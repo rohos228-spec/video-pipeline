@@ -1,0 +1,53 @@
+"""Шаг 8: для каждого кадра — текстовый анимационный промт через ChatGPT web.
+Мастер-промт VIDEO_SHORTS пока черновой; пользователь позже пришлёт финальный
+и мы заменим prompts/VIDEO_SHORTS.v*.md.
+"""
+
+from __future__ import annotations
+
+from aiogram import Bot  # noqa: F401
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
+from app.models import Frame, FrameStatus, Project, ProjectStatus, PromptKey
+from app.services.prompts import get_active_prompt
+
+
+async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
+    if project.status is not ProjectStatus.images_ready:
+        return
+    logger.info("[#{}] make_animation_prompts starting", project.id)
+
+    video_master = await get_active_prompt(session, PromptKey.VIDEO_SHORTS)
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+
+    async with browser_session() as bs:
+        gpt = ChatGPTBot(bs)
+        for fr in frames:
+            if fr.animation_prompt:
+                continue
+            ask = (
+                video_master
+                + "\n\n---\n\nЗадача: составь ОДИН промт для анимации следующего кадра "
+                + "(Veo 3.1 Fast Relax, 8 сек, 9:16). Без лишних пояснений, только текст промта.\n\n"
+                + f"Номер кадра: {fr.number}\n"
+                + f"Длительность: {fr.duration_seconds} сек\n"
+                + f"Закадровый текст: {fr.voiceover_text}\n"
+                + f"Изобразительный промт (контекст кадра):\n{fr.image_prompt or '—'}\n"
+            )
+            reply = await gpt.ask_fresh(ask, timeout=240)
+            if not reply or len(reply) < 30:
+                raise RuntimeError(f"пустой animation_prompt на кадре {fr.number}")
+            fr.animation_prompt = reply
+            fr.status = FrameStatus.animation_prompt_ready
+            await session.flush()
+
+    project.status = ProjectStatus.animation_prompts_ready
+    await session.flush()
