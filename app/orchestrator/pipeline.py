@@ -39,6 +39,7 @@ from app.orchestrator.steps import (
     make_animation_prompts,
     make_plan,
     make_script,
+    publish,
     split_frames,
 )
 
@@ -149,17 +150,15 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             session, project, HITLKind.approve_final, on_back=ProjectStatus.audio_ready
         )
         if decision is HITLDecision.approved:
-            # публикация будет подключена в PR#4
-            logger.info(
-                "[#{}] final approved \u2014 publish step will be implemented next",
-                project.id,
-            )
+            await publish.run(session, project, bot)
         elif decision is HITLDecision.regenerate:
-            # пересоберём финальный видеофайл (из тех же клипов/аудио)
+            # пересоберём финальный видеофайл из тех же клипов/аудио
             project.status = ProjectStatus.audio_ready
         elif decision is HITLDecision.rejected:
             project.status = ProjectStatus.failed
         return
+
+    # published — терминальный статус
 
 
 async def _gate(
