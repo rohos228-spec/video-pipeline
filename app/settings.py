@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Paths
     data_dir: Path = Field(Path("/data"), alias="DATA_DIR")
 
+    # Whisper
+    whisper_model: str = Field("medium", alias="WHISPER_MODEL")
+
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")

@@ -31,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import HITLDecision, HITLKind, HITLRequest, Project, ProjectStatus
 from app.orchestrator.steps import (
+    assemble,
+    generate_audio,
     generate_hero,
     generate_images,
     generate_videos,
@@ -131,19 +133,32 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             on_back=ProjectStatus.animation_prompts_ready,
         )
         if decision is HITLDecision.approved:
-            # audio + assemble будут подключены следующим PR
-            logger.info(
-                "[#{}] videos approved \u2014 next step (audio) not yet implemented",
-                project.id,
-            )
+            await generate_audio.run(session, project, bot)
         elif decision is HITLDecision.regenerate:
             project.status = ProjectStatus.animation_prompts_ready
         elif decision is HITLDecision.rejected:
             project.status = ProjectStatus.failed
         return
 
-    # audio_ready / assembled — следующий PR
-    if status in (ProjectStatus.audio_ready, ProjectStatus.assembled):
+    if status is ProjectStatus.audio_ready:
+        await assemble.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.assembled:
+        decision = await _gate(
+            session, project, HITLKind.approve_final, on_back=ProjectStatus.audio_ready
+        )
+        if decision is HITLDecision.approved:
+            # публикация будет подключена в PR#4
+            logger.info(
+                "[#{}] final approved \u2014 publish step will be implemented next",
+                project.id,
+            )
+        elif decision is HITLDecision.regenerate:
+            # пересоберём финальный видеофайл (из тех же клипов/аудио)
+            project.status = ProjectStatus.audio_ready
+        elif decision is HITLDecision.rejected:
+            project.status = ProjectStatus.failed
         return
 
 
