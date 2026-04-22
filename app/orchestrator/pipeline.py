@@ -30,7 +30,15 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import HITLDecision, HITLKind, HITLRequest, Project, ProjectStatus
-from app.orchestrator.steps import make_plan, make_script, split_frames
+from app.orchestrator.steps import (
+    generate_hero,
+    generate_images,
+    generate_videos,
+    make_animation_prompts,
+    make_plan,
+    make_script,
+    split_frames,
+)
 
 
 async def _latest_hitl(
@@ -81,16 +89,61 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             project.status = ProjectStatus.failed
         return
 
-    # Следующие стадии пока не реализованы — оставляем как no-op:
-    if status in (
-        ProjectStatus.frames_ready,
-        ProjectStatus.hero_ready,
-        ProjectStatus.images_ready,
-        ProjectStatus.animation_prompts_ready,
-        ProjectStatus.videos_ready,
-        ProjectStatus.audio_ready,
-        ProjectStatus.assembled,
-    ):
+    if status is ProjectStatus.frames_ready:
+        await generate_hero.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.hero_ready:
+        # HITL approve_hero — если запрос был, ждём решения. Если ГГ пропущен
+        # (hero_mode=no_hero), HITL-запроса нет — едем сразу на images.
+        req = await _latest_hitl(session, project.id, HITLKind.approve_hero)
+        if req is None:
+            await generate_images.run(session, project, bot)
+            return
+        if req.decision is HITLDecision.approved:
+            await generate_images.run(session, project, bot)
+        elif req.decision is HITLDecision.regenerate:
+            project.status = ProjectStatus.frames_ready
+            project.hero_description = None
+        elif req.decision is HITLDecision.rejected:
+            project.status = ProjectStatus.failed
+        return
+
+    if status is ProjectStatus.images_ready:
+        decision = await _gate(
+            session, project, HITLKind.approve_images, on_back=ProjectStatus.hero_ready
+        )
+        if decision is HITLDecision.approved:
+            await make_animation_prompts.run(session, project, bot)
+        elif decision is HITLDecision.regenerate:
+            project.status = ProjectStatus.hero_ready
+        elif decision is HITLDecision.rejected:
+            project.status = ProjectStatus.failed
+        return
+
+    if status is ProjectStatus.animation_prompts_ready:
+        await generate_videos.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.videos_ready:
+        decision = await _gate(
+            session, project, HITLKind.approve_videos,
+            on_back=ProjectStatus.animation_prompts_ready,
+        )
+        if decision is HITLDecision.approved:
+            # audio + assemble будут подключены следующим PR
+            logger.info(
+                "[#{}] videos approved \u2014 next step (audio) not yet implemented",
+                project.id,
+            )
+        elif decision is HITLDecision.regenerate:
+            project.status = ProjectStatus.animation_prompts_ready
+        elif decision is HITLDecision.rejected:
+            project.status = ProjectStatus.failed
+        return
+
+    # audio_ready / assembled — следующий PR
+    if status in (ProjectStatus.audio_ready, ProjectStatus.assembled):
         return
 
 
