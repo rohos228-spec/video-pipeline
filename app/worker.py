@@ -42,8 +42,15 @@ async def _loop_once(bot: Bot) -> None:
         for p in projects:
             try:
                 await advance_project(s, p, bot)
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 logger.exception("advance_project failed for #{}", p.id)
+                # оповещаем владельца в Telegram, чтобы он видел, что бот
+                # не висит молча
+                try:
+                    msg = f"⚠️ Ошибка на проекте #{p.id} (статус={p.status.value}): {type(e).__name__}: {e}"
+                    await bot.send_message(settings.telegram_owner_chat_id, msg[:3800])
+                except Exception:  # noqa: BLE001
+                    logger.warning("не удалось отправить уведомление об ошибке в Telegram")
 
 
 async def main() -> None:
