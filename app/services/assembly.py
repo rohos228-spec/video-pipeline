@@ -118,8 +118,10 @@ async def assemble(
         # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
-            # ffmpeg subtitles filter требует специальных escapes для ass-пути
-            esc = str(subtitles_ass.resolve()).replace(":", r"\:").replace("'", r"\'")
+            # ffmpeg filter-граф понимает только forward-slash пути (C:/...),
+            # иначе на Windows он считает ':' разделителем опций фильтра и
+            # теряет файл.
+            esc = subtitles_ass.resolve().as_posix().replace("'", r"\'")
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(with_audio),

@@ -167,12 +167,25 @@ ALL_PUBLISHERS: list[type[Publisher]] = [
 ]
 
 
-async def publish_everywhere(video_path: Path, caption: str) -> list[PublishResult]:
-    """Запускаем MoreLogin-профиль один раз и проходим по всем платформам."""
+async def publish_everywhere(
+    video_path: Path,
+    caption: str,
+    *,
+    skip_platforms: set[str] | None = None,
+) -> list[PublishResult]:
+    """Запускаем MoreLogin-профиль один раз и проходим по всем платформам.
+
+    Если `skip_platforms` задан — платформы из него пропускаются (для retry-логики,
+    чтобы не публиковать дважды туда, где уже успешно выложили).
+    """
+    skip = skip_platforms or set()
     results: list[PublishResult] = []
     async with morelogin_browser() as browser:
         for cls in ALL_PUBLISHERS:
             pub = cls(browser)
+            if pub.platform in skip:
+                logger.info("skipping {} — уже опубликовано", pub.platform)
+                continue
             logger.info("publishing → {}", pub.platform)
             res = await pub.publish(video_path, caption)
             results.append(res)

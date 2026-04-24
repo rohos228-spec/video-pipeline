@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from loguru import logger
 
@@ -91,14 +92,21 @@ async def main() -> None:
     )
     worker_task = asyncio.create_task(_run_worker_loop(bot))
     try:
+        # FIRST_COMPLETED, а не FIRST_EXCEPTION: воркер-петля ловит все исключения
+        # внутри себя и никогда «не падает», так что FIRST_EXCEPTION ждал бы
+        # вечно, если поллинг завершится штатно (Ctrl+C, graceful disconnect).
         done, pending = await asyncio.wait(
-            [polling_task, worker_task], return_when=asyncio.FIRST_EXCEPTION
+            [polling_task, worker_task], return_when=asyncio.FIRST_COMPLETED
         )
         for t in pending:
             t.cancel()
+        for t in pending:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await t
         for t in done:
-            if t.exception():
-                raise t.exception()  # type: ignore[misc]
+            exc = t.exception()
+            if exc is not None:
+                raise exc
     finally:
         await bot.session.close()
 
