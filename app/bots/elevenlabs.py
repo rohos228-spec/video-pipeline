@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from loguru import logger
-from playwright.async_api import Page, TimeoutError as PWTimeoutError
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PWTimeoutError
 
 from app.bots.browser import BrowserSession, browser_session
 from app.settings import settings

@@ -1,12 +1,12 @@
 """Playwright-обёртка: подключение по CDP к уже запущенному Chrome (локально
 на ПК пользователя), получение готовой страницы по URL и базовые helpers.
 
-Chrome запускается на хосте (вне Docker) с флагами:
+Chrome запускается пользователем один раз с флагами (см. HOW_TO_RUN.md):
   --remote-debugging-port=29229
-  --user-data-dir=/home/<user>/.browser_data_dir
+  --user-data-dir=%USERPROFILE%\\.vp_browser_data  (Windows)
 
-Из Docker-контейнера мы подключаемся по адресу host.docker.internal:29229
-(на Linux — через extra_hosts: host.docker.internal:host-gateway).
+В этом Chrome пользователь залогинен в ChatGPT, outsee.io, 11Labs и т.д. —
+Playwright подхватывает все залогиненные контексты.
 """
 
 from __future__ import annotations

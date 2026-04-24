@@ -19,7 +19,6 @@ from app.models import (
     Artifact,
     ArtifactKind,
     Frame,
-    FrameStatus,
     Project,
     ProjectStatus,
 )

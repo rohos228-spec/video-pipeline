@@ -95,7 +95,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         title=f"Клипы #{project.id}",
         text=(
             f"Готово {len(frames)} клипов по 8 сек. "
-            f"Папка: `/data/videos/{project.slug}/videos/`. "
+            f"Папка: `{out_dir}`. "
             "Одобри, если всё ок — начну сборку аудио и финала."
         ),
         payload={"step": "videos", "count": len(frames)},

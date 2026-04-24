@@ -42,16 +42,15 @@ class MoreLoginError(RuntimeError):
 
 
 async def _http_post(path: str, profile_id: str, host: str = "http://127.0.0.1:40000") -> dict:
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{host}{path}", json={"profileId": profile_id}) as r:
-            text = await r.text()
-            logger.debug("morelogin {} {} {} → {}", path, profile_id, r.status, text[:400])
-            if r.status != 200:
-                return {"__status": r.status, "__text": text}
-            try:
-                return await r.json(content_type=None)
-            except Exception:  # noqa: BLE001
-                return {"__status": r.status, "__text": text}
+    async with aiohttp.ClientSession() as s, s.post(f"{host}{path}", json={"profileId": profile_id}) as r:
+        text = await r.text()
+        logger.debug("morelogin {} {} {} → {}", path, profile_id, r.status, text[:400])
+        if r.status != 200:
+            return {"__status": r.status, "__text": text}
+        try:
+            return await r.json(content_type=None)
+        except Exception:  # noqa: BLE001
+            return {"__status": r.status, "__text": text}
 
 
 async def start_profile(profile_id: str) -> str:

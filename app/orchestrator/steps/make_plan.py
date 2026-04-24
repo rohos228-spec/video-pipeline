@@ -9,10 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.models import HITLKind, Project, ProjectStatus
-from app.services.hitl import send_hitl_text, wait_for_decision
+from app.models import HITLKind, Project, ProjectStatus, PromptKey
+from app.services.hitl import send_hitl_text
 from app.services.prompts import get_active_prompt
-from app.models import PromptKey
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:

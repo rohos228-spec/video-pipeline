@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
-from playwright.async_api import Browser, Page, TimeoutError as PWTimeoutError
+from playwright.async_api import Browser, Page
 
 from app.bots.morelogin import morelogin_browser
 

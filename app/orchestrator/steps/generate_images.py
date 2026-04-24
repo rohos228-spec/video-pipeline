@@ -105,7 +105,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         title=f"Картинки #{project.id}",
         text=(
             f"Сгенерированы {len(frames)} картинок. "
-            f"Посмотри в `/data/videos/{project.slug}/scenes/` и одобри, "
+            f"Посмотри в `{out_dir}` и одобри, "
             "если всё ок. (Превью в Telegram будет добавлено позже — пока без пред-просмотра.)"
         ),
         payload={"step": "images", "count": len(frames)},
