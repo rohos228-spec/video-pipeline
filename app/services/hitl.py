@@ -59,18 +59,24 @@ async def send_hitl_text(
     payload: dict | None = None,
     frame_id: int | None = None,
 ) -> HITLRequest:
+    import html as _html
+
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
-    body = f"*{title}*\n\n{text}"
-    # Telegram режет длинные сообщения — разобьём при необходимости.
+    # Используем HTML parse_mode и экранируем произвольный текст — так Telegram
+    # не спотыкается о «грязный» markdown из LLM-ответа (звёздочки, скобки,
+    # бэктики в непредвидимых местах).
+    body = f"<b>{_html.escape(title)}</b>\n\n{_html.escape(text)}"
     chunks = [body[i : i + 3800] for i in range(0, len(body), 3800)] or [body]
     msg = await bot.send_message(
         settings.telegram_owner_chat_id,
         chunks[0],
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=_keyboard(req.id),
     )
     for c in chunks[1:]:
-        await bot.send_message(settings.telegram_owner_chat_id, c)
+        await bot.send_message(
+            settings.telegram_owner_chat_id, c, parse_mode="HTML"
+        )
     req.tg_message_id = msg.message_id
     return req
 
