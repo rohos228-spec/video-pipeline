@@ -186,7 +186,7 @@ class OutseeBot:
         out_path: Path,
         *,
         aspect_ratio: str = "9:16",
-        timeout: float = 300,
+        timeout: float = 600,
     ) -> GenerationResult:
         logger.info("outsee.generate_image: открываю страницу")
         page = await self.session.open_page(settings.outsee_image_url, reuse=True)
@@ -260,8 +260,9 @@ class OutseeBot:
             logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
 
             # Ждём пока кнопка станет активной: на outsee она disabled если
-            # либо нет промта, либо предыдущая генерация ещё идёт.
-            await self._wait_button_enabled(page, gen_sel, timeout_s=180)
+            # либо нет промта, либо предыдущая генерация ещё идёт
+            # (nano-banana может считать 5–7 минут).
+            await self._wait_button_enabled(page, gen_sel, timeout_s=600)
 
             await page.locator(gen_sel).first.click()
             logger.info("outsee.generate_image: Generate кликнут, жду картинку")
@@ -290,7 +291,7 @@ class OutseeBot:
         self,
         out_path: Path,
         *,
-        timeout: float = 300,
+        timeout: float = 600,
     ) -> GenerationResult:
         """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
         без перезаполнения промта. Сайт использует тот же промт и настройки."""
