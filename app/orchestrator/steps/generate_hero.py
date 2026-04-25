@@ -100,11 +100,39 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             + user_brief
         )
         gpt = ChatGPTBot(bs)
-        hero_prompt = await gpt.ask_fresh(hero_ask, timeout=300)
-        if not hero_prompt or len(hero_prompt) < 200:
-            raise RuntimeError("ChatGPT не вернул заполненный hero-промт")
+        hero_prompt = ""
+        last_reply = ""
+        for attempt in range(1, 3):  # 2 попытки максимум
+            reply = await gpt.ask_fresh(hero_ask, timeout=600)
+            last_reply = reply or ""
+            logger.info(
+                "[#{}] hero ChatGPT attempt {}: {} симв",
+                project.id,
+                attempt,
+                len(last_reply),
+            )
+            logger.info(
+                "[#{}] hero ChatGPT preview:\n{}",
+                project.id,
+                last_reply[:600],
+            )
+            if last_reply and len(last_reply) >= 100:
+                hero_prompt = last_reply.strip()
+                break
+            logger.warning(
+                "[#{}] hero ChatGPT вернул слишком короткий ответ ({} симв), "
+                "пробую ещё раз",
+                project.id,
+                len(last_reply),
+            )
+        if not hero_prompt:
+            raise RuntimeError(
+                f"ChatGPT не вернул заполненный hero-промт после 2 попыток. "
+                f"Последний ответ ({len(last_reply)} симв): "
+                f"{last_reply[:200]!r}"
+            )
         logger.info(
-            "[#{}] hero ChatGPT prompt: {} симв (на основе {} симв описания)",
+            "[#{}] hero final prompt: {} симв (из {} симв описания)",
             project.id,
             len(hero_prompt),
             len(user_brief),
