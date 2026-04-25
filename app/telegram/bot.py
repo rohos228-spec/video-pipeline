@@ -140,15 +140,60 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
 async def build_bot() -> tuple[Bot, Dispatcher]:
     # Если задан TELEGRAM_PROXY_URL — гоняем aiogram через прокси (актуально,
     # когда api.telegram.org заблокирован провайдером).
-    if settings.telegram_proxy_url:
-        from aiogram.client.session.aiohttp import AiohttpSession
+    proxy_url = settings.telegram_proxy_url
+    if proxy_url:
+        # Прячем пароль в логах, показываем только host.
+        logger.info("telegram: using proxy {}", _mask_proxy_url(proxy_url))
+        if proxy_url.startswith(("socks4://", "socks5://", "socks5h://")):
+            # aiohttp сам SOCKS не умеет — нужен aiohttp-socks.
+            try:
+                from aiohttp_socks import ProxyConnector  # type: ignore[import-not-found]
+            except ImportError as e:
+                raise RuntimeError(
+                    "Для SOCKS-прокси поставь aiohttp-socks: pip install aiohttp-socks"
+                ) from e
+            import aiohttp
+            from aiogram.client.session.aiohttp import AiohttpSession
 
-        session = AiohttpSession(proxy=settings.telegram_proxy_url)
-        logger.info("telegram: using proxy {}", settings.telegram_proxy_url)
-        bot = Bot(settings.telegram_bot_token, session=session)
+            class _SocksSession(AiohttpSession):
+                def __init__(self, proxy: str) -> None:
+                    super().__init__()
+                    self._proxy_url_socks = proxy
+
+                async def create_session(self) -> aiohttp.ClientSession:  # type: ignore[override]
+                    if self._session is None or self._session.closed:
+                        connector = ProxyConnector.from_url(self._proxy_url_socks)
+                        self._session = aiohttp.ClientSession(connector=connector)
+                    return self._session
+
+            bot = Bot(settings.telegram_bot_token, session=_SocksSession(proxy_url))
+        else:
+            # HTTP/HTTPS-прокси — нативная поддержка aiohttp.
+            from aiogram.client.session.aiohttp import AiohttpSession
+
+            bot = Bot(
+                settings.telegram_bot_token,
+                session=AiohttpSession(proxy=proxy_url),
+            )
     else:
         bot = Bot(settings.telegram_bot_token)
     return bot, dp
+
+
+def _mask_proxy_url(url: str) -> str:
+    """Скрываем пароль в логах."""
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        p = urlparse(url)
+        if p.username or p.password:
+            netloc = f"{p.username or ''}:***@{p.hostname}"
+            if p.port:
+                netloc += f":{p.port}"
+            return urlunparse(p._replace(netloc=netloc))
+        return url
+    except Exception:  # noqa: BLE001
+        return "***"
 
 
 async def notify_owner(bot: Bot, text: str, **kwargs: Any) -> Message:
