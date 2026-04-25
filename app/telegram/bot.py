@@ -129,12 +129,40 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         if req.decision is not HITLDecision.pending:
             await cb.answer(f"Уже обработан: {req.decision.value}", show_alert=True)
             return
-        req.decision = {
+        decision = {
             "approve": HITLDecision.approved,
             "regen": HITLDecision.regenerate,
             "reject": HITLDecision.rejected,
         }.get(action, HITLDecision.pending)
+        req.decision = decision
     await cb.answer(f"Решение: {action}")
+
+    # Прячем кнопки и добавляем в подпись/текст отметку о решении — чтобы
+    # визуально было видно, что карточка уже обработана, но при этом само
+    # медиа (картинка/видео) и исходный текст остались.
+    badge = {
+        HITLDecision.approved: "✅ Одобрено",
+        HITLDecision.regenerate: "🔁 Перегенерация",
+        HITLDecision.rejected: "❌ Отклонено",
+    }.get(decision, "")
+    try:
+        msg = cb.message
+        if msg is None:
+            return
+        # У фото/видео редактируется caption, у текста — text.
+        if msg.photo or msg.video:
+            new_caption = ((msg.caption or "") + f"\n\n{badge}").strip()
+            await msg.edit_caption(caption=new_caption[:1024], reply_markup=None)
+        else:
+            existing = msg.text or msg.html_text or ""
+            new_text = (existing + f"\n\n{badge}").strip()
+            # Сохраняем формат (HTML): исходное сообщение у нас HTML-parse_mode.
+            await msg.edit_text(
+                new_text[:4096], parse_mode="HTML", reply_markup=None
+            )
+    except Exception:  # noqa: BLE001
+        # не критично — просто кнопки не скрыли
+        pass
 
 
 async def build_bot() -> tuple[Bot, Dispatcher]:

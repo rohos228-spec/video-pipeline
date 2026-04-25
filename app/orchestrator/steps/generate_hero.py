@@ -18,13 +18,17 @@ from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import desc, select
+
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
 from app.models import (
     Artifact,
     ArtifactKind,
+    HITLDecision,
     HITLKind,
+    HITLRequest,
     Project,
     ProjectStatus,
     PromptKey,
@@ -44,6 +48,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     logger.info("[#{}] generate_hero starting", project.id)
+
+    # Проверяем: это перегенерация после нажатия 🔁 на предыдущей HITL-карточке?
+    # Если да — используем кнопку «Повторить» на outsee вместо полного прогона.
+    last_hitl = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+            )
+            .order_by(desc(HITLRequest.id))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    is_regen = (
+        last_hitl is not None
+        and last_hitl.decision is HITLDecision.regenerate
+        and bool(project.hero_description)
+    )
 
     async with browser_session() as bs:
         # 1) описание внешности героя (ChatGPT web) — берём из общего плана.
@@ -82,9 +105,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
         file_name = f"hero_{uuid.uuid4().hex[:8]}.png"
         out_path = out_dir / file_name
-        result = await outsee.generate_image(
-            hero_prompt, out_path, aspect_ratio="9:16"
-        )
+        if is_regen:
+            logger.info(
+                "[#{}] regenerate hero via 'Повторить' (without ChatGPT)",
+                project.id,
+            )
+            result = await outsee.regenerate_image(out_path)
+        else:
+            result = await outsee.generate_image(
+                hero_prompt, out_path, aspect_ratio="9:16"
+            )
 
     # 3) сохраняем в БД + HITL
     art = Artifact(

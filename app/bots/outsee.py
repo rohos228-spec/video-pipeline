@@ -144,6 +144,11 @@ class OutseeBot:
         # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
         await page.wait_for_load_state("networkidle", timeout=30_000)
 
+        # Фиксируем «базовую» картинку в блоке «Результат генерации» ДО запуска,
+        # чтобы потом ждать появление ДРУГОЙ (свежей) — иначе рискуем подхватить
+        # старый результат, который уже висел на странице.
+        baseline = await self._result_img_src(page)
+
         # 1) вбить промт
         input_sel = await _first_visible(
             page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
@@ -179,7 +184,7 @@ class OutseeBot:
         await page.locator(gen_sel).first.click()
 
         # 4) ждём появления <img> с результатом
-        img_url = await self._wait_image_url(page, timeout=timeout)
+        img_url = await self._wait_image_url(page, timeout=timeout, baseline=baseline)
 
         # 5) скачиваем
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,26 +192,88 @@ class OutseeBot:
         logger.info("outsee image saved → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=img_url)
 
-    async def _wait_image_url(self, page: Page, *, timeout: float) -> str:
-        deadline = asyncio.get_event_loop().time() + timeout
-        last_known: set[str] = {
-            src for src in await page.evaluate(
-                "() => Array.from(document.querySelectorAll('img')).map(i => i.src)"
+    async def regenerate_image(
+        self,
+        out_path: Path,
+        *,
+        timeout: float = 300,
+    ) -> GenerationResult:
+        """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
+        без перезаполнения промта. Сайт использует тот же промт и настройки."""
+        page = await self.session.open_page(settings.outsee_image_url, reuse=True)
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_load_state("networkidle", timeout=30_000)
+
+        baseline = await self._result_img_src(page)
+
+        retry_sel = await _first_visible(
+            page,
+            [
+                "button:has-text('Повторить')",
+                "button:has-text('Retry')",
+                "button:has-text('Regenerate')",
+            ],
+            timeout_ms=15_000,
+        )
+        if not retry_sel:
+            raise RuntimeError(
+                "outsee image: не найдена кнопка «Повторить» — возможно, "
+                "на странице нет предыдущего результата"
             )
-            if src
-        }
+        try:
+            await page.locator(retry_sel).first.scroll_into_view_if_needed(
+                timeout=5_000
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await page.locator(retry_sel).first.click()
+
+        img_url = await self._wait_image_url(page, timeout=timeout, baseline=baseline)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        await _download_via_context(page, img_url, out_path)
+        logger.info("outsee image regenerated → {}", out_path)
+        return GenerationResult(file_path=out_path, raw_url=img_url)
+
+    async def _result_img_src(self, page: Page) -> str | None:
+        """Src большой картинки из блока «Результат генерации» (или None,
+        если блока ещё нет / там плейсхолдер/спиннер)."""
+        try:
+            return await page.evaluate(
+                """() => {
+                    const imgs = Array.from(document.querySelectorAll('img'));
+                    for (const img of imgs) {
+                        const r = img.getBoundingClientRect();
+                        if (r.width < 200 || r.height < 200) continue;
+                        let el = img;
+                        for (let i = 0; i < 12 && el; i++) {
+                            const t = el.textContent || '';
+                            if (t.includes('Результат генерации')) {
+                                return img.src || null;
+                            }
+                            el = el.parentElement;
+                        }
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _wait_image_url(
+        self, page: Page, *, timeout: float, baseline: str | None = None
+    ) -> str:
+        """Ждёт, пока в блоке «Результат генерации» появится картинка,
+        отличающаяся от baseline. Игнорирует галерею и боковые превью."""
+        deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
-            now = {
-                src for src in await page.evaluate(
-                    "() => Array.from(document.querySelectorAll('img')).map(i => i.src)"
-                )
-                if src
-            }
-            new = now - last_known
-            # Берём свежий src, который выглядит как сгенерированная картинка
-            for u in new:
-                if any(tok in u for tok in ("blob:", "outsee", "cdn", "storage", ".png", ".jpg", ".webp")):
-                    return u
+            current = await self._result_img_src(page)
+            if current and current != baseline and not current.endswith("/placeholder.svg"):
+                # фильтруем очевидно невалидные
+                if any(
+                    tok in current
+                    for tok in ("blob:", "outsee", "cdn", "storage", ".png", ".jpg", ".webp", "http")
+                ):
+                    return current
             await asyncio.sleep(1.0)
         raise PWTimeoutError("outsee image: результат не появился за отведённое время")
 

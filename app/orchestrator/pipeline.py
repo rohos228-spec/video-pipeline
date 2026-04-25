@@ -106,8 +106,10 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         if req.decision is HITLDecision.approved:
             await generate_images.run(session, project, bot)
         elif req.decision is HITLDecision.regenerate:
+            # Откат на frames_ready — generate_hero увидит последний HITL
+            # approve_hero=regenerate и дёрнет «Повторить» на outsee (без
+            # похода в ChatGPT и без перезаполнения промта).
             project.status = ProjectStatus.frames_ready
-            project.hero_description = None
         elif req.decision is HITLDecision.rejected:
             project.status = ProjectStatus.failed
         return
