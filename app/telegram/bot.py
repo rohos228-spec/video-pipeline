@@ -40,6 +40,7 @@ from app.db import session_scope
 from app.models import (
     Frame,
     HITLDecision,
+    HITLKind,
     HITLRequest,
     Project,
     ProjectStatus,
@@ -617,12 +618,30 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             "reject": HITLDecision.rejected,
         }.get(action, HITLDecision.pending)
         req.decision = decision
+
+        # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4».
+        # Возвращаем проект в generating_hero, воркер подхватит.
+        regen_step_msg = ""
+        if action == "regen" and req.kind is HITLKind.approve_hero:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == req.project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                project.status = ProjectStatus.generating_hero
+                regen_step_msg = (
+                    "\n\n▶ Запускаю генерацию hero заново "
+                    "(с тем же описанием)."
+                )
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",
         HITLDecision.regenerate: "🔁 Перегенерация",
         HITLDecision.rejected: "❌ Отклонено",
     }.get(decision, "")
+    if regen_step_msg:
+        badge = badge + regen_step_msg
     await _hide_buttons_with_badge(cb.message, badge)
 
 
