@@ -79,15 +79,15 @@ class ChatGPTBot:
 
     async def new_conversation(self) -> None:
         page = await self._page_ready()
-        # пробуем найти кнопку "новый чат"; если нет — просто перезагружаем /
-        sel = await _first_matching(page, NEW_CHAT_SELECTORS, timeout=3)
-        if sel:
-            try:
-                await page.locator(sel).first.click()
-            except Exception:  # noqa: BLE001
-                await page.goto(CHATGPT_URL, wait_until="domcontentloaded")
-        else:
-            await page.goto(CHATGPT_URL, wait_until="domcontentloaded")
+        # Самый надёжный способ открыть новый чат — просто перейти на /.
+        # Клик по кнопке в сайдбаре ChatGPT часто перехватывается svg-иконкой
+        # (`subtree intercepts pointer events`), а навигация работает всегда.
+        try:
+            await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=30_000)
+        except Exception:  # noqa: BLE001
+            # Если страница закрылась или ещё что — пересоздадим вкладку.
+            self._page = None
+            page = await self._page_ready()
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
 
     async def _send_prompt(self, text: str) -> None:
