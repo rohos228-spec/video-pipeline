@@ -93,22 +93,32 @@ class GenerationResult:
     raw_url: str | None = None
 
 
-async def _first_visible(page: Page, selectors: list[str], *, timeout_ms: int = 15_000) -> str | None:
+async def _first_visible(
+    page: Page, selectors: list[str], *, timeout_ms: int = 15_000
+) -> str | None:
+    """Возвращает CSS-селектор с уже вставленным `:nth-match(sel, N)`, который
+    гарантированно попадает в первый ВИДИМЫЙ элемент. Страницы outsee часто
+    рендерят 2–3 копии одного textarea (desktop + mobile + sidebar), и
+    locator(sel).first может ткнуть в скрытую."""
     deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
     while asyncio.get_event_loop().time() < deadline:
         for sel in selectors:
             try:
-                loc = page.locator(sel).first
-                if await loc.count() == 0:
+                base = page.locator(sel)
+                count = await base.count()
+                if count == 0:
                     continue
-                try:
-                    if await loc.is_visible():
-                        return sel
-                except Exception:  # noqa: BLE001
-                    # У некоторых <input[type=file]> is_visible = False, но они валидные
-                    if "file" in sel:
-                        return sel
-                    continue
+                for i in range(min(count, 8)):
+                    loc = base.nth(i)
+                    try:
+                        if await loc.is_visible():
+                            # Вернём Playwright-селектор `:nth-match(X, N+1)`
+                            return f":nth-match({sel}, {i + 1})"
+                    except Exception:  # noqa: BLE001
+                        # input[type=file] обычно hidden, но валиден
+                        if "file" in sel:
+                            return f":nth-match({sel}, {i + 1})"
+                        continue
             except Exception:  # noqa: BLE001
                 continue
         await asyncio.sleep(0.3)
