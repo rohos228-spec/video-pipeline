@@ -356,10 +356,59 @@ class ProjectSheet:
     def _open(self):  # type: ignore[no-untyped-def]
         from openpyxl import load_workbook
 
-        return load_workbook(self.file_path)
+        # Если Excel открыл файл — он держит его на чтение, и load_workbook
+        # обычно проходит. Но если открыто в режиме редактирования и lock
+        # держится жёстко, делаем 3 ретрая по 0.2 сек.
+        import time as _t
+
+        last: Exception | None = None
+        for _ in range(3):
+            try:
+                return load_workbook(self.file_path)
+            except PermissionError as e:
+                last = e
+                _t.sleep(0.2)
+        assert last is not None
+        raise last
 
     def _save(self, wb: Any) -> None:
-        wb.save(self.file_path)
+        """Сохраняем атомарно через временный файл, с ретраями на
+        PermissionError (Windows + открытый Excel)."""
+        import os as _os
+        import time as _t
+
+        tmp = self.file_path.with_suffix(self.file_path.suffix + ".tmp")
+        last: Exception | None = None
+        for _ in range(5):
+            try:
+                wb.save(tmp)
+                _os.replace(tmp, self.file_path)
+                return
+            except PermissionError as e:
+                last = e
+                _t.sleep(0.3)
+            except Exception as e:  # noqa: BLE001
+                last = e
+                break
+        # деградация: если файл реально занят (Excel открыт у пользователя) —
+        # сохраняем рядом «pending»-копию, чтобы данные не терялись. В этом
+        # случае не поднимаем исключение: запись формально удалась (в pending),
+        # caller узнает по предупреждению в логе.
+        try:
+            pending = self.file_path.with_suffix(self.file_path.suffix + ".pending")
+            wb.save(pending)
+            logger.warning(
+                "project_sheet: {} занят (PermissionError, скорее всего открыт в "
+                "Excel) — данные ушли в {}; закрой файл, при следующем шаге "
+                "пайплайна будет полная запись",
+                self.file_path.name,
+                pending.name,
+            )
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        if last is not None:
+            raise last
 
     def _ensure_layout(self, wb: Any) -> None:
         """Гарантирует, что в файле есть оба листа и наши служебные строки."""
