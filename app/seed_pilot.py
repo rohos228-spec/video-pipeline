@@ -20,6 +20,8 @@ from sqlalchemy import select
 
 from app.db import engine, session_scope
 from app.models import Base, Project, ProjectStatus
+from app.settings import settings
+from app.storage import ProjectSheet
 
 DEFAULT_TOPIC = "5 фактов о рачках в стиле киберпанк"
 DEFAULT_HERO_MODE = "auto"
@@ -74,6 +76,18 @@ async def seed(topic: str = DEFAULT_TOPIC, hero_mode: str = DEFAULT_HERO_MODE) -
         s.add(p)
         await s.flush()
         logger.info("pilot project created: #{} slug={} topic={}", p.id, p.slug, p.topic)
+
+        # xlsx-хранилище: копия шаблона + общий план
+        sheet = ProjectSheet(
+            file_path=settings.data_dir / "videos" / p.slug / "project.xlsx",
+        )
+        sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+        sheet.write_general(
+            topic=p.topic,
+            slug=p.slug,
+            hero_mode=p.hero_mode,
+            status=p.status.value,
+        )
         return p.id
 
 

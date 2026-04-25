@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project, ProjectStatus
+from app.storage import for_project as _sheet_for_project
 
 MIN_FRAME = 2.0
 MAX_FRAME = 4.0
@@ -99,3 +100,18 @@ async def run(session: AsyncSession, project: Project) -> None:
     project.status = ProjectStatus.frames_ready
     await session.flush()
     logger.info("[#{}] split_frames: {} ячеек, итого {:.2f} сек", project.id, len(cells), t)
+
+    try:
+        sheet = _sheet_for_project(project)
+        sheet.ensure_frame_columns(len(cells))
+        for i, (cell, dur) in enumerate(zip(cells, durations, strict=True), start=1):
+            sheet.write_frame(
+                i,
+                voiceover_text=cell,
+                duration_seconds=dur,
+                char_count=len(cell),
+                frame_status="planned",
+            )
+        sheet.write_general(status=project.status.value)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet split write failed: {}", project.id, e)

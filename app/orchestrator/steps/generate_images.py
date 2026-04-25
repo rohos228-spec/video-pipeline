@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot
+from app.bots.outsee import OutseeBot, OutseeImageError
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -45,6 +45,7 @@ from app.models import (
 from app.services.hitl import send_hitl_photo
 from app.services.prompts import get_active_prompt
 from app.settings import settings
+from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -69,6 +70,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             + project.hero_description
         )
 
+    sheet = _sheet_for_project(project)
+    try:
+        sheet.ensure_frame_columns(len(frames))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
+
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         outsee = OutseeBot(bs)
@@ -78,6 +85,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             if fr.status in (FrameStatus.image_approved, FrameStatus.failed):
                 continue
             if fr.image_prompt:
+                # уже есть в БД — но xlsx могли не успеть записать раньше;
+                # синканём (не страшно, это просто запись в человекочитаемое).
+                try:
+                    sheet.write_frame(fr.number, image_prompt=fr.image_prompt)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] xlsx write_frame(prompt sync) failed: {}",
+                        project.id,
+                        e,
+                    )
                 continue
             prompt_ask = _build_prompt_ask(image_master, hero_line, fr)
             image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
@@ -86,6 +103,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             fr.image_prompt = image_prompt
             fr.status = FrameStatus.image_prompt_ready
             await session.flush()
+            try:
+                sheet.write_frame(
+                    fr.number,
+                    image_prompt=image_prompt,
+                    frame_status=fr.status.value,
+                    gen_type="image",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] xlsx write_frame(image_prompt) failed: {}",
+                    project.id,
+                    e,
+                )
             logger.info(
                 "[#{}] frame {}: prompt готов ({} симв)",
                 project.id,
@@ -258,31 +288,89 @@ async def _generate_and_send(
     ).scalars().all()
     attempt_number = len(attempt) + 1
 
-    file_path = out_dir / f"frame_{frame.number:03d}_{uuid.uuid4().hex[:8]}.png"
+    gen_id = uuid.uuid4().hex
+    file_path = out_dir / f"frame_{frame.number:03d}_{gen_id[:8]}.png"
     logger.info(
-        "[#{}] frame {} attempt {}: outsee {}",
+        "[#{}] frame {} attempt {} gen_id={}: outsee {}",
         project.id,
         frame.number,
         attempt_number,
+        gen_id[:8],
         "regenerate" if use_regen_button else "generate",
     )
-    if use_regen_button:
-        try:
-            result = await outsee.regenerate_image(file_path)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] frame {}: «Повторить» не сработала ({}) — падаем на generate",
-                project.id,
-                frame.number,
-                e,
-            )
-            result = await outsee.generate_image(
-                frame.image_prompt, file_path, aspect_ratio="9:16"
-            )
-    else:
-        result = await outsee.generate_image(
-            frame.image_prompt, file_path, aspect_ratio="9:16"
+    sheet = _sheet_for_project(project)
+    try:
+        sheet.write_frame(
+            frame.number,
+            image_gen_id=gen_id,
+            attempt=attempt_number,
+            frame_status="image_generating",
+            last_error="",
         )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
+
+    try:
+        if use_regen_button:
+            try:
+                result = await outsee.regenerate_image(file_path, gen_id=gen_id)
+            except OutseeImageError:
+                # Если на странице нет предыдущего результата (или другая
+                # «структурная» ошибка regenerate) — падаем на полноценный
+                # generate с тем же gen_id, чтобы не плодить ложных файлов.
+                logger.warning(
+                    "[#{}] frame {}: «Повторить» не сработала — падаю на generate",
+                    project.id,
+                    frame.number,
+                )
+                result = await outsee.generate_image(
+                    frame.image_prompt,
+                    file_path,
+                    aspect_ratio="9:16",
+                    gen_id=gen_id,
+                )
+        else:
+            result = await outsee.generate_image(
+                frame.image_prompt,
+                file_path,
+                aspect_ratio="9:16",
+                gen_id=gen_id,
+            )
+    except OutseeImageError as e:
+        # Не «возьму последнюю картинку», не silent retry: помечаем кадр
+        # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
+        # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика
+        # анти-зацикливания (MAX_FAIL=3) защитит проект целиком.
+        logger.exception(
+            "[#{}] frame {}: outsee fail (gen_id={})",
+            project.id,
+            frame.number,
+            gen_id[:8],
+        )
+        frame.status = FrameStatus.failed
+        try:
+            sheet.write_frame(
+                frame.number,
+                frame_status=frame.status.value,
+                last_error=e.format_text()[:1500],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await session.flush()
+        try:
+            await bot.send_message(
+                settings.telegram_owner_chat_id,
+                (
+                    f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
+                    f"картинку поймать не удалось.\n\n"
+                    f"<pre>{_html_escape(e.format_text())}</pre>"
+                )[:3800],
+                parse_mode="HTML",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await session.commit()
+        return
 
     art = Artifact(
         project_id=project.id,
@@ -290,10 +378,21 @@ async def _generate_and_send(
         kind=ArtifactKind.scene_image,
         uuid=uuid.uuid4().hex,
         path=str(result.file_path),
+        meta={"gen_id": gen_id, "raw_url": result.raw_url or ""},
     )
     session.add(art)
     frame.status = FrameStatus.image_generated
     await session.flush()
+
+    try:
+        sheet.write_frame(
+            frame.number,
+            image_path=str(result.file_path),
+            image_url=result.raw_url,
+            frame_status=frame.status.value,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] xlsx write_frame(image_path) failed: {}", project.id, e)
 
     caption = (
         f"Кадр #{frame.number} / {project.id}. Попытка {attempt_number}.\n"
@@ -310,9 +409,16 @@ async def _generate_and_send(
             "step": "image",
             "frame_id": frame.id,
             "attempt": attempt_number,
+            "gen_id": gen_id,
         },
         frame_id=frame.id,
         allow_edit=True,
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
+
+
+def _html_escape(s: str) -> str:
+    import html as _h
+
+    return _h.escape(s)

@@ -16,9 +16,8 @@ from pathlib import Path
 
 from aiogram import Bot
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
@@ -36,6 +35,7 @@ from app.models import (
 from app.services.hitl import send_hitl_photo
 from app.services.prompts import get_active_prompt
 from app.settings import settings
+from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -126,6 +126,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     session.add(art)
     project.status = ProjectStatus.hero_ready
     await session.flush()
+
+    try:
+        _sheet_for_project(project).write_general(
+            status=project.status.value,
+            hero_description=project.hero_description,
+            hero_image_path=str(result.file_path),
+            hero_image_url=result.raw_url,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet hero write failed: {}", project.id, e)
 
     await send_hitl_photo(
         bot, session, project,

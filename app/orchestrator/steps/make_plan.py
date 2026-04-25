@@ -12,6 +12,7 @@ from app.bots.chatgpt import ChatGPTBot
 from app.models import HITLKind, Project, ProjectStatus, PromptKey
 from app.services.hitl import send_hitl_text
 from app.services.prompts import get_active_prompt
+from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -44,6 +45,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.general_plan = reply
     project.status = ProjectStatus.plan_ready
     await session.flush()
+
+    try:
+        _sheet_for_project(project).write_general(
+            topic=project.topic,
+            slug=project.slug,
+            hero_mode=project.hero_mode,
+            status=project.status.value,
+            general_plan=reply,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet plan write failed: {}", project.id, e)
 
     # HITL: одобрение плана
     req = await send_hitl_text(

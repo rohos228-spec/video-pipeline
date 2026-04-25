@@ -15,6 +15,8 @@ from sqlalchemy import select
 from app.db import session_scope
 from app.models import Frame, HITLDecision, HITLRequest, Project, ProjectStatus
 from app.settings import settings
+from app.storage import ProjectSheet
+from app.storage import for_project as _sheet_for_project
 
 dp = Dispatcher()
 
@@ -69,6 +71,20 @@ async def cmd_new(msg: Message) -> None:
         s.add(project)
         await s.flush()
         project_id = project.id
+        # xlsx-копия шаблона + базовые поля «Общего плана»
+        try:
+            sheet = ProjectSheet(
+                file_path=settings.data_dir / "videos" / project.slug / "project.xlsx",
+            )
+            sheet.ensure_initialized(project_id=project.id, slug=project.slug)
+            sheet.write_general(
+                topic=project.topic,
+                slug=project.slug,
+                hero_mode=project.hero_mode,
+                status=project.status.value,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("project_sheet init failed: {}", e)
     await msg.answer(
         f"Проект создан: #{project_id} `{slug}`\nТема: {topic}\nРежим героя: {hero_mode}\n\n"
         "Дальше бот сам проведёт по этапам, буду присылать промежуточные результаты.",
@@ -282,6 +298,19 @@ async def on_owner_text_reply(msg: Message) -> None:
             "edited_prompt": new_prompt[:2000],
         }
         hitl_tg_msg_id = req.tg_message_id
+        # дублируем правку в xlsx, чтобы человекочитаемая копия была актуальной
+        project = (
+            await s.execute(select(Project).where(Project.id == frame.project_id))
+        ).scalar_one_or_none()
+        if project is not None:
+            try:
+                _sheet_for_project(project).write_frame(
+                    frame.number, image_prompt=new_prompt
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "project_sheet write_frame(image_prompt) failed: {}", e
+                )
     # обновим исходную HITL-карточку, проставив финальную метку
     if hitl_tg_msg_id:
         try:
