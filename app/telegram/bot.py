@@ -60,6 +60,9 @@ dp = Dispatcher()
 # Ожидание текстового ответа (тема нового проекта). user_id → True.
 _pending_topic_input: dict[int, bool] = {}
 
+# Ожидание описания героя для конкретного проекта. user_id → project_id.
+_pending_hero_brief: dict[int, int] = {}
+
 
 def is_owner(msg: Message) -> bool:
     return msg.from_user is not None and msg.from_user.id == settings.telegram_owner_chat_id
@@ -251,6 +254,24 @@ async def on_project_step(cb: CallbackQuery) -> None:
         if project.status is step.running_status:
             await cb.answer("Этот шаг уже выполняется")
             return
+
+        # Шаг 4 (Hero) требует описание персонажа от юзера. Не выставляем
+        # running-статус сразу — сначала собираем brief.
+        if step.code == "hero":
+            _pending_hero_brief[cb.from_user.id] = pid
+            await cb.answer()
+            await cb.message.answer(
+                "Опишите главного героя одним сообщением: "
+                "визуал, стиль, одежда, стиль рисовки, любые "
+                "характерные детали.\n\n"
+                "Пример: «Девушка-киборг, 25 лет, серебряные волосы каре, "
+                "лицо с резкими чертами, неоновые татуировки. Одежда: "
+                "чёрная кожаная куртка с кибер-вставками, серый свитер, "
+                "узкие чёрные брюки, тяжёлые ботинки. Стиль рисовки — "
+                "cyberpunk semi-realistic, кинематографичное освещение.»",
+            )
+            return
+
         # выставляем running-статус — воркер увидит и запустит шаг
         project.status = step.running_status
         slug = project.slug
@@ -399,9 +420,50 @@ async def on_text_message(msg: Message) -> None:
         await _create_new_project(msg)
         return
 
-    # 2) Иначе — может это ответ на edit-запрос
+    # 2) Если ждём описание героя для конкретного проекта
+    pid = _pending_hero_brief.get(user_id)
+    if pid is not None:
+        _pending_hero_brief.pop(user_id, None)
+        await _save_hero_brief_and_run(msg, pid)
+        return
+
+    # 3) Иначе — может это ответ на edit-запрос
     if msg.reply_to_message is not None:
         await _on_edit_reply(msg)
+
+
+async def _save_hero_brief_and_run(msg: Message, project_id: int) -> None:
+    """Сохраняет описание героя в БД и выставляет статус generating_hero.
+    Воркер на следующем тике подхватит и запустит generate_hero."""
+    text = (msg.text or "").strip()
+    if len(text) < 5:
+        await msg.answer(
+            "Слишком короткое описание. Тыкни «4. Hero» в меню заново и "
+            "напиши подробнее."
+        )
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        project.hero_description = text
+        project.status = ProjectStatus.generating_hero
+        try:
+            _sheet_for_project(project).write_general(
+                hero_description=text,
+                status=project.status.value,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("hero_description xlsx write failed: {}", e)
+    await msg.answer(
+        f"✏️ Описание героя сохранено ({len(text)} симв). "
+        "Запускаю шаг 4 — воркер подхватит за ~15 сек.\n"
+        "ChatGPT превратит описание в полный turnaround-промт, "
+        "outsee сгенерит картинку, потом пришлю результат."
+    )
 
 
 async def _create_new_project(msg: Message) -> None:

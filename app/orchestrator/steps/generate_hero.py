@@ -68,47 +68,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         and bool(project.hero_description)
     )
 
+    # Пользовательское описание героя сохраняется в project.hero_description
+    # ботом (когда юзер тыкает «4. Hero» — бот спрашивает текст, юзер пишет,
+    # бот пишет в hero_description и выставляет generating_hero). Здесь мы
+    # просто берём этот текст и склеиваем готовый ChatGPT-промт.
+    user_brief = (project.hero_description or "").strip()
+    if len(user_brief) < 5:
+        raise RuntimeError(
+            "hero_description пустой — нечем описать героя. "
+            "Тыкни «4. Hero» в меню заново и напиши описание."
+        )
+
     async with browser_session() as bs:
-        # 1) описание внешности героя (ChatGPT web) — берём из общего плана.
-        #    Если уже есть в project.hero_description (retry после падения на
-        #    outsee) — не дёргаем ChatGPT повторно.
-        if project.hero_description and len(project.hero_description) >= 50:
-            hero_prompt = project.hero_description
-            logger.info(
-                "[#{}] reuse cached hero_description ({} chars)",
-                project.id,
-                len(hero_prompt),
-            )
-        else:
-            # Берём шаблон HERO_SHORTS (turnaround sheet) и просим ChatGPT
-            # подставить значения в placeholder-ы (квадратные скобки) исходя
-            # из темы/плана проекта. Возвращаем целиком финальный текст,
-            # который можно сразу отправить в outsee.
-            hero_master = await get_active_prompt(
-                session, PromptKey.HERO_SHORTS
-            )
-            hero_ask = (
-                "Тема ролика: " + (project.topic or "") + "\n\n"
-                + "Общий план:\n" + (project.general_plan or "")
-                + "\n\n---\n\nНиже шаблон промта для генерации turnaround-"
-                + "листа главного героя. Подставь подходящие значения вместо "
-                + "квадратных скобок ([age], [gender], [body type], "
-                + "[skin tone], [hair color and hairstyle], [facial features], "
-                + "[expression], [other defining traits], [describe jacket / "
-                + "coat / top / pants / shoes / colors / materials], "
-                + "[outerwear study], [top study], [bottom study], "
-                + "[footwear study]) — на основе темы и плана ролика. "
-                + "Верни ТОЛЬКО полный готовый текст промта (на английском, "
-                + "сохранив всю структуру, заголовки, форматирование), без "
-                + "пояснений, без кавычек, без markdown-обрамления.\n\n"
-                + "Шаблон:\n\n" + hero_master
-            )
-            gpt = ChatGPTBot(bs)
-            hero_prompt = await gpt.ask_fresh(hero_ask, timeout=300)
-            if not hero_prompt or len(hero_prompt) < 200:
-                raise RuntimeError("ChatGPT не вернул заполненный hero-шаблон")
-            project.hero_description = hero_prompt
-            await session.flush()
+        # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
+        hero_master = await get_active_prompt(session, PromptKey.HERO_SHORTS)
+        # Префикс — фиксированная инструкция от пользователя:
+        #   "сделай промт для генерации персонажа который описан ниже,
+        #    ты должен интегрировать персонажа в промт и прислать готовый
+        #    промт для генерации персонажа"
+        hero_ask = (
+            "Сделай промт для генерации персонажа, который описан ниже. "
+            "Ты должен интегрировать персонажа в промт и прислать готовый "
+            "промт для генерации персонажа.\n\n"
+            "Структура промта (turnaround sheet) — ниже шаблоном. "
+            "Подставь в него характеристики персонажа из описания ниже, "
+            "верни ТОЛЬКО готовый текст промта (на английском, без кавычек, "
+            "без markdown-обрамления, без пояснений).\n\n"
+            "Шаблон:\n\n"
+            + hero_master
+            + "\n\n---\n\nОписание персонажа:\n"
+            + user_brief
+        )
+        gpt = ChatGPTBot(bs)
+        hero_prompt = await gpt.ask_fresh(hero_ask, timeout=300)
+        if not hero_prompt or len(hero_prompt) < 200:
+            raise RuntimeError("ChatGPT не вернул заполненный hero-промт")
+        logger.info(
+            "[#{}] hero ChatGPT prompt: {} симв (на основе {} симв описания)",
+            project.id,
+            len(hero_prompt),
+            len(user_brief),
+        )
 
         # 2) генерация референса в outsee nano-banana-2
         outsee = OutseeBot(bs)
