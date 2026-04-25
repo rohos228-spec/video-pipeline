@@ -138,7 +138,16 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
 
 
 async def build_bot() -> tuple[Bot, Dispatcher]:
-    bot = Bot(settings.telegram_bot_token)
+    # Если задан TELEGRAM_PROXY_URL — гоняем aiogram через прокси (актуально,
+    # когда api.telegram.org заблокирован провайдером).
+    if settings.telegram_proxy_url:
+        from aiogram.client.session.aiohttp import AiohttpSession
+
+        session = AiohttpSession(proxy=settings.telegram_proxy_url)
+        logger.info("telegram: using proxy {}", settings.telegram_proxy_url)
+        bot = Bot(settings.telegram_bot_token, session=session)
+    else:
+        bot = Bot(settings.telegram_bot_token)
     return bot, dp
 
 

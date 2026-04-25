@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_chat_id: int = Field(..., alias="TELEGRAM_OWNER_CHAT_ID")
+    # Опциональный HTTP/SOCKS5 прокси для Telegram-API.
+    # Примеры: http://user:pass@host:port, socks5://user:pass@host:port
+    telegram_proxy_url: str | None = Field(None, alias="TELEGRAM_PROXY_URL")
 
     # Database — SQLite file + aiosqlite.
     # Пути в Windows: C:\Users\<user>\vp_state.db → пишется как C:/Users/<user>/vp_state.db
