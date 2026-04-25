@@ -1,7 +1,19 @@
 """Шаг 6–7: для каждого кадра — промт картинки (ChatGPT web) + генерация
-(outsee nano-banana-2). Каждый кадр отправляется в TG отдельной HITL-карточкой
-с 4 кнопками (✅ Одобрить / 🔁 Перегенерировать / ✏️ Изменить промт / ❌ Отклонить).
-Бот по одному кадру ждёт решение, и либо едет дальше, либо перегенерирует.
+картинки (outsee nano-banana-2). Генерация и HITL-проверка работают
+ПАРАЛЛЕЛЬНО:
+
+  1. Сначала бот получает в ChatGPT промты для всех кадров, у которых их
+     ещё нет.
+  2. Затем по очереди генерирует картинки в outsee (nano-banana одна
+     очередь — параллельно нельзя), каждую сразу шлёт в TG как HITL-
+     карточку с 4 кнопками и НЕ БЛОКИРУЕТСЯ на ожидании решения —
+     продолжает генерить следующую.
+  3. После того как все кадры «выпущены» в TG, loop ждёт пока каждый
+     из них станет либо approved, либо failed. Параллельно обрабатывает
+     возникающие 🔁 / ✏️ решения — ставит соответствующий кадр на
+     повторную генерацию и запускает новый outsee-проход.
+
+Таким образом пока ты одобряешь кадр N, бот уже может генерить кадр N+1.
 """
 
 from __future__ import annotations
@@ -18,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
-from app.db import session_scope
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -39,7 +50,7 @@ from app.settings import settings
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.hero_ready:
         return
-    logger.info("[#{}] generate_images starting", project.id)
+    logger.info("[#{}] generate_images starting (parallel mode)", project.id)
 
     image_master = await get_active_prompt(session, PromptKey.IMAGE_SHORTS)
     frames = (
@@ -62,140 +73,246 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         gpt = ChatGPTBot(bs)
         outsee = OutseeBot(bs)
 
+        # ---- Phase 1: промты для всех кадров -------------------------------
         for fr in frames:
-            # Если кадр уже одобрен/отклонён ранее — пропускаем.
-            if fr.status in (
-                FrameStatus.image_approved,
-                FrameStatus.animation_prompt_ready,
-                FrameStatus.video_generated,
-                FrameStatus.video_approved,
-                FrameStatus.done,
-                FrameStatus.failed,
-            ):
+            if fr.status in (FrameStatus.image_approved, FrameStatus.failed):
+                continue
+            if fr.image_prompt:
+                continue
+            prompt_ask = _build_prompt_ask(image_master, hero_line, fr)
+            image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
+            if not image_prompt or len(image_prompt) < 40:
+                raise RuntimeError(f"пустой image_prompt на кадре {fr.number}")
+            fr.image_prompt = image_prompt
+            fr.status = FrameStatus.image_prompt_ready
+            await session.flush()
+            logger.info(
+                "[#{}] frame {}: prompt готов ({} симв)",
+                project.id,
+                fr.number,
+                len(image_prompt),
+            )
+        await session.commit()
+
+        # ---- Phase 2+3: генерация картинок + обработка regen/edit ----------
+        # Главный цикл не блокируется на HITL-решениях пользователя. Он:
+        #   - берёт следующий кадр, которому нужна генерация (image_prompt_ready),
+        #   - генерит, сохраняет, шлёт HITL-карточку, коммит,
+        #   - переходит к следующему такому кадру,
+        #   - когда все кадры сгенерированы — ждёт решений пользователя;
+        #     при 🔁/✏️ возвращает кадр в image_prompt_ready и снова его гонит.
+        #   - выходит когда каждый кадр либо image_approved, либо failed.
+        while True:
+            # 1) подхватить HITL-решения, требующие перегенерации
+            await _apply_pending_regens(session, project.id)
+
+            # 2) взять следующий кадр к обработке
+            target = await _next_frame_to_process(session, project.id)
+            if target is not None:
+                await _generate_and_send(
+                    session, bot, outsee, project, target, out_dir
+                )
                 continue
 
-            # 1) получаем промт (если ещё не получен)
-            if not fr.image_prompt:
-                prompt_ask = (
-                    image_master
-                    + hero_line
-                    + "\n\n---\n\nЗадача: составь ОДИН готовый текст промта для "
-                    + "генерации картинки этого кадра (на английском, строго по "
-                    + "правилам выше, включая блок `--no ...` в конце).\n\n"
-                    + f"Номер кадра: {fr.number}\n"
-                    + f"Длительность: {fr.duration_seconds} сек\n"
-                    + f"Закадровый текст: {fr.voiceover_text}\n"
-                    + (f"Смысл: {fr.meaning}\n" if fr.meaning else "")
-                )
-                image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
-                if not image_prompt or len(image_prompt) < 40:
-                    raise RuntimeError(f"пустой image_prompt на кадре {fr.number}")
-                fr.image_prompt = image_prompt
-                fr.status = FrameStatus.image_prompt_ready
-                await session.flush()
+            # 3) все кадры обработаны? (approved / failed)
+            if await _all_frames_settled(session, project.id):
+                break
 
-            # 2) per-frame цикл: генерим → карточка → ждём решение.
-            await _review_frame(session, bot, outsee, project, fr, out_dir)
+            # 4) иначе ждём пока пользователь нажмёт кнопку в TG
+            await asyncio.sleep(3)
 
     project.status = ProjectStatus.images_ready
     await session.flush()
-    logger.info("[#{}] generate_images complete, все кадры обработаны", project.id)
+    logger.info("[#{}] generate_images complete", project.id)
 
 
-async def _review_frame(
+# ---------------------------------------------------------------------------
+
+
+def _build_prompt_ask(image_master: str, hero_line: str, fr: Frame) -> str:
+    return (
+        image_master
+        + hero_line
+        + "\n\n---\n\nЗадача: составь ОДИН готовый текст промта для "
+        + "генерации картинки этого кадра (на английском, строго по "
+        + "правилам выше, включая блок `--no ...` в конце).\n\n"
+        + f"Номер кадра: {fr.number}\n"
+        + f"Длительность: {fr.duration_seconds} сек\n"
+        + f"Закадровый текст: {fr.voiceover_text}\n"
+        + (f"Смысл: {fr.meaning}\n" if fr.meaning else "")
+    )
+
+
+async def _next_frame_to_process(
+    session: AsyncSession, project_id: int
+) -> Frame | None:
+    """Ищет первый кадр в статусе image_prompt_ready — т.е. «готов к outsee»."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    for fr in frames:
+        if fr.status == FrameStatus.image_prompt_ready:
+            return fr
+    return None
+
+
+async def _all_frames_settled(session: AsyncSession, project_id: int) -> bool:
+    """True если у каждого кадра статус image_approved или failed."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    for fr in frames:
+        if fr.status not in (FrameStatus.image_approved, FrameStatus.failed):
+            return False
+    return True
+
+
+async def _apply_pending_regens(session: AsyncSession, project_id: int) -> None:
+    """Находит HITL-решения regenerate/edit_prompt, которые ещё не
+    «потреблены», возвращает соответствующие кадры в image_prompt_ready
+    и помечает HITL как consumed."""
+    hitls = (
+        await session.execute(
+            select(HITLRequest)
+            .where(HITLRequest.project_id == project_id)
+            .where(HITLRequest.kind == HITLKind.approve_images)
+            .where(
+                HITLRequest.decision.in_(
+                    [HITLDecision.regenerate, HITLDecision.edit_prompt]
+                )
+            )
+            .order_by(HITLRequest.id.desc())
+        )
+    ).scalars().all()
+    for h in hitls:
+        payload = dict(h.payload or {})
+        if payload.get("consumed"):
+            continue
+        if h.frame_id is None:
+            payload["consumed"] = True
+            h.payload = payload
+            continue
+        frame = (
+            await session.execute(select(Frame).where(Frame.id == h.frame_id))
+        ).scalar_one_or_none()
+        if frame is None:
+            payload["consumed"] = True
+            h.payload = payload
+            continue
+        # Возвращаем кадр в очередь на outsee. Выбор «Повторить» vs
+        # заполнение промта делается в _generate_and_send на основе
+        # последнего решения пользователя.
+        frame.status = FrameStatus.image_prompt_ready
+        payload["consumed"] = True
+        h.payload = payload
+        logger.info(
+            "[#{}] frame {}: повторная генерация по решению '{}' (HITL #{})",
+            project_id,
+            frame.number,
+            h.decision.value,
+            h.id,
+        )
+    await session.flush()
+
+
+async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
     outsee: OutseeBot,
     project: Project,
-    fr: Frame,
+    frame: Frame,
     out_dir: Path,
 ) -> None:
-    """Генерирует картинку для кадра, шлёт HITL-карточку, ждёт решение.
-    На 🔁 — регенерит тем же промтом через «Повторить»; на ✏️ — ждёт нового
-    промта из TG-ответа и регенерит с ним; на ✅ — уходит; на ❌ — failed."""
-    attempt = 0
-    use_regenerate_button = False  # использовать ли кнопку «Повторить» на outsee
-
-    while True:
-        attempt += 1
-        file_path = out_dir / f"frame_{fr.number:03d}_{uuid.uuid4().hex[:8]}.png"
-        logger.info(
-            "[#{}] frame {} attempt {}, regen={}",
-            project.id,
-            fr.number,
-            attempt,
-            use_regenerate_button,
+    """Один прогон outsee → сохранение артефакта → HITL-карточка."""
+    # Проверяем последний HITL: если последнее решение было regenerate —
+    # используем кнопку «Повторить» (без перезаполнения промта); иначе —
+    # обычная генерация с текущим image_prompt.
+    last_hitl = (
+        await session.execute(
+            select(HITLRequest)
+            .where(HITLRequest.frame_id == frame.id)
+            .where(HITLRequest.kind == HITLKind.approve_images)
+            .order_by(HITLRequest.id.desc())
+            .limit(1)
         )
-        if use_regenerate_button:
-            # тот же промт, нажимаем «Повторить» на outsee
+    ).scalar_one_or_none()
+    use_regen_button = (
+        last_hitl is not None
+        and last_hitl.decision is HITLDecision.regenerate
+    )
+
+    attempt = (
+        await session.execute(
+            select(HITLRequest)
+            .where(HITLRequest.frame_id == frame.id)
+            .where(HITLRequest.kind == HITLKind.approve_images)
+        )
+    ).scalars().all()
+    attempt_number = len(attempt) + 1
+
+    file_path = out_dir / f"frame_{frame.number:03d}_{uuid.uuid4().hex[:8]}.png"
+    logger.info(
+        "[#{}] frame {} attempt {}: outsee {}",
+        project.id,
+        frame.number,
+        attempt_number,
+        "regenerate" if use_regen_button else "generate",
+    )
+    if use_regen_button:
+        try:
             result = await outsee.regenerate_image(file_path)
-        else:
-            # свежая генерация с заполнением textarea
-            result = await outsee.generate_image(
-                fr.image_prompt, file_path, aspect_ratio="9:16"
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] frame {}: «Повторить» не сработала ({}) — падаем на generate",
+                project.id,
+                frame.number,
+                e,
             )
-
-        art = Artifact(
-            project_id=project.id,
-            frame_id=fr.id,
-            kind=ArtifactKind.scene_image,
-            uuid=uuid.uuid4().hex,
-            path=str(result.file_path),
+            result = await outsee.generate_image(
+                frame.image_prompt, file_path, aspect_ratio="9:16"
+            )
+    else:
+        result = await outsee.generate_image(
+            frame.image_prompt, file_path, aspect_ratio="9:16"
         )
-        session.add(art)
-        fr.status = FrameStatus.image_generated
-        await session.flush()
 
-        # HITL-карточка
-        caption = (
-            f"Кадр #{fr.number} / {project.id}. Попытка {attempt}.\n"
-            f"{(fr.voiceover_text or '')[:600]}"
-        )
-        req = await send_hitl_photo(
-            bot,
-            session,
-            project,
-            kind=HITLKind.approve_images,
-            photo_path=str(result.file_path),
-            caption=caption,
-            payload={"step": "image", "frame_id": fr.id, "attempt": attempt},
-            frame_id=fr.id,
-            allow_edit=True,
-        )
-        # Коммит, чтобы callback-handler в другом таске видел HITL.
-        await session.commit()
+    art = Artifact(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind=ArtifactKind.scene_image,
+        uuid=uuid.uuid4().hex,
+        path=str(result.file_path),
+    )
+    session.add(art)
+    frame.status = FrameStatus.image_generated
+    await session.flush()
 
-        decision = await _wait_decision(req.id)
-        # перезагружаем frame из БД (возможно image_prompt был обновлён)
-        await session.refresh(fr)
-
-        if decision is HITLDecision.approved:
-            fr.status = FrameStatus.image_approved
-            await session.flush()
-            return
-        if decision is HITLDecision.rejected:
-            fr.status = FrameStatus.failed
-            await session.flush()
-            return
-        if decision is HITLDecision.regenerate:
-            use_regenerate_button = True
-            continue
-        if decision is HITLDecision.edit_prompt:
-            # frame.image_prompt уже обновлён в on_owner_text_reply
-            use_regenerate_button = False
-            continue
-        # pending / прочее — странная ситуация, выходим
-        raise RuntimeError(f"неожиданное решение {decision} для HITL #{req.id}")
-
-
-async def _wait_decision(hitl_id: int, *, poll: float = 2.0) -> HITLDecision:
-    while True:
-        async with session_scope() as s:
-            req = (
-                await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
-            ).scalar_one_or_none()
-            if req is None:
-                raise RuntimeError(f"HITL #{hitl_id} исчез")
-            if req.decision is not HITLDecision.pending:
-                return req.decision
-        await asyncio.sleep(poll)
+    caption = (
+        f"Кадр #{frame.number} / {project.id}. Попытка {attempt_number}.\n"
+        f"{(frame.voiceover_text or '')[:600]}"
+    )
+    await send_hitl_photo(
+        bot,
+        session,
+        project,
+        kind=HITLKind.approve_images,
+        photo_path=str(result.file_path),
+        caption=caption,
+        payload={
+            "step": "image",
+            "frame_id": frame.id,
+            "attempt": attempt_number,
+        },
+        frame_id=frame.id,
+        allow_edit=True,
+    )
+    # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
+    await session.commit()
