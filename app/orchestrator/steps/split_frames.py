@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project, ProjectStatus
@@ -62,8 +63,15 @@ async def run(session: AsyncSession, project: Project) -> None:
     logger.info("[#{}] split_frames starting", project.id)
 
     # Идемпотентность: если фреймы уже есть — не трогаем.
-    if project.frames:
-        logger.info("[#{}] frames уже есть ({})", project.id, len(project.frames))
+    # Явный await-запрос вместо project.frames (lazy-load в async SQLAlchemy
+    # падает с MissingGreenlet).
+    existing = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    if existing:
+        logger.info("[#{}] frames уже есть ({})", project.id, len(existing))
         project.status = ProjectStatus.frames_ready
         return
 
