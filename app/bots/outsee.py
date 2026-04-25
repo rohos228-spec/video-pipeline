@@ -41,6 +41,12 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
+    # Сначала пытаемся найти АКТИВНУЮ кнопку; только если не нашли —
+    # берём любую (она может быть заблокирована пока не вставлен промт).
+    "button:has-text('Генерировать'):not([disabled])",
+    "button:has-text('Сгенерировать'):not([disabled])",
+    "button:has-text('Создать'):not([disabled])",
+    "button:has-text('Generate'):not([disabled])",
     "button:has-text('Генерировать')",
     "button:has-text('Генерация')",
     "button:has-text('Сгенерировать')",
@@ -92,6 +98,48 @@ class GenerationResult:
     """Итог генерации."""
     file_path: Path
     raw_url: str | None = None
+
+
+# Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
+# (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
+_MIN_IMAGE_BYTES = 50_000
+
+# Пути, по которым точно не лежат результаты генерации.
+_UI_ASSET_MARKERS = (
+    "/_next/",
+    "/static/",
+    "/assets/",
+    "/icons/",
+    "/logo",
+    "favicon",
+    "sprite",
+)
+
+
+def _is_candidate_image_response(resp: Any) -> bool:
+    """Подходит ли сетевой ответ под «вероятно, это результат nano-banana»:
+    image/* (не svg/ico), не UI-ассет, тело ≥ 50 KB."""
+    try:
+        url = resp.url or ""
+        ct = (resp.headers.get("content-type") or "").lower()
+        if not ct.startswith("image/"):
+            return False
+        if ct in ("image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"):
+            return False
+        low = url.lower()
+        if any(marker in low for marker in _UI_ASSET_MARKERS):
+            return False
+        # Content-Length — дешёвый способ отсечь мелочь без .body()
+        cl = resp.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) < _MIN_IMAGE_BYTES:
+                    return False
+            except ValueError:
+                pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 async def _first_visible(
@@ -164,19 +212,9 @@ class OutseeBot:
 
         def _on_response(resp: Any) -> None:  # type: ignore[no-redef]
             try:
-                url = resp.url
-                ct = (resp.headers.get("content-type") or "").lower()
-                if not ct.startswith("image/"):
+                if not _is_candidate_image_response(resp):
                     return
-                # игнор иконок, аватарок, логотипов outsee — там обычно svg/ico
-                if ct in ("image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"):
-                    return
-                if any(
-                    bad in url.lower()
-                    for bad in ("favicon", "logo", "avatar", "icon")
-                ):
-                    return
-                image_urls.append(url)
+                image_urls.append(resp.url)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -220,6 +258,11 @@ class OutseeBot:
             if not gen_sel:
                 raise RuntimeError("outsee image: не найдена кнопка Generate")
             logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
+
+            # Ждём пока кнопка станет активной: на outsee она disabled если
+            # либо нет промта, либо предыдущая генерация ещё идёт.
+            await self._wait_button_enabled(page, gen_sel, timeout_s=180)
+
             await page.locator(gen_sel).first.click()
             logger.info("outsee.generate_image: Generate кликнут, жду картинку")
 
@@ -262,15 +305,9 @@ class OutseeBot:
 
         def _on_response(resp: Any) -> None:
             try:
-                url = resp.url
-                ct = (resp.headers.get("content-type") or "").lower()
-                if not ct.startswith("image/"):
+                if not _is_candidate_image_response(resp):
                     return
-                if ct in ("image/svg+xml", "image/x-icon"):
-                    return
-                if any(bad in url.lower() for bad in ("favicon", "logo", "avatar", "icon")):
-                    return
-                image_urls.append(url)
+                image_urls.append(resp.url)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -318,6 +355,41 @@ class OutseeBot:
         await _download_via_context(page, img_url, out_path)
         logger.info("outsee image regenerated → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=img_url)
+
+    async def _wait_button_enabled(
+        self, page: Page, selector: str, *, timeout_s: float = 180
+    ) -> None:
+        """Ждёт пока кнопка станет активной (не disabled). На outsee Generate
+        заблокирован, если идёт предыдущая генерация или пуст промт."""
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        last_log = 0.0
+        start = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                loc = page.locator(selector).first
+                disabled = await loc.get_attribute("disabled")
+                aria = await loc.get_attribute("aria-disabled")
+                if disabled is None and (aria or "").lower() != "true":
+                    if (asyncio.get_event_loop().time() - start) > 1:
+                        logger.info(
+                            "outsee: Generate активен спустя {:.0f} сек",
+                            asyncio.get_event_loop().time() - start,
+                        )
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            now = asyncio.get_event_loop().time()
+            if now - last_log > 15:
+                last_log = now
+                logger.info(
+                    "outsee: жду пока Generate станет активной... ({:.0f} сек)",
+                    now - start,
+                )
+            await asyncio.sleep(1.0)
+        raise PWTimeoutError(
+            "outsee image: кнопка Generate остаётся disabled — "
+            "предыдущая генерация зависла?"
+        )
 
     async def _result_img_src(self, page: Page) -> str | None:
         """Src большой картинки из блока «Результат генерации» (или None,
