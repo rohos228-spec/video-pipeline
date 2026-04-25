@@ -73,46 +73,52 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         gpt = ChatGPTBot(bs)
         outsee = OutseeBot(bs)
 
-        # ---- Главный цикл: интерливинг промт↔картинка, без ожидания HITL ---
-        # На каждой итерации:
-        #   1) Подхватываем решения regenerate/edit_prompt → возвращаем кадр
-        #      в image_prompt_ready.
-        #   2) Ищем первый «необработанный» кадр (planned или image_prompt_ready).
-        #      - planned без prompt → просим у ChatGPT промт → image_prompt_ready;
-        #      - image_prompt_ready → гоним в outsee → image_generated + HITL.
-        #   3) Если необработанных нет — ждём решений пользователя.
-        #   4) Выход, когда каждый кадр approved или failed.
+        # ---- Phase 1: промты для всех кадров -------------------------------
+        for fr in frames:
+            if fr.status in (FrameStatus.image_approved, FrameStatus.failed):
+                continue
+            if fr.image_prompt:
+                continue
+            prompt_ask = _build_prompt_ask(image_master, hero_line, fr)
+            image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
+            if not image_prompt or len(image_prompt) < 40:
+                raise RuntimeError(f"пустой image_prompt на кадре {fr.number}")
+            fr.image_prompt = image_prompt
+            fr.status = FrameStatus.image_prompt_ready
+            await session.flush()
+            logger.info(
+                "[#{}] frame {}: prompt готов ({} симв)",
+                project.id,
+                fr.number,
+                len(image_prompt),
+            )
+        await session.commit()
+
+        # ---- Phase 2+3: генерация картинок + обработка regen/edit ----------
+        # Главный цикл не блокируется на HITL-решениях пользователя. Он:
+        #   - берёт следующий кадр, которому нужна генерация (image_prompt_ready),
+        #   - генерит, сохраняет, шлёт HITL-карточку, коммит,
+        #   - переходит к следующему такому кадру,
+        #   - когда все кадры сгенерированы — ждёт решений пользователя;
+        #     при 🔁/✏️ возвращает кадр в image_prompt_ready и снова его гонит.
+        #   - выходит когда каждый кадр либо image_approved, либо failed.
         while True:
+            # 1) подхватить HITL-решения, требующие перегенерации
             await _apply_pending_regens(session, project.id)
 
-            target, action = await _next_frame_and_action(session, project.id)
-            if action == "prompt" and target is not None:
-                prompt_ask = _build_prompt_ask(image_master, hero_line, target)
-                image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
-                if not image_prompt or len(image_prompt) < 40:
-                    raise RuntimeError(
-                        f"пустой image_prompt на кадре {target.number}"
-                    )
-                target.image_prompt = image_prompt
-                target.status = FrameStatus.image_prompt_ready
-                await session.commit()
-                logger.info(
-                    "[#{}] frame {}: prompt готов ({} симв) → передаю в outsee",
-                    project.id,
-                    target.number,
-                    len(image_prompt),
-                )
-                continue
-
-            if action == "generate" and target is not None:
+            # 2) взять следующий кадр к обработке
+            target = await _next_frame_to_process(session, project.id)
+            if target is not None:
                 await _generate_and_send(
                     session, bot, outsee, project, target, out_dir
                 )
                 continue
 
-            # нечего делать — все сгенерены, ждём кнопок пользователя
+            # 3) все кадры обработаны? (approved / failed)
             if await _all_frames_settled(session, project.id):
                 break
+
+            # 4) иначе ждём пока пользователь нажмёт кнопку в TG
             await asyncio.sleep(3)
 
     project.status = ProjectStatus.images_ready
@@ -137,16 +143,10 @@ def _build_prompt_ask(image_master: str, hero_line: str, fr: Frame) -> str:
     )
 
 
-async def _next_frame_and_action(
+async def _next_frame_to_process(
     session: AsyncSession, project_id: int
-) -> tuple[Frame | None, str]:
-    """Ищет следующий кадр и тип действия:
-      - ("prompt", fr) — кадру нужен image_prompt (planned без promt или
-        image_prompt пуст);
-      - ("generate", fr) — кадру нужен outsee-прогон (image_prompt_ready);
-      - (None, "") — активных задач нет, ждём решений.
-    Выбираем первый кадр, которому нужен promt; если таких нет —
-    первый, которому нужен outsee."""
+) -> Frame | None:
+    """Ищет первый кадр в статусе image_prompt_ready — т.е. «готов к outsee»."""
     frames = (
         await session.execute(
             select(Frame)
@@ -154,21 +154,10 @@ async def _next_frame_and_action(
             .order_by(Frame.number)
         )
     ).scalars().all()
-    # 1) prompt-потребители
-    for fr in frames:
-        if fr.status in (FrameStatus.image_approved, FrameStatus.failed):
-            continue
-        if not fr.image_prompt:
-            return fr, "prompt"
-        if fr.status == FrameStatus.image_prompt_ready:
-            # сразу за проптом идёт генерация — возвращаем тот же кадр
-            return fr, "generate"
-    # 2) generate-потребители (на случай если prompt уже есть, а status
-    # image_prompt_ready — например, после regen).
     for fr in frames:
         if fr.status == FrameStatus.image_prompt_ready:
-            return fr, "generate"
-    return None, ""
+            return fr
+    return None
 
 
 async def _all_frames_settled(session: AsyncSession, project_id: int) -> bool:
