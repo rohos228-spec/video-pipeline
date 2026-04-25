@@ -115,15 +115,11 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         return
 
     if status is ProjectStatus.images_ready:
-        decision = await _gate(
-            session, project, HITLKind.approve_images, on_back=ProjectStatus.hero_ready
-        )
-        if decision is HITLDecision.approved:
-            await make_animation_prompts.run(session, project, bot)
-        elif decision is HITLDecision.regenerate:
-            project.status = ProjectStatus.hero_ready
-        elif decision is HITLDecision.rejected:
-            project.status = ProjectStatus.failed
+        # generate_images уже сделал per-frame HITL по каждому кадру.
+        # Здесь сразу едем дальше (если все кадры одобрены в рамках кадров —
+        # хорошо; если какие-то отклонены, make_animation_prompts сам их
+        # пропустит/упадёт по своей логике).
+        await make_animation_prompts.run(session, project, bot)
         return
 
     if status is ProjectStatus.animation_prompts_ready:

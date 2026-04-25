@@ -82,6 +82,7 @@ class HITLDecision(str, enum.Enum):
     pending = "pending"
     approved = "approved"
     regenerate = "regenerate"
+    edit_prompt = "edit_prompt"
     rejected = "rejected"
 
 

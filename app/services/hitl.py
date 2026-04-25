@@ -17,18 +17,24 @@ from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.settings import settings
 
 
-def _keyboard(hitl_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"hitl:{hitl_id}:approve"),
-                InlineKeyboardButton(text="🔁 Перегенерировать", callback_data=f"hitl:{hitl_id}:regen"),
-            ],
-            [
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"hitl:{hitl_id}:reject"),
-            ],
-        ]
-    )
+def _keyboard(hitl_id: int, *, allow_edit: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"hitl:{hitl_id}:approve"),
+            InlineKeyboardButton(text="🔁 Перегенерировать", callback_data=f"hitl:{hitl_id}:regen"),
+        ],
+    ]
+    if allow_edit:
+        rows.append([
+            InlineKeyboardButton(
+                text="✏️ Изменить промт",
+                callback_data=f"hitl:{hitl_id}:edit",
+            ),
+        ])
+    rows.append([
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"hitl:{hitl_id}:reject"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def create_hitl(
@@ -90,6 +96,7 @@ async def send_hitl_photo(
     caption: str,
     payload: dict | None = None,
     frame_id: int | None = None,
+    allow_edit: bool = False,
 ) -> HITLRequest:
     from aiogram.types import FSInputFile
 
@@ -98,7 +105,7 @@ async def send_hitl_photo(
         settings.telegram_owner_chat_id,
         FSInputFile(photo_path),
         caption=caption[:1000],
-        reply_markup=_keyboard(req.id),
+        reply_markup=_keyboard(req.id, allow_edit=allow_edit),
     )
     req.tg_message_id = msg.message_id
     return req

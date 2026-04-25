@@ -13,7 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.db import session_scope
-from app.models import HITLDecision, HITLRequest, Project, ProjectStatus
+from app.models import Frame, HITLDecision, HITLRequest, Project, ProjectStatus
 from app.settings import settings
 
 dp = Dispatcher()
@@ -119,6 +119,73 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
     except Exception:
         await cb.answer("Плохой callback", show_alert=True)
         return
+
+    # ---- edit: не выставляем decision, а просим пользователя прислать новый
+    # текст промта в ответ на наше сообщение. decision выставится в
+    # on_owner_text_reply, когда мы получим ответ.
+    if action == "edit":
+        async with session_scope() as s:
+            req = (
+                await s.execute(
+                    select(HITLRequest).where(HITLRequest.id == hitl_id)
+                )
+            ).scalar_one_or_none()
+            if req is None:
+                await cb.answer("HITL-запрос не найден", show_alert=True)
+                return
+            if req.decision is not HITLDecision.pending:
+                await cb.answer(
+                    f"Уже обработан: {req.decision.value}", show_alert=True
+                )
+                return
+            frame = None
+            if req.frame_id is not None:
+                frame = (
+                    await s.execute(
+                        select(Frame).where(Frame.id == req.frame_id)
+                    )
+                ).scalar_one_or_none()
+            current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
+            # просим ответом прислать новый промт
+            ask_msg = await cb.bot.send_message(
+                settings.telegram_owner_chat_id,
+                (
+                    f"✏️ Новый промт для кадра #{frame.number if frame else '?'}.\n"
+                    f"Текущий:\n\n<pre>{_html_escape(current_prompt)}</pre>\n\n"
+                    f"Ответь на это сообщение новым текстом — я перегенерирую "
+                    f"картинку с ним."
+                ),
+                parse_mode="HTML",
+            )
+            # запомним message_id нашего запроса — чтобы связать ответ с HITL
+            req.payload = {
+                **(req.payload or {}),
+                "edit_ask_message_id": ask_msg.message_id,
+            }
+            # и скрыть кнопки на карточке, поставить промежуточную метку
+            try:
+                orig = cb.message
+                if orig is not None:
+                    if orig.photo or orig.video:
+                        new_caption = (
+                            (orig.caption or "") + "\n\n✏️ Ожидаю новый промт…"
+                        ).strip()
+                        await orig.edit_caption(
+                            caption=new_caption[:1024], reply_markup=None
+                        )
+                    else:
+                        existing = orig.text or orig.html_text or ""
+                        await orig.edit_text(
+                            (existing + "\n\n✏️ Ожидаю новый промт…")[:4096],
+                            parse_mode="HTML",
+                            reply_markup=None,
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+        await cb.answer("Жду новый текст")
+        return
+
+    # ---- approve / regen / reject — выставляем decision сразу
     async with session_scope() as s:
         req = (
             await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
@@ -137,32 +204,96 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         req.decision = decision
     await cb.answer(f"Решение: {action}")
 
-    # Прячем кнопки и добавляем в подпись/текст отметку о решении — чтобы
-    # визуально было видно, что карточка уже обработана, но при этом само
-    # медиа (картинка/видео) и исходный текст остались.
     badge = {
         HITLDecision.approved: "✅ Одобрено",
         HITLDecision.regenerate: "🔁 Перегенерация",
         HITLDecision.rejected: "❌ Отклонено",
     }.get(decision, "")
+    await _hide_buttons_with_badge(cb.message, badge)
+
+
+def _html_escape(s: str) -> str:
+    import html as _h
+
+    return _h.escape(s)[:3500]
+
+
+async def _hide_buttons_with_badge(msg: Any, badge: str) -> None:
+    """Убирает инлайн-кнопки у сообщения и дописывает в caption/text метку."""
     try:
-        msg = cb.message
         if msg is None:
             return
-        # У фото/видео редактируется caption, у текста — text.
         if msg.photo or msg.video:
             new_caption = ((msg.caption or "") + f"\n\n{badge}").strip()
             await msg.edit_caption(caption=new_caption[:1024], reply_markup=None)
         else:
             existing = msg.text or msg.html_text or ""
-            new_text = (existing + f"\n\n{badge}").strip()
-            # Сохраняем формат (HTML): исходное сообщение у нас HTML-parse_mode.
             await msg.edit_text(
-                new_text[:4096], parse_mode="HTML", reply_markup=None
+                (existing + f"\n\n{badge}")[:4096],
+                parse_mode="HTML",
+                reply_markup=None,
             )
     except Exception:  # noqa: BLE001
-        # не критично — просто кнопки не скрыли
         pass
+
+
+@dp.message(F.reply_to_message & F.text)
+async def on_owner_text_reply(msg: Message) -> None:
+    """Если пользователь ответил на наше сообщение-запрос нового промта —
+    записываем новый текст в frame.image_prompt и ставим decision=edit_prompt."""
+    if not is_owner(msg):
+        return
+    reply_to_id = msg.reply_to_message.message_id if msg.reply_to_message else None
+    if reply_to_id is None:
+        return
+    new_prompt = (msg.text or "").strip()
+    if not new_prompt:
+        return
+    # Ищем HITL, у которого в payload записан наш edit_ask_message_id.
+    async with session_scope() as s:
+        # SQLite не умеет искать по JSON эффективно — берём свежие pending HITL
+        # и проверяем payload в Python.
+        rows = (
+            await s.execute(
+                select(HITLRequest)
+                .where(HITLRequest.decision == HITLDecision.pending)
+                .order_by(HITLRequest.id.desc())
+                .limit(30)
+            )
+        ).scalars().all()
+        req = None
+        for r in rows:
+            if (r.payload or {}).get("edit_ask_message_id") == reply_to_id:
+                req = r
+                break
+        if req is None:
+            return
+        if req.frame_id is None:
+            return
+        frame = (
+            await s.execute(select(Frame).where(Frame.id == req.frame_id))
+        ).scalar_one_or_none()
+        if frame is None:
+            return
+        frame.image_prompt = new_prompt
+        req.decision = HITLDecision.edit_prompt
+        req.payload = {
+            **(req.payload or {}),
+            "edited_prompt": new_prompt[:2000],
+        }
+        hitl_tg_msg_id = req.tg_message_id
+    # обновим исходную HITL-карточку, проставив финальную метку
+    if hitl_tg_msg_id:
+        try:
+            await msg.bot.edit_message_caption(
+                chat_id=settings.telegram_owner_chat_id,
+                message_id=hitl_tg_msg_id,
+                caption="✏️ Промт изменён — перегенерирую",
+                reply_markup=None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    await msg.reply("✏️ Промт обновлён. Перегенерирую картинку с ним.")
 
 
 async def build_bot() -> tuple[Bot, Dispatcher]:
