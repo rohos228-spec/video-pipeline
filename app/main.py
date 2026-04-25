@@ -49,18 +49,23 @@ async def _run_worker_loop(bot) -> None:
     # (project_id, status.value) -> кол-во подряд неудач на этом шаге
     fail_counts: dict[tuple[int, str], int] = {}
 
+    # Воркер запускает только «running»-статусы. «ready»-статусы — это
+    # ожидание действия пользователя из TG-меню, авто-advance отключён.
     active = [
         ProjectStatus.planning,
-        ProjectStatus.plan_ready,
-        ProjectStatus.script_ready,
-        ProjectStatus.frames_ready,
-        ProjectStatus.hero_ready,
-        ProjectStatus.images_ready,
-        ProjectStatus.animation_prompts_ready,
-        ProjectStatus.videos_ready,
-        ProjectStatus.audio_ready,
-        ProjectStatus.assembled,
+        ProjectStatus.scripting,
+        ProjectStatus.splitting,
+        ProjectStatus.generating_hero,
+        ProjectStatus.generating_image_prompts,
+        ProjectStatus.generating_images,
+        ProjectStatus.generating_animation_prompts,
+        ProjectStatus.generating_videos,
+        ProjectStatus.generating_audio,
+        ProjectStatus.assembling,
+        ProjectStatus.publishing,
     ]
+    from app.telegram.bot import notify_step_done
+
     while True:
         try:
             async with session_scope() as s:
@@ -69,10 +74,19 @@ async def _run_worker_loop(bot) -> None:
                 ).scalars().all()
                 for p in projects:
                     key = (p.id, p.status.value)
+                    prev_status_value = p.status.value
                     try:
                         await advance_project(s, p, bot)
                         # успех на этом шаге — сбрасываем счётчик
                         fail_counts.pop(key, None)
+                        # если статус изменился — шлём уведомление в TG
+                        if p.status.value != prev_status_value:
+                            try:
+                                await notify_step_done(bot, p.id, prev_status_value)
+                            except Exception:  # noqa: BLE001
+                                logger.warning(
+                                    "notify_step_done({}) failed", p.id
+                                )
                     except Exception as e:  # noqa: BLE001
                         logger.exception("advance_project failed for #{}", p.id)
                         prev = fail_counts.get(key, 0)

@@ -1,13 +1,15 @@
-"""Шаг 6–7: для каждого кадра — промт картинки (ChatGPT web) + генерация
-картинки (outsee nano-banana-2). Генерация и HITL-проверка работают
-ПАРАЛЛЕЛЬНО:
+"""Шаг 6: генерация картинок по уже готовым промтам (outsee nano-banana-2).
 
-  1. Сначала бот получает в ChatGPT промты для всех кадров, у которых их
-     ещё нет.
-  2. Затем по очереди генерирует картинки в outsee (nano-banana одна
-     очередь — параллельно нельзя), каждую сразу шлёт в TG как HITL-
-     карточку с 4 кнопками и НЕ БЛОКИРУЕТСЯ на ожидании решения —
-     продолжает генерить следующую.
+Промты должны быть подготовлены на шаге 5 (generate_image_prompts).
+Этот шаг только генерит и валидирует картинки.
+
+Входной статус: generating_images.
+Выходной статус: images_ready.
+
+Алгоритм (НЕ БЛОКИРУЕТСЯ на ожидании approve пользователя):
+  1. Берёт следующий кадр в статусе image_prompt_ready.
+  2. Генерит картинку в outsee, сохраняет файл, шлёт в TG карточку
+     с кнопками ✅/🔁/❌/✏ — но НЕ ждёт решения, переходит дальше.
   3. После того как все кадры «выпущены» в TG, loop ждёт пока каждый
      из них станет либо approved, либо failed. Параллельно обрабатывает
      возникающие 🔁 / ✏️ решения — ставит соответствующий кадр на
@@ -28,7 +30,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot, OutseeImageError
 from app.models import (
     Artifact,
@@ -40,20 +41,17 @@ from app.models import (
     HITLRequest,
     Project,
     ProjectStatus,
-    PromptKey,
 )
 from app.services.hitl import send_hitl_photo
-from app.services.prompts import get_active_prompt
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.hero_ready:
+    if project.status is not ProjectStatus.generating_images:
         return
-    logger.info("[#{}] generate_images starting (parallel mode)", project.id)
+    logger.info("[#{}] generate_images starting", project.id)
 
-    image_master = await get_active_prompt(session, PromptKey.IMAGE_SHORTS)
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
@@ -62,13 +60,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего генерировать")
 
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "scenes"
-    hero_line = ""
-    if project.hero_description:
-        hero_line = (
-            "\n\nЭталонное описание главного героя (использовать, если он в кадре):\n"
-            + project.hero_description
+    # Все кадры должны иметь image_prompt (шаг 5 уже выполнен).
+    missing_prompts = [fr.number for fr in frames if not fr.image_prompt]
+    if missing_prompts:
+        raise RuntimeError(
+            f"нет image_prompt у кадров: {missing_prompts}. "
+            "Сначала запусти шаг 5 (Промты картинок)."
         )
+
+    out_dir = Path(settings.data_dir) / "videos" / project.slug / "scenes"
 
     sheet = _sheet_for_project(project)
     try:
@@ -76,62 +76,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
+    # Кадры, у которых нет картинки (статус не image_generated/image_approved)
+    # → ставим в image_prompt_ready, чтобы цикл их подхватил.
+    for fr in frames:
+        if fr.status in (
+            FrameStatus.image_approved,
+            FrameStatus.failed,
+            FrameStatus.image_generated,
+        ):
+            continue
+        fr.status = FrameStatus.image_prompt_ready
+    await session.flush()
+
     async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
         outsee = OutseeBot(bs)
-
-        # ---- Phase 1: промты для всех кадров -------------------------------
-        for fr in frames:
-            if fr.status in (FrameStatus.image_approved, FrameStatus.failed):
-                continue
-            if fr.image_prompt:
-                # уже есть в БД — но xlsx могли не успеть записать раньше;
-                # синканём (не страшно, это просто запись в человекочитаемое).
-                try:
-                    sheet.write_frame(fr.number, image_prompt=fr.image_prompt)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[#{}] xlsx write_frame(prompt sync) failed: {}",
-                        project.id,
-                        e,
-                    )
-                continue
-            prompt_ask = _build_prompt_ask(image_master, hero_line, fr)
-            image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
-            if not image_prompt or len(image_prompt) < 40:
-                raise RuntimeError(f"пустой image_prompt на кадре {fr.number}")
-            fr.image_prompt = image_prompt
-            fr.status = FrameStatus.image_prompt_ready
-            await session.flush()
-            try:
-                sheet.write_frame(
-                    fr.number,
-                    image_prompt=image_prompt,
-                    frame_status=fr.status.value,
-                    gen_type="image",
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] xlsx write_frame(image_prompt) failed: {}",
-                    project.id,
-                    e,
-                )
-            logger.info(
-                "[#{}] frame {}: prompt готов ({} симв)",
-                project.id,
-                fr.number,
-                len(image_prompt),
-            )
-        await session.commit()
-
-        # ---- Phase 2+3: генерация картинок + обработка regen/edit ----------
-        # Главный цикл не блокируется на HITL-решениях пользователя. Он:
-        #   - берёт следующий кадр, которому нужна генерация (image_prompt_ready),
-        #   - генерит, сохраняет, шлёт HITL-карточку, коммит,
-        #   - переходит к следующему такому кадру,
-        #   - когда все кадры сгенерированы — ждёт решений пользователя;
-        #     при 🔁/✏️ возвращает кадр в image_prompt_ready и снова его гонит.
-        #   - выходит когда каждый кадр либо image_approved, либо failed.
         while True:
             # 1) подхватить HITL-решения, требующие перегенерации
             await _apply_pending_regens(session, project.id)
@@ -144,8 +102,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 continue
 
-            # 3) все кадры обработаны? (approved / failed)
-            if await _all_frames_settled(session, project.id):
+            # 3) все кадры обработаны? (approved / failed / image_generated)
+            if await _all_frames_have_image_or_failed(session, project.id):
                 break
 
             # 4) иначе ждём пока пользователь нажмёт кнопку в TG
@@ -157,20 +115,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
 
 # ---------------------------------------------------------------------------
-
-
-def _build_prompt_ask(image_master: str, hero_line: str, fr: Frame) -> str:
-    return (
-        image_master
-        + hero_line
-        + "\n\n---\n\nЗадача: составь ОДИН готовый текст промта для "
-        + "генерации картинки этого кадра (на английском, строго по "
-        + "правилам выше, включая блок `--no ...` в конце).\n\n"
-        + f"Номер кадра: {fr.number}\n"
-        + f"Длительность: {fr.duration_seconds} сек\n"
-        + f"Закадровый текст: {fr.voiceover_text}\n"
-        + (f"Смысл: {fr.meaning}\n" if fr.meaning else "")
-    )
 
 
 async def _next_frame_to_process(
@@ -190,8 +134,12 @@ async def _next_frame_to_process(
     return None
 
 
-async def _all_frames_settled(session: AsyncSession, project_id: int) -> bool:
-    """True если у каждого кадра статус image_approved или failed."""
+async def _all_frames_have_image_or_failed(
+    session: AsyncSession, project_id: int
+) -> bool:
+    """True если у каждого кадра картинка сгенерирована/одобрена или статус
+    failed. В ручном режиме мы не ждём явного approve, но если пользователь
+    нажал ✅ — это тоже считается."""
     frames = (
         await session.execute(
             select(Frame)
@@ -200,7 +148,11 @@ async def _all_frames_settled(session: AsyncSession, project_id: int) -> bool:
         )
     ).scalars().all()
     for fr in frames:
-        if fr.status not in (FrameStatus.image_approved, FrameStatus.failed):
+        if fr.status not in (
+            FrameStatus.image_approved,
+            FrameStatus.image_generated,
+            FrameStatus.failed,
+        ):
             return False
     return True
 

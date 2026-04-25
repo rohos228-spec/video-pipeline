@@ -17,6 +17,7 @@ _FILE_TO_KEY: dict[str, PromptKey] = {
     "SCRIPT_SHORTS.v1.md": PromptKey.SCRIPT_SHORTS,
     "IMAGE_SHORTS.v1.md": PromptKey.IMAGE_SHORTS,
     "VIDEO_SHORTS.v1.md": PromptKey.VIDEO_SHORTS,
+    "HERO_SHORTS.v1.md": PromptKey.HERO_SHORTS,
 }
 
 

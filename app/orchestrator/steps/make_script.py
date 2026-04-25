@@ -15,7 +15,7 @@ from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.plan_ready:
+    if project.status is not ProjectStatus.scripting:
         return
     if not project.general_plan:
         raise RuntimeError("general_plan пуст — нечего превращать в сценарий")
@@ -39,13 +39,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.script_ready
     await session.flush()
 
+    # На «Общий план ролика» текст сценария НЕ пишем — пользователь просит,
+    # чтобы он лежал на «Кадры» в строке «закадровый текст», по столбцу на
+    # кадр. Это сделает шаг 3 (split_frames) после разбивки.
     try:
-        _sheet_for_project(project).write_general(
-            status=project.status.value,
-            script_text=reply,
-        )
+        _sheet_for_project(project).write_general(status=project.status.value)
     except Exception as e:  # noqa: BLE001
-        logger.warning("[#{}] project_sheet script write failed: {}", project.id, e)
+        logger.warning("[#{}] project_sheet status write failed: {}", project.id, e)
 
     await send_hitl_text(
         bot, session, project,

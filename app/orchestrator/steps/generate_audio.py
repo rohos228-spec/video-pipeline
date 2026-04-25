@@ -28,7 +28,7 @@ from app.settings import settings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.videos_ready:
+    if project.status is not ProjectStatus.generating_audio:
         return
     logger.info("[#{}] generate_audio starting", project.id)
 

@@ -39,7 +39,7 @@ from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.frames_ready:
+    if project.status is not ProjectStatus.generating_hero:
         return
 
     if project.hero_mode == "no_hero":
@@ -80,23 +80,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 len(hero_prompt),
             )
         else:
-            image_master = await get_active_prompt(
-                session, PromptKey.IMAGE_SHORTS
+            # Берём шаблон HERO_SHORTS (turnaround sheet) и просим ChatGPT
+            # подставить значения в placeholder-ы (квадратные скобки) исходя
+            # из темы/плана проекта. Возвращаем целиком финальный текст,
+            # который можно сразу отправить в outsee.
+            hero_master = await get_active_prompt(
+                session, PromptKey.HERO_SHORTS
             )
             hero_ask = (
-                image_master
-                + "\n\n---\n\nЗадача: на основе темы и общего плана ниже составь "
-                + "ОДИН описательный промт для генерации эталонного референс-"
-                + "изображения главного героя-кота. Только описание внешности, "
-                + "позы и атмосферы; без указаний на конкретную сцену. "
-                + "Формат 9:16.\n\n"
-                + "Тема: " + (project.topic or "") + "\n\n"
+                "Тема ролика: " + (project.topic or "") + "\n\n"
                 + "Общий план:\n" + (project.general_plan or "")
+                + "\n\n---\n\nНиже шаблон промта для генерации turnaround-"
+                + "листа главного героя. Подставь подходящие значения вместо "
+                + "квадратных скобок ([age], [gender], [body type], "
+                + "[skin tone], [hair color and hairstyle], [facial features], "
+                + "[expression], [other defining traits], [describe jacket / "
+                + "coat / top / pants / shoes / colors / materials], "
+                + "[outerwear study], [top study], [bottom study], "
+                + "[footwear study]) — на основе темы и плана ролика. "
+                + "Верни ТОЛЬКО полный готовый текст промта (на английском, "
+                + "сохранив всю структуру, заголовки, форматирование), без "
+                + "пояснений, без кавычек, без markdown-обрамления.\n\n"
+                + "Шаблон:\n\n" + hero_master
             )
             gpt = ChatGPTBot(bs)
             hero_prompt = await gpt.ask_fresh(hero_ask, timeout=300)
-            if not hero_prompt or len(hero_prompt) < 50:
-                raise RuntimeError("ChatGPT не вернул описание героя")
+            if not hero_prompt or len(hero_prompt) < 200:
+                raise RuntimeError("ChatGPT не вернул заполненный hero-шаблон")
             project.hero_description = hero_prompt
             await session.flush()
 

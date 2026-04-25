@@ -18,7 +18,7 @@ from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.images_ready:
+    if project.status is not ProjectStatus.generating_animation_prompts:
         return
     logger.info("[#{}] make_animation_prompts starting", project.id)
 

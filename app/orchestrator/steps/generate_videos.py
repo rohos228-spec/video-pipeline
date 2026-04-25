@@ -28,7 +28,7 @@ from app.settings import settings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.animation_prompts_ready:
+    if project.status is not ProjectStatus.generating_videos:
         return
     logger.info("[#{}] generate_videos starting", project.id)
 

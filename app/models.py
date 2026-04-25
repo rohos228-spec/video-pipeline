@@ -15,11 +15,24 @@ class Base(DeclarativeBase):
 
 class ProjectStatus(str, enum.Enum):
     new = "new"
-    planning = "planning"
+    # «running» статусы — воркер видит их и запускает соответствующий шаг.
+    planning = "planning"  # шаг 1: план
+    scripting = "scripting"  # шаг 2: сценарий → закадровые тексты
+    splitting = "splitting"  # шаг 3: разбивка на кадры
+    generating_hero = "generating_hero"  # шаг 4: hero-картинка
+    generating_image_prompts = "generating_image_prompts"  # шаг 5: промты картинок
+    generating_images = "generating_images"  # шаг 6: картинки
+    generating_animation_prompts = "generating_animation_prompts"  # шаг 7
+    generating_videos = "generating_videos"  # шаг 8
+    generating_audio = "generating_audio"  # шаг 9
+    assembling = "assembling"  # шаг 10
+    publishing = "publishing"
+    # «ready» статусы — воркер их игнорирует, ждём действия пользователя из бота.
     plan_ready = "plan_ready"
     script_ready = "script_ready"
     frames_ready = "frames_ready"
     hero_ready = "hero_ready"
+    image_prompts_ready = "image_prompts_ready"
     images_ready = "images_ready"
     animation_prompts_ready = "animation_prompts_ready"
     videos_ready = "videos_ready"
@@ -60,6 +73,7 @@ class PromptKey(str, enum.Enum):
     VIDEO_SHORTS = "VIDEO_SHORTS"
     IMAGE_CHECK = "IMAGE_CHECK"
     VIDEO_CHECK = "VIDEO_CHECK"
+    HERO_SHORTS = "HERO_SHORTS"
 
 
 class AttemptResult(str, enum.Enum):

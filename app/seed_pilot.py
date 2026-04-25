@@ -71,7 +71,8 @@ async def seed(topic: str = DEFAULT_TOPIC, hero_mode: str = DEFAULT_HERO_MODE) -
             slug=slug,
             topic=topic,
             hero_mode=hero_mode,
-            status=ProjectStatus.planning,
+            # `new` — проект ждёт первого клика «Запустить шаг 1» в TG-меню.
+            status=ProjectStatus.new,
         )
         s.add(p)
         await s.flush()

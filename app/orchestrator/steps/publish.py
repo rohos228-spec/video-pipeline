@@ -18,7 +18,7 @@ _META_KEY = "published_platforms"
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.assembled:
+    if project.status is not ProjectStatus.publishing:
         return
     if not settings.social_publish_enabled:
         logger.info("[#{}] publish отключён (SOCIAL_PUBLISH_ENABLED=false)", project.id)

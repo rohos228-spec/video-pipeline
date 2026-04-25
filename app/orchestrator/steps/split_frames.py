@@ -57,7 +57,7 @@ def _distribute_durations(cells: list[str]) -> list[float]:
 
 
 async def run(session: AsyncSession, project: Project) -> None:
-    if project.status is not ProjectStatus.script_ready:
+    if project.status is not ProjectStatus.splitting:
         return
     if not project.script_text:
         raise RuntimeError("script_text пуст")

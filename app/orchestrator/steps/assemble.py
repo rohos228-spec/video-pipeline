@@ -27,7 +27,7 @@ from app.settings import settings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
-    if project.status is not ProjectStatus.audio_ready:
+    if project.status is not ProjectStatus.assembling:
         return
     logger.info("[#{}] assemble starting", project.id)
 
