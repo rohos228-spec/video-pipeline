@@ -32,12 +32,22 @@ async def _init_db() -> None:
 
 
 async def _run_worker_loop(bot) -> None:
-    """Фоновая петля воркера: сканирует БД и продвигает проекты."""
+    """Фоновая петля воркера: сканирует БД и продвигает проекты.
+
+    Анти-зацикливание: если один и тот же шаг падает >= MAX_FAIL раз подряд,
+    ставим проект в статус `failed` и шлём в TG финальное уведомление.
+    До этого шлём только первое сообщение на каждый новый шаг (чтобы не
+    спамить одинаковыми ошибками).
+    """
     from sqlalchemy import select
 
     from app.db import session_scope
     from app.models import Project, ProjectStatus
     from app.orchestrator.pipeline import advance_project
+
+    MAX_FAIL = 3
+    # (project_id, status.value) -> кол-во подряд неудач на этом шаге
+    fail_counts: dict[tuple[int, str], int] = {}
 
     active = [
         ProjectStatus.planning,
@@ -58,21 +68,46 @@ async def _run_worker_loop(bot) -> None:
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
                 for p in projects:
+                    key = (p.id, p.status.value)
                     try:
                         await advance_project(s, p, bot)
+                        # успех на этом шаге — сбрасываем счётчик
+                        fail_counts.pop(key, None)
                     except Exception as e:  # noqa: BLE001
                         logger.exception("advance_project failed for #{}", p.id)
+                        prev = fail_counts.get(key, 0)
+                        fail_counts[key] = prev + 1
                         try:
-                            msg = (
-                                f"⚠️ Ошибка на проекте #{p.id} "
-                                f"(статус={p.status.value}): {type(e).__name__}: {e}"
-                            )
-                            await bot.send_message(settings.telegram_owner_chat_id, msg[:3800])
+                            if prev == 0:
+                                # Первая ошибка на этом шаге — сообщаем.
+                                msg = (
+                                    f"⚠️ Ошибка на проекте #{p.id} "
+                                    f"(статус={p.status.value}): "
+                                    f"{type(e).__name__}: {e}"
+                                )
+                                await bot.send_message(
+                                    settings.telegram_owner_chat_id, msg[:3800]
+                                )
+                            elif fail_counts[key] >= MAX_FAIL:
+                                # Проект зависает на одном шаге — паркуем.
+                                p.status = ProjectStatus.failed
+                                await s.flush()
+                                await bot.send_message(
+                                    settings.telegram_owner_chat_id,
+                                    (
+                                        f"🛑 Проект #{p.id} переведён в failed "
+                                        f"после {MAX_FAIL} ошибок подряд на шаге "
+                                        f"{key[1]}. Последняя ошибка: "
+                                        f"{type(e).__name__}: {e}"
+                                    )[:3800],
+                                )
                         except Exception:  # noqa: BLE001
-                            logger.warning("не удалось отправить уведомление об ошибке в Telegram")
+                            logger.warning(
+                                "не удалось отправить уведомление об ошибке в Telegram"
+                            )
         except Exception:  # noqa: BLE001
             logger.exception("worker loop iteration failed")
-        await asyncio.sleep(5)
+        await asyncio.sleep(15)
 
 
 async def main() -> None:
