@@ -148,29 +148,20 @@ class ChatGPTBot:
 
         locator = page.locator(input_sel).first
         await locator.click()
-        # Для коротких промтов (< 500 символов) — keyboard.type, он ведёт себя
-        # максимально по-человечески. Для длинных — JS-вставка, иначе type
-        # упирается в дефолтный 30-сек таймаут Playwright (3400 × 3ms > 10с,
-        # плюс задержки ProseMirror при каждом keypress).
-        if len(text) > 500:
-            await page.evaluate(
-                """([sel, t]) => {
-                    const el = document.querySelector(sel);
-                    if (!el) return;
-                    if (el.tagName === 'TEXTAREA') {
-                        el.focus();
-                        el.value = t;
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                    } else {
-                        el.focus();
-                        el.innerText = t;
-                        el.dispatchEvent(new InputEvent('input', {bubbles: true, data: t}));
-                    }
-                }""",
-                [input_sel, text],
-            )
-        else:
-            await locator.type(text, delay=1, timeout=120_000)
+        # Убеждаемся, что поле сфокусировано и пустое. ProseMirror игнорирует
+        # прямое присвоение innerText — поэтому используем CDP Input.insertText
+        # через page.keyboard.insertText: он посылает один beforeinput/input
+        # событие с полным текстом, и ProseMirror корректно обновляет состояние.
+        await locator.focus()
+        # Очищаем возможный предыдущий ввод (Ctrl+A → Delete).
+        try:
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+        except Exception:  # noqa: BLE001
+            pass
+        await page.keyboard.insert_text(text)
+        # Небольшая пауза, чтобы кнопка Send активировалась.
+        await asyncio.sleep(0.3)
 
         # Находим кнопку отправки — ждём, пока она активна
         send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=15)
