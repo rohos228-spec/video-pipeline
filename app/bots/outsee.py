@@ -30,7 +30,9 @@ from app.settings import settings
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
     "textarea[placeholder*='prompt' i]",
-    "textarea[placeholder*='описан' i]",
+    "textarea[placeholder*='промпт' i]",
+    "textarea[placeholder*='промт' i]",
+    "textarea[placeholder*='опис' i]",
     "textarea[name='prompt']",
     "textarea[data-testid='prompt']",
     "textarea",
@@ -38,12 +40,14 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
-    "button[data-testid='generate']",
-    "button[type='submit']",
-    "button:has-text('Generate')",
+    "button:has-text('Генерировать')",
+    "button:has-text('Генерация')",
     "button:has-text('Сгенерировать')",
     "button:has-text('Создать')",
+    "button:has-text('Generate')",
     "button:has-text('Run')",
+    "button[data-testid='generate']",
+    "button[type='submit']",
 ]
 
 ASPECT_9_16_SELECTORS = [
@@ -51,6 +55,9 @@ ASPECT_9_16_SELECTORS = [
     "[data-value='9:16']",
     "[aria-label='9:16']",
     "input[value='9:16']",
+    # На outsee «Соотношение» отображается как кликабельный блок, внутри
+    # которого текст «9:16». Ищем родителя через :has().
+    "*:has(> :text-is('9:16'))",
 ]
 
 FILE_UPLOAD_SELECTORS = [
@@ -124,11 +131,25 @@ class OutseeBot:
     ) -> GenerationResult:
         page = await self.session.open_page(settings.outsee_image_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
+        # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
+        await page.wait_for_load_state("networkidle", timeout=30_000)
 
         # 1) вбить промт
-        input_sel = await _first_visible(page, PROMPT_INPUT_SELECTORS, timeout_ms=30_000)
+        input_sel = await _first_visible(
+            page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+        )
         if not input_sel:
-            raise RuntimeError("outsee image: не найден ввод промта (обнови селекторы в app/bots/outsee.py)")
+            raise RuntimeError(
+                "outsee image: не найден ввод промта "
+                "(обнови селекторы в app/bots/outsee.py)"
+            )
+        # Страница длинная — прокручиваем к полю, иначе click промахивается.
+        try:
+            await page.locator(input_sel).first.scroll_into_view_if_needed(
+                timeout=5_000
+            )
+        except Exception:  # noqa: BLE001
+            pass
         await page.locator(input_sel).first.click()
         await page.locator(input_sel).first.fill(prompt)
 
@@ -192,11 +213,20 @@ class OutseeBot:
     ) -> GenerationResult:
         page = await self.session.open_page(settings.outsee_video_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_load_state("networkidle", timeout=30_000)
 
         # 1) ввод промта
-        input_sel = await _first_visible(page, PROMPT_INPUT_SELECTORS, timeout_ms=30_000)
+        input_sel = await _first_visible(
+            page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+        )
         if not input_sel:
             raise RuntimeError("outsee video: не найден ввод промта")
+        try:
+            await page.locator(input_sel).first.scroll_into_view_if_needed(
+                timeout=5_000
+            )
+        except Exception:  # noqa: BLE001
+            pass
         await page.locator(input_sel).first.click()
         await page.locator(input_sel).first.fill(prompt)
 
@@ -270,7 +300,12 @@ async def _recon(kind: str, prompt: str, start_frame: str | None = None) -> None
     async with browser_session() as bs:
         page = await bs.open_page(url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
-        await asyncio.sleep(3)
+        # Ждём окончания сетевой активности (Next.js гидратация).
+        try:
+            await page.wait_for_load_state("networkidle", timeout=30_000)
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(5)
         # Печатаем найденные элементы для калибровки селекторов
         info = await page.evaluate(
             """() => {
