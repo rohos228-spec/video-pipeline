@@ -50,6 +50,19 @@ NEW_CHAT_SELECTORS = [
     "button[aria-label='Новый чат']",
 ]
 
+# Модалка «войдите/зарегистрируйтесь», которую ChatGPT показывает в анонимном
+# режиме и которая перекрывает клики по странице. Дизмиссим её, если появилась.
+NO_AUTH_MODAL_SELECTOR = "[data-testid='modal-no-auth-login']"
+NO_AUTH_DISMISS_SELECTORS = [
+    "[data-testid='modal-no-auth-login'] button:has-text('Stay logged out')",
+    "[data-testid='modal-no-auth-login'] button:has-text('Остаться без входа')",
+    "[data-testid='modal-no-auth-login'] a:has-text('Stay logged out')",
+    "[data-testid='modal-no-auth-login'] a:has-text('Остаться без входа')",
+    "[data-testid='modal-no-auth-login'] button[aria-label='Close']",
+    "[data-testid='modal-no-auth-login'] button:has-text('Maybe later')",
+    "[data-testid='modal-no-auth-login'] button:has-text('Позже')",
+]
+
 
 async def _first_matching(page: Page, selectors: list[str], *, timeout: float = 10) -> str | None:
     """Находит первый селектор, по которому есть элемент."""
@@ -75,7 +88,42 @@ class ChatGPTBot:
             self._page = await self.session.open_page(CHATGPT_URL, reuse=True)
             # ждём, пока загрузится UI
             await _first_matching(self._page, INPUT_SELECTORS, timeout=30)
+            await self._dismiss_no_auth_modal(self._page)
         return self._page
+
+    async def _dismiss_no_auth_modal(self, page: Page) -> None:
+        """Если на странице висит модалка «войдите/зарегистрируйтесь» —
+        пытаемся её закрыть, чтобы клики по prompt-полю не перехватывались.
+        Если не смогли закрыть кнопкой — жмём Escape (часто работает).
+        """
+        try:
+            if await page.locator(NO_AUTH_MODAL_SELECTOR).count() == 0:
+                return
+        except Exception:  # noqa: BLE001
+            return
+        logger.info("ChatGPT: обнаружена модалка no-auth, пытаюсь закрыть")
+        for sel in NO_AUTH_DISMISS_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=3_000)
+                    await asyncio.sleep(0.5)
+                    if await page.locator(NO_AUTH_MODAL_SELECTOR).count() == 0:
+                        logger.info("ChatGPT: модалка закрыта селектором {}", sel)
+                        return
+            except Exception:  # noqa: BLE001
+                continue
+        # fallback — Escape
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        except Exception:  # noqa: BLE001
+            pass
+        if await page.locator(NO_AUTH_MODAL_SELECTOR).count() > 0:
+            logger.warning(
+                "ChatGPT: модалка no-auth не закрывается автоматически. "
+                "Если не залогинен — залогинься в том же Chrome (или закрой её руками)."
+            )
 
     async def new_conversation(self) -> None:
         page = await self._page_ready()
@@ -89,9 +137,11 @@ class ChatGPTBot:
             self._page = None
             page = await self._page_ready()
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
+        await self._dismiss_no_auth_modal(page)
 
     async def _send_prompt(self, text: str) -> None:
         page = await self._page_ready()
+        await self._dismiss_no_auth_modal(page)
         input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
         if not input_sel:
             raise RuntimeError("ChatGPT: не найден input для промта")
