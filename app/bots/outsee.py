@@ -19,6 +19,7 @@ import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from playwright.async_api import Page
@@ -155,47 +156,86 @@ class OutseeBot:
             (baseline[:80] if baseline else None),
         )
 
-        # 1) вбить промт
-        input_sel = await _first_visible(
-            page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
-        )
-        if not input_sel:
-            raise RuntimeError(
-                "outsee image: не найден ввод промта "
-                "(обнови селекторы в app/bots/outsee.py)"
-            )
-        logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
-        # Страница длинная — прокручиваем к полю, иначе click промахивается.
+        # Навешиваем сетевой listener — он ловит URL всех картинок, которые
+        # загружаются во время генерации. Это работает, даже если результат
+        # рисуется через background-image / canvas / offscreen dom.
+        image_urls: list[str] = []
+        page_ref = page  # захватим в closure
+
+        def _on_response(resp: Any) -> None:  # type: ignore[no-redef]
+            try:
+                url = resp.url
+                ct = (resp.headers.get("content-type") or "").lower()
+                if not ct.startswith("image/"):
+                    return
+                # игнор иконок, аватарок, логотипов outsee — там обычно svg/ico
+                if ct in ("image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"):
+                    return
+                if any(
+                    bad in url.lower()
+                    for bad in ("favicon", "logo", "avatar", "icon")
+                ):
+                    return
+                image_urls.append(url)
+            except Exception:  # noqa: BLE001
+                pass
+
+        page_ref.on("response", _on_response)
+        baseline_urls = list(image_urls)
+
         try:
-            await page.locator(input_sel).first.scroll_into_view_if_needed(
-                timeout=5_000
+            # 1) вбить промт
+            input_sel = await _first_visible(
+                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
             )
-        except Exception:  # noqa: BLE001
-            pass
-        await page.locator(input_sel).first.click()
-        await page.locator(input_sel).first.fill(prompt)
-        logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
+            if not input_sel:
+                raise RuntimeError(
+                    "outsee image: не найден ввод промта "
+                    "(обнови селекторы в app/bots/outsee.py)"
+                )
+            logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
+            # Страница длинная — прокручиваем к полю, иначе click промахивается.
+            try:
+                await page.locator(input_sel).first.scroll_into_view_if_needed(
+                    timeout=5_000
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await page.locator(input_sel).first.click()
+            await page.locator(input_sel).first.fill(prompt)
+            logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
 
-        # 2) выбрать 9:16 (best-effort — если кнопки нет, считаем, что уже выбрано)
-        if aspect_ratio == "9:16":
-            ar_sel = await _first_visible(page, ASPECT_9_16_SELECTORS, timeout_ms=4_000)
-            if ar_sel:
-                try:
-                    await page.locator(ar_sel).first.click()
-                    logger.info("outsee.generate_image: 9:16 выбран ({})", ar_sel)
-                except Exception:  # noqa: BLE001
-                    logger.warning("не удалось кликнуть по селектору 9:16 ({})", ar_sel)
+            # 2) выбрать 9:16 (best-effort — если кнопки нет, считаем, что уже выбрано)
+            if aspect_ratio == "9:16":
+                ar_sel = await _first_visible(page, ASPECT_9_16_SELECTORS, timeout_ms=4_000)
+                if ar_sel:
+                    try:
+                        await page.locator(ar_sel).first.click()
+                        logger.info("outsee.generate_image: 9:16 выбран ({})", ar_sel)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("не удалось кликнуть по селектору 9:16 ({})", ar_sel)
 
-        # 3) кнопка generate
-        gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
-        if not gen_sel:
-            raise RuntimeError("outsee image: не найдена кнопка Generate")
-        logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
-        await page.locator(gen_sel).first.click()
-        logger.info("outsee.generate_image: Generate кликнут, жду картинку")
+            # 3) кнопка generate
+            gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
+            if not gen_sel:
+                raise RuntimeError("outsee image: не найдена кнопка Generate")
+            logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
+            await page.locator(gen_sel).first.click()
+            logger.info("outsee.generate_image: Generate кликнут, жду картинку")
 
-        # 4) ждём появления <img> с результатом
-        img_url = await self._wait_image_url(page, timeout=timeout, baseline=baseline)
+            # 4) ждём появления <img> с результатом
+            img_url = await self._wait_image_url(
+                page,
+                timeout=timeout,
+                baseline=baseline,
+                network_urls=image_urls,
+                network_baseline=baseline_urls,
+            )
+        finally:
+            try:
+                page_ref.remove_listener("response", _on_response)
+            except Exception:  # noqa: BLE001
+                pass
 
         # 5) скачиваем
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,29 +257,63 @@ class OutseeBot:
 
         baseline = await self._result_img_src(page)
 
-        retry_sel = await _first_visible(
-            page,
-            [
-                "button:has-text('Повторить')",
-                "button:has-text('Retry')",
-                "button:has-text('Regenerate')",
-            ],
-            timeout_ms=15_000,
-        )
-        if not retry_sel:
-            raise RuntimeError(
-                "outsee image: не найдена кнопка «Повторить» — возможно, "
-                "на странице нет предыдущего результата"
-            )
-        try:
-            await page.locator(retry_sel).first.scroll_into_view_if_needed(
-                timeout=5_000
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        await page.locator(retry_sel).first.click()
+        # сетевой listener
+        image_urls: list[str] = []
 
-        img_url = await self._wait_image_url(page, timeout=timeout, baseline=baseline)
+        def _on_response(resp: Any) -> None:
+            try:
+                url = resp.url
+                ct = (resp.headers.get("content-type") or "").lower()
+                if not ct.startswith("image/"):
+                    return
+                if ct in ("image/svg+xml", "image/x-icon"):
+                    return
+                if any(bad in url.lower() for bad in ("favicon", "logo", "avatar", "icon")):
+                    return
+                image_urls.append(url)
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("response", _on_response)
+        baseline_urls = list(image_urls)
+
+        try:
+            retry_sel = await _first_visible(
+                page,
+                [
+                    "button:has-text('Повторить')",
+                    "button:has-text('Retry')",
+                    "button:has-text('Regenerate')",
+                ],
+                timeout_ms=15_000,
+            )
+            if not retry_sel:
+                raise RuntimeError(
+                    "outsee image: не найдена кнопка «Повторить» — возможно, "
+                    "на странице нет предыдущего результата"
+                )
+            try:
+                await page.locator(retry_sel).first.scroll_into_view_if_needed(
+                    timeout=5_000
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await page.locator(retry_sel).first.click()
+            logger.info("outsee.regenerate_image: «Повторить» кликнут, жду картинку")
+
+            img_url = await self._wait_image_url(
+                page,
+                timeout=timeout,
+                baseline=baseline,
+                network_urls=image_urls,
+                network_baseline=baseline_urls,
+            )
+        finally:
+            try:
+                page.remove_listener("response", _on_response)
+            except Exception:  # noqa: BLE001
+                pass
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
         await _download_via_context(page, img_url, out_path)
         logger.info("outsee image regenerated → {}", out_path)
@@ -292,17 +366,26 @@ class OutseeBot:
             return []
 
     async def _wait_image_url(
-        self, page: Page, *, timeout: float, baseline: str | None = None
+        self,
+        page: Page,
+        *,
+        timeout: float,
+        baseline: str | None = None,
+        network_urls: list[str] | None = None,
+        network_baseline: list[str] | None = None,
     ) -> str:
-        """Ждёт, пока в блоке «Результат генерации» появится картинка,
-        отличающаяся от baseline. Фоллбэк: если за 60 сек не нашли
-        заголовок, переходим на поиск любой новой большой картинки."""
+        """Ждёт URL свежей картинки результата. Трёхступенчатый поиск:
+          1) <img> в блоке «Результат генерации»;
+          2) через 45 сек — любая новая большая (≥200×200) <img>;
+          3) через 30 сек — любой новый image/* ответ сети (CDN/API).
+        Приоритет: (1) > (3) > (2)."""
         start = asyncio.get_event_loop().time()
         deadline = start + timeout
         logger.info(
             "_wait_image_url: baseline={}", (baseline[:80] if baseline else None)
         )
         baseline_all = set(await self._all_big_imgs(page))
+        seen_baseline: set[str] = set(network_baseline or [])
         last_log = 0.0
 
         while asyncio.get_event_loop().time() < deadline:
@@ -318,14 +401,32 @@ class OutseeBot:
                 and "data:image" not in current
             ):
                 logger.info(
-                    "_wait_image_url: найдена в «Результат генерации» за {:.0f} сек: {}",
+                    "_wait_image_url: найдена в «Результат генерации» за "
+                    "{:.0f} сек: {}",
                     elapsed,
                     current[:120],
                 )
                 return current
 
-            # 2) фоллбэк: через 60 сек начинаем смотреть любые новые большие img
-            if elapsed > 60:
+            # 2) сетевой фоллбэк — самый надёжный, не зависит от DOM
+            if elapsed > 30 and network_urls is not None:
+                fresh_net = [u for u in network_urls if u not in seen_baseline]
+                # Берём САМУЮ ПОСЛЕДНЮЮ (самая свежая = результат генерации,
+                # всё что было раньше — логотипы, превью, и т.п.).
+                for u in reversed(fresh_net):
+                    # игнор data-url и маленьких иконок (оставим тяжёлые)
+                    if "data:image" in u:
+                        continue
+                    logger.warning(
+                        "_wait_image_url: network fallback — image response за "
+                        "{:.0f} сек: {}",
+                        elapsed,
+                        u[:150],
+                    )
+                    return u
+
+            # 3) DOM-фоллбэк: через 45 сек хватаем любую новую большую img
+            if elapsed > 45:
                 now_all = set(await self._all_big_imgs(page))
                 added = now_all - baseline_all
                 for u in added:
@@ -334,22 +435,24 @@ class OutseeBot:
                         and "data:image" not in u
                     ):
                         logger.warning(
-                            "_wait_image_url: fallback — новая картинка за "
-                            "{:.0f} сек (без привязки к «Результат»): {}",
+                            "_wait_image_url: DOM fallback — новая большая img "
+                            "за {:.0f} сек: {}",
                             elapsed,
                             u[:120],
                         )
                         return u
 
-            # 3) периодический diagnostic-лог, чтобы понимать, что процесс жив
+            # 4) периодический diagnostic-лог
             if elapsed - last_log > 15:
                 last_log = elapsed
                 n_big = len(await self._all_big_imgs(page))
+                n_net = len(network_urls or [])
                 logger.info(
                     "_wait_image_url: ждём... {:.0f} сек, big imgs={}, "
-                    "result_img_src={}",
+                    "net image responses={}, result_img_src={}",
                     elapsed,
                     n_big,
+                    n_net,
                     (current[:80] if current else None),
                 )
 
