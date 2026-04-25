@@ -98,15 +98,54 @@ async def send_hitl_photo(
     frame_id: int | None = None,
     allow_edit: bool = False,
 ) -> HITLRequest:
+    """Шлёт картинку как фото; если файл > 10 MB (Telegram-лимит для photo) —
+    отправляет как документ (лимит 50 MB). Подпись и кнопки одинаковые."""
+    import os as _os
+
+    from aiogram.exceptions import TelegramBadRequest
     from aiogram.types import FSInputFile
 
+    PHOTO_LIMIT = 9 * 1024 * 1024  # с запасом до 10 MB
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
-    msg = await bot.send_photo(
-        settings.telegram_owner_chat_id,
-        FSInputFile(photo_path),
-        caption=caption[:1000],
-        reply_markup=_keyboard(req.id, allow_edit=allow_edit),
-    )
+    kb = _keyboard(req.id, allow_edit=allow_edit)
+    short_caption = caption[:1000]
+
+    file_size = 0
+    try:
+        file_size = _os.path.getsize(photo_path)
+    except OSError:
+        pass
+
+    use_document = file_size > PHOTO_LIMIT
+    msg = None
+    if not use_document:
+        try:
+            msg = await bot.send_photo(
+                settings.telegram_owner_chat_id,
+                FSInputFile(photo_path),
+                caption=short_caption,
+                reply_markup=kb,
+            )
+        except TelegramBadRequest as e:
+            # «file ... too big for a photo» — фоллбэк в документ.
+            if "too big for a photo" in str(e).lower():
+                logger.warning(
+                    "send_hitl_photo: {} > photo limit, шлю как document",
+                    photo_path,
+                )
+                use_document = True
+            else:
+                raise
+
+    if use_document:
+        msg = await bot.send_document(
+            settings.telegram_owner_chat_id,
+            FSInputFile(photo_path),
+            caption=short_caption,
+            reply_markup=kb,
+        )
+
+    assert msg is not None
     req.tg_message_id = msg.message_id
     return req
 
