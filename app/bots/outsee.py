@@ -734,16 +734,39 @@ class OutseeBot:
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
 
-async def _download_via_context(page: Page, url: str, out_path: Path) -> None:
-    """Скачивает файл по URL, используя тот же контекст (cookies/auth) страницы."""
-    # Playwright APIRequestContext унаследует cookies из контекста.
+async def _download_via_context(
+    page: Page,
+    url: str,
+    out_path: Path,
+    *,
+    timeout_ms: int = 120_000,
+    attempts: int = 3,
+) -> None:
+    """Скачивает файл по URL, используя тот же контекст (cookies/auth) страницы.
+    CDN outsee/hailuoai иногда медленный — поднимаем таймаут до 120 сек и
+    делаем до 3 попыток."""
     ctx = page.context
     api = ctx.request
-    resp = await api.get(url)
-    if resp.status >= 400:
-        raise RuntimeError(f"download {url} failed: HTTP {resp.status}")
-    body = await resp.body()
-    out_path.write_bytes(body)
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            resp = await api.get(url, timeout=timeout_ms)
+            if resp.status >= 400:
+                raise RuntimeError(f"download {url} failed: HTTP {resp.status}")
+            body = await resp.body()
+            out_path.write_bytes(body)
+            return
+        except Exception as e:  # noqa: BLE001
+            last = e
+            logger.warning(
+                "_download_via_context: попытка {}/{} упала: {}",
+                i,
+                attempts,
+                type(e).__name__,
+            )
+            await asyncio.sleep(1.5 * i)
+    assert last is not None
+    raise last
 
 
 # ---------- recon util: python -m app.bots.outsee recon-image "prompt" ----------
