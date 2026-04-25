@@ -68,10 +68,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 continue
 
             prompt_ask = _build_prompt_ask(image_master, hero_line, fr)
-            image_prompt = await gpt.ask_fresh(prompt_ask, timeout=240)
-            if not image_prompt or len(image_prompt) < 40:
+            image_prompt = ""
+            last_reply = ""
+            for attempt in range(1, 3):  # до 2 попыток на кадр
+                reply = await gpt.ask_fresh(prompt_ask, timeout=600)
+                last_reply = reply or ""
+                if last_reply and len(last_reply) >= 40:
+                    image_prompt = last_reply.strip()
+                    break
+                logger.warning(
+                    "[#{}] frame {}: ChatGPT вернул короткий ответ ({} симв) "
+                    "на попытке {}, пробую ещё раз",
+                    project.id,
+                    fr.number,
+                    len(last_reply),
+                    attempt,
+                )
+            if not image_prompt:
                 raise RuntimeError(
-                    f"пустой image_prompt на кадре {fr.number}"
+                    f"пустой image_prompt на кадре {fr.number} после 2 попыток. "
+                    f"Последний ответ ({len(last_reply)} симв): "
+                    f"{last_reply[:200]!r}"
                 )
             fr.image_prompt = image_prompt
             fr.status = FrameStatus.image_prompt_ready

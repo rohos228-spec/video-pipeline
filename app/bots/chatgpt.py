@@ -212,23 +212,40 @@ class ChatGPTBot:
     async def ask(self, prompt: str, *, timeout: float = 300) -> str:
         """Отправить один промт в текущий чат и вернуть финальный ответ.
 
-        После того как кнопка «Stop generating» пропала, ждём ещё немного,
-        пока текст ответа стабилизируется (не меняется 3 сек подряд) — иначе
-        ChatGPT 5 thinking может вернуть пустую/короткую строку, пока на
-        самом деле ещё рендерит ответ."""
+        После того как кнопка «Stop generating» пропала, ждём пока текст
+        стабилизируется (не меняется 6 сек подряд), но не дольше 120 сек.
+        ChatGPT 5 thinking model часто продолжает рендерить ответ ещё
+        несколько десятков секунд после исчезновения кнопки stop — раньше
+        мы хватали обрезанную версию.
+        """
         await self._send_prompt(prompt)
         await self._wait_until_done(timeout=timeout)
 
-        # Ждём стабилизации текста: не меняется 3 сек подряд, либо 30 сек total
+        # Ждём стабилизации текста: не меняется 6 сек подряд, не дольше 120с total
+        page = await self._page_ready()
         last_text = ""
         stable_for = 0.0
-        deadline = asyncio.get_event_loop().time() + 30.0
+        deadline = asyncio.get_event_loop().time() + 120.0
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(1.0)
             text = await self._read_last_reply()
-            if text == last_text and len(text) > 0:
+            # Если кнопка «Stop generating» снова появилась — модель всё ещё
+            # генерирует, ждём дальше.
+            still_generating = False
+            for sel in STOP_BUTTON_SELECTORS:
+                try:
+                    if await page.locator(sel).count() > 0:
+                        still_generating = True
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if still_generating:
+                stable_for = 0.0
+                last_text = text
+                continue
+            if text == last_text and len(text) > 50:
                 stable_for += 1.0
-                if stable_for >= 3.0:
+                if stable_for >= 6.0:
                     break
             else:
                 stable_for = 0.0

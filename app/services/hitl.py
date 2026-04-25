@@ -73,16 +73,20 @@ async def send_hitl_text(
     # бэктики в непредвидимых местах).
     body = f"<b>{_html.escape(title)}</b>\n\n{_html.escape(text)}"
     chunks = [body[i : i + 3800] for i in range(0, len(body), 3800)] or [body]
-    msg = await bot.send_message(
-        settings.telegram_owner_chat_id,
-        chunks[0],
-        parse_mode="HTML",
-        reply_markup=_keyboard(req.id),
-    )
-    for c in chunks[1:]:
-        await bot.send_message(
-            settings.telegram_owner_chat_id, c, parse_mode="HTML"
+
+    # Кнопки прикрепляем ТОЛЬКО к последнему сообщению — чтобы они всегда
+    # были снизу. Иначе при дроблении на куски кнопки прилипают к первой
+    # части, и ниже идёт «голый» хвост текста.
+    msg = None
+    for i, c in enumerate(chunks):
+        is_last = i == len(chunks) - 1
+        msg = await bot.send_message(
+            settings.telegram_owner_chat_id,
+            c,
+            parse_mode="HTML",
+            reply_markup=_keyboard(req.id) if is_last else None,
         )
+    assert msg is not None
     req.tg_message_id = msg.message_id
     return req
 
@@ -106,9 +110,21 @@ async def send_hitl_photo(
     from aiogram.types import FSInputFile
 
     PHOTO_LIMIT = 9 * 1024 * 1024  # с запасом до 10 MB
+    CAPTION_LIMIT = 1000
+
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
     kb = _keyboard(req.id, allow_edit=allow_edit)
-    short_caption = caption[:1000]
+
+    # Если caption длиннее лимита TG — шлём фото без кнопок, потом текст
+    # хвостом, и кнопки прикрепляем к последнему сообщению (юзер просил
+    # «кнопки всегда внизу»).
+    long_caption = len(caption) > CAPTION_LIMIT
+    if long_caption:
+        short_caption = caption[: CAPTION_LIMIT - 3] + "…"
+        photo_kb = None
+    else:
+        short_caption = caption
+        photo_kb = kb
 
     file_size = 0
     try:
@@ -124,7 +140,7 @@ async def send_hitl_photo(
                 settings.telegram_owner_chat_id,
                 FSInputFile(photo_path),
                 caption=short_caption,
-                reply_markup=kb,
+                reply_markup=photo_kb,
             )
         except TelegramBadRequest as e:
             # «file ... too big for a photo» — фоллбэк в документ.
@@ -142,10 +158,24 @@ async def send_hitl_photo(
             settings.telegram_owner_chat_id,
             FSInputFile(photo_path),
             caption=short_caption,
-            reply_markup=kb,
+            reply_markup=photo_kb,
         )
-
     assert msg is not None
+
+    # Хвост подписи + кнопки последним сообщением.
+    if long_caption:
+        tail = caption[CAPTION_LIMIT - 3 :]
+        chunks = [tail[i : i + 3800] for i in range(0, len(tail), 3800)] or [tail]
+        for i, c in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            tail_msg = await bot.send_message(
+                settings.telegram_owner_chat_id,
+                c,
+                reply_markup=kb if is_last else None,
+            )
+            if is_last:
+                msg = tail_msg
+
     req.tg_message_id = msg.message_id
     return req
 

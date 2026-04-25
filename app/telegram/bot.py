@@ -735,22 +735,33 @@ async def _on_edit_reply(msg: Message) -> None:
 # Уведомления о завершении шагов
 # Вызывается из _run_worker_loop после успешного advance_project.
 
-async def notify_step_done(bot: Bot, project_id: int, prev_status: str) -> None:
-    """Сравнивает prev_status с текущим в БД; если статус «*_ready» — шлём
-    уведомление с ссылкой на меню проекта.
+async def notify_step_done(
+    bot: Bot,
+    project_id: int,
+    prev_status: str,
+    new_status: str,
+) -> None:
+    """Шлёт в TG уведомление с обновлённым меню проекта после успешного шага.
 
-    Эта функция используется воркером после завершения шага. Она не привязана
-    к конкретному шагу — работает по разнице статусов.
+    Вызывается воркером ПОСЛЕ commit, поэтому всегда читаем актуальное
+    состояние проекта из БД. prev_status и new_status передаются явно для
+    диагностики.
     """
+    logger.info(
+        "notify_step_done: project={}, {} → {}",
+        project_id,
+        prev_status,
+        new_status,
+    )
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == project_id))
         ).scalar_one_or_none()
         if project is None:
+            logger.warning(
+                "notify_step_done: project #{} не найден", project_id
+            )
             return
-        if project.status.value == prev_status:
-            return  # шаг ещё не завершился (или другая ошибка)
-        # шлём короткое уведомление + меню проекта
         try:
             await bot.send_message(
                 settings.telegram_owner_chat_id,
@@ -761,9 +772,14 @@ async def notify_step_done(bot: Bot, project_id: int, prev_status: str) -> None:
                 parse_mode="HTML",
                 reply_markup=project_menu_kb(project),
             )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "notify_step_done: не удалось отправить меню: {}", e
+            logger.info(
+                "notify_step_done: сообщение отправлено для project #{}",
+                project_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "notify_step_done: send_message провалился для project #{}",
+                project_id,
             )
 
 

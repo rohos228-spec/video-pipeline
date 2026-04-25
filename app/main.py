@@ -79,13 +79,20 @@ async def _run_worker_loop(bot) -> None:
                         await advance_project(s, p, bot)
                         # успех на этом шаге — сбрасываем счётчик
                         fail_counts.pop(key, None)
-                        # если статус изменился — шлём уведомление в TG
+                        # если статус изменился — коммитим прямо сейчас
+                        # и шлём уведомление в TG (notify_step_done читает из
+                        # отдельной сессии, поэтому commit обязателен).
                         if p.status.value != prev_status_value:
+                            new_status = p.status.value
+                            project_id = p.id
+                            await s.commit()
                             try:
-                                await notify_step_done(bot, p.id, prev_status_value)
+                                await notify_step_done(
+                                    bot, project_id, prev_status_value, new_status
+                                )
                             except Exception:  # noqa: BLE001
-                                logger.warning(
-                                    "notify_step_done({}) failed", p.id
+                                logger.exception(
+                                    "notify_step_done({}) failed", project_id
                                 )
                     except Exception as e:  # noqa: BLE001
                         logger.exception("advance_project failed for #{}", p.id)

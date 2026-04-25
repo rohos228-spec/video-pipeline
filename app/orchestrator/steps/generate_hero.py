@@ -143,13 +143,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
         file_name = f"hero_{uuid.uuid4().hex[:8]}.png"
         out_path = out_dir / file_name
+        result = None
         if is_regen:
             logger.info(
-                "[#{}] regenerate hero via 'Повторить' (without ChatGPT)",
+                "[#{}] regenerate hero: пробую кнопку «Повторить»",
                 project.id,
             )
-            result = await outsee.regenerate_image(out_path)
-        else:
+            try:
+                result = await outsee.regenerate_image(out_path)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] «Повторить» не сработала ({}), делаю fresh generate",
+                    project.id,
+                    e,
+                )
+                result = None
+        if result is None:
             result = await outsee.generate_image(
                 hero_prompt, out_path, aspect_ratio="9:16"
             )

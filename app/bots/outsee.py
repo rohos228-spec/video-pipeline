@@ -219,7 +219,10 @@ class OutseeBot:
         page = await self.session.open_page(settings.outsee_image_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
         # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
-        await page.wait_for_load_state("networkidle", timeout=30_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
         logger.info("outsee.generate_image: страница готова, гидрация ok")
 
         # Снимок «до» — все большие картинки и URL-ы, которые уже на странице.
@@ -345,7 +348,10 @@ class OutseeBot:
         gen_id = gen_id or _uuid.uuid4().hex
         page = await self.session.open_page(settings.outsee_image_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_load_state("networkidle", timeout=30_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
 
         baseline_result_img = await self._result_img_src(page)
         baseline_big_imgs = set(await self._all_big_imgs(page))
@@ -666,7 +672,10 @@ class OutseeBot:
     ) -> GenerationResult:
         page = await self.session.open_page(settings.outsee_video_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_load_state("networkidle", timeout=30_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
 
         # 1) ввод промта
         input_sel = await _first_visible(
@@ -778,7 +787,7 @@ async def _recon(kind: str, prompt: str, start_frame: str | None = None) -> None
         await page.wait_for_load_state("domcontentloaded")
         # Ждём окончания сетевой активности (Next.js гидратация).
         try:
-            await page.wait_for_load_state("networkidle", timeout=30_000)
+            await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(5)
