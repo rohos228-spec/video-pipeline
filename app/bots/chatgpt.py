@@ -148,10 +148,11 @@ class ChatGPTBot:
 
         locator = page.locator(input_sel).first
         await locator.click()
-        # Вставляем текст через clipboard-free способ — keyboard.type надёжен
-        # для contenteditable. Для очень больших текстов используем JS set.
-        if len(text) > 8000:
-            # Большие промты — через JS, иначе type слишком долгий.
+        # Для коротких промтов (< 500 символов) — keyboard.type, он ведёт себя
+        # максимально по-человечески. Для длинных — JS-вставка, иначе type
+        # упирается в дефолтный 30-сек таймаут Playwright (3400 × 3ms > 10с,
+        # плюс задержки ProseMirror при каждом keypress).
+        if len(text) > 500:
             await page.evaluate(
                 """([sel, t]) => {
                     const el = document.querySelector(sel);
@@ -169,7 +170,7 @@ class ChatGPTBot:
                 [input_sel, text],
             )
         else:
-            await locator.type(text, delay=3)
+            await locator.type(text, delay=1, timeout=120_000)
 
         # Находим кнопку отправки — ждём, пока она активна
         send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=15)
