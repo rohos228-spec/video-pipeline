@@ -171,11 +171,38 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
+def _wizard_complete(project: Project) -> bool:
+    """Заполнены ли все 5 настроек? До этого шаги 1-10 недоступны."""
+    return all(
+        getattr(project, f, None) not in (None, "")
+        for f in (
+            "image_generator",
+            "aspect_ratio",
+            "image_resolution",
+            "video_generator",
+            "video_resolution",
+        )
+    )
+
+
 def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+
+    wiz_ok = _wizard_complete(project)
+
+    # Пока мастер не пройден — первая строка меню это большая кнопка
+    # «Заполнить настройки».
+    if not wiz_ok:
+        rows.append([
+            InlineKeyboardButton(
+                text="⚙ Заполнить настройки (5 вопросов)",
+                callback_data=f"wiz:{project.id}:start",
+            )
+        ])
+
     for s in STEPS:
         icon = step_icon(s, project.status)
-        runnable = is_step_runnable(s, project.status)
+        runnable = is_step_runnable(s, project.status) and wiz_ok
         # запущенный шаг не даём тыкать второй раз пока не закончится
         is_running_now = project.status is s.running_status
         if is_running_now:
@@ -185,9 +212,22 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
             label = f"{icon} {s.n}. {s.title}"
             cb = f"proj:{project.id}:step:{s.code}"
         else:
-            label = f"{icon} {s.n}. {s.title}  🔒"
-            cb = "noop"
+            lock = "🔒" if wiz_ok else "⚙"
+            label = f"{icon} {s.n}. {s.title}  {lock}"
+            cb = "noop" if wiz_ok else f"wiz:{project.id}:start"
         rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+    # Шестая строка: настройки (пересмотреть / сбросить)
+    if wiz_ok:
+        rows.append([
+            InlineKeyboardButton(
+                text="⚙ Настройки", callback_data=f"wiz:{project.id}:start"
+            ),
+            InlineKeyboardButton(
+                text="↻ Сбросить настройки",
+                callback_data=f"wiz:{project.id}:reset",
+            ),
+        ])
 
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),
@@ -201,9 +241,19 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
 
 
 def project_header(project: Project) -> str:
+    from app.generation_options import render_settings_summary
+
+    settings_line = render_settings_summary(
+        getattr(project, "image_generator", None),
+        getattr(project, "aspect_ratio", None),
+        getattr(project, "image_resolution", None),
+        getattr(project, "video_generator", None),
+        getattr(project, "video_resolution", None),
+    )
     return (
         f"📁 Проект #{project.id} «{project.topic}»\n"
         f"slug: <code>{project.slug}</code>\n"
         f"hero: {project.hero_mode}\n"
-        f"статус: <b>{project.status.value}</b>"
+        f"статус: <b>{project.status.value}</b>\n"
+        f"{settings_line}"
     )

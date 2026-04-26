@@ -117,6 +117,13 @@ class Project(Base):
     general_plan: Mapped[str | None] = mapped_column(Text, default=None)
     hero_description: Mapped[str | None] = mapped_column(Text, default=None)
     script_text: Mapped[str | None] = mapped_column(Text, default=None)
+    # Настройки генерации — задаются в мастере после /new (5 вопросов).
+    # Если пусто — проект в статусе `new` и ждёт ответов.
+    image_generator: Mapped[str | None] = mapped_column(String(40), default=None)
+    aspect_ratio: Mapped[str | None] = mapped_column(String(10), default=None)
+    image_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
+    video_generator: Mapped[str | None] = mapped_column(String(40), default=None)
+    video_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)

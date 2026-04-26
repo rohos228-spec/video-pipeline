@@ -55,6 +55,11 @@ from app.telegram.menu import (
     project_menu_kb,
     step_by_code,
 )
+from app.telegram.wizard import (
+    handle_wizard_callback,
+    is_wizard_complete,
+    send_wizard_question,
+)
 
 dp = Dispatcher()
 
@@ -200,6 +205,17 @@ async def on_menu_list(cb: CallbackQuery) -> None:
 @dp.callback_query(F.data == "noop")
 async def on_noop(cb: CallbackQuery) -> None:
     await cb.answer("Эта кнопка пока недоступна")
+
+
+# ---------------------------------------------------------------------------
+# Мастер настроек проекта (cb=wiz:<pid>:*)
+
+@dp.callback_query(F.data.startswith("wiz:"))
+async def on_wizard_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await handle_wizard_callback(cb)
 
 
 # ---------------------------------------------------------------------------
@@ -528,14 +544,14 @@ async def _create_new_project(msg: Message) -> None:
         return
     await msg.answer(
         f"Проект создан: #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-        f"Режим героя: {hero_mode}",
+        f"Режим героя: {hero_mode}\n\n"
+        "Сейчас зададу 5 технических вопросов — после них откроется "
+        "меню шагов.",
         parse_mode="HTML",
     )
-    await msg.answer(
-        project_header(proj_obj),
-        parse_mode="HTML",
-        reply_markup=project_menu_kb(proj_obj),
-    )
+    # Запускаем мастер настроек (5 вопросов). До ответов шаги заблокированы.
+    # bot = aiogram.Bot через msg.bot
+    await send_wizard_question(msg.bot, msg.chat.id, proj_obj)
     logger.info("new project {} '{}' hero={}", pid, slug, hero_mode)
 
 
@@ -552,6 +568,42 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         hitl_id = int(hitl_id_s)
     except Exception:
         await cb.answer("Плохой callback", show_alert=True)
+        return
+
+    if action == "original":
+        # Шлём оригинал (send_document, без TG-сжатия). Файл лежит в
+        # payload.photo_path.
+        from pathlib import Path as _Path
+
+        from aiogram.types import FSInputFile
+
+        async with session_scope() as s:
+            req = (
+                await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
+            ).scalar_one_or_none()
+            if req is None:
+                await cb.answer("HITL не найден", show_alert=True)
+                return
+            photo_path = (req.payload or {}).get("photo_path")
+        if not photo_path:
+            await cb.answer("Нет исходного файла в payload", show_alert=True)
+            return
+        if not _Path(photo_path).exists():
+            await cb.answer(
+                f"Файл не найден: {photo_path}", show_alert=True
+            )
+            return
+        try:
+            await cb.bot.send_document(
+                settings.telegram_owner_chat_id,
+                FSInputFile(photo_path),
+                caption=f"Оригинал (без сжатия TG): {_Path(photo_path).name}",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("send original failed: {}", e)
+            await cb.answer(f"Ошибка: {e}", show_alert=True)
+            return
+        await cb.answer("Файл отправлен как document")
         return
 
     if action == "edit":

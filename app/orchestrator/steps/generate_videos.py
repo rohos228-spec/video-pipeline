@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.outsee import OutseeBot
+from app.generation_options import (
+    ASPECT_RATIOS_BY_ID,
+    DEFAULTS,
+    VIDEO_GENERATORS_BY_ID,
+    VIDEO_RESOLUTIONS_BY_ID,
+    build_gen_id_prefix,
+)
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -40,6 +47,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     out_dir = Path(settings.data_dir) / "videos" / project.slug / "videos"
 
+    # Настройки видео из проекта (с дефолтами).
+    vg = VIDEO_GENERATORS_BY_ID.get(
+        project.video_generator or DEFAULTS["video_generator"]
+    )
+    vr_o = VIDEO_RESOLUTIONS_BY_ID.get(
+        project.video_resolution or DEFAULTS["video_resolution"]
+    )
+    ar = ASPECT_RATIOS_BY_ID.get(
+        project.aspect_ratio or DEFAULTS["aspect_ratio"]
+    )
+    video_model_slug = vg.outsee_slug if vg else None
+    video_res_slug = vr_o.outsee_slug if vr_o else None
+    aspect_slug = ar.outsee_slug if ar else "9:16"
+
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
 
@@ -65,13 +86,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ).scalar_one_or_none()
             start_frame_path: Path | None = Path(img.path) if img else None
 
-            file_path = out_dir / f"clip_{fr.number:03d}_{uuid.uuid4().hex[:8]}.mp4"
+            short_uuid = uuid.uuid4().hex[:8]
+            file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
+            prompt_id_prefix = build_gen_id_prefix(
+                project.id, fr.number, short_uuid
+            )
             result = await outsee.generate_video(
                 fr.animation_prompt,
                 file_path,
                 start_frame=start_frame_path,
-                aspect_ratio="9:16",
+                aspect_ratio=aspect_slug,
                 timeout=1200,
+                model_slug=video_model_slug,
+                resolution=video_res_slug,
+                prompt_id_prefix=prompt_id_prefix,
             )
             session.add(
                 Artifact(

@@ -22,6 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
+from app.generation_options import (
+    ASPECT_RATIOS_BY_ID,
+    DEFAULTS,
+    IMAGE_GENERATORS_BY_ID,
+    IMAGE_RESOLUTIONS_BY_ID,
+    build_gen_id_prefix,
+    render_settings_for_gpt,
+)
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -82,12 +90,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
         hero_master = await get_active_prompt(session, PromptKey.HERO_SHORTS)
+        tech_block = render_settings_for_gpt(
+            project.image_generator,
+            project.aspect_ratio,
+            project.image_resolution,
+            project.video_generator,
+            project.video_resolution,
+        )
         # Префикс — фиксированная инструкция от пользователя:
         #   "сделай промт для генерации персонажа который описан ниже,
         #    ты должен интегрировать персонажа в промт и прислать готовый
         #    промт для генерации персонажа"
         hero_ask = (
-            "Сделай промт для генерации персонажа, который описан ниже. "
+            tech_block
+            + "\nСделай промт для генерации персонажа, который описан ниже. "
             "Ты должен интегрировать персонажа в промт и прислать готовый "
             "промт для генерации персонажа.\n\n"
             "Структура промта (turnaround sheet) — ниже шаблоном. "
@@ -138,11 +154,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             len(user_brief),
         )
 
-        # 2) генерация референса в outsee nano-banana-2
+        # 2) генерация референса в outsee — по выбранной юзером модели
         outsee = OutseeBot(bs)
         out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
-        file_name = f"hero_{uuid.uuid4().hex[:8]}.png"
+        short_uuid = uuid.uuid4().hex[:8]
+        file_name = f"hero_{short_uuid}.png"
         out_path = out_dir / file_name
+        prompt_id_prefix = build_gen_id_prefix(project.id, None, short_uuid)
+
+        # Настройки из проекта — с дефолтами на случай отсутствия.
+        img_gen = IMAGE_GENERATORS_BY_ID.get(
+            project.image_generator or DEFAULTS["image_generator"]
+        )
+        ar = ASPECT_RATIOS_BY_ID.get(
+            project.aspect_ratio or DEFAULTS["aspect_ratio"]
+        )
+        ir = IMAGE_RESOLUTIONS_BY_ID.get(
+            project.image_resolution or DEFAULTS["image_resolution"]
+        )
+
         result = None
         if is_regen:
             logger.info(
@@ -160,7 +190,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 result = None
         if result is None:
             result = await outsee.generate_image(
-                hero_prompt, out_path, aspect_ratio="9:16"
+                hero_prompt,
+                out_path,
+                aspect_ratio=ar.outsee_slug if ar else "9:16",
+                model_slug=img_gen.outsee_slug if img_gen else None,
+                resolution=ir.outsee_slug if ir else None,
+                prompt_id_prefix=prompt_id_prefix,
             )
 
     # 3) сохраняем в БД + HITL
@@ -188,6 +223,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         bot, session, project,
         kind=HITLKind.approve_hero,
         photo_path=str(result.file_path),
-        caption=f"Референс ГГ для #{project.id}. Одобрить?",
-        payload={"step": "hero", "artifact_id": art.id},
+        caption=(
+            f"{prompt_id_prefix}\n"
+            f"Референс ГГ для P{project.id}. Одобрить?"
+        ),
+        payload={
+            "step": "hero",
+            "artifact_id": art.id,
+            "prompt_id_prefix": prompt_id_prefix,
+            "photo_path": str(result.file_path),
+        },
     )

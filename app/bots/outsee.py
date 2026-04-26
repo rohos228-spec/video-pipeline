@@ -67,6 +67,56 @@ ASPECT_9_16_SELECTORS = [
     "*:has(> :text-is('9:16'))",
 ]
 
+
+def _aspect_selectors(ratio: str) -> list[str]:
+    """Набор CSS-селекторов для кнопки выбора aspect ratio.
+
+    Работает для любого формата `W:H` — 1:1, 16:9, 9:16, 4:3, 3:4, 2:3,
+    3:2, 21:9. На outsee.io это сейчас кликабельные блоки с текстом
+    внутри."""
+    return [
+        f"button:has-text('{ratio}')",
+        f"[data-value='{ratio}']",
+        f"[aria-label='{ratio}']",
+        f"input[value='{ratio}']",
+        f"*:has(> :text-is('{ratio}'))",
+    ]
+
+
+def _resolution_selectors(resolution: str) -> list[str]:
+    """Селекторы для кнопки 2K / 4K (картинка) или 720p / 1080p (видео)."""
+    return [
+        f"button:has-text('{resolution}')",
+        f"[data-value='{resolution}']",
+        f"[aria-label='{resolution}']",
+        f"*:has(> :text-is('{resolution}'))",
+    ]
+
+
+def _image_page_url(model_slug: str | None) -> str:
+    """Строит URL страницы outsee.io/image для нужной модели."""
+    base = settings.outsee_image_url
+    if not model_slug:
+        return base
+    # Если в settings.outsee_image_url уже есть `?model=...`, заменяем его
+    # на выбранный slug. Иначе добавляем.
+    if "?model=" in base:
+        head = base.split("?model=")[0]
+        return f"{head}?model={model_slug}"
+    joiner = "&" if "?" in base else "?"
+    return f"{base}{joiner}model={model_slug}"
+
+
+def _video_page_url(model_slug: str | None) -> str:
+    base = settings.outsee_video_url
+    if not model_slug:
+        return base
+    if "?model=" in base:
+        head = base.split("?model=")[0]
+        return f"{head}?model={model_slug}"
+    joiner = "&" if "?" in base else "?"
+    return f"{base}{joiner}model={model_slug}"
+
 FILE_UPLOAD_SELECTORS = [
     "input[type='file']",
 ]
@@ -208,15 +258,39 @@ class OutseeBot:
         aspect_ratio: str = "9:16",
         timeout: float = 600,
         gen_id: str | None = None,
+        model_slug: str | None = None,
+        resolution: str | None = None,
+        prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
+        """Генерирует картинку на outsee.io.
+
+        Параметры:
+          model_slug      — slug для URL (`?model=<slug>`). Если None —
+                            используется settings.outsee_image_url как есть.
+          aspect_ratio    — строка-ярлык кнопки («16:9», «9:16»…). Best-effort
+                            клик, если не нашли — оставляем дефолт страницы.
+          resolution      — строка-ярлык («2K» / «4K»). Best-effort клик.
+          prompt_id_prefix — строка вида `[ID: P12-F3-a7f2b01c]`. Будет
+                             поставлена ПЕРВОЙ строкой промта, чтобы в
+                             истории outsee однозначно отличать эту
+                             генерацию от всех прошлых.
+        """
         import time as _time
         import uuid as _uuid
 
         gen_id = gen_id or _uuid.uuid4().hex
+        if prompt_id_prefix:
+            prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
+            logger.info(
+                "outsee.generate_image: prompt_id_prefix={}", prompt_id_prefix
+            )
+
+        page_url = _image_page_url(model_slug)
         logger.info(
-            "outsee.generate_image: открываю страницу gen_id={}", gen_id[:8]
+            "outsee.generate_image: открываю страницу gen_id={} url={}",
+            gen_id[:8], page_url,
         )
-        page = await self.session.open_page(settings.outsee_image_url, reuse=True)
+        page = await self.session.open_page(page_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
         # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
         try:
@@ -275,15 +349,39 @@ class OutseeBot:
             await page.locator(input_sel).first.fill(prompt)
             logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
 
-            # 2) выбрать 9:16 (best-effort)
-            if aspect_ratio == "9:16":
-                ar_sel = await _first_visible(page, ASPECT_9_16_SELECTORS, timeout_ms=4_000)
+            # 2) выбрать aspect ratio (best-effort) — поддержка любого W:H
+            if aspect_ratio:
+                ar_sel = await _first_visible(
+                    page, _aspect_selectors(aspect_ratio), timeout_ms=4_000
+                )
                 if ar_sel:
                     try:
                         await page.locator(ar_sel).first.click()
-                        logger.info("outsee.generate_image: 9:16 выбран ({})", ar_sel)
+                        logger.info(
+                            "outsee.generate_image: aspect {} выбран ({})",
+                            aspect_ratio, ar_sel,
+                        )
                     except Exception:  # noqa: BLE001
-                        logger.warning("не удалось кликнуть по селектору 9:16 ({})", ar_sel)
+                        logger.warning(
+                            "aspect {} не кликнулось ({})", aspect_ratio, ar_sel
+                        )
+
+            # 2.5) выбрать разрешение 2K / 4K (best-effort)
+            if resolution:
+                res_sel = await _first_visible(
+                    page, _resolution_selectors(resolution), timeout_ms=3_000
+                )
+                if res_sel:
+                    try:
+                        await page.locator(res_sel).first.click()
+                        logger.info(
+                            "outsee.generate_image: {} выбран ({})",
+                            resolution, res_sel,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "resolution {} не кликнулось ({})", resolution, res_sel
+                        )
 
             # 3) кнопка generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
@@ -669,8 +767,18 @@ class OutseeBot:
         start_frame: Path | None = None,
         aspect_ratio: str = "9:16",
         timeout: float = 900,
+        model_slug: str | None = None,
+        resolution: str | None = None,
+        prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
-        page = await self.session.open_page(settings.outsee_video_url, reuse=True)
+        if prompt_id_prefix:
+            prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
+            logger.info(
+                "outsee.generate_video: prompt_id_prefix={}", prompt_id_prefix
+            )
+        page_url = _video_page_url(model_slug)
+        logger.info("outsee.generate_video: open url={}", page_url)
+        page = await self.session.open_page(page_url, reuse=True)
         await page.wait_for_load_state("domcontentloaded")
         try:
             await page.wait_for_load_state("networkidle", timeout=15_000)
@@ -692,12 +800,31 @@ class OutseeBot:
         await page.locator(input_sel).first.click()
         await page.locator(input_sel).first.fill(prompt)
 
-        # 2) аспект
-        if aspect_ratio == "9:16":
-            ar_sel = await _first_visible(page, ASPECT_9_16_SELECTORS, timeout_ms=4_000)
+        # 2) аспект (best-effort)
+        if aspect_ratio:
+            ar_sel = await _first_visible(
+                page, _aspect_selectors(aspect_ratio), timeout_ms=4_000
+            )
             if ar_sel:
                 try:
                     await page.locator(ar_sel).first.click()
+                    logger.info(
+                        "outsee.generate_video: aspect {} выбран", aspect_ratio
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # 2.5) разрешение 720p / 1080p (best-effort)
+        if resolution:
+            res_sel = await _first_visible(
+                page, _resolution_selectors(resolution), timeout_ms=3_000
+            )
+            if res_sel:
+                try:
+                    await page.locator(res_sel).first.click()
+                    logger.info(
+                        "outsee.generate_video: {} выбран", resolution
+                    )
                 except Exception:  # noqa: BLE001
                     pass
 

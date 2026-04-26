@@ -27,8 +27,36 @@ from app.telegram.bot import build_bot, dp
 
 
 async def _init_db() -> None:
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
+        # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS
+        # через PRAGMA table_info, но проще — try/except на ADD COLUMN.
+        _new_cols = [
+            ("image_generator", "VARCHAR(40)"),
+            ("aspect_ratio", "VARCHAR(10)"),
+            ("image_resolution", "VARCHAR(10)"),
+            ("video_generator", "VARCHAR(40)"),
+            ("video_resolution", "VARCHAR(10)"),
+        ]
+        cols_rows = (
+            await conn.exec_driver_sql("PRAGMA table_info(projects)")
+        ).fetchall()
+        existing = {row[1] for row in cols_rows}
+        for col, ctype in _new_cols:
+            if col in existing:
+                continue
+            try:
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE projects ADD COLUMN {col} {ctype}"
+                )
+                logger.info("migrate: projects.{} added", col)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("migrate: add column {} failed: {}", col, e)
+        _ = text  # keep import usage neutral
 
 
 async def _run_worker_loop(bot) -> None:

@@ -17,7 +17,12 @@ from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.settings import settings
 
 
-def _keyboard(hitl_id: int, *, allow_edit: bool = False) -> InlineKeyboardMarkup:
+def _keyboard(
+    hitl_id: int,
+    *,
+    allow_edit: bool = False,
+    allow_original: bool = False,
+) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="✅ Одобрить", callback_data=f"hitl:{hitl_id}:approve"),
@@ -31,9 +36,19 @@ def _keyboard(hitl_id: int, *, allow_edit: bool = False) -> InlineKeyboardMarkup
                 callback_data=f"hitl:{hitl_id}:edit",
             ),
         ])
-    rows.append([
+    # Вторая строка второго ряда: «Оригинал» (без сжатия TG) + «Отклонить».
+    last_row = []
+    if allow_original:
+        last_row.append(
+            InlineKeyboardButton(
+                text="📎 Скачать оригинал",
+                callback_data=f"hitl:{hitl_id}:original",
+            )
+        )
+    last_row.append(
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"hitl:{hitl_id}:reject"),
-    ])
+    )
+    rows.append(last_row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -112,8 +127,12 @@ async def send_hitl_photo(
     PHOTO_LIMIT = 9 * 1024 * 1024  # с запасом до 10 MB
     CAPTION_LIMIT = 1000
 
+    # Сохраняем путь к оригиналу в payload — для кнопки «📎 Скачать оригинал»,
+    # чтобы бот потом смог прислать файл через send_document без сжатия TG.
+    payload = dict(payload or {})
+    payload.setdefault("photo_path", photo_path)
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
-    kb = _keyboard(req.id, allow_edit=allow_edit)
+    kb = _keyboard(req.id, allow_edit=allow_edit, allow_original=True)
 
     # Если caption длиннее лимита TG — шлём фото без кнопок, потом текст
     # хвостом, и кнопки прикрепляем к последнему сообщению (юзер просил

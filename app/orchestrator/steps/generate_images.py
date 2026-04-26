@@ -31,6 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.outsee import OutseeBot, OutseeImageError
+from app.generation_options import (
+    ASPECT_RATIOS_BY_ID,
+    DEFAULTS,
+    IMAGE_GENERATORS_BY_ID,
+    IMAGE_RESOLUTIONS_BY_ID,
+    build_gen_id_prefix,
+)
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -241,7 +248,23 @@ async def _generate_and_send(
     attempt_number = len(attempt) + 1
 
     gen_id = uuid.uuid4().hex
-    file_path = out_dir / f"frame_{frame.number:03d}_{gen_id[:8]}.png"
+    short_uuid = gen_id[:8]
+    file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
+    prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
+
+    # Настройки картинки из проекта (с дефолтами).
+    img_gen = IMAGE_GENERATORS_BY_ID.get(
+        project.image_generator or DEFAULTS["image_generator"]
+    )
+    ar = ASPECT_RATIOS_BY_ID.get(
+        project.aspect_ratio or DEFAULTS["aspect_ratio"]
+    )
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(
+        project.image_resolution or DEFAULTS["image_resolution"]
+    )
+    aspect_slug = ar.outsee_slug if ar else "9:16"
+    model_slug = img_gen.outsee_slug if img_gen else None
+    res_slug = ir.outsee_slug if ir else None
     logger.info(
         "[#{}] frame {} attempt {} gen_id={}: outsee {}",
         project.id,
@@ -278,15 +301,21 @@ async def _generate_and_send(
                 result = await outsee.generate_image(
                     frame.image_prompt,
                     file_path,
-                    aspect_ratio="9:16",
+                    aspect_ratio=aspect_slug,
                     gen_id=gen_id,
+                    model_slug=model_slug,
+                    resolution=res_slug,
+                    prompt_id_prefix=prompt_id_prefix,
                 )
         else:
             result = await outsee.generate_image(
                 frame.image_prompt,
                 file_path,
-                aspect_ratio="9:16",
+                aspect_ratio=aspect_slug,
                 gen_id=gen_id,
+                model_slug=model_slug,
+                resolution=res_slug,
+                prompt_id_prefix=prompt_id_prefix,
             )
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
@@ -347,7 +376,8 @@ async def _generate_and_send(
         logger.warning("[#{}] xlsx write_frame(image_path) failed: {}", project.id, e)
 
     caption = (
-        f"Кадр #{frame.number} / {project.id}. Попытка {attempt_number}.\n"
+        f"{prompt_id_prefix}\n"
+        f"Кадр #{frame.number} / P{project.id}. Попытка {attempt_number}.\n"
         f"{(frame.voiceover_text or '')[:600]}"
     )
     await send_hitl_photo(
@@ -362,6 +392,8 @@ async def _generate_and_send(
             "frame_id": frame.id,
             "attempt": attempt_number,
             "gen_id": gen_id,
+            "prompt_id_prefix": prompt_id_prefix,
+            "photo_path": str(result.file_path),
         },
         frame_id=frame.id,
         allow_edit=True,
