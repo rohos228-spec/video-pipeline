@@ -66,8 +66,11 @@ dp = Dispatcher()
 # Ожидание текстового ответа (тема нового проекта). user_id → True.
 _pending_topic_input: dict[int, bool] = {}
 
-# Ожидание описания героя для конкретного проекта. user_id → project_id.
-_pending_hero_brief: dict[int, int] = {}
+# Ожидание описания героя для конкретного проекта.
+# user_id → (project_id, hero_index 1..N) — какого по счёту героя сейчас
+# описывает пользователь. После N описаний словарь чистится и проект
+# уходит в generating_hero.
+_pending_hero_brief: dict[int, tuple[int, int]] = {}
 
 
 def is_owner(msg: Message) -> bool:
@@ -219,6 +222,57 @@ async def on_wizard_cb(cb: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Шаг 4 — выбор количества героев (cb=hero_cnt:<pid>:<N>)
+
+@dp.callback_query(F.data.regexp(r"^hero_cnt:\d+:\d$"))
+async def on_hero_count_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    n = int(parts[2])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        project.hero_count = n
+        project.hero_descriptions = []
+        if n == 0:
+            # Шаг сразу готов — без героев.
+            project.hero_description = None
+            project.status = ProjectStatus.hero_ready
+            try:
+                _sheet_for_project(project).write_general(
+                    status=project.status.value,
+                    hero_description="",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hero_count=0 xlsx write failed: {}", e)
+            await cb.answer("0 героев — шаг пропущен")
+            await _hide_buttons_with_badge(
+                cb.message,
+                "✅ Без героев. Шаг 4 закрыт.",
+            )
+            return
+    # N >= 1 — просим описание первого.
+    user_id = cb.from_user.id
+    _pending_hero_brief[user_id] = (pid, 1)
+    await cb.answer(f"Будет {n} героев — жду описания первого")
+    await _hide_buttons_with_badge(
+        cb.message,
+        f"Выбрано героев: {n}. Жду описания первого.",
+    )
+    await cb.message.answer(
+        _hero_brief_question_text(1, n),
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Меню проекта (cb=proj:<id>:menu и cb=proj:<id>:step:<code>)
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:menu$"))
@@ -272,20 +326,51 @@ async def on_project_step(cb: CallbackQuery) -> None:
             await cb.answer("Этот шаг уже выполняется")
             return
 
-        # Шаг 4 (Hero) требует описание персонажа от юзера. Не выставляем
-        # running-статус сразу — сначала собираем brief.
+        # Шаг 4 (Hero) — многоэтапный:
+        #   1) если hero_count ещё не задан → кнопки 0-9 «сколько героев?»
+        #   2) если задан и описаний недостаточно → запрашиваем описание
+        #      следующего героя у юзера текстом
+        #   3) если все описания собраны → выставляем generating_hero и
+        #      воркер запускает генерацию по очереди
         if step.code == "hero":
-            _pending_hero_brief[cb.from_user.id] = pid
-            await cb.answer()
+            if project.hero_count is None:
+                await cb.answer()
+                await cb.message.answer(
+                    "Сколько персонажей-героев сгенерировать? "
+                    "Выбери число (0 — без героев, шаг будет пропущен).",
+                    reply_markup=_hero_count_kb(pid),
+                )
+                return
+            n = project.hero_count
+            descriptions = list(project.hero_descriptions or [])
+            if n == 0:
+                # Пользователь раньше выбрал «0 героев» — шаг сразу готов.
+                project.status = ProjectStatus.hero_ready
+                await cb.answer("0 героев — шаг пропущен")
+                await cb.message.answer(
+                    f"✅ Шаг 4 пропущен (0 героев). Можно идти к шагу 5."
+                )
+                return
+            if len(descriptions) < n:
+                # Нужно описать ещё одного.
+                next_idx = len(descriptions) + 1
+                _pending_hero_brief[cb.from_user.id] = (pid, next_idx)
+                await cb.answer()
+                await cb.message.answer(
+                    _hero_brief_question_text(next_idx, n),
+                )
+                return
+            # Все описания собраны → запускаем генерацию первого/следующего.
+            project.status = step.running_status
+            slug = project.slug
+            topic = project.topic
+            await cb.answer(f"Запускаю: {step.title}")
             await cb.message.answer(
-                "Опишите главного героя одним сообщением: "
-                "визуал, стиль, одежда, стиль рисовки, любые "
-                "характерные детали.\n\n"
-                "Пример: «Девушка-киборг, 25 лет, серебряные волосы каре, "
-                "лицо с резкими чертами, неоновые татуировки. Одежда: "
-                "чёрная кожаная куртка с кибер-вставками, серый свитер, "
-                "узкие чёрные брюки, тяжёлые ботинки. Стиль рисовки — "
-                "cyberpunk semi-realistic, кинематографичное освещение.»",
+                f"▶ Шаг {step.n}: <b>{step.title}</b> "
+                f"({n} героев, описаний собрано: {len(descriptions)})\n"
+                f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+                f"Воркер подхватит за ~15 сек.",
+                parse_mode="HTML",
             )
             return
 
@@ -437,11 +522,12 @@ async def on_text_message(msg: Message) -> None:
         await _create_new_project(msg)
         return
 
-    # 2) Если ждём описание героя для конкретного проекта
-    pid = _pending_hero_brief.get(user_id)
-    if pid is not None:
+    # 2) Если ждём описание героя N для конкретного проекта
+    pending = _pending_hero_brief.get(user_id)
+    if pending is not None:
+        pid, hero_idx = pending
         _pending_hero_brief.pop(user_id, None)
-        await _save_hero_brief_and_run(msg, pid)
+        await _save_hero_brief_and_run(msg, pid, hero_idx)
         return
 
     # 3) Иначе — может это ответ на edit-запрос
@@ -449,9 +535,47 @@ async def on_text_message(msg: Message) -> None:
         await _on_edit_reply(msg)
 
 
-async def _save_hero_brief_and_run(msg: Message, project_id: int) -> None:
-    """Сохраняет описание героя в БД и выставляет статус generating_hero.
-    Воркер на следующем тике подхватит и запустит generate_hero."""
+def _hero_count_kb(pid: int) -> InlineKeyboardMarkup:
+    """Клавиатура 0-9: сколько героев сгенерировать.
+    Ноль — отдельным рядом (визуально подчёркиваем «пропустить»)."""
+    rows = [
+        [InlineKeyboardButton(text="0 · без героев (пропустить шаг)",
+                              callback_data=f"hero_cnt:{pid}:0")],
+        [
+            InlineKeyboardButton(text=str(n),
+                                 callback_data=f"hero_cnt:{pid}:{n}")
+            for n in (1, 2, 3, 4, 5)
+        ],
+        [
+            InlineKeyboardButton(text=str(n),
+                                 callback_data=f"hero_cnt:{pid}:{n}")
+            for n in (6, 7, 8, 9)
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _hero_brief_question_text(idx: int, total: int) -> str:
+    return (
+        f"Опиши героя <b>{idx}/{total}</b> одним сообщением: "
+        "визуал, стиль, одежда, стиль рисовки, любые "
+        "характерные детали.\n\n"
+        "Пример: «Девушка-киборг, 25 лет, серебряные волосы каре, "
+        "лицо с резкими чертами, неоновые татуировки. Одежда: "
+        "чёрная кожаная куртка с кибер-вставками, серый свитер, "
+        "узкие чёрные брюки, тяжёлые ботинки. Стиль рисовки — "
+        "cyberpunk semi-realistic, кинематографичное освещение.»"
+    )
+
+
+async def _save_hero_brief_and_run(
+    msg: Message, project_id: int, hero_idx: int
+) -> None:
+    """Сохраняет описание героя с индексом `hero_idx` (1..N).
+
+    Если собраны все N описаний — выставляет статус generating_hero и
+    воркер на следующем тике запускает generate_hero по очереди.
+    Иначе — просит следующее описание."""
     text = (msg.text or "").strip()
     if len(text) < 5:
         await msg.answer(
@@ -466,21 +590,51 @@ async def _save_hero_brief_and_run(msg: Message, project_id: int) -> None:
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        project.hero_description = text
-        project.status = ProjectStatus.generating_hero
+        n_total = project.hero_count or 1
+        descriptions = list(project.hero_descriptions or [])
+        # Пишем в нужный индекс (1..N → 0..N-1).
+        idx0 = hero_idx - 1
+        while len(descriptions) <= idx0:
+            descriptions.append("")
+        descriptions[idx0] = text
+        project.hero_descriptions = descriptions
+        # Для совместимости со старым кодом — в hero_description
+        # кладём первое описание.
+        if idx0 == 0:
+            project.hero_description = text
+        all_done = (
+            len(descriptions) >= n_total
+            and all(d.strip() for d in descriptions[:n_total])
+        )
+        if all_done:
+            project.status = ProjectStatus.generating_hero
         try:
             _sheet_for_project(project).write_general(
-                hero_description=text,
+                hero_description=descriptions[0] if descriptions else None,
                 status=project.status.value,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("hero_description xlsx write failed: {}", e)
-    await msg.answer(
-        f"✏️ Описание героя сохранено ({len(text)} симв). "
-        "Запускаю шаг 4 — воркер подхватит за ~15 сек.\n"
-        "ChatGPT превратит описание в полный turnaround-промт, "
-        "outsee сгенерит картинку, потом пришлю результат."
-    )
+        slug = project.slug
+    if all_done:
+        await msg.answer(
+            f"✅ Собраны все описания ({n_total}/{n_total}). "
+            f"Запускаю генерацию — воркер подхватит за ~15 сек.\n"
+            f"Генерирую по очереди; после каждого героя пришлю карточку на "
+            f"одобрение (✅/🔁/❌)."
+        )
+    else:
+        next_idx = hero_idx + 1
+        # Значения hero_idx в _pending_hero_brief под юзера уже очищены
+        # вызывающим handler'ом — ставим следующий индекс.
+        user_id = msg.from_user.id if msg.from_user else 0
+        if user_id:
+            _pending_hero_brief[user_id] = (project_id, next_idx)
+        await msg.answer(
+            f"Сохранён герой {hero_idx}/{n_total}.\n\n"
+            + _hero_brief_question_text(next_idx, n_total),
+            parse_mode="HTML",
+        )
 
 
 async def _create_new_project(msg: Message) -> None:
@@ -671,21 +825,40 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         }.get(action, HITLDecision.pending)
         req.decision = decision
 
-        # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4».
-        # Возвращаем проект в generating_hero, воркер подхватит.
+        # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4
+        # для текущего героя» (с тем же описанием). На ✅ — если у проекта
+        # больше одного героя и не все ещё сделаны, возвращаем проект в
+        # generating_hero, чтобы воркер сгенерил следующего.
         regen_step_msg = ""
-        if action == "regen" and req.kind is HITLKind.approve_hero:
+        if req.kind is HITLKind.approve_hero:
             project = (
                 await s.execute(
                     select(Project).where(Project.id == req.project_id)
                 )
             ).scalar_one_or_none()
             if project is not None:
-                project.status = ProjectStatus.generating_hero
-                regen_step_msg = (
-                    "\n\n▶ Запускаю генерацию hero заново "
-                    "(с тем же описанием)."
-                )
+                if action == "regen":
+                    # Откатываем счётчик одобренных героев на текущей
+                    # позиции (просто ставим generating_hero — шаг
+                    # перегенерит того же героя).
+                    project.status = ProjectStatus.generating_hero
+                    regen_step_msg = (
+                        "\n\n▶ Запускаю генерацию hero заново "
+                        "(с тем же описанием)."
+                    )
+                elif action == "approve":
+                    n_total = project.hero_count or 1
+                    approved_idx = (
+                        (req.payload or {}).get("hero_index") or 1
+                    )
+                    if approved_idx < n_total:
+                        project.status = ProjectStatus.generating_hero
+                        regen_step_msg = (
+                            f"\n\n▶ Перехожу к герою "
+                            f"{approved_idx + 1}/{n_total}."
+                        )
+                    # Если approved_idx == n_total — статус остаётся
+                    # hero_ready (шаг полностью завершён).
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",

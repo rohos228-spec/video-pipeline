@@ -50,15 +50,64 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
         return
 
-    if project.hero_mode == "no_hero":
-        logger.info("[#{}] hero skipped (hero_mode=no_hero)", project.id)
+    if project.hero_mode == "no_hero" or project.hero_count == 0:
+        logger.info(
+            "[#{}] hero skipped (hero_mode={}, hero_count={})",
+            project.id, project.hero_mode, project.hero_count,
+        )
         project.status = ProjectStatus.hero_ready
         return
 
-    logger.info("[#{}] generate_hero starting", project.id)
+    # Сколько героев нужно всего и сколько уже одобрено пользователем.
+    # Описания лежат в project.hero_descriptions (по списку); генерируем
+    # того, чей индекс = approved_count (нумерация с 0).
+    descriptions: list[str] = list(project.hero_descriptions or [])
+    n_total = project.hero_count or (1 if project.hero_description else 0)
+    if n_total == 0:
+        # legacy fallback: hero_description есть, hero_count не задан → 1.
+        if project.hero_description:
+            descriptions = [project.hero_description]
+            n_total = 1
+        else:
+            raise RuntimeError(
+                "hero_count=None и hero_description пуст — "
+                "нечем описать героя. Тыкни «4. Hero» в меню заново."
+            )
 
-    # Проверяем: это перегенерация после нажатия 🔁 на предыдущей HITL-карточке?
-    # Если да — используем кнопку «Повторить» на outsee вместо полного прогона.
+    # Считаем одобренные ранее hero-карточки.
+    approved_hero_count = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+                HITLRequest.decision == HITLDecision.approved,
+            )
+        )
+    ).scalars().all()
+    approved_count = len(approved_hero_count)
+    if approved_count >= n_total:
+        logger.info(
+            "[#{}] hero: все {} героев уже одобрены, перехожу к hero_ready",
+            project.id, n_total,
+        )
+        project.status = ProjectStatus.hero_ready
+        return
+
+    hero_idx = approved_count + 1  # 1..N: какого героя сейчас делаем
+    user_brief = (descriptions[approved_count] if approved_count < len(descriptions) else "").strip()
+    if len(user_brief) < 5:
+        raise RuntimeError(
+            f"hero_descriptions[{approved_count}] пустой — нечем описать "
+            f"героя {hero_idx}/{n_total}. Тыкни «4. Hero» в меню заново."
+        )
+
+    logger.info(
+        "[#{}] generate_hero {}/{} starting (brief: {} симв)",
+        project.id, hero_idx, n_total, len(user_brief),
+    )
+
+    # Перегенерация (🔁 на последней карточке текущего героя)?
     last_hitl = (
         await session.execute(
             select(HITLRequest)
@@ -73,19 +122,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     is_regen = (
         last_hitl is not None
         and last_hitl.decision is HITLDecision.regenerate
-        and bool(project.hero_description)
+        and (last_hitl.payload or {}).get("hero_index") == hero_idx
     )
-
-    # Пользовательское описание героя сохраняется в project.hero_description
-    # ботом (когда юзер тыкает «4. Hero» — бот спрашивает текст, юзер пишет,
-    # бот пишет в hero_description и выставляет generating_hero). Здесь мы
-    # просто берём этот текст и склеиваем готовый ChatGPT-промт.
-    user_brief = (project.hero_description or "").strip()
-    if len(user_brief) < 5:
-        raise RuntimeError(
-            "hero_description пустой — нечем описать героя. "
-            "Тыкни «4. Hero» в меню заново и напиши описание."
-        )
 
     async with browser_session() as bs:
         # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
@@ -158,9 +196,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         outsee = OutseeBot(bs)
         out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
         short_uuid = uuid.uuid4().hex[:8]
-        file_name = f"hero_{short_uuid}.png"
+        file_name = f"hero_{hero_idx}_{short_uuid}.png"
         out_path = out_dir / file_name
-        prompt_id_prefix = build_gen_id_prefix(project.id, None, short_uuid)
+        # Префикс ID для outsee/HITL: P<pid>-HERO<idx>-<hex8>.
+        prompt_id_prefix = (
+            f"[ID: P{project.id}-HERO{hero_idx}-{short_uuid}]"
+        )
 
         # Настройки из проекта — с дефолтами на случай отсутствия.
         img_gen = IMAGE_GENERATORS_BY_ID.get(
@@ -204,8 +245,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         kind=ArtifactKind.hero_reference,
         uuid=uuid.uuid4().hex,
         path=str(result.file_path),
+        meta={"hero_index": hero_idx},
     )
     session.add(art)
+    # Статус остаёмся generating_hero — ждём одобрения юзера.
+    # Но чтобы воркер не подхватил шаг снова (иначе будет жарить бесконечно),
+    # переводим в hero_ready. После approve бот решит: если есть
+    # ещё несделанные герои — вернёт в generating_hero.
     project.status = ProjectStatus.hero_ready
     await session.flush()
 
@@ -225,12 +271,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         photo_path=str(result.file_path),
         caption=(
             f"{prompt_id_prefix}\n"
-            f"Референс ГГ для P{project.id}. Одобрить?"
+            f"Герой {hero_idx}/{n_total} для P{project.id}. Одобрить?"
         ),
         payload={
             "step": "hero",
             "artifact_id": art.id,
             "prompt_id_prefix": prompt_id_prefix,
             "photo_path": str(result.file_path),
+            "hero_index": hero_idx,
+            "hero_total": n_total,
         },
     )

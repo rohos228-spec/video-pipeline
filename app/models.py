@@ -125,6 +125,13 @@ class Project(Base):
     image_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
     video_generator: Mapped[str | None] = mapped_column(String(40), default=None)
     video_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
+    # Сколько персонажей-героев генерировать в шаге 4 (0..9). None — ещё не
+    # выбрано (бот спросит кнопками при клике на «4. Hero»). 0 — без героев.
+    hero_count: Mapped[int | None] = mapped_column(default=None)
+    # Текстовые описания героев (по одному на каждого). Юзер пишет их по
+    # очереди в TG; шаг 4 обрабатывает по индексу: descriptions[i-1] для
+    # героя i.
+    hero_descriptions: Mapped[list] = mapped_column(JSON, default=list)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
