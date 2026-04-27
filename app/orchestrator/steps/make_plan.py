@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.generation_options import render_settings_for_gpt
 from app.models import HITLKind, Project, ProjectStatus
 from app.services.hitl import send_hitl_text
 from app.services.prompt_library import get_project_prompt
@@ -28,17 +27,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         "auto": "",
     }.get(project.hero_mode, "")
 
-    tech_block = render_settings_for_gpt(
-        project.image_generator,
-        project.aspect_ratio,
-        project.image_resolution,
-        project.video_generator,
-        project.video_resolution,
-    )
     full_prompt = (
-        tech_block
-        + "\n"
-        + master
+        master
         + "\n\n---\n\n"
         + "Тема ролика (исходный материал для анализа):\n"
         + project.topic

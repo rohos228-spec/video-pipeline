@@ -12,12 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.generation_options import (
-    DEFAULTS,
-    VIDEO_GENERATORS_BY_ID,
-    VIDEO_RESOLUTIONS_BY_ID,
-    render_settings_for_gpt,
-)
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
@@ -29,26 +23,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     logger.info("[#{}] make_animation_prompts starting", project.id)
 
     video_master = get_project_prompt(project, "anim_pr")
-    tech_block = render_settings_for_gpt(
-        project.image_generator,
-        project.aspect_ratio,
-        project.image_resolution,
-        project.video_generator,
-        project.video_resolution,
-    )
-    video_master = tech_block + "\n" + video_master
-    # Описание модели для компактной строки в per-frame задаче
-    vg = VIDEO_GENERATORS_BY_ID.get(
-        project.video_generator or DEFAULTS["video_generator"]
-    )
-    vr_o = VIDEO_RESOLUTIONS_BY_ID.get(
-        project.video_resolution or DEFAULTS["video_resolution"]
-    )
-    video_label = (
-        f"{vg.label if vg else 'Veo 3.1 Fast'}, "
-        f"{vr_o.label if vr_o else '1080p'}, 8 сек, "
-        f"{project.aspect_ratio or '9:16'}"
-    )
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
@@ -62,8 +36,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 continue
             ask = (
                 video_master
-                + "\n\n---\n\nЗадача: составь ОДИН промт для анимации следующего кадра "
-                + f"(генератор: {video_label}). Без лишних пояснений, только текст промта.\n\n"
+                + "\n\n---\n\nЗадача: составь ОДИН промт для анимации следующего кадра. "
+                + "Без лишних пояснений, только текст промта.\n\n"
                 + f"Номер кадра: {fr.number}\n"
                 + f"Длительность: {fr.duration_seconds} сек\n"
                 + f"Закадровый текст: {fr.voiceover_text}\n"

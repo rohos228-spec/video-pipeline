@@ -31,7 +31,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.generation_options import render_settings_for_gpt
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
@@ -85,13 +84,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     logger.info("[#{}] generate_image_prompts starting (single GPT call mode)", project.id)
 
     image_master = get_project_prompt(project, "img_pr")
-    tech_block = render_settings_for_gpt(
-        project.image_generator,
-        project.aspect_ratio,
-        project.image_resolution,
-        project.video_generator,
-        project.video_resolution,
-    )
 
     frames = (
         await session.execute(
@@ -148,8 +140,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     full_prompt = (
         image_master.strip()
         + "\n\n"
-        + tech_block.strip()
-        + "\n"
         + hero_section
         + "\n---\n"
         + f"Кадров: {len(frames)}.\n"

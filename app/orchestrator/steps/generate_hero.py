@@ -28,7 +28,6 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     build_gen_id_prefix,
-    render_settings_for_gpt,
 )
 from app.models import (
     Artifact,
@@ -127,20 +126,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
         hero_master = get_project_prompt(project, "hero")
-        tech_block = render_settings_for_gpt(
-            project.image_generator,
-            project.aspect_ratio,
-            project.image_resolution,
-            project.video_generator,
-            project.video_resolution,
-        )
         # Префикс — фиксированная инструкция от пользователя:
         #   "сделай промт для генерации персонажа который описан ниже,
         #    ты должен интегрировать персонажа в промт и прислать готовый
         #    промт для генерации персонажа"
         hero_ask = (
-            tech_block
-            + "\nСделай промт для генерации персонажа, который описан ниже. "
+            "Сделай промт для генерации персонажа, который описан ниже. "
             "Ты должен интегрировать персонажа в промт и прислать готовый "
             "промт для генерации персонажа.\n\n"
             "Структура промта (turnaround sheet) — ниже шаблоном. "
