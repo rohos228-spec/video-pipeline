@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.generation_options import render_settings_for_gpt
-from app.models import HITLKind, Project, ProjectStatus, PromptKey
+from app.models import HITLKind, Project, ProjectStatus
 from app.services.hitl import send_hitl_text
-from app.services.prompts import get_active_prompt
+from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
 
 
@@ -21,7 +21,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] make_plan starting: '{}'", project.id, project.topic)
 
-    master = await get_active_prompt(session, PromptKey.PLAN_SHORTS)
+    master = get_project_prompt(project, "plan")
     hero_hint = {
         "hero": "Игнорируй автоматическое определение hero_needed, выставь hero_needed=true.",
         "no_hero": "Игнорируй автоматическое определение hero_needed, выставь hero_needed=false.",

@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.generation_options import render_settings_for_gpt
-from app.models import Frame, FrameStatus, Project, ProjectStatus, PromptKey
-from app.services.prompts import get_active_prompt
+from app.models import Frame, FrameStatus, Project, ProjectStatus
+from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
 
 
@@ -27,7 +27,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] generate_image_prompts starting", project.id)
 
-    image_master = await get_active_prompt(session, PromptKey.IMAGE_SHORTS)
+    image_master = get_project_prompt(project, "img_pr")
     tech_block = render_settings_for_gpt(
         project.image_generator,
         project.aspect_ratio,

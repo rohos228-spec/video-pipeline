@@ -229,6 +229,13 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
             ),
         ])
 
+    # Библиотека мастер-промтов: посмотреть/сменить выбор по любому шагу.
+    rows.append([
+        InlineKeyboardButton(
+            text="🧰 Промты", callback_data=f"pov:{project.id}"
+        ),
+    ])
+
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),
         InlineKeyboardButton(text="🔄 Перечитать xlsx", callback_data=f"proj:{project.id}:reload_xlsx"),

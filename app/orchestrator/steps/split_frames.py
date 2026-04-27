@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.models import Frame, Project, ProjectStatus, PromptKey
-from app.services.prompts import get_active_prompt
+from app.models import Frame, Project, ProjectStatus
+from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
 
 MIN_FRAME = 2.0
@@ -99,8 +99,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         project.status = ProjectStatus.frames_ready
         return
 
-    # 1) Достаём мастер-промт из БД.
-    master = await get_active_prompt(session, PromptKey.RAZBIVKA_SLOV)
+    # 1) Мастер-промт разбивки — выбранный в проекте вариант с диска.
+    master = get_project_prompt(project, "split")
 
     # 2) Шлём в ChatGPT: <RAZBIVKA_SLOV>\n\n---\n\n<script_text>.
     full_prompt = f"{master}\n\n---\n\n{project.script_text.strip()}"

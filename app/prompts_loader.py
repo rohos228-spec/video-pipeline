@@ -1,56 +1,68 @@
-"""Подгрузка мастер-промтов из файлов + апсерт в БД."""
+"""Подгрузка дефолтных мастер-промтов из файлов + апсерт в БД.
+
+Новая структура `prompts/`:
+  prompts/01_plan/default.md, prompts/02_script/default.md, …
+
+Этот загрузчик берёт `default.md` из каждой папки и кладёт в таблицу
+`MasterPrompt` по соответствующему `PromptKey`. Это нужно только для
+обратной совместимости со старыми вызовами `get_active_prompt(...)`.
+Реальные шаги пайплайна сейчас читают мастер-промты с диска через
+`app.services.prompt_library.get_project_prompt(...)`.
+
+Если файл не найден — пропускаем (логируем warning), не падаем."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from loguru import logger
 from sqlalchemy import select
 
 from app.db import session_scope
 from app.models import MasterPrompt, PromptKey
+from app.services.prompt_library import PROMPTS_ROOT, STEP_FOLDERS
 
-PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-
-
-_FILE_TO_KEY: dict[str, PromptKey] = {
-    "PLAN_SHORTS.v1.md": PromptKey.PLAN_SHORTS,
-    "SCRIPT_SHORTS.v1.md": PromptKey.SCRIPT_SHORTS,
-    "IMAGE_SHORTS.v1.md": PromptKey.IMAGE_SHORTS,
-    "VIDEO_SHORTS.v1.md": PromptKey.VIDEO_SHORTS,
-    "HERO_SHORTS.v1.md": PromptKey.HERO_SHORTS,
-    "RAZBIVKA_SLOV.v1.md": PromptKey.RAZBIVKA_SLOV,
+# Карта step_code → PromptKey (для апсерта в DB).
+_STEP_TO_KEY: dict[str, PromptKey] = {
+    "plan":    PromptKey.PLAN_SHORTS,
+    "script":  PromptKey.SCRIPT_SHORTS,
+    "split":   PromptKey.RAZBIVKA_SLOV,
+    "hero":    PromptKey.HERO_SHORTS,
+    "img_pr":  PromptKey.IMAGE_SHORTS,
+    "anim_pr": PromptKey.VIDEO_SHORTS,
 }
 
 
-async def sync_prompts_from_files() -> None:
-    """Апсерт всех мастер-промтов из `prompts/` как версии 1.
+def _default_path(step_code: str) -> Path:
+    folder = STEP_FOLDERS[step_code]
+    return PROMPTS_ROOT / folder / "default.md"
 
-    Если одноимённый ключ уже есть в БД с той же версией — не трогаем.
-    При обновлении файла нужно увеличивать версию (PLAN_SHORTS.v2.md и т.д.).
+
+async def sync_prompts_from_files() -> None:
+    """Апсерт `prompts/<этап>/default.md` в БД как версии 1 для каждого ключа.
+
+    Если файла нет — пропускаем. Текст уже в БД с такой же версией —
+    обновляем содержимое (так удобно править default.md и видеть текст
+    в DB). Это legacy-путь; новые шаги читают с диска напрямую.
     """
     async with session_scope() as s:
-        for fname, key in _FILE_TO_KEY.items():
-            p = PROMPTS_DIR / fname
+        for step_code, key in _STEP_TO_KEY.items():
+            p = _default_path(step_code)
             if not p.exists():
+                logger.warning(
+                    "prompts_loader: файл не найден, пропускаю: {}", p
+                )
                 continue
             text = p.read_text(encoding="utf-8")
-            # парсим версию из имени: NAME.v{N}.md
-            version = 1
-            stem = p.stem
-            if ".v" in stem:
-                try:
-                    version = int(stem.rsplit(".v", 1)[1])
-                except ValueError:
-                    version = 1
             existing = (
                 await s.execute(
                     select(MasterPrompt).where(
-                        MasterPrompt.key == key, MasterPrompt.version == version
+                        MasterPrompt.key == key, MasterPrompt.version == 1
                     )
                 )
             ).scalar_one_or_none()
             if existing is None:
-                s.add(MasterPrompt(key=key, version=version, text=text, active=True))
+                s.add(MasterPrompt(key=key, version=1, text=text, active=True))
             else:
                 existing.text = text
                 existing.active = True

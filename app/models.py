@@ -132,6 +132,10 @@ class Project(Base):
     # очереди в TG; шаг 4 обрабатывает по индексу: descriptions[i-1] для
     # героя i.
     hero_descriptions: Mapped[list] = mapped_column(JSON, default=list)
+    # Выбранный для каждого шага вариант мастер-промта (имя файла без .md).
+    # Пример: {"plan": "default", "script": "horror_v2", "hero": "girl_v3"}.
+    # Если ключа нет — берётся `default.md` из соответствующей папки.
+    prompt_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)

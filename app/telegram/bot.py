@@ -45,6 +45,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services import prompt_library as plib
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
@@ -54,6 +55,21 @@ from app.telegram.menu import (
     project_header,
     project_menu_kb,
     step_by_code,
+)
+from app.telegram.prompt_picker import (
+    delete_kb as _prompt_delete_kb,
+)
+from app.telegram.prompt_picker import (
+    overview_kb as _prompt_overview_kb,
+)
+from app.telegram.prompt_picker import (
+    overview_text as _prompt_overview_text,
+)
+from app.telegram.prompt_picker import (
+    picker_kb as _prompt_picker_kb,
+)
+from app.telegram.prompt_picker import (
+    picker_text as _prompt_picker_text,
 )
 from app.telegram.wizard import (
     handle_wizard_callback,
@@ -71,6 +87,16 @@ _pending_topic_input: dict[int, bool] = {}
 # описывает пользователь. После N описаний словарь чистится и проект
 # уходит в generating_hero.
 _pending_hero_brief: dict[int, tuple[int, int]] = {}
+
+# Ожидание имени нового мастер-промта. После того как юзер кликнул
+# «+ Новый промт», бот спрашивает имя текстом. Здесь храним к какому
+# (проекту, шагу) относится ожидание.
+# user_id → (project_id, step_code)
+_pending_prompt_name: dict[int, tuple[int, str]] = {}
+
+# Ожидание возврата `.md`-файла после редактирования / создания.
+# user_id → (project_id, step_code, prompt_name).
+_pending_prompt_upload: dict[int, tuple[int, str, str]] = {}
 
 
 def is_owner(msg: Message) -> bool:
@@ -374,6 +400,26 @@ async def on_project_step(cb: CallbackQuery) -> None:
             )
             return
 
+        # Если у шага есть мастер-промт и в проекте ещё не выбран
+        # вариант (или указанный файл пропал) — показываем picker и НЕ
+        # запускаем шаг до выбора. Это ключевая часть Push C.
+        if step.code in plib.STEP_FOLDERS:
+            overrides = dict(project.prompt_overrides or {})
+            chosen = overrides.get(step.code)
+            need_picker = (
+                not chosen
+                or not plib.is_valid_prompt_name(chosen)
+                or not plib.prompt_path(step.code, chosen).exists()
+            )
+            if need_picker:
+                await cb.answer()
+                await cb.message.answer(
+                    _prompt_picker_text(step.code, overrides),
+                    reply_markup=_prompt_picker_kb(pid, step.code, overrides),
+                    parse_mode="HTML",
+                )
+                return
+
         # выставляем running-статус — воркер увидит и запустит шаг
         project.status = step.running_status
         slug = project.slug
@@ -386,6 +432,309 @@ async def on_project_step(cb: CallbackQuery) -> None:
         f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# Библиотека мастер-промтов (Push C):
+#   prm:<pid>:<step>:sel:<name>     — выбрать существующий вариант + запустить шаг
+#   prm:<pid>:<step>:menu           — обновить picker (refresh / возврат назад)
+#   prm:<pid>:<step>:add            — спросить имя нового варианта
+#   prm:<pid>:<step>:editcur        — выслать текущий выбранный файлом, ждать ответ
+#   prm:<pid>:<step>:delask         — список вариантов для удаления
+#   prm:<pid>:<step>:del:<name>     — удалить файл варианта
+#   prm:<pid>:<step>:cancel         — закрыть picker (вернуться в меню проекта)
+#
+#   pov:<pid>                       — открыть «🧰 Промты» (overview по проекту)
+
+
+def _parse_prm(data: str) -> tuple[int, str, str, str | None]:
+    """Распарсить prm:<pid>:<step>:<action>[:<name>]. Возвращает кортеж."""
+    parts = data.split(":", 4)
+    if len(parts) < 4 or parts[0] != "prm":
+        raise ValueError(f"bad prm callback: {data}")
+    pid = int(parts[1])
+    step_code = parts[2]
+    action = parts[3]
+    name = parts[4] if len(parts) >= 5 else None
+    return pid, step_code, action, name
+
+
+@dp.callback_query(F.data.regexp(r"^pov:\d+$"))
+async def on_prompt_overview(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        text = _prompt_overview_text(project)
+    await cb.answer()
+    await cb.message.answer(
+        text, reply_markup=_prompt_overview_kb(pid), parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("prm:"))
+async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        pid, step_code, action, name = _parse_prm(cb.data or "")
+    except Exception:
+        await cb.answer("Плохой callback", show_alert=True)
+        return
+    if step_code not in plib.STEP_FOLDERS:
+        await cb.answer("Неизвестный шаг для промтов", show_alert=True)
+        return
+
+    if action == "cancel":
+        await cb.answer("Отменено")
+        await cb.message.answer("Отменено. Открой меню проекта /menu.")
+        return
+
+    if action == "menu":
+        # Перерисовать picker.
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            overrides = dict(project.prompt_overrides or {}) if project else {}
+        await cb.answer()
+        await cb.message.answer(
+            _prompt_picker_text(step_code, overrides),
+            reply_markup=_prompt_picker_kb(pid, step_code, overrides),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "sel" and name is not None:
+        if not plib.is_valid_prompt_name(name):
+            await cb.answer("Некорректное имя", show_alert=True)
+            return
+        if not plib.prompt_path(step_code, name).exists():
+            await cb.answer("Файл не найден", show_alert=True)
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            overrides = dict(project.prompt_overrides or {})
+            overrides[step_code] = name
+            project.prompt_overrides = overrides
+        human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+        await cb.answer(f"Выбрано: {name}")
+        await cb.message.answer(
+            f"✅ Для шага «{human}» теперь используется промт "
+            f"<code>{name}</code>.\n\n"
+            f"Тыкни шаг в меню /menu чтобы запустить.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "add":
+        user_id = cb.from_user.id
+        _pending_prompt_name[user_id] = (pid, step_code)
+        # Чистим upload-pending на всякий случай.
+        _pending_prompt_upload.pop(user_id, None)
+        human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+        await cb.answer()
+        await cb.message.answer(
+            f"Введи имя нового варианта мастер-промта для шага "
+            f"«{human}» одним сообщением.\n"
+            f"Допустимые символы: <code>A-Z a-z 0-9 _ -</code>, длина 1-64.\n"
+            f"Например: <code>horror_dark_v1</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "editcur":
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            overrides = dict(project.prompt_overrides or {})
+        chosen = overrides.get(step_code) or plib.DEFAULT_NAME
+        if not plib.prompt_path(step_code, chosen).exists():
+            chosen = plib.DEFAULT_NAME
+        await _send_prompt_for_edit(cb, pid, step_code, chosen)
+        return
+
+    if action == "delask":
+        await cb.answer()
+        await cb.message.answer(
+            "Выбери вариант для удаления (<code>default</code> "
+            "удалить нельзя):",
+            reply_markup=_prompt_delete_kb(pid, step_code),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "del" and name is not None:
+        if name == plib.DEFAULT_NAME:
+            await cb.answer("default удалять нельзя", show_alert=True)
+            return
+        try:
+            removed = plib.delete_prompt(step_code, name)
+        except Exception as e:  # noqa: BLE001
+            await cb.answer(f"Не удалось удалить: {e}", show_alert=True)
+            return
+        # Если этот вариант был выбран в проекте — сбрасываем override.
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is not None:
+                overrides = dict(project.prompt_overrides or {})
+                if overrides.get(step_code) == name:
+                    overrides.pop(step_code, None)
+                    project.prompt_overrides = overrides
+        await cb.answer("Удалено" if removed else "Файла не было")
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            overrides = dict(project.prompt_overrides or {}) if project else {}
+        await cb.message.answer(
+            _prompt_picker_text(step_code, overrides),
+            reply_markup=_prompt_picker_kb(pid, step_code, overrides),
+            parse_mode="HTML",
+        )
+        return
+
+    await cb.answer("Неизвестное действие picker", show_alert=True)
+
+
+async def _send_prompt_for_edit(
+    cb: CallbackQuery, pid: int, step_code: str, name: str
+) -> None:
+    """Отправляет файл `<step>/<name>.md` юзеру и переводит его в режим
+    ожидания возврата отредактированного файла."""
+    path = plib.prompt_path(step_code, name)
+    if not path.exists():
+        await cb.answer("Файл не найден", show_alert=True)
+        return
+    user_id = cb.from_user.id
+    _pending_prompt_upload[user_id] = (pid, step_code, name)
+    _pending_prompt_name.pop(user_id, None)
+    await cb.answer()
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await cb.message.answer_document(
+        FSInputFile(str(path)),
+        caption=(
+            f"📝 Шаг «{human}» · вариант <b>{name}</b>.\n\n"
+            f"Поправь файл локально и пришли его <b>обратно как документ</b> "
+            f"в этот чат — я сохраню и сразу выберу его для проекта.\n"
+            f"Имя файла менять не обязательно."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_prompt_name_input(msg: Message, pid: int, step_code: str) -> None:
+    """Юзер прислал имя нового мастер-промта. Создаём шаблон и шлём файл."""
+    name = (msg.text or "").strip()
+    if not plib.is_valid_prompt_name(name):
+        await msg.answer(
+            "Имя содержит недопустимые символы или пустое. Допустимы "
+            "<code>A-Z a-z 0-9 _ -</code>, длина 1-64. Попробуй ещё раз "
+            "или нажми «⬅ Отмена» в picker'е.",
+            parse_mode="HTML",
+        )
+        # Возвращаем юзера в режим ввода имени.
+        user_id = msg.from_user.id if msg.from_user else 0
+        if user_id:
+            _pending_prompt_name[user_id] = (pid, step_code)
+        return
+    # Если файл уже есть — не перезаписываем шаблоном; просто шлём как
+    # есть на редактирование.
+    path = plib.prompt_path(step_code, name)
+    if not path.exists():
+        plib.write_prompt(step_code, name, plib.make_template_for_new(step_code, name))
+    user_id = msg.from_user.id if msg.from_user else 0
+    if user_id:
+        _pending_prompt_upload[user_id] = (pid, step_code, name)
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer_document(
+        FSInputFile(str(path)),
+        caption=(
+            f"📝 Создан шаблон <b>{name}.md</b> для шага «{human}».\n\n"
+            f"Открой файл, замени содержимое на свой мастер-промт и пришли "
+            f"<b>обратно как документ</b> в этот чат. После возврата я "
+            f"сохраню его и сразу выберу для проекта."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_prompt_upload(msg: Message) -> None:
+    """Юзер прислал .md-файл — сохраняем по адресу из _pending_prompt_upload."""
+    user_id = msg.from_user.id if msg.from_user else 0
+    pending = _pending_prompt_upload.get(user_id)
+    if pending is None:
+        return
+    pid, step_code, name = pending
+    doc = msg.document
+    if doc is None:
+        await msg.answer("Жду документ (.md), не текст.")
+        return
+    # Читаем содержимое файла через aiogram bot.download.
+    try:
+        buf = await msg.bot.download(doc)
+        raw = buf.read() if hasattr(buf, "read") else bytes(buf)
+        content = raw.decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        await msg.answer(f"Не смог прочитать файл: {e}")
+        return
+    if len(content.strip()) < 5:
+        await msg.answer(
+            "Файл практически пустой. Пришли заново с реальным мастер-"
+            "промтом. (Жду тот же файл, режим ожидания не сброшен.)"
+        )
+        return
+    plib.write_prompt(step_code, name, content)
+    _pending_prompt_upload.pop(user_id, None)
+    # Сохраняем выбор в проекте.
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{pid} не найден")
+            return
+        overrides = dict(project.prompt_overrides or {})
+        overrides[step_code] = name
+        project.prompt_overrides = overrides
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer(
+        f"✅ Сохранено: <code>prompts/{plib.STEP_FOLDERS[step_code]}/{name}.md</code> "
+        f"({len(content)} симв).\n"
+        f"Выбран как мастер-промт для шага «{human}». Тыкни шаг в "
+        f"/menu чтобы запустить.",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(F.document)
+async def on_document_message(msg: Message) -> None:
+    """Принимаем `.md`-файл с отредактированным мастер-промтом."""
+    if not is_owner(msg):
+        return
+    user_id = msg.from_user.id if msg.from_user else 0
+    if user_id not in _pending_prompt_upload:
+        return  # не ждём ничего — игнорим (это может быть просто файл)
+    await _handle_prompt_upload(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +879,15 @@ async def on_text_message(msg: Message) -> None:
         await _save_hero_brief_and_run(msg, pid, hero_idx)
         return
 
-    # 3) Иначе — может это ответ на edit-запрос
+    # 3) Если ждём имя нового мастер-промта (после клика «+ Новый» в picker'е)
+    pending_name = _pending_prompt_name.get(user_id)
+    if pending_name is not None:
+        pid_p, step_p = pending_name
+        _pending_prompt_name.pop(user_id, None)
+        await _handle_prompt_name_input(msg, pid_p, step_p)
+        return
+
+    # 4) Иначе — может это ответ на edit-запрос
     if msg.reply_to_message is not None:
         await _on_edit_reply(msg)
 

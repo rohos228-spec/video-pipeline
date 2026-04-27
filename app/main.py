@@ -43,6 +43,7 @@ async def _init_db() -> None:
             ("video_resolution", "VARCHAR(10)"),
             ("hero_count", "INTEGER"),
             ("hero_descriptions", "JSON"),
+            ("prompt_overrides", "JSON"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")

@@ -38,10 +38,9 @@ from app.models import (
     HITLRequest,
     Project,
     ProjectStatus,
-    PromptKey,
 )
 from app.services.hitl import send_hitl_photo
-from app.services.prompts import get_active_prompt
+from app.services.prompt_library import get_project_prompt
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -127,7 +126,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     async with browser_session() as bs:
         # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
-        hero_master = await get_active_prompt(session, PromptKey.HERO_SHORTS)
+        hero_master = get_project_prompt(project, "hero")
         tech_block = render_settings_for_gpt(
             project.image_generator,
             project.aspect_ratio,

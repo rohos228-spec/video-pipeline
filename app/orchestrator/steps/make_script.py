@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.generation_options import render_settings_for_gpt
-from app.models import HITLKind, Project, ProjectStatus, PromptKey
+from app.models import HITLKind, Project, ProjectStatus
 from app.services.hitl import send_hitl_text
-from app.services.prompts import get_active_prompt
+from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
 
 
@@ -22,7 +22,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError("general_plan пуст — нечего превращать в сценарий")
     logger.info("[#{}] make_script starting", project.id)
 
-    master = await get_active_prompt(session, PromptKey.SCRIPT_SHORTS)
+    master = get_project_prompt(project, "script")
     tech_block = render_settings_for_gpt(
         project.image_generator,
         project.aspect_ratio,
