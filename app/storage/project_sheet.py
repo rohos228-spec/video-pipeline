@@ -249,7 +249,7 @@ class ProjectSheet:
             ("video_resolution", "Разрешение видео"),
             ("general_plan", "Общий план (от ChatGPT)"),
             ("hero_description", "Описание героя"),
-            ("script_text", "Сценарий (от ChatGPT)"),
+            ("script_text", "Закадровый текст (от ChatGPT)"),
             ("final_video_path", "Финальное видео (файл)"),
         ]
         with _file_lock(self.file_path):

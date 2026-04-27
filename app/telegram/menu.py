@@ -80,12 +80,12 @@ STEPS: list[StepDef] = [
         ProjectStatus.planning, ProjectStatus.plan_ready, None,
     ),
     StepDef(
-        2, "script", "Сценарий",
+        2, "script", "Закадровый текст",
         ProjectStatus.scripting, ProjectStatus.script_ready,
         ProjectStatus.plan_ready,
     ),
     StepDef(
-        3, "split", "Разбивка на кадры",
+        3, "split", "Разбивка на блоки",
         ProjectStatus.splitting, ProjectStatus.frames_ready,
         ProjectStatus.script_ready,
     ),

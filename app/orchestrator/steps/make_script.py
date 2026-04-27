@@ -58,7 +58,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await send_hitl_text(
         bot, session, project,
         kind=HITLKind.approve_script,
-        title=f"Сценарий #{project.id}",
+        title=f"Закадровый текст #{project.id}",
         text=reply,
         payload={"step": "script"},
     )

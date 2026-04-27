@@ -74,6 +74,7 @@ class PromptKey(str, enum.Enum):
     IMAGE_CHECK = "IMAGE_CHECK"
     VIDEO_CHECK = "VIDEO_CHECK"
     HERO_SHORTS = "HERO_SHORTS"
+    RAZBIVKA_SLOV = "RAZBIVKA_SLOV"
 
 
 class AttemptResult(str, enum.Enum):

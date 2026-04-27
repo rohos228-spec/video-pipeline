@@ -4,7 +4,7 @@
 Что переносится:
   - Лист «Общий план ролика»:
       «Общий план (от ChatGPT)»  → project.general_plan
-      «Сценарий (от ChatGPT)»    → project.script_text
+      «Закадровый текст (от ChatGPT)» → project.script_text
       «Описание героя»           → project.hero_description
   - Лист «Кадры», для каждого столбца N=2,3,...:
       R28 (логика кадра)         → frame.meaning
@@ -37,6 +37,8 @@ from app.storage.project_sheet import (
 
 _GENERAL_LABEL_TO_FIELD = {
     "Общий план (от ChatGPT)": "general_plan",
+    "Закадровый текст (от ChatGPT)": "script_text",
+    # Старая метка (совместимость с ранее созданными xlsx-файлами):
     "Сценарий (от ChatGPT)": "script_text",
     "Описание героя": "hero_description",
 }
