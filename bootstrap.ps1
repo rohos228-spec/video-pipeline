@@ -1,7 +1,7 @@
 # video-pipeline: bootstrap для нового ПК
 # Запуск из любой папки (одна строка в PowerShell):
 #
-#   iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
+#   iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
 #
 # Что делает:
 #   1. Ставит git через winget, если его нет.

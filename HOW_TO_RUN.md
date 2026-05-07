@@ -11,7 +11,7 @@ Telegram-бот оживает, когда ты запускаешь `python -m 
 Открой PowerShell **на новом ПК** и выполни **одну команду**:
 
 ```powershell
-iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
+iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
 ```
 
 Что произойдёт:
