@@ -327,16 +327,21 @@ class ChatGPTBot:
 
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
-    async def _attach_file(self, file_path: Path) -> None:
-        """Загружает файл в текущий черновик сообщения через скрытый input[type=file].
-        Перед этим может потребоваться кликнуть по кнопке-скрепке, чтобы input
-        появился в DOM. Ждёт превью прикреплённого файла как подтверждение.
+    async def _attach_files(self, file_paths: list[Path]) -> None:
+        """Загружает один или несколько файлов в текущий черновик сообщения
+        через скрытый input[type=file] (он `multiple`). Перед этим может
+        потребоваться кликнуть по кнопке-скрепке, чтобы input появился в DOM.
+        Ждёт появление превью как подтверждение.
         """
+        if not file_paths:
+            raise ValueError("_attach_files: file_paths пустой")
+
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"upload: файл не найден {file_path}")
+        for fp in file_paths:
+            if not fp.exists():
+                raise FileNotFoundError(f"upload: файл не найден {fp}")
 
         # 1. Пытаемся найти input[type=file] напрямую.
         input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
@@ -357,20 +362,27 @@ class ChatGPTBot:
                 "обнови FILE_INPUT_SELECTORS / ATTACH_BUTTON_SELECTORS."
             )
 
-        # set_input_files работает даже со скрытыми input.
-        await page.locator(input_sel).first.set_input_files(str(file_path))
-        logger.info("ChatGPT: загружаю файл {} через {}", file_path.name, input_sel)
+        # set_input_files принимает список путей (input помечен `multiple`)
+        # и работает даже со скрытыми input.
+        await page.locator(input_sel).first.set_input_files([str(p) for p in file_paths])
+        names = ", ".join(p.name for p in file_paths)
+        logger.info("ChatGPT: загружаю файлы [{}] через {}", names, input_sel)
 
         # Ждём появление превью + завершение фоновой загрузки.
         preview_sel = await _first_matching(page, FILE_PREVIEW_SELECTORS, timeout=30)
         if preview_sel:
-            logger.info("ChatGPT: превью файла появилось ({})", preview_sel)
+            logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
         else:
             logger.warning(
                 "ChatGPT: превью файла не появилось за 30 сек — продолжаю на свой страх"
             )
         # Дополнительная пауза, чтобы upload точно завершился.
-        await asyncio.sleep(2.0)
+        # Для нескольких файлов даём больше времени.
+        await asyncio.sleep(2.0 + 1.0 * (len(file_paths) - 1))
+
+    async def _attach_file(self, file_path: Path) -> None:
+        """Совместимая обёртка над `_attach_files` для одного файла."""
+        await self._attach_files([file_path])
 
     async def ask_with_file(
         self,
@@ -384,7 +396,19 @@ class ChatGPTBot:
         Файл, который GPT может вернуть в ответ, скачивается отдельным методом
         `download_attachment_from_last_reply` после успешного ask_with_file.
         """
-        await self._attach_file(file_path)
+        return await self.ask_with_files(prompt, [file_path], timeout=timeout)
+
+    async def ask_with_files(
+        self,
+        prompt: str,
+        file_paths: list[Path],
+        *,
+        timeout: float = 900,
+    ) -> str:
+        """Аналогично `ask_with_file`, но прикрепляет НЕСКОЛЬКО файлов
+        к одному сообщению, потом шлёт промт и возвращает текст ответа.
+        """
+        await self._attach_files(file_paths)
         # Сам текстовый промт + Send — переиспользуем существующий путь.
         await self._send_prompt(prompt)
         await self._wait_until_done(timeout=timeout)

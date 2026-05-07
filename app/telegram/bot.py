@@ -111,6 +111,17 @@ _pending_plan_topic: dict[int, int] = {}
 # обычного запуска шага.
 _pending_plan_prompt: dict[int, tuple[int, str]] = {}
 
+# Ожидание выбора файла-промта для xlsx-сценария (Step 2 «Закадровый текст»).
+# Когда юзер кликнул «2. Закадровый текст» на v8-xlsx-проекте — сразу
+# показываем picker промтов и сохраняем здесь pid; потом в picker'е
+# на sel:<name> запускаем _run_script_xlsx.
+# user_id → project_id.
+_pending_script_prompt: dict[int, int] = {}
+
+# Ожидание выбора файла-промта для xlsx-разбивки (Step 3 «Разбивка на блоки»).
+# Аналогично script. user_id → project_id.
+_pending_split_prompt: dict[int, int] = {}
+
 
 def is_owner(msg: Message) -> bool:
     return msg.from_user is not None and msg.from_user.id == settings.telegram_owner_chat_id
@@ -473,6 +484,56 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 return
             # xlsx-файла нет — упадём в старую логику ниже.
 
+        # Шаг 2 (Закадровый текст) — новый xlsx-flow.
+        #   1) сразу показываем picker промтов из prompts/02_script/
+        #   2) после выбора — uploadим project.xlsx + промт в ChatGPT,
+        #      ждём ответ, скачиваем txt, сохраняем как voiceover.txt,
+        #      статус → script_ready, шлём txt в TG.
+        if step.code == "script":
+            from pathlib import Path as _Path
+            proj_xlsx = (
+                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+            )
+            if proj_xlsx.exists():
+                overrides = dict(project.prompt_overrides or {})
+                _pending_script_prompt[cb.from_user.id] = pid
+                await cb.answer()
+                await cb.message.answer(
+                    _prompt_picker_text("script", overrides),
+                    reply_markup=_prompt_picker_kb(pid, "script", overrides),
+                    parse_mode="HTML",
+                )
+                return
+            # xlsx-файла нет — упадём в старую логику ниже.
+
+        # Шаг 3 (Разбивка на блоки) — новый xlsx-flow.
+        #   1) сразу показываем picker промтов из prompts/03_razbivka/
+        #   2) после выбора — uploadим project.xlsx + voiceover.txt + промт,
+        #      ждём ответ, скачиваем txt, бэкапим старый voiceover.txt в old/,
+        #      сохраняем новый как voiceover.txt, статус → frames_ready.
+        if step.code == "split":
+            from pathlib import Path as _Path
+            proj_xlsx = (
+                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+            )
+            if proj_xlsx.exists():
+                voiceover_path = proj_xlsx.parent / "voiceover.txt"
+                if not voiceover_path.exists():
+                    await cb.answer(
+                        "Сначала Шаг 2 — нет voiceover.txt", show_alert=True
+                    )
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                _pending_split_prompt[cb.from_user.id] = pid
+                await cb.answer()
+                await cb.message.answer(
+                    _prompt_picker_text("split", overrides),
+                    reply_markup=_prompt_picker_kb(pid, "split", overrides),
+                    parse_mode="HTML",
+                )
+                return
+            # xlsx-файла нет — упадём в старую логику ниже.
+
         # Шаг 4 (Hero) — многоэтапный:
         #   1) если hero_count ещё не задан → кнопки 0-9 «сколько героев?»
         #   2) если задан и описаний недостаточно → запрашиваем описание
@@ -665,6 +726,30 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 # Не блокируем callback handler надолго — отдельной таской.
                 asyncio.create_task(
                     _run_plan_xlsx(cb.message, pid, name, topic)
+                )
+                return
+
+        # Особый случай: «Закадровый текст» (Step 2) в xlsx-режиме.
+        if step_code == "script":
+            uid = cb.from_user.id
+            pending_script_pid = _pending_script_prompt.get(uid)
+            if pending_script_pid is not None and pending_script_pid == pid:
+                _pending_script_prompt.pop(uid, None)
+                await cb.answer(f"Запускаю закадровый текст: {name}")
+                asyncio.create_task(
+                    _run_script_xlsx(cb.message, pid, name)
+                )
+                return
+
+        # Особый случай: «Разбивка на блоки» (Step 3) в xlsx-режиме.
+        if step_code == "split":
+            uid = cb.from_user.id
+            pending_split_pid = _pending_split_prompt.get(uid)
+            if pending_split_pid is not None and pending_split_pid == pid:
+                _pending_split_prompt.pop(uid, None)
+                await cb.answer(f"Запускаю разбивку: {name}")
+                asyncio.create_task(
+                    _run_split_xlsx(cb.message, pid, name)
                 )
                 return
 
@@ -1305,6 +1390,347 @@ async def _run_plan_xlsx(
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("plan_xlsx send doc failed: {}", e)
+
+
+async def _run_script_xlsx(
+    msg: Message, project_id: int, prompt_name: str
+) -> None:
+    """Запускает xlsx-flow для шага 2 «Закадровый текст»:
+
+    1) Открываем новый чат ChatGPT, прикрепляем project.xlsx, шлём промт.
+    2) Ждём ответ, скачиваем txt-файл из ответа GPT.
+       Если GPT не приложил файл, но дал длинный inline-ответ — берём его.
+    3) Старый voiceover.txt (если есть) бэкапим в old/<ts>_voiceover.txt.
+    4) Сохраняем новый txt как data/videos/<slug>/voiceover.txt.
+    5) Статус проекта → script_ready, шлём txt в TG.
+
+    Никаких изменений в orchestrator — этот шаг полностью идёт мимо воркера.
+    """
+    import shutil
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        slug = project.slug
+        topic = project.topic
+
+    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    if not proj_xlsx.exists():
+        await msg.answer(
+            f"project.xlsx не найден: <code>{proj_xlsx}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    prompt_path = plib.prompt_path("script", prompt_name)
+    if not prompt_path.exists():
+        await msg.answer(
+            f"Файл промта не найден: <code>{prompt_path}</code>",
+            parse_mode="HTML",
+        )
+        return
+    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+
+    full_prompt = (
+        f"{prompt_text}\n\n"
+        f"Прикреплённый файл — текущий project.xlsx этого ролика "
+        f"(тема: «{topic}»). Сгенерируй закадровый текст согласно "
+        "инструкции выше и пришли его мне ОБРАТНО как .txt-файл "
+        "(UTF-8, без обрезок и компрессии). Кратким текстом ответь, "
+        "что сделал — но главное верни txt-файл."
+    )
+
+    voiceover = proj_xlsx.parent / "voiceover.txt"
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_dir = proj_xlsx.parent / "tmp_gpt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = out_dir / f"voiceover_{ts}.txt"
+
+    await msg.answer(
+        f"▶ <b>Закадровый текст</b> (xlsx-flow)\n"
+        f"Проект #{project_id} «{topic}»\n"
+        f"Промт: <code>{prompt_name}</code>\n\n"
+        "Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 10 минут. "
+        "Не закрывай Chrome.",
+        parse_mode="HTML",
+    )
+
+    reply_text = ""
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply_text = await gpt.ask_with_file(
+                full_prompt, proj_xlsx, timeout=600
+            )
+            logger.info(
+                "script_xlsx: GPT reply len={} (project #{}, prompt={})",
+                len(reply_text or ""),
+                project_id,
+                prompt_name,
+            )
+            try:
+                await gpt.download_attachment_from_last_reply(
+                    downloaded, timeout=180
+                )
+            except Exception as e:  # noqa: BLE001
+                # Fallback: GPT не приложил файл — берём inline-ответ.
+                logger.warning(
+                    "script_xlsx: txt download failed, fallback to inline "
+                    "reply: {}",
+                    e,
+                )
+                if reply_text and len(reply_text.strip()) >= 50:
+                    downloaded.write_text(reply_text.strip(), encoding="utf-8")
+                else:
+                    raise RuntimeError(
+                        f"GPT не вернул ни txt-файла, ни достаточно "
+                        f"длинного inline-ответа (len="
+                        f"{len(reply_text or '')}). Ошибка скачивания: {e}"
+                    ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("script_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"voiceover.txt не подменён, можно попробовать ещё раз."
+        )
+        return
+
+    if not downloaded.exists() or downloaded.stat().st_size < 10:
+        await msg.answer(
+            f"❌ Скачанный txt пустой или повреждён: "
+            f"<code>{downloaded}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Бэкап старого + сохранение нового.
+    backup: _Path | None = None
+    try:
+        if voiceover.exists():
+            old_dir = voiceover.parent / "old"
+            old_dir.mkdir(parents=True, exist_ok=True)
+            backup = old_dir / f"{ts}_voiceover.txt"
+            shutil.copy2(voiceover, backup)
+        shutil.copy2(downloaded, voiceover)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("script_xlsx replace failed: {}", e)
+        await msg.answer(f"❌ Не смог записать voiceover.txt: {e}")
+        return
+
+    # Обновляем статус проекта.
+    try:
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                project.status = ProjectStatus.script_ready
+    except Exception as e:  # noqa: BLE001
+        logger.warning("script_xlsx status update failed: {}", e)
+
+    backup_note = (
+        f"\nПредыдущая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ Закадровый текст готов. voiceover.txt сохранён "
+        f"({voiceover.stat().st_size} байт).{backup_note}",
+        parse_mode="HTML",
+    )
+    try:
+        await msg.answer_document(
+            FSInputFile(str(voiceover)),
+            caption=(
+                f"voiceover.txt — закадровый текст "
+                f"(промт «{prompt_name}»)"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("script_xlsx send doc failed: {}", e)
+
+
+async def _run_split_xlsx(
+    msg: Message, project_id: int, prompt_name: str
+) -> None:
+    """Запускает xlsx-flow для шага 3 «Разбивка на блоки»:
+
+    1) Открываем новый чат ChatGPT, прикрепляем project.xlsx + voiceover.txt,
+       шлём промт.
+    2) Ждём ответ, скачиваем txt-файл из ответа GPT (или берём inline).
+    3) Старый voiceover.txt бэкапим в old/<ts>_voiceover.txt.
+    4) Сохраняем новый txt как data/videos/<slug>/voiceover.txt.
+    5) Статус проекта → frames_ready, шлём txt в TG.
+    """
+    import shutil
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        slug = project.slug
+        topic = project.topic
+
+    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    if not proj_xlsx.exists():
+        await msg.answer(
+            f"project.xlsx не найден: <code>{proj_xlsx}</code>",
+            parse_mode="HTML",
+        )
+        return
+    voiceover = proj_xlsx.parent / "voiceover.txt"
+    if not voiceover.exists():
+        await msg.answer(
+            f"voiceover.txt не найден: <code>{voiceover}</code>\n"
+            "Сначала пройди Шаг 2 «Закадровый текст».",
+            parse_mode="HTML",
+        )
+        return
+
+    prompt_path = plib.prompt_path("split", prompt_name)
+    if not prompt_path.exists():
+        await msg.answer(
+            f"Файл промта не найден: <code>{prompt_path}</code>",
+            parse_mode="HTML",
+        )
+        return
+    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+
+    full_prompt = (
+        f"{prompt_text}\n\n"
+        "Прикреплены два файла:\n"
+        f"1. project.xlsx — текущий project.xlsx этого ролика "
+        f"(тема: «{topic}»).\n"
+        "2. voiceover.txt — закадровый текст, который нужно разбить "
+        "на блоки.\n\n"
+        "Разбей закадровый текст согласно инструкции выше и пришли мне "
+        "ОБРАТНО результат как .txt-файл (UTF-8, без обрезок и "
+        "компрессии). Кратким текстом ответь, что сделал — но главное "
+        "верни txt-файл."
+    )
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_dir = proj_xlsx.parent / "tmp_gpt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = out_dir / f"split_{ts}.txt"
+
+    await msg.answer(
+        f"▶ <b>Разбивка на блоки</b> (xlsx-flow)\n"
+        f"Проект #{project_id} «{topic}»\n"
+        f"Промт: <code>{prompt_name}</code>\n\n"
+        "Открываю ChatGPT, прикрепляю xlsx + voiceover.txt, жду ответ. "
+        "До 15 минут. Не закрывай Chrome.",
+        parse_mode="HTML",
+    )
+
+    reply_text = ""
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply_text = await gpt.ask_with_files(
+                full_prompt, [proj_xlsx, voiceover], timeout=900
+            )
+            logger.info(
+                "split_xlsx: GPT reply len={} (project #{}, prompt={})",
+                len(reply_text or ""),
+                project_id,
+                prompt_name,
+            )
+            try:
+                await gpt.download_attachment_from_last_reply(
+                    downloaded, timeout=180
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "split_xlsx: txt download failed, fallback to inline "
+                    "reply: {}",
+                    e,
+                )
+                if reply_text and len(reply_text.strip()) >= 50:
+                    downloaded.write_text(reply_text.strip(), encoding="utf-8")
+                else:
+                    raise RuntimeError(
+                        f"GPT не вернул ни txt-файла, ни достаточно "
+                        f"длинного inline-ответа (len="
+                        f"{len(reply_text or '')}). Ошибка скачивания: {e}"
+                    ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("split_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"voiceover.txt не подменён, можно попробовать ещё раз."
+        )
+        return
+
+    if not downloaded.exists() or downloaded.stat().st_size < 10:
+        await msg.answer(
+            f"❌ Скачанный txt пустой или повреждён: "
+            f"<code>{downloaded}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Бэкап старого + сохранение нового.
+    backup: _Path | None = None
+    try:
+        old_dir = voiceover.parent / "old"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        backup = old_dir / f"{ts}_voiceover.txt"
+        shutil.copy2(voiceover, backup)
+        shutil.copy2(downloaded, voiceover)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("split_xlsx replace failed: {}", e)
+        await msg.answer(f"❌ Не смог записать voiceover.txt: {e}")
+        return
+
+    # Обновляем статус проекта.
+    try:
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                project.status = ProjectStatus.frames_ready
+    except Exception as e:  # noqa: BLE001
+        logger.warning("split_xlsx status update failed: {}", e)
+
+    backup_note = (
+        f"\nПредыдущая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ Разбивка готова. voiceover.txt обновлён "
+        f"({voiceover.stat().st_size} байт).{backup_note}",
+        parse_mode="HTML",
+    )
+    try:
+        await msg.answer_document(
+            FSInputFile(str(voiceover)),
+            caption=(
+                f"voiceover.txt — разбивка на блоки "
+                f"(промт «{prompt_name}»)"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("split_xlsx send doc failed: {}", e)
 
 
 async def _create_new_project(msg: Message) -> None:
