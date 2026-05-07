@@ -196,6 +196,8 @@ def render_settings_summary(
     image_resolution: str | None,
     video_generator: str | None,
     video_resolution: str | None,
+    image_relax: bool | None = None,
+    video_relax: bool | None = None,
 ) -> str:
     """Человекочитаемая сводка настроек — для карточки проекта в TG."""
     ig = IMAGE_GENERATORS_BY_ID.get(image_generator or "")
@@ -203,12 +205,20 @@ def render_settings_summary(
     ir = IMAGE_RESOLUTIONS_BY_ID.get(image_resolution or "")
     vg = VIDEO_GENERATORS_BY_ID.get(video_generator or "")
     vr = VIDEO_RESOLUTIONS_BY_ID.get(video_resolution or "")
+    img_relax_str = (
+        "Relax" if image_relax else ("—" if image_relax is None else "no Relax")
+    )
+    vid_relax_str = (
+        "Relax" if video_relax else ("—" if video_relax is None else "no Relax")
+    )
     return (
         f"img-gen: {ig.label if ig else '—'} · "
         f"{ar.label if ar else '—'} · "
-        f"{ir.label if ir else '—'}\n"
+        f"{ir.label if ir else '—'} · "
+        f"{img_relax_str}\n"
         f"video-gen: {vg.label if vg else '—'} · "
-        f"{vr.label if vr else '—'}"
+        f"{vr.label if vr else '—'} · "
+        f"{vid_relax_str}"
     )
 
 

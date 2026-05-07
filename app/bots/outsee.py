@@ -93,6 +93,70 @@ def _resolution_selectors(resolution: str) -> list[str]:
     ]
 
 
+# Кнопка/тогл «Relax» (для всех картиночных моделей и для veo-3-1-fast).
+# В outsee.io это просто кнопка/тогл с текстом «Relax».
+RELAX_SELECTORS: list[str] = [
+    "button:has-text('Relax')",
+    "[role='switch']:has-text('Relax')",
+    "label:has-text('Relax')",
+    "[aria-label='Relax']",
+    "[data-value='relax']",
+    "*:has(> :text-is('Relax'))",
+]
+
+
+async def _toggle_relax(page: Any, *, want_on: bool, where: str = "image") -> None:
+    """Best-effort: ставит тогл Relax в нужное состояние.
+
+    Если тогла нет на странице (модель его не поддерживает) — тихо ничего
+    не делаем. Состояние читаем из aria-checked / aria-pressed; если их нет —
+    просто кликаем (если want_on=True). Если want_on=False и текущее
+    состояние неизвестно — не трогаем (лучше не выключать дефолт).
+    """
+    sel = await _first_visible(page, RELAX_SELECTORS, timeout_ms=2_000)
+    if not sel:
+        if want_on:
+            logger.warning(
+                "outsee.{}: Relax=on запрошен, но кнопка Relax не найдена",
+                where,
+            )
+        return
+    try:
+        loc = page.locator(sel).first
+        # пробуем определить текущее состояние
+        state: str | None = None
+        for attr in ("aria-checked", "aria-pressed", "data-state"):
+            try:
+                v = await loc.get_attribute(attr, timeout=500)
+                if v is not None:
+                    state = str(v).lower()
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        is_on: bool | None = None
+        if state in ("true", "on", "checked"):
+            is_on = True
+        elif state in ("false", "off", "unchecked"):
+            is_on = False
+        if want_on and is_on is True:
+            logger.info("outsee.{}: Relax уже включён, пропускаем клик", where)
+            return
+        if not want_on and is_on is False:
+            logger.info("outsee.{}: Relax уже выключен, пропускаем клик", where)
+            return
+        if not want_on and is_on is None:
+            # неизвестно — не трогаем дефолт, чтобы не сломать.
+            logger.info(
+                "outsee.{}: Relax=off запрошен, но состояние неизвестно — не трогаем",
+                where,
+            )
+            return
+        await loc.click(timeout=2_000)
+        logger.info("outsee.{}: Relax {} (sel={})", where, "ON" if want_on else "OFF", sel)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("outsee.{}: Relax toggle упал: {}", where, e)
+
+
 def _image_page_url(model_slug: str | None) -> str:
     """Строит URL страницы outsee.io/image для нужной модели."""
     base = settings.outsee_image_url
@@ -260,6 +324,7 @@ class OutseeBot:
         gen_id: str | None = None,
         model_slug: str | None = None,
         resolution: str | None = None,
+        relax: bool = False,
         prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
         """Генерирует картинку на outsee.io.
@@ -382,6 +447,9 @@ class OutseeBot:
                         logger.warning(
                             "resolution {} не кликнулось ({})", resolution, res_sel
                         )
+
+            # 2.7) Relax (если попросили)
+            await _toggle_relax(page, want_on=relax, where="generate_image")
 
             # 3) кнопка generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
@@ -769,6 +837,7 @@ class OutseeBot:
         timeout: float = 900,
         model_slug: str | None = None,
         resolution: str | None = None,
+        relax: bool = False,
         prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
         if prompt_id_prefix:
@@ -827,6 +896,9 @@ class OutseeBot:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+
+        # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
+        await _toggle_relax(page, want_on=relax, where="generate_video")
 
         # 3) загрузка стартового кадра (если передан)
         if start_frame is not None:

@@ -91,6 +91,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             prompt_id_prefix = build_gen_id_prefix(
                 project.id, fr.number, short_uuid
             )
+            # Relax по словам пользователя поддерживает только veo-3-1-fast.
+            # Для остальных моделей даже если флаг True — _toggle_relax
+            # тихо ничего не сделает (кнопки нет).
+            video_relax = bool(project.video_relax) and (
+                project.video_generator == "veo_3_1_fast"
+            )
             result = await outsee.generate_video(
                 fr.animation_prompt,
                 file_path,
@@ -99,6 +105,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 timeout=1200,
                 model_slug=video_model_slug,
                 resolution=video_res_slug,
+                relax=video_relax,
                 prompt_id_prefix=prompt_id_prefix,
             )
             session.add(

@@ -226,6 +226,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 aspect_ratio=ar.outsee_slug if ar else "9:16",
                 model_slug=img_gen.outsee_slug if img_gen else None,
                 resolution=ir.outsee_slug if ir else None,
+                relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
             )
 

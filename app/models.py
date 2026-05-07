@@ -123,8 +123,13 @@ class Project(Base):
     image_generator: Mapped[str | None] = mapped_column(String(40), default=None)
     aspect_ratio: Mapped[str | None] = mapped_column(String(10), default=None)
     image_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
+    # None = вопрос ещё не задан, False/True — ответ юзера.
+    image_relax: Mapped[bool | None] = mapped_column(default=None)
     video_generator: Mapped[str | None] = mapped_column(String(40), default=None)
     video_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
+    # Relax поддерживается outsee только для veo-3-1-fast (на 2025-Q4).
+    # None = вопрос ещё не задан / не применим.
+    video_relax: Mapped[bool | None] = mapped_column(default=None)
     # Сколько персонажей-героев генерировать в шаге 4 (0..9). None — ещё не
     # выбрано (бот спросит кнопками при клике на «4. Hero»). 0 — без героев.
     hero_count: Mapped[int | None] = mapped_column(default=None)

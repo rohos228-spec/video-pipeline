@@ -305,6 +305,7 @@ async def _generate_and_send(
                     gen_id=gen_id,
                     model_slug=model_slug,
                     resolution=res_slug,
+                    relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
                 )
         else:
@@ -315,6 +316,7 @@ async def _generate_and_send(
                 gen_id=gen_id,
                 model_slug=model_slug,
                 resolution=res_slug,
+                relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
             )
     except OutseeImageError as e:

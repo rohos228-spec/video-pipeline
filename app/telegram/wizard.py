@@ -1,21 +1,24 @@
-"""Мастер настроек проекта: 5 вопросов после создания проекта.
+"""Мастер настроек проекта: несколько вопросов после создания проекта.
 
 Сценарий:
-  1. /new → пользователь вводит тему → создаётся проект в статусе `new`
+  1. /new → пользователь вводит название → создаётся проект в статусе `new`
   2. Бот запускает мастер: Q1 (image generator) + картинка-превью
   3. Юзер жмёт кнопку → callback `wiz:<pid>:set:image_generator:<id>`
      → сохраняем в Project.image_generator → показываем Q2
-  4. …Q2 (aspect ratio) …Q3 (image res) …Q4 (video gen) …Q5 (video res)
-  5. После Q5 — показываем обычное меню проекта (step-кнопки 1…10)
+  4. …Q2 (aspect ratio) …Q3 (image res) …Q4 (image_relax) …Q5 (video gen)
+     …Q6 (video res) …Q7 (video_relax — только для veo-3-1-fast)
+  5. После последнего — показываем обычное меню проекта.
 
-Если юзер не ответил на Q1-Q5, проект висит в `new` — воркер его не трогает,
+Если юзер не ответил на все вопросы, проект висит в `new` — воркер его не трогает,
 шаги в меню заблокированы. Кнопка «⚙ Настройки» в меню проекта позволяет
 перезапустить мастер (или изменить отдельное поле).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from aiogram import Bot
 from aiogram.types import (
@@ -55,61 +58,129 @@ _VIDEO_GENERATORS_REF = _REF_DIR / "video_generators.png"
 
 # ---- Порядок полей и каталог кнопок ----------------------------------------
 
-# Порядок вопросов: (поле Project, заголовок, варианты, картинка-путь,
-# колонок в клавиатуре)
-_QUESTIONS: list[tuple[str, str, list[OptionChoice], Path | None, int]] = [
-    (
-        "image_generator",
-        "1/5. Какой <b>генератор картинок</b> использовать?",
-        IMAGE_GENERATORS,
-        _IMG_GENERATORS_REF,
-        1,  # 1 кнопка в ряду — длинные названия
+# Yes/No-выбор для булевых полей (Relax). id — 'yes'/'no'.
+BOOLEAN_CHOICES: list[OptionChoice] = [
+    OptionChoice("yes", "Да", "yes", "Включить режим"),
+    OptionChoice("no", "Нет", "no", "Оставить выключенным"),
+]
+BOOLEAN_CHOICES_BY_ID = {c.id: c for c in BOOLEAN_CHOICES}
+
+
+@dataclass(frozen=True)
+class WizardQuestion:
+    field: str
+    title: str
+    choices: list[OptionChoice]
+    image_path: Path | None
+    cols: int
+    # Каталог вариантов (для валидации при set).
+    catalog: dict[str, OptionChoice]
+    # Как преобразовать id варианта в реальное значение для колонки бд.
+    to_db: Callable[[str], object] = lambda x: x
+    # Был ли вопрос уже отвечен. По умолчанию — проверяем
+    # «значение не None и не пустая строка». Для boolean-полей — «не None».
+    is_set: Callable[[Project], bool] = lambda p: getattr(p, "", None) not in (None, "")
+    # Скип вопроса для конкретного проекта (не применим).
+    skip_if: Callable[[Project], bool] = lambda p: False
+    # Что ставить в db если вопрос скипнут (иначе останется None → луп).
+    skip_value: object = False
+
+
+def _is_set_str(field: str) -> Callable[[Project], bool]:
+    return lambda p: getattr(p, field, None) not in (None, "")
+
+
+def _is_set_bool(field: str) -> Callable[[Project], bool]:
+    return lambda p: getattr(p, field, None) is not None
+
+
+_QUESTIONS: list[WizardQuestion] = [
+    WizardQuestion(
+        field="image_generator",
+        title="1/7. Какой <b>генератор картинок</b> использовать?",
+        choices=IMAGE_GENERATORS,
+        image_path=_IMG_GENERATORS_REF,
+        cols=1,
+        catalog=IMAGE_GENERATORS_BY_ID,
+        is_set=_is_set_str("image_generator"),
     ),
-    (
-        "aspect_ratio",
-        "2/5. Какое <b>соотношение сторон</b> картинок?",
-        ASPECT_RATIOS,
-        _ASPECT_REF,
-        4,  # 4 кнопки в ряду — короткие подписи (16:9 и т.д.)
+    WizardQuestion(
+        field="aspect_ratio",
+        title="2/7. Какое <b>соотношение сторон</b> картинок?",
+        choices=ASPECT_RATIOS,
+        image_path=_ASPECT_REF,
+        cols=4,
+        catalog=ASPECT_RATIOS_BY_ID,
+        is_set=_is_set_str("aspect_ratio"),
     ),
-    (
-        "image_resolution",
-        "3/5. <b>Разрешение картинки</b>?",
-        IMAGE_RESOLUTIONS,
-        None,
-        2,
+    WizardQuestion(
+        field="image_resolution",
+        title="3/7. <b>Разрешение картинки</b>?",
+        choices=IMAGE_RESOLUTIONS,
+        image_path=None,
+        cols=2,
+        catalog=IMAGE_RESOLUTIONS_BY_ID,
+        is_set=_is_set_str("image_resolution"),
     ),
-    (
-        "video_generator",
-        "4/5. Какой <b>видео-генератор</b> использовать?",
-        VIDEO_GENERATORS,
-        _VIDEO_GENERATORS_REF,
-        1,
+    WizardQuestion(
+        field="image_relax",
+        title=(
+            "4/7. <b>Relax-режим картинок</b>?\n"
+            "Если «Да» — outsee выберет Relax перед генерацией."
+        ),
+        choices=BOOLEAN_CHOICES,
+        image_path=None,
+        cols=2,
+        catalog=BOOLEAN_CHOICES_BY_ID,
+        to_db=lambda v: v == "yes",
+        is_set=_is_set_bool("image_relax"),
     ),
-    (
-        "video_resolution",
-        "5/5. <b>Разрешение видео</b>?",
-        VIDEO_RESOLUTIONS,
-        None,
-        2,
+    WizardQuestion(
+        field="video_generator",
+        title="5/7. Какой <b>видео-генератор</b> использовать?",
+        choices=VIDEO_GENERATORS,
+        image_path=_VIDEO_GENERATORS_REF,
+        cols=1,
+        catalog=VIDEO_GENERATORS_BY_ID,
+        is_set=_is_set_str("video_generator"),
+    ),
+    WizardQuestion(
+        field="video_resolution",
+        title="6/7. <b>Разрешение видео</b>?",
+        choices=VIDEO_RESOLUTIONS,
+        image_path=None,
+        cols=2,
+        catalog=VIDEO_RESOLUTIONS_BY_ID,
+        is_set=_is_set_str("video_resolution"),
+    ),
+    WizardQuestion(
+        field="video_relax",
+        title=(
+            "7/7. <b>Relax-режим видео</b>?\n"
+            "Поддерживается только для Veo 3.1 Fast."
+        ),
+        choices=BOOLEAN_CHOICES,
+        image_path=None,
+        cols=2,
+        catalog=BOOLEAN_CHOICES_BY_ID,
+        to_db=lambda v: v == "yes",
+        is_set=_is_set_bool("video_relax"),
+        skip_if=lambda p: (p.video_generator or "") != "veo_3_1_fast",
+        skip_value=False,
     ),
 ]
 
 
-_CATALOGS = {
-    "image_generator": IMAGE_GENERATORS_BY_ID,
-    "aspect_ratio": ASPECT_RATIOS_BY_ID,
-    "image_resolution": IMAGE_RESOLUTIONS_BY_ID,
-    "video_generator": VIDEO_GENERATORS_BY_ID,
-    "video_resolution": VIDEO_RESOLUTIONS_BY_ID,
-}
+_QUESTIONS_BY_FIELD: dict[str, WizardQuestion] = {q.field: q for q in _QUESTIONS}
 
 
 def _wizard_step_index(project: Project) -> int:
-    """Возвращает индекс следующего НЕ заполненного поля (0..4) или 5 если
-    все заполнены."""
-    for i, (field, *_rest) in enumerate(_QUESTIONS):
-        if getattr(project, field, None) in (None, ""):
+    """Возвращает индекс следующего НЕ заполненного вопроса или len(_QUESTIONS)
+    если все заполнены. Вопросы, попавшие под skip_if, считаются заполненными."""
+    for i, q in enumerate(_QUESTIONS):
+        if q.skip_if(project):
+            continue
+        if not q.is_set(project):
             return i
     return len(_QUESTIONS)
 
@@ -154,7 +225,8 @@ async def send_wizard_question(bot: Bot, chat_id: int, project: Project) -> None
     if idx >= len(_QUESTIONS):
         await _send_wizard_complete(bot, chat_id, project)
         return
-    field, title, choices, image_path, cols = _QUESTIONS[idx]
+    q = _QUESTIONS[idx]
+    field, title, choices, image_path, cols = q.field, q.title, q.choices, q.image_path, q.cols
     kb = _kb_for_question(project.id, field, choices, cols)
 
     # Текст — вопрос + список пояснений (чтобы юзер видел описания моделей
@@ -247,8 +319,10 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
             project.image_generator = None
             project.aspect_ratio = None
             project.image_resolution = None
+            project.image_relax = None
             project.video_generator = None
             project.video_resolution = None
+            project.video_relax = None
             await s.flush()
             # Перечитаем для отправки next question
             await s.refresh(project)
@@ -261,16 +335,17 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
     if action == "set" and len(parts) >= 5:
         field = parts[3]
         option_id = parts[4]
-        catalog = _CATALOGS.get(field)
-        if catalog is None:
+        question = _QUESTIONS_BY_FIELD.get(field)
+        if question is None:
             await cb.answer(f"wizard: неизвестное поле {field}", show_alert=True)
             return
-        choice = catalog.get(option_id)
+        choice = question.catalog.get(option_id)
         if choice is None:
             await cb.answer(
                 f"wizard: неизвестный вариант {option_id}", show_alert=True
             )
             return
+        db_value = question.to_db(option_id)
 
         async with session_scope() as s:
             project = (
@@ -279,7 +354,15 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
             if project is None:
                 await cb.answer("Проект не найден", show_alert=True)
                 return
-            setattr(project, field, option_id)
+            setattr(project, field, db_value)
+            # Если следующие вопросы попадают под skip_if (стали неприменимыми
+            # из-за только что изменённого поля) — выставляем skip_value, чтобы
+            # мастер их пропускал вперёд.
+            for q in _QUESTIONS:
+                if q.field == field:
+                    continue
+                if q.skip_if(project) and not q.is_set(project):
+                    setattr(project, q.field, q.skip_value)
             # Зеркалим в xlsx (general-лист), чтобы пользователь видел настройки.
             try:
                 from app.storage import for_project as _sheet_for_project
@@ -302,8 +385,10 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
                 image_generator=project.image_generator,
                 aspect_ratio=project.aspect_ratio,
                 image_resolution=project.image_resolution,
+                image_relax=project.image_relax,
                 video_generator=project.video_generator,
                 video_resolution=project.video_resolution,
+                video_relax=project.video_relax,
             )
 
         await cb.answer(f"{choice.label} ✓")
