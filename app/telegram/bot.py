@@ -36,6 +36,8 @@ from aiogram.types import (
 from loguru import logger
 from sqlalchemy import select
 
+from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
 from app.db import session_scope
 from app.models import (
     Frame,
@@ -126,6 +128,75 @@ async def cmd_menu(msg: Message) -> None:
     await msg.answer(
         "Главное меню:\nЧто делаем?",
         reply_markup=main_menu_kb(),
+    )
+
+
+@dp.message(Command("test_xlsx"))
+async def cmd_test_xlsx(msg: Message) -> None:
+    """Дебаг-команда: проверяет, что бот умеет загрузить xlsx в ChatGPT,
+    отправить промт и скачать обратно изменённый файл.
+
+    Шаги:
+      1. Берём templates/project_template_v8.xlsx.
+      2. В Chrome (с remote-debugging-port=29229) открываем новый чат ChatGPT.
+      3. Прикрепляем файл, шлём короткий промт "впиши тест и верни файл".
+      4. Скачиваем сгенерированный файл, шлём пользователю в Telegram.
+    """
+    if not is_owner(msg):
+        return
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    template = _Path("templates/project_template_v8.xlsx")
+    if not template.exists():
+        await msg.answer(
+            f"Шаблон не найден: {template}\nУбедись, что репо обновлён "
+            "(git pull origin devin/windows-installer)."
+        )
+        return
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_path = _Path("data") / f"test_xlsx_out_{ts}.xlsx"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    await msg.answer(
+        "Запускаю тест xlsx-загрузки в ChatGPT.\n"
+        "Шаги: open new chat → upload xlsx → ask GPT → download response.\n"
+        "Не закрывай Chrome. Жди до 5 минут."
+    )
+
+    prompt = (
+        "Открой прикреплённый Excel-файл. На листе 'Общий план' в ячейку D1 "
+        "впиши слово 'тест'. Затем сохрани файл и пришли его мне обратно "
+        "как .xlsx, без обрезок и компрессии. Только кратко ответь — никаких "
+        "длинных пояснений."
+    )
+
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply = await gpt.ask_with_file(prompt, template, timeout=600)
+            logger.info("test_xlsx: GPT reply len={}", len(reply))
+            await gpt.download_attachment_from_last_reply(out_path, timeout=120)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("test_xlsx failed: {}", e)
+        await msg.answer(f"Ошибка: {e}")
+        return
+
+    if not out_path.exists() or out_path.stat().st_size < 100:
+        await msg.answer(
+            f"Файл не скачался или слишком мал: {out_path} "
+            f"(size={out_path.stat().st_size if out_path.exists() else 0})"
+        )
+        return
+
+    await msg.answer_document(
+        FSInputFile(str(out_path)),
+        caption=(
+            f"Скачанный файл от ChatGPT ({out_path.stat().st_size} байт).\n"
+            "Открой и проверь — должна быть 'тест' в ячейке D1 листа 'Общий план'."
+        ),
     )
 
 
