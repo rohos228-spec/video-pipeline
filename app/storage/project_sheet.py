@@ -52,7 +52,14 @@ from typing import Any
 from loguru import logger
 
 # Путь к шаблону относительно корня репо. CWD на проде — корень.
-DEFAULT_TEMPLATE_PATH = Path("templates/project_template.xlsx")
+# Если есть v8-шаблон (новая логика, заполняется самим GPT) — берём его,
+# иначе старый. Старый используется существующим кодом в orchestrator/steps,
+# который пишет промты/URL в специально размеченные ячейки. v8-шаблон
+# структурно другой и заполняется ChatGPT-ом, поэтому при v8 мы пропускаем
+# enforce-разметку (см. _ensure_layout).
+_V8_TEMPLATE = Path("templates/project_template_v8.xlsx")
+_OLD_TEMPLATE = Path("templates/project_template.xlsx")
+DEFAULT_TEMPLATE_PATH = _V8_TEMPLATE if _V8_TEMPLATE.exists() else _OLD_TEMPLATE
 
 SHEET_FRAMES = "Кадры"
 SHEET_GENERAL = "Общий план ролика"
@@ -203,7 +210,9 @@ class ProjectSheet:
 
     def ensure_initialized(self, *, project_id: int, slug: str) -> Path:
         """Если файла ещё нет — копируем шаблон. Возвращает путь к файлу.
-        Гарантирует, что в файле есть оба листа и нужная разметка."""
+        Гарантирует, что в файле есть оба листа и нужная разметка (для
+        старого шаблона). Для v8-шаблона разметку enforce-ить не надо —
+        её формирует GPT."""
         if not self.file_path.exists():
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             tpl = _ensure_template_exists(self.template_path)
@@ -216,6 +225,9 @@ class ProjectSheet:
 
         with _file_lock(self.file_path):
             wb = self._open()
+            if SHEET_FRAMES not in wb.sheetnames:
+                # v8-шаблон: листа "Кадры" нет, пропускаем enforce-логику.
+                return self.file_path
             self._ensure_layout(wb)
             ws = wb[SHEET_FRAMES]
             ws.cell(row=ROW_PROJECT_ID, column=2, value=project_id)
@@ -254,6 +266,11 @@ class ProjectSheet:
         ]
         with _file_lock(self.file_path):
             wb = self._open()
+            if SHEET_GENERAL not in wb.sheetnames:
+                # v8-шаблон: листа "Общий план ролика" нет — данные общего
+                # уровня сидят в листе "Общий план" и заполняются GPT-ом,
+                # поэтому write_general для v8 — no-op.
+                return
             self._ensure_layout(wb)
             ws = wb[SHEET_GENERAL]
             existing: dict[str, int] = {}
@@ -287,6 +304,8 @@ class ProjectSheet:
         """Гарантирует, что в шапке листа `Кадры` есть столбцы для кадров 1..count."""
         with _file_lock(self.file_path):
             wb = self._open()
+            if SHEET_FRAMES not in wb.sheetnames:
+                return  # v8 — лист Кадры отсутствует, ничего не делаем.
             self._ensure_layout(wb)
             ws = wb[SHEET_FRAMES]
             for n in range(1, count + 1):
@@ -323,6 +342,8 @@ class ProjectSheet:
         col = _frame_col(n)
         with _file_lock(self.file_path):
             wb = self._open()
+            if SHEET_FRAMES not in wb.sheetnames:
+                return  # v8 — лист Кадры отсутствует, пропускаем запись кадра.
             self._ensure_layout(wb)
             ws = wb[SHEET_FRAMES]
             if ws.cell(row=ROW_HEADER, column=col).value in (None, ""):

@@ -283,13 +283,7 @@ async def on_menu_new(cb: CallbackQuery) -> None:
         return
     await cb.answer()
     _pending_topic_input[cb.from_user.id] = True
-    await cb.message.answer(
-        "Введи тему ролика одним сообщением. "
-        "После — создам проект и открою его меню.\n\n"
-        "По умолчанию hero_mode=auto (создаём ГГ если он нужен по плану). "
-        "Если хочешь явно — добавь `--hero` или `--no-hero`.",
-        parse_mode="Markdown",
-    )
+    await cb.message.answer("Напишите название вашего проекта")
 
 
 @dp.callback_query(F.data == "menu:list")
@@ -1088,22 +1082,14 @@ async def _save_hero_brief_and_run(
 
 
 async def _create_new_project(msg: Message) -> None:
-    """Создаёт новый проект из текста сообщения (тема + опц. флаги hero)."""
-    raw = (msg.text or "").strip()
-    if not raw:
-        await msg.answer("Пустая тема. Нажми «📁 Новый проект» ещё раз.")
+    """Создаёт новый проект. Вход — только название проекта,
+    никаких флагов. v8-шаблон копируется в data/videos/<slug>/project.xlsx."""
+    name = (msg.text or "").strip()
+    if not name:
+        await msg.answer("Пустое название. Нажми «📁 Новый проект» ещё раз.")
         return
-    # парсим флаг режима героя
-    hero_mode = "auto"
-    m = re.search(r"(--hero|--no-hero|--auto)\b", raw)
-    if m:
-        flag = m.group(1)
-        hero_mode = {"--hero": "hero", "--no-hero": "no_hero", "--auto": "auto"}[flag]
-        raw = (raw[: m.start()] + raw[m.end() :]).strip()
-    topic = raw
-    if not topic:
-        await msg.answer("Тема пустая после удаления флагов.")
-        return
+    topic = name
+    hero_mode = "auto"  # сохраняем в DB по умолчанию, больше не спрашиваем.
 
     slug_base = (
         re.sub(r"[^a-zа-я0-9]+", "-", topic.lower(), flags=re.IGNORECASE).strip("-")[:40]
@@ -1147,16 +1133,13 @@ async def _create_new_project(msg: Message) -> None:
         await msg.answer("Не удалось создать проект — попробуй ещё раз.")
         return
     await msg.answer(
-        f"Проект создан: #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-        f"Режим героя: {hero_mode}\n\n"
-        "Сейчас зададу 5 технических вопросов — после них откроется "
-        "меню шагов.",
+        f"Проект создан: #{pid} «{topic}»\n\n"
+        "Дальше выбери генератор картинок / видео и параметры.",
         parse_mode="HTML",
     )
-    # Запускаем мастер настроек (5 вопросов). До ответов шаги заблокированы.
-    # bot = aiogram.Bot через msg.bot
+    # Запускаем мастер настроек (выбор генераторов/разрешений).
     await send_wizard_question(msg.bot, msg.chat.id, proj_obj)
-    logger.info("new project {} '{}' hero={}", pid, slug, hero_mode)
+    logger.info("new project {} '{}'", pid, slug)
 
 
 # ---------------------------------------------------------------------------
