@@ -1,4 +1,4 @@
-# video-pipeline: запуск бота на Windows
+﻿# video-pipeline: запуск бота на Windows
 # Запуск:
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1
 #
