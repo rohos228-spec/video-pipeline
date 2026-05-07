@@ -6,7 +6,35 @@ Telegram-бот оживает, когда ты запускаешь `python -m 
 
 ---
 
-## Один раз (первоначальная настройка)
+## Быстрый старт (один скрипт)
+
+Открой PowerShell **на новом ПК** и выполни **одну команду**:
+
+```powershell
+iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
+```
+
+Что произойдёт:
+1. Поставит Git (через winget) и склонирует репо в папку `video-pipeline\`.
+2. Поставит Python 3.11, FFmpeg.
+3. Создаст venv, поставит все Python-зависимости.
+4. Создаст `.env` из шаблона, спросит токен Telegram-бота.
+5. Скажет дальше: `cd video-pipeline; .\start.ps1`.
+
+`start.ps1` запустит Chrome с remote-debugging-port и поднимет бота. При первом
+запуске залогинься в открывшемся Chrome:
+- https://chatgpt.com/
+- https://outsee.io/
+
+После этого в Telegram пиши боту: `/start`, потом `/new <тема>`.
+
+**Что нужно от тебя руками** (только это, остальное — скрипт):
+- Токен Telegram-бота от @BotFather (либо у тебя уже есть от `@content1400_bot`).
+- Логин в Chrome в ChatGPT и outsee.io при первом запуске `start.ps1`.
+
+---
+
+## Ручная установка (если bootstrap не подошёл)
 
 ### 1. Поставь Python 3.11 или 3.12
 
