@@ -172,16 +172,38 @@ async def cmd_test_xlsx(msg: Message) -> None:
         "длинных пояснений."
     )
 
+    html_dump_path = _Path("data") / f"test_xlsx_dump_{ts}.html"
     try:
         async with browser_session() as bs:
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
             reply = await gpt.ask_with_file(prompt, template, timeout=600)
             logger.info("test_xlsx: GPT reply len={}", len(reply))
-            await gpt.download_attachment_from_last_reply(out_path, timeout=120)
+            try:
+                await gpt.download_attachment_from_last_reply(out_path, timeout=120)
+            except Exception:
+                # Фолбэк: дампим HTML последнего сообщения, чтобы Devin
+                # увидел нужные селекторы скачивания.
+                try:
+                    full_html = await gpt._dump_last_assistant_html(max_chars=200_000)
+                    html_dump_path.write_text(full_html or "", encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
     except Exception as e:  # noqa: BLE001
         logger.exception("test_xlsx failed: {}", e)
         await msg.answer(f"Ошибка: {e}")
+        if html_dump_path.exists() and html_dump_path.stat().st_size > 0:
+            try:
+                await msg.answer_document(
+                    FSInputFile(str(html_dump_path)),
+                    caption=(
+                        "HTML последнего ответа GPT (для подбора селектора скачивания). "
+                        "Перешли мне файл — добавлю нужный селектор и починю."
+                    ),
+                )
+            except Exception as ex:  # noqa: BLE001
+                logger.exception("dump send failed: {}", ex)
         return
 
     if not out_path.exists() or out_path.stat().st_size < 100:

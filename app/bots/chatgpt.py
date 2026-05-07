@@ -45,12 +45,34 @@ FILE_PREVIEW_SELECTORS = [
     "div.group\\/attachment",
     "div[role='button'][aria-label*='Remove']",
 ]
-# Ссылка на скачивание сгенерированного файла в ответе ассистента.
+# Селекторы для скачивания сгенерированного файла в ответе ассистента.
+# ChatGPT часто рендерит файл как карточку с кнопкой скачивания, у которой
+# aria-label="Download" / "Скачать" / data-testid="..."  Иногда это <a download>,
+# иногда <button>, в новых билдах — обёртка с svg-иконкой и event-handler-ом
+# на самой кнопке. Селекторы перебираются по порядку.
+ASSISTANT_LAST_PREFIX = "[data-message-author-role='assistant']:last-of-type"
 DOWNLOAD_LINK_SELECTORS = [
-    "[data-message-author-role='assistant']:last-of-type a[download]",
-    "[data-message-author-role='assistant']:last-of-type a[href*='/files/']",
-    "[data-message-author-role='assistant']:last-of-type a[href*='sandbox']",
-    "[data-message-author-role='assistant']:last-of-type a[href*='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} a[download]",
+    f"{ASSISTANT_LAST_PREFIX} a[href*='/files/']",
+    f"{ASSISTANT_LAST_PREFIX} a[href*='sandbox']",
+    f"{ASSISTANT_LAST_PREFIX} a[href*='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label='Download']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label='Скачать']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label*='Download']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label*='Скачать']",
+    f"{ASSISTANT_LAST_PREFIX} button[data-testid*='download']",
+    f"{ASSISTANT_LAST_PREFIX} a[aria-label='Download']",
+    f"{ASSISTANT_LAST_PREFIX} a[aria-label='Скачать']",
+    # Fallback: любая кнопка/ссылка внутри карточки файла.
+    f"{ASSISTANT_LAST_PREFIX} [data-testid*='file'] button",
+    f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment'] button",
+]
+# Карточка файла как таковая — иногда нужно сначала открыть её
+# (двойной клик / hover), чтобы появилась кнопка Download.
+FILE_CARD_SELECTORS = [
+    f"{ASSISTANT_LAST_PREFIX} [data-testid*='file']",
+    f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment']",
+    f"{ASSISTANT_LAST_PREFIX} div[role='button']:has(svg)",
 ]
 
 # Селекторы (несколько вариантов — берём первый, который нашёлся).
@@ -388,6 +410,43 @@ class ChatGPTBot:
         logger.info("ChatGPT (file reply) len={}", len(reply))
         return reply
 
+    async def _hover_file_cards(self) -> None:
+        """В новых сборках ChatGPT кнопка Download появляется только при
+        наведении/клике по карточке файла. Делаем hover, чтобы её активировать.
+        """
+        page = await self._page_ready()
+        for sel in FILE_CARD_SELECTORS:
+            try:
+                cnt = await page.locator(sel).count()
+                if cnt > 0:
+                    await page.locator(sel).first.hover(timeout=2_000)
+                    logger.info("ChatGPT: hover на карточке файла ({})", sel)
+                    await asyncio.sleep(0.5)
+                    return
+            except Exception:  # noqa: BLE001
+                continue
+
+    async def _dump_last_assistant_html(self, *, max_chars: int = 4000) -> str:
+        """Возвращает (и логирует) outerHTML последнего ответа ассистента —
+        для отладки селекторов скачивания. Большие ответы обрезаются."""
+        page = await self._page_ready()
+        html = await page.evaluate(
+            """() => {
+                const msgs = document.querySelectorAll("[data-message-author-role='assistant']");
+                if (msgs.length === 0) return '';
+                return msgs[msgs.length - 1].outerHTML || '';
+            }"""
+        )
+        html = (html or "").strip()
+        if len(html) > max_chars:
+            head = html[: max_chars // 2]
+            tail = html[-max_chars // 2 :]
+            html_log = f"{head}\n...[truncated {len(html) - max_chars} chars]...\n{tail}"
+        else:
+            html_log = html
+        logger.info("ChatGPT: last assistant outerHTML:\n{}", html_log)
+        return html
+
     async def download_attachment_from_last_reply(
         self,
         target_path: Path,
@@ -397,8 +456,11 @@ class ChatGPTBot:
         """Из последнего ответа ассистента ищет ссылку на скачивание файла,
         кликает по ней и сохраняет файл в `target_path`.
 
-        Возвращает путь к скачанному файлу. Бросает RuntimeError, если ссылка
-        не найдена или скачивание не удалось.
+        Стратегия:
+          1. Прямой поиск по DOWNLOAD_LINK_SELECTORS.
+          2. Если не нашли — hover по карточке файла, потом ещё раз поиск.
+          3. Если всё равно нет — dumpим outerHTML последнего ответа для отладки
+             и кидаем RuntimeError.
         """
         page = await self._page_ready()
         target_path = Path(target_path)
@@ -406,13 +468,15 @@ class ChatGPTBot:
 
         link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=15)
         if not link_sel:
-            # Иногда ссылка появляется не сразу (Code Interpreter ещё пишет файл).
-            # Подождём подольше.
+            # 2. Возможно нужен hover.
+            await self._hover_file_cards()
             link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=timeout)
         if not link_sel:
+            await self._dump_last_assistant_html()
             raise RuntimeError(
                 "ChatGPT: ссылка на скачивание не найдена в ответе. "
-                "Проверь, что GPT действительно вернул файл."
+                "Полный outerHTML последнего ответа залогирован — пришли строки "
+                "из консоли с 'last assistant outerHTML' разработчику."
             )
 
         logger.info("ChatGPT: жму на ссылку скачивания {}", link_sel)
@@ -421,6 +485,8 @@ class ChatGPTBot:
                 await page.locator(link_sel).first.click()
             download: Download = await dl_info.value
         except Exception as e:  # noqa: BLE001
+            # На всякий случай дампим HTML, чтобы понять что было вместо файла.
+            await self._dump_last_assistant_html()
             raise RuntimeError(f"ChatGPT: не удалось скачать файл: {e}") from e
 
         await download.save_as(str(target_path))
