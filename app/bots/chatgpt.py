@@ -51,6 +51,11 @@ FILE_PREVIEW_SELECTORS = [
 # иногда <button>, в новых билдах — обёртка с svg-иконкой и event-handler-ом
 # на самой кнопке. Селекторы перебираются по порядку.
 ASSISTANT_LAST_PREFIX = "[data-message-author-role='assistant']:last-of-type"
+# Хэш sprite-иконки скачивания внутри svg-use в карточке файла.
+# Текущий хэш на 2025-Q4: '#1a3695' (рядом с ним '#03424d' — share/options).
+# При обновлении ChatGPT хэши могут поменяться — тогда дампим outerHTML
+# и подставляем новые сюда.
+DOWNLOAD_SPRITE_HASHES = ["1a3695"]
 DOWNLOAD_LINK_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} a[download]",
     f"{ASSISTANT_LAST_PREFIX} a[href*='/files/']",
@@ -63,6 +68,12 @@ DOWNLOAD_LINK_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} button[data-testid*='download']",
     f"{ASSISTANT_LAST_PREFIX} a[aria-label='Download']",
     f"{ASSISTANT_LAST_PREFIX} a[aria-label='Скачать']",
+    # Карточка файла в новом UI: <button> с svg <use href=".../sprites...#<hash>">.
+    # `:has()` поддерживается Playwright/Chromium >=105.
+    *[
+        f"{ASSISTANT_LAST_PREFIX} button:has(use[href$='#{h}'])"
+        for h in DOWNLOAD_SPRITE_HASHES
+    ],
     # Fallback: любая кнопка/ссылка внутри карточки файла.
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='file'] button",
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment'] button",
