@@ -34,22 +34,36 @@ function Refresh-Path {
 }
 
 # Возвращает строку: либо "py -3.11", либо "py -3.12", либо "python", либо $null.
+# Все вызовы интерпретатора обернуты в try/catch + временное снятие
+# ErrorActionPreference, иначе stderr из py.exe (когда нужная версия не
+# установлена) под Stop-режимом превращается в фатальную ошибку и убивает скрипт.
 function Find-PythonCmd {
-    if (Have-Cmd py) {
-        foreach ($ver in @("3.11", "3.12")) {
-            $check = & py "-$ver" -c "print(1)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $check -eq "1") {
-                return "py -$ver"
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if (Have-Cmd py) {
+            foreach ($ver in @("3.11", "3.12")) {
+                try {
+                    $check = & py "-$ver" -c "print(1)" 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $check -eq "1") {
+                        return "py -$ver"
+                    }
+                } catch { }
             }
         }
-    }
-    if (Have-Cmd python) {
-        $vraw = & python -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))" 2>$null
-        if ($LASTEXITCODE -eq 0 -and ($vraw -eq "3.11" -or $vraw -eq "3.12")) {
-            return "python"
+        if (Have-Cmd python) {
+            try {
+                $vraw = & python -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))" 2>$null
+                if ($LASTEXITCODE -eq 0 -and ($vraw -eq "3.11" -or $vraw -eq "3.12")) {
+                    return "python"
+                }
+            } catch { }
         }
+        return $null
     }
-    return $null
+    finally {
+        $ErrorActionPreference = $prevEAP
+    }
 }
 
 function Invoke-Python($pyCmd, [string[]]$Arguments) {
