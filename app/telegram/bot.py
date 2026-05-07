@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -99,6 +100,16 @@ _pending_prompt_name: dict[int, tuple[int, str]] = {}
 # Ожидание возврата `.md`-файла после редактирования / создания.
 # user_id → (project_id, step_code, prompt_name).
 _pending_prompt_upload: dict[int, tuple[int, str, str]] = {}
+
+# Ожидание темы для xlsx-плана (после клика «1. План»).
+# user_id → project_id.
+_pending_plan_topic: dict[int, int] = {}
+
+# Ожидание выбора файла-промта для xlsx-плана (после ввода темы).
+# user_id → (project_id, topic). Когда юзер кликает в picker'е sel:<name>,
+# мы видим что для него есть pending запись и запускаем xlsx-flow вместо
+# обычного запуска шага.
+_pending_plan_prompt: dict[int, tuple[int, str]] = {}
 
 
 def is_owner(msg: Message) -> bool:
@@ -439,6 +450,29 @@ async def on_project_step(cb: CallbackQuery) -> None:
             await cb.answer("Этот шаг уже выполняется")
             return
 
+        # Шаг 1 (План) — новый xlsx-flow.
+        #   1) спрашиваем у юзера тему ролика текстом
+        #   2) после ввода темы — список файлов-промтов из prompts/01_plan/
+        #   3) после выбора — uploadим project.xlsx + промт в ChatGPT,
+        #      ждём ответ, скачиваем обновлённый xlsx, подменяем,
+        #      старый кладём в old/<timestamp>.xlsx.
+        if step.code == "plan":
+            from pathlib import Path as _Path
+            proj_xlsx = (
+                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+            )
+            if proj_xlsx.exists():
+                _pending_plan_topic[cb.from_user.id] = pid
+                await cb.answer()
+                await cb.message.answer(
+                    "Напиши <b>тему ролика</b>, по которой будет сделан план.\n"
+                    "Я добавлю её в начало промта и отправлю в ChatGPT вместе "
+                    "с твоим project.xlsx.",
+                    parse_mode="HTML",
+                )
+                return
+            # xlsx-файла нет — упадём в старую логику ниже.
+
         # Шаг 4 (Hero) — многоэтапный:
         #   1) если hero_count ещё не задан → кнопки 0-9 «сколько героев?»
         #   2) если задан и описаний недостаточно → запрашиваем описание
@@ -617,6 +651,23 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             overrides = dict(project.prompt_overrides or {})
             overrides[step_code] = name
             project.prompt_overrides = overrides
+
+        # Особый случай: «План» в xlsx-режиме.
+        # Юзер сначала ввёл тему, теперь выбрал файл-промт.
+        # Запускаем upload xlsx → ChatGPT → download прямо отсюда.
+        if step_code == "plan":
+            uid = cb.from_user.id
+            pending_plan = _pending_plan_prompt.get(uid)
+            if pending_plan is not None and pending_plan[0] == pid:
+                topic = pending_plan[1]
+                _pending_plan_prompt.pop(uid, None)
+                await cb.answer(f"Запускаю план: {name}")
+                # Не блокируем callback handler надолго — отдельной таской.
+                asyncio.create_task(
+                    _run_plan_xlsx(cb.message, pid, name, topic)
+                )
+                return
+
         human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
         await cb.answer(f"Выбрано: {name}")
         await cb.message.answer(
@@ -966,6 +1017,37 @@ async def on_text_message(msg: Message) -> None:
         await _save_hero_brief_and_run(msg, pid, hero_idx)
         return
 
+    # 2.5) Если ждём тему ролика для xlsx-плана.
+    pending_plan_pid = _pending_plan_topic.get(user_id)
+    if pending_plan_pid is not None:
+        _pending_plan_topic.pop(user_id, None)
+        topic = (msg.text or "").strip()
+        if not topic:
+            await msg.answer(
+                "Пустая тема. Нажми «1. План» в меню проекта ещё раз."
+            )
+            return
+        # Сохраняем тему в pending — дальше ждём выбора файла-промта.
+        _pending_plan_prompt[user_id] = (pending_plan_pid, topic)
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == pending_plan_pid)
+                )
+            ).scalar_one_or_none()
+            overrides = (
+                dict(project.prompt_overrides or {}) if project else {}
+            )
+        await msg.answer(
+            f"Тема: <b>{topic}</b>\n\n"
+            + _prompt_picker_text("plan", overrides),
+            reply_markup=_prompt_picker_kb(
+                pending_plan_pid, "plan", overrides
+            ),
+            parse_mode="HTML",
+        )
+        return
+
     # 3) Если ждём имя нового мастер-промта (после клика «+ Новый» в picker'е)
     pending_name = _pending_prompt_name.get(user_id)
     if pending_name is not None:
@@ -1079,6 +1161,150 @@ async def _save_hero_brief_and_run(
             + _hero_brief_question_text(next_idx, n_total),
             parse_mode="HTML",
         )
+
+
+async def _run_plan_xlsx(
+    msg: Message, project_id: int, prompt_name: str, topic: str
+) -> None:
+    """Запускает xlsx-flow для шага «План»:
+
+    1) Бэкапим текущий project.xlsx в old/<timestamp>.xlsx.
+    2) Открываем новый чат ChatGPT, прикрепляем project.xlsx, шлём промт
+       (тема + содержимое выбранного файла-промта).
+    3) Скачиваем файл из ответа GPT, подменяем им project.xlsx.
+    4) Шлём результат юзеру в TG.
+
+    Никаких изменений в orchestrator — этот шаг полностью идёт мимо воркера.
+    Если что-то падает — восстанавливаем xlsx из бэкапа.
+    """
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    from app.services.xlsx_versioning import (
+        backup_to_old,
+        replace_with,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        slug = project.slug
+
+    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    if not proj_xlsx.exists():
+        await msg.answer(
+            f"project.xlsx не найден: <code>{proj_xlsx}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    prompt_path = plib.prompt_path("plan", prompt_name)
+    if not prompt_path.exists():
+        await msg.answer(
+            f"Файл промта не найден: <code>{prompt_path}</code>",
+            parse_mode="HTML",
+        )
+        return
+    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+
+    full_prompt = (
+        f"Тема ролика: {topic}\n\n"
+        f"{prompt_text}\n\n"
+        "Прикреплённый файл — текущий project.xlsx этого ролика. "
+        "Заполни его согласно инструкции выше и пришли мне обратно как "
+        ".xlsx (без обрезок и компрессии). Кратким текстом ответь — что "
+        "сделал — но главное верни файл."
+    )
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_dir = proj_xlsx.parent / "tmp_gpt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = out_dir / f"plan_{ts}.xlsx"
+
+    await msg.answer(
+        f"▶ <b>План</b> (xlsx-flow)\n"
+        f"Проект #{project_id} «{topic}»\n"
+        f"Промт: <code>{prompt_name}</code>\n\n"
+        f"Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 5 минут. "
+        f"Не закрывай Chrome.",
+        parse_mode="HTML",
+    )
+
+    backup: _Path | None = None
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply = await gpt.ask_with_file(
+                full_prompt, proj_xlsx, timeout=600
+            )
+            logger.info(
+                "plan_xlsx: GPT reply len={} (project #{}, prompt={})",
+                len(reply or ""),
+                project_id,
+                prompt_name,
+            )
+            await gpt.download_attachment_from_last_reply(
+                downloaded, timeout=180
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("plan_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз."
+        )
+        return
+
+    if not downloaded.exists() or downloaded.stat().st_size < 100:
+        await msg.answer(
+            f"❌ Скачанный файл пустой или повреждён: "
+            f"<code>{downloaded}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Бэкап старого + подмена.
+    try:
+        backup = backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, downloaded)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("plan_xlsx replace failed: {}", e)
+        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
+        return
+
+    # Обновляем статус проекта.
+    try:
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                project.status = ProjectStatus.plan_ready
+    except Exception as e:  # noqa: BLE001
+        logger.warning("plan_xlsx status update failed: {}", e)
+
+    backup_note = (
+        f"\nПредыдущая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ План готов. project.xlsx обновлён.{backup_note}",
+        parse_mode="HTML",
+    )
+    try:
+        await msg.answer_document(
+            FSInputFile(str(proj_xlsx)),
+            caption=f"project.xlsx — план «{prompt_name}» по теме «{topic}»",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("plan_xlsx send doc failed: {}", e)
 
 
 async def _create_new_project(msg: Message) -> None:
