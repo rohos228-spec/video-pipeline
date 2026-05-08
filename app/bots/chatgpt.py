@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import mimetypes
 from pathlib import Path
 
 from loguru import logger
@@ -383,20 +385,23 @@ class ChatGPTBot:
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
     async def _attach_files(self, file_paths: list[Path]) -> None:
-        """Загружает один или несколько файлов в текущий черновик сообщения
-        через скрытый input[type=file] (он `multiple`).
+        """Загружает один или несколько файлов в текущий черновик сообщения.
 
-        Стратегия (на 2025-Q4 ChatGPT использует поповер-меню под скрепкой):
-          1. Если input[type=file] уже есть в DOM — используем его.
-          2. Иначе кликаем по кнопке-скрепке/«+» (ATTACH_BUTTON_SELECTORS).
-             Если открылось поповер-меню — кликаем по пункту
-             «Add photos and files» (ATTACH_MENU_ITEM_SELECTORS), это
-             материализует input[type=file] в DOM.
-          3. Снова ищем input[type=file] и шлём `set_input_files`.
-          4. Жёстко ждём превью (FILE_PREVIEW_SELECTORS) до `preview_timeout`.
-             Если за это время превью не появилось — кидаем RuntimeError
-             с диагностикой. ВАЖНО: НЕ продолжаем «на свой страх», иначе
-             промт уйдёт в ChatGPT без файла и юзер получит мусорный ответ.
+        Стратегия (на 2026-Q2 ChatGPT):
+          1. **Главный путь — drag-and-drop через синтетический DragEvent**
+             c DataTransfer, содержащим File-объекты. Это работает как
+             ручное перетаскивание файла на форму композера: ChatGPT
+             триггерит свой полный upload-pipeline (POST на /backend-api/files)
+             и реально грузит файл на сервер. set_input_files в новых билдах
+             часто показывает превью, но реальный upload зависает в
+             «бесконечной загрузке».
+          2. **Fallback — классический set_input_files** через скрытый
+             input[type=file]. Используется если drag-drop по какой-то причине
+             не сработал. Здесь же сначала кликаем по скрепке/«+» и пункту
+             «Add photos and files», чтобы материализовать input в DOM.
+          3. **Жёстко ждём превью + завершение upload-spinner**. Если ни один
+             способ не привёл к появлению превью в окне ChatGPT — кидаем
+             RuntimeError с диагностикой и НЕ отправляем промт.
         """
         if not file_paths:
             raise ValueError("_attach_files: file_paths пустой")
@@ -411,21 +416,53 @@ class ChatGPTBot:
         names = ", ".join(p.name for p in file_paths)
         logger.info("ChatGPT: начинаю аплоад файлов [{}]", names)
 
-        # 1. Пытаемся найти input[type=file] напрямую.
+        # 1. Главный путь — drag-and-drop.
+        drag_drop_ok = False
+        try:
+            await self._drag_drop_files(file_paths)
+            preview_sel = await _first_matching(
+                page, FILE_PREVIEW_SELECTORS, timeout=20
+            )
+            if preview_sel:
+                logger.info(
+                    "ChatGPT: drag-drop превью появилось ({})", preview_sel
+                )
+                await self._wait_upload_done(timeout=120)
+                drag_drop_ok = True
+            else:
+                logger.warning(
+                    "ChatGPT: drag-drop не дал превью за 20с — "
+                    "перехожу на fallback set_input_files"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "ChatGPT: drag-drop упал ({}) — перехожу на fallback "
+                "set_input_files",
+                e,
+            )
+
+        if drag_drop_ok:
+            return
+
+        # 2. Fallback — set_input_files через скрытый input[type=file].
+        logger.info("ChatGPT: fallback на set_input_files")
+        # 2a. Пытаемся найти input[type=file] напрямую.
         input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
         if input_sel:
             logger.info("ChatGPT: input[type=file] найден сразу ({})", input_sel)
 
-        # 2. Если не нашли — кликаем по скрепке, потом, если открылось
-        #    поповер-меню, по пункту «Add photos and files».
+        # 2b. Если не нашли — кликаем по скрепке + поповер-меню.
         if not input_sel:
-            attach_sel = await _first_matching(page, ATTACH_BUTTON_SELECTORS, timeout=10)
+            attach_sel = await _first_matching(
+                page, ATTACH_BUTTON_SELECTORS, timeout=10
+            )
             if not attach_sel:
                 await self._dump_composer_html()
                 raise RuntimeError(
-                    "ChatGPT: не нашёл кнопку-скрепку (ATTACH_BUTTON_SELECTORS). "
-                    "Возможно изменился UI — пришли скрин окна Chrome или "
-                    "посмотри в консоли строку 'composer outerHTML'."
+                    "ChatGPT: drag-drop не сработал И не нашёл "
+                    "кнопку-скрепку (ATTACH_BUTTON_SELECTORS). "
+                    "Возможно изменился UI — пришли скрин окна Chrome "
+                    "или строку 'composer outerHTML' из консоли."
                 )
             logger.info("ChatGPT: кликаю по скрепке ({})", attach_sel)
             try:
@@ -436,41 +473,40 @@ class ChatGPTBot:
                     "ChatGPT: не смог кликнуть скрепку {}: {}", attach_sel, e
                 )
 
-            # 2a. Если появилось поповер-меню — кликаем «Add photos and files».
-            menu_sel = await _first_matching(page, ATTACH_MENU_ITEM_SELECTORS, timeout=2)
+            menu_sel = await _first_matching(
+                page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
+            )
             if menu_sel:
-                logger.info(
-                    "ChatGPT: кликаю по пункту меню '{}'", menu_sel
-                )
+                logger.info("ChatGPT: кликаю по пункту меню '{}'", menu_sel)
                 try:
                     await page.locator(menu_sel).first.click(timeout=3_000)
                     await asyncio.sleep(0.4)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
-                        "ChatGPT: не смог кликнуть пункт меню {}: {}", menu_sel, e
+                        "ChatGPT: не смог кликнуть пункт меню {}: {}",
+                        menu_sel,
+                        e,
                     )
 
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
+            input_sel = await _first_matching(
+                page, FILE_INPUT_SELECTORS, timeout=10
+            )
 
         if not input_sel:
             await self._dump_composer_html()
             raise RuntimeError(
-                "ChatGPT: не нашёл input[type=file] даже после клика по скрепке. "
-                "Возможно изменился UI — пришли скрин окна Chrome или строки "
-                "'composer outerHTML' из консоли."
+                "ChatGPT: drag-drop не сработал И не нашёл input[type=file] "
+                "даже после клика по скрепке. Возможно изменился UI — "
+                "пришли скрин окна Chrome или строки 'composer outerHTML' "
+                "из консоли."
             )
 
-        # 3. set_input_files работает даже со скрытыми input. Берём ВСЕ
-        #    подходящие input-ы и шлём в первый видимый/последний (новые
-        #    input-ы добавляются последними).
+        # 2c. set_input_files.
         loc = page.locator(input_sel).last
         await loc.set_input_files([str(p) for p in file_paths])
         logger.info("ChatGPT: set_input_files выполнен через {}", input_sel)
 
-        # 4. Жёстко ждём превью. Для xlsx upload в ChatGPT может занимать
-        #    до ~30-60 сек (особенно с Code Interpreter). Если превью так
-        #    и не появилось — это значит что аплоад провалился (или ChatGPT
-        #    отверг файл из-за лимита размера/типа). НЕ шлём промт.
+        # 2d. Ждём превью.
         preview_timeout = 60.0
         preview_sel = await _first_matching(
             page, FILE_PREVIEW_SELECTORS, timeout=preview_timeout
@@ -478,37 +514,187 @@ class ChatGPTBot:
         if not preview_sel:
             await self._dump_composer_html()
             raise RuntimeError(
-                f"ChatGPT: за {int(preview_timeout)} сек после set_input_files "
-                f"не появилось превью файла(ов) [{names}]. "
-                "Аплоад НЕ удался — промт в ChatGPT не отправляю. "
-                "Проверь окно Chrome: видна ли карточка файла под полем ввода. "
-                "Если нет — возможно ChatGPT отверг файл (формат/размер) или "
-                "изменился UI (FILE_PREVIEW_SELECTORS устарели)."
+                f"ChatGPT: ни drag-drop, ни set_input_files не сработали — "
+                f"за {int(preview_timeout)} сек не появилось превью файла(ов) "
+                f"[{names}]. Аплоад НЕ удался — промт в ChatGPT не отправляю."
             )
         logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
 
-        # 5. Дополнительно проверяем: input.files действительно содержит
-        #    наши файлы. Это страхует от случая, когда set_input_files
-        #    «прошёл», а ChatGPT отверг файл и убрал input из DOM.
-        try:
-            file_count = await page.locator(input_sel).last.evaluate(
-                "el => (el.files ? el.files.length : 0)"
-            )
-            logger.info("ChatGPT: input.files.length = {}", file_count)
-            if file_count == 0:
-                await self._dump_composer_html()
-                raise RuntimeError(
-                    "ChatGPT: input.files пуст после set_input_files — "
-                    "видимо ChatGPT отверг файл. Проверь размер/формат."
-                )
-        except RuntimeError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.warning("ChatGPT: не смог прочитать input.files: {}", e)
+        # 2e. Ждём, пока пропадёт upload-spinner.
+        await self._wait_upload_done(timeout=120)
 
-        # 6. Дополнительная пауза, чтобы upload точно завершился (для
-        #    нескольких файлов даём больше времени).
-        await asyncio.sleep(2.0 + 1.0 * (len(file_paths) - 1))
+    async def _drag_drop_files(self, file_paths: list[Path]) -> None:
+        """Симулирует drag-and-drop файлов на форму композера ChatGPT.
+
+        Читает файлы как base64 в Python, передаёт в JS, конструирует
+        File-объекты и DataTransfer, диспатчит dragenter/dragover/drop
+        на форму композера. Это вызывает у ChatGPT тот же upload-pipeline,
+        что и при ручном перетаскивании файла мышкой.
+        """
+        page = await self._page_ready()
+
+        files_data: list[dict[str, str]] = []
+        for fp in file_paths:
+            mime, _ = mimetypes.guess_type(str(fp))
+            if not mime:
+                ext = fp.suffix.lower()
+                if ext == ".xlsx":
+                    mime = (
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    )
+                elif ext == ".txt":
+                    mime = "text/plain"
+                elif ext == ".md":
+                    mime = "text/markdown"
+                elif ext == ".pdf":
+                    mime = "application/pdf"
+                else:
+                    mime = "application/octet-stream"
+            with open(fp, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode("ascii")
+            files_data.append(
+                {"name": fp.name, "mime": mime, "b64": content_b64}
+            )
+        logger.info(
+            "ChatGPT: drag-drop {} файлов на форму композера",
+            len(files_data),
+        )
+
+        # Селекторы drop-цели — пробуем от более специфичных к общим.
+        # Главное — попасть в элемент, на котором ChatGPT повесил
+        # `ondrop`/`ondragover`. Обычно это `<form>` или `<main>`.
+        drop_target_candidates = [
+            "main form",
+            "form",
+            "[data-testid='composer']",
+            "div[contenteditable='true']",
+            "main",
+            "body",
+        ]
+
+        result = await page.evaluate(
+            """
+            (args) => {
+                const {filesData, candidates} = args;
+                // Найти первого кандидата с непустым размером.
+                let target = null;
+                for (const sel of candidates) {
+                    const el = document.querySelector(sel);
+                    if (el && el.getBoundingClientRect().width > 0) {
+                        target = el;
+                        break;
+                    }
+                }
+                if (!target) return {ok: false, error: 'no drop target found'};
+
+                // Построить DataTransfer.
+                let dt;
+                try {
+                    dt = new DataTransfer();
+                } catch (e) {
+                    return {ok: false, error: 'DataTransfer ctor failed: ' + e.message};
+                }
+                for (const fd of filesData) {
+                    const bytes = atob(fd.b64);
+                    const arr = new Uint8Array(bytes.length);
+                    for (let i = 0; i < bytes.length; i++) {
+                        arr[i] = bytes.charCodeAt(i);
+                    }
+                    const file = new File([arr], fd.name, {type: fd.mime});
+                    dt.items.add(file);
+                }
+
+                const rect = target.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+
+                const fire = (type) => {
+                    const ev = new DragEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        composed: true,
+                        clientX: cx,
+                        clientY: cy,
+                        dataTransfer: dt,
+                    });
+                    // Некоторые сборки Chromium не пробрасывают dataTransfer
+                    // через конструктор DragEvent — подстраховываемся.
+                    try {
+                        Object.defineProperty(ev, 'dataTransfer', {
+                            value: dt,
+                            writable: false,
+                        });
+                    } catch (_) { /* ignore */ }
+                    target.dispatchEvent(ev);
+                };
+
+                fire('dragenter');
+                fire('dragover');
+                fire('drop');
+
+                return {
+                    ok: true,
+                    target: target.tagName.toLowerCase(),
+                    files: filesData.map(f => f.name),
+                };
+            }
+            """,
+            {"filesData": files_data, "candidates": drop_target_candidates},
+        )
+
+        if not result or not result.get("ok"):
+            raise RuntimeError(
+                f"ChatGPT: drag-drop не удался: "
+                f"{result.get('error') if result else 'no result'}"
+            )
+        logger.info(
+            "ChatGPT: drag-drop dispatched на <{}> для файлов {}",
+            result.get("target"),
+            result.get("files"),
+        )
+
+    async def _wait_upload_done(self, *, timeout: float = 120) -> None:
+        """Ждёт пока в композере исчезнут все upload-спиннеры.
+
+        Эвристика: ищем элементы, у которых aria-label/role содержит
+        loading/uploading/progress. Если за timeout сек спиннеры не пропали —
+        логируем warning, но НЕ кидаем (превью может остаться, ChatGPT
+        возможно перейдёт к обработке).
+        """
+        page = await self._page_ready()
+        spinner_sels = [
+            "form [role='progressbar']",
+            "form [aria-busy='true']",
+            "form [aria-label*='oading']",
+            "form [aria-label*='ploading']",
+            "form [data-testid*='loading']",
+            "form [data-testid*='uploading']",
+            "form svg.animate-spin",
+            "form .animate-spin",
+        ]
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_count = -1
+        while asyncio.get_event_loop().time() < deadline:
+            total = 0
+            for sel in spinner_sels:
+                try:
+                    total += await page.locator(sel).count()
+                except Exception:  # noqa: BLE001
+                    continue
+            if total != last_count:
+                logger.info("ChatGPT: upload-spinner count={}", total)
+                last_count = total
+            if total == 0:
+                # ещё короткая пауза для устойчивости
+                await asyncio.sleep(1.0)
+                return
+            await asyncio.sleep(1.0)
+        logger.warning(
+            "ChatGPT: upload-spinner так и не пропал за {}с — "
+            "продолжаю, но upload может быть незавершён",
+            timeout,
+        )
 
     async def _dump_composer_html(self, *, max_chars: int = 4000) -> None:
         """Логирует outerHTML формы композера — для отладки селекторов
