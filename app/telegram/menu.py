@@ -280,6 +280,38 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def script_step_kb(
+    pid: int, *, voiceover_exists: bool
+) -> InlineKeyboardMarkup:
+    """Подменю шага 2 «Закадровый текст».
+
+    Показывается после клика на кнопку шага 2 в меню проекта.
+    Если уже есть сгенерированный voiceover.txt — даём кнопку посмотреть
+    текущий файл; в любом случае предлагаем «сгенерировать заново».
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if voiceover_exists:
+        rows.append([
+            InlineKeyboardButton(
+                text="📄 Посмотреть voiceover.txt",
+                callback_data=f"proj:{pid}:script_view",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="▶ Сгенерировать заново" if voiceover_exists else "▶ Сгенерировать",
+            callback_data=f"proj:{pid}:script_regen",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅ Назад в меню проекта",
+            callback_data=f"proj:{pid}:menu",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def project_header(project: Project) -> str:
     from app.generation_options import render_settings_summary
 

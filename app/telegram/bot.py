@@ -61,6 +61,7 @@ from app.telegram.menu import (
     persistent_reply_kb,
     project_header,
     project_menu_kb,
+    script_step_kb,
     step_by_code,
 )
 from app.telegram.prompt_picker import (
@@ -552,23 +553,42 @@ async def on_project_step(cb: CallbackQuery) -> None:
             # xlsx-файла нет — упадём в старую логику ниже.
 
         # Шаг 2 (Закадровый текст) — новый xlsx-flow.
-        #   1) сразу показываем picker промтов из prompts/02_script/
-        #   2) после выбора — uploadим project.xlsx + промт в ChatGPT,
-        #      ждём ответ, скачиваем txt, сохраняем как voiceover.txt,
-        #      статус → script_ready, шлём txt в TG.
+        #   Подменю шага 2: если voiceover.txt уже есть, показываем
+        #   кнопки [📄 Посмотреть voiceover.txt] [▶ Сгенерировать заново]
+        #   [⬅ Назад]. Если ещё нет — сразу picker промтов из
+        #   prompts/02_script/ (как было).
         if step.code == "script":
             from pathlib import Path as _Path
             proj_xlsx = (
                 _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
             )
             if proj_xlsx.exists():
-                overrides = dict(project.prompt_overrides or {})
-                _pending_script_prompt[cb.from_user.id] = pid
+                voiceover_path = proj_xlsx.parent / "voiceover.txt"
+                voiceover_exists = voiceover_path.exists()
                 await cb.answer()
+                header = (
+                    "<b>Шаг 2. Закадровый текст</b>\n"
+                    f"Проект #{pid} «{project.topic}»\n"
+                )
+                if voiceover_exists:
+                    size = voiceover_path.stat().st_size
+                    body = (
+                        f"Текущий voiceover.txt — <code>{size}</code> байт.\n"
+                        "Можно посмотреть его или перегенерировать с другим "
+                        "промтом."
+                    )
+                else:
+                    body = (
+                        "voiceover.txt ещё не сгенерирован. Жми "
+                        "«▶ Сгенерировать», выбери промт и подожди ответ от "
+                        "ChatGPT."
+                    )
                 await cb.message.answer(
-                    _prompt_picker_text("script", overrides),
-                    reply_markup=_prompt_picker_kb(pid, "script", overrides),
+                    header + body,
                     parse_mode="HTML",
+                    reply_markup=script_step_kb(
+                        pid, voiceover_exists=voiceover_exists
+                    ),
                 )
                 return
             # xlsx-файла нет — упадём в старую логику ниже.
@@ -679,6 +699,75 @@ async def on_project_step(cb: CallbackQuery) -> None:
         f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
         f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
         f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Подменю шага 2 «Закадровый текст»: посмотреть текущий voiceover.txt /
+# сгенерировать заново.
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:script_view$"))
+async def on_script_view(cb: CallbackQuery) -> None:
+    """Прислать пользователю текущий voiceover.txt файлом."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        slug = project.slug
+        topic = project.topic
+    voiceover_path = settings.data_dir / "videos" / slug / "voiceover.txt"
+    if not voiceover_path.exists():
+        await cb.answer(
+            "voiceover.txt ещё не сгенерирован — нечего показывать.",
+            show_alert=True,
+        )
+        return
+    await cb.answer("Шлю файл…")
+    await cb.message.answer_document(
+        FSInputFile(str(voiceover_path)),
+        caption=(
+            f"📄 voiceover.txt — текущий закадровый текст\n"
+            f"Проект #{pid} «{topic}»\n"
+            f"({voiceover_path.stat().st_size} байт)"
+        ),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:script_regen$"))
+async def on_script_regen(cb: CallbackQuery) -> None:
+    """Открыть picker промтов для шага 2 «Закадровый текст»."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        proj_xlsx = (
+            settings.data_dir / "videos" / project.slug / "project.xlsx"
+        )
+        if not proj_xlsx.exists():
+            await cb.answer("Сначала Шаг 1 — нет project.xlsx", show_alert=True)
+            return
+        overrides = dict(project.prompt_overrides or {})
+    _pending_script_prompt[cb.from_user.id] = pid
+    _remember_project(cb.from_user.id, pid)
+    await cb.answer()
+    await cb.message.answer(
+        _prompt_picker_text("script", overrides),
+        reply_markup=_prompt_picker_kb(pid, "script", overrides),
         parse_mode="HTML",
     )
 
