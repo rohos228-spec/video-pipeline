@@ -348,10 +348,9 @@ RELAX_SELECTORS: list[str] = [
     "*:has(> :text-is('Relax'))",
 ]
 
-# Селекторы тогла «Безлимит» — это противоположность Relax. На outsee.io
-# 2026: <button>...<span>Безлимит</span>...<div class='...bg-primary'>...
-# bg-primary = тогл ВКЛ (использовать платный безлимит = НЕ Relax).
-# bg-gray-* / без bg-primary = тогл ВЫКЛ (= Relax / медленная очередь).
+# Селекторы тогла «Безлимит» — на outsee.io это и есть Relax (юзер
+# подтвердил, что «Безлимит» = Relax-режим = включается при relax=True).
+# bg-primary = тогл ВКЛ (Relax включён). bg-gray-*/без bg-primary = ВЫКЛ.
 LIMIT_TOGGLE_SELECTORS: list[str] = [
     "button:has(span:text-is('Безлимит'))",
     "button:has-text('Безлимит')",
@@ -398,10 +397,10 @@ async def _toggle_relax(
 ) -> None:
     """Best-effort: ставит тогл Relax в нужное состояние.
 
-    На outsee.io 2026 года тогл называется «Безлимит» и работает в
-    обратной семантике:
-      Relax (медленная очередь) ↔ Безлимит=OFF
-      Не-Relax (платный)         ↔ Безлимит=ON
+    На outsee.io 2026 года тогл называется «Безлимит» — и это И ЕСТЬ
+    Relax-режим (юзер подтвердил):
+      Relax=ON  ⇔ Безлимит=ON
+      Relax=OFF ⇔ Безлимит=OFF
 
     Если тогл не нашёлся — пробуем старые «Relax»-селекторы. Если совсем
     нет — тихо выходим (модель его не поддерживает). Если want_on=True и
@@ -414,8 +413,8 @@ async def _toggle_relax(
     if limit_sel:
         try:
             current_on = await _read_limit_toggle_on(page, limit_sel)
-            # Семантика: relax want_on == True ⇔ Безлимит должно быть OFF.
-            desired_limit_on = not want_on
+            # Семантика: relax want_on == True ⇔ Безлимит должно быть ON.
+            desired_limit_on = want_on
             if current_on is desired_limit_on:
                 logger.info(
                     "outsee.{}: Relax {} — Безлимит уже {} (тогл не трогаем)",
@@ -851,6 +850,21 @@ class OutseeBot:
                 )
             logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
             await self._wait_button_enabled(page, gen_sel, timeout_s=600)
+
+            # Re-baseline ПОСЛЕ всех настроек (aspect dropdown, разрешение,
+            # Relax, референс) — клики по dropdown вызывают ререндер
+            # правой панели и могут «принести» в DOM другую картинку,
+            # которую мы иначе ошибочно посчитаем «новым результатом».
+            baseline_result_img = await self._result_img_src(page)
+            baseline_big_imgs = set(await self._all_big_imgs(page))
+            baseline_dom_srcs = set(await self._all_img_srcs(page))
+            logger.info(
+                "outsee.generate_image: re-baseline перед Generate "
+                "result_img={}, big_imgs={}, all_imgs={}",
+                (baseline_result_img[:80] if baseline_result_img else None),
+                len(baseline_big_imgs),
+                len(baseline_dom_srcs),
+            )
 
             click_ts = _time.monotonic()
             net_events.clear()

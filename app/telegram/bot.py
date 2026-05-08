@@ -2855,28 +2855,46 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 )
             ).scalar_one_or_none()
             if project is not None:
+                payload = req.payload or {}
+                cur_hi = int(payload.get("hero_index") or 1)
+                cur_vi = int(payload.get("variation_index") or 1)
+                n_total = project.hero_count or 1
+                # Кол-во вариаций именно этого героя.
+                vars_cfg = list(project.hero_variations or [])
+                n_var = 1
+                if cur_hi - 1 < len(vars_cfg):
+                    try:
+                        n_var = int(vars_cfg[cur_hi - 1] or 1)
+                    except (TypeError, ValueError):
+                        n_var = 1
+                n_var = max(1, min(5, n_var))
+
                 if action == "regen":
-                    # Откатываем счётчик одобренных героев на текущей
-                    # позиции (просто ставим generating_hero — шаг
-                    # перегенерит того же героя).
+                    # 🔁 эту же вариацию — выйдет в generating_hero,
+                    # generate_hero.run() увидит, что (hi, vi) не
+                    # одобрены, и перегенерит ровно её.
                     project.status = ProjectStatus.generating_hero
                     regen_step_msg = (
-                        "\n\n▶ Запускаю генерацию hero заново "
-                        "(с тем же описанием)."
+                        f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
+                        f"вариацию {cur_vi}/{n_var}."
                     )
                 elif action == "approve":
-                    n_total = project.hero_count or 1
-                    approved_idx = (
-                        (req.payload or {}).get("hero_index") or 1
-                    )
-                    if approved_idx < n_total:
+                    # ✅ — определяем что дальше: следующая вариация
+                    # этого же героя; следующий герой; или всё готово.
+                    if cur_vi < n_var:
+                        project.status = ProjectStatus.generating_hero
+                        regen_step_msg = (
+                            f"\n\n▶ Перехожу к герою {cur_hi}/{n_total} "
+                            f"вариации {cur_vi + 1}/{n_var}."
+                        )
+                    elif cur_hi < n_total:
                         project.status = ProjectStatus.generating_hero
                         regen_step_msg = (
                             f"\n\n▶ Перехожу к герою "
-                            f"{approved_idx + 1}/{n_total}."
+                            f"{cur_hi + 1}/{n_total}, вариация 1."
                         )
-                    # Если approved_idx == n_total — статус остаётся
-                    # hero_ready (шаг полностью завершён).
+                    # Если это последняя вариация последнего героя —
+                    # статус остаётся hero_ready (шаг полностью завершён).
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",
