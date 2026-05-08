@@ -103,6 +103,12 @@ _pending_hero_brief: dict[int, tuple[int, int]] = {}
 # generating_hero. user_id → (project_id, hero_index 1..N).
 _pending_hero_variation: dict[int, tuple[int, int]] = {}
 
+# Ожидание ввода ОТЛИЧИЙ для конкретной вариации героя (вариации 2..N).
+# Появляется после выбора кол-ва вариаций (если count >= 2). Юзер
+# по очереди пишет «что меняется в вариации 2», «в вариации 3», и т.д.
+# user_id → (project_id, hero_index 1..N, variation_index 2..N).
+_pending_hero_var_modifier: dict[int, tuple[int, int, int]] = {}
+
 # Ожидание выбора пресета «стиль персонажа» (prompts/04_hero_style/) — picker
 # открывается при клике «4. Hero», если в проекте ещё не выбран стиль.
 # user_id → project_id. На on_prompt_picker_cb с step_code='hero_style' и
@@ -164,6 +170,7 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_topic_input.pop(user_id, None)
     _pending_hero_brief.pop(user_id, None)
     _pending_hero_variation.pop(user_id, None)
+    _pending_hero_var_modifier.pop(user_id, None)
     _pending_hero_style.pop(user_id, None)
     _pending_prompt_name.pop(user_id, None)
     _pending_prompt_upload.pop(user_id, None)
@@ -465,6 +472,7 @@ async def on_hero_count_cb(cb: CallbackQuery) -> None:
         project.hero_count = n
         project.hero_descriptions = []
         project.hero_variations = []
+        project.hero_variation_modifiers = []
         if n == 0:
             # Шаг сразу готов — без героев.
             project.hero_description = None
@@ -531,8 +539,78 @@ async def on_hero_variation_cb(cb: CallbackQuery) -> None:
             variations.append(0)
         variations[idx0] = count
         project.hero_variations = variations
+        # Также аккуратно ужимаем list модификаторов под новое значение
+        # вариаций (если юзер ранее ввёл 4, потом передумал на 2).
+        modifiers_all = list(project.hero_variation_modifiers or [])
+        while len(modifiers_all) <= idx0:
+            modifiers_all.append([])
+        # Для героя hero_idx нужно (count - 1) модификаторов (вариации 2..N).
+        cur = list(modifiers_all[idx0] or [])
+        need = max(count - 1, 0)
+        if len(cur) > need:
+            cur = cur[:need]
+        modifiers_all[idx0] = cur
+        project.hero_variation_modifiers = modifiers_all
+    await cb.answer(f"Героя {hero_idx}: {count} вариаций")
+    await _hide_buttons_with_badge(
+        cb.message,
+        f"✅ Герой {hero_idx}: {count} вариаций сохранено.",
+    )
+    # Если у героя > 1 вариации и модификаторы для них ещё не собраны —
+    # просим юзера описать отличия вариации 2.
+    if count >= 2:
+        # Найдём первую недозаписанную вариацию (2..count).
+        cur = list(modifiers_all[idx0] or [])
+        next_var = 2 + len(cur)
+        if next_var <= count:
+            _pending_hero_var_modifier[user_id] = (pid, hero_idx, next_var)
+            await cb.message.answer(
+                _hero_var_modifier_question_text(hero_idx, n_total, next_var, count),
+                parse_mode="HTML",
+            )
+            return
+    # Иначе (count==1 или модификаторы уже все собраны) → пробуем
+    # пройти дальше: либо описание следующего героя, либо запуск.
+    await _continue_hero_flow_after_step(
+        cb.message, user_id, pid, hero_idx, n_total
+    )
+
+
+def _hero_var_modifier_question_text(
+    hero_idx: int, n_total: int, var_idx: int, count: int
+) -> str:
+    return (
+        f"Опиши <b>отличия вариации {var_idx}/{count}</b> для героя "
+        f"<b>{hero_idx}/{n_total}</b> одним сообщением: что должно "
+        "быть иначе по сравнению с вариацией 1 — например другой "
+        "ракурс, поза, эмоция, одежда, окружение.\n\n"
+        "Пример: «три-четверти слева, лёгкая улыбка, плащ на плечах, "
+        "вечерний свет»."
+    )
+
+
+async def _continue_hero_flow_after_step(
+    msg: Message,
+    user_id: int,
+    pid: int,
+    hero_idx: int,
+    n_total: int,
+) -> None:
+    """Вызывается когда у героя hero_idx закончен сбор модификаторов
+    (или вариаций=1 — модификаторы не нужны). Решает:
+      — все герои готовы → запускаем generating_hero
+      — есть ещё герои → просим описание следующего
+    """
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer("Проект не найден.")
+            return
         descriptions = list(project.hero_descriptions or [])
-        # Готовы ли все? Описания и вариации заполнены до n_total.
+        variations = list(project.hero_variations or [])
+        modifiers_all = list(project.hero_variation_modifiers or [])
         all_described = (
             len(descriptions) >= n_total
             and all(d.strip() for d in descriptions[:n_total])
@@ -541,7 +619,15 @@ async def on_hero_variation_cb(cb: CallbackQuery) -> None:
             len(variations) >= n_total
             and all(int(v or 0) >= 1 for v in variations[:n_total])
         )
-        all_done = all_described and all_var_set
+        # Все ли модификаторы собраны (для каждого героя — variations[i-1]-1 шт.)
+        all_modifiers_set = True
+        for i in range(n_total):
+            need = max(int(variations[i] or 1) - 1, 0)
+            cur = list(modifiers_all[i] or []) if i < len(modifiers_all) else []
+            if len(cur) < need:
+                all_modifiers_set = False
+                break
+        all_done = all_described and all_var_set and all_modifiers_set
         if all_done:
             project.status = ProjectStatus.generating_hero
             try:
@@ -551,16 +637,11 @@ async def on_hero_variation_cb(cb: CallbackQuery) -> None:
             except Exception as e:  # noqa: BLE001
                 logger.warning("hero_variations xlsx write failed: {}", e)
         slug = project.slug
-    await cb.answer(f"Героя {hero_idx}: {count} вариаций")
-    await _hide_buttons_with_badge(
-        cb.message,
-        f"✅ Герой {hero_idx}: {count} вариаций сохранено.",
-    )
     if all_done:
         total_imgs = sum(int(v or 1) for v in variations[:n_total])
-        await cb.message.answer(
-            f"✅ Все описания и вариации собраны (героев: {n_total}, "
-            f"всего изображений: {total_imgs}).\n"
+        await msg.answer(
+            f"✅ Все описания, вариации и отличия собраны "
+            f"(героев: {n_total}, всего изображений: {total_imgs}).\n"
             f"Запускаю генерацию — воркер подхватит за ~15 сек.\n"
             f"Slug: <code>{slug}</code>.",
             parse_mode="HTML",
@@ -570,7 +651,7 @@ async def on_hero_variation_cb(cb: CallbackQuery) -> None:
     next_idx = hero_idx + 1
     if next_idx <= n_total:
         _pending_hero_brief[user_id] = (pid, next_idx)
-        await cb.message.answer(
+        await msg.answer(
             _hero_brief_question_text(next_idx, n_total),
             parse_mode="HTML",
         )
@@ -633,6 +714,7 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             # Сохраняем стиль и hero_count, чистим описания+вариации.
             project.hero_descriptions = []
             project.hero_variations = []
+            project.hero_variation_modifiers = []
             # Старые approve_hero-одобрения помечаем как rejected, иначе
             # generate_hero увидит «N из N уже одобрено» и сразу выйдет
             # с status=hero_ready (баг при повторной генерации).
@@ -648,12 +730,17 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             for h in old_hitls:
                 h.decision = HITLDecision.rejected
             # Возвращаем статус в frames_ready чтобы юзер мог снова
-            # запустить шаг 4 (если он стоял в hero_ready).
-            if project.status is ProjectStatus.hero_ready:
+            # запустить шаг 4 — хоть из hero_ready, хоть из
+            # generating_hero (зомби-статус после Ctrl+C).
+            if project.status in (
+                ProjectStatus.hero_ready,
+                ProjectStatus.generating_hero,
+            ):
                 project.status = ProjectStatus.frames_ready
             # Pending стейты тоже на всякий случай чистим.
             _pending_hero_brief.pop(user_id, None)
             _pending_hero_variation.pop(user_id, None)
+            _pending_hero_var_modifier.pop(user_id, None)
             await s.flush()
             await cb.answer("Описания/вариации сброшены")
             n = project.hero_count or 0
@@ -680,6 +767,7 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             project.hero_count = None
             project.hero_descriptions = []
             project.hero_variations = []
+            project.hero_variation_modifiers = []
             project.hero_description = None
             # Старые approve_hero-одобрения помечаем как rejected — см.
             # коммент выше в ветке reset_briefs.
@@ -694,10 +782,14 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             ).scalars().all()
             for h in old_hitls:
                 h.decision = HITLDecision.rejected
-            if project.status is ProjectStatus.hero_ready:
+            if project.status in (
+                ProjectStatus.hero_ready,
+                ProjectStatus.generating_hero,
+            ):
                 project.status = ProjectStatus.frames_ready
             _pending_hero_brief.pop(user_id, None)
             _pending_hero_variation.pop(user_id, None)
+            _pending_hero_var_modifier.pop(user_id, None)
             _pending_hero_style.pop(user_id, None)
             await s.flush()
             # Сразу запускаем выбор стиля (как при первом заходе в шаг 4).
@@ -790,15 +882,26 @@ async def on_project_step(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         _remember_project(cb.from_user.id, pid)
-        if not is_step_runnable(step, project.status):
-            await cb.answer(
-                f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
-                show_alert=True,
-            )
-            return
-        if project.status is step.running_status:
-            await cb.answer("Этот шаг уже выполняется")
-            return
+        # Спец-случай для шага 4 (Hero): если status=generating_hero
+        # (в 99% — застрявший зомби после Ctrl+C / падения воркера),
+        # всё равно показываем reset-подменю, чтобы юзер мог сбросить
+        # и начать заново. Иначе кнопка «4. Hero» становится «вечной»
+        # — нечем выйти из generating_hero.
+        is_hero_zombie = (
+            step.code == "hero"
+            and project.status is ProjectStatus.generating_hero
+        )
+
+        if not is_hero_zombie:
+            if not is_step_runnable(step, project.status):
+                await cb.answer(
+                    f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
+                    show_alert=True,
+                )
+                return
+            if project.status is step.running_status:
+                await cb.answer("Этот шаг уже выполняется")
+                return
 
         # Шаг 1 (План) — новый xlsx-flow.
         #   1) спрашиваем у юзера тему ролика текстом
@@ -1766,6 +1869,14 @@ async def on_text_message(msg: Message) -> None:
         await _save_hero_brief_and_run(msg, pid, hero_idx)
         return
 
+    # 2.1) Если ждём текст-отличия для конкретной вариации героя.
+    pending_var_mod = _pending_hero_var_modifier.get(user_id)
+    if pending_var_mod is not None:
+        pid, hero_idx, var_idx = pending_var_mod
+        _pending_hero_var_modifier.pop(user_id, None)
+        await _save_hero_var_modifier_and_continue(msg, pid, hero_idx, var_idx)
+        return
+
     # 2.5) Если ждём тему ролика для xlsx-плана.
     pending_plan_pid = _pending_plan_topic.get(user_id)
     if pending_plan_pid is not None:
@@ -1985,6 +2096,72 @@ async def _save_hero_brief_and_run(
         reply_markup=_hero_variation_kb(project_id, hero_idx),
         parse_mode="HTML",
     )
+
+
+async def _save_hero_var_modifier_and_continue(
+    msg: Message, project_id: int, hero_idx: int, var_idx: int
+) -> None:
+    """Сохраняет текст «отличий» для конкретной вариации героя
+    (var_idx ∈ 2..count). Дальше: либо просим следующую вариацию того же
+    героя, либо переходим к следующему герою / запуску генерации."""
+    text = (msg.text or "").strip()
+    if len(text) < 3:
+        await msg.answer(
+            "Слишком коротко. Опиши отличия чуть подробнее (хотя бы 3 "
+            "символа) — отправь сообщение ещё раз."
+        )
+        # Возвращаем pending, чтобы перехватить следующее сообщение.
+        user_id = msg.from_user.id if msg.from_user else 0
+        if user_id:
+            _pending_hero_var_modifier[user_id] = (
+                project_id, hero_idx, var_idx,
+            )
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        n_total = project.hero_count or 1
+        variations = list(project.hero_variations or [])
+        idx0 = hero_idx - 1
+        # Кол-во вариаций героя.
+        count = (
+            int(variations[idx0]) if idx0 < len(variations) and variations[idx0]
+            else 1
+        )
+        modifiers_all = list(project.hero_variation_modifiers or [])
+        while len(modifiers_all) <= idx0:
+            modifiers_all.append([])
+        cur = list(modifiers_all[idx0] or [])
+        # var_idx 2..count → индекс в массиве модификаторов = var_idx - 2.
+        slot = var_idx - 2
+        while len(cur) <= slot:
+            cur.append("")
+        cur[slot] = text
+        modifiers_all[idx0] = cur
+        project.hero_variation_modifiers = modifiers_all
+    user_id = msg.from_user.id if msg.from_user else 0
+    await msg.answer(
+        f"Сохранено: герой {hero_idx}/{n_total}, отличия вариации "
+        f"{var_idx}/{count}."
+    )
+    # Если у этого героя есть ещё вариации — спрашиваем следующую.
+    next_var = var_idx + 1
+    if next_var <= count:
+        if user_id:
+            _pending_hero_var_modifier[user_id] = (
+                project_id, hero_idx, next_var,
+            )
+        await msg.answer(
+            _hero_var_modifier_question_text(hero_idx, n_total, next_var, count),
+            parse_mode="HTML",
+        )
+        return
+    # Все модификаторы для этого героя собраны — идём к продолжению flow.
+    await _continue_hero_flow_after_step(msg, user_id, project_id, hero_idx, n_total)
 
 
 async def _run_plan_xlsx(

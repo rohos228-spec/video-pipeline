@@ -46,6 +46,7 @@ async def _init_db() -> None:
             ("hero_count", "INTEGER"),
             ("hero_descriptions", "JSON"),
             ("hero_variations", "JSON"),
+            ("hero_variation_modifiers", "JSON"),
             ("prompt_overrides", "JSON"),
         ]
         cols_rows = (

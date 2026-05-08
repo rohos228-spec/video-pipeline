@@ -178,6 +178,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             n_variations = 1
     n_variations = max(1, min(5, n_variations))
 
+    # Текстовые «отличия» для вариаций 2..N этого героя — приклеиваем
+    # к промту вариации, чтобы outsee знал что менять (поза/ракурс/etc.).
+    # variation_mods_for_hero[j-2] = текст отличия для вариации j (j∈2..N).
+    modifiers_all = list(getattr(project, "hero_variation_modifiers", None) or [])
+    variation_mods_for_hero: list[str] = []
+    if approved_count < len(modifiers_all):
+        raw = modifiers_all[approved_count] or []
+        if isinstance(raw, list):
+            variation_mods_for_hero = [str(x or "").strip() for x in raw]
+
     logger.info(
         "[#{}] generate_hero {}/{} starting "
         "(brief: {} симв, вариаций: {})",
@@ -314,9 +324,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ref_for_this = (
                 first_variant_path if v_idx > 1 and first_variant_path else None
             )
-            prompt_text = (
+            base_prompt_for_v = (
                 hero_prompt_with_ref if ref_for_this else hero_prompt_main
             )
+            # Для вариаций 2..N приклеиваем юзерский «текст отличий».
+            modifier_text = ""
+            if v_idx >= 2:
+                idx_in_mods = v_idx - 2
+                if 0 <= idx_in_mods < len(variation_mods_for_hero):
+                    modifier_text = variation_mods_for_hero[idx_in_mods]
+            if modifier_text:
+                prompt_text = (
+                    f"{base_prompt_for_v}\n\n"
+                    f"[VARIATION {v_idx} CHANGES — keep the SAME character "
+                    f"from the reference, but change the following per "
+                    f"user request:]\n{modifier_text}"
+                )
+            else:
+                prompt_text = base_prompt_for_v
 
             result = None
             if v_idx == 1 and is_regen:
@@ -344,6 +369,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         relax=bool(project.image_relax),
                         prompt_id_prefix=prompt_id_prefix,
                         reference_image=ref_for_this,
+                        # Короткий таймаут (180c) — если outsee не запустил
+                        # генерацию, лучше быстро упасть с дампом, чем
+                        # висеть 10 минут.
+                        timeout=180,
                     )
                 except Exception as e:
                     # Если outsee упал и приложил dump-файлы (html/png страницы)

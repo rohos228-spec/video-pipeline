@@ -142,6 +142,13 @@ class Project(Base):
     # Первая вариация — без референса, варианты 2..N — с первой как референс
     # (через input[type=file] на странице outsee.io).
     hero_variations: Mapped[list] = mapped_column(JSON, default=list)
+    # Текстовые «отличия» для вариаций 2..N каждого героя — что юзер
+    # хочет изменить относительно вариации 1 (поза/ракурс/одежда/etc.).
+    # Структура: list[list[str]] длиной n_heroes; внутри — список из
+    # (variations[i-1] - 1) строк (если variations[i-1]=3, то 2 модификатора:
+    # для v2 и v3). hero_variation_modifiers[i-1][j-1] = текст для вариации
+    # j+1 героя i+1 (т.е. варианты с 2 по N).
+    hero_variation_modifiers: Mapped[list] = mapped_column(JSON, default=list)
     # Выбранный для каждого шага вариант мастер-промта (имя файла без .md).
     # Пример: {"plan": "default", "script": "horror_v2", "hero": "girl_v3"}.
     # Если ключа нет — берётся `default.md` из соответствующей папки.
