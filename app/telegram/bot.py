@@ -53,8 +53,12 @@ from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
 from app.telegram.menu import (
+    PERSISTENT_BACK_TEXT,
+    PERSISTENT_HOME_TEXT,
+    PERSISTENT_LAST_TEXT,
     is_step_runnable,
     main_menu_kb,
+    persistent_reply_kb,
     project_header,
     project_menu_kb,
     step_by_code,
@@ -122,6 +126,42 @@ _pending_script_prompt: dict[int, int] = {}
 # Аналогично script. user_id → project_id.
 _pending_split_prompt: dict[int, int] = {}
 
+# Последний открытый юзером проект — для кнопки «📁 Последний проект»
+# в постоянной reply-клавиатуре. Обновляется при открытии меню проекта,
+# нажатии шага, выборе промта и т.п.  user_id → project_id.
+_last_project_by_user: dict[int, int] = {}
+
+
+def _remember_project(user_id: int, project_id: int) -> None:
+    """Запоминает что юзер сейчас работает с этим проектом — для кнопки
+    «📁 Последний проект» в постоянной клавиатуре."""
+    _last_project_by_user[user_id] = project_id
+
+
+def _clear_pending_state(user_id: int) -> None:
+    """Сбрасывает все pending-состояния юзера (используется при кликах на
+    кнопки постоянной клавиатуры — Главное меню / Назад)."""
+    _pending_topic_input.pop(user_id, None)
+    _pending_hero_brief.pop(user_id, None)
+    _pending_prompt_name.pop(user_id, None)
+    _pending_prompt_upload.pop(user_id, None)
+    _pending_plan_topic.pop(user_id, None)
+    _pending_plan_prompt.pop(user_id, None)
+    _pending_script_prompt.pop(user_id, None)
+    _pending_split_prompt.pop(user_id, None)
+
+
+async def _last_project_id_fallback() -> int | None:
+    """Если для юзера нет запомненного last-project — возвращает id самого
+    свежесозданного проекта (по убыванию id) или None если проектов нет."""
+    async with session_scope() as s:
+        proj = (
+            await s.execute(
+                select(Project).order_by(Project.id.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return proj.id if proj is not None else None
+
 
 def is_owner(msg: Message) -> bool:
     return msg.from_user is not None and msg.from_user.id == settings.telegram_owner_chat_id
@@ -134,11 +174,20 @@ def is_owner(msg: Message) -> bool:
 async def cmd_start(msg: Message) -> None:
     if not is_owner(msg):
         return
+    # Включаем постоянную reply-клавиатуру внизу TG. Она остаётся видна
+    # на всех последующих экранах (Telegram её хранит, пока бот её не
+    # снимет/не пришлёт другую).
     await msg.answer(
         "Готов. Команды:\n"
         "  /menu — главное меню (создание/просмотр проектов)\n"
         "  /status — список проектов\n"
-        "  /status <id> — детали проекта"
+        "  /status <id> — детали проекта\n\n"
+        "Внизу есть постоянные кнопки:\n"
+        f"  • <b>{PERSISTENT_HOME_TEXT}</b> — главное меню\n"
+        f"  • <b>{PERSISTENT_LAST_TEXT}</b> — последний проект\n"
+        f"  • <b>{PERSISTENT_BACK_TEXT}</b> — назад",
+        reply_markup=persistent_reply_kb(),
+        parse_mode="HTML",
     )
 
 
@@ -146,9 +195,15 @@ async def cmd_start(msg: Message) -> None:
 async def cmd_menu(msg: Message) -> None:
     if not is_owner(msg):
         return
-    _pending_topic_input.pop(msg.from_user.id if msg.from_user else 0, None)
+    _clear_pending_state(msg.from_user.id if msg.from_user else 0)
+    # Отдельным сообщением «активируем» постоянную клавиатуру (на случай
+    # если юзер пришёл /menu без /start — Telegram запомнит её).
     await msg.answer(
-        "Главное меню:\nЧто делаем?",
+        "Главное меню:",
+        reply_markup=persistent_reply_kb(),
+    )
+    await msg.answer(
+        "Что делаем?",
         reply_markup=main_menu_kb(),
     )
 
@@ -294,8 +349,15 @@ async def on_menu_root(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
+    _clear_pending_state(cb.from_user.id)
     await cb.answer()
-    await cb.message.answer("Главное меню:", reply_markup=main_menu_kb())
+    # Шлём reply-клавиатуру отдельным сообщением — у callback'а нет
+    # возможности вернуть reply-клавиатуру вместе с inline-кнопками.
+    await cb.message.answer(
+        "Главное меню:",
+        reply_markup=persistent_reply_kb(),
+    )
+    await cb.message.answer("Что делаем?", reply_markup=main_menu_kb())
 
 
 @dp.callback_query(F.data == "menu:new")
@@ -305,7 +367,10 @@ async def on_menu_new(cb: CallbackQuery) -> None:
         return
     await cb.answer()
     _pending_topic_input[cb.from_user.id] = True
-    await cb.message.answer("Напишите название вашего проекта")
+    await cb.message.answer(
+        "Напишите название вашего проекта",
+        reply_markup=persistent_reply_kb(),
+    )
 
 
 @dp.callback_query(F.data == "menu:list")
@@ -423,6 +488,7 @@ async def on_project_menu(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
+        _remember_project(cb.from_user.id, pid)
         await cb.answer()
         await cb.message.answer(
             project_header(project),
@@ -451,6 +517,7 @@ async def on_project_step(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
+        _remember_project(cb.from_user.id, pid)
         if not is_step_runnable(step, project.status):
             await cb.answer(
                 f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
@@ -1081,14 +1148,77 @@ async def on_project_delete_yes(cb: CallbackQuery) -> None:
 @dp.message(F.text & ~F.text.startswith("/"))
 async def on_text_message(msg: Message) -> None:
     """Обрабатывает текстовый ввод. Используется для:
+      0) кнопки постоянной reply-клавиатуры (Главное меню / Последний
+         проект / Назад) — ловятся по точному тексту до любых других
+         pending-стейтов, иначе нажатие могло бы попасть в «тему
+         проекта» или «имя промта».
       1) ввод темы нового проекта (после клика на «📁 Новый проект»)
       2) ответ на сообщение-запрос нового промта (HITL edit)
     """
     if not is_owner(msg):
         return
 
-    # 1) Если ждём тему нового проекта
     user_id = msg.from_user.id if msg.from_user else 0
+    text = (msg.text or "").strip()
+
+    # 0a) «🏠 Главное меню» — сбрасываем все pending-стейты и возвращаем
+    #     юзера в главное меню. Это нужно даже если бот ждал ввод темы
+    #     или имя промта — иначе из мастер-флоу не выйти.
+    if text == PERSISTENT_HOME_TEXT:
+        _clear_pending_state(user_id)
+        await msg.answer(
+            "Главное меню:",
+            reply_markup=persistent_reply_kb(),
+        )
+        await msg.answer("Что делаем?", reply_markup=main_menu_kb())
+        return
+
+    # 0b) «📁 Последний проект» — открываем меню последнего открытого
+    #     проекта (или последнего созданного, если в этой сессии юзер
+    #     ничего не открывал).
+    if text == PERSISTENT_LAST_TEXT:
+        _clear_pending_state(user_id)
+        pid = _last_project_by_user.get(user_id)
+        if pid is None:
+            pid = await _last_project_id_fallback()
+        if pid is None:
+            await msg.answer(
+                "Пока нет ни одного проекта. Жми «🏠 Главное меню» → "
+                "«📁 Новый проект».",
+                reply_markup=persistent_reply_kb(),
+            )
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(
+                f"Проект #{pid} больше не существует. Жми «🏠 Главное "
+                "меню».",
+                reply_markup=persistent_reply_kb(),
+            )
+            return
+        _remember_project(user_id, pid)
+        await msg.answer(
+            project_header(project),
+            parse_mode="HTML",
+            reply_markup=project_menu_kb(project),
+        )
+        return
+
+    # 0c) «⬅ Назад» — у нас одноуровневая навигация (главное меню →
+    #     меню проекта), так что «назад» = главное меню.
+    if text == PERSISTENT_BACK_TEXT:
+        _clear_pending_state(user_id)
+        await msg.answer(
+            "Главное меню:",
+            reply_markup=persistent_reply_kb(),
+        )
+        await msg.answer("Что делаем?", reply_markup=main_menu_kb())
+        return
+
+    # 1) Если ждём тему нового проекта
     if _pending_topic_input.get(user_id):
         _pending_topic_input.pop(user_id, None)
         await _create_new_project(msg)

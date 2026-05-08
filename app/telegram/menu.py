@@ -28,9 +28,42 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from app.models import Project, ProjectStatus
+
+# Тексты кнопок постоянной reply-клавиатуры (видна всегда внизу TG над полем
+# ввода). Эти строки используются в bot.py для распознавания нажатий.
+PERSISTENT_HOME_TEXT = "🏠 Главное меню"
+PERSISTENT_LAST_TEXT = "📁 Последний проект"
+PERSISTENT_BACK_TEXT = "⬅ Назад"
+
+
+def persistent_reply_kb() -> ReplyKeyboardMarkup:
+    """Постоянная reply-клавиатура внизу чата TG.
+
+    Telegram сохраняет её до тех пор, пока ей не пришлют новую (или
+    `ReplyKeyboardRemove`). Поэтому достаточно один раз послать её на
+    `/start` или `/menu` — она остаётся видна на всех последующих
+    экранах с inline-кнопками.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=PERSISTENT_HOME_TEXT),
+                KeyboardButton(text=PERSISTENT_LAST_TEXT),
+            ],
+            [KeyboardButton(text=PERSISTENT_BACK_TEXT)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Напиши команду или жми кнопки",
+    )
 
 
 @dataclass(frozen=True)

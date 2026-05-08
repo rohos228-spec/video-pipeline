@@ -27,8 +27,11 @@ FILE_INPUT_SELECTORS = [
     "input[type='file'][multiple]",
     "input[type='file']",
 ]
-# Кнопка-парбяг (paperclip) — нужна, чтобы триггернуть появление input[type=file],
-# который ChatGPT иногда создаёт лениво только после клика.
+# Кнопка-скрепка (paperclip) — нужна, чтобы триггернуть появление
+# input[type=file], который ChatGPT иногда создаёт лениво только после клика.
+# В новых билдах клик по скрепке открывает поповер-меню («Add photos and
+# files» / «Загрузить файлы и изображения» / «Connect to Google Drive» …),
+# и input[type=file] появляется только после клика по самому пункту меню.
 ATTACH_BUTTON_SELECTORS = [
     "button[aria-label='Attach files']",
     "button[aria-label*='Attach']",
@@ -36,14 +39,44 @@ ATTACH_BUTTON_SELECTORS = [
     "button[aria-label*='Прикрепить']",
     "button[data-testid='composer-attach-files-button']",
     "button[data-testid='composer-attach-button']",
+    "button[data-testid='composer-plus-btn']",
+    "button[aria-label='Add photos and files']",
+    "button[aria-label*='Add photos']",
+    "button[aria-haspopup='menu'][aria-label*='Attach']",
+    # Совсем новый UI — кнопка "+" слева от поля ввода.
+    "form button[aria-label='Add']",
+    "form [data-testid='composer-action-file-upload']",
 ]
-# Превью прикреплённого файла в прометной панели — индикатор успешной загрузки.
+# Пункты меню, которые могут появиться после клика по скрепке/«+».
+# Кликаем первый, который виден — это триггерит выбор файла (или открывает
+# системный picker; нам он не нужен — мы используем set_input_files).
+ATTACH_MENU_ITEM_SELECTORS = [
+    "[role='menuitem']:has-text('Add photos and files')",
+    "[role='menuitem']:has-text('Загрузить файлы и изображения')",
+    "[role='menuitem']:has-text('Загрузить файлы')",
+    "[role='menuitem']:has-text('Upload from computer')",
+    "[role='menuitem']:has-text('Загрузить с компьютера')",
+    "[role='menuitem']:has-text('From computer')",
+    "[role='menuitem']:has-text('С компьютера')",
+    # Иногда это просто <div> или <button> с подобным текстом.
+    "div:has-text('Add photos and files'):has(svg)",
+    "button:has-text('Upload from computer')",
+]
+# Превью прикреплённого файла в композере — индикатор успешной загрузки.
+# В разных билдах превью может быть как в `data-testid`, так и в кнопке
+# «Remove file», или просто в форме как карточка с именем файла.
 FILE_PREVIEW_SELECTORS = [
     "div[data-testid*='file-preview']",
     "div[data-testid*='attachment']",
     "[data-testid='composer-file-attachment']",
+    "[data-testid*='attached-file']",
     "div.group\\/attachment",
     "div[role='button'][aria-label*='Remove']",
+    "button[aria-label*='Remove file']",
+    "button[aria-label*='Удалить файл']",
+    # Карточка с именем загруженного файла в форме композера.
+    "form [class*='attachment']",
+    "form [class*='preview']",
 ]
 # Селекторы для скачивания сгенерированного файла в ответе ассистента.
 # ChatGPT часто рендерит файл как карточку с кнопкой скачивания, у которой
@@ -329,9 +362,19 @@ class ChatGPTBot:
 
     async def _attach_files(self, file_paths: list[Path]) -> None:
         """Загружает один или несколько файлов в текущий черновик сообщения
-        через скрытый input[type=file] (он `multiple`). Перед этим может
-        потребоваться кликнуть по кнопке-скрепке, чтобы input появился в DOM.
-        Ждёт появление превью как подтверждение.
+        через скрытый input[type=file] (он `multiple`).
+
+        Стратегия (на 2025-Q4 ChatGPT использует поповер-меню под скрепкой):
+          1. Если input[type=file] уже есть в DOM — используем его.
+          2. Иначе кликаем по кнопке-скрепке/«+» (ATTACH_BUTTON_SELECTORS).
+             Если открылось поповер-меню — кликаем по пункту
+             «Add photos and files» (ATTACH_MENU_ITEM_SELECTORS), это
+             материализует input[type=file] в DOM.
+          3. Снова ищем input[type=file] и шлём `set_input_files`.
+          4. Жёстко ждём превью (FILE_PREVIEW_SELECTORS) до `preview_timeout`.
+             Если за это время превью не появилось — кидаем RuntimeError
+             с диагностикой. ВАЖНО: НЕ продолжаем «на свой страх», иначе
+             промт уйдёт в ChatGPT без файла и юзер получит мусорный ответ.
         """
         if not file_paths:
             raise ValueError("_attach_files: file_paths пустой")
@@ -343,42 +386,131 @@ class ChatGPTBot:
             if not fp.exists():
                 raise FileNotFoundError(f"upload: файл не найден {fp}")
 
+        names = ", ".join(p.name for p in file_paths)
+        logger.info("ChatGPT: начинаю аплоад файлов [{}]", names)
+
         # 1. Пытаемся найти input[type=file] напрямую.
         input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        # 2. Если не нашли — кликаем по скрепке.
+        if input_sel:
+            logger.info("ChatGPT: input[type=file] найден сразу ({})", input_sel)
+
+        # 2. Если не нашли — кликаем по скрепке, потом, если открылось
+        #    поповер-меню, по пункту «Add photos and files».
         if not input_sel:
-            attach_sel = await _first_matching(page, ATTACH_BUTTON_SELECTORS, timeout=5)
-            if attach_sel:
+            attach_sel = await _first_matching(page, ATTACH_BUTTON_SELECTORS, timeout=10)
+            if not attach_sel:
+                await self._dump_composer_html()
+                raise RuntimeError(
+                    "ChatGPT: не нашёл кнопку-скрепку (ATTACH_BUTTON_SELECTORS). "
+                    "Возможно изменился UI — пришли скрин окна Chrome или "
+                    "посмотри в консоли строку 'composer outerHTML'."
+                )
+            logger.info("ChatGPT: кликаю по скрепке ({})", attach_sel)
+            try:
+                await page.locator(attach_sel).first.click(timeout=3_000)
+                await asyncio.sleep(0.6)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: не смог кликнуть скрепку {}: {}", attach_sel, e
+                )
+
+            # 2a. Если появилось поповер-меню — кликаем «Add photos and files».
+            menu_sel = await _first_matching(page, ATTACH_MENU_ITEM_SELECTORS, timeout=2)
+            if menu_sel:
+                logger.info(
+                    "ChatGPT: кликаю по пункту меню '{}'", menu_sel
+                )
                 try:
-                    await page.locator(attach_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.5)
+                    await page.locator(menu_sel).first.click(timeout=3_000)
+                    await asyncio.sleep(0.4)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("ChatGPT: не смог кликнуть скрепку {}: {}", attach_sel, e)
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=8)
+                    logger.warning(
+                        "ChatGPT: не смог кликнуть пункт меню {}: {}", menu_sel, e
+                    )
+
+            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
 
         if not input_sel:
+            await self._dump_composer_html()
             raise RuntimeError(
-                "ChatGPT: не нашёл input[type=file]. Возможно изменился UI — "
-                "обнови FILE_INPUT_SELECTORS / ATTACH_BUTTON_SELECTORS."
+                "ChatGPT: не нашёл input[type=file] даже после клика по скрепке. "
+                "Возможно изменился UI — пришли скрин окна Chrome или строки "
+                "'composer outerHTML' из консоли."
             )
 
-        # set_input_files принимает список путей (input помечен `multiple`)
-        # и работает даже со скрытыми input.
-        await page.locator(input_sel).first.set_input_files([str(p) for p in file_paths])
-        names = ", ".join(p.name for p in file_paths)
-        logger.info("ChatGPT: загружаю файлы [{}] через {}", names, input_sel)
+        # 3. set_input_files работает даже со скрытыми input. Берём ВСЕ
+        #    подходящие input-ы и шлём в первый видимый/последний (новые
+        #    input-ы добавляются последними).
+        loc = page.locator(input_sel).last
+        await loc.set_input_files([str(p) for p in file_paths])
+        logger.info("ChatGPT: set_input_files выполнен через {}", input_sel)
 
-        # Ждём появление превью + завершение фоновой загрузки.
-        preview_sel = await _first_matching(page, FILE_PREVIEW_SELECTORS, timeout=30)
-        if preview_sel:
-            logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
-        else:
-            logger.warning(
-                "ChatGPT: превью файла не появилось за 30 сек — продолжаю на свой страх"
+        # 4. Жёстко ждём превью. Для xlsx upload в ChatGPT может занимать
+        #    до ~30-60 сек (особенно с Code Interpreter). Если превью так
+        #    и не появилось — это значит что аплоад провалился (или ChatGPT
+        #    отверг файл из-за лимита размера/типа). НЕ шлём промт.
+        preview_timeout = 60.0
+        preview_sel = await _first_matching(
+            page, FILE_PREVIEW_SELECTORS, timeout=preview_timeout
+        )
+        if not preview_sel:
+            await self._dump_composer_html()
+            raise RuntimeError(
+                f"ChatGPT: за {int(preview_timeout)} сек после set_input_files "
+                f"не появилось превью файла(ов) [{names}]. "
+                "Аплоад НЕ удался — промт в ChatGPT не отправляю. "
+                "Проверь окно Chrome: видна ли карточка файла под полем ввода. "
+                "Если нет — возможно ChatGPT отверг файл (формат/размер) или "
+                "изменился UI (FILE_PREVIEW_SELECTORS устарели)."
             )
-        # Дополнительная пауза, чтобы upload точно завершился.
-        # Для нескольких файлов даём больше времени.
+        logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
+
+        # 5. Дополнительно проверяем: input.files действительно содержит
+        #    наши файлы. Это страхует от случая, когда set_input_files
+        #    «прошёл», а ChatGPT отверг файл и убрал input из DOM.
+        try:
+            file_count = await page.locator(input_sel).last.evaluate(
+                "el => (el.files ? el.files.length : 0)"
+            )
+            logger.info("ChatGPT: input.files.length = {}", file_count)
+            if file_count == 0:
+                await self._dump_composer_html()
+                raise RuntimeError(
+                    "ChatGPT: input.files пуст после set_input_files — "
+                    "видимо ChatGPT отверг файл. Проверь размер/формат."
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: не смог прочитать input.files: {}", e)
+
+        # 6. Дополнительная пауза, чтобы upload точно завершился (для
+        #    нескольких файлов даём больше времени).
         await asyncio.sleep(2.0 + 1.0 * (len(file_paths) - 1))
+
+    async def _dump_composer_html(self, *, max_chars: int = 4000) -> None:
+        """Логирует outerHTML формы композера — для отладки селекторов
+        скрепки/меню/input/превью при провалах аплоада."""
+        try:
+            page = await self._page_ready()
+            html = await page.evaluate(
+                """() => {
+                    const form = document.querySelector('form') || document.body;
+                    return form.outerHTML || '';
+                }"""
+            )
+            html = (html or "").strip()
+            if len(html) > max_chars:
+                head = html[: max_chars // 2]
+                tail = html[-max_chars // 2 :]
+                html_log = (
+                    f"{head}\n...[truncated {len(html) - max_chars} chars]...\n{tail}"
+                )
+            else:
+                html_log = html
+            logger.info("ChatGPT: composer outerHTML:\n{}", html_log)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: dump_composer_html упал: {}", e)
 
     async def _attach_file(self, file_path: Path) -> None:
         """Совместимая обёртка над `_attach_files` для одного файла."""
