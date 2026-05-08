@@ -96,6 +96,20 @@ _pending_topic_input: dict[int, bool] = {}
 # уходит в generating_hero.
 _pending_hero_brief: dict[int, tuple[int, int]] = {}
 
+# Ожидание выбора кол-ва вариаций для конкретного героя.
+# Появляется после того, как юзер описал героя (текстом). Бот шлёт
+# инлайн-кнопки 1..5; на клик пишем в project.hero_variations[idx-1] = N
+# и переходим к описанию следующего героя или, если все собраны, к
+# generating_hero. user_id → (project_id, hero_index 1..N).
+_pending_hero_variation: dict[int, tuple[int, int]] = {}
+
+# Ожидание выбора пресета «стиль персонажа» (prompts/04_hero_style/) — picker
+# открывается при клике «4. Hero», если в проекте ещё не выбран стиль.
+# user_id → project_id. На on_prompt_picker_cb с step_code='hero_style' и
+# совпадающим pid считаем, что после сохранения в overrides['hero_style']
+# нужно сразу продолжить hero-flow (запросить кол-во героев).
+_pending_hero_style: dict[int, int] = {}
+
 # Ожидание имени нового мастер-промта. После того как юзер кликнул
 # «+ Новый промт», бот спрашивает имя текстом. Здесь храним к какому
 # (проекту, шагу) относится ожидание.
@@ -149,6 +163,8 @@ def _clear_pending_state(user_id: int) -> None:
     кнопки постоянной клавиатуры — Главное меню / Назад)."""
     _pending_topic_input.pop(user_id, None)
     _pending_hero_brief.pop(user_id, None)
+    _pending_hero_variation.pop(user_id, None)
+    _pending_hero_style.pop(user_id, None)
     _pending_prompt_name.pop(user_id, None)
     _pending_prompt_upload.pop(user_id, None)
     _pending_plan_topic.pop(user_id, None)
@@ -448,6 +464,7 @@ async def on_hero_count_cb(cb: CallbackQuery) -> None:
             return
         project.hero_count = n
         project.hero_descriptions = []
+        project.hero_variations = []
         if n == 0:
             # Шаг сразу готов — без героев.
             project.hero_description = None
@@ -477,6 +494,86 @@ async def on_hero_count_cb(cb: CallbackQuery) -> None:
         _hero_brief_question_text(1, n),
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# Шаг 4 — выбор кол-ва вариаций для конкретного героя
+# (cb=hero_var:<pid>:<hero_idx>:<count>)
+
+@dp.callback_query(F.data.regexp(r"^hero_var:\d+:\d+:\d+$"))
+async def on_hero_variation_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    hero_idx = int(parts[2])
+    count = int(parts[3])
+    if count < 1 or count > 10 or hero_idx < 1:
+        await cb.answer("Плохое значение", show_alert=True)
+        return
+    user_id = cb.from_user.id
+    _pending_hero_variation.pop(user_id, None)
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        n_total = project.hero_count or 1
+        if hero_idx > n_total:
+            await cb.answer("Индекс героя вне диапазона", show_alert=True)
+            return
+        variations = list(project.hero_variations or [])
+        idx0 = hero_idx - 1
+        while len(variations) <= idx0:
+            variations.append(0)
+        variations[idx0] = count
+        project.hero_variations = variations
+        descriptions = list(project.hero_descriptions or [])
+        # Готовы ли все? Описания и вариации заполнены до n_total.
+        all_described = (
+            len(descriptions) >= n_total
+            and all(d.strip() for d in descriptions[:n_total])
+        )
+        all_var_set = (
+            len(variations) >= n_total
+            and all(int(v or 0) >= 1 for v in variations[:n_total])
+        )
+        all_done = all_described and all_var_set
+        if all_done:
+            project.status = ProjectStatus.generating_hero
+            try:
+                _sheet_for_project(project).write_general(
+                    status=project.status.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hero_variations xlsx write failed: {}", e)
+        slug = project.slug
+    await cb.answer(f"Героя {hero_idx}: {count} вариаций")
+    await _hide_buttons_with_badge(
+        cb.message,
+        f"✅ Герой {hero_idx}: {count} вариаций сохранено.",
+    )
+    if all_done:
+        total_imgs = sum(int(v or 1) for v in variations[:n_total])
+        await cb.message.answer(
+            f"✅ Все описания и вариации собраны (героев: {n_total}, "
+            f"всего изображений: {total_imgs}).\n"
+            f"Запускаю генерацию — воркер подхватит за ~15 сек.\n"
+            f"Slug: <code>{slug}</code>.",
+            parse_mode="HTML",
+        )
+        return
+    # Не все — переходим к следующему герою (описание).
+    next_idx = hero_idx + 1
+    if next_idx <= n_total:
+        _pending_hero_brief[user_id] = (pid, next_idx)
+        await cb.message.answer(
+            _hero_brief_question_text(next_idx, n_total),
+            parse_mode="HTML",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -628,30 +725,69 @@ async def on_project_step(cb: CallbackQuery) -> None:
             # xlsx-файла нет — упадём в старую логику ниже.
 
         # Шаг 4 (Hero) — многоэтапный:
+        #   0) ОБЯЗАТЕЛЬНО: выбор пресета «стиль персонажа» из
+        #      prompts/04_hero_style/. Сохраняется в overrides['hero_style'].
         #   1) если hero_count ещё не задан → кнопки 0-9 «сколько героев?»
         #   2) если задан и описаний недостаточно → запрашиваем описание
         #      следующего героя у юзера текстом
-        #   3) если все описания собраны → выставляем generating_hero и
-        #      воркер запускает генерацию по очереди
+        #   3) после описания → меню «кол-во вариаций» (1..5) для этого
+        #      героя; вариация 1 — без референса, варианты 2..N — с
+        #      первой как референс-картинкой в outsee.
+        #   4) если все описания+вариации собраны → выставляем
+        #      generating_hero и воркер запускает генерацию по очереди.
         if step.code == "hero":
+            overrides = dict(project.prompt_overrides or {})
+            style_chosen = overrides.get("hero_style")
+            style_ok = (
+                style_chosen
+                and plib.is_valid_prompt_name(style_chosen)
+                and plib.prompt_path("hero_style", style_chosen).exists()
+            )
+            if not style_ok:
+                # Просим выбрать стиль; после выбора сразу продолжим
+                # hero-flow в on_prompt_picker_cb (см. _pending_hero_style).
+                _pending_hero_style[cb.from_user.id] = pid
+                await cb.answer()
+                await cb.message.answer(
+                    "🎨 <b>Шаг 4 (Hero) — стиль персонажа</b>\n\n"
+                    "Этот пресет (визуал, освещение, lens, стилистика) "
+                    "будет приклеен к КАЖДОМУ персонажу в шаге Hero.\n\n"
+                    "Выбери стиль из списка или добавь свой "
+                    "(<code>+ Новый</code>):",
+                    parse_mode="HTML",
+                )
+                await cb.message.answer(
+                    _prompt_picker_text("hero_style", overrides),
+                    reply_markup=_prompt_picker_kb(
+                        pid, "hero_style", overrides
+                    ),
+                    parse_mode="HTML",
+                )
+                return
             if project.hero_count is None:
                 await cb.answer()
                 await cb.message.answer(
+                    f"✅ Стиль персонажа: <code>{style_chosen}</code>\n\n"
                     "Сколько персонажей-героев сгенерировать? "
                     "Выбери число (0 — без героев, шаг будет пропущен).",
                     reply_markup=_hero_count_kb(pid),
+                    parse_mode="HTML",
                 )
                 return
             n = project.hero_count
             descriptions = list(project.hero_descriptions or [])
+            variations = list(project.hero_variations or [])
             if n == 0:
                 # Пользователь раньше выбрал «0 героев» — шаг сразу готов.
                 project.status = ProjectStatus.hero_ready
                 await cb.answer("0 героев — шаг пропущен")
                 await cb.message.answer(
-                    f"✅ Шаг 4 пропущен (0 героев). Можно идти к шагу 5."
+                    "✅ Шаг 4 пропущен (0 героев). Можно идти к шагу 5."
                 )
                 return
+            # Описания и вариации заполняем параллельно: сначала
+            # описание героя i, потом сразу кол-во его вариаций, потом
+            # описание героя i+1 и т.д.
             if len(descriptions) < n:
                 # Нужно описать ещё одного.
                 next_idx = len(descriptions) + 1
@@ -659,16 +795,32 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 await cb.answer()
                 await cb.message.answer(
                     _hero_brief_question_text(next_idx, n),
+                    parse_mode="HTML",
                 )
                 return
-            # Все описания собраны → запускаем генерацию первого/следующего.
+            if len(variations) < n:
+                # Описания все есть, но для последнего героя ещё не
+                # выбрано кол-во вариаций.
+                next_idx = len(variations) + 1
+                _pending_hero_variation[cb.from_user.id] = (pid, next_idx)
+                await cb.answer()
+                await cb.message.answer(
+                    _hero_variation_question_text(next_idx, n),
+                    reply_markup=_hero_variation_kb(pid, next_idx),
+                    parse_mode="HTML",
+                )
+                return
+            # Всё собрано → запускаем генерацию первого/следующего.
             project.status = step.running_status
             slug = project.slug
             topic = project.topic
+            total_variations = sum(int(v or 1) for v in variations[:n])
             await cb.answer(f"Запускаю: {step.title}")
             await cb.message.answer(
-                f"▶ Шаг {step.n}: <b>{step.title}</b> "
-                f"({n} героев, описаний собрано: {len(descriptions)})\n"
+                f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
+                f"Героев: {n}, всего изображений с вариациями: "
+                f"{total_variations}.\n"
+                f"Стиль: <code>{style_chosen}</code>\n"
                 f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
                 f"Воркер подхватит за ~15 сек.",
                 parse_mode="HTML",
@@ -936,6 +1088,24 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 await cb.answer(f"Запускаю разбивку: {name}")
                 asyncio.create_task(
                     _run_split_xlsx(cb.message, pid, name)
+                )
+                return
+
+        # Особый случай: «Стиль персонажа» (sub-step Hero).
+        # Юзер кликнул «4. Hero», бот показал picker со стилями. Сейчас
+        # он выбрал стиль — продолжаем hero-flow (запрашиваем кол-во героев).
+        if step_code == "hero_style":
+            uid = cb.from_user.id
+            pending_hero_pid = _pending_hero_style.get(uid)
+            if pending_hero_pid is not None and pending_hero_pid == pid:
+                _pending_hero_style.pop(uid, None)
+                await cb.answer(f"Стиль: {name}")
+                await cb.message.answer(
+                    f"✅ Стиль персонажа: <code>{name}</code>\n\n"
+                    "Сколько персонажей-героев сгенерировать? "
+                    "Выбери число (0 — без героев, шаг будет пропущен).",
+                    reply_markup=_hero_count_kb(pid),
+                    parse_mode="HTML",
                 )
                 return
 
@@ -1498,14 +1668,39 @@ def _hero_brief_question_text(idx: int, total: int) -> str:
     )
 
 
+def _hero_variation_kb(pid: int, hero_idx: int) -> InlineKeyboardMarkup:
+    """Клавиатура 1..5: кол-во вариаций для героя hero_idx."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=str(n),
+                callback_data=f"hero_var:{pid}:{hero_idx}:{n}",
+            )
+            for n in (1, 2, 3, 4, 5)
+        ]
+    ])
+
+
+def _hero_variation_question_text(idx: int, total: int) -> str:
+    return (
+        f"Сколько вариаций сделать для героя <b>{idx}/{total}</b>?\n\n"
+        "1 — только один кадр (без вариаций).\n"
+        "2..5 — первый кадр сгенерим как основу, "
+        "следующие — с этой же основой как референсом "
+        "(одно и то же лицо, разные ракурсы/одежда)."
+    )
+
+
 async def _save_hero_brief_and_run(
     msg: Message, project_id: int, hero_idx: int
 ) -> None:
-    """Сохраняет описание героя с индексом `hero_idx` (1..N).
+    """Сохраняет описание героя `hero_idx` (1..N) и сразу спрашивает
+    кол-во вариаций для него (инлайн-кнопки 1..5).
 
-    Если собраны все N описаний — выставляет статус generating_hero и
-    воркер на следующем тике запускает generate_hero по очереди.
-    Иначе — просит следующее описание."""
+    После выбора вариаций (см. `on_hero_variation_cb`) и заполнения всех
+    `n_total` описаний+вариаций — статус проекта переходит в
+    `generating_hero` и воркер начинает генерацию.
+    """
     text = (msg.text or "").strip()
     if len(text) < 5:
         await msg.answer(
@@ -1532,12 +1727,6 @@ async def _save_hero_brief_and_run(
         # кладём первое описание.
         if idx0 == 0:
             project.hero_description = text
-        all_done = (
-            len(descriptions) >= n_total
-            and all(d.strip() for d in descriptions[:n_total])
-        )
-        if all_done:
-            project.status = ProjectStatus.generating_hero
         try:
             _sheet_for_project(project).write_general(
                 hero_description=descriptions[0] if descriptions else None,
@@ -1545,26 +1734,16 @@ async def _save_hero_brief_and_run(
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("hero_description xlsx write failed: {}", e)
-        slug = project.slug
-    if all_done:
-        await msg.answer(
-            f"✅ Собраны все описания ({n_total}/{n_total}). "
-            f"Запускаю генерацию — воркер подхватит за ~15 сек.\n"
-            f"Генерирую по очереди; после каждого героя пришлю карточку на "
-            f"одобрение (✅/🔁/❌)."
-        )
-    else:
-        next_idx = hero_idx + 1
-        # Значения hero_idx в _pending_hero_brief под юзера уже очищены
-        # вызывающим handler'ом — ставим следующий индекс.
-        user_id = msg.from_user.id if msg.from_user else 0
-        if user_id:
-            _pending_hero_brief[user_id] = (project_id, next_idx)
-        await msg.answer(
-            f"Сохранён герой {hero_idx}/{n_total}.\n\n"
-            + _hero_brief_question_text(next_idx, n_total),
-            parse_mode="HTML",
-        )
+    # После описания — спрашиваем кол-во вариаций для этого героя.
+    user_id = msg.from_user.id if msg.from_user else 0
+    if user_id:
+        _pending_hero_variation[user_id] = (project_id, hero_idx)
+    await msg.answer(
+        f"Сохранено описание героя {hero_idx}/{n_total}.\n\n"
+        + _hero_variation_question_text(hero_idx, n_total),
+        reply_markup=_hero_variation_kb(project_id, hero_idx),
+        parse_mode="HTML",
+    )
 
 
 async def _run_plan_xlsx(

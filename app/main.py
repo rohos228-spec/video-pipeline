@@ -45,6 +45,7 @@ async def _init_db() -> None:
             ("video_relax", "BOOLEAN DEFAULT 0"),
             ("hero_count", "INTEGER"),
             ("hero_descriptions", "JSON"),
+            ("hero_variations", "JSON"),
             ("prompt_overrides", "JSON"),
         ]
         cols_rows = (

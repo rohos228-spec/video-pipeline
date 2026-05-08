@@ -36,22 +36,29 @@ PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
 # Шаги, у которых нет мастер-промта, тут не перечисляются.
 # Ключи совпадают с `StepDef.code` в `app/telegram/menu.py`.
 STEP_FOLDERS: dict[str, str] = {
-    "plan":    "01_plan",
-    "script":  "02_script",
-    "split":   "03_razbivka",
-    "hero":    "04_hero",
-    "img_pr":  "05_image_prompts",
-    "anim_pr": "07_animation",
+    "plan":       "01_plan",
+    "script":     "02_script",
+    "split":      "03_razbivka",
+    "hero":       "04_hero",
+    # `hero_style` — НЕ отдельная кнопка в меню; это вспомогательная
+    # библиотека стилей для шага «4. Hero». Бот сам показывает picker
+    # перед запуском Hero-генерации, выбор сохраняется в
+    # project.prompt_overrides["hero_style"]. Используем общую
+    # инфраструктуру библиотеки промтов (prompt_picker, on_prompt_picker_cb).
+    "hero_style": "04_hero_style",
+    "img_pr":     "05_image_prompts",
+    "anim_pr":    "07_animation",
 }
 
 # Человеческое имя шага (для текстовых сообщений в TG).
 STEP_HUMAN_NAMES: dict[str, str] = {
-    "plan":    "1. План",
-    "script":  "2. Закадровый текст",
-    "split":   "3. Разбивка на блоки",
-    "hero":    "4. Hero",
-    "img_pr":  "5. Промты картинок",
-    "anim_pr": "7. Промты анимации",
+    "plan":       "1. План",
+    "script":     "2. Закадровый текст",
+    "split":      "3. Разбивка на блоки",
+    "hero":       "4. Hero",
+    "hero_style": "4. Hero — стиль персонажа",
+    "img_pr":     "5. Промты картинок",
+    "anim_pr":    "7. Промты анимации",
 }
 
 # Шаги без мастер-промта — для красоты в списках и проверок.

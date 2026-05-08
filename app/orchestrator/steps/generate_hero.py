@@ -1,12 +1,25 @@
-"""Шаг 5: генерация референса главного героя (антропоморфного кота).
+"""Шаг 4 (Hero): генерация референса главного героя — с поддержкой
+вариаций и обязательным «стилем персонажа» (мастер-промт из
+prompts/04_hero_style/).
 
-Только если project.hero_mode in {"hero", "auto+...}. Решение о необходимости
-ГГ — в project.hero_needed (проставляется шагом make_plan на основе плана от GPT)
-либо в режиме "auto" ориентируемся на флаг hero_mode.
+Контракт работы шага:
 
-Сейчас: проверяем hero_mode. Если "no_hero" — шаг пропускается, проект сразу
-движется к images_ready. В следующей итерации добавим поддержку hero_needed из
-plan-вывода, когда вручную доведём парсер.
+  Один вызов `run(...)` обрабатывает РОВНО одного следующего
+  неодобренного героя — от индекса 1..N. Внутри он генерит все его
+  вариации (от 1 до 5) и присылает в TG все промежуточные кадры; HITL
+  (✅/🔁/❌) вешается только на ПОСЛЕДНЮЮ вариацию — она содержит
+  payload['hero_index'] = i. После 🔁 (regenerate) шаг перегенерит того
+  же героя целиком (все вариации заново). После ✅ — переходит к
+  следующему герою (если есть) или ставит status=hero_ready.
+
+  В hero_descriptions[i-1] лежит человекописанное описание героя i.
+  В hero_variations[i-1]   лежит кол-во вариаций (1..5) для героя i.
+  В overrides['hero_style'] лежит имя пресета стиля
+  (prompts/04_hero_style/<name>.md). Содержимое стиля приклеивается к
+  промту при сборке hero_ask и идёт в ChatGPT, а потом в outsee.
+
+  Переменная reference_image для outsee.generate_image —
+  Path к первой сгенерированной вариации; передаётся для вариаций 2..N.
 """
 
 from __future__ import annotations
@@ -15,6 +28,7 @@ import uuid
 from pathlib import Path
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 from loguru import logger
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +41,6 @@ from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
-    build_gen_id_prefix,
 )
 from app.models import (
     Artifact,
@@ -39,9 +52,31 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_photo
-from app.services.prompt_library import get_project_prompt
+from app.services.prompt_library import (
+    get_project_prompt,
+    prompt_path,
+    resolve_project_prompt_name,
+)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
+
+
+def _read_hero_style(project: Project) -> str | None:
+    """Возвращает содержимое выбранного для проекта пресета стиля
+    из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
+    — возвращает None (вызывающий должен решить, как фоллбэчить)."""
+    overrides = getattr(project, "prompt_overrides", None) or {}
+    name = resolve_project_prompt_name(overrides, "hero_style")
+    p = prompt_path("hero_style", name)
+    if not p.exists():
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] hero_style read failed ({}): {}", project.id, p, e
+        )
+        return None
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -57,9 +92,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     # Сколько героев нужно всего и сколько уже одобрено пользователем.
-    # Описания лежат в project.hero_descriptions (по списку); генерируем
-    # того, чей индекс = approved_count (нумерация с 0).
     descriptions: list[str] = list(project.hero_descriptions or [])
+    variations_cfg: list[int] = list(project.hero_variations or [])
     n_total = project.hero_count or (1 if project.hero_description else 0)
     if n_total == 0:
         # legacy fallback: hero_description есть, hero_count не задан → 1.
@@ -73,7 +107,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             )
 
     # Считаем одобренные ранее hero-карточки.
-    approved_hero_count = (
+    approved_hero = (
         await session.execute(
             select(HITLRequest)
             .where(
@@ -83,7 +117,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             )
         )
     ).scalars().all()
-    approved_count = len(approved_hero_count)
+    approved_count = len(approved_hero)
     if approved_count >= n_total:
         logger.info(
             "[#{}] hero: все {} героев уже одобрены, перехожу к hero_ready",
@@ -93,16 +127,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     hero_idx = approved_count + 1  # 1..N: какого героя сейчас делаем
-    user_brief = (descriptions[approved_count] if approved_count < len(descriptions) else "").strip()
+    user_brief = (
+        descriptions[approved_count]
+        if approved_count < len(descriptions) else ""
+    ).strip()
     if len(user_brief) < 5:
         raise RuntimeError(
             f"hero_descriptions[{approved_count}] пустой — нечем описать "
             f"героя {hero_idx}/{n_total}. Тыкни «4. Hero» в меню заново."
         )
 
+    # Сколько вариаций сделать для этого героя. Дефолт = 1 (одна
+    # картинка без референса), но юзер мог выбрать 1..5 в TG.
+    n_variations = 1
+    if approved_count < len(variations_cfg):
+        try:
+            n_variations = int(variations_cfg[approved_count] or 1)
+        except (TypeError, ValueError):
+            n_variations = 1
+    n_variations = max(1, min(5, n_variations))
+
     logger.info(
-        "[#{}] generate_hero {}/{} starting (brief: {} симв)",
-        project.id, hero_idx, n_total, len(user_brief),
+        "[#{}] generate_hero {}/{} starting "
+        "(brief: {} симв, вариаций: {})",
+        project.id, hero_idx, n_total, len(user_brief), n_variations,
     )
 
     # Перегенерация (🔁 на последней карточке текущего героя)?
@@ -123,13 +171,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         and (last_hitl.payload or {}).get("hero_index") == hero_idx
     )
 
+    # Стиль персонажа (мастер-промт из prompts/04_hero_style/) —
+    # обязательно подмешивается к ChatGPT-промту, чтобы итоговое
+    # изображение было в нужном визуале (фото-реализм / аниме / 3D / etc).
+    hero_style_content = _read_hero_style(project)
+    style_chosen = (
+        getattr(project, "prompt_overrides", None) or {}
+    ).get("hero_style") or "default"
+    if not hero_style_content:
+        # Hard fallback: текст-плейсхолдер. Не падаем — но логируем.
+        logger.warning(
+            "[#{}] hero_style '{}' не найден на диске — продолжаю без стиля",
+            project.id, style_chosen,
+        )
+        hero_style_content = ""
+
     async with browser_session() as bs:
         # Шаблон HERO_SHORTS (turnaround sheet) держим как структурный гайд.
         hero_master = get_project_prompt(project, "hero")
-        # Префикс — фиксированная инструкция от пользователя:
-        #   "сделай промт для генерации персонажа который описан ниже,
-        #    ты должен интегрировать персонажа в промт и прислать готовый
-        #    промт для генерации персонажа"
         hero_ask = (
             "Сделай промт для генерации персонажа, который описан ниже. "
             "Ты должен интегрировать персонажа в промт и прислать готовый "
@@ -138,8 +197,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "Подставь в него характеристики персонажа из описания ниже, "
             "верни ТОЛЬКО готовый текст промта (на английском, без кавычек, "
             "без markdown-обрамления, без пояснений).\n\n"
+            "ВАЖНО: ОБЯЗАТЕЛЬНО учитывай блок «Visual style» ниже — он "
+            "описывает визуальный стиль (рендер, освещение, lens, цвет). "
+            "Эти инструкции должны быть отражены в финальном промте — "
+            "никакого «default» style; используем именно этот блок.\n\n"
             "Шаблон:\n\n"
             + hero_master
+            + "\n\n---\n\nVisual style (применять обязательно):\n"
+            + (hero_style_content or "(не задан — используй кинематографический фото-реализм)")
             + "\n\n---\n\nОписание персонажа:\n"
             + user_brief
         )
@@ -151,14 +216,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             last_reply = reply or ""
             logger.info(
                 "[#{}] hero ChatGPT attempt {}: {} симв",
-                project.id,
-                attempt,
-                len(last_reply),
+                project.id, attempt, len(last_reply),
             )
             logger.info(
                 "[#{}] hero ChatGPT preview:\n{}",
-                project.id,
-                last_reply[:600],
+                project.id, last_reply[:600],
             )
             if last_reply and len(last_reply) >= 100:
                 hero_prompt = last_reply.strip()
@@ -166,8 +228,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             logger.warning(
                 "[#{}] hero ChatGPT вернул слишком короткий ответ ({} симв), "
                 "пробую ещё раз",
-                project.id,
-                len(last_reply),
+                project.id, len(last_reply),
             )
         if not hero_prompt:
             raise RuntimeError(
@@ -175,23 +236,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 f"Последний ответ ({len(last_reply)} симв): "
                 f"{last_reply[:200]!r}"
             )
+        # На вариациях 2..N подмешаем явный «keep same character» хинт —
+        # outsee всё равно увидит референс, но текст в промте усилит сигнал.
+        hero_prompt_main = hero_prompt
+        hero_prompt_with_ref = (
+            "[REFERENCE: keep the EXACT SAME character from the attached "
+            "image — same face, hair, body. Different pose / angle / outfit "
+            "is fine, but identity must match.]\n\n"
+            + hero_prompt
+        )
         logger.info(
-            "[#{}] hero final prompt: {} симв (из {} симв описания)",
-            project.id,
-            len(hero_prompt),
-            len(user_brief),
+            "[#{}] hero final prompt: {} симв (style='{}', "
+            "вариаций будет {})",
+            project.id, len(hero_prompt), style_chosen, n_variations,
         )
 
-        # 2) генерация референса в outsee — по выбранной юзером модели
+        # 2) Генерация вариаций в outsee.
         outsee = OutseeBot(bs)
         out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
-        short_uuid = uuid.uuid4().hex[:8]
-        file_name = f"hero_{hero_idx}_{short_uuid}.png"
-        out_path = out_dir / file_name
-        # Префикс ID для outsee/HITL: P<pid>-HERO<idx>-<hex8>.
-        prompt_id_prefix = (
-            f"[ID: P{project.id}-HERO{hero_idx}-{short_uuid}]"
-        )
 
         # Настройки из проекта — с дефолтами на случай отсутствия.
         img_gen = IMAGE_GENERATORS_BY_ID.get(
@@ -204,72 +266,139 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.image_resolution or DEFAULTS["image_resolution"]
         )
 
-        result = None
-        if is_regen:
-            logger.info(
-                "[#{}] regenerate hero: пробую кнопку «Повторить»",
-                project.id,
-            )
-            try:
-                result = await outsee.regenerate_image(out_path)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] «Повторить» не сработала ({}), делаю fresh generate",
-                    project.id,
-                    e,
-                )
-                result = None
-        if result is None:
-            result = await outsee.generate_image(
-                hero_prompt,
-                out_path,
-                aspect_ratio=ar.outsee_slug if ar else "9:16",
-                model_slug=img_gen.outsee_slug if img_gen else None,
-                resolution=ir.outsee_slug if ir else None,
-                relax=bool(project.image_relax),
-                prompt_id_prefix=prompt_id_prefix,
+        # Будущая обработка: соберём все результаты, пошлём в TG, потом
+        # на последний вариант повесим HITL.
+        variation_results: list[tuple[int, Path, object]] = []
+        first_variant_path: Path | None = None
+        chat_id = settings.telegram_owner_chat_id
+
+        for v_idx in range(1, n_variations + 1):
+            short_uuid = uuid.uuid4().hex[:8]
+            file_name = f"hero_{hero_idx}_v{v_idx}_{short_uuid}.png"
+            out_path = out_dir / file_name
+            prompt_id_prefix = (
+                f"[ID: P{project.id}-HERO{hero_idx}-V{v_idx}-{short_uuid}]"
             )
 
-    # 3) сохраняем в БД + HITL
-    art = Artifact(
-        project_id=project.id,
-        kind=ArtifactKind.hero_reference,
-        uuid=uuid.uuid4().hex,
-        path=str(result.file_path),
-        meta={"hero_index": hero_idx},
-    )
-    session.add(art)
-    # Статус остаёмся generating_hero — ждём одобрения юзера.
-    # Но чтобы воркер не подхватил шаг снова (иначе будет жарить бесконечно),
-    # переводим в hero_ready. После approve бот решит: если есть
-    # ещё несделанные герои — вернёт в generating_hero.
+            ref_for_this = (
+                first_variant_path if v_idx > 1 and first_variant_path else None
+            )
+            prompt_text = (
+                hero_prompt_with_ref if ref_for_this else hero_prompt_main
+            )
+
+            result = None
+            if v_idx == 1 and is_regen:
+                logger.info(
+                    "[#{}] regenerate hero {}/{} v1: пробую кнопку «Повторить»",
+                    project.id, hero_idx, n_total,
+                )
+                try:
+                    result = await outsee.regenerate_image(out_path)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] «Повторить» не сработала ({}), делаю fresh "
+                        "generate", project.id, e,
+                    )
+                    result = None
+
+            if result is None:
+                result = await outsee.generate_image(
+                    prompt_text,
+                    out_path,
+                    aspect_ratio=ar.outsee_slug if ar else "9:16",
+                    model_slug=img_gen.outsee_slug if img_gen else None,
+                    resolution=ir.outsee_slug if ir else None,
+                    relax=bool(project.image_relax),
+                    prompt_id_prefix=prompt_id_prefix,
+                    reference_image=ref_for_this,
+                )
+
+            variation_results.append((v_idx, Path(result.file_path), result))
+            if v_idx == 1:
+                first_variant_path = Path(result.file_path)
+
+            # Промежуточные вариации (не последняя) — отправляем как
+            # обычное фото без HITL-кнопок, чтобы юзер видел прогресс.
+            if v_idx < n_variations:
+                try:
+                    await bot.send_photo(
+                        chat_id,
+                        FSInputFile(str(result.file_path)),
+                        caption=(
+                            f"Герой {hero_idx}/{n_total}, "
+                            f"вариация {v_idx}/{n_variations}\n"
+                            f"{prompt_id_prefix}"
+                        ),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] hero v{} preview send failed: {}",
+                        project.id, v_idx, e,
+                    )
+
+    # 3) Сохраняем артефакты в БД (по одному на вариацию).
+    last_artifact = None
+    for v_idx, file_path, _res in variation_results:
+        art = Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.hero_reference,
+            uuid=uuid.uuid4().hex,
+            path=str(file_path),
+            meta={
+                "hero_index": hero_idx,
+                "variation_index": v_idx,
+                "variations_total": n_variations,
+            },
+        )
+        session.add(art)
+        last_artifact = art
+    # После последней вариации статус временно переводим в hero_ready —
+    # ждём решение HITL. После approve бот или вернёт generating_hero
+    # (если есть ещё герои), или оставит hero_ready (если все готовы).
     project.status = ProjectStatus.hero_ready
     await session.flush()
 
+    # 4) Записываем в xlsx последнюю вариацию (как «итоговый» референс
+    # героя для дальнейших шагов).
+    final_path = variation_results[-1][1]
+    final_result = variation_results[-1][2]
     try:
         _sheet_for_project(project).write_general(
             status=project.status.value,
-            hero_description=project.hero_description,
-            hero_image_path=str(result.file_path),
-            hero_image_url=result.raw_url,
+            hero_description=user_brief,
+            hero_image_path=str(final_path),
+            hero_image_url=getattr(final_result, "raw_url", None),
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet hero write failed: {}", project.id, e)
 
+    # 5) HITL-карточка на последнюю вариацию.
+    last_v_idx = n_variations
+    short_uuid_final = uuid.uuid4().hex[:8]
+    final_prompt_id_prefix = (
+        f"[ID: P{project.id}-HERO{hero_idx}-V{last_v_idx}-{short_uuid_final}]"
+    )
     await send_hitl_photo(
         bot, session, project,
         kind=HITLKind.approve_hero,
-        photo_path=str(result.file_path),
+        photo_path=str(final_path),
         caption=(
-            f"{prompt_id_prefix}\n"
-            f"Герой {hero_idx}/{n_total} для P{project.id}. Одобрить?"
+            f"{final_prompt_id_prefix}\n"
+            f"Герой {hero_idx}/{n_total}, "
+            f"финальная вариация {last_v_idx}/{n_variations}.\n"
+            f"Стиль: {style_chosen}\n"
+            f"Одобрить? (✅ — принять все вариации этого героя; "
+            f"🔁 — перегенерить ВСЕ вариации заново.)"
         ),
         payload={
             "step": "hero",
-            "artifact_id": art.id,
-            "prompt_id_prefix": prompt_id_prefix,
-            "photo_path": str(result.file_path),
+            "artifact_id": last_artifact.id if last_artifact else None,
+            "prompt_id_prefix": final_prompt_id_prefix,
+            "photo_path": str(final_path),
             "hero_index": hero_idx,
             "hero_total": n_total,
+            "variations_total": n_variations,
+            "hero_style": style_chosen,
         },
     )

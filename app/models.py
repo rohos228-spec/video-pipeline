@@ -137,6 +137,11 @@ class Project(Base):
     # очереди в TG; шаг 4 обрабатывает по индексу: descriptions[i-1] для
     # героя i.
     hero_descriptions: Mapped[list] = mapped_column(JSON, default=list)
+    # Кол-во вариаций для каждого героя (parallel со hero_descriptions).
+    # variations[i-1] = N означает: для героя i сгенерировать N изображений.
+    # Первая вариация — без референса, варианты 2..N — с первой как референс
+    # (через input[type=file] на странице outsee.io).
+    hero_variations: Mapped[list] = mapped_column(JSON, default=list)
     # Выбранный для каждого шага вариант мастер-промта (имя файла без .md).
     # Пример: {"plan": "default", "script": "horror_v2", "hero": "girl_v3"}.
     # Если ключа нет — берётся `default.md` из соответствующей папки.

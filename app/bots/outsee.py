@@ -72,15 +72,113 @@ def _aspect_selectors(ratio: str) -> list[str]:
     """Набор CSS-селекторов для кнопки выбора aspect ratio.
 
     Работает для любого формата `W:H` — 1:1, 16:9, 9:16, 4:3, 3:4, 2:3,
-    3:2, 21:9. На outsee.io это сейчас кликабельные блоки с текстом
-    внутри."""
+    3:2, 21:9. На outsee.io это могут быть button / div role=radio / div
+    role=button / label с текстом внутри. Чем точнее селектор — тем
+    меньше шансов попасть в текст «9:16» внутри hint-подписи где-то
+    ещё на странице.
+    """
     return [
+        # Самые точные — кнопки/радио с текстом ровно ratio.
         f"button:has-text('{ratio}')",
+        f"[role='radio']:has-text('{ratio}')",
+        f"[role='button']:has-text('{ratio}')",
+        f"label:has-text('{ratio}')",
         f"[data-value='{ratio}']",
         f"[aria-label='{ratio}']",
         f"input[value='{ratio}']",
+        # Менее точно — любой родитель с дочерним :text-is.
         f"*:has(> :text-is('{ratio}'))",
     ]
+
+
+async def _is_aspect_selected(page: Any, sel: str) -> bool | None:
+    """Проверка, выбран ли вариант aspect-ratio после клика. None — не
+    смогли определить (тогда не уверены)."""
+    try:
+        loc = page.locator(sel).first
+        for attr, want in (
+            ("aria-checked", "true"),
+            ("aria-pressed", "true"),
+            ("data-state", "checked"),
+            ("data-state", "active"),
+            ("data-state", "selected"),
+        ):
+            try:
+                v = await loc.get_attribute(attr, timeout=200)
+                if v is not None:
+                    if str(v).lower() == want:
+                        return True
+            except Exception:  # noqa: BLE001
+                continue
+        # Класс с маркером "selected" / "active" / "checked".
+        try:
+            cls = await loc.get_attribute("class", timeout=200) or ""
+            cls_low = cls.lower()
+            for marker in ("selected", "active", "checked", "is-active"):
+                if marker in cls_low:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+async def _select_aspect_ratio(
+    page: Any, ratio: str, *, where: str = "image"
+) -> bool:
+    """Нажимает на кнопку нужного aspect ratio, делает best-effort
+    верификацию и при необходимости — повторный клик. Возвращает True если
+    точно/вероятно сработало."""
+    sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=6_000)
+    if not sel:
+        logger.warning(
+            "outsee.{}: aspect {} — кнопка не найдена за 6 сек",
+            where, ratio,
+        )
+        return False
+    try:
+        loc = page.locator(sel).first
+        try:
+            await loc.scroll_into_view_if_needed(timeout=2_000)
+        except Exception:  # noqa: BLE001
+            pass
+        await loc.click(timeout=3_000)
+        logger.info(
+            "outsee.{}: aspect {} — клик ({})", where, ratio, sel
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee.{}: aspect {} клик упал: {} (sel={})",
+            where, ratio, e, sel,
+        )
+        return False
+
+    # Best-effort верификация состояния. Если не получилось определить —
+    # не считаем это ошибкой (UI может не помечать выбранную опцию).
+    await asyncio.sleep(0.3)
+    ok = await _is_aspect_selected(page, sel)
+    if ok is True:
+        logger.info(
+            "outsee.{}: aspect {} подтверждён выбран (sel={})",
+            where, ratio, sel,
+        )
+        return True
+    # Не смогли подтвердить — попробуем кликнуть ещё раз, на случай если
+    # первый клик попал в hidden-twin (mobile/desktop).
+    try:
+        sel2 = await _first_visible(
+            page, _aspect_selectors(ratio), timeout_ms=2_000
+        )
+        if sel2 and sel2 != sel:
+            await page.locator(sel2).first.click(timeout=2_000)
+            logger.info(
+                "outsee.{}: aspect {} — повторный клик по другому селектору ({})",
+                where, ratio, sel2,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 def _resolution_selectors(resolution: str) -> list[str]:
@@ -326,15 +424,22 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
+        reference_image: Path | None = None,
     ) -> GenerationResult:
         """Генерирует картинку на outsee.io.
 
         Параметры:
           model_slug      — slug для URL (`?model=<slug>`). Если None —
                             используется settings.outsee_image_url как есть.
-          aspect_ratio    — строка-ярлык кнопки («16:9», «9:16»…). Best-effort
-                            клик, если не нашли — оставляем дефолт страницы.
+          aspect_ratio    — строка-ярлык кнопки («16:9», «9:16»…). Жмём
+                            кнопку и проверяем состояние.
           resolution      — строка-ярлык («2K» / «4K»). Best-effort клик.
+          relax           — если True и Relax-кнопка есть на странице — включаем.
+          reference_image — если передан Path — загружаем картинку как
+                            референс для генерации (через input[type=file]
+                            на странице outsee.io). Используется в
+                            hero-вариациях: первая вариация генерится без
+                            референса, последующие — с первой как ref.
           prompt_id_prefix — строка вида `[ID: P12-F3-a7f2b01c]`. Будет
                              поставлена ПЕРВОЙ строкой промта, чтобы в
                              истории outsee однозначно отличать эту
@@ -414,22 +519,11 @@ class OutseeBot:
             await page.locator(input_sel).first.fill(prompt)
             logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
 
-            # 2) выбрать aspect ratio (best-effort) — поддержка любого W:H
+            # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
             if aspect_ratio:
-                ar_sel = await _first_visible(
-                    page, _aspect_selectors(aspect_ratio), timeout_ms=4_000
+                await _select_aspect_ratio(
+                    page, aspect_ratio, where="generate_image"
                 )
-                if ar_sel:
-                    try:
-                        await page.locator(ar_sel).first.click()
-                        logger.info(
-                            "outsee.generate_image: aspect {} выбран ({})",
-                            aspect_ratio, ar_sel,
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "aspect {} не кликнулось ({})", aspect_ratio, ar_sel
-                        )
 
             # 2.5) выбрать разрешение 2K / 4K (best-effort)
             if resolution:
@@ -450,6 +544,41 @@ class OutseeBot:
 
             # 2.7) Relax (если попросили)
             await _toggle_relax(page, want_on=relax, where="generate_image")
+
+            # 2.9) Reference-картинка (для hero-вариаций 2..N).
+            # На странице outsee.io image обычно есть скрытый input[type=file]
+            # для подгрузки референса/контекста. Если он есть — заливаем
+            # туда наш файл; если нет — логируем warning и продолжаем без него.
+            if reference_image is not None:
+                if not reference_image.exists():
+                    logger.warning(
+                        "outsee.generate_image: reference_image {} не найден на диске",
+                        reference_image,
+                    )
+                else:
+                    file_sel = await _first_visible(
+                        page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000
+                    )
+                    if file_sel:
+                        try:
+                            await page.locator(file_sel).first.set_input_files(
+                                str(reference_image)
+                            )
+                            logger.info(
+                                "outsee.generate_image: reference {} загружен ({})",
+                                reference_image.name, file_sel,
+                            )
+                            # Дать UI секунду чтобы превью отрисовалось.
+                            await asyncio.sleep(1.0)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "outsee.generate_image: загрузка ref {} упала: {}",
+                                reference_image, e,
+                            )
+                    else:
+                        logger.warning(
+                            "outsee.generate_image: input[type=file] для ref не найден"
+                        )
 
             # 3) кнопка generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
@@ -869,19 +998,11 @@ class OutseeBot:
         await page.locator(input_sel).first.click()
         await page.locator(input_sel).first.fill(prompt)
 
-        # 2) аспект (best-effort)
+        # 2) аспект (с верификацией состояния)
         if aspect_ratio:
-            ar_sel = await _first_visible(
-                page, _aspect_selectors(aspect_ratio), timeout_ms=4_000
+            await _select_aspect_ratio(
+                page, aspect_ratio, where="generate_video"
             )
-            if ar_sel:
-                try:
-                    await page.locator(ar_sel).first.click()
-                    logger.info(
-                        "outsee.generate_video: aspect {} выбран", aspect_ratio
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
 
         # 2.5) разрешение 720p / 1080p (best-effort)
         if resolution:
