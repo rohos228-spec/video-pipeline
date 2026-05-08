@@ -61,6 +61,37 @@ from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
 
+async def _send_outsee_dumps(
+    bot: Bot,
+    chat_id: int,
+    dumps: list[Path],
+    *,
+    caption_prefix: str,
+) -> None:
+    """Отправляет в TG dump-файлы (html/png) outsee-страницы. Используется
+    для отладки селекторов: если на странице outsee.io не нашлась нужная
+    кнопка (aspect/relax/Generate), хелпер `_dump_page` сохраняет HTML +
+    скриншот, мы их сюда складываем — и юзер пересылает разработчику."""
+    for path in dumps:
+        try:
+            if not path.exists():
+                continue
+            ext = path.suffix.lower()
+            cap = f"{caption_prefix}\n<code>{path.name}</code>"
+            if ext == ".png":
+                await bot.send_photo(
+                    chat_id, FSInputFile(str(path)),
+                    caption=cap, parse_mode="HTML",
+                )
+            else:
+                await bot.send_document(
+                    chat_id, FSInputFile(str(path)),
+                    caption=cap, parse_mode="HTML",
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("отправка dump {} в TG упала: {}", path, e)
+
+
 def _read_hero_style(project: Project) -> str | None:
     """Возвращает содержимое выбранного для проекта пресета стиля
     из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
@@ -303,15 +334,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     result = None
 
             if result is None:
-                result = await outsee.generate_image(
-                    prompt_text,
-                    out_path,
-                    aspect_ratio=ar.outsee_slug if ar else "9:16",
-                    model_slug=img_gen.outsee_slug if img_gen else None,
-                    resolution=ir.outsee_slug if ir else None,
-                    relax=bool(project.image_relax),
-                    prompt_id_prefix=prompt_id_prefix,
-                    reference_image=ref_for_this,
+                try:
+                    result = await outsee.generate_image(
+                        prompt_text,
+                        out_path,
+                        aspect_ratio=ar.outsee_slug if ar else "9:16",
+                        model_slug=img_gen.outsee_slug if img_gen else None,
+                        resolution=ir.outsee_slug if ir else None,
+                        relax=bool(project.image_relax),
+                        prompt_id_prefix=prompt_id_prefix,
+                        reference_image=ref_for_this,
+                    )
+                except Exception as e:
+                    # Если outsee упал и приложил dump-файлы (html/png страницы)
+                    # — отправляем их в TG, чтобы можно было быстро поправить
+                    # селекторы. Затем перебрасываем исключение дальше.
+                    dumps = list(getattr(e, "dumps", None) or [])
+                    if dumps:
+                        await _send_outsee_dumps(
+                            bot, chat_id, dumps,
+                            caption_prefix=(
+                                f"Герой {hero_idx}/{n_total} v{v_idx}: "
+                                "outsee упал, дамп страницы для отладки"
+                            ),
+                        )
+                    raise
+
+            # Если генерация прошла, но по дороге что-то не нашлось
+            # (aspect / relax / etc.) — отправляем dumps в TG для отладки.
+            res_dumps = list(getattr(result, "dumps", None) or [])
+            if res_dumps:
+                await _send_outsee_dumps(
+                    bot, chat_id, res_dumps,
+                    caption_prefix=(
+                        f"Герой {hero_idx}/{n_total} v{v_idx}: "
+                        "выявлены проблемы с UI outsee, см. дамп"
+                    ),
                 )
 
             variation_results.append((v_idx, Path(result.file_path), result))

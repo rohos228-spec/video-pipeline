@@ -68,6 +68,51 @@ ASPECT_9_16_SELECTORS = [
 ]
 
 
+async def _dump_page(
+    page: Any, label: str, *, max_html_chars: int = 400_000
+) -> tuple[Path | None, Path | None]:
+    """Сохраняет полный outerHTML и скриншот страницы в
+    `<settings.data_dir>/outsee_dumps/<label>_<ts>.{html,png}`.
+    Возвращает (html_path, png_path); элементы могут быть None если что-то
+    не получилось.
+
+    Используется для отладки селекторов на outsee.io: при ненайденной
+    кнопке (aspect / relax / generate / др.) дампим страницу — потом
+    оркестратор присылает файл в TG, и можно подобрать селектор.
+    """
+    from datetime import datetime as _dt
+
+    dumps_dir = Path(settings.data_dir) / "outsee_dumps"
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+    ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in label)
+    html_path = dumps_dir / f"{safe}_{ts}.html"
+    png_path = dumps_dir / f"{safe}_{ts}.png"
+    html_ok: Path | None = None
+    png_ok: Path | None = None
+    try:
+        html = await page.content()
+        if html and len(html) > max_html_chars:
+            html = html[: max_html_chars // 2] + "\n<!-- ...truncated... -->\n" + html[-max_html_chars // 2 :]
+        html_path.write_text(html or "", encoding="utf-8")
+        html_ok = html_path
+    except Exception as e:  # noqa: BLE001
+        logger.warning("outsee dump html failed for {}: {}", label, e)
+    try:
+        await page.screenshot(path=str(png_path), full_page=True, timeout=10_000)
+        png_ok = png_path
+    except Exception as e:  # noqa: BLE001
+        logger.warning("outsee dump png failed for {}: {}", label, e)
+    if html_ok or png_ok:
+        logger.info(
+            "outsee dump '{}': html={} png={}",
+            label,
+            html_ok and html_ok.name,
+            png_ok and png_ok.name,
+        )
+    return html_ok, png_ok
+
+
 def _aspect_selectors(ratio: str) -> list[str]:
     """Набор CSS-селекторов для кнопки выбора aspect ratio.
 
@@ -125,17 +170,27 @@ async def _is_aspect_selected(page: Any, sel: str) -> bool | None:
 
 
 async def _select_aspect_ratio(
-    page: Any, ratio: str, *, where: str = "image"
+    page: Any, ratio: str, *, where: str = "image",
+    dumps: list[Path] | None = None,
 ) -> bool:
     """Нажимает на кнопку нужного aspect ratio, делает best-effort
     верификацию и при необходимости — повторный клик. Возвращает True если
-    точно/вероятно сработало."""
+    точно/вероятно сработало.
+
+    Если кнопка не найдена — дампит страницу в outsee_dumps/ и (если
+    передан dumps-список) добавляет туда пути файлов; вызывающий код
+    может потом отправить их в TG."""
     sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=6_000)
     if not sel:
         logger.warning(
             "outsee.{}: aspect {} — кнопка не найдена за 6 сек",
             where, ratio,
         )
+        h, p = await _dump_page(page, f"aspect_{ratio.replace(':', 'x')}_notfound")
+        if dumps is not None:
+            for x in (h, p):
+                if x:
+                    dumps.append(x)
         return False
     try:
         loc = page.locator(sel).first
@@ -203,13 +258,19 @@ RELAX_SELECTORS: list[str] = [
 ]
 
 
-async def _toggle_relax(page: Any, *, want_on: bool, where: str = "image") -> None:
+async def _toggle_relax(
+    page: Any, *, want_on: bool, where: str = "image",
+    dumps: list[Path] | None = None,
+) -> None:
     """Best-effort: ставит тогл Relax в нужное состояние.
 
     Если тогла нет на странице (модель его не поддерживает) — тихо ничего
     не делаем. Состояние читаем из aria-checked / aria-pressed; если их нет —
     просто кликаем (если want_on=True). Если want_on=False и текущее
     состояние неизвестно — не трогаем (лучше не выключать дефолт).
+
+    Если want_on=True и кнопка не найдена — дампит страницу в
+    outsee_dumps/ (для отладки селектора).
     """
     sel = await _first_visible(page, RELAX_SELECTORS, timeout_ms=2_000)
     if not sel:
@@ -218,6 +279,11 @@ async def _toggle_relax(page: Any, *, want_on: bool, where: str = "image") -> No
                 "outsee.{}: Relax=on запрошен, но кнопка Relax не найдена",
                 where,
             )
+            h, p = await _dump_page(page, "relax_notfound")
+            if dumps is not None:
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
         return
     try:
         loc = page.locator(sel).first
@@ -311,15 +377,27 @@ class GenerationResult:
     file_path: Path
     raw_url: str | None = None
     gen_id: str | None = None  # uuid v4, привязан к одной попытке (для трейсинга)
+    # Пути к dump-файлам (html/png) если по ходу генерации не нашлась
+    # какая-то кнопка (aspect/relax/etc.). Оркестратор отправляет их
+    # в TG для отладки селекторов.
+    dumps: list[Path] | None = None
 
 
 class OutseeImageError(RuntimeError):
     """Ошибка с описательным контекстом — пайплайн использует это,
     чтобы запостить понятную ошибку в Telegram, а не системный traceback."""
 
-    def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        context: dict[str, Any] | None = None,
+        dumps: list[Path] | None = None,
+    ) -> None:
         self.reason = reason
         self.context = dict(context or {})
+        # html/png дампы страницы для отладки селекторов outsee.io.
+        self.dumps: list[Path] = list(dumps or [])
         super().__init__(self.format_text())
 
     def format_text(self) -> str:
@@ -449,6 +527,10 @@ class OutseeBot:
         import uuid as _uuid
 
         gen_id = gen_id or _uuid.uuid4().hex
+        # Сюда копятся пути к dump-файлам страницы (html/png), создаваемые
+        # хелперами при ненайденных кнопках. В конце этот список идёт в
+        # GenerationResult.dumps — оркестратор отправит файлы в TG.
+        dumps: list[Path] = []
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
             logger.info(
@@ -504,9 +586,14 @@ class OutseeBot:
                 page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
             )
             if not input_sel:
+                h, p = await _dump_page(page, "prompt_input_notfound")
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
                 raise OutseeImageError(
                     "outsee image: не найден ввод промта",
                     context={"gen_id": gen_id},
+                    dumps=dumps,
                 )
             logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
             try:
@@ -522,7 +609,7 @@ class OutseeBot:
             # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
             if aspect_ratio:
                 await _select_aspect_ratio(
-                    page, aspect_ratio, where="generate_image"
+                    page, aspect_ratio, where="generate_image", dumps=dumps,
                 )
 
             # 2.5) выбрать разрешение 2K / 4K (best-effort)
@@ -543,7 +630,9 @@ class OutseeBot:
                         )
 
             # 2.7) Relax (если попросили)
-            await _toggle_relax(page, want_on=relax, where="generate_image")
+            await _toggle_relax(
+                page, want_on=relax, where="generate_image", dumps=dumps,
+            )
 
             # 2.9) Reference-картинка (для hero-вариаций 2..N).
             # На странице outsee.io image обычно есть скрытый input[type=file]
@@ -583,9 +672,14 @@ class OutseeBot:
             # 3) кнопка generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
+                h, p = await _dump_page(page, "generate_button_notfound")
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
                 raise OutseeImageError(
                     "outsee image: не найдена кнопка Generate",
                     context={"gen_id": gen_id},
+                    dumps=dumps,
                 )
             logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
             await self._wait_button_enabled(page, gen_sel, timeout_s=600)
@@ -599,14 +693,24 @@ class OutseeBot:
             )
 
             # 4) строгое ожидание свежей картинки
-            img_url = await self._wait_image_url_strict(
-                page,
-                timeout=timeout,
-                baseline_result_img=baseline_result_img,
-                baseline_big_imgs=baseline_big_imgs,
-                baseline_all_srcs=baseline_dom_srcs,
-                gen_id=gen_id,
-            )
+            try:
+                img_url = await self._wait_image_url_strict(
+                    page,
+                    timeout=timeout,
+                    baseline_result_img=baseline_result_img,
+                    baseline_big_imgs=baseline_big_imgs,
+                    baseline_all_srcs=baseline_dom_srcs,
+                    gen_id=gen_id,
+                )
+            except OutseeImageError as e:
+                # При таймауте дампим страницу — пригодится для отладки
+                # «почему Generate не запустил генерацию» и подбора селекторов.
+                h, p = await _dump_page(page, "image_timeout")
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
+                e.dumps = list(dumps)
+                raise
         finally:
             try:
                 page.remove_listener("response", _on_response)
@@ -625,9 +729,13 @@ class OutseeBot:
                     "img_url": img_url,
                     "err": f"{type(e).__name__}: {e}",
                 },
+                dumps=dumps,
             ) from e
         logger.info("outsee image saved → {} (gen_id={})", out_path, gen_id[:8])
-        return GenerationResult(file_path=out_path, raw_url=img_url, gen_id=gen_id)
+        return GenerationResult(
+            file_path=out_path, raw_url=img_url, gen_id=gen_id,
+            dumps=dumps or None,
+        )
 
     async def regenerate_image(
         self,
