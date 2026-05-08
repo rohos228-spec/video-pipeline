@@ -633,6 +633,24 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             # Сохраняем стиль и hero_count, чистим описания+вариации.
             project.hero_descriptions = []
             project.hero_variations = []
+            # Старые approve_hero-одобрения помечаем как rejected, иначе
+            # generate_hero увидит «N из N уже одобрено» и сразу выйдет
+            # с status=hero_ready (баг при повторной генерации).
+            old_hitls = (
+                await s.execute(
+                    select(HITLRequest).where(
+                        HITLRequest.project_id == project.id,
+                        HITLRequest.kind == HITLKind.approve_hero,
+                        HITLRequest.decision == HITLDecision.approved,
+                    )
+                )
+            ).scalars().all()
+            for h in old_hitls:
+                h.decision = HITLDecision.rejected
+            # Возвращаем статус в frames_ready чтобы юзер мог снова
+            # запустить шаг 4 (если он стоял в hero_ready).
+            if project.status is ProjectStatus.hero_ready:
+                project.status = ProjectStatus.frames_ready
             # Pending стейты тоже на всякий случай чистим.
             _pending_hero_brief.pop(user_id, None)
             _pending_hero_variation.pop(user_id, None)
@@ -663,6 +681,21 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             project.hero_descriptions = []
             project.hero_variations = []
             project.hero_description = None
+            # Старые approve_hero-одобрения помечаем как rejected — см.
+            # коммент выше в ветке reset_briefs.
+            old_hitls = (
+                await s.execute(
+                    select(HITLRequest).where(
+                        HITLRequest.project_id == project.id,
+                        HITLRequest.kind == HITLKind.approve_hero,
+                        HITLRequest.decision == HITLDecision.approved,
+                    )
+                )
+            ).scalars().all()
+            for h in old_hitls:
+                h.decision = HITLDecision.rejected
+            if project.status is ProjectStatus.hero_ready:
+                project.status = ProjectStatus.frames_ready
             _pending_hero_brief.pop(user_id, None)
             _pending_hero_variation.pop(user_id, None)
             _pending_hero_style.pop(user_id, None)
