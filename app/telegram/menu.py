@@ -297,6 +297,12 @@ def script_step_kb(
                 callback_data=f"proj:{pid}:script_view",
             )
         ])
+        rows.append([
+            InlineKeyboardButton(
+                text="✏️ Заменить voiceover.txt",
+                callback_data=f"proj:{pid}:script_replace",
+            )
+        ])
     rows.append([
         InlineKeyboardButton(
             text="▶ Сгенерировать заново" if voiceover_exists else "▶ Сгенерировать",

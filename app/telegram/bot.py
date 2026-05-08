@@ -127,6 +127,11 @@ _pending_script_prompt: dict[int, int] = {}
 # Аналогично script. user_id → project_id.
 _pending_split_prompt: dict[int, int] = {}
 
+# Ожидание замены voiceover.txt (Step 2 подменю «✏️ Заменить»).
+# Юзер жмёт кнопку → бот просит прислать текст или .txt-файл.
+# user_id → project_id.
+_pending_voiceover_replace: dict[int, int] = {}
+
 # Последний открытый юзером проект — для кнопки «📁 Последний проект»
 # в постоянной reply-клавиатуре. Обновляется при открытии меню проекта,
 # нажатии шага, выборе промта и т.п.  user_id → project_id.
@@ -150,6 +155,7 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_plan_prompt.pop(user_id, None)
     _pending_script_prompt.pop(user_id, None)
     _pending_split_prompt.pop(user_id, None)
+    _pending_voiceover_replace.pop(user_id, None)
 
 
 async def _last_project_id_fallback() -> int | None:
@@ -772,6 +778,30 @@ async def on_script_regen(cb: CallbackQuery) -> None:
     )
 
 
+@dp.callback_query(F.data.regexp(r"^proj:\d+:script_replace$"))
+async def on_script_replace(cb: CallbackQuery) -> None:
+    """Запросить у юзера новый voiceover.txt (текстом или файлом)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+    _pending_voiceover_replace[cb.from_user.id] = pid
+    _remember_project(cb.from_user.id, pid)
+    await cb.answer()
+    await cb.message.answer(
+        "✏️ Пришли новый текст сообщением или прикрепи <b>.txt</b>-файл.\n"
+        "Старый voiceover.txt будет сохранён в <code>old/</code>.",
+        parse_mode="HTML",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Библиотека мастер-промтов (Push C):
 #   prm:<pid>:<step>:sel:<name>     — выбрать существующий вариант + запустить шаг
@@ -1105,12 +1135,70 @@ async def _handle_prompt_upload(msg: Message) -> None:
     )
 
 
+async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
+    """Бэкапит старый voiceover.txt в old/ и записывает новый."""
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer("Проект не найден.")
+            return
+        slug = project.slug
+        topic = project.topic
+
+    proj_dir = _Path(settings.data_dir) / "videos" / slug
+    voiceover_path = proj_dir / "voiceover.txt"
+
+    if voiceover_path.exists():
+        old_dir = proj_dir / "old"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        backup = old_dir / f"{ts}_voiceover.txt"
+        backup.write_bytes(voiceover_path.read_bytes())
+
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    voiceover_path.write_text(new_text, encoding="utf-8")
+    size = voiceover_path.stat().st_size
+    await msg.answer(
+        f"✅ voiceover.txt заменён ({size} байт).\n"
+        f"Проект #{pid} «{topic}»\n"
+        "Старый файл сохранён в <code>old/</code>.",
+        parse_mode="HTML",
+    )
+
+
 @dp.message(F.document)
 async def on_document_message(msg: Message) -> None:
-    """Принимаем `.md`-файл с отредактированным мастер-промтом."""
+    """Принимаем `.md`-файл (промт) или .txt (замена voiceover)."""
     if not is_owner(msg):
         return
     user_id = msg.from_user.id if msg.from_user else 0
+
+    # Замена voiceover.txt файлом
+    pending_vo = _pending_voiceover_replace.get(user_id)
+    if pending_vo is not None:
+        _pending_voiceover_replace.pop(user_id, None)
+        doc = msg.document
+        if doc is None:
+            await msg.answer("Не вижу файл. Пришли .txt ещё раз.")
+            return
+        import tempfile
+        from pathlib import Path as _Path
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".txt", delete=False
+        ) as tmp:
+            tmp_path = _Path(tmp.name)
+        await msg.bot.download(doc, destination=str(tmp_path))
+        text = tmp_path.read_text(encoding="utf-8", errors="replace")
+        tmp_path.unlink(missing_ok=True)
+        await _replace_voiceover(pending_vo, text, msg)
+        return
+
     if user_id not in _pending_prompt_upload:
         return  # не ждём ничего — игнорим (это может быть просто файл)
     await _handle_prompt_upload(msg)
@@ -1350,6 +1438,18 @@ async def on_text_message(msg: Message) -> None:
             ),
             parse_mode="HTML",
         )
+        return
+
+    # 2.6) Если ждём замену voiceover.txt текстом
+    pending_vo_pid = _pending_voiceover_replace.get(user_id)
+    if pending_vo_pid is not None:
+        _pending_voiceover_replace.pop(user_id, None)
+        if not text:
+            await msg.answer(
+                "Пустой текст. Нажми «✏️ Заменить voiceover.txt» ещё раз."
+            )
+            return
+        await _replace_voiceover(pending_vo_pid, text, msg)
         return
 
     # 3) Если ждём имя нового мастер-промта (после клика «+ Новый» в picker'е)
