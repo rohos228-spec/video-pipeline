@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
@@ -162,78 +161,6 @@ async def _last_project_id_fallback() -> int | None:
             )
         ).scalar_one_or_none()
     return proj.id if proj is not None else None
-
-
-def _xlsx_to_text_dump(
-    path: Path, max_chars: int = 60_000
-) -> str:
-    """Дампит все листы xlsx в plain-text, чтобы вшить содержимое прямо
-    в промт. Это нужно потому, что file-upload в ChatGPT регулярно
-    подвисает (превью карточки появляется, а сам POST не уходит) и GPT
-    не видит файла. Если данные дублированы в тексте промта — GPT всё
-    равно отвечает по делу.
-
-    Формат:
-        === Лист «<имя>» ===
-        A1 | B1 | C1
-        A2 | B2 | C2
-        ...
-
-    Если суммарный текст длиннее max_chars — обрезаем хвост и
-    добавляем '... (truncated)'.
-    """
-    try:
-        from openpyxl import load_workbook
-    except Exception:  # noqa: BLE001
-        return ""
-    try:
-        wb = load_workbook(path, data_only=True, read_only=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("xlsx_to_text_dump: не смог открыть {}: {}", path, e)
-        return ""
-    parts: list[str] = []
-    for ws in wb.worksheets:
-        parts.append(f"=== Лист «{ws.title}» ===")
-        for row in ws.iter_rows(values_only=True):
-            cells = [
-                "" if v is None else str(v).replace("\t", " ").rstrip()
-                for v in row
-            ]
-            while cells and not cells[-1]:
-                cells.pop()
-            if not cells:
-                continue
-            parts.append(" | ".join(cells))
-        parts.append("")
-    text = "\n".join(parts).strip()
-    if len(text) > max_chars:
-        text = text[:max_chars].rstrip() + "\n... (truncated)"
-    return text
-
-
-def _read_text_file_safe(
-    path: Path, max_chars: int = 60_000
-) -> str:
-    """Читает текстовый файл (UTF-8 / cp1251 fallback) и возвращает
-    содержимое строкой. Если длиннее max_chars — обрезает хвост.
-    Используется чтобы вшить voiceover.txt прямо в промт.
-    """
-    try:
-        raw = path.read_bytes()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("read_text_file_safe: не смог прочитать {}: {}", path, e)
-        return ""
-    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
-        try:
-            text = raw.decode(enc).strip()
-            break
-        except Exception:  # noqa: BLE001
-            continue
-    else:
-        return ""
-    if len(text) > max_chars:
-        text = text[:max_chars].rstrip() + "\n... (truncated)"
-    return text
 
 
 def is_owner(msg: Message) -> bool:
@@ -1640,45 +1567,40 @@ async def _run_script_xlsx(
         return
     prompt_text = prompt_path.read_text(encoding="utf-8").strip()
 
-    # Дублируем содержимое xlsx прямо в текст промта. Это страховка от
-    # случаев, когда file-upload в ChatGPT подвисает (превью карточки есть, а
-    # POST /backend-api/files не уходит и GPT не видит файла). С инлайн-
-    # копией GPT в любом случае видит вход.
-    xlsx_text = _xlsx_to_text_dump(proj_xlsx)
-    logger.info(
-        "script_xlsx: xlsx-дамп для инлайн-промта = {} симв.",
-        len(xlsx_text),
-    )
-
-    full_prompt = (
-        f"{prompt_text}\n\n"
-        f"Тема ролика: «{topic}».\n\n"
-        "Ниже — содержимое текущего project.xlsx этого ролика "
-        "(листы и ячейки в порядке). Сам файл также прикреплён к этому "
-        "сообщению — если видишь расхождения, считай каноном вот этот "
-        "текстовый думп.\n\n"
-        "<<<XLSX_DUMP_START>>>\n"
-        f"{xlsx_text}\n"
-        "<<<XLSX_DUMP_END>>>\n\n"
-        "Сгенерируй закадровый текст согласно инструкции выше.\n\n"
-        "Формат ответа: пришли результат ответом в чат обычным текстом "
-        "(можно с переносами строк). Не обязательно оборачивать какими-то "
-        "маркерами. Если всё же решишь ответить файлом (.txt UTF-8) — это тоже "
-        "подойдёт. Главное — весь закадровый текст без обрезок."
-    )
-
     voiceover = proj_xlsx.parent / "voiceover.txt"
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = proj_xlsx.parent / "tmp_gpt"
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = out_dir / f"voiceover_{ts}.txt"
 
+    # Промт идёт отдельным .txt-файлом — так просил юзер. В самом
+    # сообщении в чат остаётся короткая инструкция без дублирования данных.
+    prompt_file = out_dir / f"prompt_script_{ts}.txt"
+    prompt_file.write_text(
+        f"# Инструкция для GPT (шаг 2 «Закадровый текст»)\n"
+        f"# Тема ролика: «{topic}»\n\n"
+        f"{prompt_text}\n",
+        encoding="utf-8",
+    )
+
+    chat_msg = (
+        f"Тема ролика: «{topic}».\n\n"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file.name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
+        "второй (project.xlsx).\n\n"
+        "Пришли результат обычным текстом в чат (можно с переносами "
+        "строк). Без маркеров, без .txt-файлов в ответе (если всё же решишь "
+        "ответить файлом — работает и этот fallback)."
+    )
+
     await msg.answer(
         f"▶ <b>Закадровый текст</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>\n\n"
-        "Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 10 минут. "
-        "Не закрывай Chrome.",
+        "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
+        "<code>project.xlsx</code>, жду ответ. До 10 минут. Не закрывай Chrome.",
         parse_mode="HTML",
     )
 
@@ -1687,8 +1609,8 @@ async def _run_script_xlsx(
         async with browser_session() as bs:
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
-            reply_text = await gpt.ask_with_file(
-                full_prompt, proj_xlsx, timeout=600
+            reply_text = await gpt.ask_with_files(
+                chat_msg, [prompt_file, proj_xlsx], timeout=600
             )
             logger.info(
                 "script_xlsx: GPT reply len={} (project #{}, prompt={})",
@@ -1837,50 +1759,41 @@ async def _run_split_xlsx(
         return
     prompt_text = prompt_path.read_text(encoding="utf-8").strip()
 
-    # Дублируем xlsx и voiceover.txt прямо в текст промта. file-upload
-    # в ChatGPT подвисает (превью появляется, а POST не уходит); инлайн-копия
-    # гарантирует что GPT видит входные данные.
-    xlsx_text = _xlsx_to_text_dump(proj_xlsx)
-    voiceover_text = _read_text_file_safe(voiceover)
-    logger.info(
-        "split_xlsx: xlsx-дамп={} симв, voiceover.txt={} симв",
-        len(xlsx_text),
-        len(voiceover_text),
-    )
-
-    full_prompt = (
-        f"{prompt_text}\n\n"
-        f"Тема ролика: «{topic}».\n\n"
-        "Ниже — содержимое текущего project.xlsx этого ролика "
-        "(листы и ячейки в порядке). Сам файл также прикреплён как backup — "
-        "если видишь расхождения, считай каноном вот этот текстовый думп.\n\n"
-        "<<<XLSX_DUMP_START>>>\n"
-        f"{xlsx_text}\n"
-        "<<<XLSX_DUMP_END>>>\n\n"
-        "Ниже — текущий voiceover.txt (закадровый текст, который нужно "
-        "разбить на блоки):\n\n"
-        "<<<VOICEOVER_TXT_START>>>\n"
-        f"{voiceover_text}\n"
-        "<<<VOICEOVER_TXT_END>>>\n\n"
-        "Разбей закадровый текст согласно инструкции выше.\n\n"
-        "Формат ответа: пришли результат ответом в чат обычным текстом "
-        "(можно с переносами строк, блоками, нумерацией). Не обязательно "
-        "оборачивать какими-то маркерами. Если всё же решишь ответить файлом "
-        "(.txt UTF-8) — это тоже подойдёт. Главное — весь разбитый текст "
-        "без обрезок."
-    )
-
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = proj_xlsx.parent / "tmp_gpt"
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = out_dir / f"split_{ts}.txt"
 
+    # Промт идёт отдельным .txt-файлом вместе с voiceover.txt — так просил
+    # юзер. xlsx в шаге 3 не нужен — разбивка идёт по voiceover.txt.
+    prompt_file = out_dir / f"prompt_split_{ts}.txt"
+    prompt_file.write_text(
+        f"# Инструкция для GPT (шаг 3 «Разбивка на блоки»)\n"
+        f"# Тема ролика: «{topic}»\n\n"
+        f"{prompt_text}\n",
+        encoding="utf-8",
+    )
+
+    chat_msg = (
+        f"Тема ролика: «{topic}».\n\n"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file.name} — инструкция, что именно делать.\n"
+        f"  2. voiceover.txt — закадровый текст, который нужно разбить "
+        f"на блоки.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), примени к "
+        "второму (voiceover.txt).\n\n"
+        "Пришли результат обычным текстом в чат (можно с переносами "
+        "строк, блоками, нумерацией). Без маркеров, без .txt-файлов в ответе "
+        "(если всё же решишь ответить файлом — работает и этот fallback)."
+    )
+
     await msg.answer(
         f"▶ <b>Разбивка на блоки</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>\n\n"
-        "Открываю ChatGPT, прикрепляю xlsx + voiceover.txt, жду ответ. "
-        "До 15 минут. Не закрывай Chrome.",
+        "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
+        "<code>voiceover.txt</code>, жду ответ. До 15 минут. "
+        "Не закрывай Chrome.",
         parse_mode="HTML",
     )
 
@@ -1889,10 +1802,8 @@ async def _run_split_xlsx(
         async with browser_session() as bs:
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
-            # voiceover.txt вшит в текст промта выше — как файл больше не
-            # прикрепляем (он всё равно не загружался и был источником бага).
-            reply_text = await gpt.ask_with_file(
-                full_prompt, proj_xlsx, timeout=900
+            reply_text = await gpt.ask_with_files(
+                chat_msg, [prompt_file, voiceover], timeout=900
             )
             logger.info(
                 "split_xlsx: GPT reply len={} (project #{}, prompt={})",
