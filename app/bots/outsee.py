@@ -136,6 +136,33 @@ def _aspect_selectors(ratio: str) -> list[str]:
     ]
 
 
+# Селекторы dropdown-кнопки «Соотношение …» (открывает выбор aspect).
+# В outsee.io это <button>, у которого внутри лежит <span>«Соотношение»</span>
+# и <span>текущее_значение</span>.
+ASPECT_DROPDOWN_OPENER_SELECTORS: list[str] = [
+    "button:has(span:text-is('Соотношение'))",
+    "button:has-text('Соотношение')",
+    "[role='button']:has-text('Соотношение')",
+]
+
+
+def _aspect_option_selectors(ratio: str) -> list[str]:
+    """Селекторы пункта со значением aspect ratio в открывшемся
+    dropdown-списке. Текст пункта может быть ровно W:H."""
+    return [
+        f"[role='option']:text-is('{ratio}')",
+        f"[role='menuitem']:text-is('{ratio}')",
+        f"[role='radio']:text-is('{ratio}')",
+        f"button:text-is('{ratio}')",
+        f"li:text-is('{ratio}')",
+        f"div[role]:text-is('{ratio}')",
+        f"span:text-is('{ratio}')",
+        # Любой кликабельный родитель, у которого ровно ratio в дочернем span.
+        f"button:has(> span:text-is('{ratio}'))",
+        f"li:has(span:text-is('{ratio}'))",
+    ]
+
+
 async def _is_aspect_selected(page: Any, sel: str) -> bool | None:
     """Проверка, выбран ли вариант aspect-ratio после клика. None — не
     смогли определить (тогда не уверены)."""
@@ -173,17 +200,85 @@ async def _select_aspect_ratio(
     page: Any, ratio: str, *, where: str = "image",
     dumps: list[Path] | None = None,
 ) -> bool:
-    """Нажимает на кнопку нужного aspect ratio, делает best-effort
-    верификацию и при необходимости — повторный клик. Возвращает True если
-    точно/вероятно сработало.
+    """Выбирает aspect ratio в outsee.io. Поддерживает 2 типа UI:
+
+    1) **Dropdown-кнопка «Соотношение …»** (новый UI 2026): в правой
+       панели лежит <button> с двумя <span>: «Соотношение» + текущее
+       значение. Клик открывает попап со списком вариантов; кликаем
+       нужный.
+    2) **Прямая кнопка/радио с текстом ratio** (старый UI / fallback).
 
     Если кнопка не найдена — дампит страницу в outsee_dumps/ и (если
     передан dumps-список) добавляет туда пути файлов; вызывающий код
     может потом отправить их в TG."""
-    sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=6_000)
+    # 1) Сначала пробуем NEW UI: dropdown «Соотношение N:M».
+    opener_sel = await _first_visible(
+        page, ASPECT_DROPDOWN_OPENER_SELECTORS, timeout_ms=2_000
+    )
+    if opener_sel:
+        try:
+            opener = page.locator(opener_sel).first
+            # Если в кнопке уже стоит нужное значение — ничего не делаем.
+            try:
+                cur_text = (await opener.inner_text(timeout=1_000)) or ""
+            except Exception:  # noqa: BLE001
+                cur_text = ""
+            if ratio in cur_text:
+                logger.info(
+                    "outsee.{}: aspect {} уже выбран в dropdown ({})",
+                    where, ratio, cur_text.strip().replace("\n", " ")[:80],
+                )
+                return True
+            try:
+                await opener.scroll_into_view_if_needed(timeout=1_500)
+            except Exception:  # noqa: BLE001
+                pass
+            await opener.click(timeout=3_000)
+            logger.info(
+                "outsee.{}: aspect dropdown открыт (был '{}', хочу '{}')",
+                where, cur_text.strip().replace("\n", " ")[:60], ratio,
+            )
+            await asyncio.sleep(0.3)
+            opt_sel = await _first_visible(
+                page, _aspect_option_selectors(ratio), timeout_ms=4_000
+            )
+            if opt_sel:
+                try:
+                    await page.locator(opt_sel).first.click(timeout=3_000)
+                    logger.info(
+                        "outsee.{}: aspect {} — выбран в dropdown ({})",
+                        where, ratio, opt_sel,
+                    )
+                    await asyncio.sleep(0.3)
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.{}: aspect {} клик в dropdown упал: {} ({})",
+                        where, ratio, e, opt_sel,
+                    )
+            else:
+                logger.warning(
+                    "outsee.{}: aspect dropdown открыт, но опция '{}' "
+                    "не найдена",
+                    where, ratio,
+                )
+                # Пытаемся закрыть dropdown (Escape), чтобы не мешал.
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.{}: dropdown «Соотношение» поломался: {}",
+                where, e,
+            )
+
+    # 2) Fallback: ищем прямую кнопку/радио с текстом ratio (старый UI).
+    sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=4_000)
     if not sel:
         logger.warning(
-            "outsee.{}: aspect {} — кнопка не найдена за 6 сек",
+            "outsee.{}: aspect {} — ни dropdown «Соотношение», ни "
+            "прямая кнопка не найдены",
             where, ratio,
         )
         h, p = await _dump_page(page, f"aspect_{ratio.replace(':', 'x')}_notfound")
@@ -209,8 +304,6 @@ async def _select_aspect_ratio(
         )
         return False
 
-    # Best-effort верификация состояния. Если не получилось определить —
-    # не считаем это ошибкой (UI может не помечать выбранную опцию).
     await asyncio.sleep(0.3)
     ok = await _is_aspect_selected(page, sel)
     if ok is True:
@@ -219,8 +312,6 @@ async def _select_aspect_ratio(
             where, ratio, sel,
         )
         return True
-    # Не смогли подтвердить — попробуем кликнуть ещё раз, на случай если
-    # первый клик попал в hidden-twin (mobile/desktop).
     try:
         sel2 = await _first_visible(
             page, _aspect_selectors(ratio), timeout_ms=2_000
@@ -257,6 +348,49 @@ RELAX_SELECTORS: list[str] = [
     "*:has(> :text-is('Relax'))",
 ]
 
+# Селекторы тогла «Безлимит» — это противоположность Relax. На outsee.io
+# 2026: <button>...<span>Безлимит</span>...<div class='...bg-primary'>...
+# bg-primary = тогл ВКЛ (использовать платный безлимит = НЕ Relax).
+# bg-gray-* / без bg-primary = тогл ВЫКЛ (= Relax / медленная очередь).
+LIMIT_TOGGLE_SELECTORS: list[str] = [
+    "button:has(span:text-is('Безлимит'))",
+    "button:has-text('Безлимит')",
+    "[role='switch']:has-text('Безлимит')",
+]
+
+
+async def _read_limit_toggle_on(page: Any, sel: str) -> bool | None:
+    """True если тогл «Безлимит» включён, False если выключен,
+    None если не смогли определить."""
+    try:
+        loc = page.locator(sel).first
+        try:
+            cls = await loc.locator("div.rounded-full").first.get_attribute(
+                "class", timeout=500
+            ) or ""
+            cls_low = cls.lower()
+            if "bg-primary" in cls_low:
+                return True
+            if "bg-gray" in cls_low or "bg-zinc" in cls_low:
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+        # Запасной способ — позиция «шарика» (left-[18px] = ON).
+        try:
+            ball_cls = await loc.locator("div.absolute").first.get_attribute(
+                "class", timeout=300
+            ) or ""
+            ball_low = ball_cls.lower()
+            if "left-[18px]" in ball_low:
+                return True
+            if "left-[2px]" in ball_low:
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
 
 async def _toggle_relax(
     page: Any, *, want_on: bool, where: str = "image",
@@ -264,19 +398,55 @@ async def _toggle_relax(
 ) -> None:
     """Best-effort: ставит тогл Relax в нужное состояние.
 
-    Если тогла нет на странице (модель его не поддерживает) — тихо ничего
-    не делаем. Состояние читаем из aria-checked / aria-pressed; если их нет —
-    просто кликаем (если want_on=True). Если want_on=False и текущее
-    состояние неизвестно — не трогаем (лучше не выключать дефолт).
+    На outsee.io 2026 года тогл называется «Безлимит» и работает в
+    обратной семантике:
+      Relax (медленная очередь) ↔ Безлимит=OFF
+      Не-Relax (платный)         ↔ Безлимит=ON
 
-    Если want_on=True и кнопка не найдена — дампит страницу в
-    outsee_dumps/ (для отладки селектора).
+    Если тогл не нашёлся — пробуем старые «Relax»-селекторы. Если совсем
+    нет — тихо выходим (модель его не поддерживает). Если want_on=True и
+    кнопку не нашли — дампим страницу для отладки.
     """
+    # 1) Сначала пробуем NEW UI: «Безлимит».
+    limit_sel = await _first_visible(
+        page, LIMIT_TOGGLE_SELECTORS, timeout_ms=1_500
+    )
+    if limit_sel:
+        try:
+            current_on = await _read_limit_toggle_on(page, limit_sel)
+            # Семантика: relax want_on == True ⇔ Безлимит должно быть OFF.
+            desired_limit_on = not want_on
+            if current_on is desired_limit_on:
+                logger.info(
+                    "outsee.{}: Relax {} — Безлимит уже {} (тогл не трогаем)",
+                    where, "ON" if want_on else "OFF",
+                    "OFF" if desired_limit_on is False else "ON",
+                )
+                return
+            if current_on is None:
+                logger.info(
+                    "outsee.{}: Relax {} — состояние «Безлимит» неизвестно, "
+                    "кликаю один раз",
+                    where, "ON" if want_on else "OFF",
+                )
+            await page.locator(limit_sel).first.click(timeout=2_000)
+            logger.info(
+                "outsee.{}: тогл «Безлимит» переключён → хочу Relax={}",
+                where, "ON" if want_on else "OFF",
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.{}: тогл «Безлимит» поломался: {}", where, e,
+            )
+
+    # 2) Fallback: старые «Relax»-селекторы.
     sel = await _first_visible(page, RELAX_SELECTORS, timeout_ms=2_000)
     if not sel:
         if want_on:
             logger.warning(
-                "outsee.{}: Relax=on запрошен, но кнопка Relax не найдена",
+                "outsee.{}: Relax=on запрошен, но ни тогл «Безлимит», ни "
+                "кнопка «Relax» не найдены",
                 where,
             )
             h, p = await _dump_page(page, "relax_notfound")
@@ -287,7 +457,6 @@ async def _toggle_relax(
         return
     try:
         loc = page.locator(sel).first
-        # пробуем определить текущее состояние
         state: str | None = None
         for attr in ("aria-checked", "aria-pressed", "data-state"):
             try:
@@ -309,7 +478,6 @@ async def _toggle_relax(
             logger.info("outsee.{}: Relax уже выключен, пропускаем клик", where)
             return
         if not want_on and is_on is None:
-            # неизвестно — не трогаем дефолт, чтобы не сломать.
             logger.info(
                 "outsee.{}: Relax=off запрошен, но состояние неизвестно — не трогаем",
                 where,

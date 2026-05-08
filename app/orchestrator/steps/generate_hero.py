@@ -242,6 +242,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "описывает визуальный стиль (рендер, освещение, lens, цвет). "
             "Эти инструкции должны быть отражены в финальном промте — "
             "никакого «default» style; используем именно этот блок.\n\n"
+            "ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ 5000 "
+            "символов (включая пробелы). Если получается длиннее — "
+            "сожми описание, убери дубликаты, оставь только самое "
+            "важное. Главное чтобы влезло в 5000.\n\n"
             "Шаблон:\n\n"
             + hero_master
             + "\n\n---\n\nVisual style (применять обязательно):\n"
@@ -252,8 +256,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         gpt = ChatGPTBot(bs)
         hero_prompt = ""
         last_reply = ""
-        for attempt in range(1, 3):  # 2 попытки максимум
-            reply = await gpt.ask_fresh(hero_ask, timeout=600)
+        # Лимит длины промта в outsee.io. Если ChatGPT нагенерит больше —
+        # просим его сжать ещё одной попыткой.
+        OUTSEE_PROMPT_MAX = 5000
+        for attempt in range(1, 4):  # до 3 попыток
+            ask = hero_ask
+            if attempt > 1 and last_reply and len(last_reply) > OUTSEE_PROMPT_MAX:
+                # Целевая попытка сжатия — подаём прошлый ответ и просим уплотнить.
+                ask = (
+                    f"Прошлый ответ был {len(last_reply)} символов — это "
+                    f"больше лимита {OUTSEE_PROMPT_MAX}. Сожми его до "
+                    f"≤{OUTSEE_PROMPT_MAX} символов: убери повторы, "
+                    "объедини похожие пункты, оставь самое важное. "
+                    "Структуру (turnaround sheet) сохрани. Верни ТОЛЬКО "
+                    "новый сокращённый промт, без пояснений.\n\n"
+                    "Прошлый промт:\n\n" + last_reply
+                )
+            reply = await gpt.ask_fresh(ask, timeout=600)
             last_reply = reply or ""
             logger.info(
                 "[#{}] hero ChatGPT attempt {}: {} симв",
@@ -263,19 +282,32 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 "[#{}] hero ChatGPT preview:\n{}",
                 project.id, last_reply[:600],
             )
-            if last_reply and len(last_reply) >= 100:
-                hero_prompt = last_reply.strip()
+            if not last_reply or len(last_reply) < 100:
+                logger.warning(
+                    "[#{}] hero ChatGPT вернул слишком короткий ответ "
+                    "({} симв), пробую ещё раз",
+                    project.id, len(last_reply),
+                )
+                continue
+            hero_prompt = last_reply.strip()
+            if len(hero_prompt) <= OUTSEE_PROMPT_MAX:
                 break
             logger.warning(
-                "[#{}] hero ChatGPT вернул слишком короткий ответ ({} симв), "
-                "пробую ещё раз",
-                project.id, len(last_reply),
+                "[#{}] hero ChatGPT вернул {} симв (лимит {}), "
+                "прошу сжать",
+                project.id, len(hero_prompt), OUTSEE_PROMPT_MAX,
             )
         if not hero_prompt:
             raise RuntimeError(
-                f"ChatGPT не вернул заполненный hero-промт после 2 попыток. "
+                f"ChatGPT не вернул заполненный hero-промт после 3 попыток. "
                 f"Последний ответ ({len(last_reply)} симв): "
                 f"{last_reply[:200]!r}"
+            )
+        if len(hero_prompt) > OUTSEE_PROMPT_MAX:
+            logger.warning(
+                "[#{}] hero prompt всё ещё длиннее лимита: {} > {} — "
+                "отправляю как есть, outsee может не принять",
+                project.id, len(hero_prompt), OUTSEE_PROMPT_MAX,
             )
         # На вариациях 2..N подмешаем явный «keep same character» хинт —
         # outsee всё равно увидит референс, но текст в промте усилит сигнал.
