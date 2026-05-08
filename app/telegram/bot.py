@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
@@ -163,34 +164,76 @@ async def _last_project_id_fallback() -> int | None:
     return proj.id if proj is not None else None
 
 
-# Маркеры, между которыми GPT должен вернуть закадровый текст в чате.
-# Использование маркеров надёжнее, чем download-кнопка: ChatGPT регулярно
-# меняет UI карточек файлов, а Code Interpreter иногда зависает при
-# генерации файла. Текст в чате стабильно читается через innerText.
-VOICEOVER_START_MARKER = "<<<VOICEOVER_START>>>"
-VOICEOVER_END_MARKER = "<<<VOICEOVER_END>>>"
+def _xlsx_to_text_dump(
+    path: Path, max_chars: int = 60_000
+) -> str:
+    """Дампит все листы xlsx в plain-text, чтобы вшить содержимое прямо
+    в промт. Это нужно потому, что file-upload в ChatGPT регулярно
+    подвисает (превью карточки появляется, а сам POST не уходит) и GPT
+    не видит файла. Если данные дублированы в тексте промта — GPT всё
+    равно отвечает по делу.
 
+    Формат:
+        === Лист «<имя>» ===
+        A1 | B1 | C1
+        A2 | B2 | C2
+        ...
 
-def _extract_marked_content(
-    text: str, start_marker: str, end_marker: str
-) -> str | None:
-    """Вырезает контент между двумя маркерами из текста ответа GPT.
-
-    Возвращает None если хотя бы один маркер не найден или контент пустой.
-    Полезно когда в ответе помимо нужного куска есть ещё мета-комментарии
-    («готово, держи скрипт …»).
+    Если суммарный текст длиннее max_chars — обрезаем хвост и
+    добавляем '... (truncated)'.
     """
-    if not text:
-        return None
-    start_idx = text.find(start_marker)
-    if start_idx < 0:
-        return None
-    after_start = start_idx + len(start_marker)
-    end_idx = text.find(end_marker, after_start)
-    if end_idx < 0:
-        return None
-    content = text[after_start:end_idx].strip()
-    return content if content else None
+    try:
+        from openpyxl import load_workbook
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        wb = load_workbook(path, data_only=True, read_only=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("xlsx_to_text_dump: не смог открыть {}: {}", path, e)
+        return ""
+    parts: list[str] = []
+    for ws in wb.worksheets:
+        parts.append(f"=== Лист «{ws.title}» ===")
+        for row in ws.iter_rows(values_only=True):
+            cells = [
+                "" if v is None else str(v).replace("\t", " ").rstrip()
+                for v in row
+            ]
+            while cells and not cells[-1]:
+                cells.pop()
+            if not cells:
+                continue
+            parts.append(" | ".join(cells))
+        parts.append("")
+    text = "\n".join(parts).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n... (truncated)"
+    return text
+
+
+def _read_text_file_safe(
+    path: Path, max_chars: int = 60_000
+) -> str:
+    """Читает текстовый файл (UTF-8 / cp1251 fallback) и возвращает
+    содержимое строкой. Если длиннее max_chars — обрезает хвост.
+    Используется чтобы вшить voiceover.txt прямо в промт.
+    """
+    try:
+        raw = path.read_bytes()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("read_text_file_safe: не смог прочитать {}: {}", path, e)
+        return ""
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            text = raw.decode(enc).strip()
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    else:
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n... (truncated)"
+    return text
 
 
 def is_owner(msg: Message) -> bool:
@@ -1597,26 +1640,31 @@ async def _run_script_xlsx(
         return
     prompt_text = prompt_path.read_text(encoding="utf-8").strip()
 
+    # Дублируем содержимое xlsx прямо в текст промта. Это страховка от
+    # случаев, когда file-upload в ChatGPT подвисает (превью карточки есть, а
+    # POST /backend-api/files не уходит и GPT не видит файла). С инлайн-
+    # копией GPT в любом случае видит вход.
+    xlsx_text = _xlsx_to_text_dump(proj_xlsx)
+    logger.info(
+        "script_xlsx: xlsx-дамп для инлайн-промта = {} симв.",
+        len(xlsx_text),
+    )
+
     full_prompt = (
         f"{prompt_text}\n\n"
-        f"Прикреплённый файл — текущий project.xlsx этого ролика "
-        f"(тема: «{topic}»). Сгенерируй закадровый текст согласно "
-        "инструкции выше.\n\n"
-        "ВАЖНО — формат ответа:\n"
-        "1. ВЕСЬ закадровый текст верни ПРЯМО В ЭТОМ ЧАТЕ между "
-        f"маркерами `{VOICEOVER_START_MARKER}` и "
-        f"`{VOICEOVER_END_MARKER}`.\n"
-        "2. НЕ используй файлы (.txt и т.п.), НЕ используй Code "
-        "Interpreter / Python sandbox — пиши ответ обычным текстом "
-        "в чат.\n"
-        "3. Между маркерами должен быть только сам закадровый текст "
-        "без префиксов и пояснений (можно с переносами строк).\n"
-        "4. До или после маркеров можешь добавить короткий "
-        "комментарий — он будет проигнорирован.\n\n"
-        "Пример формата:\n"
-        f"`{VOICEOVER_START_MARKER}`\n"
-        "Здесь полный закадровый текст ролика…\n"
-        f"`{VOICEOVER_END_MARKER}`"
+        f"Тема ролика: «{topic}».\n\n"
+        "Ниже — содержимое текущего project.xlsx этого ролика "
+        "(листы и ячейки в порядке). Сам файл также прикреплён к этому "
+        "сообщению — если видишь расхождения, считай каноном вот этот "
+        "текстовый думп.\n\n"
+        "<<<XLSX_DUMP_START>>>\n"
+        f"{xlsx_text}\n"
+        "<<<XLSX_DUMP_END>>>\n\n"
+        "Сгенерируй закадровый текст согласно инструкции выше.\n\n"
+        "Формат ответа: пришли результат ответом в чат обычным текстом "
+        "(можно с переносами строк). Не обязательно оборачивать какими-то "
+        "маркерами. Если всё же решишь ответить файлом (.txt UTF-8) — это тоже "
+        "подойдёт. Главное — весь закадровый текст без обрезок."
     )
 
     voiceover = proj_xlsx.parent / "voiceover.txt"
@@ -1648,55 +1696,31 @@ async def _run_script_xlsx(
                 project_id,
                 prompt_name,
             )
-            # 1. Главный путь — content между маркерами в inline-ответе.
-            content = _extract_marked_content(
-                reply_text or "",
-                VOICEOVER_START_MARKER,
-                VOICEOVER_END_MARKER,
-            )
-            if content and len(content) >= 50:
+            raw = (reply_text or "").strip()
+            # 1. Главный путь — inline-ответ в чате.
+            if len(raw) >= 200:
                 logger.info(
-                    "script_xlsx: извлёк контент по маркерам, "
-                    "len={} символов",
-                    len(content),
+                    "script_xlsx: беру inline-ответ из чата, len={}",
+                    len(raw),
                 )
-                downloaded.write_text(content, encoding="utf-8")
+                downloaded.write_text(raw, encoding="utf-8")
             else:
-                # 2. Fallback A: GPT всё-таки приложил .txt файл — пробуем.
+                # 2. Fallback: GPT всё-таки приложил .txt файл — пробуем скачать.
                 logger.warning(
-                    "script_xlsx: маркеры в ответе не найдены или "
-                    "контент пустой (reply len={}), пробую скачать "
-                    "файл из ответа.",
-                    len(reply_text or ""),
+                    "script_xlsx: inline-ответ короткий (len={}), пробую "
+                    "скачать файл из ответа.",
+                    len(raw),
                 )
                 try:
                     await gpt.download_attachment_from_last_reply(
                         downloaded, timeout=60
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "script_xlsx: txt download failed: {}", e
-                    )
-                    # 3. Fallback B: используем raw inline-ответ если он
-                    #    достаточно длинный (без маркеров — может GPT
-                    #    проигнорировал инструкцию).
-                    raw = (reply_text or "").strip()
-                    if len(raw) >= 200:
-                        logger.warning(
-                            "script_xlsx: использую raw inline-ответ "
-                            "(маркеры не найдены), len={}",
-                            len(raw),
-                        )
-                        downloaded.write_text(raw, encoding="utf-8")
-                    else:
-                        raise RuntimeError(
-                            "GPT не вернул контент: "
-                            f"маркеры '{VOICEOVER_START_MARKER}'/"
-                            f"'{VOICEOVER_END_MARKER}' не найдены, "
-                            f"файл не скачался ({e}), "
-                            f"inline-ответ слишком короткий "
-                            f"(len={len(raw)})."
-                        ) from e
+                    raise RuntimeError(
+                        f"GPT не вернул закадровый текст: inline-ответ "
+                        f"слишком короткий (len={len(raw)}), файл не скачался ({e}). "
+                        f"Сырой ответ GPT: {raw!r}"
+                    ) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("script_xlsx failed: {}", e)
         await msg.answer(
@@ -1813,30 +1837,37 @@ async def _run_split_xlsx(
         return
     prompt_text = prompt_path.read_text(encoding="utf-8").strip()
 
+    # Дублируем xlsx и voiceover.txt прямо в текст промта. file-upload
+    # в ChatGPT подвисает (превью появляется, а POST не уходит); инлайн-копия
+    # гарантирует что GPT видит входные данные.
+    xlsx_text = _xlsx_to_text_dump(proj_xlsx)
+    voiceover_text = _read_text_file_safe(voiceover)
+    logger.info(
+        "split_xlsx: xlsx-дамп={} симв, voiceover.txt={} симв",
+        len(xlsx_text),
+        len(voiceover_text),
+    )
+
     full_prompt = (
         f"{prompt_text}\n\n"
-        "Прикреплены два файла:\n"
-        f"1. project.xlsx — текущий project.xlsx этого ролика "
-        f"(тема: «{topic}»).\n"
-        "2. voiceover.txt — закадровый текст, который нужно разбить "
-        "на блоки.\n\n"
+        f"Тема ролика: «{topic}».\n\n"
+        "Ниже — содержимое текущего project.xlsx этого ролика "
+        "(листы и ячейки в порядке). Сам файл также прикреплён как backup — "
+        "если видишь расхождения, считай каноном вот этот текстовый думп.\n\n"
+        "<<<XLSX_DUMP_START>>>\n"
+        f"{xlsx_text}\n"
+        "<<<XLSX_DUMP_END>>>\n\n"
+        "Ниже — текущий voiceover.txt (закадровый текст, который нужно "
+        "разбить на блоки):\n\n"
+        "<<<VOICEOVER_TXT_START>>>\n"
+        f"{voiceover_text}\n"
+        "<<<VOICEOVER_TXT_END>>>\n\n"
         "Разбей закадровый текст согласно инструкции выше.\n\n"
-        "ВАЖНО — формат ответа:\n"
-        "1. ВЕСЬ результат разбивки верни ПРЯМО В ЭТОМ ЧАТЕ между "
-        f"маркерами `{VOICEOVER_START_MARKER}` и "
-        f"`{VOICEOVER_END_MARKER}`.\n"
-        "2. НЕ используй файлы (.txt и т.п.), НЕ используй Code "
-        "Interpreter / Python sandbox — пиши ответ обычным текстом "
-        "в чат.\n"
-        "3. Между маркерами должен быть только сам разбитый текст "
-        "без префиксов и пояснений (можно с переносами строк, "
-        "блоками, нумерацией).\n"
-        "4. До или после маркеров можешь добавить короткий "
-        "комментарий — он будет проигнорирован.\n\n"
-        "Пример формата:\n"
-        f"`{VOICEOVER_START_MARKER}`\n"
-        "Здесь полный разбитый закадровый текст…\n"
-        f"`{VOICEOVER_END_MARKER}`"
+        "Формат ответа: пришли результат ответом в чат обычным текстом "
+        "(можно с переносами строк, блоками, нумерацией). Не обязательно "
+        "оборачивать какими-то маркерами. Если всё же решишь ответить файлом "
+        "(.txt UTF-8) — это тоже подойдёт. Главное — весь разбитый текст "
+        "без обрезок."
     )
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -1858,8 +1889,10 @@ async def _run_split_xlsx(
         async with browser_session() as bs:
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
-            reply_text = await gpt.ask_with_files(
-                full_prompt, [proj_xlsx, voiceover], timeout=900
+            # voiceover.txt вшит в текст промта выше — как файл больше не
+            # прикрепляем (он всё равно не загружался и был источником бага).
+            reply_text = await gpt.ask_with_file(
+                full_prompt, proj_xlsx, timeout=900
             )
             logger.info(
                 "split_xlsx: GPT reply len={} (project #{}, prompt={})",
@@ -1867,53 +1900,31 @@ async def _run_split_xlsx(
                 project_id,
                 prompt_name,
             )
-            # 1. Главный путь — content между маркерами в inline-ответе.
-            content = _extract_marked_content(
-                reply_text or "",
-                VOICEOVER_START_MARKER,
-                VOICEOVER_END_MARKER,
-            )
-            if content and len(content) >= 50:
+            raw = (reply_text or "").strip()
+            # 1. Главный путь — inline-ответ в чате.
+            if len(raw) >= 200:
                 logger.info(
-                    "split_xlsx: извлёк контент по маркерам, "
-                    "len={} символов",
-                    len(content),
+                    "split_xlsx: беру inline-ответ из чата, len={}",
+                    len(raw),
                 )
-                downloaded.write_text(content, encoding="utf-8")
+                downloaded.write_text(raw, encoding="utf-8")
             else:
-                # 2. Fallback A: GPT всё-таки приложил .txt файл — пробуем.
+                # 2. Fallback: GPT всё-таки приложил .txt файл — пробуем скачать.
                 logger.warning(
-                    "split_xlsx: маркеры в ответе не найдены или "
-                    "контент пустой (reply len={}), пробую скачать "
-                    "файл из ответа.",
-                    len(reply_text or ""),
+                    "split_xlsx: inline-ответ короткий (len={}), пробую "
+                    "скачать файл из ответа.",
+                    len(raw),
                 )
                 try:
                     await gpt.download_attachment_from_last_reply(
                         downloaded, timeout=60
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "split_xlsx: txt download failed: {}", e
-                    )
-                    # 3. Fallback B: используем raw inline-ответ.
-                    raw = (reply_text or "").strip()
-                    if len(raw) >= 200:
-                        logger.warning(
-                            "split_xlsx: использую raw inline-ответ "
-                            "(маркеры не найдены), len={}",
-                            len(raw),
-                        )
-                        downloaded.write_text(raw, encoding="utf-8")
-                    else:
-                        raise RuntimeError(
-                            "GPT не вернул контент: "
-                            f"маркеры '{VOICEOVER_START_MARKER}'/"
-                            f"'{VOICEOVER_END_MARKER}' не найдены, "
-                            f"файл не скачался ({e}), "
-                            f"inline-ответ слишком короткий "
-                            f"(len={len(raw)})."
-                        ) from e
+                    raise RuntimeError(
+                        f"GPT не вернул разбивку: inline-ответ слишком "
+                        f"короткий (len={len(raw)}), файл не скачался ({e}). "
+                        f"Сырой ответ GPT: {raw!r}"
+                    ) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("split_xlsx failed: {}", e)
         await msg.answer(
