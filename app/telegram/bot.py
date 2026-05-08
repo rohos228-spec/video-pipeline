@@ -1713,8 +1713,9 @@ async def _run_split_xlsx(
 ) -> None:
     """Запускает xlsx-flow для шага 3 «Разбивка на блоки»:
 
-    1) Открываем новый чат ChatGPT, прикрепляем project.xlsx + voiceover.txt,
-       шлём промт.
+    1) Открываем новый чат ChatGPT, прикрепляем 3 файла —
+       prompt_split_<ts>.txt + project.xlsx + voiceover.txt — шлём короткое
+       сообщение.
     2) Ждём ответ, скачиваем txt-файл из ответа GPT (или берём inline).
     3) Старый voiceover.txt бэкапим в old/<ts>_voiceover.txt.
     4) Сохраняем новый txt как data/videos/<slug>/voiceover.txt.
@@ -1764,8 +1765,9 @@ async def _run_split_xlsx(
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = out_dir / f"split_{ts}.txt"
 
-    # Промт идёт отдельным .txt-файлом вместе с voiceover.txt — так просил
-    # юзер. xlsx в шаге 3 не нужен — разбивка идёт по voiceover.txt.
+    # Промт идёт отдельным .txt-файлом, плюс project.xlsx и voiceover.txt —
+    # так просил юзер. xlsx нужен, чтобы GPT видел исходную структуру
+    # (лист «Общий план» и т.п.), voiceover.txt — то, что режем на блоки.
     prompt_file = out_dir / f"prompt_split_{ts}.txt"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 3 «Разбивка на блоки»)\n"
@@ -1776,12 +1778,13 @@ async def _run_split_xlsx(
 
     chat_msg = (
         f"Тема ролика: «{topic}».\n\n"
-        f"Прикреплены 2 файла:\n"
+        f"Прикреплены 3 файла:\n"
         f"  1. {prompt_file.name} — инструкция, что именно делать.\n"
-        f"  2. voiceover.txt — закадровый текст, который нужно разбить "
+        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n"
+        f"  3. voiceover.txt — закадровый текст, который нужно разбить "
         f"на блоки.\n\n"
-        "Сделай всё, что написано в первом файле (инструкция), примени к "
-        "второму (voiceover.txt).\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь "
+        "на структуру из project.xlsx и применяя к voiceover.txt.\n\n"
         "Пришли результат обычным текстом в чат (можно с переносами "
         "строк, блоками, нумерацией). Без маркеров, без .txt-файлов в ответе "
         "(если всё же решишь ответить файлом — работает и этот fallback)."
@@ -1792,8 +1795,8 @@ async def _run_split_xlsx(
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>\n\n"
         "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
-        "<code>voiceover.txt</code>, жду ответ. До 15 минут. "
-        "Не закрывай Chrome.",
+        "<code>project.xlsx</code> + <code>voiceover.txt</code>, жду ответ. "
+        "До 15 минут. Не закрывай Chrome.",
         parse_mode="HTML",
     )
 
@@ -1803,7 +1806,9 @@ async def _run_split_xlsx(
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
             reply_text = await gpt.ask_with_files(
-                chat_msg, [prompt_file, voiceover], timeout=900
+                chat_msg,
+                [prompt_file, proj_xlsx, voiceover],
+                timeout=900,
             )
             logger.info(
                 "split_xlsx: GPT reply len={} (project #{}, prompt={})",
