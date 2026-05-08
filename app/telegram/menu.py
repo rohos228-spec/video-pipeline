@@ -238,9 +238,17 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
         runnable = is_step_runnable(s, project.status) and wiz_ok
         # запущенный шаг не даём тыкать второй раз пока не закончится
         is_running_now = project.status is s.running_status
-        if is_running_now:
+        # ИСКЛЮЧЕНИЕ: для шага hero оставляем кнопку кликабельной даже
+        # при running-статусе — иначе из generating_hero нельзя выйти
+        # (если воркер завис, у юзера должна быть возможность открыть
+        # reset-подменю и прервать). on_project_step разруливает это.
+        keep_clickable_when_running = s.code == "hero"
+        if is_running_now and not keep_clickable_when_running:
             label = f"{icon} {s.n}. {s.title} · идёт…"
             cb = "noop"
+        elif is_running_now and keep_clickable_when_running:
+            label = f"{icon} {s.n}. {s.title} · идёт… (тык — управление)"
+            cb = f"proj:{project.id}:step:{s.code}"
         elif runnable:
             label = f"{icon} {s.n}. {s.title}"
             cb = f"proj:{project.id}:step:{s.code}"
