@@ -601,6 +601,141 @@ async def on_project_menu(cb: CallbackQuery) -> None:
         )
 
 
+# ----------------------------------------------------------------------
+# Шаг 4 (Hero) — подменю «продолжить / перезадать», cb=hero_menu:<pid>:<action>
+#
+# Действия:
+#   - continue     — продолжить как обычно (запросить недостающее
+#                    описание/вариацию или запустить генерацию).
+#   - reset_briefs — оставить стиль и кол-во героев, обнулить
+#                    описания+вариации и запросить заново начиная с героя 1.
+#   - reset_all    — обнулить вообще всё (стиль, кол-во, описания,
+#                    вариации) и начать с выбора стиля.
+
+@dp.callback_query(F.data.regexp(r"^hero_menu:\d+:(continue|reset_briefs|reset_all)$"))
+async def on_hero_menu_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    action = parts[2]
+    user_id = cb.from_user.id
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+
+        if action == "reset_briefs":
+            # Сохраняем стиль и hero_count, чистим описания+вариации.
+            project.hero_descriptions = []
+            project.hero_variations = []
+            # Pending стейты тоже на всякий случай чистим.
+            _pending_hero_brief.pop(user_id, None)
+            _pending_hero_variation.pop(user_id, None)
+            await s.flush()
+            await cb.answer("Описания/вариации сброшены")
+            n = project.hero_count or 0
+            if n <= 0:
+                await cb.message.answer(
+                    "Сбросил, но кол-во героев = 0. Чтобы задать заново — "
+                    "тыкни «🎨 Сменить стиль (всё с начала)» или жми «4. Hero» "
+                    "ещё раз и выбирай ❌-вариант."
+                )
+                return
+            # Сразу спрашиваем описание героя 1.
+            _pending_hero_brief[user_id] = (pid, 1)
+            await cb.message.answer(
+                _hero_brief_question_text(1, n),
+                parse_mode="HTML",
+            )
+            return
+
+        if action == "reset_all":
+            # Полный сброс: стиль, кол-во, описания, вариации.
+            overrides = dict(project.prompt_overrides or {})
+            overrides.pop("hero_style", None)
+            project.prompt_overrides = overrides
+            project.hero_count = None
+            project.hero_descriptions = []
+            project.hero_variations = []
+            project.hero_description = None
+            _pending_hero_brief.pop(user_id, None)
+            _pending_hero_variation.pop(user_id, None)
+            _pending_hero_style.pop(user_id, None)
+            await s.flush()
+            # Сразу запускаем выбор стиля (как при первом заходе в шаг 4).
+            _pending_hero_style[user_id] = pid
+            await cb.answer("Все параметры героев сброшены")
+            await cb.message.answer(
+                "🎨 <b>Шаг 4 (Hero) — стиль персонажа</b>\n\n"
+                "Выбери стиль из списка или добавь свой "
+                "(<code>+ Новый</code>):",
+                parse_mode="HTML",
+            )
+            await cb.message.answer(
+                _prompt_picker_text("hero_style", overrides),
+                reply_markup=_prompt_picker_kb(pid, "hero_style", overrides),
+                parse_mode="HTML",
+            )
+            return
+
+        # action == "continue" — обычный flow: дозапрашиваем недостающее
+        # или запускаем генерацию. Просто обрабатываем как обычный
+        # `proj:<pid>:step:hero` — но пропустив только что показанное
+        # подменю. Для этого временно ставим флаг pending_hero_style,
+        # что заставляет on_project_step пройти мимо «короткого
+        # подменю» (`if not _pending_hero_style.get(...)`).
+        await cb.answer("Продолжаю")
+        # Вычисляем что показать дальше (тот же набор условий что в
+        # on_project_step, но без подменю-проверки).
+        n = project.hero_count or 0
+        if n <= 0:
+            await cb.message.answer(
+                "0 героев — шаг пропускаем. Если хочешь героев — "
+                "жми «🎨 Сменить стиль (всё с начала)»."
+            )
+            return
+        descriptions = list(project.hero_descriptions or [])
+        variations = list(project.hero_variations or [])
+        if len(descriptions) < n:
+            next_idx = len(descriptions) + 1
+            _pending_hero_brief[user_id] = (pid, next_idx)
+            await cb.message.answer(
+                _hero_brief_question_text(next_idx, n),
+                parse_mode="HTML",
+            )
+            return
+        if len(variations) < n:
+            next_idx = len(variations) + 1
+            _pending_hero_variation[user_id] = (pid, next_idx)
+            await cb.message.answer(
+                _hero_variation_question_text(next_idx, n),
+                reply_markup=_hero_variation_kb(pid, next_idx),
+                parse_mode="HTML",
+            )
+            return
+        # Всё собрано → запускаем генерацию.
+        step = step_by_code("hero")
+        if step is not None:
+            project.status = step.running_status
+            total_variations = sum(int(v or 1) for v in variations[:n])
+            style_chosen = (
+                dict(project.prompt_overrides or {}).get("hero_style") or "default"
+            )
+            await cb.message.answer(
+                f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
+                f"Героев: {n}, всего изображений с вариациями: "
+                f"{total_variations}.\n"
+                f"Стиль: <code>{style_chosen}</code>\n"
+                f"Воркер подхватит за ~15 сек.",
+                parse_mode="HTML",
+            )
+
+
 @dp.callback_query(F.data.regexp(r"^proj:\d+:step:[a-z_]+$"))
 async def on_project_step(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
@@ -743,6 +878,25 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 and plib.is_valid_prompt_name(style_chosen)
                 and plib.prompt_path("hero_style", style_chosen).exists()
             )
+            # Если у проекта УЖЕ задано кол-во героев (даже частично с
+            # описаниями) — сначала показываем подменю «продолжить /
+            # перезадать». Это даёт юзеру возможность поменять описания
+            # или начать заново со стилем. На первом входе (hero_count
+            # is None) подменю не нужно — сразу обычный flow.
+            if (
+                project.hero_count is not None
+                and project.hero_count > 0
+                and not _pending_hero_brief.get(cb.from_user.id)
+                and not _pending_hero_variation.get(cb.from_user.id)
+                and not _pending_hero_style.get(cb.from_user.id)
+            ):
+                await cb.answer()
+                await cb.message.answer(
+                    _hero_reset_menu_text(project),
+                    reply_markup=_hero_reset_menu_kb(pid),
+                    parse_mode="HTML",
+                )
+                return
             if not style_ok:
                 # Просим выбрать стиль; после выбора сразу продолжим
                 # hero-flow в on_prompt_picker_cb (см. _pending_hero_style).
@@ -1679,6 +1833,60 @@ def _hero_variation_kb(pid: int, hero_idx: int) -> InlineKeyboardMarkup:
             for n in (1, 2, 3, 4, 5)
         ]
     ])
+
+
+def _hero_reset_menu_kb(pid: int) -> InlineKeyboardMarkup:
+    """Подменю «4. Hero», когда параметры уже заданы:
+    можно либо продолжить (запустить генерацию / достать недостающее),
+    либо сбросить параметры и задать всё заново."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="▶ Продолжить",
+            callback_data=f"hero_menu:{pid}:continue",
+        )],
+        [InlineKeyboardButton(
+            text="✏ Изменить только описания и вариации",
+            callback_data=f"hero_menu:{pid}:reset_briefs",
+        )],
+        [InlineKeyboardButton(
+            text="🎨 Сменить стиль (всё с начала)",
+            callback_data=f"hero_menu:{pid}:reset_all",
+        )],
+    ])
+
+
+def _hero_reset_menu_text(project: "Project") -> str:
+    overrides = dict(getattr(project, "prompt_overrides", None) or {})
+    style = overrides.get("hero_style") or "—"
+    n = project.hero_count
+    descriptions = list(project.hero_descriptions or [])
+    variations = list(project.hero_variations or [])
+    desc_lines: list[str] = []
+    for i in range(1, (n or 0) + 1):
+        d = descriptions[i - 1] if i - 1 < len(descriptions) else None
+        v = variations[i - 1] if i - 1 < len(variations) else None
+        d_short = (d[:50] + "…") if d and len(d) > 50 else (d or "—")
+        v_str = str(v) if v else "—"
+        desc_lines.append(
+            f"  • Герой {i}: «{d_short}», вариаций: <code>{v_str}</code>"
+        )
+    body = (
+        "<b>Шаг 4 (Hero) — что делаем?</b>\n\n"
+        f"Стиль: <code>{style}</code>\n"
+        f"Героев: <code>{n if n is not None else '—'}</code>\n"
+    )
+    if desc_lines:
+        body += "\n".join(desc_lines) + "\n\n"
+    else:
+        body += "\n"
+    body += (
+        "▶ <b>Продолжить</b> — донабрать недостающее или запустить генерацию.\n"
+        "✏ <b>Изменить только описания и вариации</b> — стиль и кол-во героев "
+        "оставляем, описания/вариации перезаполним заново.\n"
+        "🎨 <b>Сменить стиль (всё с начала)</b> — сбросить ВСЁ, начать с "
+        "выбора стиля."
+    )
+    return body
 
 
 def _hero_variation_question_text(idx: int, total: int) -> str:
