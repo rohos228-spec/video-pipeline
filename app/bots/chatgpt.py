@@ -296,13 +296,35 @@ class ChatGPTBot:
 
     async def _read_last_reply(self) -> str:
         page = await self._page_ready()
-        # Берём последний assistant-message целиком
+        # Берём последний assistant-message целиком. Перебираем несколько
+        # селекторов — ChatGPT периодически меняет атрибуты у контейнеров
+        # сообщений (`data-message-author-role` → `data-author-role` и т.п.).
         text = await page.evaluate(
             """() => {
-                const msgs = document.querySelectorAll("[data-message-author-role='assistant']");
-                if (msgs.length === 0) return '';
-                const last = msgs[msgs.length - 1];
-                return last.innerText || '';
+                const sels = [
+                    "[data-message-author-role='assistant']",
+                    "[data-author-role='assistant']",
+                    "[data-message-author='assistant']",
+                    "article[data-testid^='conversation-turn-']",
+                ];
+                for (const sel of sels) {
+                    const msgs = document.querySelectorAll(sel);
+                    if (msgs.length === 0) continue;
+                    // Берём последнее сообщение, которое НЕ от юзера.
+                    for (let i = msgs.length - 1; i >= 0; i--) {
+                        const m = msgs[i];
+                        const role = m.getAttribute('data-message-author-role')
+                            || m.getAttribute('data-author-role')
+                            || m.getAttribute('data-message-author')
+                            || '';
+                        if (role && role !== 'assistant') continue;
+                        // Если у элемента есть .markdown — берём его, иначе весь innerText.
+                        const md = m.querySelector('div.markdown, .markdown-content');
+                        const t = (md ? md.innerText : m.innerText) || '';
+                        if (t.trim().length > 0) return t;
+                    }
+                }
+                return '';
             }"""
         )
         return (text or "").strip()
@@ -595,13 +617,29 @@ class ChatGPTBot:
 
     async def _dump_last_assistant_html(self, *, max_chars: int = 4000) -> str:
         """Возвращает (и логирует) outerHTML последнего ответа ассистента —
-        для отладки селекторов скачивания. Большие ответы обрезаются."""
+        для отладки селекторов скачивания. Большие ответы обрезаются.
+
+        Если ни один селектор не нашёл сообщение — дампим main/body, чтобы
+        хоть что-то было для отладки.
+        """
         page = await self._page_ready()
         html = await page.evaluate(
             """() => {
-                const msgs = document.querySelectorAll("[data-message-author-role='assistant']");
-                if (msgs.length === 0) return '';
-                return msgs[msgs.length - 1].outerHTML || '';
+                const sels = [
+                    "[data-message-author-role='assistant']",
+                    "[data-author-role='assistant']",
+                    "[data-message-author='assistant']",
+                    "article[data-testid^='conversation-turn-']",
+                ];
+                for (const sel of sels) {
+                    const msgs = document.querySelectorAll(sel);
+                    if (msgs.length > 0) {
+                        return msgs[msgs.length - 1].outerHTML || '';
+                    }
+                }
+                // Fallback: ничего не нашли — дампим main/body.
+                const main = document.querySelector('main') || document.body;
+                return '[NO_ASSISTANT_FOUND] main/body=\\n' + (main.outerHTML || '');
             }"""
         )
         html = (html or "").strip()
