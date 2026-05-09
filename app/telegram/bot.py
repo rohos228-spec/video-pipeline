@@ -158,13 +158,17 @@ _pending_split_prompt: dict[int, int] = {}
 # user_id → project_id.
 _pending_voiceover_replace: dict[int, int] = {}
 
-# Ожидание ответа-файла на «✏️ Сопр. сообщение» (для gpt_text_overrides).
-# Юзер жмёт «📥 Получить файл» — бот шлёт .md с текущим текстом, и
-# одновременно регистрирует ожидание: ключ — message_id ОТПРАВЛЕННОГО
-# ботом сообщения с файлом, значение — (user_id, project_id, step_code).
-# Когда юзер ответит на это сообщение текстом или документом — мы найдём
-# соответствие и сохраним override.
+# Ожидание ответа на «✏️ Сопр. сообщение» (для gpt_text_overrides).
+# Поддерживаем два варианта матчинга — оба индексируют один и тот же
+# «активный» edit-сеанс юзера:
+#   1. По message_id — если юзер ответил (reply) именно на сообщение
+#      бота с .md-файлом. Ключ — message_id отправленного ботом
+#      сообщения, значение — (user_id, project_id, step_code).
+#   2. По user_id — если юзер просто прислал .md-файл / текст без
+#      reply. Ключ — user_id, значение — (project_id, step_code).
+# По любому совпадению override сохраняется. Запись чистится после.
 _pending_gpt_text_edit: dict[int, tuple[int, int, str]] = {}
+_pending_gpt_text_edit_by_user: dict[int, tuple[int, str]] = {}
 
 # Последний открытый юзером проект — для кнопки «📁 Последний проект»
 # в постоянной reply-клавиатуре. Обновляется при открытии меню проекта,
@@ -1393,13 +1397,22 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 f"✏️ Сопр. сообщение для шага «"
                 f"{plib.STEP_HUMAN_NAMES.get(step_code, step_code)}» "
                 f"(проект #{pid}).\n\n"
-                "Отредактируй и пришли мне обратно ОТВЕТОМ на это сообщение "
-                "(можно как .md / .txt-файл, или просто текстом).\n"
-                "Чтобы отменить — пришли ответом «отмена»."
+                "Отредактируй и пришли обратно — можно ОТВЕТОМ на это "
+                "сообщение или просто отдельным сообщением "
+                "(.md / .txt-файл, или текстом).\n"
+                "Чтобы отменить — пришли «отмена»."
             ),
         )
-        # Регистрируем ожидание: ключ — message_id отправленного бот-сообщения.
+        # Регистрируем ожидание сразу по двум ключам: message_id (если юзер
+        # сделает reply) и user_id (если юзер просто пришлёт следующим
+        # сообщением). Любой матч сработает.
         _pending_gpt_text_edit[sent.message_id] = (cb.from_user.id, pid, step_code)
+        _pending_gpt_text_edit_by_user[cb.from_user.id] = (pid, step_code)
+        logger.info(
+            "msgsend: registered pending gpt-text-edit for user={} pid={} step={} "
+            "(reply_to msg_id={})",
+            cb.from_user.id, pid, step_code, sent.message_id,
+        )
         return
 
     if action == "msgreset":
@@ -1738,26 +1751,38 @@ async def on_document_message(msg: Message) -> None:
         return
     user_id = msg.from_user.id if msg.from_user else 0
 
-    # Ответ-документ на «✏️ Сопр. сообщение» — сохраняем как override.
+    # Документ как ответ на «✏️ Сопр. сообщение». Пытаемся определить
+    # активный edit-сеанс: 1) по reply_to_message_id, 2) по user_id.
+    ed_pid_step: tuple[int, str] | None = None
     if msg.reply_to_message is not None:
         ed = _pending_gpt_text_edit.get(msg.reply_to_message.message_id)
         if ed is not None and ed[0] == user_id:
-            doc = msg.document
-            if doc is None:
-                await msg.answer("Не вижу файл — пришли заново.")
-                return
-            import tempfile
-            from pathlib import Path as _Path
-
-            with tempfile.NamedTemporaryFile(
-                suffix=".md", delete=False
-            ) as tmp:
-                tmp_path = _Path(tmp.name)
-            await msg.bot.download(doc, destination=str(tmp_path))
-            new_text = tmp_path.read_text(encoding="utf-8", errors="replace")
-            tmp_path.unlink(missing_ok=True)
-            await _on_gpt_text_edit_reply(msg, ed[1], ed[2], from_text=new_text)
+            ed_pid_step = (ed[1], ed[2])
+    if ed_pid_step is None:
+        ed_pid_step = _pending_gpt_text_edit_by_user.get(user_id)
+    if ed_pid_step is not None:
+        pid_e, step_e = ed_pid_step
+        doc = msg.document
+        if doc is None:
+            await msg.answer("Не вижу файл — пришли заново.")
             return
+        logger.info(
+            "on_document_message: gpt-text-edit reply detected user={} pid={} "
+            "step={} doc={}",
+            user_id, pid_e, step_e, doc.file_name,
+        )
+        import tempfile
+        from pathlib import Path as _Path
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", delete=False
+        ) as tmp:
+            tmp_path = _Path(tmp.name)
+        await msg.bot.download(doc, destination=str(tmp_path))
+        new_text = tmp_path.read_text(encoding="utf-8", errors="replace")
+        tmp_path.unlink(missing_ok=True)
+        await _on_gpt_text_edit_reply(msg, pid_e, step_e, from_text=new_text)
+        return
 
     # Замена voiceover.txt файлом
     pending_vo = _pending_voiceover_replace.get(user_id)
@@ -2049,12 +2074,31 @@ async def on_text_message(msg: Message) -> None:
         await _handle_prompt_name_input(msg, pid_p, step_p)
         return
 
-    # 4) Если это ответ на наше edit-сообщение «сопр. сообщения» (текстом).
+    # 4) Текст как ответ на «✏️ Сопр. сообщение». Сначала reply, потом
+    #    fallback на user-level pending (если юзер прислал просто текстом
+    #    без reply).
+    ed_pid_step: tuple[int, str] | None = None
     if msg.reply_to_message is not None:
         ed = _pending_gpt_text_edit.get(msg.reply_to_message.message_id)
         if ed is not None and ed[0] == user_id:
-            await _on_gpt_text_edit_reply(msg, ed[1], ed[2], from_text=text)
-            return
+            ed_pid_step = (ed[1], ed[2])
+    if ed_pid_step is None:
+        # Принимаем только если текст «отмена» либо длинный — иначе любая
+        # короткая фраза могла бы случайно сработать как override.
+        ed_user = _pending_gpt_text_edit_by_user.get(user_id)
+        if ed_user is not None and (
+            text.lower() == "отмена" or len(text) >= 80
+        ):
+            ed_pid_step = ed_user
+    if ed_pid_step is not None:
+        pid_e, step_e = ed_pid_step
+        logger.info(
+            "on_text_message: gpt-text-edit reply detected user={} pid={} "
+            "step={} len={}",
+            user_id, pid_e, step_e, len(text),
+        )
+        await _on_gpt_text_edit_reply(msg, pid_e, step_e, from_text=text)
+        return
 
     # 5) Иначе — может это ответ на edit-запрос (per-frame image prompt).
     if msg.reply_to_message is not None:
@@ -3083,21 +3127,30 @@ async def _build_gpt_text_for_edit(pid: int, step_code: str) -> str:
         return gtb.get_effective_text(project, step_code, **ctx)
 
 
+def _clear_pending_gpt_text_edit(user_id: int, pid: int, step_code: str) -> None:
+    """Снимает все pending-записи (по message_id и по user_id) для
+    указанной комбинации (user, project, step). Безопасно вызывать
+    несколько раз."""
+    for k, v in list(_pending_gpt_text_edit.items()):
+        if v == (user_id, pid, step_code):
+            _pending_gpt_text_edit.pop(k, None)
+    cur = _pending_gpt_text_edit_by_user.get(user_id)
+    if cur is not None and cur == (pid, step_code):
+        _pending_gpt_text_edit_by_user.pop(user_id, None)
+
+
 async def _on_gpt_text_edit_reply(
     msg: Message, pid: int, step_code: str, *, from_text: str
 ) -> None:
     """Обработчик ответа юзера на «✏️ Сопр. сообщение». Сохраняет
     новый текст в `Project.gpt_text_overrides[step_code]`."""
+    user_id = msg.from_user.id if msg.from_user else 0
     text = (from_text or "").strip()
     if not text:
         await msg.reply("Пустой текст — ничего не сохранил.")
         return
     if text.lower() == "отмена":
-        # Снимаем ожидание (кнопка callback_data использует id кнопки —
-        # удалить запись из dict проще через перебор).
-        for k, v in list(_pending_gpt_text_edit.items()):
-            if v == (msg.from_user.id if msg.from_user else 0, pid, step_code):
-                _pending_gpt_text_edit.pop(k, None)
+        _clear_pending_gpt_text_edit(user_id, pid, step_code)
         await msg.reply("Отменено. Override не сохранён.")
         return
     if not gtb.is_supported(step_code):
@@ -3111,11 +3164,12 @@ async def _on_gpt_text_edit_reply(
             await msg.reply(f"Проект #{pid} не найден.")
             return
         await gtb.set_override(s, project, step_code, text)
-    # Снимаем ожидание.
-    for k, v in list(_pending_gpt_text_edit.items()):
-        if v == (msg.from_user.id if msg.from_user else 0, pid, step_code):
-            _pending_gpt_text_edit.pop(k, None)
+    _clear_pending_gpt_text_edit(user_id, pid, step_code)
     human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    logger.info(
+        "gpt-text override saved: user={} pid={} step={} len={}",
+        user_id, pid, step_code, len(text),
+    )
     await msg.reply(
         f"✅ Отредактировано — сопр. сообщение для шага «{human}» "
         f"(проект #{pid}) обновлено. При следующем запуске пойдёт "
