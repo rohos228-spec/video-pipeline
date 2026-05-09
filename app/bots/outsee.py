@@ -593,6 +593,50 @@ _UI_ASSET_MARKERS = (
 )
 
 
+def _url_is_fresh(
+    url: str | None, net_events: list[tuple[float, str]] | None
+) -> bool:
+    """Returns True iff `url` actually came over the network in
+    `net_events` (list of (offset_sec, url) tuples) AFTER the Generate
+    click. Used by `_wait_image_url_strict` to filter out stale
+    cached/history images that appear in the DOM without a real
+    network load.
+
+    Semantics:
+      - `net_events is None` → caller didn't opt in; return True (legacy
+        behaviour, keeps backwards compat for any other future caller).
+      - `net_events == []` → caller opted in, but no candidate image
+        responses have arrived yet — return False (we'll re-check in
+        the next loop iteration).
+      - `net_events` non-empty → return True iff `url` matches one of
+        the events. Matching: exact string OR host+path equality
+        (strips query strings/fragments).
+    """
+    if not url:
+        return False
+    if net_events is None:
+        return True
+    if not net_events:
+        return False
+    fresh_urls = {u for _, u in net_events}
+    if url in fresh_urls:
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        target = urlparse(url)
+        for u in fresh_urls:
+            try:
+                p = urlparse(u)
+            except Exception:  # noqa: BLE001
+                continue
+            if p.netloc == target.netloc and p.path == target.path:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def _is_candidate_image_response(resp: Any) -> bool:
     """Подходит ли сетевой ответ под «вероятно, это результат nano-banana»:
     image/* (не svg/ico), не UI-ассет, тело ≥ 50 KB."""
@@ -802,9 +846,12 @@ class OutseeBot:
             )
 
             # 2.9) Reference-картинка (для hero-вариаций 2..N).
-            # На странице outsee.io image обычно есть скрытый input[type=file]
-            # для подгрузки референса/контекста. Если он есть — заливаем
-            # туда наш файл; если нет — логируем warning и продолжаем без него.
+            # На странице outsee.io image обычно есть СКРЫТЫй input[type=file]
+            # для подгрузки референса. Обычный _first_visible его НЕ найдёт
+            # (видимость=False), поэтому используем робастный хелпер
+            # `_attach_ref_image_robust`: он первым делом пытается видимый
+            # input, иначе берёт ЛЮБОЙ input[type=file] в DOM и бьёт
+            # set_input_files в него (по Playwright он работает на скрытых тоже).
             if reference_image is not None:
                 if not reference_image.exists():
                     logger.warning(
@@ -812,29 +859,14 @@ class OutseeBot:
                         reference_image,
                     )
                 else:
-                    file_sel = await _first_visible(
-                        page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000
+                    attached = await self._attach_ref_image_robust(
+                        page, reference_image, where="generate_image",
                     )
-                    if file_sel:
-                        try:
-                            await page.locator(file_sel).first.set_input_files(
-                                str(reference_image)
-                            )
-                            logger.info(
-                                "outsee.generate_image: reference {} загружен ({})",
-                                reference_image.name, file_sel,
-                            )
-                            # Дать UI секунду чтобы превью отрисовалось.
-                            await asyncio.sleep(1.0)
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(
-                                "outsee.generate_image: загрузка ref {} упала: {}",
-                                reference_image, e,
-                            )
-                    else:
-                        logger.warning(
-                            "outsee.generate_image: input[type=file] для ref не найден"
-                        )
+                    if not attached:
+                        h, p = await _dump_page(page, "ref_input_notfound")
+                        for x in (h, p):
+                            if x:
+                                dumps.append(x)
 
             # 3) кнопка generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
@@ -882,6 +914,7 @@ class OutseeBot:
                     baseline_result_img=baseline_result_img,
                     baseline_big_imgs=baseline_big_imgs,
                     baseline_all_srcs=baseline_dom_srcs,
+                    net_events=net_events,
                     gen_id=gen_id,
                 )
             except OutseeImageError as e:
@@ -928,6 +961,7 @@ class OutseeBot:
     ) -> GenerationResult:
         """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
         без перезаполнения промта. Сайт использует тот же промт и настройки."""
+        import time as _time
         import uuid as _uuid
 
         gen_id = gen_id or _uuid.uuid4().hex
@@ -941,6 +975,23 @@ class OutseeBot:
         baseline_result_img = await self._result_img_src(page)
         baseline_big_imgs = set(await self._all_big_imgs(page))
         baseline_dom_srcs = set(await self._all_img_srcs(page))
+
+        # На regenerate тоже ведём список реальных сетевых image-ответов
+        # ПОСЛЕ клика «Повторить» — это позволяет _wait_image_url_strict
+        # отфильтровать старые картинки, которые могут объвиться в DOM
+        # при ререндере карточки «Результат».
+        click_ts = _time.monotonic()
+        net_events: list[tuple[float, str]] = []
+
+        def _on_response(resp: Any) -> None:
+            try:
+                if not _is_candidate_image_response(resp):
+                    return
+                net_events.append((_time.monotonic() - click_ts, resp.url))
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("response", _on_response)
 
         try:
             retry_sel = await _first_visible(
@@ -964,6 +1015,8 @@ class OutseeBot:
                 )
             except Exception:  # noqa: BLE001
                 pass
+            click_ts = _time.monotonic()
+            net_events.clear()
             await page.locator(retry_sel).first.click()
             logger.info(
                 "outsee.regenerate_image: «Повторить» кликнут, жду картинку (gen_id={})",
@@ -976,10 +1029,14 @@ class OutseeBot:
                 baseline_result_img=baseline_result_img,
                 baseline_big_imgs=baseline_big_imgs,
                 baseline_all_srcs=baseline_dom_srcs,
+                net_events=net_events,
                 gen_id=gen_id,
             )
         finally:
-            pass
+            try:
+                page.remove_listener("response", _on_response)
+            except Exception:  # noqa: BLE001
+                pass
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1128,6 +1185,7 @@ class OutseeBot:
         baseline_result_img: str | None,
         baseline_big_imgs: set[str],
         baseline_all_srcs: set[str],
+        net_events: list[tuple[float, str]] | None = None,
         gen_id: str,
     ) -> str:
         """Жёсткое ожидание свежей картинки. Берётся ТОЛЬКО:
@@ -1138,10 +1196,18 @@ class OutseeBot:
         2) либо самая последняя `<img>`, появившаяся в DOM ПОСЛЕ нажатия
            Generate, прошедшая ту же проверку.
 
-        Никаких «сетевых fallback-ов» и «возьму самую большую» — это и был
-        источник косяков (приходила постер видосов / старая картинка из
-        кэша). Если за timeout условие не сработало — кидаем
-        OutseeImageError с подробным контекстом, что было/чего не хватило.
+        Если передан `net_events` (список (offset_sec, url) от listener'a
+        «response», очищенный в момент клика Generate) — выбранный URL
+        ДОПОЛНИТЕЛЬНО верифицируется: он должен быть в списке реально
+        пришедших по сети image-ответов ПОСЛЕ клика. Это отсекает
+        старые картинки из history/кэша, которые могут появиться в DOM при
+        ререндере без реальной сетевой загрузки. Если net_events=None или
+        пуст — верификация работает по старому (либеральному) пути.
+
+        Никаких «возьму самую большую» — это и был источник косяков
+        (приходила постер видосов / старая картинка из кэша). Если за
+        timeout условие не сработало — кидаем OutseeImageError с подробным
+        контекстом, что было/чего не хватило.
         """
         start = asyncio.get_event_loop().time()
         deadline = start + timeout
@@ -1162,20 +1228,28 @@ class OutseeBot:
                 and "data:image" not in current
             ):
                 # Дополнительно проверим, что эта картинка действительно
-                # новая (её не было в baseline-srcs) и полностью загружена.
+                # новая (её не было в baseline-srcs), полностью загружена
+                # и реально приходила по сети ПОСЛЕ клика Generate.
                 if current not in baseline_all_srcs:
                     if await self._img_is_loaded(page, current):
-                        logger.info(
-                            "_wait_image_url_strict: «Результат генерации» "
-                            "за {:.0f} сек: {}",
-                            elapsed,
-                            current[:140],
-                        )
-                        return current
+                        if not _url_is_fresh(current, net_events):
+                            # URL в DOM есть, но по сети он ещё не приходил
+                            # (или это «old cached», подсунутый из history) —
+                            # ждём дальше.
+                            pass
+                        else:
+                            logger.info(
+                                "_wait_image_url_strict: «Результат генерации» "
+                                "за {:.0f} сек: {}",
+                                elapsed,
+                                current[:140],
+                            )
+                            return current
 
             # 2) фоллбэк — новая ПОЛНОСТЬЮ ЗАГРУЖЕННАЯ <img> в DOM,
-            # которой не было в baseline. Берём ПОСЛЕДНЮЮ в порядке DOM —
-            # карточки результатов обычно добавляются в конец списка.
+            # которой не было в baseline. Берём ПОСЛЕДНЮЮ в порядке DOM,
+            # при этом ОБЯЗАТЕЛЬНО фильтруя по net_events (если переданы)
+            # — иначе легко подхватить старую картинку из history/cache.
             new_srcs = await self._completed_new_imgs(page, baseline_all_srcs)
             if new_srcs:
                 # фильтруем UI-ассеты по URL
@@ -1184,6 +1258,11 @@ class OutseeBot:
                     for u in new_srcs
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
                 ]
+                # Если включён net_events-фильтр (caller передал список) —
+                # оставляем только URL'ы, реально пришедшие по сети ПОСЛЕ
+                # клика Generate. См. `_url_is_fresh` — при net_events=None
+                # фильтр прозрачный, при пустом списке отфильтрует всё.
+                clean = [u for u in clean if _url_is_fresh(u, net_events)]
                 if clean:
                     chosen = clean[-1]
                     logger.info(
@@ -1226,6 +1305,88 @@ class OutseeBot:
                 "baseline_big_imgs": len(baseline_big_imgs),
             },
         )
+
+    async def _attach_ref_image_robust(
+        self,
+        page: Page,
+        image_path: Path,
+        *,
+        where: str,
+    ) -> bool:
+        """Робастная загрузка референсной картинки в input[type=file]
+        на странице outsee.io.
+
+        Порядок попыток:
+          1) Видимый input[type=file] (через _first_visible) — редко бывает,
+             но пусть будет. Быстрый path.
+          2) ЛЮБОЙ input[type=file] в DOM (вкл. скрытый). Playwright
+             `set_input_files` работает на скрытых input'ах тоже —
+             он не требует видимости. Берём ПОСЛЕДНИЙ (он в outsee
+             обычно и есть «видимый для юзера» — прикрепленный к самой
+             последней кнопке на экране).
+
+        Возвращает True в случае успеха. False — если input вообще не
+        нашлся в DOM или set_input_files упал. Свои dump'ы НЕ снимает —
+        это решает вызывающий (у него список `dumps`).
+        """
+        # 1) видимый input[type=file] (короткий таймаут — в outsee он почти
+        # всегда скрыт, ожидать видимость долго нет смысла).
+        file_sel = await _first_visible(
+            page, FILE_UPLOAD_SELECTORS, timeout_ms=2_000
+        )
+        if file_sel:
+            try:
+                await page.locator(file_sel).first.set_input_files(
+                    str(image_path)
+                )
+                logger.info(
+                    "outsee.{}: reference {} загружен в видимый input ({})",
+                    where, image_path.name, file_sel,
+                )
+                await asyncio.sleep(1.0)
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.{}: видимый input set_input_files упал: {}",
+                    where, e,
+                )
+
+        # 2) Скрытый/свёрнутый input. set_input_files работает без видимости.
+        try:
+            base = page.locator("input[type='file']")
+            count = await base.count()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.{}: locator('input[type=file]').count() упал: {}",
+                where, e,
+            )
+            count = 0
+        if count <= 0:
+            logger.warning(
+                "outsee.{}: input[type=file] не найден в DOM при попытке "
+                "загрузить референс {}",
+                where, image_path.name,
+            )
+            return False
+        # Берём последний input[type=file] — в outsee.io именно он
+        # привязан к UI-кнопке загрузки референса (предыдущие обычно
+        # для иных фич, вроде формы регистрации).
+        try:
+            await base.last.set_input_files(str(image_path))
+            logger.info(
+                "outsee.{}: reference {} загружен в скрытый input "
+                "(input[type=file] count={}, взят last)",
+                where, image_path.name, count,
+            )
+            await asyncio.sleep(1.0)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.{}: set_input_files в скрытый input упал: {} "
+                "(всего input[type=file] = {})",
+                where, e, count,
+            )
+            return False
 
     async def _img_is_loaded(self, page: Page, src: str) -> bool:
         """Проверяет, что `<img>` с таким src уже полностью загружена."""

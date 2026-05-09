@@ -20,14 +20,21 @@
   - `plan`   — Шаг 1 «План»
   - `script` — Шаг 2 «Закадровый текст»
   - `split`  — Шаг 3 «Разбивка на блоки»
+  - `hero`   — Шаг 4 «Hero» (per-hero/per-variation, с плейсхолдерами
+               `{{BRIEF}}` и `{{HERO_STYLE}}`, см. `_build_hero_default`)
   - `img_pr` — Шаг 5 «Промты картинок» (батч на все кадры разом)
 
-Шаги `hero` (4) и `anim_pr` (7) собирают текст ПО-РАЗНОМУ для каждой
-итерации (вариация героя / каждый кадр) — для них override текста на
-проекте плохо подходит. Если будем расширять — нужен механизм с
-плейсхолдерами `{{N}} / {{VOICEOVER}}` и подстановкой.
+Шаг `anim_pr` (7) собирает текст ПО-РАЗНОМУ для каждого кадра — для
+него override текста на проекте плохо подходит без отдельной системы
+плейсхолдеров `{{N}} / {{VOICEOVER}}`.
 Шаги 6 «Картинки» и 8 «Видео» не шлют текст в GPT (генерация в outsee),
 поэтому override для них тоже не нужен.
+
+Для `hero` шаблон (default или override) содержит литеральные плейсхолдеры
+`{{BRIEF}}` (описание конкретного героя) и `{{HERO_STYLE}}` (визуальный
+стиль из `prompts/04_hero_style/<name>.md`). Подстановка происходит в
+`generate_hero.py` для каждой пары (hero_idx, variation_idx) — так один
+и тот же шаблон работает и для нескольких героев в проекте.
 """
 
 from __future__ import annotations
@@ -41,7 +48,13 @@ from app.services.prompt_library import (
 )
 
 # Шаги, для которых поддерживается edit-override «сопр. сообщения».
-SUPPORTED_STEPS: tuple[str, ...] = ("plan", "script", "split", "img_pr")
+SUPPORTED_STEPS: tuple[str, ...] = ("plan", "script", "hero", "split", "img_pr")
+
+# Плейсхолдеры в шаблоне «сопр. сообщения» шага `hero`. Подставляются
+# в `generate_hero.py` отдельно для каждой пары (hero_idx, variation_idx)
+# — поэтому в самом шаблоне они хранятся литерально.
+HERO_PLACEHOLDER_BRIEF = "{{BRIEF}}"
+HERO_PLACEHOLDER_STYLE = "{{HERO_STYLE}}"
 
 
 def is_supported(step_code: str) -> bool:
@@ -113,6 +126,60 @@ def _build_split_default(
     )
 
 
+def _build_hero_default(project: Project) -> str:
+    """Шаг 4 — Hero. Один и тот же шаблон используется для всех героев
+    проекта и всех их вариаций. Конкретные `BRIEF` (описание героя) и
+    `HERO_STYLE` (визуальный стиль) подставляются в `generate_hero.py`
+    в момент запуска для каждой пары (hero_idx, variation_idx).
+
+    В шаблоне они оставлены литералами `{{BRIEF}}` / `{{HERO_STYLE}}`.
+    Override (если задан) тоже должен содержать эти плейсхолдеры — иначе
+    конкретное описание героя/стиля просто не попадёт в GPT.
+    """
+    hero_master = get_project_prompt(project, "hero").strip()
+    return (
+        "Сделай промт для генерации персонажа, который описан ниже. "
+        "Ты должен интегрировать персонажа в промт и прислать готовый "
+        "промт для генерации персонажа.\n\n"
+        "Структура промта (turnaround sheet) — ниже шаблоном. "
+        "Подставь в него характеристики персонажа из описания ниже, "
+        "верни ТОЛЬКО готовый текст промта (на английском, без кавычек, "
+        "без markdown-обрамления, без пояснений).\n\n"
+        "ВАЖНО: ОБЯЗАТЕЛЬНО учитывай блок «Visual style» ниже — он "
+        "описывает визуальный стиль (рендер, освещение, lens, цвет). "
+        "Эти инструкции должны быть отражены в финальном промте — "
+        "никакого «default» style; используем именно этот блок.\n\n"
+        "ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ 5000 "
+        "символов (включая пробелы). Если получается длиннее — "
+        "сожми описание, убери дубликаты, оставь только самое "
+        "важное. Главное чтобы влезло в 5000.\n\n"
+        "Шаблон:\n\n"
+        + hero_master
+        + "\n\n---\n\nVisual style (применять обязательно):\n"
+        + HERO_PLACEHOLDER_STYLE
+        + "\n\n---\n\nОписание персонажа:\n"
+        + HERO_PLACEHOLDER_BRIEF
+    )
+
+
+def render_hero_text(
+    template: str, *, brief: str, hero_style: str
+) -> str:
+    """Подставляет в шаблон «сопр. сообщения» шага `hero` конкретные
+    значения для одной пары (hero_idx, variation_idx).
+
+    Если в `hero_style` пусто — подставляется placeholder-фраза, чтобы
+    GPT не оставил пустую секцию (поведение совпадает с предыдущей
+    версией `generate_hero.py`).
+    """
+    style = (hero_style or "").strip() or (
+        "(не задан — используй кинематографический фото-реализм)"
+    )
+    out = template.replace(HERO_PLACEHOLDER_STYLE, style)
+    out = out.replace(HERO_PLACEHOLDER_BRIEF, (brief or "").strip())
+    return out
+
+
 def _build_img_pr_default(
     project: Project,
     *,
@@ -176,6 +243,8 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         return _build_script_default(project, **ctx)
     if step_code == "split":
         return _build_split_default(project, **ctx)
+    if step_code == "hero":
+        return _build_hero_default(project, **ctx)
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")

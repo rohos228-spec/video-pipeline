@@ -95,6 +95,16 @@ def picker_kb(
                 callback_data=f"prm:{pid}:{step_code}:msgmenu",
             ),
         ])
+    # Шорткат на picker'е стиля персонажа (`hero_style`) — туда юзер
+    # идёт каждый раз, когда настраивает шаг 4. Логично дать ему
+    # отсюда же доступ к «сопр. сообщению» самого шага 4 (`hero`).
+    if step_code == "hero_style" and gtb.is_supported("hero"):
+        rows.append([
+            InlineKeyboardButton(
+                text="✏️ Сопр. сообщение (Hero)",
+                callback_data=f"prm:{pid}:hero:msgmenu",
+            ),
+        ])
     rows.append([
         InlineKeyboardButton(
             text="⬅ Отмена",

@@ -38,7 +38,6 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
 from app.generation_options import (
-    ASPECT_RATIOS_BY_ID,
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
@@ -52,14 +51,21 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services import gpt_text_builder as gtb
 from app.services.hitl import send_hitl_photo
 from app.services.prompt_library import (
-    get_project_prompt,
     prompt_path,
     resolve_project_prompt_name,
 )
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
+
+# Hero turnaround sheet всегда генерится в ландшафтном 16:9 и с Relax=ON,
+# НЕЗАВИСИМО от настроек проекта (которые под shorts — 9:16 и
+# обычно Relax=OFF). Причина: референсный лист «стороны/выражения»
+# влезает в 16:9, а Relax при этом дёшевле и идёт без очереди.
+HERO_ASPECT_RATIO = "16:9"
+HERO_RELAX = True
 
 
 async def _send_outsee_dumps(
@@ -329,32 +335,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
         if not hero_prompt:
-            hero_master = get_project_prompt(project, "hero")
-            hero_ask = (
-                "Сделай промт для генерации персонажа, который описан ниже. "
-                "Ты должен интегрировать персонажа в промт и прислать готовый "
-                "промт для генерации персонажа.\n\n"
-                "Структура промта (turnaround sheet) — ниже шаблоном. "
-                "Подставь в него характеристики персонажа из описания ниже, "
-                "верни ТОЛЬКО готовый текст промта (на английском, без кавычек, "
-                "без markdown-обрамления, без пояснений).\n\n"
-                "ВАЖНО: ОБЯЗАТЕЛЬНО учитывай блок «Visual style» ниже — он "
-                "описывает визуальный стиль (рендер, освещение, lens, цвет). "
-                "Эти инструкции должны быть отражены в финальном промте — "
-                "никакого «default» style; используем именно этот блок.\n\n"
-                "ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ 5000 "
-                "символов (включая пробелы). Если получается длиннее — "
-                "сожми описание, убери дубликаты, оставь только самое "
-                "важное. Главное чтобы влезло в 5000.\n\n"
-                "Шаблон:\n\n"
-                + hero_master
-                + "\n\n---\n\nVisual style (применять обязательно):\n"
-                + (
-                    hero_style_content
-                    or "(не задан — используй кинематографический фото-реализм)"
-                )
-                + "\n\n---\n\nОписание персонажа:\n"
-                + user_brief
+            # Текст «сопр. сообщения» берём из gpt_text_builder — там же
+            # лежит выбор между юзерским override и дефолтом. Обязательно
+            # прогоняем через `render_hero_text` — в шаблоне живут литеральные
+            # плейсхолдеры `{{BRIEF}}` и `{{HERO_STYLE}}`, заполняем их
+            # отдельно для этого героя.
+            hero_template = gtb.get_effective_text(project, "hero")
+            hero_ask = gtb.render_hero_text(
+                hero_template, brief=user_brief, hero_style=hero_style_content,
             )
             gpt = ChatGPTBot(bs)
             last_reply = ""
@@ -470,9 +458,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         img_gen = IMAGE_GENERATORS_BY_ID.get(
             project.image_generator or DEFAULTS["image_generator"]
         )
-        ar = ASPECT_RATIOS_BY_ID.get(
-            project.aspect_ratio or DEFAULTS["aspect_ratio"]
-        )
+        # Aspect ratio и Relax для hero жёстко захардкожены: 16:9 + Relax=ON.
+        # См. HERO_ASPECT_RATIO / HERO_RELAX в верху файла.
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
             project.image_resolution or DEFAULTS["image_resolution"]
         )
@@ -504,10 +491,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 result = await outsee.generate_image(
                     prompt_text,
                     out_path,
-                    aspect_ratio=ar.outsee_slug if ar else "9:16",
+                    aspect_ratio=HERO_ASPECT_RATIO,
                     model_slug=img_gen.outsee_slug if img_gen else None,
                     resolution=ir.outsee_slug if ir else None,
-                    relax=bool(project.image_relax),
+                    relax=HERO_RELAX,
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=ref_path,
                     timeout=180,
