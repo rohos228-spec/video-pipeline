@@ -936,6 +936,20 @@ class OutseeBot:
                 len(baseline_dom_srcs),
             )
 
+            # Снимок текста плашки «Контент отклонён» ДО клика Generate.
+            # На свежеоткрытой странице outsee часто рендерит остаток
+            # rejection-плашки от предыдущего запроса (тот же браузерный
+            # контекст / history). Передаём этот текст в детектор, чтобы
+            # он не считал такую плашку «новой» ошибкой.
+            pre_rejected_text = await self._content_rejected_text(page)
+            if pre_rejected_text:
+                logger.info(
+                    "outsee.generate_image: pre-click rejected_text"
+                    " обнаружена ({} симв) — игнорю, считаю её остатком"
+                    " предыдущей попытки",
+                    len(pre_rejected_text),
+                )
+
             click_ts = _time.monotonic()
             net_events.clear()
             await page.locator(gen_sel).first.click()
@@ -954,6 +968,7 @@ class OutseeBot:
                     baseline_all_srcs=baseline_dom_srcs,
                     net_events=net_events,
                     gen_id=gen_id,
+                    pre_rejected_text=pre_rejected_text,
                 )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
@@ -1061,6 +1076,9 @@ class OutseeBot:
                 )
             except Exception:  # noqa: BLE001
                 pass
+            # Снимок rejection-плашки ДО клика «Повторить» — см. коммент
+            # в generate_image() про false-positive детект остатков.
+            pre_rejected_text = await self._content_rejected_text(page)
             click_ts = _time.monotonic()
             net_events.clear()
             await page.locator(retry_sel).first.click()
@@ -1077,6 +1095,7 @@ class OutseeBot:
                 baseline_all_srcs=baseline_dom_srcs,
                 net_events=net_events,
                 gen_id=gen_id,
+                pre_rejected_text=pre_rejected_text,
             )
         finally:
             try:
@@ -1233,6 +1252,7 @@ class OutseeBot:
         baseline_all_srcs: set[str],
         net_events: list[tuple[float, str]] | None = None,
         gen_id: str,
+        pre_rejected_text: str | None = None,
     ) -> str:
         """Жёсткое ожидание свежей картинки. Берётся ТОЛЬКО:
 
@@ -1328,15 +1348,28 @@ class OutseeBot:
             # 2.5) Детект плашки «Контент отклонён» (модерация).
             # Outsee показывает её прямо на странице — ждать дальше
             # бесполезно: токены уже возвращены, генерации не будет.
-            rejected_text = await self._content_rejected_text(page)
-            if rejected_text:
-                raise OutseeContentRejectedError(
-                    "outsee image: контент отклонён модерацией",
-                    context={
-                        "gen_id": gen_id,
-                        "rejection": rejected_text[:200],
-                    },
-                )
+            #
+            # ВАЖНО: не считаем «отклонёнкой» плашку, которая уже была
+            # видна на странице ДО клика Generate (например, осталась
+            # от предыдущего запроса в history-сайдбаре). Только новая
+            # плашка / другой текст. Иначе на свежеоткрытой странице
+            # с историей мы сразу же ловим old-rejection и репортим её
+            # как сегодняшнюю ошибку (выглядит как «43мс — отклонено»).
+            #
+            # Дополнительно: первые 3 секунды после клика игнорируем
+            # детект совсем — outsee.io обычно успевает показать spinner,
+            # а если плашка появляется правда — она будет видна и через
+            # 3 секунды.
+            if elapsed >= 3.0:
+                rejected_text = await self._content_rejected_text(page)
+                if rejected_text and rejected_text != pre_rejected_text:
+                    raise OutseeContentRejectedError(
+                        "outsee image: контент отклонён модерацией",
+                        context={
+                            "gen_id": gen_id,
+                            "rejection": rejected_text[:200],
+                        },
+                    )
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -1503,32 +1536,48 @@ class OutseeBot:
             return False
 
     async def _content_rejected_text(self, page: Page) -> str | None:
-        """Если на странице видна плашка «Контент отклонён» — возвращает
-        её текст, иначе None. Используется в _wait_image_url_strict для
-        мгновенного детекта модерационной ошибки (без ожидания timeout).
+        """Если на странице ВИДИМО показана плашка «Контент отклонён» —
+        возвращает её текст, иначе None.
 
-        Триггеры (любое совпадение по textContent body, case-insensitive):
-          - «Контент отклонён» / «Content rejected»
-          - «не прошёл модерацию»
-          - «содержит запрещённые слова» / «forbidden words»
-
-        Текст возвращаем только если плашка реально на экране (видима).
-        Это нужно потому, что строки могут попасть в JS-бандл outsee
-        и присутствовать в DOM как «спрятанные» error-templates."""
+        Видимость проверяется строго: display!=none, visibility!=hidden,
+        opacity>0, getBoundingClientRect>0, элемент в viewport, и все
+        предки тоже видимы. Без этого outsee даёт false-positive: их
+        React-bundle пререндерит шаблоны ошибок (`отклонённый контент /
+        запрещённые слова`) как невидимые компоненты с ненулевым rect."""
         try:
             text = await page.evaluate(
                 """() => {
                     const triggers = [
-                        'Контент отклон',  // «Контент отклонён»
+                        'Контент отклон',
                         'Content reject',
                         'не прошёл модер',
                         'содержит запрещ',
                         'forbidden word',
                     ];
-                    // ищем самый верхний видимый элемент, в textContent
-                    // которого есть один из триггеров.
+                    function isTrulyVisible(el) {
+                        const cs = window.getComputedStyle(el);
+                        if (cs.display === 'none') return false;
+                        if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+                        if (parseFloat(cs.opacity) === 0) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return false;
+                        if (r.bottom <= 0 || r.right <= 0) return false;
+                        if (r.top >= window.innerHeight) return false;
+                        if (r.left >= window.innerWidth) return false;
+                        let p = el.parentElement;
+                        while (p) {
+                            const pcs = window.getComputedStyle(p);
+                            if (pcs.display === 'none') return false;
+                            if (pcs.visibility === 'hidden' || pcs.visibility === 'collapse') return false;
+                            if (parseFloat(pcs.opacity) === 0) return false;
+                            p = p.parentElement;
+                        }
+                        return true;
+                    }
                     const all = Array.from(document.querySelectorAll('*'));
                     for (const el of all) {
+                        const tag = (el.tagName || '').toLowerCase();
+                        if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
                         const t = (el.textContent || '').trim();
                         if (!t || t.length > 1000) continue;
                         const low = t.toLowerCase();
@@ -1539,10 +1588,8 @@ class OutseeBot:
                             }
                         }
                         if (!hit) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.height > 0) {
-                            return t.slice(0, 300);
-                        }
+                        if (!isTrulyVisible(el)) continue;
+                        return t.slice(0, 300);
                     }
                     return null;
                 }"""

@@ -35,7 +35,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot
+from app.bots.outsee import (
+    OutseeBot,
+    OutseeContentRejectedError,
+    OutseeImageError,
+)
 from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
@@ -464,25 +468,65 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         if result is None:
             # Внутри generate_image_with_retries:
             #   - до 3 попыток с исходным prompt_text;
-            #   - если все 3 провалились (включая «Контент отклонён») —
-            #     просим ChatGPT переписать промт без триггеров и
-            #     ещё 3 попытки уже с переписанным.
-            # Дамп страницы в TG БОЛЬШЕ НЕ ШЛЁМ — пользователь попросил
-            # вообще не отправлять html/png-снимки на ошибки.
-            result = await generate_image_with_retries(
-                outsee, gpt,
-                prompt=prompt_text,
-                out_path=out_path,
-                max_attempts_per_prompt=3,
-                gpt_rewrite=True,
-                aspect_ratio=HERO_ASPECT_RATIO,
-                model_slug=img_gen.outsee_slug if img_gen else None,
-                resolution=ir.outsee_slug if ir else None,
-                relax=HERO_RELAX,
-                prompt_id_prefix=prompt_id_prefix,
-                reference_image=ref_path,
-                timeout=600,
-            )
+            #   - если все 3 провалились — ChatGPT переписывает промт
+            #     и ещё 3 попытки. Если все 6 провалились — ПАРКУЕМ
+            #     проект в failed и шлём в TG понятное сообщение,
+            #     иначе worker loop будет крутить бесконечно.
+            try:
+                result = await generate_image_with_retries(
+                    outsee, gpt,
+                    prompt=prompt_text,
+                    out_path=out_path,
+                    max_attempts_per_prompt=3,
+                    gpt_rewrite=True,
+                    aspect_ratio=HERO_ASPECT_RATIO,
+                    model_slug=img_gen.outsee_slug if img_gen else None,
+                    resolution=ir.outsee_slug if ir else None,
+                    relax=HERO_RELAX,
+                    prompt_id_prefix=prompt_id_prefix,
+                    reference_image=ref_path,
+                    timeout=600,
+                )
+            except OutseeImageError as e:
+                # Отличаем модерационный reject от прочего
+                # (таймаут/селектор отвалился) — текст в TG разный.
+                is_moderation = isinstance(e, OutseeContentRejectedError)
+                logger.error(
+                    "[#{}] hero pair=({}/{}, v{}/{}) RAN OUT попыток: {}",
+                    project.id, hero_idx, n_total, v_idx, n_variations,
+                    e.reason if hasattr(e, "reason") else str(e),
+                )
+                project.status = ProjectStatus.failed
+                await session.flush()
+                if is_moderation:
+                    msg = (
+                        f"🚫 Проект #{project.id} «{project.title or project.slug}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
+                        f"6 попыток в outsee подряд отклонены модерацией (3 оригинал + 3 после GPT-rewrite).\n\n"
+                        f"Проект переведён в <b>failed</b>. Действия:\n"
+                        f"1) Измени «Описание героя» в Настройках проекта (убери имена реальных людей, стран/эпох, религии — оставь нейтрально: «middle-aged scholarly anthropomorphic cat in robes»).\n"
+                        f"2) в /menu — «4. Hero» → «▶ Продолжить» (я верну статус в generating_hero перед ретраем).\n\n"
+                        f"Последняя ошибка от outsee:\n<code>{(getattr(e, 'reason', None) or str(e))[:400]}</code>"
+                    )
+                else:
+                    msg = (
+                        f"🚫 Проект #{project.id}: hero {hero_idx}/{n_total} v{v_idx}/{n_variations} — outsee 6 раз подряд провалился.\n"
+                        f"<code>{(getattr(e, 'reason', None) or str(e))[:600]}</code>\n"
+                        f"Проект в <b>failed</b>. Через /menu можно вернуть в generating_hero и повторить."
+                    )
+                try:
+                    await bot.send_message(
+                        settings.telegram_owner_chat_id,
+                        msg[:3800],
+                        parse_mode="HTML",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] не удалось отправить TG-ошибку пользователю",
+                        project.id,
+                    )
+                # Выходим ЧИСТО — без raise. worker loop увидит status=failed,
+                # commit-нет и больше не будет брать этот проект.
+                return
 
     # 5) Сохраняем артефакт ОДНОЙ вариации.
     file_path = Path(result.file_path)
