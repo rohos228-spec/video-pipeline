@@ -48,6 +48,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -68,6 +69,12 @@ from app.telegram.prompt_picker import (
     delete_kb as _prompt_delete_kb,
 )
 from app.telegram.prompt_picker import (
+    msg_menu_kb as _gpt_msg_menu_kb,
+)
+from app.telegram.prompt_picker import (
+    msg_menu_text as _gpt_msg_menu_text,
+)
+from app.telegram.prompt_picker import (
     overview_kb as _prompt_overview_kb,
 )
 from app.telegram.prompt_picker import (
@@ -81,7 +88,6 @@ from app.telegram.prompt_picker import (
 )
 from app.telegram.wizard import (
     handle_wizard_callback,
-    is_wizard_complete,
     send_wizard_question,
 )
 
@@ -151,6 +157,14 @@ _pending_split_prompt: dict[int, int] = {}
 # Юзер жмёт кнопку → бот просит прислать текст или .txt-файл.
 # user_id → project_id.
 _pending_voiceover_replace: dict[int, int] = {}
+
+# Ожидание ответа-файла на «✏️ Сопр. сообщение» (для gpt_text_overrides).
+# Юзер жмёт «📥 Получить файл» — бот шлёт .md с текущим текстом, и
+# одновременно регистрирует ожидание: ключ — message_id ОТПРАВЛЕННОГО
+# ботом сообщения с файлом, значение — (user_id, project_id, step_code).
+# Когда юзер ответит на это сообщение текстом или документом — мы найдём
+# соответствие и сохраним override.
+_pending_gpt_text_edit: dict[int, tuple[int, int, str]] = {}
 
 # Последний открытый юзером проект — для кнопки «📁 Последний проект»
 # в постоянной reply-клавиатуре. Обновляется при открытии меню проекта,
@@ -1315,10 +1329,96 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 await s.execute(select(Project).where(Project.id == pid))
             ).scalar_one_or_none()
             overrides = dict(project.prompt_overrides or {}) if project else {}
+            has_msg_override = (
+                gtb.has_override(project, step_code) if project else False
+            )
         await cb.answer()
         await cb.message.answer(
             _prompt_picker_text(step_code, overrides),
-            reply_markup=_prompt_picker_kb(pid, step_code, overrides),
+            reply_markup=_prompt_picker_kb(
+                pid, step_code, overrides, has_msg_override=has_msg_override
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "msgmenu":
+        # Открыть подменю «сопр. сообщения»: статус (default/override) +
+        # кнопки «📥 Получить файл», «🔄 Сбросить», «⬅ Назад».
+        if not gtb.is_supported(step_code):
+            await cb.answer("Шаг не поддерживает редактирование сопр. сообщения",
+                            show_alert=True)
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            has_ovr = gtb.has_override(project, step_code) if project else False
+        await cb.answer()
+        await cb.message.answer(
+            _gpt_msg_menu_text(step_code, has_ovr),
+            reply_markup=_gpt_msg_menu_kb(pid, step_code, has_ovr),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "msgsend":
+        # Сборка дефолтного «сопр. сообщения» для этого шага и отправка
+        # юзеру файлом .md. Регистрируем ожидание ответа.
+        if not gtb.is_supported(step_code):
+            await cb.answer("Шаг не поддерживает редактирование сопр. сообщения",
+                            show_alert=True)
+            return
+        try:
+            text = await _build_gpt_text_for_edit(pid, step_code)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("msgsend build failed: {}", e)
+            await cb.answer("Ошибка сборки текста", show_alert=True)
+            await cb.message.answer(f"❌ Ошибка сборки текста: {e}")
+            return
+
+        # Сохраняем .md-файл и шлём его.
+        from datetime import datetime as _dt
+        from pathlib import Path as _Path
+        ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+        out_dir = _Path(settings.data_dir) / "tmp_gpt_text_edits"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        f_path = out_dir / f"gpt_text_{step_code}_p{pid}_{ts}.md"
+        f_path.write_text(text, encoding="utf-8")
+
+        await cb.answer()
+        sent = await cb.message.answer_document(
+            FSInputFile(str(f_path)),
+            caption=(
+                f"✏️ Сопр. сообщение для шага «"
+                f"{plib.STEP_HUMAN_NAMES.get(step_code, step_code)}» "
+                f"(проект #{pid}).\n\n"
+                "Отредактируй и пришли мне обратно ОТВЕТОМ на это сообщение "
+                "(можно как .md / .txt-файл, или просто текстом).\n"
+                "Чтобы отменить — пришли ответом «отмена»."
+            ),
+        )
+        # Регистрируем ожидание: ключ — message_id отправленного бот-сообщения.
+        _pending_gpt_text_edit[sent.message_id] = (cb.from_user.id, pid, step_code)
+        return
+
+    if action == "msgreset":
+        # Удалить override. Перерисовать подменю.
+        if not gtb.is_supported(step_code):
+            await cb.answer("Шаг не поддерживает", show_alert=True)
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            await gtb.clear_override(s, project, step_code)
+        await cb.answer("Сброшено")
+        await cb.message.answer(
+            _gpt_msg_menu_text(step_code, has_override=False),
+            reply_markup=_gpt_msg_menu_kb(pid, step_code, has_override=False),
             parse_mode="HTML",
         )
         return
@@ -1638,6 +1738,27 @@ async def on_document_message(msg: Message) -> None:
         return
     user_id = msg.from_user.id if msg.from_user else 0
 
+    # Ответ-документ на «✏️ Сопр. сообщение» — сохраняем как override.
+    if msg.reply_to_message is not None:
+        ed = _pending_gpt_text_edit.get(msg.reply_to_message.message_id)
+        if ed is not None and ed[0] == user_id:
+            doc = msg.document
+            if doc is None:
+                await msg.answer("Не вижу файл — пришли заново.")
+                return
+            import tempfile
+            from pathlib import Path as _Path
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".md", delete=False
+            ) as tmp:
+                tmp_path = _Path(tmp.name)
+            await msg.bot.download(doc, destination=str(tmp_path))
+            new_text = tmp_path.read_text(encoding="utf-8", errors="replace")
+            tmp_path.unlink(missing_ok=True)
+            await _on_gpt_text_edit_reply(msg, ed[1], ed[2], from_text=new_text)
+            return
+
     # Замена voiceover.txt файлом
     pending_vo = _pending_voiceover_replace.get(user_id)
     if pending_vo is not None:
@@ -1928,7 +2049,14 @@ async def on_text_message(msg: Message) -> None:
         await _handle_prompt_name_input(msg, pid_p, step_p)
         return
 
-    # 4) Иначе — может это ответ на edit-запрос
+    # 4) Если это ответ на наше edit-сообщение «сопр. сообщения» (текстом).
+    if msg.reply_to_message is not None:
+        ed = _pending_gpt_text_edit.get(msg.reply_to_message.message_id)
+        if ed is not None and ed[0] == user_id:
+            await _on_gpt_text_edit_reply(msg, ed[1], ed[2], from_text=text)
+            return
+
+    # 5) Иначе — может это ответ на edit-запрос (per-frame image prompt).
     if msg.reply_to_message is not None:
         await _on_edit_reply(msg)
 
@@ -1999,7 +2127,7 @@ def _hero_reset_menu_kb(pid: int) -> InlineKeyboardMarkup:
     ])
 
 
-def _hero_reset_menu_text(project: "Project") -> str:
+def _hero_reset_menu_text(project: Project) -> str:
     overrides = dict(getattr(project, "prompt_overrides", None) or {})
     style = overrides.get("hero_style") or "—"
     n = project.hero_count
@@ -2210,26 +2338,25 @@ async def _run_plan_xlsx(
             parse_mode="HTML",
         )
         return
-    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
 
-    full_prompt = (
-        f"Тема ролика: {topic}\n\n"
-        f"{prompt_text}\n\n"
-        "Прикреплённый файл — текущий project.xlsx этого ролика. "
-        "Заполни его согласно инструкции выше и пришли мне обратно как "
-        ".xlsx (без обрезок и компрессии). Кратким текстом ответь — что "
-        "сделал — но главное верни файл."
-    )
+    # Берём «сопр. сообщение» из gpt_text_builder: либо override юзера,
+    # либо дефолт (мастер-промт + тема + инструкция по xlsx).
+    full_prompt = gtb.get_effective_text(project, "plan", topic=topic)
+    text_was_overridden = gtb.has_override(project, "plan")
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = proj_xlsx.parent / "tmp_gpt"
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = out_dir / f"plan_{ts}.xlsx"
 
+    override_note = (
+        "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
+        if text_was_overridden else ""
+    )
     await msg.answer(
         f"▶ <b>План</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
-        f"Промт: <code>{prompt_name}</code>\n\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
         f"Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 5 минут. "
         f"Не закрывай Chrome.",
         parse_mode="HTML",
@@ -2369,22 +2496,20 @@ async def _run_script_xlsx(
         encoding="utf-8",
     )
 
-    chat_msg = (
-        f"Тема ролика: «{topic}».\n\n"
-        f"Прикреплены 2 файла:\n"
-        f"  1. {prompt_file.name} — инструкция, что именно делать.\n"
-        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n\n"
-        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
-        "второй (project.xlsx).\n\n"
-        "Пришли результат обычным текстом в чат (можно с переносами "
-        "строк). Без маркеров, без .txt-файлов в ответе (если всё же решишь "
-        "ответить файлом — работает и этот fallback)."
+    # Сопр. сообщение — берём override юзера, либо собираем дефолт.
+    chat_msg = gtb.get_effective_text(
+        project, "script", prompt_file_name=prompt_file.name
     )
+    text_was_overridden = gtb.has_override(project, "script")
 
+    override_note = (
+        "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
+        if text_was_overridden else ""
+    )
     await msg.answer(
         f"▶ <b>Закадровый текст</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
-        f"Промт: <code>{prompt_name}</code>\n\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
         "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
         "<code>project.xlsx</code>, жду ответ. До 10 минут. Не закрывай Chrome.",
         parse_mode="HTML",
@@ -2563,25 +2688,19 @@ async def _run_split_xlsx(
         encoding="utf-8",
     )
 
-    chat_msg = (
-        f"Тема ролика: «{topic}».\n\n"
-        f"Прикреплены 3 файла:\n"
-        f"  1. {prompt_file.name} — инструкция, что именно делать.\n"
-        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n"
-        f"  3. voiceover.txt — закадровый текст, который нужно разбить "
-        f"на блоки.\n\n"
-        "Сделай всё, что написано в первом файле (инструкция), опираясь "
-        "на структуру из project.xlsx и применяя к voiceover.txt.\n\n"
-        "Все результаты ЗАПИШИ В project.xlsx (в нужные листы и ячейки) и "
-        "пришли мне обратно ОБНОВЛЁННЫЙ project.xlsx как .xlsx-файл "
-        "(без обрезок и компрессии). Кратким текстом ответь — что сделал — "
-        "но главное верни файл."
+    chat_msg = gtb.get_effective_text(
+        project, "split", prompt_file_name=prompt_file.name
     )
+    text_was_overridden = gtb.has_override(project, "split")
 
+    override_note = (
+        "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
+        if text_was_overridden else ""
+    )
     await msg.answer(
         f"▶ <b>Разбивка на блоки</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
-        f"Промт: <code>{prompt_name}</code>\n\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
         "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
         "<code>project.xlsx</code> + <code>voiceover.txt</code>, жду "
         "обновлённый xlsx. До 15 минут. Не закрывай Chrome.",
@@ -2928,6 +3047,80 @@ async def _hide_buttons_with_badge(msg: Any, badge: str) -> None:
             )
     except Exception:
         pass
+
+
+async def _build_gpt_text_for_edit(pid: int, step_code: str) -> str:
+    """Собирает «текущее» сопр. сообщение для шага: либо override юзера,
+    либо дефолт. Используется кнопкой «📥 Получить файл», чтобы дать юзеру
+    готовый шаблон для редактирования.
+
+    Контекст для шага `img_pr` (voiceover_line / n_frames) подтягивается
+    из реальных кадров проекта. Для `script` / `split` используется
+    placeholder-имя файла «prompt.txt» — фактическое имя зависит от
+    timestamp и не критично для редактирования.
+    """
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            raise RuntimeError(f"Проект #{pid} не найден")
+
+        ctx: dict = {}
+        if step_code == "img_pr":
+            frames = (
+                await s.execute(
+                    select(Frame)
+                    .where(Frame.project_id == pid)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            if frames:
+                ctx["voiceover_line"] = "-".join(
+                    (fr.voiceover_text or "").strip() for fr in frames
+                )
+                ctx["n_frames"] = len(frames)
+        return gtb.get_effective_text(project, step_code, **ctx)
+
+
+async def _on_gpt_text_edit_reply(
+    msg: Message, pid: int, step_code: str, *, from_text: str
+) -> None:
+    """Обработчик ответа юзера на «✏️ Сопр. сообщение». Сохраняет
+    новый текст в `Project.gpt_text_overrides[step_code]`."""
+    text = (from_text or "").strip()
+    if not text:
+        await msg.reply("Пустой текст — ничего не сохранил.")
+        return
+    if text.lower() == "отмена":
+        # Снимаем ожидание (кнопка callback_data использует id кнопки —
+        # удалить запись из dict проще через перебор).
+        for k, v in list(_pending_gpt_text_edit.items()):
+            if v == (msg.from_user.id if msg.from_user else 0, pid, step_code):
+                _pending_gpt_text_edit.pop(k, None)
+        await msg.reply("Отменено. Override не сохранён.")
+        return
+    if not gtb.is_supported(step_code):
+        await msg.reply(f"Шаг {step_code!r} не поддерживает override.")
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.reply(f"Проект #{pid} не найден.")
+            return
+        await gtb.set_override(s, project, step_code, text)
+    # Снимаем ожидание.
+    for k, v in list(_pending_gpt_text_edit.items()):
+        if v == (msg.from_user.id if msg.from_user else 0, pid, step_code):
+            _pending_gpt_text_edit.pop(k, None)
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.reply(
+        f"✅ Отредактировано — сопр. сообщение для шага «{human}» "
+        f"(проект #{pid}) обновлено. При следующем запуске пойдёт "
+        f"твой текст ({len(text)} символов)."
+    )
 
 
 async def _on_edit_reply(msg: Message) -> None:

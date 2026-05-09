@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
-from app.services.prompt_library import get_project_prompt
+from app.services.gpt_text_builder import get_effective_text
 from app.storage import for_project as _sheet_for_project
 
 # Минимальная длина одного image-промта в ответе. Меньше — почти
@@ -83,8 +83,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] generate_image_prompts starting (single GPT call mode)", project.id)
 
-    image_master = get_project_prompt(project, "img_pr")
-
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
@@ -119,39 +117,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         logger.info("[#{}] generate_image_prompts: все промты уже есть, skip GPT", project.id)
         return
 
-    # Hero-блок (если в проекте задан хотя бы один герой).
-    hero_text = (project.hero_description or "").strip()
-    descriptions = [d for d in (project.hero_descriptions or []) if d and d.strip()]
-    if not hero_text and descriptions:
-        hero_text = descriptions[0]
-    hero_section = ""
-    if hero_text:
-        hero_section = (
-            "\nЭталонное описание главного героя (использовать в кадрах "
-            "где он появляется):\n"
-            + hero_text
-            + "\n"
-        )
-
-    # Собираем единое сообщение для ChatGPT.
+    # Сборка «сопр. сообщения» вынесена в gpt_text_builder; там же
+    # учитывается per-project override юзера (если есть).
     voiceover_line = "-".join(
         (fr.voiceover_text or "").strip() for fr in frames
     )
-    full_prompt = (
-        image_master.strip()
-        + "\n\n"
-        + hero_section
-        + "\n---\n"
-        + f"Кадров: {len(frames)}.\n"
-        + "Закадровый текст по кадрам (между блоками знак «-»):\n"
-        + voiceover_line
-        + "\n\n"
-        + "Верни одним сообщением ровно "
-        + str(len(frames))
-        + " промтов в том же порядке, разделяя их знаком «-». "
-        + "Без нумерации, без пояснений, без заголовков. "
-        + "Внутри самих промтов знак «-» не используй (если нужен дефис "
-        + "— замени на пробел или подчёркивание)."
+    full_prompt = get_effective_text(
+        project,
+        "img_pr",
+        voiceover_line=voiceover_line,
+        n_frames=len(frames),
     )
 
     async with browser_session() as bs:

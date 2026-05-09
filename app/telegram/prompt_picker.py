@@ -11,6 +11,7 @@
   [ ✏ Редактировать выбранный ]
   [ + Новый промт ]
   [ 🗑 Удалить ]
+  [ ✏️ Сопр. сообщение ]   ← (только если шаг поддерживает override)
   [ ⬅ Отмена ]
 
 Callback-data:
@@ -21,12 +22,16 @@ Callback-data:
   prm:<pid>:<step>:del:<name>            — подтвердить удаление
   prm:<pid>:<step>:cancel                — закрыть picker
   prm:<pid>:<step>:menu                  — обновить picker (refresh)
+  prm:<pid>:<step>:msgmenu               — открыть подменю «сопр. сообщения»
+  prm:<pid>:<step>:msgsend               — отправить файл с текущим текстом
+  prm:<pid>:<step>:msgreset              — сбросить override на дефолт
 """
 
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
 
 
@@ -47,7 +52,11 @@ def picker_text(step_code: str, project_overrides: dict | None) -> str:
 
 
 def picker_kb(
-    pid: int, step_code: str, project_overrides: dict | None = None
+    pid: int,
+    step_code: str,
+    project_overrides: dict | None = None,
+    *,
+    has_msg_override: bool = False,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     chosen = (project_overrides or {}).get(step_code)
@@ -75,11 +84,69 @@ def picker_kb(
             callback_data=f"prm:{pid}:{step_code}:delask",
         ),
     ])
+    # Кнопка редактирования «сопр. сообщения» — только для шагов, в
+    # которых поддерживается override полного текста (см. SUPPORTED_STEPS
+    # в gpt_text_builder).
+    if gtb.is_supported(step_code):
+        marker = "✅ " if has_msg_override else ""
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{marker}✏️ Сопр. сообщение",
+                callback_data=f"prm:{pid}:{step_code}:msgmenu",
+            ),
+        ])
     rows.append([
         InlineKeyboardButton(
             text="⬅ Отмена",
             callback_data=f"prm:{pid}:{step_code}:cancel",
         ),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def msg_menu_text(step_code: str, has_override: bool) -> str:
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    status = (
+        "✅ <b>отредактировано пользователем</b>"
+        if has_override
+        else "<i>дефолтное (собирается из мастер-промта + контекста проекта)</i>"
+    )
+    return (
+        f"✏️ <b>Сопр. сообщение</b> для шага «{human}»\n\n"
+        f"Текущее состояние: {status}\n\n"
+        "Это тот текст, который уходит в ChatGPT вместе с прикреплёнными "
+        "файлами (project.xlsx и т.п.). Можно отредактировать его под "
+        "конкретный проект — изменения сохраняются в БД и применяются "
+        "при каждом запуске этого шага.\n\n"
+        "<b>Как редактировать:</b>\n"
+        "1. Жми «📥 Получить файл» — пришлю .md с текущим текстом.\n"
+        "2. Открой файл, отредактируй, сохрани.\n"
+        "3. Ответь на моё сообщение этим .md/.txt-файлом — заменю.\n\n"
+        "Чтобы вернуться к дефолту — «🔄 Сбросить»."
+    )
+
+
+def msg_menu_kb(pid: int, step_code: str, has_override: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="📥 Получить файл",
+                callback_data=f"prm:{pid}:{step_code}:msgsend",
+            )
+        ],
+    ]
+    if has_override:
+        rows.append([
+            InlineKeyboardButton(
+                text="🔄 Сбросить (вернуть дефолт)",
+                callback_data=f"prm:{pid}:{step_code}:msgreset",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅ Назад к picker'у",
+            callback_data=f"prm:{pid}:{step_code}:menu",
+        )
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

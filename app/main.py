@@ -48,6 +48,7 @@ async def _init_db() -> None:
             ("hero_variations", "JSON"),
             ("hero_variation_modifiers", "JSON"),
             ("prompt_overrides", "JSON"),
+            ("gpt_text_overrides", "JSON"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")

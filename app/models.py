@@ -153,6 +153,12 @@ class Project(Base):
     # Пример: {"plan": "default", "script": "horror_v2", "hero": "girl_v3"}.
     # Если ключа нет — берётся `default.md` из соответствующей папки.
     prompt_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Per-project override полного «сопр. сообщения», которое уходит в ChatGPT
+    # на конкретном шаге. Ключ — step_code (`plan`, `script`, `split`,
+    # `hero`, `img_pr`, `anim_pr`). Значение — отредактированный пользователем
+    # текст. Если ключа нет/значение пусто — собирается дефолт из мастер-
+    # промта + контекста проекта (см. `app.services.gpt_text_builder`).
+    gpt_text_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
