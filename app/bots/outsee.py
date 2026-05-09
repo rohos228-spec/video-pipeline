@@ -590,6 +590,98 @@ class OutseeContentRejectedError(OutseeImageError):
 # (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
 _MIN_IMAGE_BYTES = 50_000
 
+# Magic-байты файловых форматов, которые реально может вернуть nano-banana.
+# Используется в `_validate_downloaded_image` для отсева HTML-страниц,
+# error-pages и SVG-плейсхолдеров.
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_RIFF_MAGIC = b"RIFF"
+_WEBP_TAG = b"WEBP"
+
+
+def _validate_downloaded_image(
+    out_path: Path, *, gen_id: str, img_url: str
+) -> None:
+    """Проверяет, что скачанный файл — настоящая картинка от nano-banana,
+    а не placeholder/skeleton/error-page.
+
+    Бывает, что `_wait_image_url_strict` возвращает URL outsee-плейсхолдера
+    (тёмный фон с тремя белыми квадратами — outsee показывает его, пока
+    идёт генерация), и `_download_via_context` сохраняет этот мусор как
+    «результат». Бот потом отправляет это в TG, и пользователь видит
+    placeholder вместо реальной картинки.
+
+    Проверки:
+      1) размер файла >= `_MIN_IMAGE_BYTES` (50 KB) — placeholder/skeleton
+         сжимается в единицы KB, реальная nano-banana картинка 300 KB+;
+      2) magic-байты PNG/JPEG/WebP — отсекает HTML-страницы и SVG.
+
+    На любую неудачу — удаляем «битый» файл (чтобы случайно не
+    отправился в TG) и кидаем `OutseeImageError`. Retry-обёртка
+    (`outsee_retry.generate_image_with_retries`) увидит ошибку и
+    перезапустит генерацию с тем же или переписанным промтом.
+    """
+    try:
+        size = out_path.stat().st_size
+    except OSError as e:
+        raise OutseeImageError(
+            "outsee image: скачанный файл недоступен после download",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+
+    if size < _MIN_IMAGE_BYTES:
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeImageError(
+            "outsee image: скачанный файл слишком мал — похоже на "
+            "placeholder/skeleton, а не реальную генерацию",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "size_bytes": size,
+                "min_bytes": _MIN_IMAGE_BYTES,
+            },
+        )
+
+    try:
+        with out_path.open("rb") as f:
+            head = f.read(16)
+    except OSError as e:
+        raise OutseeImageError(
+            "outsee image: не удалось прочитать заголовок скачанного файла",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+
+    is_png = head.startswith(_PNG_MAGIC)
+    is_jpeg = head.startswith(_JPEG_MAGIC)
+    is_webp = head[:4] == _RIFF_MAGIC and head[8:12] == _WEBP_TAG
+    if not (is_png or is_jpeg or is_webp):
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeImageError(
+            "outsee image: скачанный файл не выглядит как PNG/JPEG/WebP "
+            "(возможно, error-page или SVG-плейсхолдер)",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "size_bytes": size,
+                "head_hex": head.hex(),
+            },
+        )
+
+
 # Пути, по которым точно не лежат результаты генерации.
 _UI_ASSET_MARKERS = (
     "/_next/",
@@ -1007,6 +1099,20 @@ class OutseeBot:
                 },
                 dumps=dumps,
             ) from e
+
+        # 5.1) валидация скачанного файла. Защита от placeholder/skeleton:
+        # outsee.io иногда отдаёт «загрузочный» PNG (тёмный фон с тремя
+        # белыми квадратами) как результат генерации, и без этой проверки
+        # бот сохраняет его и шлёт в TG. На неудачу — кидаем OutseeImageError,
+        # retry-обёртка повторит генерацию.
+        try:
+            _validate_downloaded_image(
+                out_path, gen_id=gen_id, img_url=img_url
+            )
+        except OutseeImageError as e:
+            e.dumps = list(dumps)
+            raise
+
         logger.info("outsee image saved → {} (gen_id={})", out_path, gen_id[:8])
         return GenerationResult(
             file_path=out_path, raw_url=img_url, gen_id=gen_id,
@@ -1115,6 +1221,10 @@ class OutseeBot:
                     "err": f"{type(e).__name__}: {e}",
                 },
             ) from e
+
+        # Валидация скачанного файла — см. комментарий в `generate_image`.
+        _validate_downloaded_image(out_path, gen_id=gen_id, img_url=img_url)
+
         logger.info(
             "outsee image regenerated → {} (gen_id={})", out_path, gen_id[:8]
         )
