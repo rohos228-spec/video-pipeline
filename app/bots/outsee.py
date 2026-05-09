@@ -577,6 +577,15 @@ class OutseeImageError(RuntimeError):
         return "\n".join(lines)
 
 
+class OutseeContentRejectedError(OutseeImageError):
+    """Outsee показал плашку «Контент отклонён» (модерация запрещённых
+    слов в промте). Отдельный класс, чтобы caller мог решить — ретраить
+    с тем же промтом или просить GPT переписать его без триггеров.
+
+    Сама `OutseeImageError` остаётся базовым классом, поэтому весь
+    существующий error-handling в caller'ах продолжит работать без правок."""
+
+
 # Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
 # (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
 _MIN_IMAGE_BYTES = 50_000
@@ -590,6 +599,19 @@ _UI_ASSET_MARKERS = (
     "/logo",
     "favicon",
     "sprite",
+)
+
+# Маркеры путей/имён, которые соответствуют ВЫБРАННОМУ ПОЛЬЗОВАТЕЛЕМ
+# референсу (то, что мы только что загрузили в input[type=file]) либо
+# его превью-копии. Эти URL outsee возвращает в DOM как «вот ваш инпут»
+# через несколько секунд после клика Generate, и без этого фильтра мы
+# их ошибочно принимаем за результат генерации (см. v=3-баг: бот сохранил
+# /temp-images/3787/input_*.png вместо реального результата).
+_INPUT_REF_MARKERS = (
+    "/temp-images/",
+    "/input_",
+    "/uploads/",
+    "/upload/",
 )
 
 
@@ -649,6 +671,10 @@ def _is_candidate_image_response(resp: Any) -> bool:
             return False
         low = url.lower()
         if any(marker in low for marker in _UI_ASSET_MARKERS):
+            return False
+        if any(marker in low for marker in _INPUT_REF_MARKERS):
+            # Это URL ВХОДНОГО референса (тот файл, который мы только что
+            # загрузили), а не результат генерации. Не считаем кандидатом.
             return False
         # Content-Length — дешёвый способ отсечь мелочь без .body()
         cl = resp.headers.get("content-length")
@@ -754,6 +780,18 @@ class OutseeBot:
             gen_id[:8], page_url,
         )
         page = await self.session.open_page(page_url, reuse=True)
+        # ВАЖНО: всегда «прокидываем» goto, чтобы сбросить состояние от
+        # предыдущей генерации (заполненный textarea, прикреплённый
+        # референс, плашка «Контент отклонён»). Без этого ретрай после
+        # ошибки на той же странице будет видеть остатки прошлой попытки
+        # и сразу падать с тем же диагнозом.
+        try:
+            await page.goto(page_url, wait_until="domcontentloaded")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.generate_image: page.goto({}) упал: {} — продолжаю "
+                "без явного reload", page_url, e,
+            )
         await page.wait_for_load_state("domcontentloaded")
         # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
         try:
@@ -917,6 +955,14 @@ class OutseeBot:
                     net_events=net_events,
                     gen_id=gen_id,
                 )
+            except OutseeContentRejectedError as e:
+                # Модерация — дамп НЕ снимаем (caller всё равно его не
+                # покажет, см. требование «не слать дампы при ошибках
+                # генерации»). Просто пробрасываем дальше — retry-обёртка
+                # сама решит: ретраить тот же промт или просить GPT
+                # переписать его без триггеров.
+                e.dumps = list(dumps)
+                raise
             except OutseeImageError as e:
                 # При таймауте дампим страницу — пригодится для отладки
                 # «почему Generate не запустил генерацию» и подбора селекторов.
@@ -1226,6 +1272,9 @@ class OutseeBot:
                 and current != baseline_result_img
                 and not current.endswith("/placeholder.svg")
                 and "data:image" not in current
+                and not any(
+                    m in current.lower() for m in _INPUT_REF_MARKERS
+                )
             ):
                 # Дополнительно проверим, что эта картинка действительно
                 # новая (её не было в baseline-srcs), полностью загружена
@@ -1252,11 +1301,13 @@ class OutseeBot:
             # — иначе легко подхватить старую картинку из history/cache.
             new_srcs = await self._completed_new_imgs(page, baseline_all_srcs)
             if new_srcs:
-                # фильтруем UI-ассеты по URL
+                # фильтруем UI-ассеты + входные референсы (см.
+                # _INPUT_REF_MARKERS) по URL.
                 clean = [
                     u
                     for u in new_srcs
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
+                    and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
                 ]
                 # Если включён net_events-фильтр (caller передал список) —
                 # оставляем только URL'ы, реально пришедшие по сети ПОСЛЕ
@@ -1273,6 +1324,19 @@ class OutseeBot:
                         len(clean),
                     )
                     return chosen
+
+            # 2.5) Детект плашки «Контент отклонён» (модерация).
+            # Outsee показывает её прямо на странице — ждать дальше
+            # бесполезно: токены уже возвращены, генерации не будет.
+            rejected_text = await self._content_rejected_text(page)
+            if rejected_text:
+                raise OutseeContentRejectedError(
+                    "outsee image: контент отклонён модерацией",
+                    context={
+                        "gen_id": gen_id,
+                        "rejection": rejected_text[:200],
+                    },
+                )
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -1316,10 +1380,19 @@ class OutseeBot:
         """Робастная загрузка референсной картинки в input[type=file]
         на странице outsee.io.
 
+        Перед загрузкой ОЧИЩАЕМ ВСЕ input[type=file] (set_input_files([])
+        каждому), чтобы не получить «стэкинг» референсов: в outsee
+        страница может переиспользоваться между генерациями (`reuse=True`),
+        и старый прикреплённый файл в input может остаться. Если на v=3
+        мы просто кинем set_input_files на last input, а в first input
+        ещё лежит файл от v=2 — outsee может прикрепить ОБА. См.
+        пользовательский баг «3-я генерация прикрепляет реф снова».
+
         Порядок попыток:
-          1) Видимый input[type=file] (через _first_visible) — редко бывает,
+          1) clear all: set_input_files([]) на каждый input[type=file] в DOM.
+          2) Видимый input[type=file] (через _first_visible) — редко бывает,
              но пусть будет. Быстрый path.
-          2) ЛЮБОЙ input[type=file] в DOM (вкл. скрытый). Playwright
+          3) ЛЮБОЙ input[type=file] в DOM (вкл. скрытый). Playwright
              `set_input_files` работает на скрытых input'ах тоже —
              он не требует видимости. Берём ПОСЛЕДНИЙ (он в outsee
              обычно и есть «видимый для юзера» — прикрепленный к самой
@@ -1329,6 +1402,30 @@ class OutseeBot:
         нашлся в DOM или set_input_files упал. Свои dump'ы НЕ снимает —
         это решает вызывающий (у него список `dumps`).
         """
+        # 0) очистка всех input[type=file] (на случай переиспользования
+        # страницы — старый референс мог остаться от предыдущей генерации).
+        try:
+            base_clear = page.locator("input[type='file']")
+            n_clear = await base_clear.count()
+        except Exception:  # noqa: BLE001
+            n_clear = 0
+        if n_clear > 0:
+            cleared = 0
+            for i in range(n_clear):
+                try:
+                    await base_clear.nth(i).set_input_files([])
+                    cleared += 1
+                except Exception:  # noqa: BLE001
+                    # некоторые input'ы могут быть недоступны для clear
+                    # (например, отвязаны от формы) — пропускаем.
+                    pass
+            if cleared > 0:
+                logger.info(
+                    "outsee.{}: очищено {}/{} input[type=file] перед "
+                    "загрузкой нового референса",
+                    where, cleared, n_clear,
+                )
+
         # 1) видимый input[type=file] (короткий таймаут — в outsee он почти
         # всегда скрыт, ожидать видимость долго нет смысла).
         file_sel = await _first_visible(
@@ -1405,6 +1502,57 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             return False
 
+    async def _content_rejected_text(self, page: Page) -> str | None:
+        """Если на странице видна плашка «Контент отклонён» — возвращает
+        её текст, иначе None. Используется в _wait_image_url_strict для
+        мгновенного детекта модерационной ошибки (без ожидания timeout).
+
+        Триггеры (любое совпадение по textContent body, case-insensitive):
+          - «Контент отклонён» / «Content rejected»
+          - «не прошёл модерацию»
+          - «содержит запрещённые слова» / «forbidden words»
+
+        Текст возвращаем только если плашка реально на экране (видима).
+        Это нужно потому, что строки могут попасть в JS-бандл outsee
+        и присутствовать в DOM как «спрятанные» error-templates."""
+        try:
+            text = await page.evaluate(
+                """() => {
+                    const triggers = [
+                        'Контент отклон',  // «Контент отклонён»
+                        'Content reject',
+                        'не прошёл модер',
+                        'содержит запрещ',
+                        'forbidden word',
+                    ];
+                    // ищем самый верхний видимый элемент, в textContent
+                    // которого есть один из триггеров.
+                    const all = Array.from(document.querySelectorAll('*'));
+                    for (const el of all) {
+                        const t = (el.textContent || '').trim();
+                        if (!t || t.length > 1000) continue;
+                        const low = t.toLowerCase();
+                        let hit = false;
+                        for (const tr of triggers) {
+                            if (low.includes(tr.toLowerCase())) {
+                                hit = true; break;
+                            }
+                        }
+                        if (!hit) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) {
+                            return t.slice(0, 300);
+                        }
+                    }
+                    return null;
+                }"""
+            )
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     # ----- VIDEO (veo-3-fast Relax) -----
 
     async def generate_video(
@@ -1428,6 +1576,16 @@ class OutseeBot:
         page_url = _video_page_url(model_slug)
         logger.info("outsee.generate_video: open url={}", page_url)
         page = await self.session.open_page(page_url, reuse=True)
+        # ВАЖНО: всегда reload, чтобы сбросить состояние от предыдущей
+        # генерации — иначе на ретрае останутся форма + start_frame +
+        # возможная плашка ошибки от прошлой попытки.
+        try:
+            await page.goto(page_url, wait_until="domcontentloaded")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.generate_video: page.goto({}) упал: {} — продолжаю "
+                "без явного reload", page_url, e,
+            )
         await page.wait_for_load_state("domcontentloaded")
         try:
             await page.wait_for_load_state("networkidle", timeout=15_000)

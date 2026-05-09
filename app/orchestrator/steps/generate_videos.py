@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
@@ -31,6 +32,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_text
+from app.services.outsee_retry import generate_video_with_retries
 from app.settings import settings
 
 
@@ -63,6 +65,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
+        # `gpt` — для GPT-rewrite внутри generate_video_with_retries:
+        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
+        # animation_prompt без триггеров модерации, потом ещё 3 попытки.
+        gpt = ChatGPTBot(bs)
 
         for fr in frames:
             if fr.status in (FrameStatus.video_generated, FrameStatus.video_approved,
@@ -97,9 +103,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             video_relax = bool(project.video_relax) and (
                 project.video_generator == "veo_3_1_fast"
             )
-            result = await outsee.generate_video(
-                fr.animation_prompt,
-                file_path,
+            # До 3 попыток с исходным animation_prompt; если все 3 провалились
+            # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
+            result = await generate_video_with_retries(
+                outsee, gpt,
+                prompt=fr.animation_prompt,
+                out_path=file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
                 start_frame=start_frame_path,
                 aspect_ratio=aspect_slug,
                 timeout=1200,

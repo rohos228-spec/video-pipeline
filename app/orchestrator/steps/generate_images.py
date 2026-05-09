@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot, OutseeImageError
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
@@ -50,6 +51,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_photo
+from app.services.outsee_retry import generate_image_with_retries
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -97,6 +99,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
+        # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
+        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
+        # промт без триггеров модерации, потом ещё 3 попытки.
+        gpt = ChatGPTBot(bs)
         while True:
             # 1) подхватить HITL-решения, требующие перегенерации
             await _apply_pending_regens(session, project.id)
@@ -105,7 +111,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             target = await _next_frame_to_process(session, project.id)
             if target is not None:
                 await _generate_and_send(
-                    session, bot, outsee, project, target, out_dir
+                    session, bot, outsee, gpt, project, target, out_dir
                 )
                 continue
 
@@ -216,6 +222,7 @@ async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
     outsee: OutseeBot,
+    gpt: ChatGPTBot,
     project: Project,
     frame: Frame,
     out_dir: Path,
@@ -298,9 +305,12 @@ async def _generate_and_send(
                     project.id,
                     frame.number,
                 )
-                result = await outsee.generate_image(
-                    frame.image_prompt,
-                    file_path,
+                result = await generate_image_with_retries(
+                    outsee, gpt,
+                    prompt=frame.image_prompt,
+                    out_path=file_path,
+                    max_attempts_per_prompt=3,
+                    gpt_rewrite=True,
                     aspect_ratio=aspect_slug,
                     gen_id=gen_id,
                     model_slug=model_slug,
@@ -309,9 +319,14 @@ async def _generate_and_send(
                     prompt_id_prefix=prompt_id_prefix,
                 )
         else:
-            result = await outsee.generate_image(
-                frame.image_prompt,
-                file_path,
+            # До 3 попыток с исходным image_prompt; если все 3 провалились —
+            # GPT-rewrite промта (убирает триггеры модерации) + ещё 3 попытки.
+            result = await generate_image_with_retries(
+                outsee, gpt,
+                prompt=frame.image_prompt,
+                out_path=file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
                 aspect_ratio=aspect_slug,
                 gen_id=gen_id,
                 model_slug=model_slug,

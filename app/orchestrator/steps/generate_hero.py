@@ -29,7 +29,6 @@ import uuid
 from pathlib import Path
 
 from aiogram import Bot
-from aiogram.types import FSInputFile
 from loguru import logger
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +52,7 @@ from app.models import (
 )
 from app.services import gpt_text_builder as gtb
 from app.services.hitl import send_hitl_photo
+from app.services.outsee_retry import generate_image_with_retries
 from app.services.prompt_library import (
     prompt_path,
     resolve_project_prompt_name,
@@ -66,37 +66,6 @@ from app.storage import for_project as _sheet_for_project
 # влезает в 16:9, а Relax при этом дёшевле и идёт без очереди.
 HERO_ASPECT_RATIO = "16:9"
 HERO_RELAX = True
-
-
-async def _send_outsee_dumps(
-    bot: Bot,
-    chat_id: int,
-    dumps: list[Path],
-    *,
-    caption_prefix: str,
-) -> None:
-    """Отправляет в TG dump-файлы (html/png) outsee-страницы. Используется
-    для отладки селекторов: если на странице outsee.io не нашлась нужная
-    кнопка (aspect/relax/Generate), хелпер `_dump_page` сохраняет HTML +
-    скриншот, мы их сюда складываем — и юзер пересылает разработчику."""
-    for path in dumps:
-        try:
-            if not path.exists():
-                continue
-            ext = path.suffix.lower()
-            cap = f"{caption_prefix}\n<code>{path.name}</code>"
-            if ext == ".png":
-                await bot.send_photo(
-                    chat_id, FSInputFile(str(path)),
-                    caption=cap, parse_mode="HTML",
-                )
-            else:
-                await bot.send_document(
-                    chat_id, FSInputFile(str(path)),
-                    caption=cap, parse_mode="HTML",
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("отправка dump {} в TG упала: {}", path, e)
 
 
 def _read_hero_style(project: Project) -> str | None:
@@ -315,8 +284,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         hero_style_content = ""
 
-    chat_id = settings.telegram_owner_chat_id
-
     # Загружаем уже готовый hero_prompt из meta артефакта v=1 (если есть и
     # это не его собственная регенерация).
     hero_prompt: str = ""
@@ -333,6 +300,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
 
     async with browser_session() as bs:
+        # `gpt` нужен ОБОИМ путям:
+        #   - v=1 / cache miss — для генерации hero_prompt из ChatGPT;
+        #   - любой v — для GPT-rewrite внутри generate_image_with_retries
+        #     (после 3 неудачных попыток в outsee он попросит ChatGPT
+        #     переписать промт без триггеров модерации).
+        gpt = ChatGPTBot(bs)
+
         # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
         if not hero_prompt:
             # Текст «сопр. сообщения» берём из gpt_text_builder — там же
@@ -344,7 +318,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             hero_ask = gtb.render_hero_text(
                 hero_template, brief=user_brief, hero_style=hero_style_content,
             )
-            gpt = ChatGPTBot(bs)
             last_reply = ""
             OUTSEE_PROMPT_MAX = 5000
             for attempt in range(1, 4):
@@ -402,28 +375,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
 
         # 2) Сборка финального prompt_text.
+        # v=1: полный hero_prompt от ChatGPT (без референса).
+        # v>=2: ТОЛЬКО текст-модификатор от пользователя + reference-картинка
+        #       (которая прикрепляется отдельно через `reference_image=`).
+        #       Полный hero_prompt НЕ повторяем — outsee получит «keep this
+        #       character + change <X>», где character закодирован в самом
+        #       reference image. Этот короткий промт сильно реже триггерит
+        #       модерацию, чем длинный hero_prompt с описанием анатомии.
         if v_idx == 1:
             prompt_text = hero_prompt
         else:
-            base_with_ref = (
-                "[REFERENCE: keep the EXACT SAME character from the "
-                "attached image — same face, hair, body. Different "
-                "pose / angle / outfit is fine, but identity must "
-                "match.]\n\n" + hero_prompt
-            )
             modifier_text = ""
             idx_in_mods = v_idx - 2
             if 0 <= idx_in_mods < len(variation_mods_for_hero):
                 modifier_text = variation_mods_for_hero[idx_in_mods]
-            if modifier_text:
-                prompt_text = (
-                    f"{base_with_ref}\n\n"
-                    f"[VARIATION {v_idx} CHANGES — keep the SAME character "
-                    f"from the reference, but change the following per "
-                    f"user request:]\n{modifier_text}"
-                )
+            if modifier_text.strip():
+                prompt_text = modifier_text.strip()
             else:
-                prompt_text = base_with_ref
+                # Модификатор не задан — отправляем минимально-короткую
+                # инструкцию: «другая поза/ракурс/наряд для того же
+                # персонажа на референсе». Без длинного hero_prompt.
+                prompt_text = (
+                    "Different pose, camera angle, or outfit for the same "
+                    "character shown in the reference image."
+                )
         logger.info(
             "[#{}] hero pair=({}, v{}): prompt {} симв "
             "(style='{}', regen={})",
@@ -487,38 +462,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 result = None
 
         if result is None:
-            try:
-                result = await outsee.generate_image(
-                    prompt_text,
-                    out_path,
-                    aspect_ratio=HERO_ASPECT_RATIO,
-                    model_slug=img_gen.outsee_slug if img_gen else None,
-                    resolution=ir.outsee_slug if ir else None,
-                    relax=HERO_RELAX,
-                    prompt_id_prefix=prompt_id_prefix,
-                    reference_image=ref_path,
-                    timeout=180,
-                )
-            except Exception as e:
-                dumps = list(getattr(e, "dumps", None) or [])
-                if dumps:
-                    await _send_outsee_dumps(
-                        bot, chat_id, dumps,
-                        caption_prefix=(
-                            f"Герой {hero_idx}/{n_total} v{v_idx}: "
-                            "outsee упал, дамп страницы для отладки"
-                        ),
-                    )
-                raise
-
-        res_dumps = list(getattr(result, "dumps", None) or [])
-        if res_dumps:
-            await _send_outsee_dumps(
-                bot, chat_id, res_dumps,
-                caption_prefix=(
-                    f"Герой {hero_idx}/{n_total} v{v_idx}: "
-                    "выявлены проблемы с UI outsee, см. дамп"
-                ),
+            # Внутри generate_image_with_retries:
+            #   - до 3 попыток с исходным prompt_text;
+            #   - если все 3 провалились (включая «Контент отклонён») —
+            #     просим ChatGPT переписать промт без триггеров и
+            #     ещё 3 попытки уже с переписанным.
+            # Дамп страницы в TG БОЛЬШЕ НЕ ШЛЁМ — пользователь попросил
+            # вообще не отправлять html/png-снимки на ошибки.
+            result = await generate_image_with_retries(
+                outsee, gpt,
+                prompt=prompt_text,
+                out_path=out_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                aspect_ratio=HERO_ASPECT_RATIO,
+                model_slug=img_gen.outsee_slug if img_gen else None,
+                resolution=ir.outsee_slug if ir else None,
+                relax=HERO_RELAX,
+                prompt_id_prefix=prompt_id_prefix,
+                reference_image=ref_path,
+                timeout=600,
             )
 
     # 5) Сохраняем артефакт ОДНОЙ вариации.
