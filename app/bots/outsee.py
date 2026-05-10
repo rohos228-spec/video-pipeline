@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -1382,53 +1383,74 @@ class OutseeBot:
         и возвращает src ближайшей к этому тексту `<img>`, удовлетворяющей
         проверкам (загружена, naturalWidth >= 200).
 
+        Пытается несколько токенов в порядке убывания строгости:
+          1) полный `[ID: P1-HERO1-V1-xxxxxxxx]` (как в промте);
+          2) то же без квадратных скобок и `ID:` — `P1-HERO1-V1-xxxxxxxx`
+             (на случай если outsee экранирует `[` `]` или вставляет
+             zero-width-чары между ними);
+          3) только 8-hex-tail (`xxxxxxxx`) — он глобально уникальный
+             (uuid.hex[:8]), и точно не подменится outsee'ем.
+
         Используется для строгой верификации: outsee показывает в карточке
         результата начало промта, и так как мы кладём `[ID: P1-HERO1-V1-…]`
         первой строкой каждого промта, у НАС всегда есть однозначный
         идентификатор для сопоставления «картинка ↔ моя генерация».
         Это отсекает любые старые/чужие фото из истории outsee.
         """
+        # Готовим набор токенов для матчинга — от самого строгого
+        # к самому либеральному. Cильные первыми, чтобы не подхватить
+        # 8-hex-чужого uuid'а если случайно их два совпало.
+        tokens: list[str] = [id_token]
+        # Полное содержимое скобок: `P1-HERO1-V1-xxxxxxxx`.
+        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
+        if m:
+            inner = m.group(1)
+            if inner not in tokens:
+                tokens.append(inner)
+        # 8-hex-tail. uuid.uuid4().hex[:8] всегда даёт ровно 8 hex-символов.
+        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
+        if m2:
+            tail = m2.group(1)
+            if tail and tail not in tokens:
+                tokens.append(tail)
+
         js = """
-        ([idToken, maxLevels]) => {
-            const all = document.querySelectorAll('*');
-            for (const el of all) {
-                if (!el || !el.children) continue;
-                // Оптимизация: пропускаем body / html — слишком общий контекст,
-                // там idToken может быть в любом месте, но <img> в первом
-                // <img>-потомке не обязательно «наш».
-                if (el === document.body || el === document.documentElement) continue;
-                const t = (el.innerText || el.textContent || '');
-                if (!t.includes(idToken)) continue;
-                // Не хотим брать слишком крупный контейнер (например, весь main),
-                // поэтому проверяем что idToken присутствует у *самого мелкого*
-                // подходящего узла — у которого хотя бы один потомок не содержит
-                // idToken (значит это мы внутри карточки, а не вокруг неё).
-                let smallest = el;
-                for (const child of el.children) {
-                    const ct = (child.innerText || child.textContent || '');
-                    if (ct.includes(idToken)) { smallest = null; break; }
-                }
-                if (!smallest) continue;
-                // Поднимаемся вверх до тех пор, пока в текущем узле или его
-                // ближайших потомках нет <img>.
-                let cur = smallest;
-                for (let i = 0; i < maxLevels && cur; i++) {
-                    const imgs = cur.querySelectorAll('img');
-                    for (const img of imgs) {
-                        if (!img.src) continue;
-                        if (img.src.startsWith('data:')) continue;
-                        if (!img.complete) continue;
-                        if (!img.naturalWidth || img.naturalWidth < 200) continue;
-                        return img.src;
+        ([tokens, maxLevels]) => {
+            for (const idToken of tokens) {
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    if (!el || !el.children) continue;
+                    if (el === document.body || el === document.documentElement) continue;
+                    const t = (el.innerText || el.textContent || '');
+                    if (!t.includes(idToken)) continue;
+                    // Спускаемся к самому мелкому уровню, где нашёлся idToken,
+                    // чтобы не схватить весь main с галереей.
+                    let smallest = el;
+                    for (const child of el.children) {
+                        const ct = (child.innerText || child.textContent || '');
+                        if (ct.includes(idToken)) { smallest = null; break; }
                     }
-                    cur = cur.parentElement;
+                    if (!smallest) continue;
+                    // Поднимаемся вверх до уровня, где есть <img>.
+                    let cur = smallest;
+                    for (let i = 0; i < maxLevels && cur; i++) {
+                        const imgs = cur.querySelectorAll('img');
+                        for (const img of imgs) {
+                            if (!img.src) continue;
+                            if (img.src.startsWith('data:')) continue;
+                            if (!img.complete) continue;
+                            if (!img.naturalWidth || img.naturalWidth < 200) continue;
+                            return img.src;
+                        }
+                        cur = cur.parentElement;
+                    }
                 }
             }
             return null;
         }
         """
         try:
-            res = await page.evaluate(js, [id_token, max_levels])
+            res = await page.evaluate(js, [tokens, max_levels])
             if isinstance(res, str) and res:
                 return res
             return None
@@ -1437,6 +1459,52 @@ class OutseeBot:
                 "_find_img_by_prompt_id: ошибка JS-поиска: {}", e
             )
             return None
+
+    async def _diag_id_in_page(
+        self, page: Page, id_token: str
+    ) -> dict[str, Any]:
+        """Диагностика: сообщает, встречается ли `id_token` (или его
+        составляющие) где-либо в DOM-тексте страницы. Используется,
+        когда `_find_img_by_prompt_id` не нашёл совпадения, чтобы понять
+        — outsee вообще не показывает наш ID, или показывает, но в
+        форме, которую наш JS не находит.
+        """
+        tokens: list[str] = [id_token]
+        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
+        if m:
+            tokens.append(m.group(1))
+        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
+        if m2:
+            tokens.append(m2.group(1))
+
+        js = """
+        ([tokens]) => {
+            const body = document.body;
+            const text = (body && (body.innerText || body.textContent)) || '';
+            const result = {};
+            for (const tok of tokens) {
+                result[tok] = text.includes(tok);
+            }
+            // Также вернём количество <img> в DOM с непустым src
+            const imgs = document.querySelectorAll('img');
+            let total = 0, complete = 0;
+            for (const img of imgs) {
+                if (!img.src || img.src.startsWith('data:')) continue;
+                total++;
+                if (img.complete && img.naturalWidth >= 200) complete++;
+            }
+            result['__imgs_total'] = total;
+            result['__imgs_complete'] = complete;
+            return result;
+        }
+        """
+        try:
+            res = await page.evaluate(js, [tokens])
+            if isinstance(res, dict):
+                return res
+            return {}
+        except Exception:  # noqa: BLE001
+            return {}
 
     async def _wait_image_url_strict(
         self,
@@ -1484,6 +1552,13 @@ class OutseeBot:
         deadline = start + timeout
         last_log = 0.0
         last_seen_result: str | None = None
+        # Кандидат от старой логики (baseline + net_events). Запоминаем
+        # его на ВСЁМ протяжении ожидания, но НЕ возвращаем сразу —
+        # чтобы дать шанс ID-верификации найти карточку с НАШИМ ID.
+        # Используем как safety-net на случай, если outsee почему-то
+        # не показывает [ID: ...] в видимом тексте к моменту таймаута.
+        fallback_candidate: str | None = None
+        fallback_source: str | None = None  # "result_block" | "new_dom"
 
         while asyncio.get_event_loop().time() < deadline:
             now = asyncio.get_event_loop().time()
@@ -1519,41 +1594,13 @@ class OutseeBot:
                             by_id[:140],
                         )
                         return by_id
-                # Если prompt_id_prefix задан, остальные эвристики
-                # (current/result-block, fallback по «новой <img> в DOM»)
-                # пропускаем — иначе они могут вернуть СТАРУЮ карточку
-                # из галереи, у которой ID отличается от нашего, и весь
-                # смысл verification теряется. Ждём следующей итерации.
-                #
-                # Кроме одного исключения: detector модерации (см. ниже)
-                # должен срабатывать в любом случае, чтобы мы не висели
-                # 600 сек на reject'е.
-                if elapsed >= 3.0:
-                    rejected_text = await self._content_rejected_text(page)
-                    if (
-                        rejected_text
-                        and rejected_text != pre_rejected_text
-                    ):
-                        raise OutseeContentRejectedError(
-                            "outsee image: контент отклонён модерацией",
-                            context={
-                                "gen_id": gen_id,
-                                "rejection": rejected_text[:200],
-                            },
-                        )
-                if elapsed - last_log > 15:
-                    last_log = elapsed
-                    logger.info(
-                        "_wait_image_url_strict: ждём карточку с ID {}, "
-                        "{:.0f} сек прошло (timeout {:.0f} сек)",
-                        prompt_id_prefix,
-                        elapsed,
-                        timeout,
-                    )
-                await asyncio.sleep(1.0)
-                continue
 
-            # 1) приоритет — блок «Результат генерации»
+            # 1) Параллельно — отслеживаем кандидата по «старой» логике
+            # (baseline + net_events). Сохраняем последнего подходящего
+            # в `fallback_candidate`, но НЕ возвращаем сразу: даём шанс
+            # ID-верификации найти именно НАШУ карточку. Если ID-поиск
+            # за весь timeout ничего не найдёт, возьмём этот кандидат
+            # как safety-net (с WARNING в лог).
             current = await self._result_img_src(page)
             last_seen_result = current
             if (
@@ -1564,18 +1611,16 @@ class OutseeBot:
                 and not any(
                     m in current.lower() for m in _INPUT_REF_MARKERS
                 )
+                and not any(
+                    m in current.lower() for m in _UI_ASSET_MARKERS
+                )
+                and current not in baseline_all_srcs
             ):
-                # Дополнительно проверим, что эта картинка действительно
-                # новая (её не было в baseline-srcs), полностью загружена
-                # и реально приходила по сети ПОСЛЕ клика Generate.
-                if current not in baseline_all_srcs:
-                    if await self._img_is_loaded(page, current):
-                        if not _url_is_fresh(current, net_events):
-                            # URL в DOM есть, но по сети он ещё не приходил
-                            # (или это «old cached», подсунутый из history) —
-                            # ждём дальше.
-                            pass
-                        else:
+                if await self._img_is_loaded(page, current):
+                    if _url_is_fresh(current, net_events):
+                        if not prompt_id_prefix:
+                            # Без ID-верификации — возвращаем сразу
+                            # (старое поведение).
                             logger.info(
                                 "_wait_image_url_strict: «Результат генерации» "
                                 "за {:.0f} сек: {}",
@@ -1583,52 +1628,39 @@ class OutseeBot:
                                 current[:140],
                             )
                             return current
+                        else:
+                            # С ID-верификацией — только запоминаем.
+                            fallback_candidate = current
+                            fallback_source = "result_block"
 
-            # 2) фоллбэк — новая ПОЛНОСТЬЮ ЗАГРУЖЕННАЯ <img> в DOM,
-            # которой не было в baseline. Берём ПОСЛЕДНЮЮ в порядке DOM,
-            # при этом ОБЯЗАТЕЛЬНО фильтруя по net_events (если переданы)
-            # — иначе легко подхватить старую картинку из history/cache.
             new_srcs = await self._completed_new_imgs(page, baseline_all_srcs)
             if new_srcs:
-                # фильтруем UI-ассеты + входные референсы (см.
-                # _INPUT_REF_MARKERS) по URL.
                 clean = [
                     u
                     for u in new_srcs
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
                 ]
-                # Если включён net_events-фильтр (caller передал список) —
-                # оставляем только URL'ы, реально пришедшие по сети ПОСЛЕ
-                # клика Generate. См. `_url_is_fresh` — при net_events=None
-                # фильтр прозрачный, при пустом списке отфильтрует всё.
                 clean = [u for u in clean if _url_is_fresh(u, net_events)]
                 if clean:
                     chosen = clean[-1]
-                    logger.info(
-                        "_wait_image_url_strict: новая <img> в DOM за "
-                        "{:.0f} сек: {} (всего новых: {})",
-                        elapsed,
-                        chosen[:140],
-                        len(clean),
-                    )
-                    return chosen
+                    if not prompt_id_prefix:
+                        logger.info(
+                            "_wait_image_url_strict: новая <img> в DOM за "
+                            "{:.0f} сек: {} (всего новых: {})",
+                            elapsed,
+                            chosen[:140],
+                            len(clean),
+                        )
+                        return chosen
+                    else:
+                        # С ID-верификацией — только запоминаем как fallback.
+                        fallback_candidate = chosen
+                        fallback_source = "new_dom"
 
             # 2.5) Детект плашки «Контент отклонён» (модерация).
             # Outsee показывает её прямо на странице — ждать дальше
             # бесполезно: токены уже возвращены, генерации не будет.
-            #
-            # ВАЖНО: не считаем «отклонёнкой» плашку, которая уже была
-            # видна на странице ДО клика Generate (например, осталась
-            # от предыдущего запроса в history-сайдбаре). Только новая
-            # плашка / другой текст. Иначе на свежеоткрытой странице
-            # с историей мы сразу же ловим old-rejection и репортим её
-            # как сегодняшнюю ошибку (выглядит как «43мс — отклонено»).
-            #
-            # Дополнительно: первые 3 секунды после клика игнорируем
-            # детект совсем — outsee.io обычно успевает показать spinner,
-            # а если плашка появляется правда — она будет видна и через
-            # 3 секунды.
             if elapsed >= 3.0:
                 rejected_text = await self._content_rejected_text(page)
                 if rejected_text and rejected_text != pre_rejected_text:
@@ -1644,32 +1676,61 @@ class OutseeBot:
             if elapsed - last_log > 15:
                 last_log = elapsed
                 n_big = len(await self._all_big_imgs(page))
-                logger.info(
-                    "_wait_image_url_strict: ждём... {:.0f} сек, "
-                    "result_img_src={}, big_imgs_now={} (baseline={})",
-                    elapsed,
-                    (current[:80] if current else None),
-                    n_big,
-                    len(baseline_big_imgs),
-                )
+                if prompt_id_prefix:
+                    logger.info(
+                        "_wait_image_url_strict: ждём... {:.0f} сек, "
+                        "result_img={}, big_imgs={}, fallback_candidate={}",
+                        elapsed,
+                        (current[:80] if current else None),
+                        n_big,
+                        (fallback_candidate[:80] if fallback_candidate else None),
+                    )
+                else:
+                    logger.info(
+                        "_wait_image_url_strict: ждём... {:.0f} сек, "
+                        "result_img_src={}, big_imgs_now={} (baseline={})",
+                        elapsed,
+                        (current[:80] if current else None),
+                        n_big,
+                        len(baseline_big_imgs),
+                    )
 
             await asyncio.sleep(1.0)
 
-        # timeout — собираем диагностический контекст
+        # timeout — но прежде чем падать, посмотрим, есть ли fallback-
+        # кандидат от старой логики. Если есть — возвращаем его с
+        # WARNING (бот не падает зря, юзер получает картинку, мы видим
+        # что ID-верификация не сработала).
+        if prompt_id_prefix and fallback_candidate:
+            diag = await self._diag_id_in_page(page, prompt_id_prefix)
+            logger.warning(
+                "_wait_image_url_strict: ID-карточка не найдена за {} сек, "
+                "беру fallback-кандидата (source={}): {}. "
+                "Diagnostic — наличие токенов в видимом тексте: {}",
+                int(timeout), fallback_source,
+                fallback_candidate[:140], diag,
+            )
+            return fallback_candidate
+
+        # Совсем нет кандидатов — собираем диагностический контекст
         big_now = set(await self._all_big_imgs(page))
         new_big = big_now - baseline_big_imgs
         all_now_srcs = set(await self._all_img_srcs(page))
         new_dom = all_now_srcs - baseline_all_srcs
+        ctx: dict[str, Any] = {
+            "gen_id": gen_id,
+            "baseline_result_img": baseline_result_img,
+            "last_result_img_src": last_seen_result,
+            "new_big_imgs": ", ".join(list(new_big)[:3]) or "—",
+            "new_dom_srcs_count": len(new_dom),
+            "baseline_big_imgs": len(baseline_big_imgs),
+        }
+        if prompt_id_prefix:
+            ctx["prompt_id_prefix"] = prompt_id_prefix
+            ctx["id_diag"] = await self._diag_id_in_page(page, prompt_id_prefix)
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
-            context={
-                "gen_id": gen_id,
-                "baseline_result_img": baseline_result_img,
-                "last_result_img_src": last_seen_result,
-                "new_big_imgs": ", ".join(list(new_big)[:3]) or "—",
-                "new_dom_srcs_count": len(new_dom),
-                "baseline_big_imgs": len(baseline_big_imgs),
-            },
+            context=ctx,
         )
 
     async def _attach_ref_image_robust(
