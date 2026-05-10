@@ -104,9 +104,13 @@ async def _init_db() -> None:
                         "AND image_prompt != ''"
                     )
                 ).fetchone()[0]
+                # ВАЖНО: для hero_ready / image_prompts_ready ОБЯЗАТЕЛЬНО
+                # fr_total > 0. Без кадров hero_ready ставить нельзя — иначе
+                # шаг 5 (image_prompts) при первом же клике падает с
+                # «нет кадров — нечего составлять промты».
                 if fr_total > 0 and fr_with_img_prompt == fr_total:
                     new_status = "image_prompts_ready"
-                elif has_hero or fr_with_img_prompt > 0:
+                elif fr_total > 0 and (has_hero or fr_with_img_prompt > 0):
                     new_status = "hero_ready"
                 elif fr_total > 0:
                     new_status = "frames_ready"
