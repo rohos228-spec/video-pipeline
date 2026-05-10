@@ -1990,10 +1990,35 @@ async def on_text_message(msg: Message) -> None:
         )
         return
 
-    # 0c) «⬅ Назад» — у нас одноуровневая навигация (главное меню →
-    #     меню проекта), так что «назад» = главное меню.
+    # 0c) «⬅ Назад» — контекст-зависимая навигация:
+    #   - если юзер сейчас «внутри проекта» (открывал какой-то проект в этой
+    #     сессии), Назад возвращает в МЕНЮ ПРОЕКТА (а не выкидывает на самый
+    #     первый экран). Это покрывает кейс когда юзер случайно нажал не ту
+    #     кнопку и хочет вернуться к шагам этого же проекта;
+    #   - если проекта в контексте нет — уходим в главное меню (старое
+    #     поведение).
+    #
+    # Если нужно явно попасть в главное меню — есть отдельная кнопка
+    # «🏠 Главное меню».
     if text == PERSISTENT_BACK_TEXT:
         _clear_pending_state(user_id)
+        pid = _last_project_by_user.get(user_id)
+        if pid is None:
+            pid = await _last_project_id_fallback()
+        if pid is not None:
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+            if project is not None:
+                _remember_project(user_id, pid)
+                await msg.answer(
+                    project_header(project),
+                    parse_mode="HTML",
+                    reply_markup=project_menu_kb(project),
+                )
+                return
+        # Fallback — главное меню (нет ни одного проекта).
         await msg.answer(
             "Главное меню:",
             reply_markup=persistent_reply_kb(),
@@ -3243,17 +3268,39 @@ async def _on_edit_reply(msg: Message) -> None:
 # Уведомления о завершении шагов
 # Вызывается из _run_worker_loop после успешного advance_project.
 
+# Статусы, переход в которые ИНИЦИИРУЕТ юзер своим approve в TG-карточке
+# (✅ на hero-варианте / на готовой картинке). После такого approve мы НЕ
+# хотим лишний раз присылать «✅ Шаг завершён + меню проекта» — юзер только
+# что сам ткнул кнопку, под approved-карточкой уже стоит «✅ Одобрено», и
+# любое всплытие меню только мешает («не нужно каждый раз возвращать мне
+# главное меню» — комментарий пользователя).
+_HITL_DRIVEN_READY_STATUSES: set[str] = {
+    ProjectStatus.hero_ready.value,
+    ProjectStatus.images_ready.value,
+}
+
+
 async def notify_step_done(
     bot: Bot,
     project_id: int,
     prev_status: str,
     new_status: str,
 ) -> None:
-    """Шлёт в TG уведомление с обновлённым меню проекта после успешного шага.
+    """Шлёт в TG короткое уведомление о завершении шага.
 
     Вызывается воркером ПОСЛЕ commit, поэтому всегда читаем актуальное
     состояние проекта из БД. prev_status и new_status передаются явно для
     диагностики.
+
+    Поведение:
+      * для статусов из `_HITL_DRIVEN_READY_STATUSES` (`hero_ready`,
+        `images_ready`) сообщение НЕ отправляется — юзер только что сам
+        approve-нул карточку, под ней уже есть «✅ Одобрено», лишнее меню
+        мешает.
+      * для остальных переходов посылается короткий текст без inline-меню
+        — постоянная reply-клавиатура (Главное меню / Последний проект /
+        Назад) и так всегда видна, кнопка-меню в этом сообщении только
+        дублирует.
     """
     logger.info(
         "notify_step_done: project={}, {} → {}",
@@ -3261,6 +3308,13 @@ async def notify_step_done(
         prev_status,
         new_status,
     )
+    if new_status in _HITL_DRIVEN_READY_STATUSES:
+        logger.info(
+            "notify_step_done: статус {} — это HITL-одобрение, "
+            "TG-уведомление пропускаю (под approve-карточкой уже badge).",
+            new_status,
+        )
+        return
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == project_id))
@@ -3273,12 +3327,8 @@ async def notify_step_done(
         try:
             await bot.send_message(
                 settings.telegram_owner_chat_id,
-                (
-                    f"✅ Шаг завершён: статус <b>{project.status.value}</b>\n"
-                    + project_header(project)
-                ),
+                f"✅ Шаг завершён: статус <b>{project.status.value}</b>",
                 parse_mode="HTML",
-                reply_markup=project_menu_kb(project),
             )
             logger.info(
                 "notify_step_done: сообщение отправлено для project #{}",

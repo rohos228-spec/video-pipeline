@@ -20,6 +20,25 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from app.settings import settings
 
+# Сообщения playwright, по которым мы понимаем что Chrome/контекст «умер»
+# и нужно переподключиться (юзер закрыл вкладку/перезапустил браузер,
+# CDP-соединение разорвалось и т.д.).
+_DEAD_BROWSER_MARKERS = (
+    "target page, context or browser has been closed",
+    "target closed",
+    "browser has been closed",
+    "context has been closed",
+    "browser closed",
+    "connection closed",
+    "websocket: close",
+    "no target",
+)
+
+
+def _looks_like_dead_browser(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _DEAD_BROWSER_MARKERS)
+
 
 class BrowserSession:
     """Живая сессия: Playwright → Browser (CDP) → первый существующий context."""
@@ -48,9 +67,78 @@ class BrowserSession:
             if self._pw is not None:
                 await self._pw.stop()
 
+    async def reconnect(self) -> None:
+        """Переподключиться к Chrome через CDP.
+
+        Используется в случае, когда юзер закрыл chrome-окно, перезапустил
+        браузер или playwright-соединение порвалось. Без этого любые
+        последующие операции на старом `context` падают с TargetClosedError
+        (и кнопки в TG висят в «вечной загрузке» до timeout'а).
+        """
+        logger.warning("browser: reconnecting to chrome over cdp...")
+        # Пытаемся аккуратно закрыть старое соединение, но если уже мёртво —
+        # не блокируемся.
+        old_browser = self.browser
+        self.browser = None
+        self.context = None
+        if old_browser is not None:
+            try:  # noqa: SIM105
+                await old_browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        # `_pw` оставляем тот же — повторный async_playwright().start() в том
+        # же event-loop'е не нужен; если вдруг и playwright «упал», создадим
+        # его заново.
+        if self._pw is None:
+            self._pw = await async_playwright().start()
+        self.browser = await self._pw.chromium.connect_over_cdp(
+            settings.browser_cdp_url
+        )
+        if self.browser.contexts:
+            self.context = self.browser.contexts[0]
+        else:
+            self.context = await self.browser.new_context()
+        logger.info(
+            "browser: reconnected, contexts={}, pages={}",
+            len(self.browser.contexts),
+            len(self.context.pages),
+        )
+
     async def open_page(self, url: str, *, reuse: bool = True) -> Page:
         """Открыть вкладку. Если reuse=True и уже есть вкладка с тем же URL-префиксом —
-        возвращаем её."""
+        возвращаем её.
+
+        На TargetClosedError (юзер закрыл chrome / браузер упал) делаем один
+        reconnect и повторяем — это лечит «вечную загрузку» кнопок в TG, когда
+        долгий шаг (5/6) подвисал в playwright потому что контекст уже мёртв.
+        """
+        last_exc: BaseException | None = None
+        for attempt in (0, 1):
+            try:
+                return await self._open_page_once(url, reuse=reuse)
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                if attempt == 0 and _looks_like_dead_browser(e):
+                    logger.warning(
+                        "browser.open_page: chrome-контекст мёртв ({}). "
+                        "Переподключаюсь и пробую ещё раз.",
+                        type(e).__name__,
+                    )
+                    try:
+                        await self.reconnect()
+                    except Exception as rc_e:  # noqa: BLE001
+                        logger.error(
+                            "browser.open_page: reconnect провалился: {}", rc_e
+                        )
+                        raise
+                    continue
+                raise
+        # сюда мы не попадаем — либо вернули page, либо raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("open_page: unexpected loop exit")
+
+    async def _open_page_once(self, url: str, *, reuse: bool = True) -> Page:
         assert self.context is not None
         if reuse:
             target = None
@@ -62,7 +150,7 @@ class BrowserSession:
                 except Exception:  # noqa: BLE001
                     continue
             if target is not None:
-                try:
+                try:  # noqa: SIM105
                     await target.bring_to_front()
                 except Exception:  # noqa: BLE001
                     pass
