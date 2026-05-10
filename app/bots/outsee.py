@@ -1460,6 +1460,40 @@ class OutseeBot:
             )
             return None
 
+    async def _count_id_tokens_in_page(
+        self, page: Page, tokens: list[str]
+    ) -> dict[str, int]:
+        """Возвращает карту {token: количество_вхождений} в `body.innerText`.
+
+        Используется для дифференциальной проверки клика: если outsee
+        уже показывает наш `[ID: ...]` где-то на странице (например, в
+        панели «генерация в процессе» или в карточке композера) ДО
+        клика — простой `includes`-чек даст ложноположительный ответ
+        для любой кликнутой картинки. Считаем количество вхождений и
+        смотрим РОСТ после клика — рост означает «открылась наша
+        карточка из gallery».
+        """
+        js = """
+        ([toks]) => {
+            const body = document.body;
+            const text = (body && (body.innerText || body.textContent)) || '';
+            const result = {};
+            for (const tok of toks) {
+                if (!tok) { result[tok] = 0; continue; }
+                // text.split(tok).length - 1 = количество вхождений
+                result[tok] = text.split(tok).length - 1;
+            }
+            return result;
+        }
+        """
+        try:
+            res = await page.evaluate(js, [tokens])
+            if isinstance(res, dict):
+                return {t: int(res.get(t, 0) or 0) for t in tokens}
+            return dict.fromkeys(tokens, 0)
+        except Exception:  # noqa: BLE001
+            return dict.fromkeys(tokens, 0)
+
     async def _verify_img_by_clicking(
         self, page: Page, target_src: str, id_token: str
     ) -> bool:
@@ -1468,9 +1502,16 @@ class OutseeBot:
         и проверяет, что в видимом тексте этой панели присутствует
         `id_token` (или его 8-hex-tail).
 
-        Если совпало — `target_src` это РОВНО НАША генерация, можно
-        возвращать. Если нет — это чужая/старая картинка, нужно ждать
-        дальше.
+        Дифференциальная проверка: outsee уже МОЖЕТ показывать наш
+        `[ID: ...]` где-то (например, в индикаторе «генерация в процессе»
+        с прикреплённым к ней нашим же текущим промтом). Поэтому мы:
+          1. Снимаем количество вхождений токенов в body.innerText ДО клика.
+          2. Кликаем картинку.
+          3. Ждём что количество УВЕЛИЧИТСЯ — это значит что после клика
+             в DOM добавилась карточка с этим же токеном (наша картинка
+             из gallery).
+          4. Если количество не изменилось — клик не открыл нашу карточку,
+             это чужая картинка → False.
 
         Возвращает True/False. После проверки закрываем панель Esc'ом —
         чтобы следующая итерация ждала корректное состояние.
@@ -1485,7 +1526,11 @@ class OutseeBot:
             tokens.append(m2.group(1))
 
         try:
-            # Клик по img с нужным src — через JS, потому что обычный
+            # 1. Снапшот вхождений ДО клика.
+            pre_count = await self._count_id_tokens_in_page(page, tokens)
+            pre_total = sum(pre_count.values())
+
+            # 2. Клик по img с нужным src — через JS, потому что обычный
             # locator может не найти элемент если он внутри сложной
             # модалки/canvas-обёртки.
             clicked = await page.evaluate(
@@ -1517,23 +1562,31 @@ class OutseeBot:
                 )
                 return False
 
-            # Ждём пока правая панель отрендерит promtp-текст.
-            # Polling до 5 секунд — обычно outsee успевает за 1-2 сек.
+            # 3. Ждём пока правая панель отрендерит prompt-текст.
+            # Дифференциальная проверка: ждём чтобы количество вхождений
+            # хотя бы одного токена УВЕЛИЧИЛОСЬ после клика — это значит
+            # что после клика в DOM добавилась карточка с нашим ID.
+            # Polling до 5 секунд.
             for _ in range(10):
                 await asyncio.sleep(0.5)
-                diag = await self._diag_id_in_page(page, id_token)
-                if any(diag.get(t, False) for t in tokens):
+                cur_count = await self._count_id_tokens_in_page(page, tokens)
+                cur_total = sum(cur_count.values())
+                if cur_total > pre_total:
                     logger.info(
-                        "_verify_img_by_clicking: ID найден после клика "
-                        "по картинке, токены: {}",
-                        {t: diag.get(t) for t in tokens},
+                        "_verify_img_by_clicking: token count вырос после "
+                        "клика ({} -> {}, pre={}, cur={}), это НАША картинка",
+                        pre_total, cur_total, pre_count, cur_count,
                     )
                     return True
 
+            # 4. Количество не выросло — клик не открыл нашу карточку.
             logger.warning(
-                "_verify_img_by_clicking: после клика панель промта "
-                "не показала ни одного из токенов {}. Diag: {}",
-                tokens, await self._diag_id_in_page(page, id_token),
+                "_verify_img_by_clicking: token count НЕ вырос после клика "
+                "(pre_total={}, pre={}). Outsee либо показывает наш токен "
+                "только в композере (поэтому он попадает в body всегда), "
+                "либо это чужая картинка. Считаем что чужая. Diag: {}",
+                pre_total, pre_count,
+                await self._diag_id_in_page(page, id_token),
             )
             return False
         except Exception as e:  # noqa: BLE001
