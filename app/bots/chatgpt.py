@@ -842,14 +842,16 @@ class ChatGPTBot:
         self,
         target_path: Path,
         *,
-        timeout: float = 60,
+        timeout: float = 900,
     ) -> Path:
         """Из последнего ответа ассистента ищет ссылку на скачивание файла,
         кликает по ней и сохраняет файл в `target_path`.
 
         Стратегия:
-          1. Прямой поиск по DOWNLOAD_LINK_SELECTORS.
-          2. Если не нашли — hover по карточке файла, потом ещё раз поиск.
+          1. Прямой поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек — ChatGPT
+             часто рендерит карточку файла позже текстового ответа).
+          2. Если не нашли — hover по карточке файла, потом ещё раз поиск
+             уже с полным `timeout` (по умолчанию 15 минут).
           3. Если всё равно нет — dumpим outerHTML последнего ответа для отладки
              и кидаем RuntimeError.
         """
@@ -857,7 +859,7 @@ class ChatGPTBot:
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=15)
+        link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=60)
         if not link_sel:
             # 2. Возможно нужен hover.
             await self._hover_file_cards()

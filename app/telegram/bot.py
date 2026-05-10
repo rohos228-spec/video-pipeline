@@ -2473,7 +2473,7 @@ async def _run_plan_xlsx(
         f"▶ <b>План</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
-        f"Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 5 минут. "
+        f"Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 15 минут. "
         f"Не закрывай Chrome.",
         parse_mode="HTML",
     )
@@ -2484,7 +2484,7 @@ async def _run_plan_xlsx(
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
             reply = await gpt.ask_with_file(
-                full_prompt, proj_xlsx, timeout=600
+                full_prompt, proj_xlsx, timeout=900
             )
             logger.info(
                 "plan_xlsx: GPT reply len={} (project #{}, prompt={})",
@@ -2493,7 +2493,7 @@ async def _run_plan_xlsx(
                 prompt_name,
             )
             await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=180
+                downloaded, timeout=900
             )
     except Exception as e:  # noqa: BLE001
         logger.exception("plan_xlsx failed: {}", e)
@@ -2627,7 +2627,7 @@ async def _run_script_xlsx(
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
         "Открываю ChatGPT, прикрепляю <code>prompt.txt</code> + "
-        "<code>project.xlsx</code>, жду ответ. До 10 минут. Не закрывай Chrome.",
+        "<code>project.xlsx</code>, жду ответ. До 15 минут. Не закрывай Chrome.",
         parse_mode="HTML",
     )
 
@@ -2637,7 +2637,7 @@ async def _run_script_xlsx(
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
             reply_text = await gpt.ask_with_files(
-                chat_msg, [prompt_file, proj_xlsx], timeout=600
+                chat_msg, [prompt_file, proj_xlsx], timeout=900
             )
             logger.info(
                 "script_xlsx: GPT reply len={} (project #{}, prompt={})",
@@ -2662,7 +2662,7 @@ async def _run_script_xlsx(
                 )
                 try:
                     await gpt.download_attachment_from_last_reply(
-                        downloaded, timeout=60
+                        downloaded, timeout=900
                     )
                 except Exception as e:  # noqa: BLE001
                     raise RuntimeError(
@@ -2840,7 +2840,7 @@ async def _run_split_xlsx(
                 prompt_name,
             )
             await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=180
+                downloaded, timeout=900
             )
     except Exception as e:  # noqa: BLE001
         logger.exception("split_xlsx failed: {}", e)
