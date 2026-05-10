@@ -19,19 +19,34 @@ class ProjectStatus(str, enum.Enum):
     planning = "planning"  # шаг 1: план
     scripting = "scripting"  # шаг 2: сценарий → закадровые тексты
     splitting = "splitting"  # шаг 3: разбивка на кадры
-    generating_hero = "generating_hero"  # шаг 4: hero-картинка
-    generating_image_prompts = "generating_image_prompts"  # шаг 5: промты картинок
-    generating_images = "generating_images"  # шаг 6: картинки
-    generating_animation_prompts = "generating_animation_prompts"  # шаг 7
-    generating_videos = "generating_videos"  # шаг 8
-    generating_audio = "generating_audio"  # шаг 9
-    assembling = "assembling"  # шаг 10
+    # ───── Шаг 4: «Объекты» — sub-menu внутри ────
+    generating_hero = "generating_hero"  # шаг 4a: персонажи (former hero)
+    generating_items = "generating_items"  # шаг 4b: предметы (new)
+    # ───── Шаги 5-N: «Доп работа с EXCEL» (xlsx round-trip), N до 5 ────
+    enriching_1 = "enriching_1"
+    enriching_2 = "enriching_2"
+    enriching_3 = "enriching_3"
+    enriching_4 = "enriching_4"
+    enriching_5 = "enriching_5"
+    # ───── Шаги после enrich-слотов ────
+    generating_image_prompts = "generating_image_prompts"  # промты картинок
+    generating_images = "generating_images"  # картинки
+    generating_animation_prompts = "generating_animation_prompts"
+    generating_videos = "generating_videos"
+    generating_audio = "generating_audio"
+    assembling = "assembling"
     publishing = "publishing"
     # «ready» статусы — воркер их игнорирует, ждём действия пользователя из бота.
     plan_ready = "plan_ready"
     script_ready = "script_ready"
     frames_ready = "frames_ready"
-    hero_ready = "hero_ready"
+    hero_ready = "hero_ready"  # персонажи готовы
+    items_ready = "items_ready"  # предметы готовы (new)
+    enrich_1_ready = "enrich_1_ready"
+    enrich_2_ready = "enrich_2_ready"
+    enrich_3_ready = "enrich_3_ready"
+    enrich_4_ready = "enrich_4_ready"
+    enrich_5_ready = "enrich_5_ready"
     image_prompts_ready = "image_prompts_ready"
     images_ready = "images_ready"
     animation_prompts_ready = "animation_prompts_ready"
@@ -57,6 +72,7 @@ class FrameStatus(str, enum.Enum):
 
 class ArtifactKind(str, enum.Enum):
     hero_reference = "hero_reference"
+    item_reference = "item_reference"  # реф-картинка предмета
     scene_image = "scene_image"
     scene_video = "scene_video"
     audio = "audio"
@@ -149,6 +165,16 @@ class Project(Base):
     # для v2 и v3). hero_variation_modifiers[i-1][j-1] = текст для вариации
     # j+1 героя i+1 (т.е. варианты с 2 по N).
     hero_variation_modifiers: Mapped[list] = mapped_column(JSON, default=list)
+    # Сколько слотов «Доп работа с EXCEL» (xlsx round-trip с ChatGPT)
+    # активно для этого проекта. По умолчанию 3, можно увеличить кнопкой
+    # «➕ Добавить слот» в TG-меню (до 5 — лимит ProjectStatus.enriching_N).
+    enrich_slots_count: Mapped[int] = mapped_column(default=3)
+    # Описания предметов (по одному на каждый id в листе «Предметы»).
+    # Аналог hero_descriptions, заполняется юзером в xlsx; шаг 4b
+    # «Предметы» генерит по одному изображению на каждое непустое описание.
+    item_descriptions: Mapped[list] = mapped_column(JSON, default=list)
+    # Вариации предметов (parallel со item_descriptions). По 1 по умолчанию.
+    item_variations: Mapped[list] = mapped_column(JSON, default=list)
     # Выбранный для каждого шага вариант мастер-промта (имя файла без .md).
     # Пример: {"plan": "default", "script": "horror_v2", "hero": "girl_v3"}.
     # Если ключа нет — берётся `default.md` из соответствующей папки.

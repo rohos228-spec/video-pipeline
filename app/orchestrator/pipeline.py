@@ -30,10 +30,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.orchestrator.steps import (
     assemble,
+    enrich_xlsx,
     generate_audio,
     generate_hero,
     generate_image_prompts,
     generate_images,
+    generate_items,
     generate_videos,
     make_animation_prompts,
     make_plan,
@@ -63,6 +65,22 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
 
     if status is ProjectStatus.generating_hero:
         await generate_hero.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_items:
+        await generate_items.run(session, project, bot)
+        return
+
+    # 3 (по умолчанию, до 5) слотов «Доп работа с EXCEL» — все через
+    # один generic step, который сам читает slot_idx из running-статуса.
+    if status in (
+        ProjectStatus.enriching_1,
+        ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3,
+        ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+    ):
+        await enrich_xlsx.run(session, project, bot)
         return
 
     if status is ProjectStatus.generating_image_prompts:

@@ -49,6 +49,11 @@ async def _init_db() -> None:
             ("hero_variation_modifiers", "JSON"),
             ("prompt_overrides", "JSON"),
             ("gpt_text_overrides", "JSON"),
+            # Pipeline-redesign: «Объекты» (Персонажи+Предметы) и слоты
+            # «Доп работа с EXCEL».
+            ("enrich_slots_count", "INTEGER DEFAULT 3"),
+            ("item_descriptions", "JSON"),
+            ("item_variations", "JSON"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")

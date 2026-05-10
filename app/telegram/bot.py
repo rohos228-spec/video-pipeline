@@ -904,7 +904,7 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
             )
 
 
-@dp.callback_query(F.data.regexp(r"^proj:\d+:step:[a-z_]+$"))
+@dp.callback_query(F.data.regexp(r"^proj:\d+:step:[a-z_0-9]+$"))
 async def on_project_step(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
@@ -1057,6 +1057,27 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 )
                 return
             # xlsx-файла нет — упадём в старую логику ниже.
+
+        # Шаг 4 «Объекты» — wrapper, показывает подменю с двумя
+        # суб-шагами «Персонажи» (старая hero-логика) и «Предметы»
+        # (новый generate_items). Сам по себе step.code=="objects"
+        # никогда не запускает воркер — он только показывает submenu.
+        if step.code == "objects":
+            from app.telegram.menu import objects_submenu_kb
+
+            await cb.answer()
+            await cb.message.answer(
+                f"<b>Шаг 4. Объекты</b>\n"
+                f"Проект #{pid} «{project.topic}»\n\n"
+                "Выбери, что генерировать. «Персонажи» — старая Hero-логика "
+                "(c01..c05 из листа «Персонажи»). «Предметы» — реф-картинки "
+                "по item_descriptions, кладутся в "
+                "<code>data/videos/&lt;slug&gt;/items/</code> как "
+                "<code>predmet&lt;N&gt;_&lt;uuid&gt;.png</code>.",
+                reply_markup=objects_submenu_kb(project),
+                parse_mode="HTML",
+            )
+            return
 
         # Шаг 4 (Hero) — многоэтапный:
         #   0) ОБЯЗАТЕЛЬНО: выбор пресета «стиль персонажа» из
@@ -1976,6 +1997,110 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
     if not parts:
         parts.append("ничего нового — ваши правки уже в БД")
     await cb.message.answer("🔄 Перечитал xlsx.\n" + "\n".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# Подменю шага 4 «Объекты» — Персонажи / Предметы / + слот к Доп работа.
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:persons$"))
+async def on_objects_persons(cb: CallbackQuery) -> None:
+    """Клик «Персонажи» в submenu «Объекты» — перенаправляем на старую
+    Hero-логику. Просто эмулируем proj:<pid>:step:hero, чтобы переиспользовать
+    весь существующий многоэтапный flow (выбор стиля, hero_count, описания,
+    вариации и т.д.)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    # Поджимаем cb.data, чтобы on_project_step увидел старый формат.
+    cb_clone = cb.model_copy(update={"data": f"proj:{pid}:step:hero"})
+    await on_project_step(cb_clone)
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:items$"))
+async def on_objects_items(cb: CallbackQuery) -> None:
+    """Клик «Предметы» в submenu «Объекты» — запускаем generate_items.
+    Запускать можно только из hero_ready (или выше). Если ещё не достигли
+    hero_ready — refuse (требование сначала сделать Персонажей)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        # Требование: hero_ready достигнут или превзойдён.
+        from app.telegram.menu import status_order as _ord
+
+        if _ord(project.status) < _ord(ProjectStatus.hero_ready):
+            await cb.answer(
+                "Сначала сделай «Персонажи» — нужен hero_ready",
+                show_alert=True,
+            )
+            return
+        # Если item_descriptions пуст — спросим юзера в чате (на будущее),
+        # пока просто разрешим — generate_items сам отработает корректно
+        # (поставит items_ready, если описаний нет).
+        project.status = ProjectStatus.generating_items
+        slug = project.slug
+        topic = project.topic
+        n_items = len([
+            d for d in (project.item_descriptions or [])
+            if isinstance(d, str) and d.strip()
+        ])
+    await cb.answer(f"Запускаю: Предметы ({n_items} шт)")
+    await cb.message.answer(
+        f"▶ Шаг 4b: <b>Предметы</b>\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"К генерации: <b>{n_items}</b> предмет(ов).\n"
+        f"Если нужно описать предметы — отредактируй "
+        f"<code>item_descriptions</code> в БД или через xlsx-round-trip "
+        f"в шагах «Доп работа с EXCEL».\n"
+        f"Воркер подхватит за ~15 сек.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:enrich_add_slot$"))
+async def on_enrich_add_slot(cb: CallbackQuery) -> None:
+    """Клик «➕ Добавить слот» в меню проекта — инкрементит
+    project.enrich_slots_count на 1 (до лимита MAX_ENRICH_SLOTS=5)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    from app.telegram.menu import MAX_ENRICH_SLOTS, project_menu_kb
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        cur = project.enrich_slots_count or 3
+        if cur >= MAX_ENRICH_SLOTS:
+            await cb.answer(
+                f"Уже максимум: {MAX_ENRICH_SLOTS} слотов",
+                show_alert=True,
+            )
+            return
+        project.enrich_slots_count = cur + 1
+        await s.flush()
+        await s.refresh(project)
+        kb = project_menu_kb(project)
+    await cb.answer(f"Слот #{cur + 1} добавлен")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception:  # noqa: BLE001
+        await cb.message.answer(
+            f"➕ Добавлен слот «Доп работа с EXCEL #{cur + 1}»",
+            reply_markup=kb,
+        )
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:delete$"))

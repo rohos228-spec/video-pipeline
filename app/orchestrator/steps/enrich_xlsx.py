@@ -1,0 +1,203 @@
+"""Шаг «Доп работа с EXCEL» — generic xlsx round-trip с ChatGPT.
+
+Параметризован по slot_idx (1..5). Каждый слот — отдельный
+мастер-промт (в `prompts/05<a..e>_enrich_<i>/`) и отдельный gpt_text
+override (через `Project.gpt_text_overrides["enrich_<i>"]`).
+
+Поток:
+  1. Берём текущий `data/videos/<slug>/project.xlsx`.
+  2. Открываем НОВЫЙ чат ChatGPT (без истории прошлых шагов).
+  3. Аплоадим xlsx как вложение + шлём промт «мастер + сопровождающий
+     текст».
+  4. Ждём ответ. Скачиваем приложенный к ответу обновлённый xlsx и
+     сохраняем поверх исходного `project.xlsx`.
+  5. Если ChatGPT не приложил файл — повторяем (новый чат) до 3 раз.
+  6. После успеха — `xlsx_sync.reload_from_xlsx()` → данные в БД,
+     `recompute_status()` поднимет статус. И принудительно ставим
+     статус `enrich_<i>_ready`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from aiogram import Bot
+from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
+from app.models import Project, ProjectStatus
+from app.services import xlsx_sync
+from app.services.prompt_library import get_project_prompt
+from app.storage import for_project as _sheet_for_project
+
+# Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
+_SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
+    1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
+    2: (ProjectStatus.enriching_2, ProjectStatus.enrich_2_ready, "enrich_2"),
+    3: (ProjectStatus.enriching_3, ProjectStatus.enrich_3_ready, "enrich_3"),
+    4: (ProjectStatus.enriching_4, ProjectStatus.enrich_4_ready, "enrich_4"),
+    5: (ProjectStatus.enriching_5, ProjectStatus.enrich_5_ready, "enrich_5"),
+}
+
+# Сколько раз пробуем round-trip, если ChatGPT не приложил файл в ответе.
+_MAX_RETRIES = 3
+
+# Сопровождающий текст по умолчанию. Юзер может перебить через
+# `Project.gpt_text_overrides["enrich_<i>"]` (стандартный механизм
+# «📝 Сменить сопр. текст»).
+_DEFAULT_ACCOMPANYING_TEXT = (
+    "Внеси изменения в приложенный xlsx согласно инструкциям выше.\n"
+    "ВАЖНО: в ответ ОБЯЗАТЕЛЬНО приложи обновлённый xlsx файлом."
+)
+
+
+def _resolve_slot_idx(status: ProjectStatus) -> int | None:
+    """Из running-статуса (enriching_N) достаём slot_idx."""
+    for idx, (running, _ready, _code) in _SLOT_MAP.items():
+        if status is running:
+            return idx
+    return None
+
+
+def _get_accompanying_text(project: Project, step_code: str) -> str:
+    """Возвращает сопровождающий текст для слота: override юзера или дефолт."""
+    overrides = getattr(project, "gpt_text_overrides", None) or {}
+    val = overrides.get(step_code)
+    if isinstance(val, str) and val.strip():
+        return val
+    return _DEFAULT_ACCOMPANYING_TEXT
+
+
+async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
+    slot_idx = _resolve_slot_idx(project.status)
+    if slot_idx is None:
+        logger.warning(
+            "[#{}] enrich_xlsx.run: статус {} не соответствует ни одному слоту",
+            project.id,
+            project.status.value,
+        )
+        return
+    running_status, ready_status, step_code = _SLOT_MAP[slot_idx]
+    logger.info(
+        "[#{}] enrich_xlsx slot={} (code={}) starting", project.id, slot_idx, step_code
+    )
+
+    # 1. Гарантируем существование xlsx (для свежих проектов).
+    sheet = _sheet_for_project(project)
+    xlsx_path: Path = sheet.ensure_initialized(
+        project_id=project.id, slug=project.slug
+    )
+    if not xlsx_path.exists():
+        raise RuntimeError(
+            f"enrich_xlsx: project.xlsx не найден по пути {xlsx_path}"
+        )
+
+    # 2. Собираем промт «мастер + сопровождающий текст».
+    try:
+        master = get_project_prompt(project, step_code)
+    except FileNotFoundError:
+        # Если default.md ещё не создан — используем минимальную заглушку.
+        master = (
+            f"# {step_code}\n\n"
+            "Мастер-промт для этого слота ещё не настроен. "
+            "Открой `prompts/05*_enrich_<i>/default.md` и опиши там, "
+            "что именно ChatGPT должен изменить в приложенном xlsx."
+        )
+    accompanying = _get_accompanying_text(project, step_code)
+    full_prompt = master.strip() + "\n\n---\n\n" + accompanying.strip()
+
+    # 3. Round-trip до 3 раз.
+    last_err: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        logger.info(
+            "[#{}] enrich_xlsx slot={} attempt {}/{}",
+            project.id,
+            slot_idx,
+            attempt,
+            _MAX_RETRIES,
+        )
+        try:
+            async with browser_session() as bs:
+                gpt = ChatGPTBot(bs)
+                # Новый чат каждый раз (без истории).
+                await gpt.new_conversation()
+                # Шлём xlsx + промт, ждём ответ.
+                reply = await gpt.ask_with_files(
+                    full_prompt, [xlsx_path], timeout=1200
+                )
+                logger.info(
+                    "[#{}] enrich_xlsx: получен ответ len={} (try={})",
+                    project.id,
+                    len(reply or ""),
+                    attempt,
+                )
+                # Скачиваем приложенный xlsx ПОВЕРХ исходного.
+                # download_attachment_from_last_reply бросит исключение,
+                # если ChatGPT не приложил файл.
+                target = await gpt.download_attachment_from_last_reply(
+                    xlsx_path, timeout=600
+                )
+                if not target.exists() or target.stat().st_size < 1024:
+                    raise RuntimeError(
+                        f"скачанный xlsx пустой/слишком маленький "
+                        f"({target.stat().st_size if target.exists() else 0} байт)"
+                    )
+                logger.info(
+                    "[#{}] enrich_xlsx: xlsx обновлён ({} байт)",
+                    project.id,
+                    target.stat().st_size,
+                )
+                break  # успех
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            logger.warning(
+                "[#{}] enrich_xlsx slot={} attempt {}/{} FAILED: {}",
+                project.id,
+                slot_idx,
+                attempt,
+                _MAX_RETRIES,
+                e,
+            )
+            if attempt >= _MAX_RETRIES:
+                # Откатим статус назад — пайплайн сам поднимет из данных.
+                project.status = running_status  # оставляем running, чтобы юзер ткнул retry
+                await session.flush()
+                raise RuntimeError(
+                    f"enrich_xlsx slot={slot_idx}: 3 попытки failed, last err: {e}"
+                ) from e
+            continue
+
+    # 4. Reload xlsx → БД.
+    try:
+        info = await xlsx_sync.reload_from_xlsx(session, project, xlsx_path)
+        logger.info(
+            "[#{}] enrich_xlsx slot={} reload_from_xlsx: {}",
+            project.id,
+            slot_idx,
+            info,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] enrich_xlsx slot={} reload_from_xlsx failed: {}",
+            project.id,
+            slot_idx,
+            e,
+        )
+
+    # 5. Ставим статус slot_<i>_ready (но не перебиваем более продвинутый).
+    from app.telegram.menu import status_order as _ord
+
+    cur = project.status
+    if _ord(cur) < _ord(ready_status):
+        project.status = ready_status
+        await session.flush()
+        logger.info(
+            "[#{}] enrich_xlsx slot={} → status={}",
+            project.id,
+            slot_idx,
+            ready_status.value,
+        )
+
+    _ = last_err  # keep ref to silence "unused" warning in some linters

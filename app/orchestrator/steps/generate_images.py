@@ -55,6 +55,156 @@ from app.services.outsee_retry import generate_image_with_retries
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
+# Лист «план» v8 — какие строки в столбце кадра используются для рефов.
+_XLSX_SHEET_PLAN = "план"
+_XLSX_ROW_PERSONS = 38  # «персонажи» — id c01..c05 (могут быть через запятую)
+_XLSX_ROW_ITEMS = 39  # «предметы» — id predmet1+ (могут быть через запятую)
+
+
+def _parse_ref_ids(cell_value: object) -> list[str]:
+    """Парсит строку из xlsx-ячейки в список ID. Поддерживает разделители:
+    запятая, пробел, точка с запятой, знак «+». Пустые токены и whitespace
+    игнорируются. Регистр приводим к lower-case (id хранится как c01/predmet1).
+    """
+    if cell_value is None:
+        return []
+    s = str(cell_value).strip()
+    if not s:
+        return []
+    # Заменим разделители на запятые и split.
+    for ch in (";", "+", "/", "|", " "):
+        s = s.replace(ch, ",")
+    out: list[str] = []
+    for tok in s.split(","):
+        t = tok.strip().lower()
+        if t:
+            out.append(t)
+    return out
+
+
+def _find_ref_file(base_dir: Path, ref_id: str) -> Path | None:
+    """Ищет файл вида `<ref_id>_<anything>.png` в указанной папке.
+    Возвращает САМЫЙ СВЕЖИЙ (по mtime) — если у юзера несколько
+    регенераций одного персонажа/предмета. None если ничего нет.
+    """
+    if not base_dir.is_dir():
+        return None
+    candidates: list[Path] = []
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        candidates.extend(base_dir.glob(f"{ref_id}_*.{ext}"))
+        # Бывают legacy-имена для hero: `hero_<N>_v1_<uuid>.png`. Для
+        # ref_id="c01" это не подойдёт — но если юзер положил «c01.png»
+        # без суффикса, тоже подберём.
+        for p in base_dir.glob(f"{ref_id}.{ext}"):
+            candidates.append(p)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _hero_legacy_ref(slug: str, persons_id: str) -> Path | None:
+    """Fallback для старых проектов: реф персонажа c0X лежит как
+    `hero_X_v1_<uuid>.png` (нумерация по old hero_index, X = int(ID[1:])).
+    Возвращает самый свежий v1 — если c0X парсится в число.
+    """
+    if not persons_id.startswith("c"):
+        return None
+    try:
+        idx = int(persons_id[1:])
+    except ValueError:
+        return None
+    chars_dir = Path(settings.data_dir) / "videos" / slug / "characters"
+    if not chars_dir.is_dir():
+        return None
+    candidates = sorted(
+        chars_dir.glob(f"hero_{idx}_v1_*.png"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _load_refs_for_frame(
+    project: Project, frame_number: int
+) -> list[Path]:
+    """Читает xlsx-ячейки R38 (персонажи) и R39 (предметы) для столбца
+    кадра frame_number (1-based, column 2+frame_number в openpyxl, т.к.
+    колонки 1-2 — заголовки).
+
+    Возвращает список Path рефов (до 2 шт — outsee ограничение):
+    первый — персонаж (если найден), второй — предмет. Если ячейка пуста
+    или файлы не найдены — соответствующий ref не добавляется.
+    """
+    refs: list[Path] = []
+    xlsx_path = (
+        Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+    )
+    if not xlsx_path.exists():
+        return refs
+    try:
+        from openpyxl import load_workbook  # ленивый импорт
+    except ImportError:
+        logger.warning("openpyxl не установлен — не могу прочитать xlsx-рефы")
+        return refs
+    try:
+        wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+        if _XLSX_SHEET_PLAN not in wb.sheetnames:
+            return refs
+        ws = wb[_XLSX_SHEET_PLAN]
+        # В v8 структуре столбцы кадров начинаются с 3 (1=label, 2=зарезервировано).
+        # frame_number 1 → column 3, frame_number N → column N+2.
+        col = frame_number + 2
+        persons_cell = ws.cell(row=_XLSX_ROW_PERSONS, column=col).value
+        items_cell = ws.cell(row=_XLSX_ROW_ITEMS, column=col).value
+        wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] frame {}: ошибка чтения xlsx-рефов: {}",
+            project.id, frame_number, e,
+        )
+        return refs
+
+    persons_ids = _parse_ref_ids(persons_cell)
+    items_ids = _parse_ref_ids(items_cell)
+
+    chars_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
+    items_dir = Path(settings.data_dir) / "videos" / project.slug / "items"
+
+    # Персонажи — берём первый успешно найденный.
+    for pid in persons_ids:
+        f = _find_ref_file(chars_dir, pid) or _hero_legacy_ref(project.slug, pid)
+        if f is not None:
+            refs.append(f)
+            logger.info(
+                "[#{}] frame {} ref персонаж '{}' → {}",
+                project.id, frame_number, pid, f,
+            )
+            break
+        else:
+            logger.warning(
+                "[#{}] frame {} ref персонаж '{}' не найден в {}",
+                project.id, frame_number, pid, chars_dir,
+            )
+
+    # Предметы — берём первый успешно найденный.
+    for iid in items_ids:
+        f = _find_ref_file(items_dir, iid)
+        if f is not None:
+            refs.append(f)
+            logger.info(
+                "[#{}] frame {} ref предмет '{}' → {}",
+                project.id, frame_number, iid, f,
+            )
+            break
+        else:
+            logger.warning(
+                "[#{}] frame {} ref предмет '{}' не найден в {}",
+                project.id, frame_number, iid, items_dir,
+            )
+
+    return refs[:2]  # outsee лимит — 2 рефа на генерацию
+
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
@@ -292,6 +442,17 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
+    # Загружаем рефы (персонаж + предмет) из xlsx R38/R39 для этого кадра.
+    # Передаются в outsee как 1-2 reference_image. На regenerate (если
+    # кнопка «Повторить» используется) рефы не пересабмитятся — outsee
+    # внутри регенерации работает на основе предыдущего state.
+    refs: list[Path] = _load_refs_for_frame(project, frame.number)
+    if refs:
+        logger.info(
+            "[#{}] frame {}: {} ref(ов) подгружено: {}",
+            project.id, frame.number, len(refs), [str(r) for r in refs],
+        )
+
     try:
         if use_regen_button:
             try:
@@ -317,6 +478,7 @@ async def _generate_and_send(
                     resolution=res_slug,
                     relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
+                    reference_image=refs if refs else None,
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -333,6 +495,7 @@ async def _generate_and_send(
                 resolution=res_slug,
                 relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
+                reference_image=refs if refs else None,
             )
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр

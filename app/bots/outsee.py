@@ -844,7 +844,7 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
-        reference_image: Path | None = None,
+        reference_image: Path | list[Path] | None = None,
     ) -> GenerationResult:
         """Генерирует картинку на outsee.io.
 
@@ -855,11 +855,12 @@ class OutseeBot:
                             кнопку и проверяем состояние.
           resolution      — строка-ярлык («2K» / «4K»). Best-effort клик.
           relax           — если True и Relax-кнопка есть на странице — включаем.
-          reference_image — если передан Path — загружаем картинку как
-                            референс для генерации (через input[type=file]
-                            на странице outsee.io). Используется в
-                            hero-вариациях: первая вариация генерится без
-                            референса, последующие — с первой как ref.
+          reference_image — если передан Path или list[Path] — загружаем
+                            картинку(и) как референс(ы) для генерации
+                            (через input[type=file] на странице outsee.io).
+                            Используется в hero-вариациях (1 ref персонажа)
+                            и в шаге 8 «Картинки» (до 2 ref: персонаж +
+                            предмет, читаются из xlsx R38/R39 для кадра).
           prompt_id_prefix — строка вида `[ID: P12-F3-a7f2b01c]`. Будет
                              поставлена ПЕРВОЙ строкой промта, чтобы в
                              истории outsee однозначно отличать эту
@@ -996,17 +997,30 @@ class OutseeBot:
             # input, иначе берёт ЛЮБОЙ input[type=file] в DOM и бьёт
             # set_input_files в него (по Playwright он работает на скрытых тоже).
             if reference_image is not None:
-                if not reference_image.exists():
-                    logger.warning(
-                        "outsee.generate_image: reference_image {} не найден на диске",
-                        reference_image,
-                    )
-                else:
+                # Поддержка single Path и list[Path]: для шага 8 «Картинки»
+                # передаётся [персонаж.png, предмет.png] (до 2 ref). Для
+                # старого hero-flow — один Path.
+                refs: list[Path] = (
+                    [reference_image]
+                    if isinstance(reference_image, Path)
+                    else list(reference_image)
+                )
+                for ref_idx, ref_path in enumerate(refs, start=1):
+                    if not ref_path.exists():
+                        logger.warning(
+                            "outsee.generate_image: reference_image #{} {} "
+                            "не найден на диске",
+                            ref_idx, ref_path,
+                        )
+                        continue
                     attached = await self._attach_ref_image_robust(
-                        page, reference_image, where="generate_image",
+                        page, ref_path,
+                        where=f"generate_image[ref{ref_idx}]",
                     )
                     if not attached:
-                        h, p = await _dump_page(page, "ref_input_notfound")
+                        h, p = await _dump_page(
+                            page, f"ref_input_notfound_{ref_idx}"
+                        )
                         for x in (h, p):
                             if x:
                                 dumps.append(x)
