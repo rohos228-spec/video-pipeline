@@ -900,26 +900,53 @@ async def on_project_step(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         _remember_project(cb.from_user.id, pid)
-        # Спец-случай для шага 4 (Hero): если status=generating_hero
-        # (в 99% — застрявший зомби после Ctrl+C / падения воркера),
-        # всё равно показываем reset-подменю, чтобы юзер мог сбросить
-        # и начать заново. Иначе кнопка «4. Hero» становится «вечной»
-        # — нечем выйти из generating_hero.
+        # Зомби-статус: проект застрял в `generating_*` (например, воркер
+        # упал на playwright TargetClosedError, прибили Ctrl+C, chrome
+        # перезапустили и т.п.). Для шага 4 (hero) показываем спец-меню
+        # «продолжить / сбросить описания / сбросить всё»; для остальных
+        # шагов просто разрешаем юзеру повторно ткнуть кнопку — не надо
+        # «Этот шаг уже выполняется» (это блокировало возврат к шагу 5,
+        # пока проект висит в generating_image_prompts).
         is_hero_zombie = (
             step.code == "hero"
             and project.status is ProjectStatus.generating_hero
         )
+        is_other_zombie = (
+            step.code != "hero"
+            and project.status is step.running_status
+        )
 
-        if not is_hero_zombie:
-            if not is_step_runnable(step, project.status):
-                await cb.answer(
-                    f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
-                    show_alert=True,
-                )
-                return
-            if project.status is step.running_status:
-                await cb.answer("Этот шаг уже выполняется")
-                return
+        if is_other_zombie:
+            logger.info(
+                "[#{}] step={} клик при зомби-статусе {}: "
+                "разрешаю перезапуск шага.",
+                pid, step.code, project.status.value,
+            )
+
+        # Если проект ушёл в `failed` (3 ошибки подряд от воркера) —
+        # позволяем перезапустить шаг с этого места, иначе из failed
+        # некуда выйти. По логике это эквивалентно «сбросу к requires».
+        if project.status is ProjectStatus.failed:
+            logger.info(
+                "[#{}] step={} клик из failed: сбрасываю на requires={} и "
+                "перезапускаю.",
+                pid,
+                step.code,
+                (step.requires.value if step.requires else "(none)"),
+            )
+            if step.requires is not None:
+                project.status = step.requires
+
+        if (
+            not is_hero_zombie
+            and not is_other_zombie
+            and not is_step_runnable(step, project.status)
+        ):
+            await cb.answer(
+                f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
+                show_alert=True,
+            )
+            return
 
         # Шаг 1 (План) — новый xlsx-flow.
         #   1) спрашиваем у юзера тему ролика текстом
