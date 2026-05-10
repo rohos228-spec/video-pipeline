@@ -499,8 +499,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.status = ProjectStatus.failed
                 await session.flush()
                 if is_moderation:
+                    project_label = (project.topic or project.slug or "")[:60]
                     msg = (
-                        f"🚫 Проект #{project.id} «{project.title or project.slug}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
+                        f"🚫 Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
                         f"6 попыток в outsee подряд отклонены модерацией (3 оригинал + 3 после GPT-rewrite).\n\n"
                         f"Проект переведён в <b>failed</b>. Действия:\n"
                         f"1) Измени «Описание героя» в Настройках проекта (убери имена реальных людей, стран/эпох, религии — оставь нейтрально: «middle-aged scholarly anthropomorphic cat in robes»).\n"
