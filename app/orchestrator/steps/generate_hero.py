@@ -469,9 +469,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # Внутри generate_image_with_retries:
             #   - до 3 попыток с исходным prompt_text;
             #   - если все 3 провалились — ChatGPT переписывает промт
-            #     и ещё 3 попытки. Если все 6 провалились — ПАРКУЕМ
-            #     проект в failed и шлём в TG понятное сообщение,
-            #     иначе worker loop будет крутить бесконечно.
+            #     и ещё 3 попытки. Если все 6 провалились — НЕ паркуем
+            #     в failed (юзер каждый раз потом должен «вытаскивать»
+            #     проект, а другие шаги становятся 🔒 — это бесит).
+            #     Вместо этого откатываем status на frames_ready (туда
+            #     откуда юзер запустил шаг), шлём ясное TG-сообщение
+            #     и выходим. Юзер правит описание героя и просто жмёт
+            #     «4. Hero» снова — никакого «failed → unfail» дёрганья.
             try:
                 result = await generate_image_with_retries(
                     outsee, gpt,
@@ -496,23 +500,32 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id, hero_idx, n_total, v_idx, n_variations,
                     e.reason if hasattr(e, "reason") else str(e),
                 )
-                project.status = ProjectStatus.failed
+                # Откатываем статус ровно туда, откуда юзер тыкнул
+                # «4. Hero» — это `frames_ready`. Все остальные шаги
+                # тогда не блокируются 🔒 (как при `failed`), и юзер
+                # может просто исправить описание героя и снова нажать
+                # «4. Hero». Никакого «вытащить проект из failed».
+                project.status = ProjectStatus.frames_ready
                 await session.flush()
+                project_label = (project.topic or project.slug or "")[:60]
                 if is_moderation:
-                    project_label = (project.topic or project.slug or "")[:60]
                     msg = (
                         f"🚫 Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
                         f"6 попыток в outsee подряд отклонены модерацией (3 оригинал + 3 после GPT-rewrite).\n\n"
-                        f"Проект переведён в <b>failed</b>. Действия:\n"
-                        f"1) Измени «Описание героя» в Настройках проекта (убери имена реальных людей, стран/эпох, религии — оставь нейтрально: «middle-aged scholarly anthropomorphic cat in robes»).\n"
-                        f"2) в /menu — «4. Hero» → «▶ Продолжить» (я верну статус в generating_hero перед ретраем).\n\n"
+                        f"Статус откатил обратно в <b>frames_ready</b> — проект НЕ failed, "
+                        f"никакие файлы/настройки не трогал. Действия:\n"
+                        f"1) В <code>/menu → проект → ⚙ Настройки</code> поправь «Описание героя» "
+                        f"(убери реальные имена/страны/эпохи/религии, добавь safety-приписку).\n"
+                        f"2) Нажми «4. Hero» ещё раз — пойдёт повтор.\n\n"
                         f"Последняя ошибка от outsee:\n<code>{(getattr(e, 'reason', None) or str(e))[:400]}</code>"
                     )
                 else:
                     msg = (
-                        f"🚫 Проект #{project.id}: hero {hero_idx}/{n_total} v{v_idx}/{n_variations} — outsee 6 раз подряд провалился.\n"
+                        f"🚫 Проект #{project.id} «{project_label}»: hero "
+                        f"{hero_idx}/{n_total} v{v_idx}/{n_variations} — "
+                        f"outsee 6 раз подряд провалился (не модерация, что-то с outsee/сетью).\n"
                         f"<code>{(getattr(e, 'reason', None) or str(e))[:600]}</code>\n"
-                        f"Проект в <b>failed</b>. Через /menu можно вернуть в generating_hero и повторить."
+                        f"Статус откатил в <b>frames_ready</b>. Проверь Chrome/outsee и нажми «4. Hero» снова."
                     )
                 try:
                     await bot.send_message(
@@ -525,8 +538,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "[#{}] не удалось отправить TG-ошибку пользователю",
                         project.id,
                     )
-                # Выходим ЧИСТО — без raise. worker loop увидит status=failed,
-                # commit-нет и больше не будет брать этот проект.
+                # Выходим ЧИСТО — без raise. worker loop увидит
+                # status=frames_ready (не «active» в его списке) и проект
+                # больше не будет автоматически брать на этой итерации.
                 return
 
     # 5) Сохраняем артефакт ОДНОЙ вариации.
