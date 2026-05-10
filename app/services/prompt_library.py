@@ -66,7 +66,25 @@ STEPS_WITHOUT_PROMPT: set[str] = {"img", "video", "audio", "assemble"}
 
 DEFAULT_NAME = "default"
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+# Запрещённые символы в имени файла (path traversal / fs-unsafe).
+_UNSAFE_CHARS_RE = re.compile(r'[/\\:\*\?"<>|\x00]')
+
+
+def _sanitize_name(raw: str) -> str:
+    """Убирает из строки символы, опасные для файловой системы.
+    Пробелы, кириллица, цифры, `_`, `-` — остаются.
+    Усекает результат до 40 байт UTF-8."""
+    name = _UNSAFE_CHARS_RE.sub("_", raw).strip().strip(".")
+    # Схлопываем подряд идущие подчёркивания
+    name = re.sub(r"_{2,}", "_", name)
+    if not name:
+        return ""
+    # Усекаем по байтам UTF-8 без обрезания посередине символа
+    encoded = name.encode("utf-8")
+    if len(encoded) <= 40:
+        return name
+    truncated = encoded[:40].decode("utf-8", errors="ignore")
+    return truncated
 
 
 def step_folder_name(step_code: str) -> str | None:
@@ -85,8 +103,20 @@ def step_dir(step_code: str) -> Path:
 
 
 def is_valid_prompt_name(name: str) -> bool:
-    """Имя варианта: только латиница/цифры/_/- длиной 1..64."""
-    return bool(name) and bool(_NAME_RE.match(name))
+    """Имя варианта: любые символы кроме path-traversal.
+    Пробелы, кириллица, спецсимволы — допустимы.
+
+    Лимит UTF-8: 40 байт (это ~20 кириллических симв, ~40 латинских),
+    чтобы имя гарантированно влезало в Telegram callback_data
+    (макс 64 байта; префиксы вида `prm:<pid>:<step>:sel:<name>` уже
+    занимают ~24 байта)."""
+    if not name or not name.strip():
+        return False
+    if len(name.encode("utf-8")) > 40:
+        return False
+    if ".." in name:
+        return False
+    return not _UNSAFE_CHARS_RE.search(name)
 
 
 def list_prompts(step_code: str) -> list[str]:
@@ -103,9 +133,10 @@ def list_prompts(step_code: str) -> list[str]:
 
 def prompt_path(step_code: str, name: str) -> Path:
     """Путь к файлу `<step_dir>/<name>.md`. Не проверяет существование."""
-    if not is_valid_prompt_name(name):
+    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
+    if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
-    return step_dir(step_code) / f"{name}.md"
+    return step_dir(step_code) / f"{clean}.md"
 
 
 def read_prompt(step_code: str, name: str) -> str:
@@ -142,11 +173,12 @@ def resolve_project_prompt_name(
     chosen = overrides.get(step_code)
     if not chosen:
         return DEFAULT_NAME
-    if not is_valid_prompt_name(chosen):
+    clean = _sanitize_name(chosen) if not is_valid_prompt_name(chosen) else chosen
+    if not clean:
         return DEFAULT_NAME
-    if not prompt_path(step_code, chosen).exists():
+    if not prompt_path(step_code, clean).exists():
         return DEFAULT_NAME
-    return chosen
+    return clean
 
 
 def get_project_prompt(project, step_code: str) -> str:

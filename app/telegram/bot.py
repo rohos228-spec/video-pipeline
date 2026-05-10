@@ -1557,10 +1557,16 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
         human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
         await cb.answer()
         await cb.message.answer(
-            f"Введи имя нового варианта мастер-промта для шага "
-            f"«{human}» одним сообщением.\n"
-            f"Допустимые символы: <code>A-Z a-z 0-9 _ -</code>, длина 1-64.\n"
-            f"Например: <code>horror_dark_v1</code>",
+            f"<b>Шаг 1 из 2.</b> Назови новый вариант мастер-промта для "
+            f"шага «{human}» — отправь имя <b>текстовым сообщением</b>.\n\n"
+            f"Имя — это просто название для бота, чтобы потом выбирать его "
+            f"в списке вариантов. Можно по-русски, с пробелами и почти "
+            f"любыми символами (до ~20 кириллических или ~40 латинских "
+            f"симв). Файл сам переименовывать не нужно — на следующем "
+            f"шаге я пришлю шаблон <code>.md</code>, ты заменишь его "
+            f"содержимое и пришлёшь обратно документом.\n\n"
+            f"Например: <code>хоррор тёмный</code> или "
+            f"<code>horror_v1</code>.",
             parse_mode="HTML",
         )
         return
@@ -1656,9 +1662,10 @@ async def _handle_prompt_name_input(msg: Message, pid: int, step_code: str) -> N
     name = (msg.text or "").strip()
     if not plib.is_valid_prompt_name(name):
         await msg.answer(
-            "Имя содержит недопустимые символы или пустое. Допустимы "
-            "<code>A-Z a-z 0-9 _ -</code>, длина 1-64. Попробуй ещё раз "
-            "или нажми «⬅ Отмена» в picker'е.",
+            "Имя пустое или слишком длинное (лимит ~20 кириллических "
+            "/ ~40 латинских симв) или содержит запрещённые символы "
+            "(<code>/ \\ : * ? \" &lt; &gt; |</code>). Попробуй ещё раз или нажми "
+            "«⬅ Отмена» в picker'е.",
             parse_mode="HTML",
         )
         # Возвращаем юзера в режим ввода имени.
@@ -1678,10 +1685,12 @@ async def _handle_prompt_name_input(msg: Message, pid: int, step_code: str) -> N
     await msg.answer_document(
         FSInputFile(str(path)),
         caption=(
-            f"📝 Создан шаблон <b>{name}.md</b> для шага «{human}».\n\n"
-            f"Открой файл, замени содержимое на свой мастер-промт и пришли "
-            f"<b>обратно как документ</b> в этот чат. После возврата я "
-            f"сохраню его и сразу выберу для проекта."
+            f"<b>Шаг 2 из 2.</b> Создан шаблон для варианта "
+            f"<b>{name}</b> (шаг «{human}»).\n\n"
+            f"📥 Скачай файл, замени содержимое на свой мастер-промт и "
+            f"пришли <b>обратно как документ</b> в этот чат "
+            f"(.md или .txt — без разницы). Имя файла менять не надо.\n\n"
+            f"После возврата я сохраню вариант и сразу выберу его для проекта."
         ),
         parse_mode="HTML",
     )
@@ -1830,6 +1839,17 @@ async def on_document_message(msg: Message) -> None:
         text = tmp_path.read_text(encoding="utf-8", errors="replace")
         tmp_path.unlink(missing_ok=True)
         await _replace_voiceover(pending_vo, text, msg)
+        return
+
+    # Если юзер кликнул «+ Новый промт» и сразу прислал файл (не введя
+    # имя текстом) — подсказываем что сначала нужно имя.
+    if user_id in _pending_prompt_name:
+        await msg.answer(
+            "Сначала пришли <b>имя</b> нового варианта <b>текстовым "
+            "сообщением</b> (например: <code>хоррор тёмная версия</code>). "
+            "Потом я попрошу прислать <code>.md</code>-файл с промтом.",
+            parse_mode="HTML",
+        )
         return
 
     if user_id not in _pending_prompt_upload:
