@@ -883,9 +883,20 @@ class ChatGPTBot:
             raise RuntimeError(f"ChatGPT: не удалось скачать файл: {e}") from e
 
         await download.save_as(str(target_path))
+        size = target_path.stat().st_size if target_path.exists() else -1
         logger.info(
-            "ChatGPT: файл скачан как {} (исходное имя {})",
+            "ChatGPT: файл скачан как {} (исходное имя {}, размер {} байт)",
             target_path,
             download.suggested_filename,
+            size,
         )
+        if size < 1024:
+            # Логируем outerHTML, чтобы понять почему скачался «крошечный»
+            # файл (часто это svg-иконка из карточки share/edit, а не сам xlsx).
+            logger.warning(
+                "ChatGPT: размер скачанного файла подозрительно мал ({} байт). "
+                "Дампим outerHTML последнего ответа для отладки.",
+                size,
+            )
+            await self._dump_last_assistant_html()
         return target_path

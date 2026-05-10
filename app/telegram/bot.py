@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Coroutine
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
@@ -175,11 +176,35 @@ _pending_gpt_text_edit_by_user: dict[int, tuple[int, str]] = {}
 # нажатии шага, выборе промта и т.п.  user_id → project_id.
 _last_project_by_user: dict[int, int] = {}
 
+# Активные xlsx-flow-операции — чтобы юзер случайным двойным/тройным
+# нажатием не запустил параллельные прогоны одного и того же шага
+# (ChatGPT в одном чате не справляется с 2-3 параллельными upload'ами,
+# в итоге все три кладут в project.xlsx «пустышки»). Ключ —
+# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split'}.
+_xlsx_flow_active: set[tuple[int, str]] = set()
+
 
 def _remember_project(user_id: int, project_id: int) -> None:
     """Запоминает что юзер сейчас работает с этим проектом — для кнопки
     «📁 Последний проект» в постоянной клавиатуре."""
     _last_project_by_user[user_id] = project_id
+
+
+async def _run_xlsx_with_lock(
+    coro: Coroutine[Any, Any, None], project_id: int, step: str
+) -> None:
+    """Запускает xlsx-flow корутину под глобальным per-(project, step) локом.
+
+    Лок защищает от тройного нажатия одной кнопки, когда пользователь видит
+    что «ничего не происходит» и тыкает повторно — в результате 2-3 параллельных
+    upload'а в один чат ChatGPT и испорченный project.xlsx.
+    """
+    key = (project_id, step)
+    _xlsx_flow_active.add(key)
+    try:
+        await coro
+    finally:
+        _xlsx_flow_active.discard(key)
 
 
 def _clear_pending_state(user_id: int) -> None:
@@ -1489,11 +1514,22 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             pending_plan = _pending_plan_prompt.get(uid)
             if pending_plan is not None and pending_plan[0] == pid:
                 topic = pending_plan[1]
+                if (pid, "plan") in _xlsx_flow_active:
+                    await cb.answer(
+                        "⏳ Уже идёт обработка «Плана» по этому проекту, "
+                        "подожди.",
+                        show_alert=True,
+                    )
+                    return
                 _pending_plan_prompt.pop(uid, None)
                 await cb.answer(f"Запускаю план: {name}")
                 # Не блокируем callback handler надолго — отдельной таской.
                 asyncio.create_task(
-                    _run_plan_xlsx(cb.message, pid, name, topic)
+                    _run_xlsx_with_lock(
+                        _run_plan_xlsx(cb.message, pid, name, topic),
+                        pid,
+                        "plan",
+                    )
                 )
                 return
 
@@ -1502,10 +1538,21 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             uid = cb.from_user.id
             pending_script_pid = _pending_script_prompt.get(uid)
             if pending_script_pid is not None and pending_script_pid == pid:
+                if (pid, "script") in _xlsx_flow_active:
+                    await cb.answer(
+                        "⏳ Уже идёт обработка «Закадрового текста» по этому "
+                        "проекту, подожди.",
+                        show_alert=True,
+                    )
+                    return
                 _pending_script_prompt.pop(uid, None)
                 await cb.answer(f"Запускаю закадровый текст: {name}")
                 asyncio.create_task(
-                    _run_script_xlsx(cb.message, pid, name)
+                    _run_xlsx_with_lock(
+                        _run_script_xlsx(cb.message, pid, name),
+                        pid,
+                        "script",
+                    )
                 )
                 return
 
@@ -1514,10 +1561,21 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             uid = cb.from_user.id
             pending_split_pid = _pending_split_prompt.get(uid)
             if pending_split_pid is not None and pending_split_pid == pid:
+                if (pid, "split") in _xlsx_flow_active:
+                    await cb.answer(
+                        "⏳ Уже идёт обработка «Разбивки» по этому проекту, "
+                        "подожди.",
+                        show_alert=True,
+                    )
+                    return
                 _pending_split_prompt.pop(uid, None)
                 await cb.answer(f"Запускаю разбивку: {name}")
                 asyncio.create_task(
-                    _run_split_xlsx(cb.message, pid, name)
+                    _run_xlsx_with_lock(
+                        _run_split_xlsx(cb.message, pid, name),
+                        pid,
+                        "split",
+                    )
                 )
                 return
 
@@ -2428,6 +2486,7 @@ async def _run_plan_xlsx(
     from app.services.xlsx_versioning import (
         backup_to_old,
         replace_with,
+        validate_xlsx,
     )
 
     async with session_scope() as s:
@@ -2503,10 +2562,17 @@ async def _run_plan_xlsx(
         )
         return
 
-    if not downloaded.exists() or downloaded.stat().st_size < 100:
+    validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        logger.warning(
+            "plan_xlsx: скачанный файл не валиден ({}): {}",
+            validation_err,
+            downloaded,
+        )
         await msg.answer(
-            f"❌ Скачанный файл пустой или повреждён: "
-            f"<code>{downloaded}</code>",
+            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
+            f"Файл: <code>{downloaded}</code>\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз.",
             parse_mode="HTML",
         )
         return
@@ -2751,7 +2817,11 @@ async def _run_split_xlsx(
     from datetime import datetime
     from pathlib import Path as _Path
 
-    from app.services.xlsx_versioning import backup_to_old, replace_with
+    from app.services.xlsx_versioning import (
+        backup_to_old,
+        replace_with,
+        validate_xlsx,
+    )
 
     async with session_scope() as s:
         project = (
@@ -2850,10 +2920,17 @@ async def _run_split_xlsx(
         )
         return
 
-    if not downloaded.exists() or downloaded.stat().st_size < 100:
+    validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        logger.warning(
+            "split_xlsx: скачанный файл не валиден ({}): {}",
+            validation_err,
+            downloaded,
+        )
         await msg.answer(
-            f"❌ Скачанный xlsx пустой или повреждён: "
-            f"<code>{downloaded}</code>",
+            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
+            f"Файл: <code>{downloaded}</code>\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз.",
             parse_mode="HTML",
         )
         return
