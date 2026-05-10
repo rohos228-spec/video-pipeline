@@ -683,6 +683,14 @@ def _validate_downloaded_image(
 
 
 # Пути, по которым точно не лежат результаты генерации.
+#
+# `videomobilepreview/topaz.webp` — outsee.io кладёт сюда статус-плашку
+# «идёт обработка через Topaz» (тёмный фон + три белых квадрата
+# в виде loading-анимации). Если её НЕ отфильтровать на уровне URL,
+# `_wait_image_url_strict` радостно вернёт этот URL как «новая
+# картинка в DOM» (она и правда новая), валидатор размера её
+# не ловит (webp-анимация ~80КБ), и она сохраняется как hero.png.
+# Юзер потом видит лоадер вместо персонажа.
 _UI_ASSET_MARKERS = (
     "/_next/",
     "/static/",
@@ -691,6 +699,10 @@ _UI_ASSET_MARKERS = (
     "/logo",
     "favicon",
     "sprite",
+    "/videomobilepreview/",
+    "topaz.webp",
+    "/preview/loader",
+    "/skeleton",
 )
 
 # Маркеры путей/имён, которые соответствуют ВЫБРАННОМУ ПОЛЬЗОВАТЕЛЕМ
