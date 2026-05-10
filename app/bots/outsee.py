@@ -1460,6 +1460,95 @@ class OutseeBot:
             )
             return None
 
+    async def _verify_img_by_clicking(
+        self, page: Page, target_src: str, id_token: str
+    ) -> bool:
+        """Кликает в DOM на `<img>` с src=`target_src`, ждёт появления
+        панели «ПРОМПТ» (outsee рисует её только по клику на картинку),
+        и проверяет, что в видимом тексте этой панели присутствует
+        `id_token` (или его 8-hex-tail).
+
+        Если совпало — `target_src` это РОВНО НАША генерация, можно
+        возвращать. Если нет — это чужая/старая картинка, нужно ждать
+        дальше.
+
+        Возвращает True/False. После проверки закрываем панель Esc'ом —
+        чтобы следующая итерация ждала корректное состояние.
+        """
+        # Извлекаем 8-hex-tail для liberal-match'а.
+        tokens: list[str] = [id_token]
+        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
+        if m:
+            tokens.append(m.group(1))
+        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
+        if m2:
+            tokens.append(m2.group(1))
+
+        try:
+            # Клик по img с нужным src — через JS, потому что обычный
+            # locator может не найти элемент если он внутри сложной
+            # модалки/canvas-обёртки.
+            clicked = await page.evaluate(
+                """(targetSrc) => {
+                    for (const img of document.querySelectorAll('img')) {
+                        if (img.src === targetSrc) {
+                            img.scrollIntoView({block:'center'});
+                            // Кликабельный родитель — обычно <button>
+                            // или <a>, но если нет, кликаем сам img.
+                            let target = img;
+                            for (let i = 0; i < 4; i++) {
+                                if (!target.parentElement) break;
+                                const tag = target.tagName?.toLowerCase();
+                                if (tag === 'button' || tag === 'a') break;
+                                target = target.parentElement;
+                            }
+                            target.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                target_src,
+            )
+            if not clicked:
+                logger.warning(
+                    "_verify_img_by_clicking: не нашёл <img src='{}'> в DOM",
+                    target_src[:100],
+                )
+                return False
+
+            # Ждём пока правая панель отрендерит promtp-текст.
+            # Polling до 5 секунд — обычно outsee успевает за 1-2 сек.
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                diag = await self._diag_id_in_page(page, id_token)
+                if any(diag.get(t, False) for t in tokens):
+                    logger.info(
+                        "_verify_img_by_clicking: ID найден после клика "
+                        "по картинке, токены: {}",
+                        {t: diag.get(t) for t in tokens},
+                    )
+                    return True
+
+            logger.warning(
+                "_verify_img_by_clicking: после клика панель промта "
+                "не показала ни одного из токенов {}. Diag: {}",
+                tokens, await self._diag_id_in_page(page, id_token),
+            )
+            return False
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_verify_img_by_clicking: исключение: {}", e
+            )
+            return False
+        finally:
+            # Закрываем панель Escape'ом, чтобы следующая итерация
+            # ожидания не зависела от текущего состояния модалки.
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:  # noqa: BLE001
+                pass
+
     async def _diag_id_in_page(
         self, page: Page, id_token: str
     ) -> dict[str, Any]:
@@ -1552,21 +1641,18 @@ class OutseeBot:
         deadline = start + timeout
         last_log = 0.0
         last_seen_result: str | None = None
-        # Кандидат от старой логики (baseline + net_events). Запоминаем
-        # его, как только появится. После этого даём короткий
-        # `FALLBACK_GRACE_SEC` на случай, если outsee всё-таки нарисует
-        # карточку с нашим [ID: ...] — но если за этот grace ID не
-        # появится, возвращаем fallback с WARNING. Без этого бот висел
-        # бы все 600 сек впустую (см. лог юзера: 62 сек fallback есть,
-        # ID-карточки нет, ждём дальше зря).
+        # Кандидат от «старой» логики (baseline + net_events). Когда
+        # появляется, бот кликает по нему в браузере чтобы открыть
+        # outsee'вскую правую панель «Промпт» и проверить [ID: ...].
+        # Если ID совпал — это наша картинка, возвращаем; если нет —
+        # это чужая из gallery, добавляем в rejected_candidates и ждём
+        # дальше.
         fallback_candidate: str | None = None
         fallback_source: str | None = None  # "result_block" | "new_dom"
-        fallback_first_seen_at: float | None = None
-        # Сколько секунд ждём ID-карточку *после* того как fallback уже
-        # найден. 30 сек — outsee обычно успевает за это время дорендерить
-        # любую UI; если ещё нет ID, значит он на этой странице вообще
-        # не рендерится (по-крайней мере в текущей версии outsee).
-        FALLBACK_GRACE_SEC = 30.0
+        # URL'ы, для которых клик-верификация уже была проведена и
+        # ID не совпал. Чтобы не кликать одну и ту же чужую картинку
+        # снова и снова.
+        rejected_candidates: set[str] = set()
 
         while asyncio.get_event_loop().time() < deadline:
             now = asyncio.get_event_loop().time()
@@ -1637,11 +1723,11 @@ class OutseeBot:
                             )
                             return current
                         else:
-                            # С ID-верификацией — только запоминаем.
-                            if fallback_candidate is None:
-                                fallback_first_seen_at = elapsed
-                            fallback_candidate = current
-                            fallback_source = "result_block"
+                            # С ID-верификацией — только запоминаем,
+                            # если ещё не отвергали этот URL.
+                            if current not in rejected_candidates:
+                                fallback_candidate = current
+                                fallback_source = "result_block"
 
             new_srcs = await self._completed_new_imgs(page, baseline_all_srcs)
             if new_srcs:
@@ -1652,6 +1738,9 @@ class OutseeBot:
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
                 ]
                 clean = [u for u in clean if _url_is_fresh(u, net_events)]
+                # Исключаем уже отвергнутых при ID-верификации.
+                if prompt_id_prefix:
+                    clean = [u for u in clean if u not in rejected_candidates]
                 if clean:
                     chosen = clean[-1]
                     if not prompt_id_prefix:
@@ -1665,31 +1754,48 @@ class OutseeBot:
                         return chosen
                     else:
                         # С ID-верификацией — только запоминаем как fallback.
-                        if fallback_candidate is None:
-                            fallback_first_seen_at = elapsed
                         fallback_candidate = chosen
                         fallback_source = "new_dom"
 
-            # 2.7) Grace-period после fallback: если за FALLBACK_GRACE_SEC
-            # секунд ID-карточка так и не появилась, возвращаем fallback
-            # с WARNING. Это бережёт бот от висения 600 сек, когда outsee
-            # явно не рендерит наш [ID: ...] на этой странице.
+            # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его
+            # кликом: outsee показывает `[ID: ...]` в правой панели
+            # «Промпт» только когда юзер кликает по картинке. Бот делает
+            # то же — кликает на найденную картинку, читает панель и
+            # проверяет ID. Совпало → возвращаем; не совпало → это чужая
+            # старая картинка из gallery, продолжаем ждать.
+            #
+            # Чтобы не кликать сотни раз на одну и ту же картинку,
+            # запоминаем уже отвергнутые URL (и больше не пытаемся
+            # их верифицировать).
             if (
                 prompt_id_prefix
                 and fallback_candidate is not None
-                and fallback_first_seen_at is not None
-                and (elapsed - fallback_first_seen_at) >= FALLBACK_GRACE_SEC
+                and fallback_candidate not in rejected_candidates
             ):
-                diag = await self._diag_id_in_page(page, prompt_id_prefix)
-                logger.warning(
-                    "_wait_image_url_strict: ID-карточка не появилась за "
-                    "{:.0f} сек grace после fallback. Беру fallback "
-                    "(source={}): {}. Diag: {}",
-                    FALLBACK_GRACE_SEC, fallback_source,
-                    fallback_candidate[:140], diag,
+                ok = await self._verify_img_by_clicking(
+                    page, fallback_candidate, prompt_id_prefix
                 )
-                return fallback_candidate
-
+                if ok:
+                    logger.info(
+                        "_wait_image_url_strict: verified by click "
+                        "(source={}) за {:.0f} сек: {}",
+                        fallback_source, elapsed,
+                        fallback_candidate[:140],
+                    )
+                    return fallback_candidate
+                else:
+                    logger.warning(
+                        "_wait_image_url_strict: fallback {} НЕ "
+                        "прошёл ID-верификацию (source={}) — это чужая "
+                        "картинка из gallery, ждём дальше",
+                        fallback_candidate[:100], fallback_source,
+                    )
+                    rejected_candidates.add(fallback_candidate)
+                    fallback_candidate = None
+                    fallback_source = None
+                    # Подождём ещё пока придёт НОВАЯ картинка.
+                    await asyncio.sleep(2.0)
+                    continue
             # 2.5) Детект плашки «Контент отклонён» (модерация).
             # Outsee показывает её прямо на странице — ждать дальше
             # бесполезно: токены уже возвращены, генерации не будет.
@@ -1729,22 +1835,8 @@ class OutseeBot:
 
             await asyncio.sleep(1.0)
 
-        # timeout — но прежде чем падать, посмотрим, есть ли fallback-
-        # кандидат от старой логики. Если есть — возвращаем его с
-        # WARNING (бот не падает зря, юзер получает картинку, мы видим
-        # что ID-верификация не сработала).
-        if prompt_id_prefix and fallback_candidate:
-            diag = await self._diag_id_in_page(page, prompt_id_prefix)
-            logger.warning(
-                "_wait_image_url_strict: ID-карточка не найдена за {} сек, "
-                "беру fallback-кандидата (source={}): {}. "
-                "Diagnostic — наличие токенов в видимом тексте: {}",
-                int(timeout), fallback_source,
-                fallback_candidate[:140], diag,
-            )
-            return fallback_candidate
-
-        # Совсем нет кандидатов — собираем диагностический контекст
+        # timeout — все кандидаты были отвергнуты ID-верификацией
+        # (или вообще не появились). Падаем с диагностикой.
         big_now = set(await self._all_big_imgs(page))
         new_big = big_now - baseline_big_imgs
         all_now_srcs = set(await self._all_img_srcs(page))
@@ -1756,6 +1848,7 @@ class OutseeBot:
             "new_big_imgs": ", ".join(list(new_big)[:3]) or "—",
             "new_dom_srcs_count": len(new_dom),
             "baseline_big_imgs": len(baseline_big_imgs),
+            "rejected_count": len(rejected_candidates),
         }
         if prompt_id_prefix:
             ctx["prompt_id_prefix"] = prompt_id_prefix
