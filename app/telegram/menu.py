@@ -173,12 +173,12 @@ def status_order(s: ProjectStatus) -> int:
 
 def step_icon(step: StepDef, project_status: ProjectStatus) -> str:
     """Возвращает значок-индикатор статуса шага.
-      ✅ — пройден; ⏳ — выполняется; ⬜ — не пройден; ❌ — упал.
+      ✅ — пройден; ⏳ — выполняется; ⬜ — не пройден.
+
+    `failed` больше не используется (воркер вместо него откатывает статус
+    к prerequisite упавшего шага), поэтому никакого спец-кейса для failed
+    тут нет.
     """
-    if project_status is ProjectStatus.failed:
-        # На каком этапе упало — узнать сложно; рисуем «❌» только на текущем шаге
-        # пайплайна (определить «текущий» нельзя без доп. поля). Пусть всё «⬜».
-        return "⬜"
     if project_status is step.running_status:
         return "⏳"
     if status_order(project_status) >= status_order(step.ready_status):

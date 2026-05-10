@@ -948,20 +948,13 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 pid, step.code, project.status.value,
             )
 
-        # Если проект ушёл в `failed` (3 ошибки подряд от воркера) —
-        # позволяем перезапустить шаг с этого места, иначе из failed
-        # некуда выйти. По логике это эквивалентно «сбросу к requires».
-        if project.status is ProjectStatus.failed:
-            logger.info(
-                "[#{}] step={} клик из failed: сбрасываю на requires={} и "
-                "перезапускаю.",
-                pid,
-                step.code,
-                (step.requires.value if step.requires else "(none)"),
-            )
-            if step.requires is not None:
-                project.status = step.requires
-
+        # `failed` больше не используется — воркер вместо этого откатывает
+        # статус на prerequisite упавшего шага (см. _run_worker_loop в
+        # app/main.py). Старая логика «клик из failed → reset до
+        # step.requires» убрана: она позволяла молча проскочить
+        # невыполненные prerequisite (тыкаешь шаг 5 из failed → статус
+        # ставится в hero_ready, хотя ни шаг 3, ни шаг 4 не отрабатывали;
+        # шаг 5 потом падает на «нет кадров», цикл повторяется).
         if (
             not is_hero_zombie
             and not is_other_zombie

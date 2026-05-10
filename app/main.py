@@ -20,7 +20,7 @@ import contextlib
 from loguru import logger
 
 from app.db import engine
-from app.models import Base
+from app.models import Base, ProjectStatus
 from app.prompts_loader import sync_prompts_from_files
 from app.settings import settings
 from app.telegram.bot import build_bot, dp
@@ -66,14 +66,94 @@ async def _init_db() -> None:
                 logger.warning("migrate: add column {} failed: {}", col, e)
         _ = text  # keep import usage neutral
 
+        # Миграция: статус `failed` больше не используется (визуально
+        # лочил весь проект — все шаги ⬜, и в меню не было пути назад).
+        # Восстанавливаем последний реально достигнутый статус по данным
+        # самого проекта: какие поля заполнены, есть ли кадры, есть ли
+        # промты картинок и т.д. Юзер увидит галочки до этого шага и
+        # сможет ткнуть упавший шаг ещё раз для ретрая.
+        try:
+            failed_pids = [
+                row[0]
+                for row in (
+                    await conn.exec_driver_sql(
+                        "SELECT id FROM projects WHERE status = 'failed'"
+                    )
+                ).fetchall()
+            ]
+            for pid in failed_pids:
+                row = (
+                    await conn.exec_driver_sql(
+                        "SELECT general_plan, script_text, hero_description "
+                        f"FROM projects WHERE id = {int(pid)}"
+                    )
+                ).fetchone()
+                has_plan = bool(row[0]) if row else False
+                has_script = bool(row[1]) if row else False
+                has_hero = bool(row[2]) if row else False
+                fr_total = (
+                    await conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM frames WHERE project_id = "
+                        f"{int(pid)}"
+                    )
+                ).fetchone()[0]
+                fr_with_img_prompt = (
+                    await conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM frames WHERE project_id = "
+                        f"{int(pid)} AND image_prompt IS NOT NULL "
+                        "AND image_prompt != ''"
+                    )
+                ).fetchone()[0]
+                if fr_total > 0 and fr_with_img_prompt == fr_total:
+                    new_status = "image_prompts_ready"
+                elif has_hero or fr_with_img_prompt > 0:
+                    new_status = "hero_ready"
+                elif fr_total > 0:
+                    new_status = "frames_ready"
+                elif has_script:
+                    new_status = "script_ready"
+                elif has_plan:
+                    new_status = "plan_ready"
+                else:
+                    new_status = "new"
+                await conn.exec_driver_sql(
+                    f"UPDATE projects SET status = '{new_status}' "
+                    f"WHERE id = {int(pid)}"
+                )
+                logger.info(
+                    "migrate: project #{} failed -> {}", pid, new_status
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("migrate failed-status cleanup: {}", e)
+
+
+def _running_status_requires(
+    running_status: ProjectStatus,
+) -> ProjectStatus | None:
+    """Найти `requires` шага, чей running_status == running_status.
+
+    Используется при анти-зацикливании: чтобы откатить упавший проект
+    к prerequisite предыдущего шага (а не в тупиковый `failed`).
+    """
+    # Импорт внутри функции, чтобы избежать кругового импорта на старте.
+    from app.telegram.menu import STEPS
+
+    for step in STEPS:
+        if step.running_status == running_status:
+            return step.requires
+    return None
+
 
 async def _run_worker_loop(bot) -> None:
     """Фоновая петля воркера: сканирует БД и продвигает проекты.
 
-    Анти-зацикливание: если один и тот же шаг падает >= MAX_FAIL раз подряд,
-    ставим проект в статус `failed` и шлём в TG финальное уведомление.
-    До этого шлём только первое сообщение на каждый новый шаг (чтобы не
-    спамить одинаковыми ошибками).
+    Анти-зацикливание: если один и тот же шаг падает >= MAX_FAIL раз
+    подряд, откатываем статус проекта на prerequisite предыдущего шага
+    и шлём в TG уведомление. РАНЬШЕ тут стоял `status = failed`, но
+    `failed` лочил всё меню (все шаги ⬜, никуда не ткнуть) — поэтому
+    отказались от него.
+    До MAX_FAIL шлём только первое сообщение на каждый новый шаг
+    (чтобы не спамить одинаковыми ошибками).
     """
     from sqlalchemy import select
 
@@ -146,15 +226,33 @@ async def _run_worker_loop(bot) -> None:
                                     settings.telegram_owner_chat_id, msg[:3800]
                                 )
                             elif fail_counts[key] >= MAX_FAIL:
-                                # Проект зависает на одном шаге — паркуем.
-                                p.status = ProjectStatus.failed
+                                # Проект зависает на одном шаге — откатываем
+                                # на prerequisite предыдущего шага. Юзер
+                                # увидит галочки до этого шага и сможет
+                                # ткнуть упавший шаг для ретрая.
+                                # НЕ ставим `failed`: он лочит всё меню.
+                                prev_running = p.status
+                                requires = _running_status_requires(
+                                    prev_running
+                                )
+                                if requires is None:
+                                    # Шаг 1 (planning) — откатываемся в `new`.
+                                    requires = ProjectStatus.new
+                                p.status = requires
                                 await s.flush()
+                                # Сбрасываем счётчик, чтобы при ретрае было
+                                # 3 свежие попытки.
+                                fail_counts.pop(key, None)
                                 await bot.send_message(
                                     settings.telegram_owner_chat_id,
                                     (
-                                        f"🛑 Проект #{p.id} переведён в failed "
-                                        f"после {MAX_FAIL} ошибок подряд на шаге "
-                                        f"{key[1]}. Последняя ошибка: "
+                                        f"🛑 Проект #{p.id}: {MAX_FAIL} "
+                                        f"ошибок подряд на шаге "
+                                        f"`{prev_running.value}`. Статус "
+                                        f"откачен к `{requires.value}` — "
+                                        f"открой меню и нажми кнопку "
+                                        f"шага, чтобы повторить попытку. "
+                                        f"Последняя ошибка: "
                                         f"{type(e).__name__}: {e}"
                                     )[:3800],
                                 )
