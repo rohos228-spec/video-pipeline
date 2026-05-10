@@ -1062,7 +1062,13 @@ class OutseeBot:
                 gen_id[:8],
             )
 
-            # 4) строгое ожидание свежей картинки
+            # 4) строгое ожидание свежей картинки.
+            # Передаём prompt_id_prefix — `_wait_image_url_strict` тогда
+            # ищет в DOM карточку именно с НАШИМ `[ID: P1-HERO1-V1-…]`
+            # и игнорирует все остальные (старые/чужие фото из истории
+            # outsee). Это самая строгая верификация — без неё бот мог
+            # подхватить чужой/прошлый результат, см. баг с
+            # «загрузило старую фотку с другим идентификатором».
             try:
                 img_url = await self._wait_image_url_strict(
                     page,
@@ -1073,6 +1079,7 @@ class OutseeBot:
                     net_events=net_events,
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
+                    prompt_id_prefix=prompt_id_prefix,
                 )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
@@ -1364,6 +1371,73 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             return []
 
+    async def _find_img_by_prompt_id(
+        self,
+        page: Page,
+        id_token: str,
+        *,
+        max_levels: int = 12,
+    ) -> str | None:
+        """Ищет в DOM «карточку», в которой видимый текст содержит `id_token`,
+        и возвращает src ближайшей к этому тексту `<img>`, удовлетворяющей
+        проверкам (загружена, naturalWidth >= 200).
+
+        Используется для строгой верификации: outsee показывает в карточке
+        результата начало промта, и так как мы кладём `[ID: P1-HERO1-V1-…]`
+        первой строкой каждого промта, у НАС всегда есть однозначный
+        идентификатор для сопоставления «картинка ↔ моя генерация».
+        Это отсекает любые старые/чужие фото из истории outsee.
+        """
+        js = """
+        ([idToken, maxLevels]) => {
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                if (!el || !el.children) continue;
+                // Оптимизация: пропускаем body / html — слишком общий контекст,
+                // там idToken может быть в любом месте, но <img> в первом
+                // <img>-потомке не обязательно «наш».
+                if (el === document.body || el === document.documentElement) continue;
+                const t = (el.innerText || el.textContent || '');
+                if (!t.includes(idToken)) continue;
+                // Не хотим брать слишком крупный контейнер (например, весь main),
+                // поэтому проверяем что idToken присутствует у *самого мелкого*
+                // подходящего узла — у которого хотя бы один потомок не содержит
+                // idToken (значит это мы внутри карточки, а не вокруг неё).
+                let smallest = el;
+                for (const child of el.children) {
+                    const ct = (child.innerText || child.textContent || '');
+                    if (ct.includes(idToken)) { smallest = null; break; }
+                }
+                if (!smallest) continue;
+                // Поднимаемся вверх до тех пор, пока в текущем узле или его
+                // ближайших потомках нет <img>.
+                let cur = smallest;
+                for (let i = 0; i < maxLevels && cur; i++) {
+                    const imgs = cur.querySelectorAll('img');
+                    for (const img of imgs) {
+                        if (!img.src) continue;
+                        if (img.src.startsWith('data:')) continue;
+                        if (!img.complete) continue;
+                        if (!img.naturalWidth || img.naturalWidth < 200) continue;
+                        return img.src;
+                    }
+                    cur = cur.parentElement;
+                }
+            }
+            return null;
+        }
+        """
+        try:
+            res = await page.evaluate(js, [id_token, max_levels])
+            if isinstance(res, str) and res:
+                return res
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_find_img_by_prompt_id: ошибка JS-поиска: {}", e
+            )
+            return None
+
     async def _wait_image_url_strict(
         self,
         page: Page,
@@ -1375,8 +1449,17 @@ class OutseeBot:
         net_events: list[tuple[float, str]] | None = None,
         gen_id: str,
         pre_rejected_text: str | None = None,
+        prompt_id_prefix: str | None = None,
     ) -> str:
-        """Жёсткое ожидание свежей картинки. Берётся ТОЛЬКО:
+        """Жёсткое ожидание свежей картинки.
+
+        ПРИОРИТЕТ 0 (если передан `prompt_id_prefix`, например
+        `[ID: P1-HERO1-V1-349303db]`): ищем в DOM карточку, у которой
+        видимый текст содержит этот токен, и возвращаем `<img>` из неё.
+        Это самая строгая проверка — она исключает все картинки из
+        history-галереи outsee и любые «чужие» резалт-карточки.
+
+        Если `prompt_id_prefix` не передан — работают старые правила:
 
         1) `<img>` из блока «Результат генерации», у которого src отличается
            от baseline и который полностью загружен (img.complete &&
@@ -1405,6 +1488,70 @@ class OutseeBot:
         while asyncio.get_event_loop().time() < deadline:
             now = asyncio.get_event_loop().time()
             elapsed = now - start
+
+            # 0) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
+            # Outsee рендерит в карточке результата начало промта, и наш
+            # `[ID: P1-HERO1-V1-…]` всегда стоит первой строкой. Если в
+            # DOM появилась карточка с НАШИМ ID — берём её картинку,
+            # независимо от baseline и порядка. Это полностью отсекает
+            # старые/чужие фото из истории outsee.
+            if prompt_id_prefix:
+                by_id = await self._find_img_by_prompt_id(
+                    page, prompt_id_prefix
+                )
+                if by_id:
+                    fresh_ok = (
+                        by_id != baseline_result_img
+                        and by_id not in baseline_all_srcs
+                        and not any(
+                            m in by_id.lower() for m in _UI_ASSET_MARKERS
+                        )
+                        and not any(
+                            m in by_id.lower() for m in _INPUT_REF_MARKERS
+                        )
+                    )
+                    if fresh_ok:
+                        logger.info(
+                            "_wait_image_url_strict: matched by prompt_id "
+                            "{} за {:.0f} сек: {}",
+                            prompt_id_prefix,
+                            elapsed,
+                            by_id[:140],
+                        )
+                        return by_id
+                # Если prompt_id_prefix задан, остальные эвристики
+                # (current/result-block, fallback по «новой <img> в DOM»)
+                # пропускаем — иначе они могут вернуть СТАРУЮ карточку
+                # из галереи, у которой ID отличается от нашего, и весь
+                # смысл verification теряется. Ждём следующей итерации.
+                #
+                # Кроме одного исключения: detector модерации (см. ниже)
+                # должен срабатывать в любом случае, чтобы мы не висели
+                # 600 сек на reject'е.
+                if elapsed >= 3.0:
+                    rejected_text = await self._content_rejected_text(page)
+                    if (
+                        rejected_text
+                        and rejected_text != pre_rejected_text
+                    ):
+                        raise OutseeContentRejectedError(
+                            "outsee image: контент отклонён модерацией",
+                            context={
+                                "gen_id": gen_id,
+                                "rejection": rejected_text[:200],
+                            },
+                        )
+                if elapsed - last_log > 15:
+                    last_log = elapsed
+                    logger.info(
+                        "_wait_image_url_strict: ждём карточку с ID {}, "
+                        "{:.0f} сек прошло (timeout {:.0f} сек)",
+                        prompt_id_prefix,
+                        elapsed,
+                        timeout,
+                    )
+                await asyncio.sleep(1.0)
+                continue
 
             # 1) приоритет — блок «Результат генерации»
             current = await self._result_img_src(page)
