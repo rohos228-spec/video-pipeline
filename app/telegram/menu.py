@@ -236,17 +236,16 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
     for s in STEPS:
         icon = step_icon(s, project.status)
         runnable = is_step_runnable(s, project.status) and wiz_ok
-        # запущенный шаг не даём тыкать второй раз пока не закончится
+        # Если шаг сейчас в running-статусе — НЕ блокируем кнопку. Раньше
+        # для всех шагов кроме hero ставили `cb="noop"` («Эта кнопка пока
+        # недоступна»), и юзер ничего не мог сделать когда воркер падал
+        # на playwright-ошибке и оставлял проект в зомби-статусе типа
+        # `generating_image_prompts` — кнопка шага становилась мёртвой,
+        # из меню некуда выйти кроме как править SQLite вручную.
+        # Теперь все шаги обрабатываются `on_project_step` (там есть
+        # отдельная логика «zombie status → перезапуск»).
         is_running_now = project.status is s.running_status
-        # ИСКЛЮЧЕНИЕ: для шага hero оставляем кнопку кликабельной даже
-        # при running-статусе — иначе из generating_hero нельзя выйти
-        # (если воркер завис, у юзера должна быть возможность открыть
-        # reset-подменю и прервать). on_project_step разруливает это.
-        keep_clickable_when_running = s.code == "hero"
-        if is_running_now and not keep_clickable_when_running:
-            label = f"{icon} {s.n}. {s.title} · идёт…"
-            cb = "noop"
-        elif is_running_now and keep_clickable_when_running:
+        if is_running_now:
             label = f"{icon} {s.n}. {s.title} · идёт… (тык — управление)"
             cb = f"proj:{project.id}:step:{s.code}"
         elif runnable:
