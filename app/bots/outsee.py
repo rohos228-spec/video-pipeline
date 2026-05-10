@@ -1553,12 +1553,20 @@ class OutseeBot:
         last_log = 0.0
         last_seen_result: str | None = None
         # Кандидат от старой логики (baseline + net_events). Запоминаем
-        # его на ВСЁМ протяжении ожидания, но НЕ возвращаем сразу —
-        # чтобы дать шанс ID-верификации найти карточку с НАШИМ ID.
-        # Используем как safety-net на случай, если outsee почему-то
-        # не показывает [ID: ...] в видимом тексте к моменту таймаута.
+        # его, как только появится. После этого даём короткий
+        # `FALLBACK_GRACE_SEC` на случай, если outsee всё-таки нарисует
+        # карточку с нашим [ID: ...] — но если за этот grace ID не
+        # появится, возвращаем fallback с WARNING. Без этого бот висел
+        # бы все 600 сек впустую (см. лог юзера: 62 сек fallback есть,
+        # ID-карточки нет, ждём дальше зря).
         fallback_candidate: str | None = None
         fallback_source: str | None = None  # "result_block" | "new_dom"
+        fallback_first_seen_at: float | None = None
+        # Сколько секунд ждём ID-карточку *после* того как fallback уже
+        # найден. 30 сек — outsee обычно успевает за это время дорендерить
+        # любую UI; если ещё нет ID, значит он на этой странице вообще
+        # не рендерится (по-крайней мере в текущей версии outsee).
+        FALLBACK_GRACE_SEC = 30.0
 
         while asyncio.get_event_loop().time() < deadline:
             now = asyncio.get_event_loop().time()
@@ -1630,6 +1638,8 @@ class OutseeBot:
                             return current
                         else:
                             # С ID-верификацией — только запоминаем.
+                            if fallback_candidate is None:
+                                fallback_first_seen_at = elapsed
                             fallback_candidate = current
                             fallback_source = "result_block"
 
@@ -1655,8 +1665,30 @@ class OutseeBot:
                         return chosen
                     else:
                         # С ID-верификацией — только запоминаем как fallback.
+                        if fallback_candidate is None:
+                            fallback_first_seen_at = elapsed
                         fallback_candidate = chosen
                         fallback_source = "new_dom"
+
+            # 2.7) Grace-period после fallback: если за FALLBACK_GRACE_SEC
+            # секунд ID-карточка так и не появилась, возвращаем fallback
+            # с WARNING. Это бережёт бот от висения 600 сек, когда outsee
+            # явно не рендерит наш [ID: ...] на этой странице.
+            if (
+                prompt_id_prefix
+                and fallback_candidate is not None
+                and fallback_first_seen_at is not None
+                and (elapsed - fallback_first_seen_at) >= FALLBACK_GRACE_SEC
+            ):
+                diag = await self._diag_id_in_page(page, prompt_id_prefix)
+                logger.warning(
+                    "_wait_image_url_strict: ID-карточка не появилась за "
+                    "{:.0f} сек grace после fallback. Беру fallback "
+                    "(source={}): {}. Diag: {}",
+                    FALLBACK_GRACE_SEC, fallback_source,
+                    fallback_candidate[:140], diag,
+                )
+                return fallback_candidate
 
             # 2.5) Детект плашки «Контент отклонён» (модерация).
             # Outsee показывает её прямо на странице — ждать дальше
