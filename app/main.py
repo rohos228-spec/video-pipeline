@@ -66,69 +66,38 @@ async def _init_db() -> None:
                 logger.warning("migrate: add column {} failed: {}", col, e)
         _ = text  # keep import usage neutral
 
-        # Миграция: статус `failed` больше не используется (визуально
-        # лочил весь проект — все шаги ⬜, и в меню не было пути назад).
-        # Восстанавливаем последний реально достигнутый статус по данным
-        # самого проекта: какие поля заполнены, есть ли кадры, есть ли
-        # промты картинок и т.д. Юзер увидит галочки до этого шага и
-        # сможет ткнуть упавший шаг ещё раз для ретрая.
+        # Миграция со статуса `failed` (его больше не используем): просто
+        # сбрасываем в `new`, дальше recompute_all поднимет до правильного
+        # уровня по данным.
         try:
-            failed_pids = [
-                row[0]
-                for row in (
-                    await conn.exec_driver_sql(
-                        "SELECT id FROM projects WHERE status = 'failed'"
-                    )
-                ).fetchall()
-            ]
-            for pid in failed_pids:
-                row = (
-                    await conn.exec_driver_sql(
-                        "SELECT general_plan, script_text, hero_description "
-                        f"FROM projects WHERE id = {int(pid)}"
-                    )
-                ).fetchone()
-                has_plan = bool(row[0]) if row else False
-                has_script = bool(row[1]) if row else False
-                has_hero = bool(row[2]) if row else False
-                fr_total = (
-                    await conn.exec_driver_sql(
-                        "SELECT COUNT(*) FROM frames WHERE project_id = "
-                        f"{int(pid)}"
-                    )
-                ).fetchone()[0]
-                fr_with_img_prompt = (
-                    await conn.exec_driver_sql(
-                        "SELECT COUNT(*) FROM frames WHERE project_id = "
-                        f"{int(pid)} AND image_prompt IS NOT NULL "
-                        "AND image_prompt != ''"
-                    )
-                ).fetchone()[0]
-                # ВАЖНО: для hero_ready / image_prompts_ready ОБЯЗАТЕЛЬНО
-                # fr_total > 0. Без кадров hero_ready ставить нельзя — иначе
-                # шаг 5 (image_prompts) при первом же клике падает с
-                # «нет кадров — нечего составлять промты».
-                if fr_total > 0 and fr_with_img_prompt == fr_total:
-                    new_status = "image_prompts_ready"
-                elif fr_total > 0 and (has_hero or fr_with_img_prompt > 0):
-                    new_status = "hero_ready"
-                elif fr_total > 0:
-                    new_status = "frames_ready"
-                elif has_script:
-                    new_status = "script_ready"
-                elif has_plan:
-                    new_status = "plan_ready"
-                else:
-                    new_status = "new"
-                await conn.exec_driver_sql(
-                    f"UPDATE projects SET status = '{new_status}' "
-                    f"WHERE id = {int(pid)}"
-                )
-                logger.info(
-                    "migrate: project #{} failed -> {}", pid, new_status
-                )
+            await conn.exec_driver_sql(
+                "UPDATE projects SET status = 'new' WHERE status = 'failed'"
+            )
         except Exception as e:  # noqa: BLE001
-            logger.warning("migrate failed-status cleanup: {}", e)
+            logger.warning("migrate failed→new: {}", e)
+
+
+async def _recompute_all_projects() -> None:
+    """ROOT FIX: на каждом старте перевычисляем status для ВСЕХ проектов
+    из реальных данных в БД. Лечит десинхронизацию (status=hero_ready при
+    отсутствии frames и т.п. — последствие старого failed-bypass)."""
+    from app.db import session_scope
+    from app.services.project_state import recompute_all
+
+    try:
+        async with session_scope() as s:
+            changes = await recompute_all(s)
+            if changes:
+                logger.warning(
+                    "recompute: {} проект(а/ов) с десинхронизацией статуса "
+                    "→ {}",
+                    len(changes),
+                    {pid: f"{old}→{new}" for pid, (old, new) in changes.items()},
+                )
+            else:
+                logger.info("recompute: все проекты в консистентном статусе")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("recompute on startup failed: {}", e)
 
 
 def _running_status_requires(
@@ -276,6 +245,7 @@ async def main() -> None:
         settings.db_url,
     )
     await _init_db()
+    await _recompute_all_projects()
     await sync_prompts_from_files()
 
     bot, _ = await build_bot()

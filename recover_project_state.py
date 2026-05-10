@@ -1,18 +1,22 @@
 """Диагностика и восстановление статуса проекта по фактическим данным БД.
 
-Зачем: в _init_db есть миграция failed→*_ready, но она не учитывала случай,
-когда `hero_description` заполнен, а в таблице `frames` нет записей. Тогда
-проект попадал в `hero_ready`, и юзер мог тыкнуть «5. Промты картинок» —
-который сразу падал с «нет кадров».
+Использует тот же алгоритм, что и `_init_db._recompute_all_projects` на
+старте воркера — `app.services.project_state.compute_actual_status`.
 
-Этот скрипт идемпотентный — можно запускать на любом статусе:
+Запуск:
     python -m recover_project_state 1                # для проекта #1
     python -m recover_project_state 1 --dry-run      # только показать
 
-Логика та же, что в _init_db, но теперь:
-    - hero_ready ставится ТОЛЬКО если fr_total > 0
-    - image_prompts_ready — то же
-    - всегда показываем before/after и причину
+Перевычисляет project.status из реальных данных:
+    - general_plan / script_text / hero_description (поля projects)
+    - frames (кол-во и заполненность image_prompt / animation_prompt)
+    - artifacts kind=hero_reference / scene_image / scene_video / audio /
+      final_video (счётчики)
+
+Смотрит ТОЛЬКО на БД. Если данные у тебя в xlsx (а в БД ещё нет) — сначала
+нажми в TG-меню «🔄 Перечитать xlsx», это импортирует xlsx → БД и сразу
+вызовет тот же recompute. Этот CLI-скрипт нужен в основном для проектов,
+которые сидят в зависшем status и нужен ручной триггер без TG.
 """
 
 from __future__ import annotations
@@ -21,10 +25,11 @@ import argparse
 import asyncio
 import sys
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from app.db import session_scope
-from app.models import Frame, Project
+from app.models import Artifact, ArtifactKind, Frame, Project
+from app.services.project_state import compute_actual_status, recompute_status
 
 
 async def _recover(project_id: int, dry_run: bool) -> int:
@@ -38,6 +43,7 @@ async def _recover(project_id: int, dry_run: bool) -> int:
             print(f"[!] проект #{project_id} не найден")
             return 1
 
+        # Диагностика — показать всё, что видим.
         has_plan = bool(project.general_plan)
         has_script = bool(project.script_text)
         has_hero = bool(project.hero_description)
@@ -55,75 +61,92 @@ async def _recover(project_id: int, dry_run: bool) -> int:
                 )
             )
         ).scalar_one()
+        fr_with_anim_prompt = (
+            await session.execute(
+                select(func.count(Frame.id)).where(
+                    Frame.project_id == project_id,
+                    Frame.animation_prompt.isnot(None),
+                    Frame.animation_prompt != "",
+                )
+            )
+        ).scalar_one()
+
+        async def _count_kind(k: ArtifactKind) -> int:
+            return (
+                await session.execute(
+                    select(func.count(Artifact.id)).where(
+                        Artifact.project_id == project_id, Artifact.kind == k
+                    )
+                )
+            ).scalar_one()
+
+        hero_arts = await _count_kind(ArtifactKind.hero_reference)
+        scene_image_arts = await _count_kind(ArtifactKind.scene_image)
+        scene_video_arts = await _count_kind(ArtifactKind.scene_video)
+        audio_arts = await _count_kind(ArtifactKind.audio)
+        final_arts = await _count_kind(ArtifactKind.final_video)
 
         print(f"проект #{project.id} title='{project.topic or project.slug}'")
         print(f"  current status     = {project.status.value}")
-        print(f"  has general_plan   = {has_plan}")
-        print(f"  has script_text    = {has_script}")
-        print(f"  has hero_descr     = {has_hero}")
-        print(f"  frames total       = {fr_total}")
-        print(f"  frames with prompt = {fr_with_img_prompt}")
+        print()
+        print("  --- БД: поля projects ---")
+        print(f"  has general_plan         = {has_plan}")
+        print(f"  has script_text          = {has_script}")
+        print(f"  has hero_description     = {has_hero}")
+        print()
+        print("  --- БД: таблица frames ---")
+        print(f"  frames total             = {fr_total}")
+        print(f"  frames with image_prompt = {fr_with_img_prompt}")
+        print(f"  frames with anim_prompt  = {fr_with_anim_prompt}")
+        print()
+        print("  --- БД: таблица artifacts (по kind) ---")
+        print(f"  hero_reference           = {hero_arts}")
+        print(f"  scene_image              = {scene_image_arts}")
+        print(f"  scene_video              = {scene_video_arts}")
+        print(f"  audio                    = {audio_arts}")
+        print(f"  final_video              = {final_arts}")
+        print()
 
-        # Корректная логика: для hero_ready/image_prompts_ready/frames_ready
-        # ОБЯЗАТЕЛЬНО fr_total > 0. Без кадров hero_ready ставить нельзя — иначе
-        # шаг 5 (image_prompts) сразу упадёт с «нет кадров».
-        if fr_total > 0 and fr_with_img_prompt == fr_total:
-            new_status = "image_prompts_ready"
-            reason = (
-                "все кадры уже имеют image_prompt → шаг 5 пройден"
-            )
-        elif fr_total > 0 and (has_hero or fr_with_img_prompt > 0):
-            new_status = "hero_ready"
-            reason = (
-                "есть кадры + hero_description (или часть промтов) → шаги 3,4 ✅"
-            )
-        elif fr_total > 0:
-            new_status = "frames_ready"
-            reason = "есть кадры → шаг 3 ✅, но hero ещё не делали"
-        elif has_script:
-            new_status = "script_ready"
-            reason = (
-                "нет кадров → шаг 3 (split) НЕ выполнен, "
-                "несмотря на наличие hero_description. Нужно сначала split."
-            )
-        elif has_plan:
-            new_status = "plan_ready"
-            reason = "есть план, но нет скрипта"
-        else:
-            new_status = "new"
-            reason = "нет вообще ничего"
+        new_status = await compute_actual_status(session, project)
+        print(f"  computed status (по данным) = {new_status.value}")
 
-        print(f"  recommended status = {new_status}")
-        print(f"  reason             = {reason}")
-
-        if project.status.value == new_status:
+        if project.status == new_status:
             print("[=] статус уже корректный, ничего не делаем")
             return 0
 
         if dry_run:
             print(
-                f"[dry-run] изменил бы {project.status.value} → {new_status}"
+                f"[dry-run] изменил бы {project.status.value} → {new_status.value}"
             )
             return 0
 
-        await session.execute(
-            Project.__table__.update()
-            .where(Project.id == project_id)
-            .values(status=new_status)
+        old_value = project.status.value
+        old, new, changed = await recompute_status(
+            session, project, log_prefix="recover_project_state CLI"
         )
+        if not changed:
+            print("[=] нечего менять")
+            return 0
         await session.commit()
-        print(f"[ok] {project.status.value} → {new_status}")
+        print(f"[ok] {old_value} → {new.value}")
 
-        if new_status == "script_ready" and has_hero:
+        # Подсказки куда дальше
+        hints = {
+            "new": "В TG жми «1. План» — ChatGPT напишет план.",
+            "plan_ready": "В TG жми «2. Закадровый текст».",
+            "script_ready": "В TG жми «3. Разбивка на блоки» — frames появятся.",
+            "frames_ready": "В TG жми «4. Hero-картинка».",
+            "hero_ready": "В TG жми «5. Промты картинок».",
+            "image_prompts_ready": "В TG жми «6. Картинки».",
+            "images_ready": "В TG жми «7. Промты анимации».",
+            "animation_prompts_ready": "В TG жми «8. Видео».",
+            "videos_ready": "В TG жми «9. Аудио».",
+            "audio_ready": "В TG жми «10. Финальная сборка».",
+        }
+        hint = hints.get(new.value)
+        if hint:
             print()
-            print(
-                "ВАЖНО: hero_description заполнен, но кадров нет. "
-                "Сейчас в меню жми «3. Разбивка на блоки» — он создаст "
-                "frames в БД. После этого hero уже не нужно перегенеривать "
-                "(он берётся из artifacts), и можно сразу нажать "
-                "«5. Промты картинок»."
-            )
-
+            print(f"СЛЕДУЮЩИЙ ШАГ: {hint}")
         return 0
 
 

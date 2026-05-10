@@ -147,4 +147,21 @@ async def reload_from_xlsx(
                 logger.info("[#{}] xlsx→DB: кадр {} обновлён", project.id, fnum)
 
     await session.flush()
+
+    # ROOT FIX: после импорта данных из xlsx — перевычислить project.status,
+    # чтобы он отражал реальное содержимое (а не остался в зависшем
+    # `hero_ready` при пустых полях, например). Раньше клик «Перечитать
+    # xlsx» обновлял поля, но статус не двигал — менюшка продолжала
+    # врать ✅.
+    try:
+        from app.services.project_state import recompute_status
+        old, new, changed = await recompute_status(
+            session, project, log_prefix="recompute(after xlsx reload)"
+        )
+        if changed:
+            summary["status_recomputed"] = f"{old.value} → {new.value}"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] recompute_status after xlsx reload failed: {}",
+                       project.id, e)
+
     return summary
