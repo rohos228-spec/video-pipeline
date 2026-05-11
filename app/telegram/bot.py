@@ -199,10 +199,55 @@ def _is_enrich_slot(code: str) -> bool:
     return tail.isdigit() and 1 <= int(tail) <= 5
 
 
+def _can_run_enrich_slot_now(project: Project, step_code: str) -> bool:
+    """`True` если этот enrich-слот можно запустить ПРЯМО СЕЙЧАС
+    (его prerequisite уже достигнут). Используется, чтобы решить,
+    рисовать ли кнопку «▶ Запустить шаг» в picker'е.
+
+    Для слотов, у которых ещё не выполнен предыдущий слот, кнопка
+    «▶ Запустить шаг» не нужна (она бы только показала alert при
+    клике). Юзер может настроить шаблон и сопр. сообщение, а потом
+    стартовать всю цепочку через «▶▶ Запустить все слоты подряд».
+    """
+    if not _is_enrich_slot(step_code):
+        return False
+    from app.telegram.menu import status_order, step_by_code
+    step = step_by_code(step_code)
+    if step is None:
+        return False
+    if step.requires is None:
+        return True
+    return status_order(project.status) >= status_order(step.requires)
+
+
 def _remember_project(user_id: int, project_id: int) -> None:
     """Запоминает что юзер сейчас работает с этим проектом — для кнопки
     «📁 Последний проект» в постоянной клавиатуре."""
     _last_project_by_user[user_id] = project_id
+
+
+# Текущий «экран» юзера — используется кнопкой «⬅ Назад» (postоянная
+# reply-клавиатура), чтобы возвращать на ОДИН шаг назад, а не сразу
+# в меню проекта/главное меню.
+#
+# Возможные значения:
+#   ("project_menu", pid, None)        — карточка проекта (proj_menu_kb)
+#   ("enrich_submenu", pid, None)      — подменю шага 5 со слотами
+#   ("picker", pid, step_code)         — picker промта для шага step_code
+#   ("step_submenu", pid, step_code)   — подменю шага (script/split/hero/items/…)
+#   ("main", None, None)               — главное меню
+#
+# Если значения для юзера нет — fallback на старое поведение (project_menu).
+_user_screen: dict[int, tuple[str, int | None, str | None]] = {}
+
+
+def _set_user_screen(
+    user_id: int,
+    screen_type: str,
+    pid: int | None = None,
+    extra: str | None = None,
+) -> None:
+    _user_screen[user_id] = (screen_type, pid, extra)
 
 
 async def _run_xlsx_with_lock(
@@ -732,6 +777,7 @@ async def on_project_menu(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         _remember_project(cb.from_user.id, pid)
+        _set_user_screen(cb.from_user.id, "project_menu", pid)
         await cb.answer()
         await cb.message.answer(
             project_header(project),
@@ -970,9 +1016,17 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # невыполненные prerequisite (тыкаешь шаг 5 из failed → статус
         # ставится в hero_ready, хотя ни шаг 3, ни шаг 4 не отрабатывали;
         # шаг 5 потом падает на «нет кадров», цикл повторяется).
+        # Для enrich-слотов (шаг 5) НЕ блокируем клик, даже если
+        # prerequisite не достигнут — юзер хочет «настроить заранее»
+        # шаблон + сопр. сообщение для слотов 2..N, а потом запустить
+        # цепочку через «▶▶ Запустить все слоты подряд». Реальная
+        # проверка runnable выполнится при попытке нажать
+        # «▶ Запустить шаг» в picker'е (action="run" в
+        # on_prompt_picker_cb).
         if (
             not is_hero_zombie
             and not is_other_zombie
+            and not _is_enrich_slot(step.code)
             and not is_step_runnable(step, project.status)
         ):
             await cb.answer(
@@ -1103,6 +1157,7 @@ async def on_project_step(cb: CallbackQuery) -> None:
 
             await cb.answer()
             n_slots = enabled_enrich_slots(project)
+            _set_user_screen(cb.from_user.id, "enrich_submenu", pid)
             await cb.message.answer(
                 f"<b>Шаг 5. Доп работа с EXCEL</b>\n"
                 f"Проект #{pid} «{project.topic}»\n"
@@ -1261,13 +1316,17 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 need_picker = True
             if need_picker:
                 has_msg_override = gtb.has_override(project, step.code)
+                show_run = _can_run_enrich_slot_now(project, step.code)
+                _set_user_screen(
+                    cb.from_user.id, "picker", pid, step.code
+                )
                 await cb.answer()
                 await cb.message.answer(
                     _prompt_picker_text(step.code, overrides),
                     reply_markup=_prompt_picker_kb(
                         pid, step.code, overrides,
                         has_msg_override=has_msg_override,
-                        show_run_button=_is_enrich_slot(step.code),
+                        show_run_button=show_run,
                     ),
                     parse_mode="HTML",
                 )
@@ -1454,13 +1513,17 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             has_msg_override = (
                 gtb.has_override(project, step_code) if project else False
             )
+            show_run = (
+                _can_run_enrich_slot_now(project, step_code) if project else False
+            )
+        _set_user_screen(cb.from_user.id, "picker", pid, step_code)
         await cb.answer()
         await cb.message.answer(
             _prompt_picker_text(step_code, overrides),
             reply_markup=_prompt_picker_kb(
                 pid, step_code, overrides,
                 has_msg_override=has_msg_override,
-                show_run_button=_is_enrich_slot(step_code),
+                show_run_button=show_run,
             ),
             parse_mode="HTML",
         )
@@ -1753,19 +1816,34 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 has_msg_override = (
                     gtb.has_override(project, step_code) if project else False
                 )
+                show_run = (
+                    _can_run_enrich_slot_now(project, step_code)
+                    if project else False
+                )
+            _set_user_screen(cb.from_user.id, "picker", pid, step_code)
+            hint_run = (
+                "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
+                if show_run else
+                "  • <i>Запустить этот слот можно только после того, "
+                "как предыдущий слот будет готов.</i>\n"
+                "    Чтобы запустить всё подряд — кнопка "
+                "<b>▶▶ Запустить все слоты подряд</b> в меню шага 5.\n"
+            )
             await cb.answer(f"Выбрано: {name}")
             await cb.message.answer(
                 f"✅ Для шага «{human}» теперь выбран шаблон "
                 f"<code>{name}</code>.\n\n"
                 "Можешь:\n"
-                "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
-                "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
+                + hint_run
+                + "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
+                "  • <b>✏️ Сопр. сообщение</b> — отредактировать текст, "
+                "который уходит в ChatGPT вместе с xlsx.\n"
                 "  • выбрать другой шаблон из списка.\n\n"
                 + _prompt_picker_text(step_code, overrides_after),
                 reply_markup=_prompt_picker_kb(
                     pid, step_code, overrides_after,
                     has_msg_override=has_msg_override,
-                    show_run_button=True,
+                    show_run_button=show_run,
                 ),
                 parse_mode="HTML",
             )
@@ -1852,11 +1930,18 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 await s.execute(select(Project).where(Project.id == pid))
             ).scalar_one_or_none()
             overrides = dict(project.prompt_overrides or {}) if project else {}
+            has_msg_override = (
+                gtb.has_override(project, step_code) if project else False
+            )
+            show_run = (
+                _can_run_enrich_slot_now(project, step_code) if project else False
+            )
         await cb.message.answer(
             _prompt_picker_text(step_code, overrides),
             reply_markup=_prompt_picker_kb(
                 pid, step_code, overrides,
-                show_run_button=_is_enrich_slot(step_code),
+                has_msg_override=has_msg_override,
+                show_run_button=show_run,
             ),
             parse_mode="HTML",
         )
@@ -2160,6 +2245,17 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
             else ProjectStatus.new
         )
         project.status = rollback_to
+        # Если шла авто-цепочка «▶▶ Запустить все слоты подряд» —
+        # снимаем флаг, чтобы worker не возобновил её случайно после
+        # отката статуса.
+        meta = dict(project.meta or {})
+        chain_to = meta.pop("enrich_auto_chain_to", None)
+        if chain_to is not None:
+            project.meta = meta
+            logger.info(
+                "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
+                pid, chain_to,
+            )
         slug = project.slug
         topic = project.topic
         step_title = step.title if step is not None else cur_running.value
@@ -2327,6 +2423,83 @@ async def on_enrich_add_slot(cb: CallbackQuery) -> None:
         )
 
 
+@dp.callback_query(F.data.regexp(r"^proj:\d+:enrich_run_all$"))
+async def on_enrich_run_all(cb: CallbackQuery) -> None:
+    """▶▶ Запустить все слоты подряд — кнопка из подменю шага 5.
+
+    Поведение:
+      1) Проверяем, что слот #1 готов к запуску (prereq hero_ready/
+         items_ready достигнут).
+      2) Запоминаем в `project.meta['enrich_auto_chain_to'] = N`
+         (где N = enrich_slots_count). После завершения каждого
+         слота воркер увидит этот флаг и автоматически переведёт
+         статус на следующий enriching_<i+1>.
+      3) Выставляем статус `enriching_1` — воркер подхватит и
+         запустит первый слот.
+      4) Юзер может в любой момент нажать «⏹ Остановить текущий
+         шаг» — это уберёт running-статус и очистит auto_chain_to.
+    """
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    from app.telegram.menu import (
+        ENRICH_RUNNING,
+        _objects_requires_for_step5,
+        enabled_enrich_slots,
+        is_running_status,
+        status_order,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if is_running_status(project.status):
+            await cb.answer(
+                f"Сейчас выполняется шаг (статус: {project.status.value}). "
+                "Сначала останови его кнопкой ⏹.",
+                show_alert=True,
+            )
+            return
+        n_slots = enabled_enrich_slots(project)
+        prereq = _objects_requires_for_step5()
+        if status_order(project.status) < status_order(prereq):
+            await cb.answer(
+                f"Сначала пройди шаг до {prereq.value} (готовы объекты).",
+                show_alert=True,
+            )
+            return
+        # Метаданные хранят целевой номер слота, до которого автоматически
+        # цепочка дойдёт. Worker (см. app/main.py / pipeline.advance_project)
+        # после каждого enrich_<i>_ready проверяет meta['enrich_auto_chain_to']
+        # и если i<target — выставляет следующий running-статус сам.
+        meta = dict(project.meta or {})
+        meta["enrich_auto_chain_to"] = n_slots
+        project.meta = meta
+        project.status = ENRICH_RUNNING[0]  # enriching_1
+        slug = project.slug
+        topic = project.topic
+
+    logger.info(
+        "[#{}] enrich_run_all: chain enriching_1..{} (slug={}, topic={!r})",
+        pid, n_slots, slug, topic,
+    )
+    await cb.answer(f"Стартую слот #1 → #{n_slots}")
+    await cb.message.answer(
+        f"▶▶ <b>Запустил все слоты «Доп работа с EXCEL» подряд</b>\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"Цепочка: #1 → #{n_slots} (статусы enriching_1..enriching_{n_slots}).\n\n"
+        "Воркер автоматически переведёт статус на следующий слот после "
+        "каждого <code>enrich_<i>_ready</code>. Чтобы остановить — "
+        "ткни <b>⏹ Остановить текущий шаг</b> в меню проекта.",
+        parse_mode="HTML",
+    )
+
+
 @dp.callback_query(F.data.regexp(r"^proj:\d+:delete$"))
 async def on_project_delete(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
@@ -2437,18 +2610,107 @@ async def on_text_message(msg: Message) -> None:
         )
         return
 
-    # 0c) «⬅ Назад» — контекст-зависимая навигация:
-    #   - если юзер сейчас «внутри проекта» (открывал какой-то проект в этой
-    #     сессии), Назад возвращает в МЕНЮ ПРОЕКТА (а не выкидывает на самый
-    #     первый экран). Это покрывает кейс когда юзер случайно нажал не ту
-    #     кнопку и хочет вернуться к шагам этого же проекта;
-    #   - если проекта в контексте нет — уходим в главное меню (старое
-    #     поведение).
+    # 0c) «⬅ Назад» — навигация на ОДИН шаг назад по «дереву» экранов.
+    #
+    # Иерархия экранов:
+    #     main
+    #      └── project_menu
+    #           ├── enrich_submenu (шаг 5)
+    #           │    └── picker (enrich_<N>)
+    #           ├── picker (любой не-enrich шаг)
+    #           └── step_submenu (script/split/hero/items)
+    #
+    # Поведение:
+    #   - picker (enrich_<N>) → enrich_submenu
+    #   - picker (не-enrich)  → project_menu
+    #   - enrich_submenu      → project_menu
+    #   - step_submenu        → project_menu
+    #   - project_menu        → main
+    #   - main / нет данных   → main (current fallback)
     #
     # Если нужно явно попасть в главное меню — есть отдельная кнопка
     # «🏠 Главное меню».
     if text == PERSISTENT_BACK_TEXT:
         _clear_pending_state(user_id)
+        screen = _user_screen.get(user_id, ("main", None, None))
+        st, scr_pid, extra = screen
+        # Определяем «родительский» экран и рендерим его.
+        # На каждом успешном рендере родителя мы обновляем _user_screen,
+        # чтобы повторный клик «⬅ Назад» вёл ещё на уровень выше.
+        if st == "picker" and scr_pid is not None:
+            # Picker — определяем parent по step_code.
+            parent_is_enrich = (
+                extra is not None and _is_enrich_slot(extra)
+            )
+            if parent_is_enrich:
+                async with session_scope() as s:
+                    project = (
+                        await s.execute(
+                            select(Project).where(Project.id == scr_pid)
+                        )
+                    ).scalar_one_or_none()
+                if project is not None:
+                    from app.telegram.menu import (
+                        enabled_enrich_slots,
+                        enrich_submenu_kb,
+                    )
+                    _set_user_screen(user_id, "enrich_submenu", scr_pid)
+                    _remember_project(user_id, scr_pid)
+                    n_slots = enabled_enrich_slots(project)
+                    await msg.answer(
+                        f"<b>Шаг 5. Доп работа с EXCEL</b>\n"
+                        f"Проект #{scr_pid} «{project.topic}»\n"
+                        f"Активных слотов: <b>{n_slots}</b>",
+                        reply_markup=enrich_submenu_kb(project),
+                        parse_mode="HTML",
+                    )
+                    return
+            # Не-enrich picker → в меню проекта.
+            async with session_scope() as s:
+                project = (
+                    await s.execute(
+                        select(Project).where(Project.id == scr_pid)
+                    )
+                ).scalar_one_or_none()
+            if project is not None:
+                _set_user_screen(user_id, "project_menu", scr_pid)
+                _remember_project(user_id, scr_pid)
+                await msg.answer(
+                    project_header(project),
+                    parse_mode="HTML",
+                    reply_markup=project_menu_kb(project),
+                )
+                return
+
+        if st in ("enrich_submenu", "step_submenu") and scr_pid is not None:
+            async with session_scope() as s:
+                project = (
+                    await s.execute(
+                        select(Project).where(Project.id == scr_pid)
+                    )
+                ).scalar_one_or_none()
+            if project is not None:
+                _set_user_screen(user_id, "project_menu", scr_pid)
+                _remember_project(user_id, scr_pid)
+                await msg.answer(
+                    project_header(project),
+                    parse_mode="HTML",
+                    reply_markup=project_menu_kb(project),
+                )
+                return
+
+        if st == "project_menu":
+            # Один шаг назад из меню проекта → главное меню.
+            _set_user_screen(user_id, "main")
+            await msg.answer(
+                "Главное меню:",
+                reply_markup=persistent_reply_kb(),
+            )
+            await msg.answer("Что делаем?", reply_markup=main_menu_kb())
+            return
+
+        # Fallback: если _user_screen ничего не знает — старое поведение
+        # (вернуть в меню последнего проекта).
         pid = _last_project_by_user.get(user_id)
         if pid is None:
             pid = await _last_project_id_fallback()
@@ -2458,6 +2720,7 @@ async def on_text_message(msg: Message) -> None:
                     await s.execute(select(Project).where(Project.id == pid))
                 ).scalar_one_or_none()
             if project is not None:
+                _set_user_screen(user_id, "project_menu", pid)
                 _remember_project(user_id, pid)
                 await msg.answer(
                     project_header(project),
@@ -2465,7 +2728,8 @@ async def on_text_message(msg: Message) -> None:
                     reply_markup=project_menu_kb(project),
                 )
                 return
-        # Fallback — главное меню (нет ни одного проекта).
+        # Уже совсем нет контекста — главное меню.
+        _set_user_screen(user_id, "main")
         await msg.answer(
             "Главное меню:",
             reply_markup=persistent_reply_kb(),

@@ -560,19 +560,30 @@ def enrich_submenu_kb(project: Project) -> InlineKeyboardMarkup:
     """Подменю шага 5 «Доп работа с EXCEL».
 
     Содержит:
-      - N кнопок «Доп работа с EXCEL #1..#N» (N = enrich_slots_count)
-      - Кнопку «➕ Добавить слот» (если N < 5)
-      - Кнопку «⬅ Назад в меню проекта»
+      - N кнопок «Доп работа с EXCEL #1..#N» (N = enrich_slots_count).
+        ВСЕ слоты доступны для клика — даже «заблокированные» (юзер
+        может заранее сконфигурить шаблон/сопр. сообщение, а запуск
+        будет проверен только в picker'е по нажатию «▶ Запустить шаг»).
+      - Кнопку «▶▶ Запустить все слоты подряд» (когда слот #1 готов
+        к запуску). Выставляет meta['enrich_auto_chain_to'] = N и
+        ставит статус enriching_1 — воркер сам пройдёт всю цепочку.
+      - Кнопку «➕ Добавить слот» (если N < 5).
 
-    Для каждого слота:
+    Иконки слотов:
       ✅ — этот слот уже выполнен (enrich_<i>_ready достигнут)
       ⏳ — этот слот сейчас выполняется (status == enriching_<i>)
       ▶ — можно запустить (предыдущий слот готов или это слот #1 и
           hero_ready достигнут)
-      🔒 — заблокирован (предыдущий слот не готов)
+      ⚙ — заблокирован для запуска (предыдущий слот не готов), но
+          можно зайти в picker и сконфигурить заранее
     """
     rows: list[list[InlineKeyboardButton]] = []
     n_slots = enabled_enrich_slots(project)
+    slot1_can_run = (
+        status_order(project.status)
+        >= status_order(_objects_requires_for_step5())
+    )
+    any_running = project.status in ENRICH_RUNNING
 
     for i in range(1, n_slots + 1):
         running = ENRICH_RUNNING[i - 1]
@@ -588,17 +599,29 @@ def enrich_submenu_kb(project: Project) -> InlineKeyboardMarkup:
 
         if is_running:
             label = f"⏳ Доп работа с EXCEL #{i} · идёт…"
-            cb = f"proj:{project.id}:step:enrich_{i}"
         elif is_done:
             label = f"✅ Доп работа с EXCEL #{i} (перезапустить)"
-            cb = f"proj:{project.id}:step:enrich_{i}"
         elif can_run:
             label = f"▶ Доп работа с EXCEL #{i}"
-            cb = f"proj:{project.id}:step:enrich_{i}"
         else:
-            label = f"🔒 Доп работа с EXCEL #{i} (сначала #{i-1})"
-            cb = "noop"
+            # Раньше тут стоял noop-замок. Теперь даём войти в
+            # picker — настроить шаблон + сопр. сообщение заранее.
+            label = f"⚙ Доп работа с EXCEL #{i} (настроить заранее)"
+        # ВСЕ слоты ведут на step-handler — он покажет picker.
+        cb = f"proj:{project.id}:step:enrich_{i}"
         rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+    # «▶▶ Запустить все слоты подряд» — стартует enriching_1, после
+    # каждого ready=> воркер автоматически переводит в следующий
+    # enriching_<i+1>. Показываем только когда слот #1 готов к
+    # запуску и сейчас ничего не выполняется.
+    if slot1_can_run and not any_running:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"▶▶ Запустить все слоты подряд (#1→#{n_slots})",
+                callback_data=f"proj:{project.id}:enrich_run_all",
+            )
+        ])
 
     # «➕ Добавить слот» — рисуется только пока не достигли лимита.
     if n_slots < MAX_ENRICH_SLOTS:
@@ -609,12 +632,6 @@ def enrich_submenu_kb(project: Project) -> InlineKeyboardMarkup:
             )
         ])
 
-    rows.append([
-        InlineKeyboardButton(
-            text="⬅ Назад в меню проекта",
-            callback_data=f"proj:{project.id}:menu",
-        )
-    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

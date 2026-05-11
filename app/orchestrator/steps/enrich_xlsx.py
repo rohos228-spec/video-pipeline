@@ -195,4 +195,38 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ready_status.value,
         )
 
+    # 6. Auto-chain — если юзер запустил «▶▶ Запустить все слоты подряд»,
+    # `project.meta['enrich_auto_chain_to']` хранит целевой номер слота
+    # (1..5). После завершения этого слота, если есть следующий — сами
+    # переводим статус в `enriching_<i+1>`. Воркер на следующем тике
+    # подхватит и продолжит. При достижении target — чистим флаг.
+    meta = dict(project.meta or {})
+    chain_to = meta.get("enrich_auto_chain_to")
+    if isinstance(chain_to, int) and chain_to > slot_idx:
+        next_slot = slot_idx + 1
+        next_running = _SLOT_MAP[next_slot][0]
+        project.status = next_running
+        await session.flush()
+        logger.info(
+            "[#{}] enrich_xlsx auto-chain: {} → {} (target slot #{})",
+            project.id,
+            ready_status.value,
+            next_running.value,
+            chain_to,
+        )
+    elif chain_to is not None:
+        # Цепочка дошла до target (или вышла за неё). Снимаем флаг,
+        # чтобы при ручном повторном запуске одного слота не было
+        # неожиданного авто-перехода.
+        meta.pop("enrich_auto_chain_to", None)
+        project.meta = meta
+        await session.flush()
+        logger.info(
+            "[#{}] enrich_xlsx auto-chain complete at slot #{} "
+            "(target was #{}) — cleared meta flag",
+            project.id,
+            slot_idx,
+            chain_to,
+        )
+
     _ = last_err  # keep ref to silence "unused" warning in some linters
