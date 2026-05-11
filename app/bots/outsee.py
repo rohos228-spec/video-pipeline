@@ -1430,19 +1430,47 @@ class OutseeBot:
 
         js = """
         ([tokens, maxLevels]) => {
+            // Хелпер: содержит ли элемент токен в видимом тексте
+            // ИЛИ в .value, если это textarea/input.
+            const hasToken = (el, idToken) => {
+                if (!el) return false;
+                const t = (el.innerText || el.textContent || '');
+                if (t.includes(idToken)) return true;
+                const tag = el.tagName && el.tagName.toLowerCase();
+                if (tag === 'textarea' || tag === 'input') {
+                    const v = el.value || '';
+                    if (v.includes(idToken)) return true;
+                }
+                return false;
+            };
             for (const idToken of tokens) {
                 const all = document.querySelectorAll('*');
                 for (const el of all) {
                     if (!el || !el.children) continue;
                     if (el === document.body || el === document.documentElement) continue;
-                    const t = (el.innerText || el.textContent || '');
-                    if (!t.includes(idToken)) continue;
+                    if (!hasToken(el, idToken)) continue;
                     // Спускаемся к самому мелкому уровню, где нашёлся idToken,
                     // чтобы не схватить весь main с галереей.
                     let smallest = el;
                     for (const child of el.children) {
-                        const ct = (child.innerText || child.textContent || '');
-                        if (ct.includes(idToken)) { smallest = null; break; }
+                        if (hasToken(child, idToken)) {
+                            smallest = null;
+                            break;
+                        }
+                    }
+                    // Также проверяем «спрятанные» textarea/input внутри
+                    // (если у el есть descendant textarea с нашим токеном,
+                    // спустимся к нему).
+                    if (smallest) {
+                        const deepInputs = el.querySelectorAll('textarea, input');
+                        for (const di of deepInputs) {
+                            if (di === el) continue;
+                            const v = di.value || '';
+                            if (v.includes(idToken)) {
+                                smallest = null;
+                                break;
+                            }
+                        }
                     }
                     if (!smallest) continue;
                     // Поднимаемся вверх до уровня, где есть <img>.
@@ -1477,7 +1505,15 @@ class OutseeBot:
     async def _count_id_tokens_in_page(
         self, page: Page, tokens: list[str]
     ) -> dict[str, int]:
-        """Возвращает карту {token: количество_вхождений} в `body.innerText`.
+        """Возвращает карту {token: количество_вхождений} на странице.
+
+        Сканирует:
+          1) `body.innerText` — рендеренный текст;
+          2) `<textarea>.value` и `<input>.value` — значения форм,
+             которые **не** попадают в innerText. Outsee рендерит
+             промт в правой панели через <textarea readonly>, и без
+             этой проверки счётчик не растёт после клика → ложное
+             «чужая картинка» в `_verify_img_by_clicking`.
 
         Используется для дифференциальной проверки клика: если outsee
         уже показывает наш `[ID: ...]` где-то на странице (например, в
@@ -1490,7 +1526,15 @@ class OutseeBot:
         js = """
         ([toks]) => {
             const body = document.body;
-            const text = (body && (body.innerText || body.textContent)) || '';
+            let text = (body && (body.innerText || body.textContent)) || '';
+            // Добавляем значения <textarea>/<input> — они не попадают
+            // в innerText, но outsee рендерит туда полный промт.
+            for (const el of document.querySelectorAll(
+                'textarea, input[type=text], input:not([type])'
+            )) {
+                const v = el && el.value;
+                if (v) text += '\\n' + v;
+            }
             const result = {};
             for (const tok of toks) {
                 if (!tok) { result[tok] = 0; continue; }
@@ -1636,7 +1680,13 @@ class OutseeBot:
         js = """
         ([tokens]) => {
             const body = document.body;
-            const text = (body && (body.innerText || body.textContent)) || '';
+            let text = (body && (body.innerText || body.textContent)) || '';
+            for (const el of document.querySelectorAll(
+                'textarea, input[type=text], input:not([type])'
+            )) {
+                const v = el && el.value;
+                if (v) text += '\\n' + v;
+            }
             const result = {};
             for (const tok of tokens) {
                 result[tok] = text.includes(tok);
@@ -1824,21 +1874,46 @@ class OutseeBot:
                         fallback_candidate = chosen
                         fallback_source = "new_dom"
 
-            # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его
-            # кликом: outsee показывает `[ID: ...]` в правой панели
-            # «Промпт» только когда юзер кликает по картинке. Бот делает
-            # то же — кликает на найденную картинку, читает панель и
-            # проверяет ID. Совпало → возвращаем; не совпало → это чужая
-            # старая картинка из gallery, продолжаем ждать.
+            # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его.
             #
-            # Чтобы не кликать сотни раз на одну и ту же картинку,
-            # запоминаем уже отвергнутые URL (и больше не пытаемся
-            # их верифицировать).
+            # Иерархия доверия (от сильного к слабому):
+            #  A. net_events: URL РЕАЛЬНО пришёл по сети ПОСЛЕ нашего
+            #     клика Generate. Listener чист в момент клика. Outsee
+            #     не подгружает чужие изображения в этот короткий
+            #     промежуток. Это самое сильное доказательство «это
+            #     наша картинка», и его достаточно — клик-верификация
+            #     не нужна.
+            #  B. click-verification: клик по img открывает правую
+            #     панель «Промпт», в видимом тексте которой должен
+            #     появиться наш [ID: ...]. Слабее: outsee может
+            #     рендерить промт через <textarea>.value, который не
+            #     попадает в body.innerText, и счётчик токенов не
+            #     растёт после клика → ложное «чужая». Использовать
+            #     только как fallback, когда net_events недоступны
+            #     или пусты.
             if (
                 prompt_id_prefix
                 and fallback_candidate is not None
                 and fallback_candidate not in rejected_candidates
             ):
+                # A. net_events trust path. Если URL пришёл по сети
+                # после Generate-клика — это сильная гарантия, что
+                # это наша картинка. Click-verification (которая
+                # часто врёт из-за textarea.value vs innerText)
+                # пропускаем.
+                if net_events and _url_is_fresh(
+                    fallback_candidate, net_events
+                ):
+                    logger.info(
+                        "_wait_image_url_strict: trusted by net_events "
+                        "(source={}, URL пришёл по сети после Generate) "
+                        "за {:.0f} сек: {}",
+                        fallback_source, elapsed,
+                        fallback_candidate[:140],
+                    )
+                    return fallback_candidate
+                # B. Fallback — click-verification, когда нет net_events
+                # или URL не подтверждён сетью.
                 ok = await self._verify_img_by_clicking(
                     page, fallback_candidate, prompt_id_prefix
                 )
