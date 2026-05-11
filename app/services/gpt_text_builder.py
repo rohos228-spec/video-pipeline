@@ -48,7 +48,25 @@ from app.services.prompt_library import (
 )
 
 # Шаги, для которых поддерживается edit-override «сопр. сообщения».
-SUPPORTED_STEPS: tuple[str, ...] = ("plan", "script", "hero", "split", "img_pr")
+SUPPORTED_STEPS: tuple[str, ...] = (
+    "plan", "script", "hero", "split", "img_pr",
+    # Слоты «Доп работа с EXCEL» (шаг 5). Каждый слот хранит свой
+    # override в `Project.gpt_text_overrides["enrich_<i>"]`. В отличие
+    # от других шагов, тут «сопр. сообщение» = ТОЛЬКО сопровождающий
+    # текст (без мастер-промта). Мастер-промт лежит отдельно в
+    # `prompts/05<a..e>_enrich_<i>/<name>.md`, в `enrich_xlsx.py` они
+    # склеиваются: master + "\n\n---\n\n" + accompanying.
+    "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
+)
+
+# Дефолтный «сопровождающий текст» для enrich-слотов. Единый источник
+# правды — используется и в UI (через `_build_enrich_default`), и в
+# самом воркере (см. `app/orchestrator/steps/enrich_xlsx.py`,
+# `_get_accompanying_text` через `get_effective_text`).
+ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
+    "Внеси изменения в приложенный xlsx согласно инструкциям выше.\n"
+    "ВАЖНО: в ответ ОБЯЗАТЕЛЬНО приложи обновлённый xlsx файлом."
+)
 
 # Плейсхолдеры в шаблоне «сопр. сообщения» шага `hero`. Подставляются
 # в `generate_hero.py` отдельно для каждой пары (hero_idx, variation_idx)
@@ -231,6 +249,18 @@ def _build_img_pr_default(
 # Публичные функции
 # --------------------------------------------------------------------------- #
 
+def _build_enrich_default(project: Project, **_ctx) -> str:  # noqa: ARG001
+    """Дефолтный «сопровождающий текст» для enrich-слотов (1..5).
+
+    Здесь, в отличие от других шагов, возвращаем ТОЛЬКО короткую
+    инструкцию (без мастер-промта). Мастер-промт пользователь редактирует
+    отдельно — через picker → «✏ Редактировать выбранный». А «сопр.
+    сообщение» — это короткое сопровождение, которое склеивается с
+    мастер-промтом в `enrich_xlsx.py` через `master + "\\n---\\n" + ...`.
+    """
+    return ENRICH_DEFAULT_ACCOMPANYING_TEXT
+
+
 def build_default_text(project: Project, step_code: str, **ctx) -> str:
     """Собирает дефолтный текст «сопр. сообщения» для шага.
 
@@ -247,6 +277,8 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         return _build_hero_default(project, **ctx)
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
+    if step_code.startswith("enrich_"):
+        return _build_enrich_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")
 
 

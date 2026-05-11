@@ -245,11 +245,20 @@ async def _run_worker_loop(bot) -> None:
 
     # Воркер запускает только «running»-статусы. «ready»-статусы — это
     # ожидание действия пользователя из TG-меню, авто-advance отключён.
+    # ВАЖНО: список должен содержать ВСЕ running-статусы из ProjectStatus,
+    # иначе воркер не подхватит шаг и юзер увидит «бесконечно выполняется».
+    # Маппинг running-статус → handler смотри в `pipeline.advance_project`.
     active = [
         ProjectStatus.planning,
         ProjectStatus.scripting,
         ProjectStatus.splitting,
         ProjectStatus.generating_hero,
+        ProjectStatus.generating_items,
+        ProjectStatus.enriching_1,
+        ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3,
+        ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
         ProjectStatus.generating_image_prompts,
         ProjectStatus.generating_images,
         ProjectStatus.generating_animation_prompts,

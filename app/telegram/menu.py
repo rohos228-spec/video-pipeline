@@ -43,6 +43,7 @@ from aiogram.types import (
 )
 
 from app.models import Project, ProjectStatus
+from app.services.project_state import is_running_status
 
 # Тексты кнопок постоянной reply-клавиатуры (видна всегда внизу TG над полем
 # ввода). Эти строки используются в bot.py для распознавания нажатий.
@@ -479,6 +480,18 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
             text="🧰 Промты", callback_data=f"pov:{project.id}"
         ),
     ])
+
+    # ⏹ Остановить — видим только когда шаг сейчас выполняется. Сбрасывает
+    # running-статус на prerequisite шага, чтобы воркер перестал его
+    # подхватывать. Текущая итерация (если она уже стартовала в outsee/
+    # ChatGPT) доработает свой кусок, но дальше не пойдёт.
+    if is_running_status(project.status):
+        rows.append([
+            InlineKeyboardButton(
+                text="⏹ Остановить текущий шаг",
+                callback_data=f"proj:{project.id}:stop_running",
+            ),
+        ])
 
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),

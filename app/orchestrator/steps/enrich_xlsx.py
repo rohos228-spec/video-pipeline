@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Project, ProjectStatus
+from app.services import gpt_text_builder as gtb
 from app.services import xlsx_sync
 from app.services.prompt_library import get_project_prompt
 from app.storage import for_project as _sheet_for_project
@@ -44,14 +45,6 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
 # Сколько раз пробуем round-trip, если ChatGPT не приложил файл в ответе.
 _MAX_RETRIES = 3
 
-# Сопровождающий текст по умолчанию. Юзер может перебить через
-# `Project.gpt_text_overrides["enrich_<i>"]` (стандартный механизм
-# «📝 Сменить сопр. текст»).
-_DEFAULT_ACCOMPANYING_TEXT = (
-    "Внеси изменения в приложенный xlsx согласно инструкциям выше.\n"
-    "ВАЖНО: в ответ ОБЯЗАТЕЛЬНО приложи обновлённый xlsx файлом."
-)
-
 
 def _resolve_slot_idx(status: ProjectStatus) -> int | None:
     """Из running-статуса (enriching_N) достаём slot_idx."""
@@ -62,12 +55,14 @@ def _resolve_slot_idx(status: ProjectStatus) -> int | None:
 
 
 def _get_accompanying_text(project: Project, step_code: str) -> str:
-    """Возвращает сопровождающий текст для слота: override юзера или дефолт."""
-    overrides = getattr(project, "gpt_text_overrides", None) or {}
-    val = overrides.get(step_code)
-    if isinstance(val, str) and val.strip():
-        return val
-    return _DEFAULT_ACCOMPANYING_TEXT
+    """Возвращает сопровождающий текст для слота: override юзера или дефолт.
+
+    Источник дефолта — `gpt_text_builder.ENRICH_DEFAULT_ACCOMPANYING_TEXT`
+    (через `get_effective_text`). Юзер редактирует через
+    «✏️ Сопр. сообщение» в picker'е → запись попадает в
+    `Project.gpt_text_overrides[step_code]`.
+    """
+    return gtb.get_effective_text(project, step_code)
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:

@@ -1260,11 +1260,13 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 # Для enrich-слотов: picker всегда видим, авто-запуска нет.
                 need_picker = True
             if need_picker:
+                has_msg_override = gtb.has_override(project, step.code)
                 await cb.answer()
                 await cb.message.answer(
                     _prompt_picker_text(step.code, overrides),
                     reply_markup=_prompt_picker_kb(
                         pid, step.code, overrides,
+                        has_msg_override=has_msg_override,
                         show_run_button=_is_enrich_slot(step.code),
                     ),
                     parse_mode="HTML",
@@ -2118,6 +2120,66 @@ async def on_project_download_xlsx(cb: CallbackQuery) -> None:
             f"Открой в Excel, поправь нужные ячейки, сохрани.\n"
             f"Потом нажми «🔄 Перечитать xlsx» в меню проекта."
         ),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:stop_running$"))
+async def on_project_stop_running(cb: CallbackQuery) -> None:
+    """⏹ Остановить — сбрасывает running-статус проекта на prerequisite
+    шага. Воркер при следующем тике перестанет подхватывать этот проект.
+
+    Важно: если шаг уже начал выполняться в outsee/ChatGPT, текущая
+    итерация (например один retry или одна вариация Hero) может
+    доработать свой кусок — её прервать снаружи нельзя. Но **следующих
+    итераций НЕ будет** — статус упал ниже running.
+    """
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    from app.services.project_state import is_running_status
+    from app.telegram.menu import step_by_running_status
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if not is_running_status(project.status):
+            await cb.answer(
+                f"Шаг не выполняется (статус: {project.status.value}).",
+                show_alert=True,
+            )
+            return
+        cur_running = project.status
+        step = step_by_running_status(cur_running)
+        rollback_to = (
+            step.requires if (step is not None and step.requires is not None)
+            else ProjectStatus.new
+        )
+        project.status = rollback_to
+        slug = project.slug
+        topic = project.topic
+        step_title = step.title if step is not None else cur_running.value
+
+    logger.info(
+        "[#{}] STOP: rolled back {} -> {} (user-requested via ⏹)",
+        pid, cur_running.value, rollback_to.value,
+    )
+    await cb.answer("Остановлено")
+    await cb.message.answer(
+        f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"Статус: <code>{cur_running.value}</code> → "
+        f"<code>{rollback_to.value}</code>.\n\n"
+        "⚠️ Если outsee/ChatGPT уже работают над этой итерацией — "
+        "она может ещё доработать свой кусок (прервать снаружи нельзя). "
+        "Но следующих автоматических попыток <b>не будет</b> — воркер "
+        "больше не подхватит этот проект для текущего шага. Можно "
+        "повторно ткнуть шаг в /menu чтобы запустить заново.",
+        parse_mode="HTML",
     )
 
 

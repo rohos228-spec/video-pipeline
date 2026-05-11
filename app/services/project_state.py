@@ -56,6 +56,11 @@ _RUNNING_STATUSES = {
 }
 
 
+def is_running_status(status: ProjectStatus) -> bool:
+    """True если статус — «running» (шаг сейчас выполняется воркером)."""
+    return status in _RUNNING_STATUSES
+
+
 async def compute_actual_status(session, project: Project) -> ProjectStatus:
     """Вернуть наивысший status, который подтверждён данными в БД.
 
