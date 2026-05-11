@@ -183,6 +183,13 @@ _last_project_by_user: dict[int, int] = {}
 # (project_id, step_code), где step_code ∈ {'plan', 'script', 'split'}.
 _xlsx_flow_active: set[tuple[int, str]] = set()
 
+# Ожидание загрузки отредактированного xlsx обратно в проект.
+# Когда юзер скачивает xlsx кнопкой «📥 Скачать xlsx», запоминаем
+# project_id. Если после этого юзер пришлёт .xlsx-документ —
+# подменим project.xlsx (с бэкапом + валидацией + reload в БД).
+# user_id → project_id.
+_pending_xlsx_replace: dict[int, int] = {}
+
 
 def _is_enrich_slot(code: str) -> bool:
     """`True` для enrich_1..enrich_5 — sub-step'ов шага 5 «Доп работа с EXCEL».
@@ -1035,24 +1042,32 @@ async def on_project_step(cb: CallbackQuery) -> None:
             )
             return
 
-        # Шаг 1 (План) — новый xlsx-flow.
-        #   1) спрашиваем у юзера тему ролика текстом
-        #   2) после ввода темы — список файлов-промтов из prompts/01_plan/
-        #   3) после выбора — uploadим project.xlsx + промт в ChatGPT,
-        #      ждём ответ, скачиваем обновлённый xlsx, подменяем,
-        #      старый кладём в old/<timestamp>.xlsx.
+        # Шаг 1 (План) — picker + «✏️ Сопр. сообщение» + «▶ Запустить шаг».
+        # Flow аналогичен шагу 5 (enrich): выбрать шаблон, при желании
+        # отредактировать сопр. сообщение, явно нажать «▶ Запустить».
         if step.code == "plan":
             from pathlib import Path as _Path
             proj_xlsx = (
                 _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
             )
             if proj_xlsx.exists():
-                _pending_plan_topic[cb.from_user.id] = pid
+                overrides = dict(project.prompt_overrides or {})
+                has_msg_override = gtb.has_override(project, "plan")
+                chosen = overrides.get("plan")
+                show_run = bool(
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("plan", chosen).exists()
+                )
+                _set_user_screen(cb.from_user.id, "picker", pid, "plan")
                 await cb.answer()
                 await cb.message.answer(
-                    "Напиши <b>тему ролика</b>, по которой будет сделан план.\n"
-                    "Я добавлю её в начало промта и отправлю в ChatGPT вместе "
-                    "с твоим project.xlsx.",
+                    _prompt_picker_text("plan", overrides),
+                    reply_markup=_prompt_picker_kb(
+                        pid, "plan", overrides,
+                        has_msg_override=has_msg_override,
+                        show_run_button=show_run,
+                    ),
                     parse_mode="HTML",
                 )
                 return
@@ -1513,9 +1528,18 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             has_msg_override = (
                 gtb.has_override(project, step_code) if project else False
             )
-            show_run = (
-                _can_run_enrich_slot_now(project, step_code) if project else False
-            )
+            if step_code == "plan" and project is not None:
+                chosen = overrides.get("plan")
+                show_run = bool(
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("plan", chosen).exists()
+                )
+            else:
+                show_run = (
+                    _can_run_enrich_slot_now(project, step_code)
+                    if project else False
+                )
         _set_user_screen(cb.from_user.id, "picker", pid, step_code)
         await cb.answer()
         await cb.message.answer(
@@ -1530,12 +1554,52 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
         return
 
     if action == "run":
-        # Явный запуск шага (только для enrich_<N>). Picker не запускает
+        # Явный запуск шага (для enrich_<N> и plan). Picker не запускает
         # шаг автоматом, юзер должен сам ткнуть «▶ Запустить шаг».
+
+        # Шаг 1 (План) — запуск xlsx-flow напрямую из picker'а.
+        if step_code == "plan":
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get("plan")
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("plan", chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+                topic = project.topic or ""
+            if (pid, "plan") in _xlsx_flow_active:
+                await cb.answer(
+                    "⏳ Уже идёт обработка «Плана» по этому проекту, подожди.",
+                    show_alert=True,
+                )
+                return
+            await cb.answer(f"Запускаю план: {chosen}")
+            asyncio.create_task(
+                _run_xlsx_with_lock(
+                    _run_plan_xlsx(cb.message, pid, chosen, topic),
+                    pid,
+                    "plan",
+                )
+            )
+            return
+
         if not _is_enrich_slot(step_code):
             await cb.answer(
-                "Кнопка «Запустить» доступна только для слотов "
-                "«Доп работа с EXCEL» (шаг 5).",
+                "Кнопка «Запустить» доступна только для шага 1 (План) и "
+                "слотов «Доп работа с EXCEL» (шаг 5).",
                 show_alert=True,
             )
             return
@@ -1708,32 +1772,43 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             overrides[step_code] = name
             project.prompt_overrides = overrides
 
-        # Особый случай: «План» в xlsx-режиме.
-        # Юзер сначала ввёл тему, теперь выбрал файл-промт.
-        # Запускаем upload xlsx → ChatGPT → download прямо отсюда.
+        # Шаг 1 (План) — picker остаётся видимым (как в enrich), авто-запуска нет.
         if step_code == "plan":
-            uid = cb.from_user.id
-            pending_plan = _pending_plan_prompt.get(uid)
-            if pending_plan is not None and pending_plan[0] == pid:
-                topic = pending_plan[1]
-                if (pid, "plan") in _xlsx_flow_active:
-                    await cb.answer(
-                        "⏳ Уже идёт обработка «Плана» по этому проекту, "
-                        "подожди.",
-                        show_alert=True,
-                    )
-                    return
-                _pending_plan_prompt.pop(uid, None)
-                await cb.answer(f"Запускаю план: {name}")
-                # Не блокируем callback handler надолго — отдельной таской.
-                asyncio.create_task(
-                    _run_xlsx_with_lock(
-                        _run_plan_xlsx(cb.message, pid, name, topic),
-                        pid,
-                        "plan",
-                    )
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                overrides_after = (
+                    dict(project.prompt_overrides or {}) if project else {}
                 )
-                return
+                has_msg_override = (
+                    gtb.has_override(project, step_code) if project else False
+                )
+                show_run = bool(
+                    overrides_after.get(step_code)
+                    and plib.is_valid_prompt_name(overrides_after.get(step_code, ""))
+                    and plib.prompt_path(step_code, overrides_after.get(step_code, "")).exists()
+                )
+            _set_user_screen(cb.from_user.id, "picker", pid, step_code)
+            await cb.answer(f"Выбрано: {name}")
+            await cb.message.answer(
+                f"✅ Для шага «План» теперь выбран шаблон "
+                f"<code>{name}</code>.\n\n"
+                "Можешь:\n"
+                "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
+                "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
+                "  • <b>✏️ Сопр. сообщение</b> — отредактировать текст, "
+                "который уходит в ChatGPT вместе с xlsx.\n"
+                "  • выбрать другой шаблон из списка.\n\n"
+                + _prompt_picker_text(step_code, overrides_after),
+                reply_markup=_prompt_picker_kb(
+                    pid, step_code, overrides_after,
+                    has_msg_override=has_msg_override,
+                    show_run_button=show_run,
+                ),
+                parse_mode="HTML",
+            )
+            return
 
         # Особый случай: «Закадровый текст» (Step 2) в xlsx-режиме.
         if step_code == "script":
@@ -2160,6 +2235,19 @@ async def on_document_message(msg: Message) -> None:
         await _replace_voiceover(pending_vo, text, msg)
         return
 
+    # Замена project.xlsx — юзер скачал xlsx кнопкой «📥», отредактировал
+    # и прислал обратно .xlsx-документом.
+    pending_xlsx_pid = _pending_xlsx_replace.get(user_id)
+    doc = msg.document
+    if (
+        pending_xlsx_pid is not None
+        and doc is not None
+        and (doc.file_name or "").lower().endswith(".xlsx")
+    ):
+        _pending_xlsx_replace.pop(user_id, None)
+        await _handle_xlsx_replace(msg, pending_xlsx_pid, doc)
+        return
+
     # Если юзер кликнул «+ Новый промт» и сразу прислал файл (не введя
     # имя текстом) — подсказываем что сначала нужно имя.
     if user_id in _pending_prompt_name:
@@ -2174,6 +2262,88 @@ async def on_document_message(msg: Message) -> None:
     if user_id not in _pending_prompt_upload:
         return  # не ждём ничего — игнорим (это может быть просто файл)
     await _handle_prompt_upload(msg)
+
+
+# ---------------------------------------------------------------------------
+# Замена project.xlsx загруженным от юзера документом
+
+async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
+    """Принимает .xlsx-документ от юзера и подменяет project.xlsx.
+
+    1) Скачиваем файл во временную папку.
+    2) Валидируем (openpyxl + zip-magic).
+    3) Бэкапим текущий project.xlsx в old/.
+    4) Подменяем.
+    5) Reload xlsx → БД.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from app.services.xlsx_versioning import (
+        backup_to_old,
+        replace_with,
+        validate_xlsx,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден.")
+            return
+        slug = project.slug
+        topic = project.topic
+
+    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp_path = _Path(tmp.name)
+    await msg.bot.download(doc, destination=str(tmp_path))
+
+    validation_err = validate_xlsx(tmp_path)
+    if validation_err is not None:
+        tmp_path.unlink(missing_ok=True)
+        await msg.answer(
+            f"❌ Загруженный файл не валиден: {validation_err}\n"
+            f"project.xlsx не подменён. Пришли корректный .xlsx.",
+            parse_mode="HTML",
+        )
+        return
+
+    backup = backup_to_old(proj_xlsx)
+    proj_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    replace_with(proj_xlsx, tmp_path)
+    tmp_path.unlink(missing_ok=True)
+
+    # Reload xlsx → БД.
+    try:
+        from app.services.xlsx_sync import reload_from_xlsx
+
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                summary = await reload_from_xlsx(s, project, proj_xlsx)
+                logger.info(
+                    "xlsx_replace: reload_from_xlsx → {}", summary
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("xlsx_replace reload failed: {}", e)
+
+    backup_note = (
+        f"\nСтарая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ project.xlsx заменён ({proj_xlsx.stat().st_size} байт).\n"
+        f"Проект #{project_id} «{topic}»{backup_note}\n"
+        f"Данные перечитаны в БД.",
+        parse_mode="HTML",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2198,12 +2368,14 @@ async def on_project_download_xlsx(cb: CallbackQuery) -> None:
         await cb.answer("xlsx-файл ещё не создан", show_alert=True)
         return
     await cb.answer("Шлю файл…")
+    _pending_xlsx_replace[cb.from_user.id] = pid
     await cb.message.answer_document(
         FSInputFile(str(xlsx_path)),
         caption=(
             f"📥 project.xlsx (#{pid})\n"
             f"Открой в Excel, поправь нужные ячейки, сохрани.\n"
-            f"Потом нажми «🔄 Перечитать xlsx» в меню проекта."
+            f"Пришли отредактированный .xlsx сюда в чат — я заменю им "
+            f"текущий project.xlsx (старая версия сохранится в old/)."
         ),
     )
 
@@ -4126,10 +4298,12 @@ async def notify_step_done(
                 "notify_step_done: project #{} не найден", project_id
             )
             return
+        slug = project.slug
+        status_val = project.status.value
         try:
             await bot.send_message(
                 settings.telegram_owner_chat_id,
-                f"✅ Шаг завершён: статус <b>{project.status.value}</b>",
+                f"✅ Шаг завершён: статус <b>{status_val}</b>",
                 parse_mode="HTML",
             )
             logger.info(
@@ -4141,6 +4315,28 @@ async def notify_step_done(
                 "notify_step_done: send_message провалился для project #{}",
                 project_id,
             )
+
+    # Для enrich-шагов (enrich_1_ready..enrich_5_ready) присылаем
+    # обновлённый project.xlsx как документ.
+    if new_status.startswith("enrich_") and new_status.endswith("_ready"):
+        from pathlib import Path as _Path
+
+        xlsx_path = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+        if xlsx_path.exists():
+            try:
+                await bot.send_document(
+                    settings.telegram_owner_chat_id,
+                    FSInputFile(str(xlsx_path)),
+                    caption=(
+                        f"📥 Результат: project.xlsx после «{new_status}»\n"
+                        f"Проект #{project_id}"
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "notify_step_done: send_document xlsx failed for #{}",
+                    project_id,
+                )
 
 
 # ---------------------------------------------------------------------------
