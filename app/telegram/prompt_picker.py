@@ -25,6 +25,7 @@ Callback-data:
   prm:<pid>:<step>:msgmenu               — открыть подменю «сопр. сообщения»
   prm:<pid>:<step>:msgsend               — отправить файл с текущим текстом
   prm:<pid>:<step>:msgreset              — сбросить override на дефолт
+  prm:<pid>:<step>:run                   — явный запуск шага после выбора
 """
 
 from __future__ import annotations
@@ -57,9 +58,27 @@ def picker_kb(
     project_overrides: dict | None = None,
     *,
     has_msg_override: bool = False,
+    show_run_button: bool = False,
 ) -> InlineKeyboardMarkup:
+    """Клавиатура picker'а.
+
+    `show_run_button=True` — добавляет в верху кнопку «▶ Запустить шаг».
+    Используется для enrich_<N> (шаг 5): после выбора шаблона пикер
+    остаётся видимым, юзер может ещё раз ткнуть «Редактировать» или
+    сменить шаблон, а явный запуск — только по нажатию «▶ Запустить».
+    Без этой кнопки шаг не запускается автоматом.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     chosen = (project_overrides or {}).get(step_code)
+    # ▶ Запустить шаг — на самом верху, если шаблон выбран и попросили
+    # показать (для enrich-слотов).
+    if show_run_button and chosen:
+        rows.append([
+            InlineKeyboardButton(
+                text="▶ Запустить шаг",
+                callback_data=f"prm:{pid}:{step_code}:run",
+            )
+        ])
     for name in plib.list_prompts(step_code):
         marker = "● " if name == chosen else ""
         rows.append([

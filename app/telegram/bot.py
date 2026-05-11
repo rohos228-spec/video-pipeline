@@ -184,6 +184,21 @@ _last_project_by_user: dict[int, int] = {}
 _xlsx_flow_active: set[tuple[int, str]] = set()
 
 
+def _is_enrich_slot(code: str) -> bool:
+    """`True` для enrich_1..enrich_5 — sub-step'ов шага 5 «Доп работа с EXCEL».
+
+    Для этих шагов:
+      - выбор шаблона в picker'е НЕ запускает шаг автоматом
+      - picker остаётся виден после выбора, чтобы можно было ткнуть
+        «✏ Редактировать выбранный» или сменить шаблон
+      - запуск — только через явную кнопку «▶ Запустить шаг» в picker'е
+    """
+    if not code.startswith("enrich_"):
+        return False
+    tail = code[len("enrich_"):]
+    return tail.isdigit() and 1 <= int(tail) <= 5
+
+
 def _remember_project(user_id: int, project_id: int) -> None:
     """Запоминает что юзер сейчас работает с этим проектом — для кнопки
     «📁 Последний проект» в постоянной клавиатуре."""
@@ -1227,19 +1242,31 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # Если у шага есть мастер-промт и в проекте ещё не выбран
         # вариант (или указанный файл пропал) — показываем picker и НЕ
         # запускаем шаг до выбора. Это ключевая часть Push C.
+        #
+        # Для enrich_<N> (шаг 5) picker показываем ВСЕГДА — даже если
+        # шаблон уже выбран. Юзер просил не запускать шаг автоматом,
+        # чтобы успеть отредактировать выбранный шаблон. Запуск делает
+        # отдельная кнопка «▶ Запустить шаг» в picker'е (action="run").
         if step.code in plib.STEP_FOLDERS:
             overrides = dict(project.prompt_overrides or {})
             chosen = overrides.get(step.code)
-            need_picker = (
-                not chosen
-                or not plib.is_valid_prompt_name(chosen)
-                or not plib.prompt_path(step.code, chosen).exists()
+            chosen_ok = (
+                chosen
+                and plib.is_valid_prompt_name(chosen)
+                and plib.prompt_path(step.code, chosen).exists()
             )
+            need_picker = not chosen_ok
+            if _is_enrich_slot(step.code):
+                # Для enrich-слотов: picker всегда видим, авто-запуска нет.
+                need_picker = True
             if need_picker:
                 await cb.answer()
                 await cb.message.answer(
                     _prompt_picker_text(step.code, overrides),
-                    reply_markup=_prompt_picker_kb(pid, step.code, overrides),
+                    reply_markup=_prompt_picker_kb(
+                        pid, step.code, overrides,
+                        show_run_button=_is_enrich_slot(step.code),
+                    ),
                     parse_mode="HTML",
                 )
                 return
@@ -1429,8 +1456,81 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
         await cb.message.answer(
             _prompt_picker_text(step_code, overrides),
             reply_markup=_prompt_picker_kb(
-                pid, step_code, overrides, has_msg_override=has_msg_override
+                pid, step_code, overrides,
+                has_msg_override=has_msg_override,
+                show_run_button=_is_enrich_slot(step_code),
             ),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "run":
+        # Явный запуск шага (только для enrich_<N>). Picker не запускает
+        # шаг автоматом, юзер должен сам ткнуть «▶ Запустить шаг».
+        if not _is_enrich_slot(step_code):
+            await cb.answer(
+                "Кнопка «Запустить» доступна только для слотов "
+                "«Доп работа с EXCEL» (шаг 5).",
+                show_alert=True,
+            )
+            return
+        from app.telegram.menu import (
+            is_step_runnable,
+            step_by_code as _step_by_code,
+        )
+        step = _step_by_code(step_code)
+        if step is None:
+            await cb.answer("Неизвестный шаг", show_alert=True)
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            overrides = dict(project.prompt_overrides or {})
+            chosen = overrides.get(step_code)
+            chosen_ok = (
+                chosen
+                and plib.is_valid_prompt_name(chosen)
+                and plib.prompt_path(step_code, chosen).exists()
+            )
+            if not chosen_ok:
+                await cb.answer(
+                    "Сначала выбери шаблон в списке.",
+                    show_alert=True,
+                )
+                return
+            # Зомби-статус: уже идёт — просто говорим «работает».
+            if project.status is step.running_status:
+                await cb.answer(
+                    f"⏳ Шаг уже выполняется ({step.title}). Подожди.",
+                    show_alert=True,
+                )
+                return
+            # Перезапуск из ready — разрешаем (юзер мог сменить шаблон).
+            if not is_step_runnable(step, project.status):
+                from app.telegram.menu import status_order
+                is_already_done = (
+                    status_order(project.status) >= status_order(step.ready_status)
+                )
+                if not is_already_done:
+                    await cb.answer(
+                        f"Сначала пройди шаг до "
+                        f"{step.requires.value if step.requires else '?'}",
+                        show_alert=True,
+                    )
+                    return
+            project.status = step.running_status
+            slug = project.slug
+            topic = project.topic
+        await cb.answer(f"Запускаю: {step.title}")
+        await cb.message.answer(
+            f"▶ <b>{step.title}</b>\n"
+            f"Шаблон: <code>{chosen}</code>\n"
+            f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+            f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
             parse_mode="HTML",
         )
         return
@@ -1635,6 +1735,40 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 return
 
         human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+
+        # Для enrich_<N> (шаг 5) — не показываем терминальное «тыкни шаг»,
+        # а перерисовываем picker. Юзер останется на нём, сможет ткнуть
+        # «✏ Редактировать выбранный» / сменить шаблон / ткнуть
+        # «▶ Запустить шаг» для явного запуска.
+        if _is_enrich_slot(step_code):
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                overrides_after = (
+                    dict(project.prompt_overrides or {}) if project else {}
+                )
+                has_msg_override = (
+                    gtb.has_override(project, step_code) if project else False
+                )
+            await cb.answer(f"Выбрано: {name}")
+            await cb.message.answer(
+                f"✅ Для шага «{human}» теперь выбран шаблон "
+                f"<code>{name}</code>.\n\n"
+                "Можешь:\n"
+                "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
+                "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
+                "  • выбрать другой шаблон из списка.\n\n"
+                + _prompt_picker_text(step_code, overrides_after),
+                reply_markup=_prompt_picker_kb(
+                    pid, step_code, overrides_after,
+                    has_msg_override=has_msg_override,
+                    show_run_button=True,
+                ),
+                parse_mode="HTML",
+            )
+            return
+
         await cb.answer(f"Выбрано: {name}")
         await cb.message.answer(
             f"✅ Для шага «{human}» теперь используется промт "
@@ -1718,7 +1852,10 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             overrides = dict(project.prompt_overrides or {}) if project else {}
         await cb.message.answer(
             _prompt_picker_text(step_code, overrides),
-            reply_markup=_prompt_picker_kb(pid, step_code, overrides),
+            reply_markup=_prompt_picker_kb(
+                pid, step_code, overrides,
+                show_run_button=_is_enrich_slot(step_code),
+            ),
             parse_mode="HTML",
         )
         return
