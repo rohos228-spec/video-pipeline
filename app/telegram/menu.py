@@ -4,30 +4,31 @@
   /menu                              → главное меню (новый/существующие)
   cb=menu:new                        → попросить тему → cb=menu:topic_set
   cb=menu:list                       → список проектов
-  cb=proj:<id>:menu                  → меню проекта (10 шагов + xlsx + удалить)
-  cb=proj:<id>:step:<n>              → запустить шаг N
+  cb=proj:<id>:menu                  → меню проекта (шаги + xlsx + удалить)
+  cb=proj:<id>:step:<code>           → запустить шаг
   cb=proj:<id>:dl_xlsx               → скачать xlsx
   cb=proj:<id>:reload_xlsx           → перечитать xlsx → БД
   cb=proj:<id>:delete                → удалить проект (после подтверждения)
   cb=proj:<id>:delete_yes            → подтверждённое удаление
 
-Шаги (после редизайна):
+Шаги (после редизайна с группировкой):
   1: plan      → planning            → plan_ready
   2: script    → scripting           → script_ready
   3: split     → splitting           → frames_ready
   4: objects   → (sub-menu: persons/items)        → hero_ready или items_ready
        4a:  persons → generating_hero  → hero_ready
        4b:  items   → generating_items → items_ready
-  5: enrich_1 → enriching_1          → enrich_1_ready  (xlsx round-trip)
-  6: enrich_2 → enriching_2          → enrich_2_ready  (доступен по «+ слот»)
-  7: enrich_3 → enriching_3          → enrich_3_ready
-  …  (до 5 слотов; «+ Добавить слот» наращивает projects.enrich_slots_count)
-  8: img_pr   → generating_image_prompts → image_prompts_ready
-  9: img      → generating_images   → images_ready
- 10: anim_pr  → generating_animation_prompts → animation_prompts_ready
- 11: video    → generating_videos   → videos_ready
- 12: audio    → generating_audio    → audio_ready
- 13: assemble → assembling          → assembled
+  5: enrich   → (sub-menu: enrich_1..N + «➕ слот»)
+       5.1:  enrich_1 → enriching_1 → enrich_1_ready (xlsx round-trip)
+       5.2:  enrich_2 → enriching_2 → enrich_2_ready
+       5.3:  enrich_3 → enriching_3 → enrich_3_ready (по дефолту 3 слота)
+       …  (до 5 слотов; «+ Добавить слот» наращивает enrich_slots_count)
+  6: img_pr   → generating_image_prompts → image_prompts_ready
+  7: img      → generating_images   → images_ready
+  8: anim_pr  → generating_animation_prompts → animation_prompts_ready
+  9: video    → generating_videos   → videos_ready
+ 10: audio    → generating_audio    → audio_ready
+ 11: assemble → assembling          → assembled
 """
 
 from __future__ import annotations
@@ -162,26 +163,40 @@ def _objects_requires_for_step5() -> ProjectStatus:
     return ProjectStatus.hero_ready
 
 
+def enabled_enrich_slots(project: Project | None) -> int:
+    """Сколько enrich-слотов реально включено у проекта (1..5).
+    Если project=None или поле не выставлено — дефолт 3."""
+    if project is None:
+        return 3
+    n = project.enrich_slots_count or 3
+    return max(1, min(MAX_ENRICH_SLOTS, n))
+
+
 def steps_for(project: Project | None) -> list[StepDef]:
     """Динамический список шагов меню для проекта.
 
-    Шаги 1-3 без изменений. Шаг 4 «Объекты» — wrapper над двумя
-    суб-генерациями (running=generating_hero — для совместимости с
-    логикой step_icon/runnable; sub-menu рисуется отдельно). Слотов
-    «Доп работа с EXCEL» — столько, сколько указано в
-    project.enrich_slots_count (от 1 до 5, дефолт 3). Затем идут
-    шаги «Промты картинок» → «Финальная сборка», с requires=
-    enrich_<N>_ready, где N — последний активный слот.
+    После последнего редизайна все enrich-слоты схлопнуты в ОДИН пункт
+    меню «5. Доп работа с EXCEL» (wrapper). При клике открывается
+    суб-меню с N кнопками «Доп работа с EXCEL #i» и кнопкой
+    «➕ Добавить слот». Сами слоты ПО-ПРЕЖНЕМУ имеют отдельные коды
+    `enrich_1..enrich_5` в `_STEP_BY_CODE` — это нужно, чтобы
+    `step_by_code("enrich_1")` находил StepDef для запуска нужного
+    `enriching_<i>` running-статуса в воркере, и чтобы prompt-picker
+    видел их в `STEP_FOLDERS`.
 
     Если project=None (например в /menu списках) — берётся 3 слота
     по умолчанию.
     """
-    n_slots = (
-        max(1, min(MAX_ENRICH_SLOTS, project.enrich_slots_count or 3))
-        if project is not None
-        else 3
-    )
-    steps: list[StepDef] = [
+    n_slots = enabled_enrich_slots(project)
+    # Wrapper-шаг 5 «Доп работа с EXCEL»:
+    #   - running_status:  enriching_1 (плейсхолдер, иконка «⏳»
+    #     спец-кейсом обрабатывается в step_icon: ⏳ если статус ∈
+    #     enriching_1..5)
+    #   - ready_status:    enrich_<n_slots>_ready (✅ только когда
+    #     ПОСЛЕДНИЙ активный слот выполнен)
+    #   - requires:        hero_ready (т.к. предметы опциональны)
+    enrich_ready = ENRICH_READY[n_slots - 1]
+    return [
         StepDef(
             1, "plan", "План",
             ProjectStatus.planning, ProjectStatus.plan_ready, None,
@@ -202,80 +217,131 @@ def steps_for(project: Project | None) -> list[StepDef]:
             ProjectStatus.hero_ready,
             ProjectStatus.frames_ready,
         ),
-    ]
-    # Слоты enrich. Первый зависит от шага 4, дальше — от предыдущего.
-    prev_ready: ProjectStatus = _objects_requires_for_step5()
-    n = 5
-    for i in range(1, n_slots + 1):
-        steps.append(
-            StepDef(
-                n, f"enrich_{i}", f"Доп работа с EXCEL #{i}",
-                ENRICH_RUNNING[i - 1], ENRICH_READY[i - 1],
-                prev_ready,
-            )
-        )
-        prev_ready = ENRICH_READY[i - 1]
-        n += 1
-    # Финальные шаги. Первый из них требует последний enrich_<n_slots>_ready.
-    steps.extend([
         StepDef(
-            n, "img_pr", "Промты картинок",
-            ProjectStatus.generating_image_prompts, ProjectStatus.image_prompts_ready,
-            prev_ready,
+            5, "enrich", "Доп работа с EXCEL",
+            ProjectStatus.enriching_1,  # плейсхолдер; ⏳ спец-кейсом
+            enrich_ready,
+            _objects_requires_for_step5(),
         ),
         StepDef(
-            n + 1, "img", "Картинки",
+            6, "img_pr", "Промты картинок",
+            ProjectStatus.generating_image_prompts,
+            ProjectStatus.image_prompts_ready,
+            enrich_ready,
+        ),
+        StepDef(
+            7, "img", "Картинки",
             ProjectStatus.generating_images, ProjectStatus.images_ready,
             ProjectStatus.image_prompts_ready,
         ),
         StepDef(
-            n + 2, "anim_pr", "Промты анимации",
-            ProjectStatus.generating_animation_prompts, ProjectStatus.animation_prompts_ready,
+            8, "anim_pr", "Промты анимации",
+            ProjectStatus.generating_animation_prompts,
+            ProjectStatus.animation_prompts_ready,
             ProjectStatus.images_ready,
         ),
         StepDef(
-            n + 3, "video", "Видео",
+            9, "video", "Видео",
             ProjectStatus.generating_videos, ProjectStatus.videos_ready,
             ProjectStatus.animation_prompts_ready,
         ),
         StepDef(
-            n + 4, "audio", "Аудио",
+            10, "audio", "Аудио",
             ProjectStatus.generating_audio, ProjectStatus.audio_ready,
             ProjectStatus.videos_ready,
         ),
         StepDef(
-            n + 5, "assemble", "Финальная сборка",
+            11, "assemble", "Финальная сборка",
             ProjectStatus.assembling, ProjectStatus.assembled,
             ProjectStatus.audio_ready,
         ),
-    ])
-    return steps
+    ]
 
 
-# Базовый список (3 слота enrich) — для обратной совместимости
-# импортов `from app.telegram.menu import STEPS`. Большинство мест
-# в коде ходят через `step_by_code()`, который работает поверх этого
-# базового списка.
+# Список StepDef'ов для отдельных enrich-слотов (запускаются из
+# enrich_submenu_kb, имеют running/ready-статусы под каждый слот).
+# Используется step_by_code("enrich_<i>") и as-is воркером.
+def _enrich_slot_step(slot: int) -> StepDef:
+    """Создать StepDef для отдельного enrich-слота 1..5."""
+    return StepDef(
+        # Номер шага «-1» означает «не присутствует в основном списке»
+        # (под кнопкой 5 «Доп работа с EXCEL» — sub-step).
+        -1, f"enrich_{slot}", f"Доп работа с EXCEL #{slot}",
+        ENRICH_RUNNING[slot - 1], ENRICH_READY[slot - 1],
+        # Префиквизит:
+        #   - слот #1 — после «Объектов» (hero_ready)
+        #   - слот #N>1 — после предыдущего enrich_(N-1)_ready
+        ENRICH_READY[slot - 2] if slot > 1 else _objects_requires_for_step5(),
+    )
+
+
+# Базовый список (wrapper «Доп работа с EXCEL») — для обратной
+# совместимости импортов `from app.telegram.menu import STEPS`.
+# Большинство мест в коде ходят через `step_by_code()`, который
+# работает поверх этого базового списка + sub-step'ы enrich_1..5.
 STEPS: list[StepDef] = steps_for(None)
 
 
-# Полный лукап-словарь: включает все 5 возможных enrich-слотов,
-# даже если в дефолтном STEPS их только 3. Чтобы step_by_code(...)
-# не возвращал None при клике на «5. Доп работа с EXCEL #5», когда
-# enrich_slots_count расширен до 5.
-_STEP_BY_CODE: dict[str, StepDef] = {s.code: s for s in steps_for(None)}
+# Полный лукап-словарь: включает все wrapper-шаги основного меню
+# плюс sub-step'ы:
+#   - "hero"  — старая Hero-логика (sub-step под «Объекты»)
+#   - "items" — реф-картинки предметов (sub-step под «Объекты»)
+#   - "enrich_1..5" — sub-step'ы под «Доп работа с EXCEL»
+# Они недоступны напрямую из основного меню (n=-1), но нужны для:
+#   - step_by_code("hero") при эмуляции через on_objects_persons
+#   - step_by_code("enrich_1") при клике в enrich submenu
+#   - prompt-picker по коду шага
+_STEP_BY_CODE: dict[str, StepDef] = {s.code: s for s in STEPS}
+# Sub-step «Персонажи» (старая Hero-логика). running=generating_hero,
+# ready=hero_ready, requires=frames_ready (см. on_project_step:
+# if step.code == "hero").
+_STEP_BY_CODE["hero"] = StepDef(
+    -1, "hero", "Персонажи",
+    ProjectStatus.generating_hero, ProjectStatus.hero_ready,
+    ProjectStatus.frames_ready,
+)
+# Sub-step «Предметы». running=generating_items, ready=items_ready,
+# requires=hero_ready.
+_STEP_BY_CODE["items"] = StepDef(
+    -1, "items", "Предметы",
+    ProjectStatus.generating_items, ProjectStatus.items_ready,
+    ProjectStatus.hero_ready,
+)
+# Sub-step'ы enrich_1..5.
 for _slot in range(1, MAX_ENRICH_SLOTS + 1):
     _code = f"enrich_{_slot}"
-    if _code not in _STEP_BY_CODE:
-        _STEP_BY_CODE[_code] = StepDef(
-            -1, _code, f"Доп работа с EXCEL #{_slot}",
-            ENRICH_RUNNING[_slot - 1], ENRICH_READY[_slot - 1],
-            ENRICH_READY[_slot - 2] if _slot > 1 else _objects_requires_for_step5(),
-        )
+    _STEP_BY_CODE[_code] = _enrich_slot_step(_slot)
 
 
 def step_by_code(code: str) -> StepDef | None:
     return _STEP_BY_CODE.get(code)
+
+
+def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
+    """Найти StepDef по running_status. Учитывает как «верхние» шаги
+    основного меню (см. steps_for(None)), так и sub-step'ы для
+    hero/items/enrich_1..5 — последнее важно для rollback'а при
+    failed-шаге.
+
+    Sub-step'ы матчатся первыми, т.к. они точнее (например wrapper
+    "objects" имеет running=generating_hero, но при failed-rollback
+    хотим вернуться к requires sub-step'а "hero", т.е. frames_ready —
+    это совпадает с requires "objects", так что разницы нет, но
+    приоритет на sub-step'ах — на будущее).
+    """
+    # Sub-step'ы (точнее, чем wrapper'ы).
+    for code in ("hero", "items", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
+        sd = _STEP_BY_CODE.get(code)
+        if sd is not None and sd.running_status is running_status:
+            return sd
+    # Затем — среди базовых шагов основного меню (1..11).
+    for sd in STEPS:
+        # Wrapper'ы (objects/enrich) уже покрыты sub-step'ами выше.
+        if sd.code in ("objects", "enrich"):
+            continue
+        if sd.running_status is running_status:
+            return sd
+    return None
 
 
 def status_order(s: ProjectStatus) -> int:
@@ -289,7 +355,19 @@ def step_icon(step: StepDef, project_status: ProjectStatus) -> str:
     `failed` больше не используется (воркер вместо него откатывает статус
     к prerequisite упавшего шага), поэтому никакого спец-кейса для failed
     тут нет.
+
+    Спец-кейсы:
+      - «objects»: ⏳ если статус ∈ {generating_hero, generating_items};
+        ✅ — если достигнут hero_ready.
+      - «enrich» (wrapper-шаг 5): ⏳ если статус ∈ enriching_1..5;
+        ✅ — если достигнут enrich_<n_slots>_ready (последний активный).
     """
+    if step.code == "enrich":
+        if project_status in ENRICH_RUNNING:
+            return "⏳"
+        if status_order(project_status) >= status_order(step.ready_status):
+            return "✅"
+        return "⬜"
     if project_status is step.running_status:
         return "⏳"
     if status_order(project_status) >= status_order(step.ready_status):
@@ -356,6 +434,10 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
                 ProjectStatus.generating_hero,
                 ProjectStatus.generating_items,
             )
+        # Спец-кейс шаг 5 «Доп работа с EXCEL» (wrapper):
+        # «running», если статус в любом из enriching_1..5.
+        elif s.code == "enrich":
+            is_running_now = project.status in ENRICH_RUNNING
         else:
             is_running_now = project.status is s.running_status
 
@@ -376,15 +458,8 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
             cb = "noop" if wiz_ok else f"wiz:{project.id}:start"
         rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
-    # Кнопка «➕ Добавить слот» — рисуется только если ещё не достигли
-    # лимита и мастер пройден. Инкрементит project.enrich_slots_count.
-    if wiz_ok and (project.enrich_slots_count or 3) < MAX_ENRICH_SLOTS:
-        rows.append([
-            InlineKeyboardButton(
-                text="➕ Добавить слот «Доп работа с EXCEL»",
-                callback_data=f"proj:{project.id}:enrich_add_slot",
-            )
-        ])
+    # NB: кнопки «➕ Добавить слот» в основном меню больше нет —
+    # она переехала внутрь подменю «Доп работа с EXCEL» (enrich_submenu_kb).
 
     # Шестая строка: настройки (пересмотреть / сбросить)
     if wiz_ok:
@@ -458,6 +533,68 @@ def objects_submenu_kb(project: Project) -> InlineKeyboardMarkup:
             ),
         )
     ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅ Назад в меню проекта",
+            callback_data=f"proj:{project.id}:menu",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def enrich_submenu_kb(project: Project) -> InlineKeyboardMarkup:
+    """Подменю шага 5 «Доп работа с EXCEL».
+
+    Содержит:
+      - N кнопок «Доп работа с EXCEL #1..#N» (N = enrich_slots_count)
+      - Кнопку «➕ Добавить слот» (если N < 5)
+      - Кнопку «⬅ Назад в меню проекта»
+
+    Для каждого слота:
+      ✅ — этот слот уже выполнен (enrich_<i>_ready достигнут)
+      ⏳ — этот слот сейчас выполняется (status == enriching_<i>)
+      ▶ — можно запустить (предыдущий слот готов или это слот #1 и
+          hero_ready достигнут)
+      🔒 — заблокирован (предыдущий слот не готов)
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    n_slots = enabled_enrich_slots(project)
+
+    for i in range(1, n_slots + 1):
+        running = ENRICH_RUNNING[i - 1]
+        ready = ENRICH_READY[i - 1]
+        if i == 1:
+            prereq = _objects_requires_for_step5()
+        else:
+            prereq = ENRICH_READY[i - 2]
+
+        is_running = project.status is running
+        is_done = status_order(project.status) >= status_order(ready)
+        can_run = status_order(project.status) >= status_order(prereq)
+
+        if is_running:
+            label = f"⏳ Доп работа с EXCEL #{i} · идёт…"
+            cb = f"proj:{project.id}:step:enrich_{i}"
+        elif is_done:
+            label = f"✅ Доп работа с EXCEL #{i} (перезапустить)"
+            cb = f"proj:{project.id}:step:enrich_{i}"
+        elif can_run:
+            label = f"▶ Доп работа с EXCEL #{i}"
+            cb = f"proj:{project.id}:step:enrich_{i}"
+        else:
+            label = f"🔒 Доп работа с EXCEL #{i} (сначала #{i-1})"
+            cb = "noop"
+        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+    # «➕ Добавить слот» — рисуется только пока не достигли лимита.
+    if n_slots < MAX_ENRICH_SLOTS:
+        rows.append([
+            InlineKeyboardButton(
+                text="➕ Добавить слот",
+                callback_data=f"proj:{project.id}:enrich_add_slot",
+            )
+        ])
 
     rows.append([
         InlineKeyboardButton(

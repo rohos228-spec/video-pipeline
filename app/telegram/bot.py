@@ -1079,6 +1079,29 @@ async def on_project_step(cb: CallbackQuery) -> None:
             )
             return
 
+        # Шаг 5 «Доп работа с EXCEL» (wrapper) — показывает подменю
+        # с N кнопками «Доп работа с EXCEL #i» и «➕ Добавить слот».
+        # Сам по себе step.code=="enrich" воркера НЕ запускает —
+        # юзер выбирает конкретный слот через subменю.
+        if step.code == "enrich":
+            from app.telegram.menu import enabled_enrich_slots, enrich_submenu_kb
+
+            await cb.answer()
+            n_slots = enabled_enrich_slots(project)
+            await cb.message.answer(
+                f"<b>Шаг 5. Доп работа с EXCEL</b>\n"
+                f"Проект #{pid} «{project.topic}»\n"
+                f"Активных слотов: <b>{n_slots}</b> (макс {5}).\n\n"
+                "Каждый слот — один round-trip xlsx ↔ ChatGPT: бот шлёт "
+                "<code>project.xlsx</code> + твой мастер-промт, ChatGPT "
+                "редактирует и возвращает обновлённый xlsx, бот импортит "
+                "его обратно в БД. Слоты выполняются по порядку: #1 → "
+                "#2 → ... → #N.",
+                reply_markup=enrich_submenu_kb(project),
+                parse_mode="HTML",
+            )
+            return
+
         # Шаг 4 (Hero) — многоэтапный:
         #   0) ОБЯЗАТЕЛЬНО: выбор пресета «стиль персонажа» из
         #      prompts/04_hero_style/. Сохраняется в overrides['hero_style'].
@@ -2067,13 +2090,15 @@ async def on_objects_items(cb: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:enrich_add_slot$"))
 async def on_enrich_add_slot(cb: CallbackQuery) -> None:
-    """Клик «➕ Добавить слот» в меню проекта — инкрементит
-    project.enrich_slots_count на 1 (до лимита MAX_ENRICH_SLOTS=5)."""
+    """Клик «➕ Добавить слот» внутри подменю «Доп работа с EXCEL» —
+    инкрементит project.enrich_slots_count на 1 (до лимита
+    MAX_ENRICH_SLOTS=5). Перерисовывает подменю enrich (а НЕ основное
+    меню проекта, т.к. кнопка теперь живёт в подменю)."""
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
-    from app.telegram.menu import MAX_ENRICH_SLOTS, project_menu_kb
+    from app.telegram.menu import MAX_ENRICH_SLOTS, enrich_submenu_kb
 
     async with session_scope() as s:
         project = (
@@ -2092,7 +2117,7 @@ async def on_enrich_add_slot(cb: CallbackQuery) -> None:
         project.enrich_slots_count = cur + 1
         await s.flush()
         await s.refresh(project)
-        kb = project_menu_kb(project)
+        kb = enrich_submenu_kb(project)
     await cb.answer(f"Слот #{cur + 1} добавлен")
     try:
         await cb.message.edit_reply_markup(reply_markup=kb)

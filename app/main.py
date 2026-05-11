@@ -114,12 +114,10 @@ def _running_status_requires(
     к prerequisite предыдущего шага (а не в тупиковый `failed`).
     """
     # Импорт внутри функции, чтобы избежать кругового импорта на старте.
-    from app.telegram.menu import STEPS
+    from app.telegram.menu import step_by_running_status
 
-    for step in STEPS:
-        if step.running_status == running_status:
-            return step.requires
-    return None
+    step = step_by_running_status(running_status)
+    return step.requires if step is not None else None
 
 
 async def _run_worker_loop(bot) -> None:
