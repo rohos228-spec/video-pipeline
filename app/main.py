@@ -82,6 +82,108 @@ async def _init_db() -> None:
             logger.warning("migrate failed→new: {}", e)
 
 
+async def _backfill_from_disk() -> None:
+    """ROOT FIX: подтягиваем project.xlsx и voiceover.txt в БД для всех
+    проектов перед recompute. xlsx-flow-шаги (_run_plan_xlsx /
+    _run_script_xlsx / _run_split_xlsx) долгое время не сохраняли
+    `project.general_plan` / `project.script_text` / Frame'ы — данные
+    жили только в xlsx/txt на диске. После рестарта `compute_actual_status`
+    видел пустые поля и сбрасывал status назад («всё откатилось»).
+
+    Этот бэкфилл — идемпотентный: если поля уже заполнены и совпадают
+    с xlsx, ничего не меняется.
+    """
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Project
+    from app.services.xlsx_sync import reload_from_xlsx
+    from app.services.xlsx_v8_import import import_v8_xlsx
+    from app.settings import settings as _settings
+
+    try:
+        async with session_scope() as s:
+            projects = (
+                await s.execute(select(Project))
+            ).scalars().all()
+            for p in projects:
+                proj_dir = Path(_settings.data_dir) / "videos" / p.slug
+                proj_xlsx = proj_dir / "project.xlsx"
+                voiceover_txt = proj_dir / "voiceover.txt"
+
+                # 1) Подтягиваем xlsx → DB.
+                #
+                # Сначала пробуем v8-импортёр (лист «Общий план»,
+                # лист «план», R49). У v8-шаблона СВОЯ структура,
+                # отличная от старой колоночной (SHEET_GENERAL = «Общий
+                # план ролика», SHEET_FRAMES = «Кадры»).
+                #
+                # keep_fields=True — НЕ перезаписываем непустые
+                # general_plan / script_text. Бэкфилл только заполняет
+                # пустоты.
+                if proj_xlsx.exists():
+                    try:
+                        info_v8 = await import_v8_xlsx(
+                            s, p, proj_xlsx, keep_fields=True
+                        )
+                        if (
+                            info_v8.get("project_fields_changed")
+                            or info_v8.get("frames_created")
+                            or info_v8.get("frames_updated")
+                        ):
+                            logger.info(
+                                "backfill[#{}]: v8 xlsx → DB: {}",
+                                p.id, info_v8,
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "backfill[#{}]: v8 import failed: {}", p.id, e,
+                        )
+                    # Старый v7-формат — тоже пробуем (на случай если
+                    # проект мигрирован со старого шаблона).
+                    try:
+                        info = await reload_from_xlsx(s, p, proj_xlsx)
+                        changed = (
+                            info.get("project_fields_changed")
+                            or info.get("frames_changed")
+                            or info.get("frames_created")
+                        )
+                        if changed:
+                            logger.info(
+                                "backfill[#{}]: v7 xlsx → DB: {}",
+                                p.id, info,
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "backfill[#{}]: v7 reload_from_xlsx failed: {}",
+                            p.id, e,
+                        )
+
+                # 2) voiceover.txt → project.script_text (xlsx-flow шага 2
+                # сохраняет туда, а не в xlsx).
+                if voiceover_txt.exists() and not p.script_text:
+                    try:
+                        txt = voiceover_txt.read_text(
+                            encoding="utf-8"
+                        ).strip()
+                        if txt:
+                            p.script_text = txt
+                            logger.info(
+                                "backfill[#{}]: voiceover.txt → "
+                                "project.script_text ({} симв)",
+                                p.id, len(txt),
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "backfill[#{}]: voiceover.txt read failed: {}",
+                            p.id, e,
+                        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("backfill on startup failed: {}", e)
+
+
 async def _recompute_all_projects() -> None:
     """ROOT FIX: на каждом старте перевычисляем status для ВСЕХ проектов
     из реальных данных в БД. Лечит десинхронизацию (status=hero_ready при
@@ -248,6 +350,7 @@ async def main() -> None:
         settings.db_url,
     )
     await _init_db()
+    await _backfill_from_disk()
     await _recompute_all_projects()
     await sync_prompts_from_files()
 

@@ -116,6 +116,30 @@ async def reload_from_xlsx(
         ).scalars().all()
         by_number = {f.number: f for f in rows}
 
+        # Создаём недостающие Frame'ы — после шага 3 (split) фреймов в БД
+        # ещё нет, а xlsx уже содержит их (колонки B,C,D,…). Без этого
+        # `compute_actual_status` видит fr_total=0 → откатывает статус.
+        summary.setdefault("frames_created", [])
+        for col, fnum in col_to_frame.items():
+            if fnum in by_number:
+                continue
+            voice = _to_str(ws_f.cell(row=ROW_VOICEOVER, column=col).value)
+            if not voice:
+                # Без закадрового текста — это не кадр, а пустая колонка.
+                continue
+            new_fr = Frame(
+                project_id=project.id,
+                number=fnum,
+                voiceover_text=voice,
+            )
+            session.add(new_fr)
+            by_number[fnum] = new_fr
+            summary["frames_created"].append(fnum)
+            logger.info(
+                "[#{}] xlsx→DB: создан Frame {} ('{}…')",
+                project.id, fnum, (voice or "")[:40],
+            )
+
         for col, fnum in col_to_frame.items():
             fr = by_number.get(fnum)
             if fr is None:

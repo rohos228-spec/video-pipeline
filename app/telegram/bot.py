@@ -2729,8 +2729,14 @@ async def _run_plan_xlsx(
         await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
         return
 
-    # Обновляем статус проекта.
+    # Обновляем статус проекта + СИНХРОНИЗИРУЕМ xlsx → БД.
+    # ROOT FIX: без этого `project.general_plan` остаётся NULL, и при
+    # следующем рестарте бота `_recompute_all_projects` откатывает
+    # статус на `new`. Юзер видит «всё откатилось».
     try:
+        from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
+
         async with session_scope() as s:
             project = (
                 await s.execute(
@@ -2738,6 +2744,29 @@ async def _run_plan_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
+                # v8-импортёр (для нового шаблона с листом «Общий план»).
+                # keep_fields=False — свежий xlsx от GPT, перезаписываем.
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx, keep_fields=False
+                    )
+                    logger.info(
+                        "plan_xlsx: v8 import → {}", info_v8
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "plan_xlsx: v8 import failed: {}", e
+                    )
+                # Старый v7-формат (на случай миграции).
+                try:
+                    info = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info(
+                        "plan_xlsx: v7 reload_from_xlsx → {}", info
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "plan_xlsx: v7 reload_from_xlsx failed: {}", e
+                    )
                 project.status = ProjectStatus.plan_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("plan_xlsx status update failed: {}", e)
@@ -2909,7 +2938,14 @@ async def _run_script_xlsx(
         await msg.answer(f"❌ Не смог записать voiceover.txt: {e}")
         return
 
-    # Обновляем статус проекта.
+    # Обновляем статус проекта + СОХРАНЯЕМ script_text в БД.
+    # ROOT FIX: без `project.script_text` рекомпьют статуса откатывает
+    # проект на `plan_ready` после рестарта (см. compute_actual_status).
+    voiceover_text = ""
+    try:
+        voiceover_text = voiceover.read_text(encoding="utf-8").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("script_xlsx: не смог прочитать voiceover.txt: {}", e)
     try:
         async with session_scope() as s:
             project = (
@@ -2918,6 +2954,12 @@ async def _run_script_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
+                if voiceover_text:
+                    project.script_text = voiceover_text
+                    logger.info(
+                        "script_xlsx: project.script_text сохранён ({} симв)",
+                        len(voiceover_text),
+                    )
                 project.status = ProjectStatus.script_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("script_xlsx status update failed: {}", e)
@@ -3087,8 +3129,13 @@ async def _run_split_xlsx(
         await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
         return
 
-    # Обновляем статус проекта.
+    # Обновляем статус проекта + СИНХРОНИЗИРУЕМ xlsx → БД (создаём Frame'ы).
+    # ROOT FIX: без Frame-строк в БД `compute_actual_status` видит
+    # fr_total=0 и откатывает статус на `script_ready` после рестарта.
     try:
+        from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
+
         async with session_scope() as s:
             project = (
                 await s.execute(
@@ -3096,6 +3143,31 @@ async def _run_split_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
+                # v8-импортёр: тут лежат voiceover-блоки на листе «план»
+                # R49, по которым создаём Frame'ы и обновляем script_text.
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx,
+                        keep_fields=False,
+                        update_frames_voiceover=True,
+                    )
+                    logger.info(
+                        "split_xlsx: v8 import → {}", info_v8
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "split_xlsx: v8 import failed: {}", e
+                    )
+                # Старый v7-формат (на случай миграции).
+                try:
+                    info = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info(
+                        "split_xlsx: v7 reload_from_xlsx → {}", info
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "split_xlsx: v7 reload_from_xlsx failed: {}", e
+                    )
                 project.status = ProjectStatus.frames_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("split_xlsx status update failed: {}", e)
