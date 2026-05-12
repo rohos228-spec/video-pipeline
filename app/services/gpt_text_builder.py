@@ -83,22 +83,26 @@ def is_supported(step_code: str) -> bool:
 # Сборка дефолтного текста по шагам
 # --------------------------------------------------------------------------- #
 
-def _build_plan_default(project: Project, *, topic: str | None = None) -> str:
-    """Шаг 1 «План» (xlsx-flow): к чату прикладывается project.xlsx.
-    Возвращает «сопр. сообщение», которое уходит в GPT вместе с файлом.
-
-    Сборка совпадает с `_run_plan_xlsx` в `app/telegram/bot.py`:
-       Тема + содержимое мастер-промта + инструкция по xlsx.
+def _build_plan_default(
+    project: Project,
+    *,
+    topic: str | None = None,
+    prompt_file_name: str = "prompt_plan.md",
+) -> str:
+    """Шаг 1 «План» (xlsx-flow): к чату прикладываются prompt_plan.md и
+    project.xlsx. Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
     """
-    master = get_project_prompt(project, "plan").strip()
     actual_topic = topic if topic is not None else (project.topic or "")
     return (
-        f"Тема ролика: {actual_topic}\n\n"
-        f"{master}\n\n"
-        "Прикреплённый файл — текущий project.xlsx этого ролика. "
-        "Заполни его согласно инструкции выше и пришли мне обратно как "
-        ".xlsx (без обрезок и компрессии). Кратким текстом ответь — что "
-        "сделал — но главное верни файл."
+        f"Тема ролика: «{actual_topic}».\n\n"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
+        "второй (project.xlsx). Заполни xlsx согласно инструкции и пришли "
+        "мне обратно как .xlsx (без обрезок и компрессии). Кратким текстом "
+        "ответь — что сделал — но главное верни файл."
     )
 
 

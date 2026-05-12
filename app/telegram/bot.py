@@ -3374,14 +3374,16 @@ async def _run_plan_xlsx(
         return
 
     # Мастер-промт → .md файл, сопр. сообщение → текст в чат.
-    # Аналогично step 5 (enrich): промт уходит файлом, не текстом.
+    # Аналогично step 2 и step 5: промт уходит файлом, не текстом.
     from app.services.prompt_library import get_project_prompt
     try:
         master = get_project_prompt(project, "plan")
     except FileNotFoundError:
-        master = ""
-    accompanying = gtb.get_effective_text(project, "plan", topic=topic)
-    text_was_overridden = gtb.has_override(project, "plan")
+        master = (
+            "# plan\n\n"
+            "Мастер-промт для шага «План» ещё не настроен. "
+            "Открой prompts/01_plan/default.md и опиши там задачу."
+        )
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = proj_xlsx.parent / "tmp_gpt"
@@ -3390,17 +3392,30 @@ async def _run_plan_xlsx(
 
     # Мастер-промт + тема → .md файл
     prompt_file = out_dir / f"prompt_plan_{ts}.md"
-    prompt_content = f"Тема ролика: {topic}\n\n{master.strip()}" if master.strip() else f"Тема ролика: {topic}"
+    prompt_content = f"Тема ролика: {topic}\n\n{master.strip()}"
     prompt_file.write_text(prompt_content, encoding="utf-8")
+
+    # Сопр. сообщение — короткий текст в чат (без дублирования мастер-промта).
+    accompanying = gtb.get_effective_text(
+        project, "plan", topic=topic, prompt_file_name=prompt_file.name,
+    )
+    text_was_overridden = gtb.has_override(project, "plan")
 
     override_note = (
         "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
         if text_was_overridden else ""
     )
+    logger.info(
+        "plan_xlsx: prompt_file={}, size={}, accompanying_len={}, xlsx={}",
+        prompt_file, prompt_file.stat().st_size,
+        len(accompanying), proj_xlsx,
+    )
     await msg.answer(
         f"▶ <b>План</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
-        f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n"
+        f"Файл промта: <code>{prompt_file.name}</code> "
+        f"({prompt_file.stat().st_size} байт)\n\n"
         f"Открываю ChatGPT, прикрепляю xlsx + промт-файл, жду ответ. "
         f"До 15 минут. Не закрывай Chrome.",
         parse_mode="HTML",
