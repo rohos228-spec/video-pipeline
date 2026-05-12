@@ -3373,15 +3373,25 @@ async def _run_plan_xlsx(
         )
         return
 
-    # Берём «сопр. сообщение» из gpt_text_builder: либо override юзера,
-    # либо дефолт (мастер-промт + тема + инструкция по xlsx).
-    full_prompt = gtb.get_effective_text(project, "plan", topic=topic)
+    # Мастер-промт → .md файл, сопр. сообщение → текст в чат.
+    # Аналогично step 5 (enrich): промт уходит файлом, не текстом.
+    from app.services.prompt_library import get_project_prompt
+    try:
+        master = get_project_prompt(project, "plan")
+    except FileNotFoundError:
+        master = ""
+    accompanying = gtb.get_effective_text(project, "plan", topic=topic)
     text_was_overridden = gtb.has_override(project, "plan")
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = proj_xlsx.parent / "tmp_gpt"
     out_dir.mkdir(parents=True, exist_ok=True)
     downloaded = out_dir / f"plan_{ts}.xlsx"
+
+    # Мастер-промт + тема → .md файл
+    prompt_file = out_dir / f"prompt_plan_{ts}.md"
+    prompt_content = f"Тема ролика: {topic}\n\n{master.strip()}" if master.strip() else f"Тема ролика: {topic}"
+    prompt_file.write_text(prompt_content, encoding="utf-8")
 
     override_note = (
         "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
@@ -3391,8 +3401,8 @@ async def _run_plan_xlsx(
         f"▶ <b>План</b> (xlsx-flow)\n"
         f"Проект #{project_id} «{topic}»\n"
         f"Промт: <code>{prompt_name}</code>{override_note}\n\n"
-        f"Открываю ChatGPT, прикрепляю xlsx, жду ответ. До 15 минут. "
-        f"Не закрывай Chrome.",
+        f"Открываю ChatGPT, прикрепляю xlsx + промт-файл, жду ответ. "
+        f"До 15 минут. Не закрывай Chrome.",
         parse_mode="HTML",
     )
 
@@ -3401,8 +3411,9 @@ async def _run_plan_xlsx(
         async with browser_session() as bs:
             gpt = ChatGPTBot(bs)
             await gpt.new_conversation()
-            reply = await gpt.ask_with_file(
-                full_prompt, proj_xlsx, timeout=900
+            # Промт-файл + xlsx — как вложения, сопр. текст — в чат.
+            reply = await gpt.ask_with_files(
+                accompanying.strip(), [prompt_file, proj_xlsx], timeout=900
             )
             logger.info(
                 "plan_xlsx: GPT reply len={} (project #{}, prompt={})",
