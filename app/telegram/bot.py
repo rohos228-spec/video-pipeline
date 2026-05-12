@@ -2463,7 +2463,6 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         slug = project.slug
-        topic = project.topic
 
         if is_running_status(project.status):
             cur_running = project.status
@@ -3625,31 +3624,11 @@ async def _run_script_xlsx(
                 project_id,
                 prompt_name,
             )
-            raw = (reply_text or "").strip()
-            # 1. Главный путь — inline-ответ в чате.
-            if len(raw) >= 200:
-                logger.info(
-                    "script_xlsx: беру inline-ответ из чата, len={}",
-                    len(raw),
-                )
-                downloaded.write_text(raw, encoding="utf-8")
-            else:
-                # 2. Fallback: GPT всё-таки приложил .txt файл — пробуем скачать.
-                logger.warning(
-                    "script_xlsx: inline-ответ короткий (len={}), пробую "
-                    "скачать файл из ответа.",
-                    len(raw),
-                )
-                try:
-                    await gpt.download_attachment_from_last_reply(
-                        downloaded, timeout=900
-                    )
-                except Exception as e:  # noqa: BLE001
-                    raise RuntimeError(
-                        f"GPT не вернул закадровый текст: inline-ответ "
-                        f"слишком короткий (len={len(raw)}), файл не скачался ({e}). "
-                        f"Сырой ответ GPT: {raw!r}"
-                    ) from e
+            # GPT должен вернуть txt файл — всегда скачиваем файл из ответа.
+            logger.info("script_xlsx: скачиваю txt файл из ответа ChatGPT")
+            await gpt.download_attachment_from_last_reply(
+                downloaded, timeout=900
+            )
     except Exception as e:  # noqa: BLE001
         logger.exception("script_xlsx failed: {}", e)
         await msg.answer(
