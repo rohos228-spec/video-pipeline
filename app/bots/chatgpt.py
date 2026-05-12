@@ -797,6 +797,51 @@ class ChatGPTBot:
         logger.info("ChatGPT (file reply) len={}", len(reply))
         return reply
 
+    async def _try_download_via_file_card(
+        self, page: Page, *, timeout: float = 30,
+    ) -> Download | None:
+        """Пробует скачать файл, кликнув по карточке файла (behavior-btn).
+
+        В новом ChatGPT UI (2025-Q2) клик по ``button.behavior-btn``
+        напрямую запускает скачивание файла. Оборачиваем клик в
+        ``page.expect_download`` чтобы перехватить Download-объект.
+
+        Возвращает ``Download`` или ``None`` если карточка не найдена
+        или скачивание не началось.
+        """
+        for sel in FILE_CARD_SELECTORS:
+            try:
+                cnt = await page.locator(sel).count()
+                if cnt == 0:
+                    continue
+                loc = page.locator(sel).first
+                logger.info(
+                    "ChatGPT: пробую скачать файл кликом по карточке ({})",
+                    sel,
+                )
+                try:
+                    async with page.expect_download(
+                        timeout=timeout * 1000,
+                    ) as dl_info:
+                        await loc.click(timeout=5_000)
+                    dl: Download = await dl_info.value
+                    logger.info(
+                        "ChatGPT: download triggered via file card ({}), "
+                        "filename={}",
+                        sel, dl.suggested_filename,
+                    )
+                    return dl
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "ChatGPT: клик по карточке ({}) не вызвал "
+                        "download: {}",
+                        sel, exc,
+                    )
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
         наведении/клике по карточке файла. Делаем hover + click, чтобы
@@ -869,22 +914,41 @@ class ChatGPTBot:
         кликает по ней и сохраняет файл в `target_path`.
 
         Стратегия:
-          1. Прямой поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек — ChatGPT
-             часто рендерит карточку файла позже текстового ответа).
-          2. Если не нашли — hover по карточке файла, потом ещё раз поиск
-             уже с полным `timeout` (по умолчанию 15 минут).
-          3. Если всё равно нет — dumpим outerHTML последнего ответа для отладки
-             и кидаем RuntimeError.
+          1. Прямой клик по карточке файла (button.behavior-btn) с
+             expect_download — в новом UI клик напрямую качает файл.
+          2. Если карточки нет — поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек).
+          3. Если не нашли — hover/click по FILE_CARD_SELECTORS, потом ещё
+             раз поиск уже с полным `timeout`.
+          4. Если всё равно нет — dumpим outerHTML для отладки и RuntimeError.
         """
         page = await self._page_ready()
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 1. Прямой клик по behavior-btn — скачивание через expect_download.
+        download = await self._try_download_via_file_card(page, timeout=30)
+        if download is not None:
+            await download.save_as(str(target_path))
+            size = target_path.stat().st_size if target_path.exists() else -1
+            logger.info(
+                "ChatGPT: файл скачан (behavior-btn) как {} "
+                "(исходное имя {}, размер {} байт)",
+                target_path, download.suggested_filename, size,
+            )
+            if size < 1024:
+                logger.warning(
+                    "ChatGPT: размер подозрительно мал ({} байт).", size,
+                )
+                await self._dump_last_assistant_html()
+            return target_path
+
+        # 2. Классический путь — ищем ссылку/кнопку скачивания.
         link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=60)
         if not link_sel:
-            # 2. Возможно нужен hover.
             await self._hover_file_cards()
-            link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=timeout)
+            link_sel = await _first_matching(
+                page, DOWNLOAD_LINK_SELECTORS, timeout=timeout,
+            )
         if not link_sel:
             await self._dump_last_assistant_html()
             raise RuntimeError(
@@ -897,9 +961,8 @@ class ChatGPTBot:
         try:
             async with page.expect_download(timeout=timeout * 1000) as dl_info:
                 await page.locator(link_sel).first.click()
-            download: Download = await dl_info.value
+            download = await dl_info.value
         except Exception as e:  # noqa: BLE001
-            # На всякий случай дампим HTML, чтобы понять что было вместо файла.
             await self._dump_last_assistant_html()
             raise RuntimeError(f"ChatGPT: не удалось скачать файл: {e}") from e
 
