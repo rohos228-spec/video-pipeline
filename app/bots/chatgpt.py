@@ -798,7 +798,7 @@ class ChatGPTBot:
         return reply
 
     async def _try_download_via_file_card(
-        self, page: Page, *, timeout: float = 30,
+        self, page: Page, *, timeout: float = 60,
     ) -> Download | None:
         """Пробует скачать файл, кликнув по карточке файла (behavior-btn).
 
@@ -806,41 +806,42 @@ class ChatGPTBot:
         напрямую запускает скачивание файла. Оборачиваем клик в
         ``page.expect_download`` чтобы перехватить Download-объект.
 
-        Возвращает ``Download`` или ``None`` если карточка не найдена
-        или скачивание не началось.
+        Сначала ЖДЁМ появления карточки файла (polling до ``timeout``
+        секунд), потом кликаем. Возвращает ``Download`` или ``None``.
         """
-        for sel in FILE_CARD_SELECTORS:
-            try:
-                cnt = await page.locator(sel).count()
-                if cnt == 0:
-                    continue
-                loc = page.locator(sel).first
-                logger.info(
-                    "ChatGPT: пробую скачать файл кликом по карточке ({})",
-                    sel,
-                )
-                try:
-                    async with page.expect_download(
-                        timeout=timeout * 1000,
-                    ) as dl_info:
-                        await loc.click(timeout=5_000)
-                    dl: Download = await dl_info.value
-                    logger.info(
-                        "ChatGPT: download triggered via file card ({}), "
-                        "filename={}",
-                        sel, dl.suggested_filename,
-                    )
-                    return dl
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "ChatGPT: клик по карточке ({}) не вызвал "
-                        "download: {}",
-                        sel, exc,
-                    )
-                    continue
-            except Exception:  # noqa: BLE001
-                continue
-        return None
+        # Ждём появления любого FILE_CARD_SELECTOR (polling).
+        card_sel = await _first_matching(
+            page, FILE_CARD_SELECTORS, timeout=timeout,
+        )
+        if card_sel is None:
+            logger.info(
+                "ChatGPT: _try_download_via_file_card: карточка файла "
+                "не найдена за {} сек",
+                timeout,
+            )
+            return None
+
+        loc = page.locator(card_sel).first
+        logger.info(
+            "ChatGPT: пробую скачать файл кликом по карточке ({})",
+            card_sel,
+        )
+        try:
+            async with page.expect_download(timeout=30_000) as dl_info:
+                await loc.click(timeout=5_000)
+            dl: Download = await dl_info.value
+            logger.info(
+                "ChatGPT: download triggered via file card ({}), "
+                "filename={}",
+                card_sel, dl.suggested_filename,
+            )
+            return dl
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ChatGPT: клик по карточке ({}) не вызвал download: {}",
+                card_sel, exc,
+            )
+            return None
 
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
@@ -926,7 +927,9 @@ class ChatGPTBot:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 1. Прямой клик по behavior-btn — скачивание через expect_download.
-        download = await self._try_download_via_file_card(page, timeout=30)
+        # Ждём до 60 сек пока карточка файла появится в ответе
+        # (ChatGPT иногда рендерит файл позже текста).
+        download = await self._try_download_via_file_card(page, timeout=60)
         if download is not None:
             await download.save_as(str(target_path))
             size = target_path.stat().st_size if target_path.exists() else -1
