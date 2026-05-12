@@ -1345,12 +1345,21 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 and plib.prompt_path(step.code, chosen).exists()
             )
             need_picker = not chosen_ok
-            if _is_enrich_slot(step.code):
-                # Для enrich-слотов: picker всегда видим, авто-запуска нет.
+            # Для enrich-слотов и xlsx-flow шагов (script, split):
+            # picker всегда видим, авто-запуска нет — только по кнопке
+            # «▶ Запустить шаг».
+            always_picker = (
+                _is_enrich_slot(step.code)
+                or step.code in ("script", "split")
+            )
+            if always_picker:
                 need_picker = True
             if need_picker:
                 has_msg_override = gtb.has_override(project, step.code)
-                show_run = _can_run_enrich_slot_now(project, step.code)
+                if always_picker:
+                    show_run = bool(chosen_ok)
+                else:
+                    show_run = _can_run_enrich_slot_now(project, step.code)
                 _set_user_screen(
                     cb.from_user.id, "picker", pid, step.code
                 )
@@ -1642,9 +1651,85 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             )
             return
 
+        # Шаг 2 (script) — запуск xlsx-flow из picker'а.
+        if step_code == "script":
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get("script")
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("script", chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+            if (pid, "script") in _xlsx_flow_active:
+                await cb.answer(
+                    "⏳ Уже идёт обработка «Закадрового текста», подожди.",
+                    show_alert=True,
+                )
+                return
+            await cb.answer(f"Запускаю закадровый текст: {chosen}")
+            asyncio.create_task(
+                _run_xlsx_with_lock(
+                    _run_script_xlsx(cb.message, pid, chosen),
+                    pid,
+                    "script",
+                )
+            )
+            return
+
+        # Шаг 3 (split) — запуск xlsx-flow из picker'а.
+        if step_code == "split":
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get("split")
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("split", chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+            if (pid, "split") in _xlsx_flow_active:
+                await cb.answer(
+                    "⏳ Уже идёт обработка «Разбивки», подожди.",
+                    show_alert=True,
+                )
+                return
+            await cb.answer(f"Запускаю разбивку: {chosen}")
+            asyncio.create_task(
+                _run_xlsx_with_lock(
+                    _run_split_xlsx(cb.message, pid, chosen),
+                    pid,
+                    "split",
+                )
+            )
+            return
+
         if not _is_enrich_slot(step_code):
             await cb.answer(
-                "Кнопка «Запустить» доступна только для шага 1 (План) и "
+                "Кнопка «Запустить» доступна только для шагов 1–3 и "
                 "слотов «Доп работа с EXCEL» (шаг 5).",
                 show_alert=True,
             )
@@ -1862,51 +1947,44 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             )
             return
 
-        # Особый случай: «Закадровый текст» (Step 2) в xlsx-режиме.
-        if step_code == "script":
-            uid = cb.from_user.id
-            pending_script_pid = _pending_script_prompt.get(uid)
-            if pending_script_pid is not None and pending_script_pid == pid:
-                if (pid, "script") in _xlsx_flow_active:
-                    await cb.answer(
-                        "⏳ Уже идёт обработка «Закадрового текста» по этому "
-                        "проекту, подожди.",
-                        show_alert=True,
-                    )
-                    return
-                _pending_script_prompt.pop(uid, None)
-                await cb.answer(f"Запускаю закадровый текст: {name}")
-                asyncio.create_task(
-                    _run_xlsx_with_lock(
-                        _run_script_xlsx(cb.message, pid, name),
-                        pid,
-                        "script",
-                    )
+        # Шаг 2 (script) и Шаг 3 (split) — picker остаётся видимым
+        # (как plan/enrich), авто-запуска нет — только по «▶ Запустить шаг».
+        if step_code in ("script", "split"):
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                overrides_after = (
+                    dict(project.prompt_overrides or {}) if project else {}
                 )
-                return
-
-        # Особый случай: «Разбивка на блоки» (Step 3) в xlsx-режиме.
-        if step_code == "split":
-            uid = cb.from_user.id
-            pending_split_pid = _pending_split_prompt.get(uid)
-            if pending_split_pid is not None and pending_split_pid == pid:
-                if (pid, "split") in _xlsx_flow_active:
-                    await cb.answer(
-                        "⏳ Уже идёт обработка «Разбивки» по этому проекту, "
-                        "подожди.",
-                        show_alert=True,
-                    )
-                    return
-                _pending_split_prompt.pop(uid, None)
-                await cb.answer(f"Запускаю разбивку: {name}")
-                asyncio.create_task(
-                    _run_xlsx_with_lock(
-                        _run_split_xlsx(cb.message, pid, name),
-                        pid,
-                        "split",
-                    )
+                has_msg_override = (
+                    gtb.has_override(project, step_code) if project else False
                 )
-                return
+                show_run = bool(
+                    overrides_after.get(step_code)
+                    and plib.is_valid_prompt_name(overrides_after.get(step_code, ""))
+                    and plib.prompt_path(step_code, overrides_after.get(step_code, "")).exists()
+                )
+            _set_user_screen(cb.from_user.id, "picker", pid, step_code)
+            await cb.answer(f"Выбрано: {name}")
+            await cb.message.answer(
+                f"✅ Для шага «{step_code}» выбран шаблон "
+                f"<code>{name}</code>.\n\n"
+                "Можешь:\n"
+                "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
+                "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
+                "  • <b>✏️ Сопр. сообщение</b> — отредактировать текст, "
+                "который уходит в ChatGPT вместе с xlsx.\n"
+                "  • выбрать другой шаблон из списка.\n\n"
+                + _prompt_picker_text(step_code, overrides_after),
+                reply_markup=_prompt_picker_kb(
+                    pid, step_code, overrides_after,
+                    has_msg_override=has_msg_override,
+                    show_run_button=show_run,
+                ),
+                parse_mode="HTML",
+            )
+            return
 
         # Особый случай: «Стиль персонажа» (sub-step Hero).
         # Юзер кликнул «4. Hero», бот показал picker со стилями. Сейчас
