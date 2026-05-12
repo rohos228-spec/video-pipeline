@@ -2434,13 +2434,11 @@ async def on_project_download_xlsx(cb: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:stop_running$"))
 async def on_project_stop_running(cb: CallbackQuery) -> None:
-    """⏹ Остановить — сбрасывает running-статус проекта на prerequisite
-    шага. Воркер при следующем тике перестанет подхватывать этот проект.
+    """⏹ Остановить — сбрасывает running-статус и/или снимает xlsx-flow лок.
 
-    Важно: если шаг уже начал выполняться в outsee/ChatGPT, текущая
-    итерация (например один retry или одна вариация Hero) может
-    доработать свой кусок — её прервать снаружи нельзя. Но **следующих
-    итераций НЕ будет** — статус упал ниже running.
+    Работает в двух случаях:
+      1) Проект в running-статусе (воркер) → откат на prerequisite.
+      2) Активен xlsx-flow (plan/script/split) → снимаем лок.
     """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
@@ -2449,6 +2447,14 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     from app.services.project_state import is_running_status
     from app.telegram.menu import step_by_running_status
 
+    # Снимаем xlsx-flow локи для этого проекта.
+    xlsx_stopped: list[str] = []
+    for code in ("plan", "script", "split"):
+        key = (pid, code)
+        if key in _xlsx_flow_active:
+            _xlsx_flow_active.discard(key)
+            xlsx_stopped.append(code)
+
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == pid))
@@ -2456,51 +2462,53 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        if not is_running_status(project.status):
+        slug = project.slug
+        topic = project.topic
+
+        if is_running_status(project.status):
+            cur_running = project.status
+            step = step_by_running_status(cur_running)
+            rollback_to = (
+                step.requires if (step is not None and step.requires is not None)
+                else ProjectStatus.new
+            )
+            project.status = rollback_to
+            meta = dict(project.meta or {})
+            chain_to = meta.pop("enrich_auto_chain_to", None)
+            if chain_to is not None:
+                project.meta = meta
+                logger.info(
+                    "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
+                    pid, chain_to,
+                )
+            step_title = step.title if step is not None else cur_running.value
+            logger.info(
+                "[#{}] STOP: rolled back {} -> {} (user-requested via ⏹)",
+                pid, cur_running.value, rollback_to.value,
+            )
+            status_msg = (
+                f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
+                f"Проект #{pid} «{_project_display_topic(project)}» "
+                f"(slug: <code>{slug}</code>)\n"
+                f"Статус: <code>{cur_running.value}</code> → "
+                f"<code>{rollback_to.value}</code>."
+            )
+        elif xlsx_stopped:
+            status_msg = (
+                f"⏹ <b>Остановлено</b>: xlsx-flow ({', '.join(xlsx_stopped)})\n"
+                f"Проект #{pid} «{_project_display_topic(project)}» "
+                f"(slug: <code>{slug}</code>)\n"
+                "Лок снят — можно запустить шаг заново."
+            )
+        else:
             await cb.answer(
-                f"Шаг не выполняется (статус: {project.status.value}).",
+                f"Нет активных шагов (статус: {project.status.value}).",
                 show_alert=True,
             )
             return
-        cur_running = project.status
-        step = step_by_running_status(cur_running)
-        rollback_to = (
-            step.requires if (step is not None and step.requires is not None)
-            else ProjectStatus.new
-        )
-        project.status = rollback_to
-        # Если шла авто-цепочка «▶▶ Запустить все слоты подряд» —
-        # снимаем флаг, чтобы worker не возобновил её случайно после
-        # отката статуса.
-        meta = dict(project.meta or {})
-        chain_to = meta.pop("enrich_auto_chain_to", None)
-        if chain_to is not None:
-            project.meta = meta
-            logger.info(
-                "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
-                pid, chain_to,
-            )
-        slug = project.slug
-        topic = project.topic
-        step_title = step.title if step is not None else cur_running.value
 
-    logger.info(
-        "[#{}] STOP: rolled back {} -> {} (user-requested via ⏹)",
-        pid, cur_running.value, rollback_to.value,
-    )
     await cb.answer("Остановлено")
-    await cb.message.answer(
-        f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
-        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-        f"Статус: <code>{cur_running.value}</code> → "
-        f"<code>{rollback_to.value}</code>.\n\n"
-        "⚠️ Если outsee/ChatGPT уже работают над этой итерацией — "
-        "она может ещё доработать свой кусок (прервать снаружи нельзя). "
-        "Но следующих автоматических попыток <b>не будет</b> — воркер "
-        "больше не подхватит этот проект для текущего шага. Можно "
-        "повторно ткнуть шаг в /menu чтобы запустить заново.",
-        parse_mode="HTML",
-    )
+    await cb.message.answer(status_msg, parse_mode="HTML")
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:reload_xlsx$"))

@@ -481,17 +481,14 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
         ),
     ])
 
-    # ⏹ Остановить — видим только когда шаг сейчас выполняется. Сбрасывает
-    # running-статус на prerequisite шага, чтобы воркер перестал его
-    # подхватывать. Текущая итерация (если она уже стартовала в outsee/
-    # ChatGPT) доработает свой кусок, но дальше не пойдёт.
-    if is_running_status(project.status):
-        rows.append([
-            InlineKeyboardButton(
-                text="⏹ Остановить текущий шаг",
-                callback_data=f"proj:{project.id}:stop_running",
-            ),
-        ])
+    # ⏹ Остановить — всегда видим. Останавливает running-статус воркера
+    # и/или отменяет xlsx-flow (plan/script/split).
+    rows.append([
+        InlineKeyboardButton(
+            text="⏹ Остановить текущий шаг",
+            callback_data=f"proj:{project.id}:stop_running",
+        ),
+    ])
 
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),
