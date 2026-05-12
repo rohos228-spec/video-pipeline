@@ -191,6 +191,11 @@ _xlsx_flow_active: set[tuple[int, str]] = set()
 _pending_xlsx_replace: dict[int, int] = {}
 
 
+def _project_display_topic(project: Project) -> str:
+    """Тема или slug для отображения в сообщениях."""
+    return (project.topic or "").strip() or project.slug
+
+
 def _is_enrich_slot(code: str) -> bool:
     """`True` для enrich_1..enrich_5 — sub-step'ов шага 5 «Доп работа с EXCEL».
 
@@ -1045,12 +1050,24 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # Шаг 1 (План) — picker + «✏️ Сопр. сообщение» + «▶ Запустить шаг».
         # Flow аналогичен шагу 5 (enrich): выбрать шаблон, при желании
         # отредактировать сопр. сообщение, явно нажать «▶ Запустить».
+        # Если тема ролика ещё не задана — сначала спрашиваем тему.
         if step.code == "plan":
             from pathlib import Path as _Path
             proj_xlsx = (
                 _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
             )
             if proj_xlsx.exists():
+                # Если тема не задана — просим ввести.
+                if not (project.topic or "").strip():
+                    _pending_plan_topic[cb.from_user.id] = pid
+                    _set_user_screen(cb.from_user.id, "picker", pid, "plan")
+                    await cb.answer()
+                    await cb.message.answer(
+                        f"Проект #{pid} «{project.slug}»\n\n"
+                        "Напишите тему ролика (может быть длинным описанием):",
+                        parse_mode="HTML",
+                    )
+                    return
                 overrides = dict(project.prompt_overrides or {})
                 has_msg_override = gtb.has_override(project, "plan")
                 chosen = overrides.get("plan")
@@ -1062,11 +1079,13 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 _set_user_screen(cb.from_user.id, "picker", pid, "plan")
                 await cb.answer()
                 await cb.message.answer(
-                    _prompt_picker_text("plan", overrides),
+                    f"Тема: <b>{project.topic}</b>\n\n"
+                    + _prompt_picker_text("plan", overrides),
                     reply_markup=_prompt_picker_kb(
                         pid, "plan", overrides,
                         has_msg_override=has_msg_override,
                         show_run_button=show_run,
+                        show_topic_button=True,
                     ),
                     parse_mode="HTML",
                 )
@@ -1540,15 +1559,36 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                     _can_run_enrich_slot_now(project, step_code)
                     if project else False
                 )
+        is_plan = step_code == "plan"
+        topic_prefix = ""
+        if is_plan and project is not None and (project.topic or "").strip():
+            topic_prefix = f"Тема: <b>{project.topic}</b>\n\n"
         _set_user_screen(cb.from_user.id, "picker", pid, step_code)
         await cb.answer()
         await cb.message.answer(
-            _prompt_picker_text(step_code, overrides),
+            topic_prefix + _prompt_picker_text(step_code, overrides),
             reply_markup=_prompt_picker_kb(
                 pid, step_code, overrides,
                 has_msg_override=has_msg_override,
                 show_run_button=show_run,
+                show_topic_button=is_plan,
             ),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "topic":
+        # Изменить тему ролика (для шага plan).
+        _pending_plan_topic[cb.from_user.id] = pid
+        await cb.answer()
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            cur_topic = (project.topic or "") if project else ""
+        text = f"Текущая тема: <b>{cur_topic}</b>\n\n" if cur_topic else ""
+        await cb.message.answer(
+            f"{text}Напишите новую тему ролика (может быть длинным описанием):",
             parse_mode="HTML",
         )
         return
@@ -1580,6 +1620,12 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                     )
                     return
                 topic = project.topic or ""
+                if not topic.strip():
+                    await cb.answer(
+                        "Сначала задайте тему ролика (📝 Изменить тему).",
+                        show_alert=True,
+                    )
+                    return
             if (pid, "plan") in _xlsx_flow_active:
                 await cb.answer(
                     "⏳ Уже идёт обработка «Плана» по этому проекту, подожди.",
@@ -1789,6 +1835,9 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                     and plib.is_valid_prompt_name(overrides_after.get(step_code, ""))
                     and plib.prompt_path(step_code, overrides_after.get(step_code, "")).exists()
                 )
+                topic_prefix = ""
+                if project is not None and (project.topic or "").strip():
+                    topic_prefix = f"Тема: <b>{project.topic}</b>\n\n"
             _set_user_screen(cb.from_user.id, "picker", pid, step_code)
             await cb.answer(f"Выбрано: {name}")
             await cb.message.answer(
@@ -1796,15 +1845,18 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 f"<code>{name}</code>.\n\n"
                 "Можешь:\n"
                 "  • <b>▶ Запустить шаг</b> — стартовать ChatGPT.\n"
+                "  • <b>📝 Изменить тему</b> — переписать тему ролика.\n"
                 "  • <b>✏ Редактировать выбранный</b> — поправить шаблон.\n"
                 "  • <b>✏️ Сопр. сообщение</b> — отредактировать текст, "
                 "который уходит в ChatGPT вместе с xlsx.\n"
                 "  • выбрать другой шаблон из списка.\n\n"
+                + topic_prefix
                 + _prompt_picker_text(step_code, overrides_after),
                 reply_markup=_prompt_picker_kb(
                     pid, step_code, overrides_after,
                     has_msg_override=has_msg_override,
                     show_run_button=show_run,
+                    show_topic_button=True,
                 ),
                 parse_mode="HTML",
             )
@@ -2941,22 +2993,43 @@ async def on_text_message(msg: Message) -> None:
                 "Пустая тема. Нажми «1. План» в меню проекта ещё раз."
             )
             return
-        # Сохраняем тему в pending — дальше ждём выбора файла-промта.
-        _pending_plan_prompt[user_id] = (pending_plan_pid, topic)
+        # Сохраняем тему в project.topic в БД.
         async with session_scope() as s:
             project = (
                 await s.execute(
                     select(Project).where(Project.id == pending_plan_pid)
                 )
             ).scalar_one_or_none()
-            overrides = (
-                dict(project.prompt_overrides or {}) if project else {}
-            )
+            if project is None:
+                await msg.answer("Проект не найден.")
+                return
+            project.topic = topic
+            slug = project.slug
+            overrides = dict(project.prompt_overrides or {})
+            has_msg_override = gtb.has_override(project, "plan")
+        # Обновляем тему и в xlsx (лист «Общий план ролика»).
+        try:
+            from pathlib import Path as _Path
+            proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+            if proj_xlsx.exists():
+                sheet = ProjectSheet(file_path=proj_xlsx)
+                sheet.write_general(topic=topic)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("write_general(topic) failed: {}", e)
+        chosen = overrides.get("plan")
+        show_run = bool(
+            chosen
+            and plib.is_valid_prompt_name(chosen)
+            and plib.prompt_path("plan", chosen).exists()
+        )
         await msg.answer(
-            f"Тема: <b>{topic}</b>\n\n"
+            f"Тема сохранена: <b>{topic}</b>\n\n"
             + _prompt_picker_text("plan", overrides),
             reply_markup=_prompt_picker_kb(
-                pending_plan_pid, "plan", overrides
+                pending_plan_pid, "plan", overrides,
+                has_msg_override=has_msg_override,
+                show_run_button=show_run,
+                show_topic_button=True,
             ),
             parse_mode="HTML",
         )
@@ -3829,17 +3902,20 @@ async def _run_split_xlsx(
 
 
 async def _create_new_project(msg: Message) -> None:
-    """Создаёт новый проект. Вход — только название проекта,
-    никаких флагов. v8-шаблон копируется в data/videos/<slug>/project.xlsx."""
+    """Создаёт новый проект. Вход — только название проекта (короткое),
+    тема ролика спрашивается отдельно при запуске шага 1 «План».
+    v8-шаблон копируется в data/videos/<slug>/project.xlsx."""
     name = (msg.text or "").strip()
     if not name:
         await msg.answer("Пустое название. Нажми «📁 Новый проект» ещё раз.")
         return
-    topic = name
+    # Название — только для slug и отображения. Тема (topic) спрашивается
+    # отдельно при запуске шага 1 (может быть длинным подробным описанием).
+    topic = ""
     hero_mode = "auto"  # сохраняем в DB по умолчанию, больше не спрашиваем.
 
     slug_base = (
-        re.sub(r"[^a-zа-я0-9]+", "-", topic.lower(), flags=re.IGNORECASE).strip("-")[:40]
+        re.sub(r"[^a-zа-я0-9]+", "-", name.lower(), flags=re.IGNORECASE).strip("-")[:40]
         or "rolik"
     )
     async with session_scope() as s:
@@ -3880,7 +3956,9 @@ async def _create_new_project(msg: Message) -> None:
         await msg.answer("Не удалось создать проект — попробуй ещё раз.")
         return
     await msg.answer(
-        f"Проект создан: #{pid} «{topic}»\n\n"
+        f"Проект создан: #{pid} «{name}»\n"
+        f"(slug: <code>{slug}</code>)\n\n"
+        "Тема ролика будет задана при запуске шага 1 «План».\n"
         "Дальше выбери генератор картинок / видео и параметры.",
         parse_mode="HTML",
     )

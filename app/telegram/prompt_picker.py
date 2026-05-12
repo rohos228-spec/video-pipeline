@@ -26,6 +26,7 @@ Callback-data:
   prm:<pid>:<step>:msgsend               — отправить файл с текущим текстом
   prm:<pid>:<step>:msgreset              — сбросить override на дефолт
   prm:<pid>:<step>:run                   — явный запуск шага после выбора
+  prm:<pid>:<step>:topic                 — изменить тему ролика (шаг plan)
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ def picker_kb(
     *,
     has_msg_override: bool = False,
     show_run_button: bool = False,
+    show_topic_button: bool = False,
 ) -> InlineKeyboardMarkup:
     """Клавиатура picker'а.
 
@@ -77,6 +79,14 @@ def picker_kb(
             InlineKeyboardButton(
                 text="▶ Запустить шаг",
                 callback_data=f"prm:{pid}:{step_code}:run",
+            )
+        ])
+    # Кнопка «📝 Изменить тему» — для шага «plan»: даёт переписать тему ролика.
+    if show_topic_button:
+        rows.append([
+            InlineKeyboardButton(
+                text="📝 Изменить тему",
+                callback_data=f"prm:{pid}:{step_code}:topic",
             )
         ])
     for name in plib.list_prompts(step_code):

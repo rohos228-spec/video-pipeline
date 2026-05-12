@@ -686,7 +686,7 @@ def project_header(project: Project) -> str:
         video_relax=getattr(project, "video_relax", None),
     )
     return (
-        f"📁 Проект #{project.id} «{project.topic}»\n"
+        f"📁 Проект #{project.id} «{(project.topic or '').strip() or project.slug}»\n"
         f"slug: <code>{project.slug}</code>\n"
         f"hero: {project.hero_mode}\n"
         f"статус: <b>{project.status.value}</b>\n"
