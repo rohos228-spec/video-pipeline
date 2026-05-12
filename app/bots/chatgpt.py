@@ -96,6 +96,7 @@ DOWNLOAD_LINK_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} a[href*='/files/']",
     f"{ASSISTANT_LAST_PREFIX} a[href*='sandbox']",
     f"{ASSISTANT_LAST_PREFIX} a[href*='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} a[href*='.txt']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label='Download']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label='Скачать']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label*='Download']",
@@ -112,6 +113,13 @@ DOWNLOAD_LINK_SELECTORS = [
     # Fallback: любая кнопка/ссылка внутри карточки файла.
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='file'] button",
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment'] button",
+    # Popover скачивания (Radix) — появляется после клика по карточке файла.
+    "[data-radix-popper-content-wrapper] a[download]",
+    "[data-radix-popper-content-wrapper] a[href*='/files/']",
+    "[data-radix-popper-content-wrapper] a[href*='sandbox']",
+    "[data-radix-popper-content-wrapper] button[aria-label*='Download']",
+    "[data-radix-popper-content-wrapper] button[aria-label*='Скачать']",
+    "[data-radix-popper-content-wrapper] a",
 ]
 # Карточка файла как таковая — иногда нужно сначала открыть её
 # (двойной клик / hover), чтобы появилась кнопка Download.
@@ -119,6 +127,10 @@ FILE_CARD_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='file']",
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment']",
     f"{ASSISTANT_LAST_PREFIX} div[role='button']:has(svg)",
+    # Новый UI 2025-Q2: файл = <button class="behavior-btn"> внутри
+    # <span data-state="closed"> (Radix trigger). Клик открывает popover.
+    f"{ASSISTANT_LAST_PREFIX} span[data-state] > button.behavior-btn",
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn",
 ]
 
 # Селекторы (несколько вариантов — берём первый, который нашёлся).
@@ -787,16 +799,25 @@ class ChatGPTBot:
 
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
-        наведении/клике по карточке файла. Делаем hover, чтобы её активировать.
+        наведении/клике по карточке файла. Делаем hover + click, чтобы
+        активировать popover или кнопку скачивания (Radix trigger).
         """
         page = await self._page_ready()
         for sel in FILE_CARD_SELECTORS:
             try:
                 cnt = await page.locator(sel).count()
                 if cnt > 0:
-                    await page.locator(sel).first.hover(timeout=2_000)
+                    loc = page.locator(sel).first
+                    await loc.hover(timeout=2_000)
                     logger.info("ChatGPT: hover на карточке файла ({})", sel)
                     await asyncio.sleep(0.5)
+                    # Radix trigger: hover может не открыть popover, нужен клик.
+                    try:
+                        await loc.click(timeout=2_000)
+                        logger.info("ChatGPT: click на карточке файла ({})", sel)
+                        await asyncio.sleep(1.0)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return
             except Exception:  # noqa: BLE001
                 continue
