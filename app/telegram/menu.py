@@ -535,22 +535,18 @@ def objects_submenu_kb(project: Project) -> InlineKeyboardMarkup:
             )
         ])
 
-    # «Предметы» — доступны только если hero_ready (требование).
-    can_items = status_order(project.status) >= status_order(ProjectStatus.hero_ready)
+    # «Предметы» — раньше блокировались до hero_ready. По требованию
+    # юзера блокировки сняты — кнопка всегда кликабельна.
     if project.status is ProjectStatus.generating_items:
         items_label = "⏳ Предметы · идёт…"
     elif status_order(project.status) >= status_order(ProjectStatus.items_ready):
         items_label = "✅ Предметы (перегенерировать)"
-    elif can_items:
-        items_label = "▶ Предметы"
     else:
-        items_label = "🔒 Предметы (сначала персонажи)"
+        items_label = "▶ Предметы"
     rows.append([
         InlineKeyboardButton(
             text=items_label,
-            callback_data=(
-                f"proj:{project.id}:objects:items" if can_items else "noop"
-            ),
+            callback_data=f"proj:{project.id}:objects:items",
         )
     ])
 

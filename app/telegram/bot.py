@@ -1036,17 +1036,12 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # проверка runnable выполнится при попытке нажать
         # «▶ Запустить шаг» в picker'е (action="run" в
         # on_prompt_picker_cb).
-        if (
-            not is_hero_zombie
-            and not is_other_zombie
-            and not _is_enrich_slot(step.code)
-            and not is_step_runnable(step, project.status)
-        ):
-            await cb.answer(
-                f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
-                show_alert=True,
-            )
-            return
+        # ПО ТРЕБОВАНИЮ: убрали все ограничения на вход в шаги — любой
+        # шаг можно открыть, даже если prerequisite не достигнут. Если
+        # шаг реально не сможет запуститься (нет данных) — это всплывёт
+        # внутри picker'а при попытке нажать «▶ Запустить шаг».
+        _ = is_hero_zombie  # переменные оставлены: используются ниже в логике
+        _ = is_other_zombie
 
         # Шаг 1 (План) — picker + «✏️ Сопр. сообщение» + «▶ Запустить шаг».
         # Flow аналогичен шагу 5 (enrich): выбрать шаблон, при желании
@@ -1770,19 +1765,10 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                     show_alert=True,
                 )
                 return
-            # Перезапуск из ready — разрешаем (юзер мог сменить шаблон).
-            if not is_step_runnable(step, project.status):
-                from app.telegram.menu import status_order
-                is_already_done = (
-                    status_order(project.status) >= status_order(step.ready_status)
-                )
-                if not is_already_done:
-                    await cb.answer(
-                        f"Сначала пройди шаг до "
-                        f"{step.requires.value if step.requires else '?'}",
-                        show_alert=True,
-                    )
-                    return
+            # ПО ТРЕБОВАНИЮ: убрали проверку prerequisite — пользователь
+            # может запустить любой шаг в любой момент. Если данных нет —
+            # шаг упадёт в воркере, статус откатится. Раньше тут стоял
+            # `is_step_runnable` check.
             project.status = step.running_status
             slug = project.slug
             topic = project.topic
@@ -2884,15 +2870,9 @@ async def on_objects_items(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        # Требование: hero_ready достигнут или превзойдён.
-        from app.telegram.menu import status_order as _ord
-
-        if _ord(project.status) < _ord(ProjectStatus.hero_ready):
-            await cb.answer(
-                "Сначала сделай «Персонажи» — нужен hero_ready",
-                show_alert=True,
-            )
-            return
+        # ПО ТРЕБОВАНИЮ: убрали блокировку «hero_ready нужен» — юзер
+        # может запустить «Предметы» в любой момент. Если данных нет —
+        # generate_items упадёт в воркере, статус откатится.
         # Если item_descriptions пуст — спросим юзера в чате (на будущее),
         # пока просто разрешим — generate_items сам отработает корректно
         # (поставит items_ready, если описаний нет).
