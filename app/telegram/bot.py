@@ -2650,6 +2650,7 @@ async def on_objects_persons_xlsx(cb: CallbackQuery) -> None:
     показываем по очереди picker промта для каждого. После того как
     юзер выберет промт для последнего — статус становится
     generating_hero и воркер запускает _run_excel."""
+    logger.info("excel-hero: persons_xlsx click cb.data={!r}", cb.data)
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -2730,6 +2731,7 @@ async def _excel_hero_show_next_picker(
 ) -> None:
     """Шлёт picker для первого ещё не выбранного персонажа.
     Если все выбрали — стартует генерацию (status=generating_hero)."""
+    logger.info("excel-hero: show_next_picker pid={}", project_id)
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == project_id))
@@ -2745,6 +2747,10 @@ async def _excel_hero_show_next_picker(
             if isinstance(c, dict) and not (c.get("prompt_name") or ""):
                 next_id = str(c.get("id") or "")
                 break
+        logger.info(
+            "excel-hero: next_id={!r} total_chars={}",
+            next_id, len(chars),
+        )
         if next_id is None:
             # Все выбрали — стартуем.
             project.status = ProjectStatus.generating_hero
@@ -2766,14 +2772,24 @@ async def _excel_hero_show_next_picker(
 
 def _excel_hero_prompt_kb(pid: int, char_id: str) -> InlineKeyboardMarkup:
     """Клавиатура выбора промта (из prompts/04_hero_style/) для одного
-    excel-персонажа. Callback: excel_prm:<pid>:<char_id>:<prompt_name>."""
+    excel-персонажа. Callback: excel_prm:<pid>:<char_id>:<prompt_name>.
+
+    `char_id` может содержать любые символы (включая кириллицу) — мы
+    кладём его в callback as-is, но т.к. Telegram-лимит на callback_data
+    = 64 байта, обрезаем по 30 байт UTF-8 на всякий случай."""
     names = plib.list_prompts("hero_style")
     rows: list[list[InlineKeyboardButton]] = []
+    # Safety: truncate char_id to fit Telegram's 64-byte callback limit.
+    cid_safe = char_id.encode("utf-8")[:30].decode("utf-8", errors="ignore")
     for name in names:
+        cb_data = f"excel_prm:{pid}:{cid_safe}:{name}"
+        if len(cb_data.encode("utf-8")) > 64:
+            # Имя промта слишком длинное — обрезаем.
+            cb_data = cb_data.encode("utf-8")[:64].decode("utf-8", errors="ignore")
         rows.append([
             InlineKeyboardButton(
                 text=name,
-                callback_data=f"excel_prm:{pid}:{char_id}:{name}",
+                callback_data=cb_data,
             )
         ])
     if not rows:
@@ -2781,49 +2797,70 @@ def _excel_hero_prompt_kb(pid: int, char_id: str) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(
                 text="default",
-                callback_data=f"excel_prm:{pid}:{char_id}:default",
+                callback_data=f"excel_prm:{pid}:{cid_safe}:default",
             )
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@dp.callback_query(F.data.regexp(r"^excel_prm:\d+:[A-Za-z][A-Za-z0-9_-]*:.+$"))
+@dp.callback_query(F.data.startswith("excel_prm:"))
 async def on_excel_hero_prompt_pick(cb: CallbackQuery) -> None:
     """Юзер выбрал промт для одного excel-персонажа. Сохраняем выбор
     в project.meta['excel_hero']['characters'][...]['prompt_name'] и
     показываем picker для следующего."""
+    logger.info("excel-hero: prompt_pick cb.data={!r}", cb.data)
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
-    parts = (cb.data or "").split(":", 3)
-    if len(parts) != 4:
-        await cb.answer("Битый callback", show_alert=True)
-        return
-    _, pid_s, char_id, prompt_name = parts
-    pid = int(pid_s)
-    async with session_scope() as s:
-        project = (
-            await s.execute(select(Project).where(Project.id == pid))
-        ).scalar_one_or_none()
-        if project is None:
-            await cb.answer("Проект не найден", show_alert=True)
+    try:
+        parts = (cb.data or "").split(":", 3)
+        if len(parts) != 4:
+            await cb.answer("Битый callback", show_alert=True)
+            logger.warning(
+                "excel-hero: битый callback parts={} cb.data={!r}",
+                len(parts), cb.data,
+            )
             return
-        meta = dict(project.meta or {})
-        cfg = meta.get("excel_hero") or {}
-        chars = list(cfg.get("characters") or [])
-        for c in chars:
-            if isinstance(c, dict) and str(c.get("id") or "") == char_id:
-                c["prompt_name"] = prompt_name
-                break
-        cfg["characters"] = chars
-        meta["excel_hero"] = cfg
-        project.meta = meta
-        await s.flush()
-    await cb.answer(f"{char_id} → {prompt_name}")
-    await _hide_buttons_with_badge(
-        cb.message, f"✅ {char_id}: <code>{prompt_name}</code>"
-    )
-    await _excel_hero_show_next_picker(cb.message, pid)
+        _, pid_s, char_id, prompt_name = parts
+        pid = int(pid_s)
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            meta = dict(project.meta or {})
+            cfg = meta.get("excel_hero") or {}
+            chars = list(cfg.get("characters") or [])
+            found = False
+            for c in chars:
+                if isinstance(c, dict) and str(c.get("id") or "") == char_id:
+                    c["prompt_name"] = prompt_name
+                    found = True
+                    break
+            cfg["characters"] = chars
+            meta["excel_hero"] = cfg
+            project.meta = meta
+            await s.flush()
+            logger.info(
+                "excel-hero: saved prompt char_id={!r} prompt={!r} found={}",
+                char_id, prompt_name, found,
+            )
+        await cb.answer(f"{char_id} → {prompt_name}")
+        await _hide_buttons_with_badge(
+            cb.message, f"✅ {char_id}: <code>{prompt_name}</code>"
+        )
+        await _excel_hero_show_next_picker(cb.message, pid)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("excel-hero: prompt_pick failed")
+        try:
+            await cb.message.answer(
+                f"🚫 Ошибка picker'а промта: <code>{e}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:objects:items$"))

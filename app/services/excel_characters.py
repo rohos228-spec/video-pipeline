@@ -35,9 +35,10 @@ ROW_RULES = 7
 SHEET_PERSONS = "Персонажи"
 
 # Шаблон допустимого ID персонажа в R1 (для отсеивания «мусорных» столбцов).
-# c01..c99, p01..p99 — на всякий случай, но строгости не требуем; достаточно
-# непустого «слова» из латинских букв и цифр.
-_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+# Поддерживаем латиницу, кириллицу, цифры, `_`, `-`. Должен начинаться
+# с буквы (любой). Без пробелов и спецсимволов — чтобы безопасно класть
+# в имя файла (`<id>.png`) и в callback_data Telegram-инлайн-кнопок.
+_ID_RE = re.compile(r"^[^\W\d_][\w-]*$", re.UNICODE)
 
 
 @dataclass
@@ -190,10 +191,11 @@ def _extract_refs(rules_text: str, known_ids: set[str], *, exclude: str) -> list
     `exclude` — собственный ID персонажа (на себя ссылаться не считаем)."""
     if not rules_text or not known_ids:
         return []
-    # Ищем «слова» из латинских букв/цифр/подчёркивания/дефиса. Это покрывает
-    # форматы вида c01, c1, p_02, hero-3 и т.п.
+    # Ищем «слова» из букв/цифр/подчёркивания/дефиса (UNICODE — кириллица
+    # тоже допускается). Это покрывает форматы вида c01, p_02, hero-3,
+    # пав1, нико-2 и т.п.
     found: list[str] = []
-    for tok in re.findall(r"[A-Za-z][A-Za-z0-9_-]*", rules_text):
+    for tok in re.findall(r"[^\W\d_][\w-]*", rules_text, flags=re.UNICODE):
         if tok == exclude:
             continue
         if tok in known_ids and tok not in found:
