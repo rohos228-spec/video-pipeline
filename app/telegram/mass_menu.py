@@ -10,6 +10,10 @@ Callback-схема:
   mass:upload_xlsx:<bid>             → загрузить новый topics.xlsx
   mass:progress:<bid>                → таблица прогресса
   mass:settings:<bid>                → меню snapshot настроек
+  mass:start:<bid>                   → запустить очередь (running)
+  mass:pause:<bid>                   → пауза очереди
+  mass:resume:<bid>                  → вернуть в running
+  mass:retry_paused:<bid>            → вернуть все paused-подпроекты в очередь
   mass:delete:<bid>                  → подтверждение удаления
   mass:delete_yes:<bid>              → удалить безвозвратно (с папкой)
   mass:delete_keep:<bid>             → удалить, оставив папку
@@ -42,11 +46,32 @@ def mass_list_kb(batches: list[BatchProject]) -> InlineKeyboardMarkup:
 
 
 def mass_main_kb(batch: BatchProject, sub_count: int) -> InlineKeyboardMarkup:
+    # Кнопка управления очередью меняется по текущему статусу.
+    if batch.status.value == "running":
+        queue_row = [InlineKeyboardButton(
+            text="⏸ Поставить на паузу",
+            callback_data=f"mass:pause:{batch.id}",
+        )]
+    elif batch.status.value == "paused":
+        queue_row = [InlineKeyboardButton(
+            text="▶ Снять с паузы",
+            callback_data=f"mass:resume:{batch.id}",
+        )]
+    else:
+        queue_row = [InlineKeyboardButton(
+            text="▶ Запустить очередь",
+            callback_data=f"mass:start:{batch.id}",
+        )]
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"📝 Темы ({sub_count})",
                 callback_data=f"mass:topics:{batch.id}",
+            )],
+            queue_row,
+            [InlineKeyboardButton(
+                text="🔄 Вернуть paused в очередь",
+                callback_data=f"mass:retry_paused:{batch.id}",
             )],
             [InlineKeyboardButton(
                 text="📊 Прогресс",
@@ -170,9 +195,16 @@ def batch_header(batch: BatchProject, sub_count: int, progress: dict) -> str:
         int(round(100 * (progress.get("done", 0) / sub_count)))
         if sub_count else 0
     )
+    queue_icon = {
+        "new": "⏳ не запущена",
+        "running": "▶ работает",
+        "paused": "⏸ пауза",
+        "done": "✅ завершена",
+    }.get(batch.status.value, batch.status.value)
     return (
         f"<b>📁 {_html.escape(batch.name)}</b>\n"
         f"slug: <code>{_html.escape(batch.slug)}</code>\n"
+        f"очередь: {queue_icon}\n"
         f"подпроектов: {sub_count}\n"
         f"готовы: {progress.get('done', 0)} ({pct}%) · "
         f"в работе: {progress.get('in_progress', 0)} · "
