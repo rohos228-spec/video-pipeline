@@ -61,44 +61,56 @@ try {
 if ($cdpRunning) {
     Write-OK "Chrome уже работает на 29229 — не трогаю"
 } else {
-    $chromePaths = @(
-        "C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
-    )
-    $chrome = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $chrome) {
-        Write-Host "ERROR: Chrome не найден в стандартных путях. Установи Chrome." -ForegroundColor Red
-        exit 1
-    }
-    $userDataDir = "$env:USERPROFILE\.vp_browser_data"
-    Write-Host ""
-    Write-Host "    Запускаю отдельный Chrome для бота." -ForegroundColor Yellow
-    Write-Host "    Залогинься в нём при первом запуске:" -ForegroundColor Yellow
-    Write-Host "      - https://chatgpt.com/" -ForegroundColor Yellow
-    Write-Host "      - https://outsee.io/" -ForegroundColor Yellow
-    Write-Host "    Этот Chrome должен быть открыт всё время, пока работает бот." -ForegroundColor Yellow
-    Write-Host ""
-    Start-Process -FilePath $chrome -ArgumentList @(
-        "--remote-debugging-port=29229",
-        "--user-data-dir=$userDataDir"
-    )
-    # Ждём пока CDP-эндпоинт ответит
-    $maxWait = 15
-    $waited = 0
-    while ($waited -lt $maxWait) {
-        Start-Sleep -Seconds 1
-        $waited++
-        try {
-            $resp = Invoke-WebRequest -Uri "http://localhost:29229/json/version" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-            if ($resp.StatusCode -eq 200) {
-                Write-OK "Chrome поднялся на 29229 (за $waited сек)"
-                break
-            }
-        } catch { }
-    }
-    if ($waited -ge $maxWait) {
-        Write-Warn "Chrome не ответил по http://localhost:29229/json/version за $maxWait сек. Запускаю бота всё равно — если он упадёт с CDP-ошибкой, проверь Chrome руками."
+    # Проверяем, есть ли вообще ЛЮБОЕ окно chrome.exe запущенное в системе
+    # (включая обычное пользовательское). Если есть — не пытаемся открыть
+    # ещё одно и не ждём CDP: либо юзер сам поднимет нужное окно с CDP,
+    # либо бот свалится при первом обращении и юзер увидит понятную
+    # ошибку. Это лучше чем тупо ждать 15 секунд впустую.
+    $chromeRunning = @(Get-Process -Name chrome -ErrorAction SilentlyContinue).Count -gt 0
+    if ($chromeRunning) {
+        Write-Warn "Chrome уже запущен (но без remote-debugging-port=29229)."
+        Write-Warn "Не открываю новое окно и не жду — запускаю бота сразу."
+        Write-Warn "Если бот упадёт с CDP-ошибкой — закрой ВСЕ окна Chrome и перезапусти .\start.ps1"
+    } else {
+        $chromePaths = @(
+            "C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+        )
+        $chrome = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $chrome) {
+            Write-Host "ERROR: Chrome не найден в стандартных путях. Установи Chrome." -ForegroundColor Red
+            exit 1
+        }
+        $userDataDir = "$env:USERPROFILE\.vp_browser_data"
+        Write-Host ""
+        Write-Host "    Запускаю отдельный Chrome для бота." -ForegroundColor Yellow
+        Write-Host "    Залогинься в нём при первом запуске:" -ForegroundColor Yellow
+        Write-Host "      - https://chatgpt.com/" -ForegroundColor Yellow
+        Write-Host "      - https://outsee.io/" -ForegroundColor Yellow
+        Write-Host "    Этот Chrome должен быть открыт всё время, пока работает бот." -ForegroundColor Yellow
+        Write-Host ""
+        Start-Process -FilePath $chrome -ArgumentList @(
+            "--remote-debugging-port=29229",
+            "--user-data-dir=$userDataDir"
+        )
+        # Ждём пока CDP-эндпоинт ответит
+        $maxWait = 15
+        $waited = 0
+        while ($waited -lt $maxWait) {
+            Start-Sleep -Seconds 1
+            $waited++
+            try {
+                $resp = Invoke-WebRequest -Uri "http://localhost:29229/json/version" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                if ($resp.StatusCode -eq 200) {
+                    Write-OK "Chrome поднялся на 29229 (за $waited сек)"
+                    break
+                }
+            } catch { }
+        }
+        if ($waited -ge $maxWait) {
+            Write-Warn "Chrome не ответил по http://localhost:29229/json/version за $maxWait сек. Запускаю бота всё равно — если он упадёт с CDP-ошибкой, проверь Chrome руками."
+        }
     }
 }
 
