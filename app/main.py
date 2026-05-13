@@ -54,6 +54,13 @@ async def _init_db() -> None:
             ("enrich_slots_count", "INTEGER DEFAULT 3"),
             ("item_descriptions", "JSON"),
             ("item_variations", "JSON"),
+            # Массовое создание: каждая запись projects может принадлежать
+            # массовому проекту (BatchProject). batch_slug дублирован для
+            # быстрого построения data_dir без join к batch_projects.
+            ("batch_id", "INTEGER"),
+            ("batch_position", "INTEGER"),
+            ("batch_slug", "VARCHAR(120)"),
+            ("auto_mode", "BOOLEAN DEFAULT 0"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")
@@ -93,15 +100,12 @@ async def _backfill_from_disk() -> None:
     Этот бэкфилл — идемпотентный: если поля уже заполнены и совпадают
     с xlsx, ничего не меняется.
     """
-    from pathlib import Path
-
     from sqlalchemy import select
 
     from app.db import session_scope
     from app.models import Project
     from app.services.xlsx_sync import reload_from_xlsx
     from app.services.xlsx_v8_import import import_v8_xlsx
-    from app.settings import settings as _settings
 
     try:
         async with session_scope() as s:
@@ -109,7 +113,10 @@ async def _backfill_from_disk() -> None:
                 await s.execute(select(Project))
             ).scalars().all()
             for p in projects:
-                proj_dir = Path(_settings.data_dir) / "videos" / p.slug
+                # p.data_dir автоматически даёт правильный путь:
+                # для одиночных — data/videos/<slug>/,
+                # для батч-подпроектов — data/batches/<batch_slug>/sub/<slug>/.
+                proj_dir = p.data_dir
                 proj_xlsx = proj_dir / "project.xlsx"
                 voiceover_txt = proj_dir / "voiceover.txt"
 

@@ -103,7 +103,7 @@ def _find_ref_file(base_dir: Path, ref_id: str) -> Path | None:
     return candidates[0]
 
 
-def _hero_legacy_ref(slug: str, persons_id: str) -> Path | None:
+def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     """Fallback для старых проектов: реф персонажа c0X лежит как
     `hero_X_v1_<uuid>.png` (нумерация по old hero_index, X = int(ID[1:])).
     Возвращает самый свежий v1 — если c0X парсится в число.
@@ -114,7 +114,7 @@ def _hero_legacy_ref(slug: str, persons_id: str) -> Path | None:
         idx = int(persons_id[1:])
     except ValueError:
         return None
-    chars_dir = Path(settings.data_dir) / "videos" / slug / "characters"
+    chars_dir = project_data_dir / "characters"
     if not chars_dir.is_dir():
         return None
     candidates = sorted(
@@ -138,7 +138,7 @@ def _load_refs_for_frame(
     """
     refs: list[Path] = []
     xlsx_path = (
-        Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+        project.data_dir / "project.xlsx"
     )
     if not xlsx_path.exists():
         return refs
@@ -168,12 +168,12 @@ def _load_refs_for_frame(
     persons_ids = _parse_ref_ids(persons_cell)
     items_ids = _parse_ref_ids(items_cell)
 
-    chars_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
-    items_dir = Path(settings.data_dir) / "videos" / project.slug / "items"
+    chars_dir = project.data_dir / "characters"
+    items_dir = project.data_dir / "items"
 
     # Персонажи — берём первый успешно найденный.
     for pid in persons_ids:
-        f = _find_ref_file(chars_dir, pid) or _hero_legacy_ref(project.slug, pid)
+        f = _find_ref_file(chars_dir, pid) or _hero_legacy_ref(project.data_dir, pid)
         if f is not None:
             refs.append(f)
             logger.info(
@@ -227,7 +227,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "Сначала запусти шаг 5 (Промты картинок)."
         )
 
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "scenes"
+    out_dir = project.data_dir / "scenes"
 
     sheet = _sheet_for_project(project)
     try:

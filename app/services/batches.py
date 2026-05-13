@@ -1,0 +1,423 @@
+"""Сервис «Массовое создание» — батч-проекты.
+
+BatchProject — контейнер для группы подпроектов (роликов), сделанных
+по одному шаблону. Полностью изолирован:
+  - своя папка `data/batches/<slug>/`
+  - снапшот промптов из `prompts/` копируется в `data/batches/<slug>/prompts/`
+    в момент создания батча; основная папка `prompts/` потом может быть
+    отредактирована — на батч это не повлияет
+  - общий `topics.xlsx` со списком тем
+  - снапшот настроек эталонного проекта в `BatchProject.settings_snapshot`,
+    применяется ко всем подпроектам при создании
+  - каждый подпроект — обычная запись `projects` со ссылкой `batch_id`,
+    `batch_position` (порядок) и `batch_slug` (денормализация для путей)
+
+Сюда вынесена ВСЯ логика батча: создание, добавление тем, удаление,
+подсчёт прогресса, slug-генерация, копирование промптов.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import BatchProject, BatchStatus, Project, ProjectStatus
+from app.services.prompt_library import PROMPTS_ROOT
+from app.settings import settings
+
+# Поля Project, которые попадают в snapshot и применяются ко всем подпроектам
+# при их создании. ВНИМАНИЕ: тут перечислены только «настроечные» поля,
+# которые юзер задавал в мастере / меню. Поля с данными (general_plan,
+# script_text, status, slug, topic, …) НЕ копируются — у каждого подпроекта
+# они свои.
+TEMPLATE_FIELDS: tuple[str, ...] = (
+    "hero_mode",
+    "image_generator",
+    "aspect_ratio",
+    "image_resolution",
+    "image_relax",
+    "video_generator",
+    "video_resolution",
+    "video_relax",
+    "hero_count",
+    "hero_descriptions",
+    "hero_variations",
+    "hero_variation_modifiers",
+    "enrich_slots_count",
+    "item_descriptions",
+    "item_variations",
+    "prompt_overrides",
+    "gpt_text_overrides",
+    "meta",
+)
+
+# Кириллица → ASCII транслитерация для slug. Дублирует логику из seed_pilot,
+# чтобы не плодить зависимостей.
+_CYR_MAP = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+)
+
+
+def slugify(text: str, *, fallback: str = "batch", max_len: int = 60) -> str:
+    """Превращает произвольный текст в filesystem-safe slug (ASCII)."""
+    t = (text or "").lower().translate(_CYR_MAP)
+    t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+    t = re.sub(r"-+", "-", t)
+    return t[:max_len] or fallback
+
+
+def make_sub_slug(batch_slug: str, position: int, topic: str) -> str:
+    """Slug подпроекта: `<batch_slug>__<NN>_<topic_slug>`.
+
+    Двойное подчёркивание — разделитель префикса батча. Гарантированно
+    уникально в рамках одного batch (через position), легко читается
+    глазами в `data/videos/` или `data/batches/.../sub/`.
+    """
+    topic_part = slugify(topic, fallback=f"sub{position:03d}", max_len=40)
+    return f"{batch_slug}__{position:03d}_{topic_part}"
+
+
+async def _unique_batch_slug(session: AsyncSession, base: str) -> str:
+    """Подбирает уникальный slug, добавляя -2, -3, …, если базовый занят."""
+    slug = base
+    n = 1
+    while True:
+        exists = (
+            await session.execute(
+                select(BatchProject).where(BatchProject.slug == slug)
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            return slug
+        n += 1
+        slug = f"{base}-{n}"
+
+
+async def _unique_project_slug(session: AsyncSession, base: str) -> str:
+    """Подбирает уникальный slug для подпроекта."""
+    slug = base
+    n = 1
+    while True:
+        exists = (
+            await session.execute(select(Project).where(Project.slug == slug))
+        ).scalar_one_or_none()
+        if exists is None:
+            return slug
+        n += 1
+        slug = f"{base}-{n}"
+
+
+def _snapshot_settings_from(project: Project) -> dict:
+    """Снимаем настройки эталонного проекта в dict для settings_snapshot."""
+    snap: dict = {}
+    for f in TEMPLATE_FIELDS:
+        val = getattr(project, f, None)
+        # Глубокая копия JSON-полей, чтобы snapshot не делил ссылки с эталонным
+        # проектом (иначе изменения эталона потекут в snapshot).
+        if isinstance(val, (dict, list)):
+            import copy as _copy
+            val = _copy.deepcopy(val)
+        snap[f] = val
+    return snap
+
+
+def _copy_prompts_snapshot(target_dir: Path) -> None:
+    """Копирует всё содержимое `prompts/` в `target_dir`.
+
+    Структура сохраняется: `01_plan/default.md`, `02_script/default.md` и т.д.
+    Если папка-цель уже существует — НЕ перезаписываем (снапшот неизменяем).
+    """
+    if target_dir.exists():
+        logger.info("batches: prompts snapshot already exists at {}", target_dir)
+        return
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(PROMPTS_ROOT, target_dir, dirs_exist_ok=False)
+    logger.info("batches: copied prompts snapshot → {}", target_dir)
+
+
+async def create_batch(
+    session: AsyncSession,
+    *,
+    name: str,
+    template_project_id: int | None = None,
+) -> BatchProject:
+    """Создаёт массовый проект и инициализирует папки на диске.
+
+    - sanitize name → unique slug
+    - копирует промпты из `prompts/` в `data/batches/<slug>/prompts/`
+    - если задан template_project_id — снимает snapshot его настроек
+    - создаёт пустую папку `sub/` для будущих подпроектов
+    - вставляет запись в БД (status=new, тем нет — добавляются позже)
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Имя массового проекта не может быть пустым")
+
+    base_slug = slugify(name)
+    slug = await _unique_batch_slug(session, base_slug)
+
+    settings_snapshot: dict = {}
+    if template_project_id is not None:
+        template = (
+            await session.execute(
+                select(Project).where(Project.id == template_project_id)
+            )
+        ).scalar_one_or_none()
+        if template is not None:
+            settings_snapshot = _snapshot_settings_from(template)
+
+    batch = BatchProject(
+        name=name,
+        slug=slug,
+        status=BatchStatus.new,
+        template_project_id=template_project_id,
+        settings_snapshot=settings_snapshot,
+    )
+    session.add(batch)
+    await session.flush()
+
+    # Папочная структура на диске
+    base_dir = Path(settings.data_dir) / "batches" / slug
+    (base_dir / "sub").mkdir(parents=True, exist_ok=True)
+    _copy_prompts_snapshot(base_dir / "prompts")
+
+    logger.info(
+        "batches: created #{} '{}' (slug={}, template_pid={})",
+        batch.id, name, slug, template_project_id,
+    )
+    return batch
+
+
+async def add_topics(
+    session: AsyncSession,
+    batch: BatchProject,
+    topics: list[str],
+) -> list[Project]:
+    """Создаёт подпроекты по списку тем (по одной строке на ролик).
+
+    Каждый подпроект:
+      - получает batch_id / batch_position (1..N + текущая длина очереди) /
+        batch_slug (денормализация)
+      - наследует поля из settings_snapshot
+      - создаётся со status=new (юзер далее жмёт «▶ Запустить очередь»
+        или работает с подпроектами вручную; в PR #2 — авто-режим)
+      - получает свою папку `data/batches/<batch_slug>/sub/<sub_slug>/`
+
+    Возвращает список созданных Project'ов.
+    """
+    topics = [t.strip() for t in topics if t and t.strip()]
+    if not topics:
+        return []
+
+    # Считаем сколько уже подпроектов у этого батча — продолжаем нумерацию.
+    existing = (
+        await session.execute(
+            select(Project).where(Project.batch_id == batch.id)
+        )
+    ).scalars().all()
+    next_position = (
+        max((p.batch_position or 0) for p in existing) if existing else 0
+    ) + 1
+
+    snap = batch.settings_snapshot or {}
+    created: list[Project] = []
+    for offset, topic in enumerate(topics):
+        position = next_position + offset
+        base = make_sub_slug(batch.slug, position, topic)
+        slug = await _unique_project_slug(session, base)
+
+        kwargs: dict = {
+            "slug": slug,
+            "topic": topic,
+            "status": ProjectStatus.new,
+            "batch_id": batch.id,
+            "batch_position": position,
+            "batch_slug": batch.slug,
+            # auto_mode наследуется из snapshot (если зашит); по умолчанию False
+            "auto_mode": bool(snap.get("auto_mode", False)),
+        }
+        for f in TEMPLATE_FIELDS:
+            if f in snap and snap[f] is not None:
+                # JSON-поля — копия, чтобы каждый проект имел свою (не общую)
+                v = snap[f]
+                if isinstance(v, (dict, list)):
+                    import copy as _copy
+                    v = _copy.deepcopy(v)
+                kwargs[f] = v
+
+        # hero_mode имеет дефолт 'auto' на уровне модели — оставим если в
+        # snapshot нет.
+        if "hero_mode" not in kwargs or not kwargs.get("hero_mode"):
+            kwargs["hero_mode"] = "auto"
+
+        proj = Project(**kwargs)
+        session.add(proj)
+        await session.flush()
+
+        # Папка подпроекта на диске + все подпапки, чтобы шаги пайплайна
+        # не падали при `cwd / "characters" / ...`.
+        sub_dir = proj.data_dir  # резолвится через batch_slug → batches/<slug>/sub/<slug>
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        for sub in (
+            "characters",
+            "items",
+            "scenes",
+            "videos",
+            "audio",
+            "subs",
+            "final",
+        ):
+            (sub_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        created.append(proj)
+        logger.info(
+            "batches: sub-project #{} '{}' (slug={}, pos={}) added to batch #{}",
+            proj.id, topic, proj.slug, position, batch.id,
+        )
+
+    return created
+
+
+async def list_batches(session: AsyncSession) -> list[BatchProject]:
+    """Все массовые проекты, новые сверху."""
+    return list(
+        (
+            await session.execute(
+                select(BatchProject).order_by(BatchProject.id.desc())
+            )
+        ).scalars().all()
+    )
+
+
+async def batch_progress(
+    session: AsyncSession,
+    batch: BatchProject,
+) -> dict:
+    """Сводка по подпроектам массового: счётчики по статусам.
+
+    Возвращает:
+      {
+        "total": int,
+        "queued": int,       # new, planning, …
+        "in_progress": int,  # любой *ing
+        "ready": int,        # любой *_ready (не финальный)
+        "done": int,         # published
+        "paused": int,
+        "failed": int,
+        "by_status": {status_value: count}
+      }
+    """
+    subs = (
+        await session.execute(
+            select(Project)
+            .where(Project.batch_id == batch.id)
+            .order_by(Project.batch_position.asc())
+        )
+    ).scalars().all()
+
+    by_status: dict[str, int] = {}
+    queued = in_progress = ready = done = paused = failed = 0
+    for p in subs:
+        st = p.status
+        by_status[st.value] = by_status.get(st.value, 0) + 1
+        if st is ProjectStatus.published:
+            done += 1
+        elif st is ProjectStatus.paused:
+            paused += 1
+        elif st is ProjectStatus.failed:
+            failed += 1
+        elif st is ProjectStatus.new:
+            queued += 1
+        elif st.value.endswith("_ready"):
+            ready += 1
+        else:
+            in_progress += 1
+
+    return {
+        "total": len(subs),
+        "queued": queued,
+        "in_progress": in_progress,
+        "ready": ready,
+        "done": done,
+        "paused": paused,
+        "failed": failed,
+        "by_status": by_status,
+    }
+
+
+async def delete_batch(
+    session: AsyncSession,
+    batch_id: int,
+    *,
+    delete_files: bool = True,
+) -> None:
+    """Удаляет массовый проект + все его подпроекты + (опционально) папку.
+
+    Папка на диске удаляется, если delete_files=True (default). Подпроекты
+    удаляются каскадно по batch_id (или, для безопасности, обнулением
+    ссылки batch_id — мы выбираем безопасный путь: SET NULL по FK +
+    явное удаление здесь, чтобы не оставлять сирот).
+    """
+    batch = (
+        await session.execute(
+            select(BatchProject).where(BatchProject.id == batch_id)
+        )
+    ).scalar_one_or_none()
+    if batch is None:
+        return
+
+    subs = (
+        await session.execute(
+            select(Project).where(Project.batch_id == batch_id)
+        )
+    ).scalars().all()
+    for p in subs:
+        await session.delete(p)
+
+    base_dir = batch.data_dir
+    await session.delete(batch)
+    await session.flush()
+
+    if delete_files and base_dir.exists():
+        try:
+            shutil.rmtree(base_dir)
+            logger.info("batches: removed dir {}", base_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("batches: failed to remove {}: {}", base_dir, e)
+
+
+async def get_batch(
+    session: AsyncSession, batch_id: int
+) -> BatchProject | None:
+    return (
+        await session.execute(
+            select(BatchProject).where(BatchProject.id == batch_id)
+        )
+    ).scalar_one_or_none()
+
+
+async def get_batch_subprojects(
+    session: AsyncSession,
+    batch_id: int,
+) -> list[Project]:
+    """Подпроекты массового, отсортированные по batch_position."""
+    return list(
+        (
+            await session.execute(
+                select(Project)
+                .where(Project.batch_id == batch_id)
+                .order_by(Project.batch_position.asc())
+            )
+        ).scalars().all()
+    )

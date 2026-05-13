@@ -80,7 +80,7 @@ async def seed(topic: str = DEFAULT_TOPIC, hero_mode: str = DEFAULT_HERO_MODE) -
 
         # xlsx-хранилище: копия шаблона + общий план
         sheet = ProjectSheet(
-            file_path=settings.data_dir / "videos" / p.slug / "project.xlsx",
+            file_path=p.data_dir / "project.xlsx",
         )
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
         sheet.write_general(

@@ -510,7 +510,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         # 4) Генерация в outsee.
         outsee = OutseeBot(bs)
-        out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
+        out_dir = project.data_dir / "characters"
         img_gen = IMAGE_GENERATORS_BY_ID.get(
             project.image_generator or DEFAULTS["image_generator"]
         )
@@ -844,7 +844,7 @@ async def _generate_one_excel_character(
         or "default"
     )
 
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
+    out_dir = project.data_dir / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{ch.id}.png"
     prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}]"
