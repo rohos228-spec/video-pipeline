@@ -34,6 +34,10 @@ SHEET_GENERAL_V8 = "Общий план"
 SHEET_PLAN_V8 = "план"
 ROW_VOICEOVER_V8 = 49
 
+# Метки строк, которые не входят в general_plan (служебные параметры).
+# Сравнение по подстроке, без учёта регистра.
+_SKIP_LABEL_NEEDLES = ("фоновая музыка", "background music", "bgm")
+
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).
 CHARS_PER_SEC = 14.0
 MIN_FRAME = 1.5
@@ -77,6 +81,11 @@ def _read_general_plan(wb) -> str | None:
             block_header_row = None
 
         if a_s and b_s:
+            a_lower = a_s.lower()
+            if any(n in a_lower for n in _SKIP_LABEL_NEEDLES):
+                # служебный параметр (например, путь к фоновой музыке) —
+                # в general_plan не попадает.
+                continue
             lines.append(f"**{a_s}:** {b_s}")
             continue
 

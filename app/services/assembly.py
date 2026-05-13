@@ -1,15 +1,19 @@
 """FFmpeg-сборка финального ролика.
 
 Вход:
-  - список (clip_path: mp4 на 8 сек, duration: float) в порядке кадров,
-  - путь к единой mp3-озвучке,
-  - путь выходного mp4.
+  - список (clip_path: mp4, duration: float) в порядке кадров,
+  - путь к единой mp3-озвучке (голос диктора),
+  - путь выходного mp4,
+  - (опц.) путь к фоновой музыке (bgm) и её громкость в dB.
 
 Что делаем:
   1. Для каждого клипа — обрезаем до точной длительности `duration` (c начала)
      и приводим к канве 1080x1920 с центровкой (чтобы все клипы были 9:16).
   2. Склеиваем через ffmpeg concat с перекодированием (надёжнее, чем demuxer).
-  3. Накладываем mp3 как основную звуковую дорожку (-map 0:v -map 1:a -shortest).
+  3. Накладываем озвучку как основную звуковую дорожку:
+     - без bgm — просто маппим аудио озвучки на выход (-map);
+     - с bgm — фильтр-граф `amix`: голос на полную + bgm с волюм-фильтром
+       (по умолчанию -18 dB), bgm зацикливается до длины голоса и обрезается.
   4. (Опционально) — прожигаем ASS-субтитры, если передан путь.
 
 Используем просто subprocess с ffmpeg (без python-биндингов), чтобы не плодить
@@ -27,6 +31,9 @@ from loguru import logger
 
 CANVAS_W, CANVAS_H = 1080, 1920
 FPS = 30
+
+# Фоновая музыка: дефолт -18 dB под голосом. Можно переопределить параметром.
+DEFAULT_BGM_VOLUME_DB = -18.0
 
 
 @dataclass
@@ -73,9 +80,26 @@ async def assemble(
     out_path: Path,
     *,
     subtitles_ass: Path | None = None,
+    bgm_path: Path | None = None,
+    bgm_volume_db: float = DEFAULT_BGM_VOLUME_DB,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
+
+    bgm_path_effective: Path | None = None
+    if bgm_path is not None:
+        if not bgm_path.exists():
+            logger.warning(
+                "assembly: bgm файл не найден ({}), собираем без фоновой музыки",
+                bgm_path,
+            )
+        else:
+            bgm_path_effective = bgm_path
+            logger.info(
+                "assembly: используется bgm {} на громкости {} dB",
+                bgm_path_effective,
+                bgm_volume_db,
+            )
 
     with tempfile.TemporaryDirectory(prefix="vp_asm_") as tmp:
         tmp_dir = Path(tmp)
@@ -103,17 +127,43 @@ async def assemble(
             str(concat_mp4),
         ])
 
-        # наложим аудио
+        # наложим аудио (голос + опц. bgm)
         with_audio = tmp_dir / "with_audio.mp4"
-        await _run([
-            "ffmpeg", "-y",
-            "-i", str(concat_mp4),
-            "-i", str(audio_path),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            str(with_audio),
-        ])
+        if bgm_path_effective is None:
+            await _run([
+                "ffmpeg", "-y",
+                "-i", str(concat_mp4),
+                "-i", str(audio_path),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                str(with_audio),
+            ])
+        else:
+            # Микс голос + bgm (-18 dB).
+            # - голос (input 1) → [voice] без обработки
+            # - bgm (input 2) → loop=-1 (бесконечно) → volume=<bgm_volume_db>dB →
+            #   обрезать до длины голоса (apad+atrim не нужны — amix с
+            #   duration=first остановится по голосу).
+            # - amix inputs=2 duration=first dropout_transition=0 → [aout]
+            volume_filter = f"volume={bgm_volume_db}dB"
+            filter_complex = (
+                "[1:a]anull[voice];"
+                f"[2:a]aloop=loop=-1:size=2e9,{volume_filter}[bgm];"
+                "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0,"
+                "alimiter=limit=0.95[aout]"
+            )
+            await _run([
+                "ffmpeg", "-y",
+                "-i", str(concat_mp4),
+                "-i", str(audio_path),
+                "-i", str(bgm_path_effective),
+                "-filter_complex", filter_complex,
+                "-map", "0:v:0", "-map", "[aout]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                str(with_audio),
+            ])
 
         # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -69,7 +69,9 @@ app/
   services/
     hitl.py                  # send_hitl_photo / send_hitl_text,
                              # _keyboard(allow_edit=False/True)
-    assembly.py              # финальная сборка MP4 (ffmpeg, позже)
+    assembly.py              # финальная сборка MP4 через ffmpeg.
+                             # Параметры: clips + voice mp3 + опц. bgm
+                             # (фоновая музыка, -18 dB, loop до длины голоса).
 
   orchestrator/
     pipeline.py              # advance_project() — стейт-машина
