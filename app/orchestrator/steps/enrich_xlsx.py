@@ -89,11 +89,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"enrich_xlsx: project.xlsx не найден по пути {xlsx_path}"
         )
 
-    # 2. Собираем промт «мастер + сопровождающий текст».
+    # 2. Собираем промт: мастер-промт → файл, сопр. сообщение → текст в чате.
     try:
         master = get_project_prompt(project, step_code)
     except FileNotFoundError:
-        # Если default.md ещё не создан — используем минимальную заглушку.
         master = (
             f"# {step_code}\n\n"
             "Мастер-промт для этого слота ещё не настроен. "
@@ -101,7 +100,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "что именно ChatGPT должен изменить в приложенном xlsx."
         )
     accompanying = _get_accompanying_text(project, step_code)
-    full_prompt = master.strip() + "\n\n---\n\n" + accompanying.strip()
+
+    # Мастер-промт пишем во временный файл и прикрепляем к чату.
+    # В само сообщение идёт только «сопр. сообщение».
+    tmp_dir = xlsx_path.parent / "tmp_gpt"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    prompt_file = tmp_dir / f"prompt_{step_code}.md"
+    prompt_file.write_text(master.strip(), encoding="utf-8")
 
     # 3. Round-trip до 3 раз.
     last_err: Exception | None = None
@@ -116,11 +121,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             async with browser_session() as bs:
                 gpt = ChatGPTBot(bs)
-                # Новый чат каждый раз (без истории).
                 await gpt.new_conversation()
-                # Шлём xlsx + промт, ждём ответ.
+                # Шлём prompt-файл + xlsx как вложения, сопр. текст — в чат.
                 reply = await gpt.ask_with_files(
-                    full_prompt, [xlsx_path], timeout=1200
+                    accompanying.strip(), [prompt_file, xlsx_path], timeout=1200
                 )
                 logger.info(
                     "[#{}] enrich_xlsx: получен ответ len={} (try={})",

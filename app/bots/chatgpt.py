@@ -96,6 +96,7 @@ DOWNLOAD_LINK_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} a[href*='/files/']",
     f"{ASSISTANT_LAST_PREFIX} a[href*='sandbox']",
     f"{ASSISTANT_LAST_PREFIX} a[href*='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} a[href*='.txt']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label='Download']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label='Скачать']",
     f"{ASSISTANT_LAST_PREFIX} button[aria-label*='Download']",
@@ -112,6 +113,13 @@ DOWNLOAD_LINK_SELECTORS = [
     # Fallback: любая кнопка/ссылка внутри карточки файла.
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='file'] button",
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment'] button",
+    # Popover скачивания (Radix) — появляется после клика по карточке файла.
+    "[data-radix-popper-content-wrapper] a[download]",
+    "[data-radix-popper-content-wrapper] a[href*='/files/']",
+    "[data-radix-popper-content-wrapper] a[href*='sandbox']",
+    "[data-radix-popper-content-wrapper] button[aria-label*='Download']",
+    "[data-radix-popper-content-wrapper] button[aria-label*='Скачать']",
+    "[data-radix-popper-content-wrapper] a",
 ]
 # Карточка файла как таковая — иногда нужно сначала открыть её
 # (двойной клик / hover), чтобы появилась кнопка Download.
@@ -119,6 +127,10 @@ FILE_CARD_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='file']",
     f"{ASSISTANT_LAST_PREFIX} [data-testid*='attachment']",
     f"{ASSISTANT_LAST_PREFIX} div[role='button']:has(svg)",
+    # Новый UI 2025-Q2: файл = <button class="behavior-btn"> внутри
+    # <span data-state="closed"> (Radix trigger). Клик открывает popover.
+    f"{ASSISTANT_LAST_PREFIX} span[data-state] > button.behavior-btn",
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn",
 ]
 
 # Селекторы (несколько вариантов — берём первый, который нашёлся).
@@ -785,18 +797,73 @@ class ChatGPTBot:
         logger.info("ChatGPT (file reply) len={}", len(reply))
         return reply
 
+    async def _try_download_via_file_card(
+        self, page: Page, *, timeout: float = 60,
+    ) -> Download | None:
+        """Пробует скачать файл, кликнув по карточке файла (behavior-btn).
+
+        В новом ChatGPT UI (2025-Q2) клик по ``button.behavior-btn``
+        напрямую запускает скачивание файла. Оборачиваем клик в
+        ``page.expect_download`` чтобы перехватить Download-объект.
+
+        Сначала ЖДЁМ появления карточки файла (polling до ``timeout``
+        секунд), потом кликаем. Возвращает ``Download`` или ``None``.
+        """
+        # Ждём появления любого FILE_CARD_SELECTOR (polling).
+        card_sel = await _first_matching(
+            page, FILE_CARD_SELECTORS, timeout=timeout,
+        )
+        if card_sel is None:
+            logger.info(
+                "ChatGPT: _try_download_via_file_card: карточка файла "
+                "не найдена за {} сек",
+                timeout,
+            )
+            return None
+
+        loc = page.locator(card_sel).first
+        logger.info(
+            "ChatGPT: пробую скачать файл кликом по карточке ({})",
+            card_sel,
+        )
+        try:
+            async with page.expect_download(timeout=30_000) as dl_info:
+                await loc.click(timeout=5_000)
+            dl: Download = await dl_info.value
+            logger.info(
+                "ChatGPT: download triggered via file card ({}), "
+                "filename={}",
+                card_sel, dl.suggested_filename,
+            )
+            return dl
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ChatGPT: клик по карточке ({}) не вызвал download: {}",
+                card_sel, exc,
+            )
+            return None
+
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
-        наведении/клике по карточке файла. Делаем hover, чтобы её активировать.
+        наведении/клике по карточке файла. Делаем hover + click, чтобы
+        активировать popover или кнопку скачивания (Radix trigger).
         """
         page = await self._page_ready()
         for sel in FILE_CARD_SELECTORS:
             try:
                 cnt = await page.locator(sel).count()
                 if cnt > 0:
-                    await page.locator(sel).first.hover(timeout=2_000)
+                    loc = page.locator(sel).first
+                    await loc.hover(timeout=2_000)
                     logger.info("ChatGPT: hover на карточке файла ({})", sel)
                     await asyncio.sleep(0.5)
+                    # Radix trigger: hover может не открыть popover, нужен клик.
+                    try:
+                        await loc.click(timeout=2_000)
+                        logger.info("ChatGPT: click на карточке файла ({})", sel)
+                        await asyncio.sleep(1.0)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return
             except Exception:  # noqa: BLE001
                 continue
@@ -848,22 +915,43 @@ class ChatGPTBot:
         кликает по ней и сохраняет файл в `target_path`.
 
         Стратегия:
-          1. Прямой поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек — ChatGPT
-             часто рендерит карточку файла позже текстового ответа).
-          2. Если не нашли — hover по карточке файла, потом ещё раз поиск
-             уже с полным `timeout` (по умолчанию 15 минут).
-          3. Если всё равно нет — dumpим outerHTML последнего ответа для отладки
-             и кидаем RuntimeError.
+          1. Прямой клик по карточке файла (button.behavior-btn) с
+             expect_download — в новом UI клик напрямую качает файл.
+          2. Если карточки нет — поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек).
+          3. Если не нашли — hover/click по FILE_CARD_SELECTORS, потом ещё
+             раз поиск уже с полным `timeout`.
+          4. Если всё равно нет — dumpим outerHTML для отладки и RuntimeError.
         """
         page = await self._page_ready()
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 1. Прямой клик по behavior-btn — скачивание через expect_download.
+        # Ждём до 60 сек пока карточка файла появится в ответе
+        # (ChatGPT иногда рендерит файл позже текста).
+        download = await self._try_download_via_file_card(page, timeout=60)
+        if download is not None:
+            await download.save_as(str(target_path))
+            size = target_path.stat().st_size if target_path.exists() else -1
+            logger.info(
+                "ChatGPT: файл скачан (behavior-btn) как {} "
+                "(исходное имя {}, размер {} байт)",
+                target_path, download.suggested_filename, size,
+            )
+            if size < 1024:
+                logger.warning(
+                    "ChatGPT: размер подозрительно мал ({} байт).", size,
+                )
+                await self._dump_last_assistant_html()
+            return target_path
+
+        # 2. Классический путь — ищем ссылку/кнопку скачивания.
         link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=60)
         if not link_sel:
-            # 2. Возможно нужен hover.
             await self._hover_file_cards()
-            link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=timeout)
+            link_sel = await _first_matching(
+                page, DOWNLOAD_LINK_SELECTORS, timeout=timeout,
+            )
         if not link_sel:
             await self._dump_last_assistant_html()
             raise RuntimeError(
@@ -876,9 +964,8 @@ class ChatGPTBot:
         try:
             async with page.expect_download(timeout=timeout * 1000) as dl_info:
                 await page.locator(link_sel).first.click()
-            download: Download = await dl_info.value
+            download = await dl_info.value
         except Exception as e:  # noqa: BLE001
-            # На всякий случай дампим HTML, чтобы понять что было вместо файла.
             await self._dump_last_assistant_html()
             raise RuntimeError(f"ChatGPT: не удалось скачать файл: {e}") from e
 

@@ -83,22 +83,26 @@ def is_supported(step_code: str) -> bool:
 # Сборка дефолтного текста по шагам
 # --------------------------------------------------------------------------- #
 
-def _build_plan_default(project: Project, *, topic: str | None = None) -> str:
-    """Шаг 1 «План» (xlsx-flow): к чату прикладывается project.xlsx.
-    Возвращает «сопр. сообщение», которое уходит в GPT вместе с файлом.
-
-    Сборка совпадает с `_run_plan_xlsx` в `app/telegram/bot.py`:
-       Тема + содержимое мастер-промта + инструкция по xlsx.
+def _build_plan_default(
+    project: Project,
+    *,
+    topic: str | None = None,
+    prompt_file_name: str = "prompt_plan.md",
+) -> str:
+    """Шаг 1 «План» (xlsx-flow): к чату прикладываются prompt_plan.md и
+    project.xlsx. Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
     """
-    master = get_project_prompt(project, "plan").strip()
     actual_topic = topic if topic is not None else (project.topic or "")
     return (
-        f"Тема ролика: {actual_topic}\n\n"
-        f"{master}\n\n"
-        "Прикреплённый файл — текущий project.xlsx этого ролика. "
-        "Заполни его согласно инструкции выше и пришли мне обратно как "
-        ".xlsx (без обрезок и компрессии). Кратким текстом ответь — что "
-        "сделал — но главное верни файл."
+        f"Тема ролика: «{actual_topic}».\n\n"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
+        "второй (project.xlsx). Заполни xlsx согласно инструкции и пришли "
+        "мне обратно как .xlsx (без обрезок и компрессии). Кратким текстом "
+        "ответь — что сделал — но главное верни файл."
     )
 
 
@@ -203,45 +207,25 @@ def _build_img_pr_default(
     *,
     voiceover_line: str = "",
     n_frames: int = 0,
+    prompt_file_name: str = "prompt_img_pr.md",
 ) -> str:
-    """Шаг 5 — промты картинок (один батч на все кадры).
+    """Шаг 6 «Промты картинок» (xlsx-flow).
 
-    `voiceover_line` — закадровый текст по кадрам, склеенный знаком «-».
-    `n_frames` — кол-во кадров. Когда вызывается из UI «получить файл
-    с дефолтом», передаём фактические значения; если пусто — оставляем
-    плейсхолдеры (юзер видит структуру).
+    К чату прикладываются prompt_img_pr.md и project.xlsx.
+    Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
     """
-    image_master = get_project_prompt(project, "img_pr")
-    hero_text = (project.hero_description or "").strip()
-    descriptions = [d for d in (project.hero_descriptions or []) if d and d.strip()]
-    if not hero_text and descriptions:
-        hero_text = descriptions[0]
-    hero_section = ""
-    if hero_text:
-        hero_section = (
-            "\nЭталонное описание главного героя (использовать в кадрах "
-            "где он появляется):\n"
-            + hero_text
-            + "\n"
-        )
-
-    n_frames_str = str(n_frames) if n_frames > 0 else "<N>"
-    voiceover_str = voiceover_line if voiceover_line else "<закадровый текст по кадрам>"
     return (
-        image_master.strip()
-        + "\n\n"
-        + hero_section
-        + "\n---\n"
-        + f"Кадров: {n_frames_str}.\n"
-        + "Закадровый текст по кадрам (между блоками знак «-»):\n"
-        + voiceover_str
-        + "\n\n"
-        + "Верни одним сообщением ровно "
-        + n_frames_str
-        + " промтов в том же порядке, разделяя их знаком «-». "
-        + "Без нумерации, без пояснений, без заголовков. "
-        + "Внутри самих промтов знак «-» не используй (если нужен дефис "
-        + "— замени на пробел или подчёркивание)."
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция по генерации промтов "
+        f"для картинок.\n"
+        f"  2. project.xlsx — рабочая таблица ролика с кадрами и "
+        f"закадровым текстом.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), "
+        "опираясь на данные из project.xlsx. Заполни в xlsx строку "
+        "«промт картинки» (строка 29) для каждого кадра. "
+        "Верни обновлённый xlsx файлом (без обрезок и компрессии). "
+        "Кратким текстом ответь — что сделал — но главное верни файл."
     )
 
 
