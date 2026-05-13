@@ -62,13 +62,18 @@ HEADERS = [
     "Интеграция продукта",        # I
     "Примечание по съёмке",       # J
     "hero_mode",                  # K
-    "Подпроект",                  # L
-    "Статус",                     # M
-    "Прогресс",                   # N
-    "Обновлён",                   # O
+    "⛔ СЛУЖ. НЕ ТРОГАТЬ — slug",  # L
+    "⛔ СЛУЖ. НЕ ТРОГАТЬ — статус",  # M
+    "⛔ СЛУЖ. НЕ ТРОГАТЬ — прогресс",  # N
+    "⛔ СЛУЖ. НЕ ТРОГАТЬ — обновлён",  # O
 ]
 
-COL_WIDTHS = [4, 40, 14, 16, 22, 18, 50, 50, 50, 28, 12, 36, 16, 12, 20]
+# Колонки L–O — сервисные, в них бот сам записывает данные при выгрузке.
+# Априори их не нужно редактировать вручную — collect_new_topics()
+# игнорирует любые значения в L, которые не похожи на реальный slug.
+SERVICE_COL_INDICES = (12, 13, 14, 15)  # L, M, N, O (1-based)
+
+COL_WIDTHS = [4, 40, 14, 16, 22, 18, 50, 50, 50, 28, 12, 32, 32, 28, 32]
 
 
 def _now_iso() -> str:
@@ -77,6 +82,30 @@ def _now_iso() -> str:
 
 def _header_count() -> int:
     return len(HEADERS)
+
+
+def _apply_service_styling(ws, last_row: int) -> None:
+    """Покрасить сервисные колонки L–O в серый + локнуть их.
+
+    Визуальный сигнал: "не трогать". Лок работает в Excel при
+    включённой защите листа, но без пароля и опционально —
+    просто подсказка.
+    """
+    from openpyxl.styles import PatternFill, Font, Alignment, Protection
+    gray = PatternFill(start_color="FFE0E0E0", end_color="FFE0E0E0",
+                       fill_type="solid")
+    head_red = Font(color="FF990000", bold=True, size=10)
+    centered = Alignment(horizontal="center", vertical="center",
+                         wrap_text=True)
+    for col_idx in SERVICE_COL_INDICES:
+        h = ws.cell(row=2, column=col_idx)
+        h.fill = gray
+        h.font = head_red
+        h.alignment = centered
+        for r in range(3, max(last_row, 2) + 1):
+            c = ws.cell(row=r, column=col_idx)
+            c.fill = gray
+            c.protection = Protection(locked=True)
 
 
 def init_topics_xlsx(path: Path, batch_name: str) -> None:
@@ -102,6 +131,8 @@ def init_topics_xlsx(path: Path, batch_name: str) -> None:
 
     for i, w in enumerate(COL_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+    _apply_service_styling(ws, last_row=2)
 
     wb.save(path)
     logger.info("batch topics.xlsx initialized: {}", path)
@@ -159,6 +190,8 @@ def write_subprojects_table(
         ws.cell(row=r, column=13, value=row.get("status"))
         ws.cell(row=r, column=14, value=row.get("progress"))
         ws.cell(row=r, column=15, value=_now_iso())
+
+    _apply_service_styling(ws, last_row=2 + len(rows))
 
     wb.save(path)
 
@@ -223,16 +256,25 @@ def read_topics(path: Path) -> list[dict]:
     return out
 
 
-def collect_new_topics(path: Path) -> list[dict]:
-    """Возвращает только новые темы (без slug — ещё не созданы подпроекты).
+def collect_new_topics(
+    path: Path,
+    known_slugs: set[str] | None = None,
+) -> list[dict]:
+    """Возвращает только новые темы (ещё не созданы подпроекты).
 
-    Каждый элемент — полный dict с карточными полями (title, source,
-    style, hook_type, emotion, fact, logic, integration, shoot_note,
-    hero_mode). Это позволяет передать всю карточку при создании
-    подпроекта.
+    `known_slugs` — множество реально существующих slug'ов подпроектов
+    данного массового (из БД). Строка считается «уже привязанной»
+    ТОЛЬКО если её slug-колонка содержит ровно один из этих slug'ов.
+    Любая каша / случайный текст / название продукта в колонке L → строка
+    идёт в новые темы.
+
+    Если `known_slugs is None` — поведение как раньше: строка считается
+    новой, если slug пустой. Используется в тестах.
     """
     rows = read_topics(path)
-    return [r for r in rows if not r.get("slug")]
+    if known_slugs is None:
+        return [r for r in rows if not r.get("slug")]
+    return [r for r in rows if (r.get("slug") or "") not in known_slugs]
 
 
 def topic_card_from_row(row: dict) -> dict:

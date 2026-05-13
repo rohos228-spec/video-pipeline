@@ -1263,7 +1263,12 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
         tmp_path = _Path(tmp.name)
     try:
         await msg.bot.download(doc, destination=str(tmp_path))
-        new_topics = batch_sheet.collect_new_topics(tmp_path)
+        # Берём реальные slug'и подпроектов из БД, чтобы collect_new_topics
+        # игнорировал любые посторонние значения в сервисной колонке L.
+        async with session_scope() as s_pre:
+            existing_subs = await batches_svc.get_batch_subprojects(s_pre, batch_id)
+            known_slugs = {p.slug for p in existing_subs if p.slug}
+        new_topics = batch_sheet.collect_new_topics(tmp_path, known_slugs=known_slugs)
     except Exception as e:  # noqa: BLE001
         await msg.answer(f"❌ Не смог прочитать xlsx: {e}")
         tmp_path.unlink(missing_ok=True)
@@ -1271,7 +1276,10 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
 
     if not new_topics:
         await msg.answer(
-            "В файле нет новых тем (все строки уже имеют «Подпроект»)."
+            "В файле нет новых тем — все строки уже соответствуют существующим "
+            "подпроектам (по slug в служебной колонке).\n\n"
+            "Чтобы добавить новые ролики — заполни строки в свободных позициях, "
+            "оставляя сервисные колонки L–O пустыми."
         )
         tmp_path.unlink(missing_ok=True)
         return
