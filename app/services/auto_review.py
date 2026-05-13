@@ -236,9 +236,15 @@ async def review_plan(
     chatgpt_bot: Any,
     batch_snapshot_dir: Path | None = None,
     timeout: float = 240.0,
+    product_name: str | None = None,
 ) -> ReviewResult:
-    """Проверка общего плана."""
-    facts = validate_plan_numeric(plan_text)
+    """Проверка общего плана.
+
+    `product_name` — название постоянного продукта массового. Если задан
+    и продукт не упомянут в плане — добавится numeric_failure и план
+    уйдёт на регенерацию.
+    """
+    facts = validate_plan_numeric(plan_text, product_name=product_name)
     extra = []
     if not facts["has_all_intervals"]:
         missing = facts["missing_intervals"]
@@ -246,6 +252,8 @@ async def review_plan(
             "PLAN_MISSING_INTERVALS: "
             + ", ".join(f"{a}-{b}" for a, b in missing)
         )
+    if facts.get("product_required") and not facts.get("product_mentioned"):
+        extra.append(f"PRODUCT_NOT_MENTIONED: «{product_name}»")
     return await review_text(
         kind=HITLKind.approve_plan,
         artifact_text=plan_text,
@@ -263,9 +271,10 @@ async def review_script(
     chatgpt_bot: Any,
     batch_snapshot_dir: Path | None = None,
     timeout: float = 240.0,
+    product_name: str | None = None,
 ) -> ReviewResult:
     """Проверка закадрового текста."""
-    facts = validate_script_numeric(script_text)
+    facts = validate_script_numeric(script_text, product_name=product_name)
     extra = []
     if not facts["char_count_in_range"]:
         extra.append(
@@ -281,6 +290,8 @@ async def review_script(
             "REPEATED_STARTS: "
             + ", ".join(facts["repeated_sentence_starts"][:5])
         )
+    if facts.get("product_required") and not facts.get("product_mentioned"):
+        extra.append(f"PRODUCT_NOT_MENTIONED: «{product_name}»")
     return await review_text(
         kind=HITLKind.approve_script,
         artifact_text=script_text,

@@ -202,22 +202,41 @@ async def create_batch(
 async def add_topics(
     session: AsyncSession,
     batch: BatchProject,
-    topics: list[str],
+    topics: list,
 ) -> list[Project]:
-    """Создаёт подпроекты по списку тем (по одной строке на ролик).
+    """Создаёт подпроекты по списку тем.
+
+    PR #3: каждая «тема» — это либо просто строка (заголовок), либо
+    dict с расширенными карточными полями (title, source, style,
+    hook_type, emotion, fact, logic, integration, shoot_note,
+    hero_mode). Карточные поля попадают в `Project.meta["topic_card"]`
+    и далее в промпты плана/сценария.
 
     Каждый подпроект:
-      - получает batch_id / batch_position (1..N + текущая длина очереди) /
-        batch_slug (денормализация)
+      - получает batch_id / batch_position / batch_slug (денормализация)
       - наследует поля из settings_snapshot
-      - создаётся со status=new (юзер далее жмёт «▶ Запустить очередь»
-        или работает с подпроектами вручную; в PR #2 — авто-режим)
+      - получает carded-описание в meta["topic_card"]
+      - создаётся со status=new
       - получает свою папку `data/batches/<batch_slug>/sub/<sub_slug>/`
-
-    Возвращает список созданных Project'ов.
     """
-    topics = [t.strip() for t in topics if t and t.strip()]
     if not topics:
+        return []
+
+    # Нормализуем входные данные: str → dict с одним полем title.
+    norm_topics: list[dict] = []
+    for t in topics:
+        if isinstance(t, dict):
+            title = (t.get("title") or t.get("topic") or "").strip()
+            if not title:
+                continue
+            card = dict(t)
+            card["title"] = title
+            card["topic"] = title  # обратная совместимость
+            norm_topics.append(card)
+        elif isinstance(t, str) and t.strip():
+            title = t.strip()
+            norm_topics.append({"title": title, "topic": title})
+    if not norm_topics:
         return []
 
     # Считаем сколько уже подпроектов у этого батча — продолжаем нумерацию.
@@ -232,42 +251,64 @@ async def add_topics(
 
     snap = batch.settings_snapshot or {}
     created: list[Project] = []
-    for offset, topic in enumerate(topics):
+
+    # Карточные поля, попадающие в Project.meta["topic_card"].
+    CARD_KEYS = [
+        "title", "source", "style", "hook_type", "emotion", "fact",
+        "logic", "integration", "shoot_note",
+    ]
+
+    # Снимок постоянного продукта массового — копируем в meta каждого
+    # подпроекта, чтобы build-функции работали синхронно без запросов к БД.
+    perm_product = (batch.meta or {}).get("permanent_product")
+
+    for offset, card in enumerate(norm_topics):
         position = next_position + offset
-        base = make_sub_slug(batch.slug, position, topic)
+        title = card["title"]
+        base = make_sub_slug(batch.slug, position, title)
         slug = await _unique_project_slug(session, base)
+
+        # hero_mode из карточки (если указан) перебивает наследование из snapshot.
+        card_hero_mode = (card.get("hero_mode") or "").strip().lower() or None
+
+        # Карточные поля, кроме служебных, → meta["topic_card"].
+        topic_card = {k: card[k] for k in CARD_KEYS if card.get(k)}
+        meta: dict = {"topic_card": topic_card}
+        if perm_product and perm_product.get("name"):
+            import copy as _copy
+            meta["permanent_product"] = _copy.deepcopy(perm_product)
 
         kwargs: dict = {
             "slug": slug,
-            "topic": topic,
+            "topic": title,
             "status": ProjectStatus.new,
             "batch_id": batch.id,
             "batch_position": position,
             "batch_slug": batch.slug,
+            "meta": meta,
             # auto_mode наследуется из snapshot (если зашит); по умолчанию False
             "auto_mode": bool(snap.get("auto_mode", False)),
         }
         for f in TEMPLATE_FIELDS:
             if f in snap and snap[f] is not None:
-                # JSON-поля — копия, чтобы каждый проект имел свою (не общую)
                 v = snap[f]
                 if isinstance(v, (dict, list)):
                     import copy as _copy
                     v = _copy.deepcopy(v)
                 kwargs[f] = v
 
-        # hero_mode имеет дефолт 'auto' на уровне модели — оставим если в
-        # snapshot нет.
-        if "hero_mode" not in kwargs or not kwargs.get("hero_mode"):
+        # hero_mode: явный из карточки > из snapshot > default 'auto'.
+        if card_hero_mode in ("hero", "no_hero", "auto"):
+            kwargs["hero_mode"] = card_hero_mode
+        elif "hero_mode" not in kwargs or not kwargs.get("hero_mode"):
             kwargs["hero_mode"] = "auto"
 
         proj = Project(**kwargs)
         session.add(proj)
         await session.flush()
 
-        # Папка подпроекта на диске + все подпапки, чтобы шаги пайплайна
-        # не падали при `cwd / "characters" / ...`.
-        sub_dir = proj.data_dir  # резолвится через batch_slug → batches/<slug>/sub/<slug>
+        # Папка подпроекта на диске + все подпапки.
+        sub_dir = proj.data_dir
         sub_dir.mkdir(parents=True, exist_ok=True)
         for sub in (
             "characters",
@@ -282,8 +323,10 @@ async def add_topics(
 
         created.append(proj)
         logger.info(
-            "batches: sub-project #{} '{}' (slug={}, pos={}) added to batch #{}",
-            proj.id, topic, proj.slug, position, batch.id,
+            "batches: sub-project #{} '{}' (slug={}, pos={}) added to batch #{} "
+            "[card_keys={}]",
+            proj.id, title, proj.slug, position, batch.id,
+            list(topic_card.keys()),
         )
 
     return created
@@ -421,6 +464,119 @@ async def get_batch_subprojects(
             )
         ).scalars().all()
     )
+
+
+# ----------------------------------------------------------------------
+# Постоянный продукт массового (PR #3)
+# ----------------------------------------------------------------------
+
+
+def _ensure_meta(batch: BatchProject) -> dict:
+    if batch.meta is None:
+        batch.meta = {}
+    return batch.meta
+
+
+async def set_permanent_product_field(
+    session: AsyncSession,
+    batch_id: int,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    reference_image_path: str | None = None,
+) -> BatchProject | None:
+    """Обновляет одно или несколько полей постоянного продукта массового.
+
+    Передавать только нужные kwarg'и (другие останутся без изменений).
+    Поле сохраняется в `batch.meta["permanent_product"]`:
+      - name: как называть в кадре/сценарии
+      - description: описание (вид, использование, фишка)
+      - reference_image_path: путь к загруженной картинке-референсу
+    """
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    meta = _ensure_meta(batch)
+    prod = dict(meta.get("permanent_product") or {})
+    if name is not None:
+        prod["name"] = name.strip() or None
+    if description is not None:
+        prod["description"] = description.strip() or None
+    if reference_image_path is not None:
+        prod["reference_image_path"] = reference_image_path or None
+    # Не храним полностью пустой dict — но сохраняем структуру если есть хоть
+    # одно непустое поле.
+    cleaned = {k: v for k, v in prod.items() if v}
+    if cleaned:
+        meta["permanent_product"] = cleaned
+    else:
+        meta.pop("permanent_product", None)
+    # SQLAlchemy с JSON-полем не всегда триггерит dirty по mutate — присваиваем
+    # ссылку заново.
+    batch.meta = dict(meta)
+    await session.flush()
+    # Пробрасываем изменения в подпроекты, которые ещё не стартовали —
+    # они должны увидеть свежий продукт при первой генерации плана.
+    await _propagate_product_to_new_subs(session, batch.id, meta.get("permanent_product"))
+    return batch
+
+
+async def clear_permanent_product(
+    session: AsyncSession, batch_id: int
+) -> BatchProject | None:
+    """Полностью удаляет постоянный продукт массового."""
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    meta = _ensure_meta(batch)
+    if "permanent_product" in meta:
+        meta = dict(meta)
+        meta.pop("permanent_product", None)
+        batch.meta = meta
+        await session.flush()
+    await _propagate_product_to_new_subs(session, batch_id, None)
+    return batch
+
+
+async def _propagate_product_to_new_subs(
+    session: AsyncSession,
+    batch_id: int,
+    product: dict | None,
+) -> None:
+    """Обновляет meta["permanent_product"] у всех new-подпроектов массового.
+
+    Подпроекты в статусах *_ready / *_running / *_done / paused НЕ
+    трогаем — у них уже могла начаться генерация со старой версией
+    продукта, и менять контекст на лету было бы непоследовательно.
+    """
+    import copy as _copy
+
+    subs = (
+        await session.execute(
+            select(Project).where(
+                Project.batch_id == batch_id,
+                Project.status == ProjectStatus.new,
+            )
+        )
+    ).scalars().all()
+    for p in subs:
+        m = dict(p.meta or {})
+        if product and product.get("name"):
+            m["permanent_product"] = _copy.deepcopy(product)
+        else:
+            m.pop("permanent_product", None)
+        p.meta = m
+    if subs:
+        await session.flush()
+
+
+def get_permanent_product(batch: BatchProject) -> dict | None:
+    """Удобный аксессор для подпроектов: читает product-карточку из batch."""
+    meta = batch.meta or {}
+    prod = meta.get("permanent_product")
+    if prod and prod.get("name"):
+        return dict(prod)
+    return None
 
 
 # ----------------------------------------------------------------------

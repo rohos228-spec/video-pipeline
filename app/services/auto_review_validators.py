@@ -94,7 +94,11 @@ EXPECTED_PLAN_INTERVALS: list[tuple[int, int]] = [
 ]
 
 
-def validate_plan_numeric(plan_text: str) -> dict:
+def validate_plan_numeric(
+    plan_text: str,
+    *,
+    product_name: str | None = None,
+) -> dict:
     """Возвращает технические факты о плане.
 
     Возвращаемые поля:
@@ -102,6 +106,13 @@ def validate_plan_numeric(plan_text: str) -> dict:
       - missing_intervals: список ожидаемых, которых нет
       - has_all_intervals: bool
       - char_count: int
+      - product_required: bool — был ли задан постоянный продукт
+      - product_mentioned: bool — упоминается ли продукт в плане (если задан)
+
+    `product_name` — название постоянного продукта массового. Если задан
+    и в плане НЕ упомянут хотя бы 1 раз (по quote_in_text-нормализации) —
+    `product_mentioned=False`, что в `derive_final_decision` приведёт к
+    regen.
     """
     if not plan_text:
         return {
@@ -109,6 +120,8 @@ def validate_plan_numeric(plan_text: str) -> dict:
             "missing_intervals": list(EXPECTED_PLAN_INTERVALS),
             "has_all_intervals": False,
             "char_count": 0,
+            "product_required": bool(product_name and product_name.strip()),
+            "product_mentioned": False,
         }
     found: set[tuple[int, int]] = set()
     for m in _TIME_INTERVAL_RE.finditer(plan_text):
@@ -118,11 +131,18 @@ def validate_plan_numeric(plan_text: str) -> dict:
         except (TypeError, ValueError):
             continue
     missing = [iv for iv in EXPECTED_PLAN_INTERVALS if iv not in found]
+    product_required = bool(product_name and product_name.strip())
+    product_mentioned = (
+        quote_in_text(product_name.strip(), plan_text)
+        if product_required else False
+    )
     return {
         "intervals_found": sorted(found),
         "missing_intervals": missing,
         "has_all_intervals": not missing,
         "char_count": len(plan_text),
+        "product_required": product_required,
+        "product_mentioned": product_mentioned,
     }
 
 
@@ -151,14 +171,24 @@ BANNED_PHRASES = [
 ADVERSATIVE_TOKENS = ["однако,", "не просто,", "казалось,", "сначала,"]
 
 
-def validate_script_numeric(script_text: str) -> dict:
-    """Возвращает технические факты о сценарии."""
+def validate_script_numeric(
+    script_text: str,
+    *,
+    product_name: str | None = None,
+) -> dict:
+    """Возвращает технические факты о сценарии.
+
+    `product_name` — название постоянного продукта массового. Если задан,
+    добавляет поля `product_required` / `product_mentioned`.
+    """
     if not script_text:
         return {
             "char_count": 0,
             "char_count_in_range": False,
             "banned_phrases_found": [],
             "repeated_sentence_starts": [],
+            "product_required": bool(product_name and product_name.strip()),
+            "product_mentioned": False,
         }
     char_count = len(script_text)
     in_range = SCRIPT_MIN_CHARS <= char_count <= SCRIPT_MAX_CHARS
@@ -182,6 +212,12 @@ def validate_script_numeric(script_text: str) -> dict:
         if starts[i] == starts[i - 1] and len(starts[i]) > 3:
             repeated.append(starts[i])
 
+    product_required = bool(product_name and product_name.strip())
+    product_mentioned = (
+        quote_in_text(product_name.strip(), script_text)
+        if product_required else False
+    )
+
     return {
         "char_count": char_count,
         "char_count_in_range": in_range,
@@ -189,6 +225,8 @@ def validate_script_numeric(script_text: str) -> dict:
         "char_max": SCRIPT_MAX_CHARS,
         "banned_phrases_found": banned_found,
         "repeated_sentence_starts": repeated,
+        "product_required": product_required,
+        "product_mentioned": product_mentioned,
     }
 
 
