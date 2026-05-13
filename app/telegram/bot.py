@@ -180,7 +180,7 @@ _last_project_by_user: dict[int, int] = {}
 # нажатием не запустил параллельные прогоны одного и того же шага
 # (ChatGPT в одном чате не справляется с 2-3 параллельными upload'ами,
 # в итоге все три кладут в project.xlsx «пустышки»). Ключ —
-# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split'}.
+# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split', 'img_pr'}.
 _xlsx_flow_active: set[tuple[int, str]] = set()
 
 # Ожидание загрузки отредактированного xlsx обратно в проект.
@@ -1345,12 +1345,12 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 and plib.prompt_path(step.code, chosen).exists()
             )
             need_picker = not chosen_ok
-            # Для enrich-слотов и xlsx-flow шагов (script, split):
+            # Для enrich-слотов и xlsx-flow шагов (script, split, img_pr):
             # picker всегда видим, авто-запуска нет — только по кнопке
             # «▶ Запустить шаг».
             always_picker = (
                 _is_enrich_slot(step.code)
-                or step.code in ("script", "split")
+                or step.code in ("script", "split", "img_pr")
             )
             if always_picker:
                 need_picker = True
@@ -1556,12 +1556,12 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             has_msg_override = (
                 gtb.has_override(project, step_code) if project else False
             )
-            if step_code == "plan" and project is not None:
-                chosen = overrides.get("plan")
+            if step_code in ("plan", "script", "split", "img_pr") and project is not None:
+                chosen = overrides.get(step_code)
                 show_run = bool(
                     chosen
                     and plib.is_valid_prompt_name(chosen)
-                    and plib.prompt_path("plan", chosen).exists()
+                    and plib.prompt_path(step_code, chosen).exists()
                 )
             else:
                 show_run = (
@@ -1727,9 +1727,47 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             )
             return
 
+        # Шаг 6 (img_pr) — запуск xlsx-flow из picker'а.
+        if step_code == "img_pr":
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get("img_pr")
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("img_pr", chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+            if (pid, "img_pr") in _xlsx_flow_active:
+                await cb.answer(
+                    "⏳ Уже идёт обработка «Промтов картинок», подожди.",
+                    show_alert=True,
+                )
+                return
+            await cb.answer(f"Запускаю промты картинок: {chosen}")
+            asyncio.create_task(
+                _run_xlsx_with_lock(
+                    _run_img_pr_xlsx(cb.message, pid, chosen),
+                    pid,
+                    "img_pr",
+                )
+            )
+            return
+
         if not _is_enrich_slot(step_code):
             await cb.answer(
-                "Кнопка «Запустить» доступна только для шагов 1–3 и "
+                "Кнопка «Запустить» доступна только для шагов 1–3, 6 и "
                 "слотов «Доп работа с EXCEL» (шаг 5).",
                 show_alert=True,
             )
@@ -2527,7 +2565,7 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
 
     # Снимаем xlsx-flow локи для этого проекта.
     xlsx_stopped: list[str] = []
-    for code in ("plan", "script", "split"):
+    for code in ("plan", "script", "split", "img_pr"):
         key = (pid, code)
         if key in _xlsx_flow_active:
             _xlsx_flow_active.discard(key)
@@ -3990,6 +4028,193 @@ async def _run_split_xlsx(
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("split_xlsx send doc failed: {}", e)
+
+
+async def _run_img_pr_xlsx(
+    msg: Message, project_id: int, prompt_name: str
+) -> None:
+    """Запускает xlsx-flow для шага 6 «Промты картинок»:
+
+    1) Открываем новый чат ChatGPT, прикрепляем project.xlsx + мастер-промт.
+    2) ChatGPT заполняет промты картинок прямо в xlsx и возвращает его.
+    3) Бэкапим старый project.xlsx, подменяем новым.
+    4) Синхронизируем xlsx → БД (image_prompt поля кадров).
+    5) Статус проекта → image_prompts_ready.
+
+    Никаких изменений в orchestrator — этот шаг полностью идёт мимо воркера.
+    """
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    from app.services.xlsx_versioning import (
+        backup_to_old,
+        replace_with,
+        validate_xlsx,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        slug = project.slug
+        topic = project.topic or ""
+
+    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    if not proj_xlsx.exists():
+        await msg.answer(
+            f"project.xlsx не найден: <code>{proj_xlsx}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    prompt_path = plib.prompt_path("img_pr", prompt_name)
+    if not prompt_path.exists():
+        await msg.answer(
+            f"Файл промта не найден: <code>{prompt_path}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    from app.services.prompt_library import get_project_prompt
+    try:
+        master = get_project_prompt(project, "img_pr")
+    except FileNotFoundError:
+        master = (
+            "# img_pr\n\n"
+            "Мастер-промт для шага «Промты картинок» ещё не настроен. "
+            "Открой prompts/05_image_prompts/default.md и опиши там задачу."
+        )
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_dir = proj_xlsx.parent / "tmp_gpt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = out_dir / f"img_pr_{ts}.xlsx"
+
+    prompt_file = out_dir / f"prompt_img_pr_{ts}.md"
+    prompt_file.write_text(master.strip(), encoding="utf-8")
+
+    accompanying = gtb.get_effective_text(project, "img_pr")
+    text_was_overridden = gtb.has_override(project, "img_pr")
+
+    override_note = (
+        "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
+        if text_was_overridden else ""
+    )
+    logger.info(
+        "img_pr_xlsx: prompt_file={}, size={}, accompanying_len={}, xlsx={}",
+        prompt_file, prompt_file.stat().st_size,
+        len(accompanying), proj_xlsx,
+    )
+    await msg.answer(
+        f"▶ <b>Промты картинок</b> (xlsx-flow)\n"
+        f"Проект #{project_id} «{topic}»\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n"
+        f"Файл промта: <code>{prompt_file.name}</code> "
+        f"({prompt_file.stat().st_size} байт)\n\n"
+        f"Открываю ChatGPT, прикрепляю xlsx + промт-файл, жду ответ. "
+        f"До 15 минут. Не закрывай Chrome.",
+        parse_mode="HTML",
+    )
+
+    backup: _Path | None = None
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply = await gpt.ask_with_files(
+                accompanying.strip(), [prompt_file, proj_xlsx], timeout=900
+            )
+            logger.info(
+                "img_pr_xlsx: GPT reply len={} (project #{}, prompt={})",
+                len(reply or ""),
+                project_id,
+                prompt_name,
+            )
+            await gpt.download_attachment_from_last_reply(
+                downloaded, timeout=900
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("img_pr_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз."
+        )
+        return
+
+    validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        logger.warning(
+            "img_pr_xlsx: скачанный файл не валиден ({}): {}",
+            validation_err,
+            downloaded,
+        )
+        await msg.answer(
+            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
+            f"Файл: <code>{downloaded}</code>\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз.",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        backup = backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, downloaded)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("img_pr_xlsx replace failed: {}", e)
+        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
+        return
+
+    try:
+        from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
+
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx, keep_fields=False
+                    )
+                    logger.info("img_pr_xlsx: v8 import → {}", info_v8)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("img_pr_xlsx: v8 import failed: {}", e)
+                try:
+                    info = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info("img_pr_xlsx: v7 reload_from_xlsx → {}", info)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "img_pr_xlsx: v7 reload_from_xlsx failed: {}", e
+                    )
+                project.status = ProjectStatus.image_prompts_ready
+    except Exception as e:  # noqa: BLE001
+        logger.warning("img_pr_xlsx status update failed: {}", e)
+
+    backup_note = (
+        f"\nПредыдущая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ Промты картинок готовы. project.xlsx обновлён.{backup_note}",
+        parse_mode="HTML",
+    )
+    try:
+        await msg.answer_document(
+            FSInputFile(str(proj_xlsx)),
+            caption=(
+                f"project.xlsx — промты картинок "
+                f"(промт «{prompt_name}»)"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("img_pr_xlsx send doc failed: {}", e)
 
 
 async def _create_new_project(msg: Message) -> None:
