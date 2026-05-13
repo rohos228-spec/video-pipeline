@@ -426,7 +426,6 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
     steps = steps_for(project)
     for s in steps:
         icon = step_icon(s, project.status)
-        runnable = is_step_runnable(s, project.status) and wiz_ok
 
         # Спец-кейс шаг 4 «Объекты»: считаем «running», если проект
         # в любом из generating_hero / generating_items.
@@ -450,13 +449,13 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
         if is_running_now:
             label = f"{icon} {s.n}. {s.title} · идёт… (тык — управление)"
             cb = f"proj:{project.id}:step:{s.code}"
-        elif runnable:
+        else:
+            # По требованию: убираем замки 🔒/⚙ со всех пунктов главного
+            # меню — все шаги всегда кликабельны. Внутренняя валидация
+            # (мастер заполнен / предыдущий шаг выполнен) остаётся внутри
+            # step-handler'а, где это нужно.
             label = f"{icon} {s.n}. {s.title}"
             cb = f"proj:{project.id}:step:{s.code}"
-        else:
-            lock = "🔒" if wiz_ok else "⚙"
-            label = f"{icon} {s.n}. {s.title}  {lock}"
-            cb = "noop" if wiz_ok else f"wiz:{project.id}:start"
         rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
     # NB: кнопки «➕ Добавить слот» в основном меню больше нет —
@@ -524,6 +523,17 @@ def objects_submenu_kb(project: Project) -> InlineKeyboardMarkup:
             callback_data=f"proj:{project.id}:objects:persons",
         )
     ])
+    # «🧾 Из EXCEL» — новый flow: персонажи берутся из листа «Персонажи»
+    # project.xlsx (R1=id, R3=имя, R4=внешность, R5=одежда, R6=характер,
+    # R7=правила). Для каждого пользователь выбирает промт, дальше
+    # генерация идёт автоматически. Реф-вариации (по ID в R7) — без GPT.
+    if project.status is not ProjectStatus.generating_hero:
+        rows.append([
+            InlineKeyboardButton(
+                text="🧾 Из EXCEL",
+                callback_data=f"proj:{project.id}:objects:persons_xlsx",
+            )
+        ])
 
     # «Предметы» — доступны только если hero_ready (требование).
     can_items = status_order(project.status) >= status_order(ProjectStatus.hero_ready)

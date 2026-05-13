@@ -2644,6 +2644,188 @@ async def on_objects_persons(cb: CallbackQuery) -> None:
     await on_project_step(cb_clone)
 
 
+@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:persons_xlsx$"))
+async def on_objects_persons_xlsx(cb: CallbackQuery) -> None:
+    """Клик «🧾 Из EXCEL» — парсим лист «Персонажи» из project.xlsx,
+    показываем по очереди picker промта для каждого. После того как
+    юзер выберет промт для последнего — статус становится
+    generating_hero и воркер запускает _run_excel."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    from app.services.excel_characters import parse_persons_sheet
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        slug = project.slug
+    xlsx_path = settings.data_dir / "videos" / slug / "project.xlsx"
+    if not xlsx_path.exists():
+        await cb.answer("project.xlsx не найден", show_alert=True)
+        await cb.message.answer(
+            "🚫 <code>project.xlsx</code> для этого проекта ещё не создан. "
+            "Сначала пройди шаги 1-3 (план/сценарий/разбивка), либо "
+            "загрузи xlsx вручную.",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        chars = parse_persons_sheet(xlsx_path)
+    except Exception as e:  # noqa: BLE001
+        await cb.answer("Ошибка чтения xlsx", show_alert=True)
+        await cb.message.answer(
+            f"🚫 Не смог прочитать лист «Персонажи»:\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
+        return
+    if not chars:
+        await cb.answer("Персонажи пустые", show_alert=True)
+        await cb.message.answer(
+            "🚫 В листе «Персонажи» project.xlsx не заполнен ни один "
+            "столбец. Заполни (R1=id, R3=имя, R4=внешность, R5=одежда, "
+            "R6=характер, R7=правила) и пришли xlsx обратно.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Сохраняем заготовку в project.meta — promt_name пока None.
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        meta = dict(project.meta or {})
+        meta["excel_hero"] = {
+            "characters": [c.to_dict() for c in chars],
+        }
+        project.meta = meta
+        await s.flush()
+    summary = "\n".join(
+        f"• <b>{c.id}</b>: {c.name or '—'}"
+        + (f" → реф {', '.join(c.ref_ids)}" if c.ref_ids else "")
+        for c in chars
+    )
+    await cb.answer(f"Нашёл {len(chars)} персонажей")
+    await cb.message.answer(
+        f"🧾 <b>Из EXCEL</b> — нашёл персонажей: <b>{len(chars)}</b>.\n\n"
+        f"{summary}\n\n"
+        "Сейчас по очереди для каждого выбираем промт "
+        "(стиль). Реф-вариации тоже выберут промт, но при "
+        "генерации он не используется (используется referenced "
+        "image + краткий текст изменений).",
+        parse_mode="HTML",
+    )
+    await _excel_hero_show_next_picker(cb.message, pid)
+
+
+async def _excel_hero_show_next_picker(
+    msg: Message, project_id: int
+) -> None:
+    """Шлёт picker для первого ещё не выбранного персонажа.
+    Если все выбрали — стартует генерацию (status=generating_hero)."""
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer("Проект не найден")
+            return
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or {}
+        chars = cfg.get("characters") or []
+        next_id: str | None = None
+        for c in chars:
+            if isinstance(c, dict) and not (c.get("prompt_name") or ""):
+                next_id = str(c.get("id") or "")
+                break
+        if next_id is None:
+            # Все выбрали — стартуем.
+            project.status = ProjectStatus.generating_hero
+            await s.flush()
+            topic = project.topic or project.slug
+            await msg.answer(
+                f"▶ Стартую генерацию из EXCEL: <b>{len(chars)}</b> "
+                f"персонаж(ей). Проект «{topic}». Воркер подхватит за ~15 сек.",
+                parse_mode="HTML",
+            )
+            return
+    kb = _excel_hero_prompt_kb(project_id, next_id)
+    await msg.answer(
+        f"Выбери промт для <b>{next_id}</b>:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+def _excel_hero_prompt_kb(pid: int, char_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора промта (из prompts/04_hero_style/) для одного
+    excel-персонажа. Callback: excel_prm:<pid>:<char_id>:<prompt_name>."""
+    names = plib.list_prompts("hero_style")
+    rows: list[list[InlineKeyboardButton]] = []
+    for name in names:
+        rows.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=f"excel_prm:{pid}:{char_id}:{name}",
+            )
+        ])
+    if not rows:
+        # На случай пустой папки — даём дефолт.
+        rows.append([
+            InlineKeyboardButton(
+                text="default",
+                callback_data=f"excel_prm:{pid}:{char_id}:default",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.regexp(r"^excel_prm:\d+:[A-Za-z][A-Za-z0-9_-]*:.+$"))
+async def on_excel_hero_prompt_pick(cb: CallbackQuery) -> None:
+    """Юзер выбрал промт для одного excel-персонажа. Сохраняем выбор
+    в project.meta['excel_hero']['characters'][...]['prompt_name'] и
+    показываем picker для следующего."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":", 3)
+    if len(parts) != 4:
+        await cb.answer("Битый callback", show_alert=True)
+        return
+    _, pid_s, char_id, prompt_name = parts
+    pid = int(pid_s)
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or {}
+        chars = list(cfg.get("characters") or [])
+        for c in chars:
+            if isinstance(c, dict) and str(c.get("id") or "") == char_id:
+                c["prompt_name"] = prompt_name
+                break
+        cfg["characters"] = chars
+        meta["excel_hero"] = cfg
+        project.meta = meta
+        await s.flush()
+    await cb.answer(f"{char_id} → {prompt_name}")
+    await _hide_buttons_with_badge(
+        cb.message, f"✅ {char_id}: <code>{prompt_name}</code>"
+    )
+    await _excel_hero_show_next_picker(cb.message, pid)
+
+
 @dp.callback_query(F.data.regexp(r"^proj:\d+:objects:items$"))
 async def on_objects_items(cb: CallbackQuery) -> None:
     """Клик «Предметы» в submenu «Объекты» — запускаем generate_items.
@@ -4187,45 +4369,93 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             ).scalar_one_or_none()
             if project is not None:
                 payload = req.payload or {}
-                cur_hi = int(payload.get("hero_index") or 1)
-                cur_vi = int(payload.get("variation_index") or 1)
-                n_total = project.hero_count or 1
-                # Кол-во вариаций именно этого героя.
-                vars_cfg = list(project.hero_variations or [])
-                n_var = 1
-                if cur_hi - 1 < len(vars_cfg):
-                    try:
-                        n_var = int(vars_cfg[cur_hi - 1] or 1)
-                    except (TypeError, ValueError):
-                        n_var = 1
-                n_var = max(1, min(5, n_var))
+                # Excel-режим (кнопка «🧾 Из EXCEL»): payload содержит
+                # `excel_id`, hero_index/variation_index не используются.
+                # Решение каждой карточки — переход к следующему персонажу
+                # списка (или всё готово). Воркер сам берёт следующего.
+                excel_id = payload.get("excel_id")
+                if isinstance(excel_id, str) and excel_id:
+                    if action == "regen":
+                        project.status = ProjectStatus.generating_hero
+                        regen_step_msg = (
+                            f"\n\n▶ Перегенерирую персонажа {excel_id}."
+                        )
+                    elif action == "approve":
+                        # Считаем сколько ещё не одобрено в excel-списке.
+                        meta = dict(project.meta or {})
+                        cfg = meta.get("excel_hero") or {}
+                        all_ids = [
+                            str((c or {}).get("id") or "")
+                            for c in (cfg.get("characters") or [])
+                            if isinstance(c, dict)
+                        ]
+                        approved_rows = (
+                            await s.execute(
+                                select(HITLRequest).where(
+                                    HITLRequest.project_id == project.id,
+                                    HITLRequest.kind == HITLKind.approve_hero,
+                                    HITLRequest.decision == HITLDecision.approved,
+                                )
+                            )
+                        ).scalars().all()
+                        approved_ids = {
+                            (r.payload or {}).get("excel_id")
+                            for r in approved_rows
+                            if (r.payload or {}).get("excel_id")
+                        }
+                        approved_ids.add(excel_id)
+                        remaining = [
+                            i for i in all_ids if i and i not in approved_ids
+                        ]
+                        if remaining:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Осталось персонажей: {len(remaining)} "
+                                f"({', '.join(remaining[:5])}{'…' if len(remaining) > 5 else ''})."
+                            )
+                        # Если всё одобрено — статус уже hero_ready (его
+                        # выставил generate_hero после сохранения артефакта).
+                    await s.flush()
+                else:
+                    cur_hi = int(payload.get("hero_index") or 1)
+                    cur_vi = int(payload.get("variation_index") or 1)
+                    n_total = project.hero_count or 1
+                    # Кол-во вариаций именно этого героя.
+                    vars_cfg = list(project.hero_variations or [])
+                    n_var = 1
+                    if cur_hi - 1 < len(vars_cfg):
+                        try:
+                            n_var = int(vars_cfg[cur_hi - 1] or 1)
+                        except (TypeError, ValueError):
+                            n_var = 1
+                    n_var = max(1, min(5, n_var))
 
-                if action == "regen":
-                    # 🔁 эту же вариацию — выйдет в generating_hero,
-                    # generate_hero.run() увидит, что (hi, vi) не
-                    # одобрены, и перегенерит ровно её.
-                    project.status = ProjectStatus.generating_hero
-                    regen_step_msg = (
-                        f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
-                        f"вариацию {cur_vi}/{n_var}."
-                    )
-                elif action == "approve":
-                    # ✅ — определяем что дальше: следующая вариация
-                    # этого же героя; следующий герой; или всё готово.
-                    if cur_vi < n_var:
+                    if action == "regen":
+                        # 🔁 эту же вариацию — выйдет в generating_hero,
+                        # generate_hero.run() увидит, что (hi, vi) не
+                        # одобрены, и перегенерит ровно её.
                         project.status = ProjectStatus.generating_hero
                         regen_step_msg = (
-                            f"\n\n▶ Перехожу к герою {cur_hi}/{n_total} "
-                            f"вариации {cur_vi + 1}/{n_var}."
+                            f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
+                            f"вариацию {cur_vi}/{n_var}."
                         )
-                    elif cur_hi < n_total:
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перехожу к герою "
-                            f"{cur_hi + 1}/{n_total}, вариация 1."
-                        )
-                    # Если это последняя вариация последнего героя —
-                    # статус остаётся hero_ready (шаг полностью завершён).
+                    elif action == "approve":
+                        # ✅ — определяем что дальше: следующая вариация
+                        # этого же героя; следующий герой; или всё готово.
+                        if cur_vi < n_var:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Перехожу к герою {cur_hi}/{n_total} "
+                                f"вариации {cur_vi + 1}/{n_var}."
+                            )
+                        elif cur_hi < n_total:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Перехожу к герою "
+                                f"{cur_hi + 1}/{n_total}, вариация 1."
+                            )
+                        # Если это последняя вариация последнего героя —
+                        # статус остаётся hero_ready (шаг полностью завершён).
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",
