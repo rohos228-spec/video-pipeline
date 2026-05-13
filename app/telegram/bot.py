@@ -952,6 +952,95 @@ async def on_mass_noop(cb: CallbackQuery) -> None:
     await cb.answer("Заглушка — функция появится в PR #2")
 
 
+# --------- управление очередью (PR #2) ---------
+
+async def _refresh_mass_main(cb: CallbackQuery, bid: int) -> None:
+    """Перерисовать главное меню массового после изменения очереди."""
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    await cb.message.answer(head, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:start:"))
+async def on_mass_start(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.start_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("▶ Очередь запущена")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:pause:"))
+async def on_mass_pause(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.pause_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("⏸ Очередь на паузе")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:resume:"))
+async def on_mass_resume(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.resume_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("▶ Снято с паузы")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:retry_paused:"))
+async def on_mass_retry_paused(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        n = await batches_svc.retry_paused_subprojects(s, bid)
+    await cb.answer(f"🔄 Вернули в очередь: {n}", show_alert=True)
+    await _refresh_mass_main(cb, bid)
+
+
 async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
     """Парсит текстовый список тем и создаёт подпроекты."""
     text = (msg.text or "").strip()

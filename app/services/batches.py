@@ -421,3 +421,110 @@ async def get_batch_subprojects(
             )
         ).scalars().all()
     )
+
+
+# ----------------------------------------------------------------------
+# Управление очередью (PR #2)
+# ----------------------------------------------------------------------
+
+
+async def start_batch_queue(
+    session: AsyncSession, batch_id: int
+) -> BatchProject | None:
+    """Запустить очередь массового: status=running + auto_mode=True для
+    всех подпроектов, которые ещё не закончены.
+
+    Воркер (serial_tick_batches) сам подхватит первого по batch_position
+    в статусе `new` и переведёт его в planning.
+    """
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    batch.status = BatchStatus.running
+    # Включаем auto_mode для всех подпроектов которые ещё в работе.
+    subs = await get_batch_subprojects(session, batch_id)
+    terminal = {ProjectStatus.published, ProjectStatus.failed}
+    for p in subs:
+        if p.status not in terminal:
+            p.auto_mode = True
+    await session.flush()
+    logger.info(
+        "batch #{} ({}): очередь запущена, подпроектов в auto-режиме: {}",
+        batch.id, batch.slug,
+        sum(1 for p in subs if p.status not in terminal),
+    )
+    return batch
+
+
+async def pause_batch_queue(
+    session: AsyncSession, batch_id: int
+) -> BatchProject | None:
+    """Поставить очередь на паузу.
+
+    Текущий running-подпроект НЕ прерываем (он доработает текущий шаг
+    до *_ready, но дальше не пойдёт). Следующие подпроекты не стартуют.
+    """
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    batch.status = BatchStatus.paused
+    # Снимаем auto_mode у подпроектов в *_ready состоянии и new,
+    # чтобы auto_advance их не двигал.
+    subs = await get_batch_subprojects(session, batch_id)
+    for p in subs:
+        if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
+            p.auto_mode = False
+    await session.flush()
+    logger.info("batch #{} ({}): пауза", batch.id, batch.slug)
+    return batch
+
+
+async def resume_batch_queue(
+    session: AsyncSession, batch_id: int
+) -> BatchProject | None:
+    """Снять с паузы: то же что start_batch_queue, но не двигает
+    подпроекты в paused-состоянии (только включает auto_mode у new
+    и *_ready)."""
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    batch.status = BatchStatus.running
+    subs = await get_batch_subprojects(session, batch_id)
+    terminal = {ProjectStatus.published, ProjectStatus.failed, ProjectStatus.paused}
+    for p in subs:
+        if p.status not in terminal:
+            p.auto_mode = True
+    await session.flush()
+    logger.info("batch #{} ({}): возобновлено", batch.id, batch.slug)
+    return batch
+
+
+async def retry_paused_subprojects(
+    session: AsyncSession, batch_id: int
+) -> int:
+    """Вернуть все подпроекты в paused → new, чтобы воркер их подхватил.
+
+    Сбрасывает счётчики авто-retry, очищает auto_paused_reason.
+    Возвращает кол-во возвращённых подпроектов.
+    """
+    subs = await get_batch_subprojects(session, batch_id)
+    count = 0
+    for p in subs:
+        if p.status is ProjectStatus.paused:
+            p.status = ProjectStatus.new
+            p.auto_mode = True
+            # Очищаем мета-флаги авто-paused.
+            meta = dict(p.meta or {})
+            for k in list(meta.keys()):
+                if k.startswith("auto_retry_") or k in (
+                    "auto_paused_reason", "auto_paused_fix_hints",
+                ):
+                    del meta[k]
+            p.meta = meta
+            count += 1
+    await session.flush()
+    logger.info(
+        "batch #{}: вернули в очередь {} paused-подпроект(ов)",
+        batch_id, count,
+    )
+    return count
