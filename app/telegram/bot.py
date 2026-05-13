@@ -37,6 +37,7 @@ from aiogram.types import (
 )
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
@@ -2707,6 +2708,7 @@ async def on_objects_persons_xlsx(cb: CallbackQuery) -> None:
             "characters": [c.to_dict() for c in chars],
         }
         project.meta = meta
+        flag_modified(project, "meta")
         await s.flush()
     summary = "\n".join(
         f"• <b>{c.id}</b>: {c.name or '—'}"
@@ -2831,21 +2833,24 @@ async def on_excel_hero_prompt_pick(cb: CallbackQuery) -> None:
                 await cb.answer("Проект не найден", show_alert=True)
                 return
             meta = dict(project.meta or {})
-            cfg = meta.get("excel_hero") or {}
-            chars = list(cfg.get("characters") or [])
+            cfg = dict(meta.get("excel_hero") or {})
+            chars = [dict(c) for c in (cfg.get("characters") or []) if isinstance(c, dict)]
             found = False
             for c in chars:
-                if isinstance(c, dict) and str(c.get("id") or "") == char_id:
+                if str(c.get("id") or "") == char_id:
                     c["prompt_name"] = prompt_name
                     found = True
                     break
             cfg["characters"] = chars
             meta["excel_hero"] = cfg
             project.meta = meta
+            flag_modified(project, "meta")
             await s.flush()
             logger.info(
-                "excel-hero: saved prompt char_id={!r} prompt={!r} found={}",
+                "excel-hero: saved prompt char_id={!r} prompt={!r} found={} "
+                "after_save_pmeta={!r}",
                 char_id, prompt_name, found,
+                [(c.get('id'), c.get('prompt_name')) for c in chars],
             )
         await cb.answer(f"{char_id} → {prompt_name}")
         await _hide_buttons_with_badge(
