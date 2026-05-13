@@ -190,6 +190,14 @@ _xlsx_flow_active: set[tuple[int, str]] = set()
 # user_id → project_id.
 _pending_xlsx_replace: dict[int, int] = {}
 
+# Состояния «Массовое создание».
+# user_id → True: ждём название нового массового проекта.
+_pending_mass_name: dict[int, bool] = {}
+# user_id → batch_id: ждём текстовый список тем для массового.
+_pending_mass_topics_text: dict[int, int] = {}
+# user_id → batch_id: ждём topics.xlsx файлом для массового.
+_pending_mass_xlsx_upload: dict[int, int] = {}
+
 
 def _project_display_topic(project: Project) -> str:
     """Тема или slug для отображения в сообщениях."""
@@ -299,6 +307,9 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_script_prompt.pop(user_id, None)
     _pending_split_prompt.pop(user_id, None)
     _pending_voiceover_replace.pop(user_id, None)
+    _pending_mass_name.pop(user_id, None)
+    _pending_mass_topics_text.pop(user_id, None)
+    _pending_mass_xlsx_upload.pop(user_id, None)
 
 
 async def _last_project_id_fallback() -> int | None:
@@ -568,6 +579,506 @@ async def on_menu_list(cb: CallbackQuery) -> None:
         )
     )
     await cb.message.answer("Существующие проекты:", reply_markup=kb)
+
+
+# ---------------------------------------------------------------------------
+# Массовое создание (mass:*) — батч-проекты, каждый в своей изолированной
+# папке data/batches/<slug>/.
+
+import contextlib  # noqa: E402
+
+from app.services import batches as batches_svc  # noqa: E402
+from app.storage import batch_sheet  # noqa: E402
+from app.telegram.mass_menu import (  # noqa: E402
+    batch_header,
+    mass_delete_confirm_kb,
+    mass_list_kb,
+    mass_main_kb,
+    mass_progress_kb,
+    mass_settings_kb,
+    mass_topics_kb,
+    progress_text,
+    topics_text,
+)
+
+
+async def _show_mass_list(cb_or_msg, *, edit: bool = False) -> None:
+    """Открывает список массовых проектов."""
+    async with session_scope() as s:
+        batches = await batches_svc.list_batches(s)
+    kb = mass_list_kb(batches)
+    text = (
+        "<b>🎬 Массовое создание</b>\n\n"
+        f"всего: {len(batches)}\n\n"
+        "Каждый «массовый проект» — это контейнер с собственной "
+        "изолированной папкой, общим списком тем (xlsx) и снапшотом "
+        "промптов. Внутри — N подпроектов (роликов), у каждого своя "
+        "папка characters/items/scenes/videos/audio/final."
+    )
+    target = cb_or_msg.message if hasattr(cb_or_msg, "message") else cb_or_msg
+    await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "mass:list")
+async def on_mass_list(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _clear_pending_state(cb.from_user.id)
+    _set_user_screen(cb.from_user.id, "mass_list")
+    await cb.answer()
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data == "mass:new")
+async def on_mass_new(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _pending_mass_name[cb.from_user.id] = True
+    await cb.answer()
+    await cb.message.answer(
+        "Введи название массового проекта (например: <code>Античность</code>).\n"
+        "Допустимы любые символы — кириллица будет транслитерирована в slug.",
+        parse_mode="HTML",
+    )
+
+
+async def _create_mass_from_name(msg: Message, name: str) -> None:
+    """Создаёт BatchProject + папку на диске + topics.xlsx."""
+    async with session_scope() as s:
+        try:
+            batch = await batches_svc.create_batch(s, name=name)
+        except ValueError as e:
+            await msg.answer(f"❌ {e}")
+            return
+        # init xlsx
+        batch_sheet.init_topics_xlsx(batch.topics_xlsx_path, batch.name)
+        # Перечитываем для рендера
+        await s.flush()
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, batch.id)
+        b_id = batch.id
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    _set_user_screen(msg.from_user.id, "mass_main", b_id)
+    await msg.answer(
+        head
+        + "\n\n📁 Создан. Папка: <code>data/batches/"
+        + f"{batch.slug}</code>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:open:"))
+async def on_mass_open(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    _set_user_screen(cb.from_user.id, "mass_main", bid)
+    await cb.answer()
+    await cb.message.answer(head, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:topics:"))
+async def on_mass_topics(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        text = topics_text(batch, subs)
+        kb = mass_topics_kb(batch)
+    _set_user_screen(cb.from_user.id, "mass_topics", bid)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:add_text:"))
+async def on_mass_add_text(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_topics_text[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли темы — по одной на строку. Например:\n"
+        "<pre>Юлий Цезарь\nПомпей\nКрасс\nЦицерон</pre>\n"
+        "Для каждой темы создам подпроект с отдельной папкой и project.xlsx.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:upload_xlsx:"))
+async def on_mass_upload_xlsx_btn(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_xlsx_upload[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли заполненный <code>topics.xlsx</code> файлом.\n"
+        "Я создам подпроекты для всех новых строк (где «Подпроект» пуст).",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:dl_xlsx:"))
+async def on_mass_dl_xlsx(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        path = batch.topics_xlsx_path
+        # Перезаписываем актуальной таблицей (со статусами).
+        rows = [
+            {
+                "position": p.batch_position,
+                "topic": p.topic,
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            }
+            for p in subs
+        ]
+        batch_sheet.write_subprojects_table(path, rows, batch.name)
+    if not path.exists():
+        await cb.answer("Файл не найден", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.answer_document(
+        FSInputFile(str(path)),
+        caption=f"topics.xlsx · {len(subs)} подпроектов",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:progress:"))
+async def on_mass_progress(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        text = progress_text(batch, subs, progress)
+        kb = mass_progress_kb(batch, subs)
+    _set_user_screen(cb.from_user.id, "mass_progress", bid)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:sub:"))
+async def on_mass_sub_open(cb: CallbackQuery) -> None:
+    """Открывает подпроект через стандартное меню проекта."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _, _, _bid, pid_s = (cb.data or "").split(":", 3)
+        pid = int(pid_s)
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+    if project is None:
+        await cb.answer("Проект не найден", show_alert=True)
+        return
+    _set_user_screen(cb.from_user.id, "project_menu", pid)
+    _remember_project(cb.from_user.id, pid)
+    await cb.answer()
+    await cb.message.answer(
+        project_header(project),
+        parse_mode="HTML",
+        reply_markup=project_menu_kb(project),
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:settings:"))
+async def on_mass_settings(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        snap = batch.settings_snapshot or {}
+        kb = mass_settings_kb(batch)
+        # Список ключей snapshot
+        lines: list[str] = [f"<b>⚙ Настройки шаблона «{batch.name}»</b>"]
+        if not snap:
+            lines.append(
+                "\nSnapshot пуст — настройки наследуются из проекта-шаблона "
+                "ИЛИ заполняются при создании первого подпроекта (через "
+                "обычный wizard). PR #2 добавит явное редактирование "
+                "шаблона на уровне массового."
+            )
+        else:
+            lines.append("\nТекущий snapshot настроек (применяется ко всем подпроектам):")
+            for k, v in snap.items():
+                if isinstance(v, (dict, list)):
+                    v_repr = f"<i>{type(v).__name__}, {len(v)} items</i>"
+                else:
+                    v_repr = f"<code>{str(v)[:50]}</code>"
+                lines.append(f"  • <b>{k}</b>: {v_repr}")
+    await cb.answer()
+    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:delete:"))
+async def on_mass_delete_ask(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        kb = mass_delete_confirm_kb(batch)
+    await cb.answer()
+    await cb.message.answer(
+        f"❓ Точно удалить массовый «{batch.name}» (slug: <code>{batch.slug}</code>)?\n"
+        f"Подпроектов: {len(subs)}\n"
+        f"Папка на диске: <code>data/batches/{batch.slug}</code>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:delete_yes:"))
+async def on_mass_delete_yes(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        await batches_svc.delete_batch(s, bid, delete_files=True)
+    await cb.answer("Удалено")
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data.startswith("mass:delete_keep:"))
+async def on_mass_delete_keep(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        await batches_svc.delete_batch(s, bid, delete_files=False)
+    await cb.answer("Удалено из БД (файлы оставлены)")
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data == "mass:noop")
+async def on_mass_noop(cb: CallbackQuery) -> None:
+    await cb.answer("Заглушка — функция появится в PR #2")
+
+
+async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
+    """Парсит текстовый список тем и создаёт подпроекты."""
+    text = (msg.text or "").strip()
+    topics = [line.strip() for line in text.splitlines() if line.strip()]
+    if not topics:
+        await msg.answer("Пустой список — пришли темы по одной на строку.")
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        created = await batches_svc.add_topics(s, batch, topics)
+        for p in created:
+            # Создаём project.xlsx внутри папки подпроекта (как у одиночных).
+            try:
+                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+                sheet.write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "mass: project_sheet init failed for #{}: {}", p.id, e
+                )
+        # Обновляем topics.xlsx актуальной таблицей.
+        all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
+        rows = [
+            {
+                "position": p.batch_position,
+                "topic": p.topic,
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            }
+            for p in all_subs
+        ]
+        batch_sheet.write_subprojects_table(
+            batch.topics_xlsx_path, rows, batch.name
+        )
+        progress = await batches_svc.batch_progress(s, batch)
+        head = batch_header(batch, len(all_subs), progress)
+        kb = mass_main_kb(batch, len(all_subs))
+    await msg.answer(
+        f"✅ Создано подпроектов: {len(created)}\n\n" + head,
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
+    """Принимает загруженный topics.xlsx и создаёт новые подпроекты."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp_path = _Path(tmp.name)
+    try:
+        await msg.bot.download(doc, destination=str(tmp_path))
+        new_topics = batch_sheet.collect_new_topics(tmp_path)
+    except Exception as e:  # noqa: BLE001
+        await msg.answer(f"❌ Не смог прочитать xlsx: {e}")
+        tmp_path.unlink(missing_ok=True)
+        return
+
+    if not new_topics:
+        await msg.answer(
+            "В файле нет новых тем (все строки уже имеют «Подпроект»)."
+        )
+        tmp_path.unlink(missing_ok=True)
+        return
+
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            tmp_path.unlink(missing_ok=True)
+            return
+        topics_only = [t for (t, _hm) in new_topics]
+        hero_modes = {t: hm for (t, hm) in new_topics if hm}
+        created = await batches_svc.add_topics(s, batch, topics_only)
+        for p in created:
+            hm = hero_modes.get(p.topic)
+            if hm and hm in {"hero", "no_hero", "auto"}:
+                p.hero_mode = hm
+            try:
+                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+                sheet.write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "mass: project_sheet init failed for #{}: {}", p.id, e
+                )
+        # Сохраняем актуальную топик-таблицу (она же — целевой topics.xlsx).
+        all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
+        rows = [
+            {
+                "position": p.batch_position,
+                "topic": p.topic,
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            }
+            for p in all_subs
+        ]
+        batch_sheet.write_subprojects_table(
+            batch.topics_xlsx_path, rows, batch.name
+        )
+        progress = await batches_svc.batch_progress(s, batch)
+        head = batch_header(batch, len(all_subs), progress)
+        kb = mass_main_kb(batch, len(all_subs))
+    tmp_path.unlink(missing_ok=True)
+    await msg.answer(
+        f"✅ Создано подпроектов из xlsx: {len(created)}\n\n" + head,
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
 
 
 @dp.callback_query(F.data == "noop")
@@ -1183,9 +1694,8 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # отредактировать сопр. сообщение, явно нажать «▶ Запустить».
         # Если тема ролика ещё не задана — сначала спрашиваем тему.
         if step.code == "plan":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 # Если тема не задана — просим ввести.
@@ -1229,9 +1739,8 @@ async def on_project_step(cb: CallbackQuery) -> None:
         #   [⬅ Назад]. Если ещё нет — сразу picker промтов из
         #   prompts/02_script/ (как было).
         if step.code == "script":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 voiceover_path = proj_xlsx.parent / "voiceover.txt"
@@ -1273,9 +1782,8 @@ async def on_project_step(cb: CallbackQuery) -> None:
         #      ждём ответ, скачиваем txt, бэкапим старый voiceover.txt в old/,
         #      сохраняем новый как voiceover.txt, статус → frames_ready.
         if step.code == "split":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 voiceover_path = proj_xlsx.parent / "voiceover.txt"
@@ -1497,10 +2005,7 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 need_picker = True
             if need_picker:
                 has_msg_override = gtb.has_override(project, step.code)
-                if always_picker:
-                    show_run = bool(chosen_ok)
-                else:
-                    show_run = _can_run_enrich_slot_now(project, step.code)
+                show_run = bool(chosen_ok) if always_picker else _can_run_enrich_slot_now(project, step.code)
                 _set_user_screen(
                     cb.from_user.id, "picker", pid, step.code
                 )
@@ -1550,9 +2055,8 @@ async def on_script_view(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        slug = project.slug
         topic = project.topic
-    voiceover_path = settings.data_dir / "videos" / slug / "voiceover.txt"
+    voiceover_path = project.data_dir / "voiceover.txt"
     if not voiceover_path.exists():
         await cb.answer(
             "voiceover.txt ещё не сгенерирован — нечего показывать.",
@@ -1585,7 +2089,7 @@ async def on_script_regen(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         proj_xlsx = (
-            settings.data_dir / "videos" / project.slug / "project.xlsx"
+            project.data_dir / "project.xlsx"
         )
         if not proj_xlsx.exists():
             await cb.answer("Сначала Шаг 1 — нет project.xlsx", show_alert=True)
@@ -2503,7 +3007,6 @@ async def _handle_prompt_upload(msg: Message) -> None:
 async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
     """Бэкапит старый voiceover.txt в old/ и записывает новый."""
     from datetime import datetime as _dt
-    from pathlib import Path as _Path
 
     async with session_scope() as s:
         project = (
@@ -2512,10 +3015,9 @@ async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
         if project is None:
             await msg.answer("Проект не найден.")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_dir = _Path(settings.data_dir) / "videos" / slug
+    proj_dir = project.data_dir
     voiceover_path = proj_dir / "voiceover.txt"
 
     if voiceover_path.exists():
@@ -2542,6 +3044,18 @@ async def on_document_message(msg: Message) -> None:
     if not is_owner(msg):
         return
     user_id = msg.from_user.id if msg.from_user else 0
+
+    # Загрузка topics.xlsx для массового — проверяем первым (юзер кликнул
+    # «📤 Залить topics.xlsx» в меню массового).
+    pending_mass_bid = _pending_mass_xlsx_upload.get(user_id)
+    if (
+        pending_mass_bid is not None
+        and msg.document is not None
+        and (msg.document.file_name or "").lower().endswith(".xlsx")
+    ):
+        _pending_mass_xlsx_upload.pop(user_id, None)
+        await _handle_mass_xlsx_upload(msg, pending_mass_bid, msg.document)
+        return
 
     # Документ как ответ на «✏️ Сопр. сообщение». Пытаемся определить
     # активный edit-сеанс: 1) по reply_to_message_id, 2) по user_id.
@@ -2654,10 +3168,9 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден.")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = _Path(tmp.name)
     await msg.bot.download(doc, destination=str(tmp_path))
@@ -2724,8 +3237,7 @@ async def on_project_download_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        slug = project.slug
-    xlsx_path = settings.data_dir / "videos" / slug / "project.xlsx"
+    xlsx_path = project.data_dir / "project.xlsx"
     if not xlsx_path.exists():
         await cb.answer("xlsx-файл ещё не создан", show_alert=True)
         return
@@ -2835,7 +3347,7 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        xlsx_path = settings.data_dir / "videos" / project.slug / "project.xlsx"
+        xlsx_path = project.data_dir / "project.xlsx"
         if not xlsx_path.exists():
             await cb.answer("xlsx-файла нет", show_alert=True)
             return
@@ -2896,8 +3408,7 @@ async def on_objects_persons_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        slug = project.slug
-    xlsx_path = settings.data_dir / "videos" / slug / "project.xlsx"
+    xlsx_path = project.data_dir / "project.xlsx"
     if not xlsx_path.exists():
         await cb.answer("project.xlsx не найден", show_alert=True)
         await cb.message.answer(
@@ -3498,6 +4009,19 @@ async def on_text_message(msg: Message) -> None:
         await _create_new_project(msg)
         return
 
+    # 1a) Если ждём название массового проекта.
+    if _pending_mass_name.get(user_id):
+        _pending_mass_name.pop(user_id, None)
+        await _create_mass_from_name(msg, (msg.text or "").strip())
+        return
+
+    # 1b) Если ждём список тем для массового (по строке на тему).
+    mass_bid = _pending_mass_topics_text.get(user_id)
+    if mass_bid is not None:
+        _pending_mass_topics_text.pop(user_id, None)
+        await _handle_mass_topics_text(msg, mass_bid)
+        return
+
     # 2) Если ждём описание героя N для конкретного проекта
     pending = _pending_hero_brief.get(user_id)
     if pending is not None:
@@ -3535,13 +4059,11 @@ async def on_text_message(msg: Message) -> None:
                 await msg.answer("Проект не найден.")
                 return
             project.topic = topic
-            slug = project.slug
             overrides = dict(project.prompt_overrides or {})
             has_msg_override = gtb.has_override(project, "plan")
         # Обновляем тему и в xlsx (лист «Общий план ролика»).
         try:
-            from pathlib import Path as _Path
-            proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+            proj_xlsx = project.data_dir / "project.xlsx"
             if proj_xlsx.exists():
                 sheet = ProjectSheet(file_path=proj_xlsx)
                 sheet.write_general(topic=topic)
@@ -3910,9 +4432,8 @@ async def _run_plan_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -4111,10 +4632,9 @@ async def _run_script_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -4292,10 +4812,9 @@ async def _run_split_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -4499,10 +5018,9 @@ async def _run_img_pr_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
         topic = project.topic or ""
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -4692,7 +5210,7 @@ async def _create_new_project(msg: Message) -> None:
         pid = project.id
         try:
             sheet = ProjectSheet(
-                file_path=settings.data_dir / "videos" / slug / "project.xlsx",
+                file_path=project.data_dir / "project.xlsx",
             )
             sheet.ensure_initialized(project_id=pid, slug=slug)
             sheet.write_general(
@@ -5108,15 +5626,13 @@ async def _on_edit_reply(msg: Message) -> None:
             except Exception as e:  # noqa: BLE001
                 logger.warning("xlsx write_frame(image_prompt) failed: {}", e)
     if hitl_tg_msg_id:
-        try:
+        with contextlib.suppress(Exception):
             await msg.bot.edit_message_caption(
                 chat_id=settings.telegram_owner_chat_id,
                 message_id=hitl_tg_msg_id,
                 caption="✏️ Промт изменён — перегенерирую",
                 reply_markup=None,
             )
-        except Exception:
-            pass
     await msg.reply("✏️ Промт обновлён. Перегенерирую картинку с ним.")
 
 
@@ -5180,7 +5696,6 @@ async def notify_step_done(
                 "notify_step_done: project #{} не найден", project_id
             )
             return
-        slug = project.slug
         status_val = project.status.value
         try:
             await bot.send_message(
@@ -5201,9 +5716,8 @@ async def notify_step_done(
     # Для enrich-шагов (enrich_1_ready..enrich_5_ready) присылаем
     # обновлённый project.xlsx как документ.
     if new_status.startswith("enrich_") and new_status.endswith("_ready"):
-        from pathlib import Path as _Path
 
-        xlsx_path = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+        xlsx_path = project.data_dir / "project.xlsx"
         if xlsx_path.exists():
             try:
                 await bot.send_document(

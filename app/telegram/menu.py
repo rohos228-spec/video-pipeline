@@ -390,6 +390,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📁 Новый проект", callback_data="menu:new")],
             [InlineKeyboardButton(text="📋 Существующие проекты", callback_data="menu:list")],
+            [InlineKeyboardButton(text="🎬 Массовое создание", callback_data="mass:list")],
         ]
     )
 
