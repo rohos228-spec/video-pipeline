@@ -44,6 +44,9 @@ SHEET_GENERAL_V8 = "Общий план"
 SHEET_PLAN_V8 = "план"
 ROW_VOICEOVER_V8 = 49
 
+# Служебные ряды, которые не входят в general_plan (вроде пути к bgm).
+_SKIP_LABEL_NEEDLES = ("фоновая музыка", "background music", "bgm")
+
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).
 # Не пытаемся уложиться в 60-75 сек суммарно, как делает split_frames.py для
 # короткой нарезки ChatGPT — у пользователя в xlsx может быть много блоков
@@ -102,6 +105,10 @@ def _read_general_plan(wb) -> str | None:
 
         # Обычная пара label / value
         if a_s and b_s:
+            a_lower = a_s.lower()
+            if any(n in a_lower for n in _SKIP_LABEL_NEEDLES):
+                # служебный параметр — в general_plan не попадает
+                continue
             lines.append(f"**{a_s}:** {b_s}")
             continue
 

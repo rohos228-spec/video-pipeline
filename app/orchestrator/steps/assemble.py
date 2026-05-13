@@ -1,6 +1,14 @@
 """Шаг 11: финальная сборка ролика FFmpeg — нарезка клипов по реальным
-длительностям из Whisper, concat, наложение mp3, ASS-субтитры, затем HITL
-approve_final.
+длительностям из Whisper, concat, наложение mp3 (голос + опц. фоновой
+музыки), ASS-субтитры, затем HITL approve_final.
+
+Фоновая музыка берётся в таком порядке:
+  1. Из xlsx листа «Общий план» — строка с меткой «Фоновая музыка» в колонке A,
+     путь — в колонке B. Может быть абсолютным или относительным
+     от папки проекта.
+  2. Fallback: `data/videos/<slug>/audio/bgm.mp3` / `.wav` на диске.
+  3. Если ни то ни другое не найдено — ролик собирается без фоновой музыки.
+Громкость bgm фиксирована на -18 dB (см. `DEFAULT_BGM_VOLUME_DB` в assembly).
 """
 
 from __future__ import annotations
@@ -24,6 +32,86 @@ from app.models import (
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
 from app.services.hitl import send_hitl_video
 from app.settings import settings
+
+# Метка левой ячейки в листе «Общий план», из которой читаем путь
+# к фоновой музыке. Сравнение регистронезависимое с обрезкой пробелов.
+_BGM_XLSX_SHEET = "Общий план"
+_BGM_XLSX_LABELS = ("фоновая музыка", "background music", "bgm")
+
+
+def _read_bgm_path_from_xlsx(xlsx_path: Path) -> Path | None:
+    """Читает путь к фоновой музыке из xlsx (лист «Общий план»).
+
+    Ищет любую строку, у которой в колонке A есть подстрока из
+    `_BGM_XLSX_LABELS` (без учёта регистра); в колонке B берёт путь.
+
+    Возвращает None, если листа нет, ячейка пуста, или ошибка чтения xlsx.
+    Сам факт существования файла проверяет вызывающая сторона.
+    """
+    if not xlsx_path.exists():
+        return None
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        logger.warning("assemble: openpyxl не установлен, путь к bgm из xlsx не читаю")
+        return None
+    try:
+        wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("assemble: ошибка чтения xlsx для bgm: {}", e)
+        return None
+    try:
+        if _BGM_XLSX_SHEET not in wb.sheetnames:
+            return None
+        ws = wb[_BGM_XLSX_SHEET]
+        for r in range(1, min(ws.max_row, 200) + 1):
+            a = ws.cell(row=r, column=1).value
+            b = ws.cell(row=r, column=2).value
+            if a is None or b is None:
+                continue
+            label = str(a).strip().lower()
+            if not label:
+                continue
+            if any(needle in label for needle in _BGM_XLSX_LABELS):
+                value = str(b).strip()
+                if not value:
+                    return None
+                return Path(value)
+        return None
+    finally:
+        wb.close()
+
+
+def _resolve_bgm_path(project: Project) -> Path | None:
+    """Определяет финальный путь к bgm:
+      1. xlsx лист «Общий план» — ряд с меткой «Фоновая музыка».
+         Путь может быть абсолютным или относительным (от папки проекта).
+      2. Диск-fallback: `data/videos/<slug>/audio/bgm.{mp3,wav,m4a,ogg}`.
+      3. Иначе — None.
+    Возвращает None, если файл не существует по выбранному пути.
+    """
+    project_dir = Path(settings.data_dir) / "videos" / project.slug
+    xlsx_path = project_dir / "project.xlsx"
+
+    raw = _read_bgm_path_from_xlsx(xlsx_path)
+    if raw is not None:
+        candidate = raw
+        if not candidate.is_absolute():
+            candidate = project_dir / candidate
+        if candidate.exists():
+            logger.info("[#{}] bgm из xlsx: {}", project.id, candidate)
+            return candidate
+        logger.warning(
+            "[#{}] bgm из xlsx не найден на диске: {}", project.id, candidate
+        )
+
+    audio_dir = project_dir / "audio"
+    for ext in ("mp3", "wav", "m4a", "ogg"):
+        candidate = audio_dir / f"bgm.{ext}"
+        if candidate.exists():
+            logger.info("[#{}] bgm fallback из audio/: {}", project.id, candidate)
+            return candidate
+    return None
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -85,10 +173,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         uuid=uuid.uuid4().hex, path=str(subs_path),
     ))
 
+    # bgm: из xlsx или с диска
+    bgm_path = _resolve_bgm_path(project)
+
     # сборка
     out_dir = Path(settings.data_dir) / "videos" / project.slug / "final"
     out_path = out_dir / f"{project.slug}.mp4"
-    await assemble(clips, Path(audio.path), out_path, subtitles_ass=subs_path)
+    await assemble(
+        clips,
+        Path(audio.path),
+        out_path,
+        subtitles_ass=subs_path,
+        bgm_path=bgm_path,
+    )
 
     session.add(Artifact(
         project_id=project.id, kind=ArtifactKind.final_video,
