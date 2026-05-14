@@ -57,8 +57,13 @@ from app.storage import for_project as _sheet_for_project
 
 # Лист «план» v8 — какие строки в столбце кадра используются для рефов.
 _XLSX_SHEET_PLAN = "план"
-_XLSX_ROW_PERSONS = 38  # «персонажи» — id c01..c05 (могут быть через запятую)
-_XLSX_ROW_ITEMS = 39  # «предметы» — id predmet1+ (могут быть через запятую)
+# v8-шаблон «план» дублирует лейблы «персонажи» / «предметы» в нескольких
+# блоках (под заголовками «кадр1», «кадр2», «кадр3»). Юзер может вписать
+# id в ЛЮБОЙ из этих строк. Раньше код смотрел только row=38/39 (3-й
+# блок), и если юзер вписал в row=8 — рефы не подгружались. Теперь
+# читаем ВСЕ три строки и сливаем (с dedupe сохраняя порядок).
+_XLSX_ROWS_PERSONS = (8, 23, 38)   # «персонажи» — id c01..c05
+_XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id predmet1+
 
 
 def _parse_ref_ids(cell_value: object) -> list[str]:
@@ -150,10 +155,25 @@ def _load_refs_for_frame(
                 ws = wb[_XLSX_SHEET_PLAN]
                 # В v8 столбцы кадров — с 3 (1=label, 2=зарезервировано).
                 col = frame_number + 2
-                persons_cell = ws.cell(row=_XLSX_ROW_PERSONS, column=col).value
-                items_cell = ws.cell(row=_XLSX_ROW_ITEMS, column=col).value
-                persons_ids = _parse_ref_ids(persons_cell)
-                items_ids = _parse_ref_ids(items_cell)
+
+                # Читаем ВСЕ три «persons» строки и сливаем с dedupe,
+                # сохраняя порядок: row=8 (под кадр1) первой имеет
+                # приоритет, потом 23, потом 38. Так юзер может вписать
+                # id в ЛЮБУЮ из них.
+                def _merged(rows: tuple[int, ...]) -> list[str]:
+                    merged: list[str] = []
+                    seen: set[str] = set()
+                    for r in rows:
+                        for x in _parse_ref_ids(
+                            ws.cell(row=r, column=col).value
+                        ):
+                            if x not in seen:
+                                seen.add(x)
+                                merged.append(x)
+                    return merged
+
+                persons_ids = _merged(_XLSX_ROWS_PERSONS)
+                items_ids = _merged(_XLSX_ROWS_ITEMS)
             wb.close()
         except ImportError:
             logger.warning(

@@ -3686,6 +3686,12 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
                 else ProjectStatus.new
             )
             project.status = rollback_to
+            # Юзер нажал «⏹ Остановить» — НЕ хочет, чтобы воркер
+            # тут же снова запустил этот же шаг через auto_advance.
+            # Отрубаем auto_mode (для подпроекта батча это значит,
+            # что serial_tick_batches его не подхватит, пока юзер не
+            # переключит вручную).
+            project.auto_mode = False
             meta = dict(project.meta or {})
             chain_to = meta.pop("enrich_auto_chain_to", None)
             if chain_to is not None:
@@ -3696,7 +3702,8 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
                 )
             step_title = step.title if step is not None else cur_running.value
             logger.info(
-                "[#{}] STOP: rolled back {} -> {} (user-requested via ⏹)",
+                "[#{}] STOP: rolled back {} -> {}, auto_mode=False "
+                "(user-requested via ⏹)",
                 pid, cur_running.value, rollback_to.value,
             )
             status_msg = (
@@ -3704,7 +3711,9 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
                 f"Проект #{pid} «{_project_display_topic(project)}» "
                 f"(slug: <code>{slug}</code>)\n"
                 f"Статус: <code>{cur_running.value}</code> → "
-                f"<code>{rollback_to.value}</code>."
+                f"<code>{rollback_to.value}</code>.\n"
+                f"auto_mode выключен — воркер не будет автоматически "
+                f"перезапускать шаг."
             )
         elif xlsx_stopped:
             status_msg = (
