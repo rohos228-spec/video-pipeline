@@ -44,7 +44,7 @@ from app.models import (
 from app.services import auto_review
 from app.services.auto_review import ReviewResult
 from app.settings import settings
-from app.telegram.menu import STEPS, step_by_running_status
+from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
 
 # По умолчанию для визуальных шагов GPT-чек ВЫКЛ — авто-апруф.
 # Включить можно env-переменной AUTO_REVIEW_VISUAL=1.
@@ -227,6 +227,32 @@ def _reset_retry_count(project: Project, ready: ProjectStatus) -> None:
         project.meta = meta
 
 
+_ENRICH_READY_TO_INDEX: dict[ProjectStatus, int] = {
+    ProjectStatus.enrich_1_ready: 1,
+    ProjectStatus.enrich_2_ready: 2,
+    ProjectStatus.enrich_3_ready: 3,
+    ProjectStatus.enrich_4_ready: 4,
+    ProjectStatus.enrich_5_ready: 5,
+}
+
+
+def _next_running_with_enrich_cap(
+    project: Project, transition: StepTransition
+) -> ProjectStatus | None:
+    """(single-mass parity #3) Наследует логику single-mode меню:
+    если проект в enrich_N_ready и N ≥ enrich_slots_count — это был
+    ПОСЛЕДНИЙ активный слот, прыгаем сразу на generating_image_prompts.
+    Иначе — следующий enrich. Раньше auto-mode по фиксированной
+    таблице всегда шёл до enrich_5, игнорируя настройку юзера."""
+    cur_idx = _ENRICH_READY_TO_INDEX.get(transition.ready_status)
+    if cur_idx is None:
+        return transition.next_running
+    slots = enabled_enrich_slots(project)
+    if cur_idx >= slots:
+        return ProjectStatus.generating_image_prompts
+    return transition.next_running
+
+
 async def _next_status_after_hero_approve(
     session: AsyncSession,
     project: Project,
@@ -318,7 +344,7 @@ async def _apply_approve(
         nxt = await _next_status_after_hero_approve(session, project, hitl)
         project.status = nxt
     else:
-        nxt = transition.next_running
+        nxt = _next_running_with_enrich_cap(project, transition)
         if nxt is not None:
             project.status = nxt
     _reset_retry_count(project, transition.ready_status)
