@@ -43,7 +43,7 @@ from aiogram.types import (
 )
 
 from app.models import Project, ProjectStatus
-from app.services.global_pause import is_active as global_pause_active
+from app.services.mass_pause import is_active as mass_pause_active
 from app.services.project_state import is_running_status
 
 # Тексты кнопок постоянной reply-клавиатуры (видна всегда внизу TG над полем
@@ -392,21 +392,21 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📋 Существующие проекты", callback_data="menu:list")],
         [InlineKeyboardButton(text="🎬 Массовое создание", callback_data="mass:list")],
     ]
-    # Явный тоггл глобальной паузы. Когда пауза включена — воркер
-    # не продвигает ничего (ни обычные проекты, ни массовые очереди).
-    # Состояние — файл `data/.global_pause`, переживает рестарт.
-    if global_pause_active():
+    # Пауза МАССОВОЙ генерации (все батчи разом).
+    # НЕ трогает индивидуальные проекты — те продолжают работать.
+    # Состояние — файл `data/.mass_pause`, переживает рестарт.
+    if mass_pause_active():
         rows.append([
             InlineKeyboardButton(
-                text="▶ Возобновить всё (снять общую паузу)",
-                callback_data="menu:gresume",
+                text="▶ Возобновить массовую (снять паузу)",
+                callback_data="menu:mresume",
             ),
         ])
     else:
         rows.append([
             InlineKeyboardButton(
-                text="⏸ Общая пауза (стоп воркера)",
-                callback_data="menu:gpause",
+                text="⏸ Пауза массовой (все батчи)",
+                callback_data="menu:mpause",
             ),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -247,10 +247,58 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Все кадры должны иметь image_prompt (шаг 5 уже выполнен).
     missing_prompts = [fr.number for fr in frames if not fr.image_prompt]
     if missing_prompts:
-        raise RuntimeError(
-            f"нет image_prompt у кадров: {missing_prompts}. "
-            "Сначала запусти шаг 5 (Промты картинок)."
-        )
+        # АВТО-РЕКАВЕРИ: типичный кейс — промты ЕСТЬ в xlsx, но
+        # в БД пустые (например, ре-сплит создал новые кадры, или v8
+        # импорт не подтянул). Пробуем перечитать xlsx и проверить
+        # снова, ПРЕЖДЕ чем падать. Это спасает от ситуаций «срочно
+        # пофиксить — шаг 5 ведь делали».
+        proj_xlsx = project.data_dir / "project.xlsx"
+        if proj_xlsx.exists():
+            try:
+                from app.services.xlsx_sync import reload_from_xlsx
+                from app.services.xlsx_v8_import import import_v8_xlsx
+
+                logger.info(
+                    "[#{}] generate_images: missing image_prompt у {} кадров — "
+                    "пробую авто-импорт из {}",
+                    project.id, len(missing_prompts), proj_xlsx.name,
+                )
+                try:
+                    await import_v8_xlsx(
+                        session, project, proj_xlsx,
+                        keep_fields=False, update_frames_voiceover=False,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[#{}] v8 reload failed: {}", project.id, e)
+                try:
+                    await reload_from_xlsx(session, project, proj_xlsx)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[#{}] v7 reload failed: {}", project.id, e)
+                await session.flush()
+                # Пере-вычитываем кадры из БД и проверяем заново.
+                frames = (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                ).scalars().all()
+                missing_prompts = [
+                    fr.number for fr in frames if not fr.image_prompt
+                ]
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "[#{}] generate_images авто-импорт упал: {}",
+                    project.id, e,
+                )
+        if missing_prompts:
+            raise RuntimeError(
+                f"нет image_prompt у кадров: {missing_prompts}. "
+                "В xlsx тоже пусто (проверил авто-импортом). "
+                "Запусти шаг 5 «Промты картинок» — он сгенерит их через GPT, "
+                "потом сразу шаг 7. Если 21 кадр — это новые кадры из "
+                "ре-сплита (шаг 3), и шаг 5 для них не запускали."
+            )
 
     out_dir = project.data_dir / "scenes"
 

@@ -3810,20 +3810,44 @@ async def on_project_resume(cb: CallbackQuery) -> None:
         pass
 
 
-@dp.callback_query(F.data == "menu:gpause")
-async def on_global_pause(cb: CallbackQuery) -> None:
-    """⏸ Общая пауза — фоновый воркер перестаёт продвигать всё
-    (и обычные проекты, и массовые очереди). Маркер хранится в
-    `data/.global_pause` и переживает рестарт процесса.
+@dp.callback_query(F.data == "menu:mpause")
+async def on_mass_global_pause(cb: CallbackQuery) -> None:
+    """⏸ Пауза массовой генерации (все батчи разом).
+
+    Жёсткая пауза — НЕ только флаг, но и DB-rollback:
+      * `serial_tick_batches` не вызывается (флаг `data/.mass_pause`);
+      * auto_advance пропускается для проектов с `batch_id != NULL`;
+      * для всех батчей со status=running → status=paused;
+      * все running-подпроекты батчей откатываются на их prerequisite
+        *_ready (останавливает бесконечные циклы автоматического
+        retry-advance);
+      * auto_mode=False у всех new/*_ready подпроектов батчей.
+    Индивидуальные (не-батч) проекты ВООБЩЕ не трогаем.
+
+    Маркер `data/.mass_pause` переживает рестарт процесса.
     """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
-    from app.services.global_pause import set_active
+    from app.services import batches as batches_svc
+    from app.services.mass_pause import set_active
 
     set_active(True)
-    logger.info("GLOBAL PAUSE: enabled by user")
-    await cb.answer("⏸ Общая пауза включена")
+    stats = {"batches": 0, "rolled_back": 0, "auto_mode_off": 0}
+    async with session_scope() as s:
+        try:
+            stats = await batches_svc.pause_all_running_batches(s)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("pause_all_running_batches failed: {}", e)
+    logger.info(
+        "MASS PAUSE: enabled by user; batches={} rolled_back={} auto_off={}",
+        stats["batches"], stats["rolled_back"], stats["auto_mode_off"],
+    )
+    await cb.answer(
+        f"⏸ Массовая на паузе. Батчей: {stats['batches']}, откатил "
+        f"{stats['rolled_back']} running-шаг(ов).",
+        show_alert=True,
+    )
     try:
         if cb.message:
             await cb.message.edit_reply_markup(reply_markup=main_menu_kb())
@@ -3831,17 +3855,31 @@ async def on_global_pause(cb: CallbackQuery) -> None:
         pass
 
 
-@dp.callback_query(F.data == "menu:gresume")
-async def on_global_resume(cb: CallbackQuery) -> None:
-    """▶ Снять общую паузу."""
+@dp.callback_query(F.data == "menu:mresume")
+async def on_mass_global_resume(cb: CallbackQuery) -> None:
+    """▶ Снять паузу массовой: batch.status=paused→running, auto_mode
+    обратно на non-terminal подпроекты."""
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
-    from app.services.global_pause import set_active
+    from app.services import batches as batches_svc
+    from app.services.mass_pause import set_active
 
     set_active(False)
-    logger.info("GLOBAL PAUSE: disabled by user")
-    await cb.answer("▶ Общая пауза снята")
+    stats = {"batches": 0, "auto_mode_on": 0}
+    async with session_scope() as s:
+        try:
+            stats = await batches_svc.resume_all_paused_batches(s)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("resume_all_paused_batches failed: {}", e)
+    logger.info(
+        "MASS RESUME: enabled by user; batches={} auto_on={}",
+        stats["batches"], stats["auto_mode_on"],
+    )
+    await cb.answer(
+        f"▶ Массовая возобновлена. Батчей: {stats['batches']}, "
+        f"auto_mode включён на {stats['auto_mode_on']} подпроекте(ах)."
+    )
     try:
         if cb.message:
             await cb.message.edit_reply_markup(reply_markup=main_menu_kb())

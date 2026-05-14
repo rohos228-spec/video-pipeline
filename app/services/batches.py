@@ -934,3 +934,102 @@ async def retry_paused_subprojects(
         batch_id, count,
     )
     return count
+
+
+async def pause_all_running_batches(
+    session: AsyncSession,
+) -> dict[str, int]:
+    """Жёсткая пауза ВСЕЙ массовой генерации.
+
+    Применяется при «⏸ Пауза массовой» в главном меню.
+
+    Делает три вещи:
+      1) batch.status = paused для всех батчей с status=running;
+      2) auto_mode=False у всех batch-подпроектов в new и *_ready
+         (как в `pause_batch_queue` для одного батча);
+      3) ROLLBACK running-статуса у всех batch-подпроектов на их
+         prerequisite *_ready. Это и есть «стоп бесконечных скриптов»
+         — если до этого maybe_auto_advance гонял такой подпроект
+         по кругу running→ready→running, теперь он зависнет в *_ready
+         и без снятия паузы не двинется.
+
+    Возвращает {"batches": N, "rolled_back": M, "auto_mode_off": K}.
+    """
+    from app.telegram.menu import step_by_running_status
+    from sqlalchemy import select as _sel
+
+    out = {"batches": 0, "rolled_back": 0, "auto_mode_off": 0}
+
+    batches_q = await session.execute(
+        _sel(BatchProject).where(BatchProject.status == BatchStatus.running)
+    )
+    for b in batches_q.scalars().all():
+        b.status = BatchStatus.paused
+        out["batches"] += 1
+
+    subs_q = await session.execute(
+        _sel(Project).where(Project.batch_id.is_not(None))
+    )
+    for p in subs_q.scalars().all():
+        # 1) Если статус — running, ROLLBACK на prerequisite *_ready.
+        #    Это останавливает бесконечные циклы maybe_auto_advance.
+        step = step_by_running_status(p.status)
+        if step is not None and step.requires is not None:
+            logger.info(
+                "[#{}] MASS PAUSE rollback: {} -> {}",
+                p.id, p.status.value, step.requires.value,
+            )
+            p.status = step.requires
+            out["rolled_back"] += 1
+        # 2) Снимаем auto_mode у всех new и *_ready (после rollback это
+        #    и есть бывшие running-подпроекты тоже).
+        if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
+            if p.auto_mode:
+                p.auto_mode = False
+                out["auto_mode_off"] += 1
+
+    await session.flush()
+    logger.info(
+        "MASS PAUSE: paused {} batches, rolled back {} running subs, "
+        "auto_mode off for {} subs",
+        out["batches"], out["rolled_back"], out["auto_mode_off"],
+    )
+    return out
+
+
+async def resume_all_paused_batches(
+    session: AsyncSession,
+) -> dict[str, int]:
+    """Снять жёсткую паузу: batch.status=paused → running, и включить
+    auto_mode у новых/*_ready batch-подпроектов (НЕ у paused/failed,
+    те так и остаются — их надо явно `retry_paused_subprojects`)."""
+    from sqlalchemy import select as _sel
+
+    out = {"batches": 0, "auto_mode_on": 0}
+
+    batches_q = await session.execute(
+        _sel(BatchProject).where(BatchProject.status == BatchStatus.paused)
+    )
+    for b in batches_q.scalars().all():
+        b.status = BatchStatus.running
+        out["batches"] += 1
+
+    subs_q = await session.execute(
+        _sel(Project).where(Project.batch_id.is_not(None))
+    )
+    terminal = {
+        ProjectStatus.published,
+        ProjectStatus.failed,
+        ProjectStatus.paused,
+    }
+    for p in subs_q.scalars().all():
+        if p.status not in terminal and not p.auto_mode:
+            p.auto_mode = True
+            out["auto_mode_on"] += 1
+
+    await session.flush()
+    logger.info(
+        "MASS RESUME: resumed {} batches, auto_mode on for {} subs",
+        out["batches"], out["auto_mode_on"],
+    )
+    return out

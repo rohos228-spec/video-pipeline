@@ -274,23 +274,24 @@ async def _run_worker_loop(bot) -> None:
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ]
-    from app.services.global_pause import is_active as _global_pause_active
+    from app.services.mass_pause import is_active as _mass_pause_active
     from app.telegram.bot import notify_step_done
 
-    _last_pause_log = False
+    _last_mass_pause_log = False
     while True:
-        # Глобальная пауза: маркер `data/.global_pause`. Когда активна —
-        # воркер не продвигает ни обычные проекты, ни массовые очереди
-        # (serial_tick_batches). Бот остаётся отзывчивым на «▶ Возобновить».
-        if _global_pause_active():
-            if not _last_pause_log:
-                logger.info("worker: global pause active — idling")
-                _last_pause_log = True
-            await asyncio.sleep(5)
-            continue
-        if _last_pause_log:
-            logger.info("worker: global pause снята — продолжаем")
-            _last_pause_log = False
+        # Пауза МАССОВОЙ генерации (маркер `data/.mass_pause`):
+        # пропускаем serial_tick_batches и auto_advance подпроектов с
+        # `batch_id != NULL`. Индивидуальные проекты продолжают работать
+        # как обычно. Сами running-шаги batch-подпроектов (planning/
+        # scripting/...) не прерываем — дорабатывают до *_ready, дальше
+        # auto_advance их уже не двинет пока пауза.
+        mass_paused = _mass_pause_active()
+        if mass_paused and not _last_mass_pause_log:
+            logger.info("worker: mass pause active — batches frozen, individual projects keep running")
+            _last_mass_pause_log = True
+        elif not mass_paused and _last_mass_pause_log:
+            logger.info("worker: mass pause снята")
+            _last_mass_pause_log = False
         try:
             async with session_scope() as s:
                 projects = (
@@ -389,6 +390,10 @@ async def _run_worker_loop(bot) -> None:
                         )
                     ).scalars().all()
                     for ap in auto_projects:
+                        # При активной паузе массовой — пропускаем подпроекты
+                        # батчей (но не индивидуальные проекты с auto_mode=True).
+                        if mass_paused and ap.batch_id is not None:
+                            continue
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)
@@ -412,12 +417,14 @@ async def _run_worker_loop(bot) -> None:
 
                     # 2) serial worker: запускает следующий подпроект
                     #    из активного массового, если нет «занятого».
-                    try:
-                        started = await serial_tick_batches(s)
-                        if started:
-                            await s.commit()
-                    except Exception:  # noqa: BLE001
-                        logger.exception("serial_tick_batches failed")
+                    #    При паузе массовой — вообще не вызываем.
+                    if not mass_paused:
+                        try:
+                            started = await serial_tick_batches(s)
+                            if started:
+                                await s.commit()
+                        except Exception:  # noqa: BLE001
+                            logger.exception("serial_tick_batches failed")
                 except Exception:  # noqa: BLE001
                     logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001
