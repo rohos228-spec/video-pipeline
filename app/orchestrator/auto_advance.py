@@ -358,11 +358,64 @@ async def _next_status_after_hero_approve(
     return ProjectStatus.generating_items
 
 
+async def _hide_hitl_buttons_with_badge(
+    bot: Bot | None, hitl: HITLRequest | None, badge: str
+) -> None:
+    """(single-mass parity #5) Убирает inline-кнопки С HITL-карточки
+    в TG после auto-решения и добавляет подпись-бейдж в текст/caption.
+
+    Раньше auto_advance менял только HITLRequest.decision в БД, а
+    карточка с кнопками ✅/🔁/❌ оставалась кликабельной, и юзер
+    не понимал что решение уже принято (и клик приводил к
+    «HITL уже обработан» алерту).
+    """
+    if bot is None or hitl is None or hitl.tg_message_id is None:
+        return
+    chat_id = settings.telegram_owner_chat_id
+    msg_id = hitl.tg_message_id
+    # Пробуем edit caption (визуальные HITL — photo/video); если
+    # СЭТОДА приходит ApiError "there is no caption" — переходим
+    # на edit_message_text.
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=msg_id, reply_markup=None
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    if not badge:
+        return
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=msg_id,
+            caption=badge[:1024],
+            reply_markup=None,
+        )
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # Text HITL (plan/script) — добавляем бейдж внизу. Без исходного
+        # текста можем только полностью перезаписать — это ок, все
+        # решения уже в БД.
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=badge[:4096],
+            reply_markup=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
     hitl: HITLRequest | None,
     transition: StepTransition,
+    *,
+    bot: Bot | None = None,
+    badge: str | None = None,
 ) -> None:
     """Эмулируем клик `approve` пользователем в TG."""
     if hitl is not None and hitl.decision is HITLDecision.pending:
@@ -385,6 +438,10 @@ async def _apply_approve(
         project.id, transition.ready_status.value,
         project.status.value,
     )
+    # (single-mass parity #5) Гасим кнопки на карточке в TG.
+    await _hide_hitl_buttons_with_badge(
+        bot, hitl, badge or "✅ Авто-одобрено"
+    )
 
 
 async def _apply_regen(
@@ -393,6 +450,8 @@ async def _apply_regen(
     hitl: HITLRequest | None,
     transition: StepTransition,
     result: ReviewResult,
+    *,
+    bot: Bot | None = None,
 ) -> None:
     """Эмулируем клик `regen` + кладём fix_hints для следующей генерации."""
     if hitl is not None and hitl.decision is HITLDecision.pending:
@@ -440,6 +499,9 @@ async def _apply_regen(
         project.id, transition.ready_status.value, count,
         back_to.value if back_to else "(paused)",
     )
+    await _hide_hitl_buttons_with_badge(
+        bot, hitl, "🔁 Авто-перегенерация (GPT просит fix_hints)"
+    )
 
 
 async def _apply_reject(
@@ -448,6 +510,8 @@ async def _apply_reject(
     hitl: HITLRequest | None,
     transition: StepTransition,
     result: ReviewResult,
+    *,
+    bot: Bot | None = None,
 ) -> None:
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.rejected
@@ -462,6 +526,9 @@ async def _apply_reject(
     logger.warning(
         "auto_advance: #{} REJECTED on {}",
         project.id, transition.ready_status.value,
+    )
+    await _hide_hitl_buttons_with_badge(
+        bot, hitl, "❌ GPT-отказ. Проект поставлен на паузу."
     )
 
 
@@ -489,7 +556,9 @@ async def maybe_auto_advance(
 
     # Если HITL уже approved юзером руками — просто двигаемся вперёд.
     if hitl is not None and hitl.decision is HITLDecision.approved:
-        await _apply_approve(session, project, hitl, transition)
+        # Юзер нажал в боте — bot.py уже погасил кнопки и добавил
+        # бейдж. Ничего не рисуем.
+        await _apply_approve(session, project, hitl, transition, bot=None)
         return True
 
     # (single-mass parity #4) Решаем нужен ли vision-чек для этого kind'а.
@@ -500,7 +569,7 @@ async def maybe_auto_advance(
             "auto_advance: #{} {} → auto-approve (visual, no GPT check)",
             project.id, status.value,
         )
-        await _apply_approve(session, project, hitl, transition)
+        await _apply_approve(session, project, hitl, transition, bot=bot)
         return True
 
     # GPT-чек для текстовых kind'ов:
@@ -514,12 +583,12 @@ async def maybe_auto_advance(
             return False
         result = await _run_text_review(project, transition.kind, artifact)
         return await _apply_review_result(
-            session, project, hitl, transition, result
+            session, project, hitl, transition, result, bot=bot
         )
 
     # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1) — TODO.
     # Пока — auto-approve.
-    await _apply_approve(session, project, hitl, transition)
+    await _apply_approve(session, project, hitl, transition, bot=bot)
     return True
 
 
@@ -598,14 +667,20 @@ async def _apply_review_result(
     hitl: HITLRequest | None,
     transition: StepTransition,
     result: ReviewResult,
+    *,
+    bot: Bot | None = None,
 ) -> bool:
     """Применяет ReviewResult к проекту + уведомляет (опционально)."""
     if result.decision is HITLDecision.approved:
-        await _apply_approve(session, project, hitl, transition)
+        await _apply_approve(session, project, hitl, transition, bot=bot)
     elif result.decision is HITLDecision.regenerate:
-        await _apply_regen(session, project, hitl, transition, result)
+        await _apply_regen(
+            session, project, hitl, transition, result, bot=bot
+        )
     elif result.decision is HITLDecision.rejected:
-        await _apply_reject(session, project, hitl, transition, result)
+        await _apply_reject(
+            session, project, hitl, transition, result, bot=bot
+        )
     else:
         # На pending/edit_prompt — игнорируем, оставляем юзеру.
         logger.warning(
