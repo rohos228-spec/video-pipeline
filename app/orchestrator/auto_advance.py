@@ -227,6 +227,80 @@ def _reset_retry_count(project: Project, ready: ProjectStatus) -> None:
         project.meta = meta
 
 
+async def _next_status_after_hero_approve(
+    session: AsyncSession,
+    project: Project,
+    hitl: HITLRequest | None,
+) -> ProjectStatus:
+    """(single-mass parity #1, #2) Зеркалит логику single-mode callback'а
+    `bot.py` (≈ строки 5757-5851) для HITL `approve_hero`:
+
+    * Excel-режим (payload содержит `excel_id`): считаем сколько персонажей
+      ещё не одобрено; если есть остаток — `generating_hero` (воркер сделает
+      следующего), иначе — `generating_items`.
+    * Обычный режим (payload `hero_index` / `variation_index`):
+      следующая вариация / следующий герой → `generating_hero`,
+      иначе → `generating_items` (=transition.next_running).
+    """
+    payload: dict = {}
+    if hitl is not None and isinstance(hitl.payload, dict):
+        payload = dict(hitl.payload)
+
+    # --- Excel-hero (parity #2) ---
+    excel_id = payload.get("excel_id")
+    if isinstance(excel_id, str) and excel_id:
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or {}
+        all_ids: list[str] = []
+        for c in (cfg.get("characters") or []):
+            if isinstance(c, dict):
+                cid = str((c.get("id") or "")).strip()
+                if cid:
+                    all_ids.append(cid)
+        approved_rows = (
+            await session.execute(
+                select(HITLRequest).where(
+                    HITLRequest.project_id == project.id,
+                    HITLRequest.kind == HITLKind.approve_hero,
+                    HITLRequest.decision == HITLDecision.approved,
+                )
+            )
+        ).scalars().all()
+        approved_ids = {
+            (r.payload or {}).get("excel_id")
+            for r in approved_rows
+            if (r.payload or {}).get("excel_id")
+        }
+        approved_ids.add(excel_id)
+        remaining = [i for i in all_ids if i not in approved_ids]
+        if remaining:
+            return ProjectStatus.generating_hero
+        return ProjectStatus.generating_items
+
+    # --- Multi-character / multi-variation (parity #1) ---
+    try:
+        cur_hi = int(payload.get("hero_index") or 1)
+        cur_vi = int(payload.get("variation_index") or 1)
+    except (TypeError, ValueError):
+        cur_hi, cur_vi = 1, 1
+    n_total = int(project.hero_count or 1) or 1
+    vars_cfg = list(project.hero_variations or [])
+    n_var = 1
+    if cur_hi - 1 < len(vars_cfg):
+        try:
+            n_var = int(vars_cfg[cur_hi - 1] or 1)
+        except (TypeError, ValueError):
+            n_var = 1
+    n_var = max(1, min(5, n_var))
+
+    if cur_vi < n_var:
+        return ProjectStatus.generating_hero
+    if cur_hi < n_total:
+        return ProjectStatus.generating_hero
+    # Последняя вариация последнего героя — шаг полностью завершён.
+    return ProjectStatus.generating_items
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -236,15 +310,23 @@ async def _apply_approve(
     """Эмулируем клик `approve` пользователем в TG."""
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.approved
-    nxt = transition.next_running
-    if nxt is not None:
+
+    # Hero-ready: внутри шага 4 может быть несколько героев / вариаций,
+    # одна HITL-карточка ≠ переход к следующему шагу. Зеркалим логику
+    # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
+    if transition.ready_status is ProjectStatus.hero_ready:
+        nxt = await _next_status_after_hero_approve(session, project, hitl)
         project.status = nxt
+    else:
+        nxt = transition.next_running
+        if nxt is not None:
+            project.status = nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
     logger.info(
         "auto_advance: #{} {} → approved → {}",
         project.id, transition.ready_status.value,
-        nxt.value if nxt else "(final)",
+        project.status.value,
     )
 
 
