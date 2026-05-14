@@ -197,6 +197,12 @@ _pending_mass_name: dict[int, bool] = {}
 _pending_mass_topics_text: dict[int, int] = {}
 # user_id → batch_id: ждём topics.xlsx файлом для массового.
 _pending_mass_xlsx_upload: dict[int, int] = {}
+# user_id → batch_id: ждём название постоянного продукта (PR #3).
+_pending_mass_prod_name: dict[int, int] = {}
+# user_id → batch_id: ждём описание постоянного продукта (PR #3).
+_pending_mass_prod_desc: dict[int, int] = {}
+# user_id → batch_id: ждём фото-референс постоянного продукта (PR #3).
+_pending_mass_prod_photo: dict[int, int] = {}
 
 
 def _project_display_topic(project: Project) -> str:
@@ -310,15 +316,25 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_mass_name.pop(user_id, None)
     _pending_mass_topics_text.pop(user_id, None)
     _pending_mass_xlsx_upload.pop(user_id, None)
+    _pending_mass_prod_name.pop(user_id, None)
+    _pending_mass_prod_desc.pop(user_id, None)
+    _pending_mass_prod_photo.pop(user_id, None)
 
 
 async def _last_project_id_fallback() -> int | None:
     """Если для юзера нет запомненного last-project — возвращает id самого
-    свежесозданного проекта (по убыванию id) или None если проектов нет."""
+    свежесозданного ОДИНОЧНОГО проекта (по убыванию id)
+    или None. Бэтч-подпроекты (Project.batch_id IS NOT NULL) в фоллбэк
+    НЕ попадают — они живут внутри «Массовое создание» и не должны
+    «всплывать» в обычном меню по одиночному /menu или /status.
+    """
     async with session_scope() as s:
         proj = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(1)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(1)
             )
         ).scalar_one_or_none()
     return proj.id if proj is not None else None
@@ -490,9 +506,15 @@ async def cmd_status(msg: Message) -> None:
                 reply_markup=project_menu_kb(project),
             )
         else:
+            # Список ОБЫЧНЫХ проектов — бэтч-подпроекты (с batch_id)
+            # живут внутри «🎬 Массовое создание» и не должны пересекаться
+            # с одиночными — выводятся только в mass:* меню.
             rows = (
                 await s.execute(
-                    select(Project).order_by(Project.id.desc()).limit(20)
+                    select(Project)
+                    .where(Project.batch_id.is_(None))
+                    .order_by(Project.id.desc())
+                    .limit(20)
                 )
             ).scalars().all()
             if not rows:
@@ -554,10 +576,16 @@ async def on_menu_list(cb: CallbackQuery) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     _set_user_screen(cb.from_user.id, "project_list")
+    # ТОЛЬКО одиночные проекты (batch_id IS NULL). Бэтч-подпроекты
+    # отображаются исключительно в mass:* меню — эти два раздела
+    # принципиально не пересекаются.
     async with session_scope() as s:
         rows = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(30)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(30)
             )
         ).scalars().all()
     await cb.answer()
@@ -731,9 +759,15 @@ async def on_mass_add_text(cb: CallbackQuery) -> None:
     _pending_mass_topics_text[cb.from_user.id] = bid
     await cb.answer()
     await cb.message.answer(
-        "Пришли темы — по одной на строку. Например:\n"
-        "<pre>Юлий Цезарь\nПомпей\nКрасс\nЦицерон</pre>\n"
-        "Для каждой темы создам подпроект с отдельной папкой и project.xlsx.",
+        "Пришли названия роликов — по одной на строку. Например:\n"
+        "<pre>Неандерталец с зубочисткой\nУтро в Месопотамии\n"
+        "Гиппократ советует порошок</pre>\n"
+        "Для каждого создам подпроект с папкой и project.xlsx.\n\n"
+        "💡 Если хочешь задать богатый контекст для каждого ролика "
+        "(стиль, тип хука, эмоция, факт, логика, интеграция продукта, "
+        "примечание по съёмке) — нажми «📥 Скачать topics.xlsx», "
+        "заполни нужные колонки и пришли файл обратно через "
+        "«📤 Залить topics.xlsx».",
         parse_mode="HTML",
     )
 
@@ -774,18 +808,28 @@ async def on_mass_dl_xlsx(cb: CallbackQuery) -> None:
             return
         subs = await batches_svc.get_batch_subprojects(s, bid)
         path = batch.topics_xlsx_path
-        # Перезаписываем актуальной таблицей (со статусами).
-        rows = [
-            {
+        # Перезаписываем актуальной таблицей (со статусами + карточные поля).
+        rows = []
+        for p in subs:
+            meta = p.meta or {}
+            card = meta.get("topic_card") or {}
+            rows.append({
                 "position": p.batch_position,
+                "title": p.topic,
                 "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
                 "hero_mode": p.hero_mode,
                 "slug": p.slug,
                 "status": p.status.value,
                 "progress": "",
-            }
-            for p in subs
-        ]
+            })
         batch_sheet.write_subprojects_table(path, rows, batch.name)
     if not path.exists():
         await cb.answer("Файл не найден", show_alert=True)
@@ -1041,6 +1085,131 @@ async def on_mass_retry_paused(cb: CallbackQuery) -> None:
     await _refresh_mass_main(cb, bid)
 
 
+# ---------------------------------------------------------------------------
+# Постоянный продукт массового (PR #3)
+# ---------------------------------------------------------------------------
+
+
+@dp.callback_query(F.data.startswith("mass:prod:"))
+async def on_mass_prod(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:prod_name:"))
+async def on_mass_prod_name(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_name[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>название продукта</b> — короткое, как будет фигурировать "
+        "в сценариях. Например: <code>пенка для рта [Бренд]</code>.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_desc:"))
+async def on_mass_prod_desc(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_desc[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>описание продукта</b>: как выглядит, как его используют, "
+        "чем он отличается, какие плюсы (для встраивания в текст ролика). "
+        "GPT использует эту описалку при генерации плана/сценария.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_photo:"))
+async def on_mass_prod_photo(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_photo[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>референс-фото продукта</b> картинкой "
+        "(одно фото за сообщение). Сохраним рядом с массовым.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_clear:"))
+async def on_mass_prod_clear(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.clear_permanent_product(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("🗑 Продукт удалён", show_alert=True)
+    # Перерисовать меню продукта.
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _show_mass_product(msg: Message, bid: int) -> None:
+    """Показать после обновления карточку продукта."""
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
     """Парсит текстовый список тем и создаёт подпроекты."""
     text = (msg.text or "").strip()
@@ -1069,19 +1238,28 @@ async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
                 logger.warning(
                     "mass: project_sheet init failed for #{}: {}", p.id, e
                 )
-        # Обновляем topics.xlsx актуальной таблицей.
+        # Обновляем topics.xlsx актуальной таблицей (с карточными полями).
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
-        rows = [
-            {
+        rows = []
+        for p in all_subs:
+            card = (p.meta or {}).get("topic_card") or {}
+            rows.append({
                 "position": p.batch_position,
+                "title": p.topic,
                 "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
                 "hero_mode": p.hero_mode,
                 "slug": p.slug,
                 "status": p.status.value,
                 "progress": "",
-            }
-            for p in all_subs
-        ]
+            })
         batch_sheet.write_subprojects_table(
             batch.topics_xlsx_path, rows, batch.name
         )
@@ -1104,7 +1282,12 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
         tmp_path = _Path(tmp.name)
     try:
         await msg.bot.download(doc, destination=str(tmp_path))
-        new_topics = batch_sheet.collect_new_topics(tmp_path)
+        # Берём реальные slug'и подпроектов из БД, чтобы collect_new_topics
+        # игнорировал любые посторонние значения в сервисной колонке L.
+        async with session_scope() as s_pre:
+            existing_subs = await batches_svc.get_batch_subprojects(s_pre, batch_id)
+            known_slugs = {p.slug for p in existing_subs if p.slug}
+        new_topics = batch_sheet.collect_new_topics(tmp_path, known_slugs=known_slugs)
     except Exception as e:  # noqa: BLE001
         await msg.answer(f"❌ Не смог прочитать xlsx: {e}")
         tmp_path.unlink(missing_ok=True)
@@ -1112,7 +1295,10 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
 
     if not new_topics:
         await msg.answer(
-            "В файле нет новых тем (все строки уже имеют «Подпроект»)."
+            "В файле нет новых тем — все строки уже соответствуют существующим "
+            "подпроектам (по slug в служебной колонке).\n\n"
+            "Чтобы добавить новые ролики — заполни строки в свободных позициях, "
+            "оставляя сервисные колонки L–O пустыми."
         )
         tmp_path.unlink(missing_ok=True)
         return
@@ -1123,13 +1309,9 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
             await msg.answer("Массовый не найден.")
             tmp_path.unlink(missing_ok=True)
             return
-        topics_only = [t for (t, _hm) in new_topics]
-        hero_modes = {t: hm for (t, hm) in new_topics if hm}
-        created = await batches_svc.add_topics(s, batch, topics_only)
+        # new_topics — список dict'ов с полным набором карточных полей.
+        created = await batches_svc.add_topics(s, batch, new_topics)
         for p in created:
-            hm = hero_modes.get(p.topic)
-            if hm and hm in {"hero", "no_hero", "auto"}:
-                p.hero_mode = hm
             try:
                 sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
                 sheet.ensure_initialized(project_id=p.id, slug=p.slug)
@@ -1143,19 +1325,28 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
                 logger.warning(
                     "mass: project_sheet init failed for #{}: {}", p.id, e
                 )
-        # Сохраняем актуальную топик-таблицу (она же — целевой topics.xlsx).
+        # Сохраняем актуальную топик-таблицу (со всеми карточными полями).
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
-        rows = [
-            {
+        rows = []
+        for p in all_subs:
+            card = (p.meta or {}).get("topic_card") or {}
+            rows.append({
                 "position": p.batch_position,
+                "title": p.topic,
                 "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
                 "hero_mode": p.hero_mode,
                 "slug": p.slug,
                 "status": p.status.value,
                 "progress": "",
-            }
-            for p in all_subs
-        ]
+            })
         batch_sheet.write_subprojects_table(
             batch.topics_xlsx_path, rows, batch.name
         )
@@ -3127,6 +3318,45 @@ async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
     )
 
 
+@dp.message(F.photo)
+async def on_photo_message(msg: Message) -> None:
+    """Принимаем фото — пока только как референс постоянного продукта (PR #3)."""
+    if not is_owner(msg):
+        return
+    user_id = msg.from_user.id if msg.from_user else 0
+    mass_pp_bid = _pending_mass_prod_photo.get(user_id)
+    if mass_pp_bid is None:
+        return
+    _pending_mass_prod_photo.pop(user_id, None)
+    if not msg.photo:
+        await msg.answer("Фото не пришло — отправь ещё раз.")
+        return
+    # Берём самое большое разрешение (последнее в списке).
+    photo = msg.photo[-1]
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, mass_pp_bid)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        # Сохраняем рядом с массовым: data/batches/<slug>/product_reference.<ext>
+        target_dir = batch.data_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / "product_reference.jpg"
+        try:
+            await msg.bot.download(photo, destination=str(target_path))
+        except Exception as e:  # noqa: BLE001
+            await msg.answer(f"❌ Не смог сохранить фото: {e}")
+            return
+        await batches_svc.set_permanent_product_field(
+            s, mass_pp_bid, reference_image_path=str(target_path)
+        )
+    await msg.answer(
+        f"🖼 Референс продукта сохранён: <code>{target_path.name}</code>",
+        parse_mode="HTML",
+    )
+    await _show_mass_product(msg, mass_pp_bid)
+
+
 @dp.message(F.document)
 async def on_document_message(msg: Message) -> None:
     """Принимаем `.md`-файл (промт) или .txt (замена voiceover)."""
@@ -4109,6 +4339,39 @@ async def on_text_message(msg: Message) -> None:
     if mass_bid is not None:
         _pending_mass_topics_text.pop(user_id, None)
         await _handle_mass_topics_text(msg, mass_bid)
+        return
+
+    # 1c) Если ждём название постоянного продукта массового.
+    mass_pn_bid = _pending_mass_prod_name.get(user_id)
+    if mass_pn_bid is not None:
+        _pending_mass_prod_name.pop(user_id, None)
+        new_name = (msg.text or "").strip()
+        if not new_name:
+            await msg.answer("Пустое название — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            await batches_svc.set_permanent_product_field(
+                s, mass_pn_bid, name=new_name
+            )
+        await msg.answer(f"✏ Название продукта: <b>{_html_escape(new_name)}</b>",
+                         parse_mode="HTML")
+        await _show_mass_product(msg, mass_pn_bid)
+        return
+
+    # 1d) Если ждём описание постоянного продукта массового.
+    mass_pd_bid = _pending_mass_prod_desc.get(user_id)
+    if mass_pd_bid is not None:
+        _pending_mass_prod_desc.pop(user_id, None)
+        new_desc = (msg.text or "").strip()
+        if not new_desc:
+            await msg.answer("Пустое описание — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            await batches_svc.set_permanent_product_field(
+                s, mass_pd_bid, description=new_desc
+            )
+        await msg.answer("📝 Описание продукта сохранено.")
+        await _show_mass_product(msg, mass_pd_bid)
         return
 
     # 2) Если ждём описание героя N для конкретного проекта

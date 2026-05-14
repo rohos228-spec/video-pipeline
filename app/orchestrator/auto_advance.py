@@ -409,17 +409,24 @@ async def _run_text_review(
         if not snap.exists():
             snap = None
 
+    # Постоянный продукт массового (если есть) — для проверки упоминания.
+    meta = getattr(project, "meta", None) or {}
+    product = meta.get("permanent_product") or {}
+    product_name = (product.get("name") or "").strip() or None
+
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         if kind is HITLKind.approve_plan:
             return await auto_review.review_plan(
                 plan_text=artifact, chatgpt_bot=gpt,
                 batch_snapshot_dir=snap,
+                product_name=product_name,
             )
         if kind is HITLKind.approve_script:
             return await auto_review.review_script(
                 script_text=artifact, chatgpt_bot=gpt,
                 batch_snapshot_dir=snap,
+                product_name=product_name,
             )
     raise RuntimeError(f"_run_text_review: неизвестный kind={kind}")
 

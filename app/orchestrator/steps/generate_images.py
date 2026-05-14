@@ -140,33 +140,30 @@ def _load_refs_for_frame(
     xlsx_path = (
         project.data_dir / "project.xlsx"
     )
-    if not xlsx_path.exists():
-        return refs
-    try:
-        from openpyxl import load_workbook  # ленивый импорт
-    except ImportError:
-        logger.warning("openpyxl не установлен — не могу прочитать xlsx-рефы")
-        return refs
-    try:
-        wb = load_workbook(xlsx_path, data_only=True, read_only=True)
-        if _XLSX_SHEET_PLAN not in wb.sheetnames:
-            return refs
-        ws = wb[_XLSX_SHEET_PLAN]
-        # В v8 структуре столбцы кадров начинаются с 3 (1=label, 2=зарезервировано).
-        # frame_number 1 → column 3, frame_number N → column N+2.
-        col = frame_number + 2
-        persons_cell = ws.cell(row=_XLSX_ROW_PERSONS, column=col).value
-        items_cell = ws.cell(row=_XLSX_ROW_ITEMS, column=col).value
-        wb.close()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] frame {}: ошибка чтения xlsx-рефов: {}",
-            project.id, frame_number, e,
-        )
-        return refs
-
-    persons_ids = _parse_ref_ids(persons_cell)
-    items_ids = _parse_ref_ids(items_cell)
+    persons_ids: list[str] = []
+    items_ids: list[str] = []
+    if xlsx_path.exists():
+        try:
+            from openpyxl import load_workbook  # ленивый импорт
+            wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+            if _XLSX_SHEET_PLAN in wb.sheetnames:
+                ws = wb[_XLSX_SHEET_PLAN]
+                # В v8 столбцы кадров — с 3 (1=label, 2=зарезервировано).
+                col = frame_number + 2
+                persons_cell = ws.cell(row=_XLSX_ROW_PERSONS, column=col).value
+                items_cell = ws.cell(row=_XLSX_ROW_ITEMS, column=col).value
+                persons_ids = _parse_ref_ids(persons_cell)
+                items_ids = _parse_ref_ids(items_cell)
+            wb.close()
+        except ImportError:
+            logger.warning(
+                "openpyxl не установлен — не могу прочитать xlsx-рефы"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] frame {}: ошибка чтения xlsx-рефов: {}",
+                project.id, frame_number, e,
+            )
 
     chars_dir = project.data_dir / "characters"
     items_dir = project.data_dir / "items"
@@ -202,6 +199,34 @@ def _load_refs_for_frame(
                 "[#{}] frame {} ref предмет '{}' не найден в {}",
                 project.id, frame_number, iid, items_dir,
             )
+
+    # Постоянный продукт массового (если есть). Подставляем как
+    # дополнительный ref, если в кадре остался свободный слот (< 2 рефов).
+    # Outsee лимит — 2 ref'а на генерацию, поэтому если уже занято обоими
+    # (char + item) — продукт не помещается, оставляем кадр без него.
+    meta = getattr(project, "meta", None) or {}
+    prod = meta.get("permanent_product") or {}
+    prod_ref_path = prod.get("reference_image_path")
+    if prod_ref_path and len(refs) < 2:
+        prod_path = Path(prod_ref_path)
+        if prod_path.exists():
+            refs.append(prod_path)
+            logger.info(
+                "[#{}] frame {} ref продукт '{}' → {} (slot {})",
+                project.id, frame_number,
+                prod.get("name") or "?", prod_path, len(refs),
+            )
+        else:
+            logger.warning(
+                "[#{}] frame {}: продукт-референс {} не найден на диске",
+                project.id, frame_number, prod_ref_path,
+            )
+    elif prod_ref_path and len(refs) >= 2:
+        logger.warning(
+            "[#{}] frame {}: у кадра уже 2 ref'а (char+item), продукт-референс "
+            "не помещается — Outsee лимит. Кадр уйдёт без продукта.",
+            project.id, frame_number,
+        )
 
     return refs[:2]  # outsee лимит — 2 рефа на генерацию
 

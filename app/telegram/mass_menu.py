@@ -17,6 +17,11 @@ Callback-схема:
   mass:delete:<bid>                  → подтверждение удаления
   mass:delete_yes:<bid>              → удалить безвозвратно (с папкой)
   mass:delete_keep:<bid>             → удалить, оставив папку
+  mass:prod:<bid>                    → меню «Постоянный продукт»
+  mass:prod_name:<bid>               → запросить название продукта
+  mass:prod_desc:<bid>               → запросить описание продукта
+  mass:prod_photo:<bid>              → запросить референс-фото продукта
+  mass:prod_clear:<bid>              → удалить постоянный продукт
 
   mass:sub:<bid>:<pid>               → открыть подпроект (использует
                                        обычное project_menu_kb с возвратом
@@ -62,11 +67,19 @@ def mass_main_kb(batch: BatchProject, sub_count: int) -> InlineKeyboardMarkup:
             text="▶ Запустить очередь",
             callback_data=f"mass:start:{batch.id}",
         )]
+    prod_btn_text = "📦 Постоянный продукт"
+    prod = (batch.meta or {}).get("permanent_product") if batch.meta else None
+    if prod and prod.get("name"):
+        prod_btn_text = f"📦 Продукт: {_short(prod.get('name'), 18)}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"📝 Темы ({sub_count})",
                 callback_data=f"mass:topics:{batch.id}",
+            )],
+            [InlineKeyboardButton(
+                text=prod_btn_text,
+                callback_data=f"mass:prod:{batch.id}",
             )],
             queue_row,
             [InlineKeyboardButton(
@@ -91,6 +104,69 @@ def mass_main_kb(batch: BatchProject, sub_count: int) -> InlineKeyboardMarkup:
             )],
         ]
     )
+
+
+def mass_product_kb(batch: BatchProject) -> InlineKeyboardMarkup:
+    """Меню постоянного продукта (применяется ко всем роликам массового)."""
+    prod = (batch.meta or {}).get("permanent_product") if batch.meta else None
+    has_prod = bool(prod and prod.get("name"))
+    rows = [
+        [InlineKeyboardButton(
+            text="✏ Название продукта",
+            callback_data=f"mass:prod_name:{batch.id}",
+        )],
+        [InlineKeyboardButton(
+            text="📝 Описание продукта",
+            callback_data=f"mass:prod_desc:{batch.id}",
+        )],
+        [InlineKeyboardButton(
+            text="🖼 Прислать референс-фото",
+            callback_data=f"mass:prod_photo:{batch.id}",
+        )],
+    ]
+    if has_prod:
+        rows.append([InlineKeyboardButton(
+            text="🗑 Удалить продукт",
+            callback_data=f"mass:prod_clear:{batch.id}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="⬅ К меню массового",
+        callback_data=f"mass:open:{batch.id}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def product_text(batch: BatchProject) -> str:
+    """Текст экрана «Постоянный продукт»."""
+    prod = (batch.meta or {}).get("permanent_product") if batch.meta else None
+    head = f"<b>📦 Постоянный продукт массового «{_html.escape(batch.name)}»</b>"
+    if not prod or not prod.get("name"):
+        return (
+            head + "\n\nПродукт не задан.\n\n"
+            "Постоянный продукт — это товар/предмет, который должен "
+            "появляться в каждом ролике массового (например, пенка для "
+            "рта или конкретный аксессуар). Бот передаст его в промпт "
+            "плана и сценария → GPT учтёт его при генерации.\n\n"
+            "Заполни:\n"
+            "1) Название (как называть в кадре и сценарии)\n"
+            "2) Описание (что это, как выглядит, как использовать)\n"
+            "3) Референс-фото (опционально — изображение для художника)"
+        )
+    name = prod.get("name") or ""
+    desc = prod.get("description") or ""
+    photo = prod.get("reference_image_path") or ""
+    lines = [
+        head,
+        "",
+        f"<b>Название:</b> {_html.escape(name)}",
+    ]
+    if desc:
+        lines.append(f"<b>Описание:</b>\n{_html.escape(_short(desc, 800))}")
+    if photo:
+        lines.append("<b>Референс:</b> 🖼 загружен")
+    else:
+        lines.append("<b>Референс:</b> не загружен")
+    return "\n".join(lines)
 
 
 def mass_topics_kb(batch: BatchProject) -> InlineKeyboardMarkup:
