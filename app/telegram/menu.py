@@ -43,6 +43,7 @@ from aiogram.types import (
 )
 
 from app.models import Project, ProjectStatus
+from app.services.global_pause import is_active as global_pause_active
 from app.services.project_state import is_running_status
 
 # Тексты кнопок постоянной reply-клавиатуры (видна всегда внизу TG над полем
@@ -386,13 +387,29 @@ def is_step_runnable(step: StepDef, project_status: ProjectStatus) -> bool:
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📁 Новый проект", callback_data="menu:new")],
-            [InlineKeyboardButton(text="📋 Существующие проекты", callback_data="menu:list")],
-            [InlineKeyboardButton(text="🎬 Массовое создание", callback_data="mass:list")],
-        ]
-    )
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="📁 Новый проект", callback_data="menu:new")],
+        [InlineKeyboardButton(text="📋 Существующие проекты", callback_data="menu:list")],
+        [InlineKeyboardButton(text="🎬 Массовое создание", callback_data="mass:list")],
+    ]
+    # Явный тоггл глобальной паузы. Когда пауза включена — воркер
+    # не продвигает ничего (ни обычные проекты, ни массовые очереди).
+    # Состояние — файл `data/.global_pause`, переживает рестарт.
+    if global_pause_active():
+        rows.append([
+            InlineKeyboardButton(
+                text="▶ Возобновить всё (снять общую паузу)",
+                callback_data="menu:gresume",
+            ),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="⏸ Общая пауза (стоп воркера)",
+                callback_data="menu:gpause",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _wizard_complete(project: Project) -> bool:
@@ -481,14 +498,34 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
         ),
     ])
 
-    # ⏹ Остановить — всегда видим. Останавливает running-статус воркера
-    # и/или отменяет xlsx-flow (plan/script/split).
+    # ⏹ Остановить текущий шаг — роллбек in-flight running-статуса
+    # на prerequisite (и/или снятие xlsx-flow локов). Не пауза проекта —
+    # воркер продолжит двигать проект, просто текущий шаг откатился.
     rows.append([
         InlineKeyboardButton(
             text="⏹ Остановить текущий шаг",
             callback_data=f"proj:{project.id}:stop_running",
         ),
     ])
+
+    # 🔛 Пауза / ▶ Снять паузу проекта — выводит весь проект в
+    # статус `paused`. Воркер игнорирует такие проекты (paused
+    # не входит в active-список). При снятии возвращаем на
+    # сохранённый в meta["paused_from_status"] старый статус или в `new`.
+    if project.status is ProjectStatus.paused:
+        rows.append([
+            InlineKeyboardButton(
+                text="▶ Снять паузу проекта",
+                callback_data=f"proj:{project.id}:resume",
+            ),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="🔛 Пауза проекта",
+                callback_data=f"proj:{project.id}:pause",
+            ),
+        ])
 
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),

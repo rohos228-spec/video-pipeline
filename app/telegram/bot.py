@@ -3724,6 +3724,131 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     await cb.message.answer(status_msg, parse_mode="HTML")
 
 
+@dp.callback_query(F.data.regexp(r"^proj:\d+:pause$"))
+async def on_project_pause(cb: CallbackQuery) -> None:
+    """🛑 Пауза проекта — выводит весь проект в статус `paused`.
+
+    Отличается от «⏹ Остановить текущий шаг» тем, что воркер
+    полностью игнорирует paused-проекты (paused не входит в active-
+    список), а не просто откатывает один шаг. Возвращаемый статус
+    (на случай снятия паузы) кладём в `meta["paused_from_status"]`.
+    """
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    prev_value: str | None = None
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if project.status is ProjectStatus.paused:
+            await cb.answer("Уже на паузе", show_alert=True)
+            return
+        prev_value = project.status.value
+        meta = dict(project.meta or {})
+        meta["paused_from_status"] = prev_value
+        project.meta = meta
+        project.status = ProjectStatus.paused
+        await s.flush()
+        refreshed = project
+    logger.info("[#{}] PROJECT PAUSE: {} -> paused", pid, prev_value)
+    await cb.answer(f"🛑 Проект #{pid} на паузе")
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(
+                reply_markup=project_menu_kb(refreshed)
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:resume$"))
+async def on_project_resume(cb: CallbackQuery) -> None:
+    """▶ Снять паузу — возвращает статус из `meta["paused_from_status"]`
+    (или `new`, если запомненного нет).
+    """
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    target_value: str = "new"
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if project.status is not ProjectStatus.paused:
+            await cb.answer("Проект не на паузе", show_alert=True)
+            return
+        meta = dict(project.meta or {})
+        from_status = meta.pop("paused_from_status", None)
+        project.meta = meta
+        try:
+            project.status = (
+                ProjectStatus(from_status) if from_status else ProjectStatus.new
+            )
+            target_value = project.status.value
+        except Exception:  # noqa: BLE001
+            project.status = ProjectStatus.new
+            target_value = "new"
+        await s.flush()
+        refreshed = project
+    logger.info("[#{}] PROJECT RESUME: paused -> {}", pid, target_value)
+    await cb.answer(f"▶ Проект #{pid}: {target_value}")
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(
+                reply_markup=project_menu_kb(refreshed)
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.callback_query(F.data == "menu:gpause")
+async def on_global_pause(cb: CallbackQuery) -> None:
+    """⏸ Общая пауза — фоновый воркер перестаёт продвигать всё
+    (и обычные проекты, и массовые очереди). Маркер хранится в
+    `data/.global_pause` и переживает рестарт процесса.
+    """
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    from app.services.global_pause import set_active
+
+    set_active(True)
+    logger.info("GLOBAL PAUSE: enabled by user")
+    await cb.answer("⏸ Общая пауза включена")
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(reply_markup=main_menu_kb())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.callback_query(F.data == "menu:gresume")
+async def on_global_resume(cb: CallbackQuery) -> None:
+    """▶ Снять общую паузу."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    from app.services.global_pause import set_active
+
+    set_active(False)
+    logger.info("GLOBAL PAUSE: disabled by user")
+    await cb.answer("▶ Общая пауза снята")
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(reply_markup=main_menu_kb())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @dp.callback_query(F.data.regexp(r"^proj:\d+:reload_xlsx$"))
 async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:

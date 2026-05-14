@@ -1,5 +1,14 @@
 # Handover — video-pipeline (локальный Windows-запуск)
 
+> **🟢 Канонная ветка на 2026-05-14:** `devin/windows-installer`
+> Это default-ветка репо. На ней есть и одиночный пайплайн, и массовая
+> генерация («🎬 Массовое создание» в `/menu` → `mass:*`, меню «⚙ Настройки
+> массовой», парити single↔mass #1-#8, доки `docs/MASS_CREATION.md`,
+> тесты `tests/test_auto_advance_parity.py`).
+> Локально работать так:
+> `git fetch --all --prune && git checkout devin/windows-installer && git pull --ff-only`.
+> Ветка `main` — старый skeleton, **в неё не коммитить**.
+
 Прочитать это ВНИМАТЕЛЬНО перед первым ответом пользователю. Это не код-ревью
 и не новый проект — это **живая отладка на машине пользователя**.
 

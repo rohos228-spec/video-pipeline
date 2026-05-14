@@ -274,9 +274,23 @@ async def _run_worker_loop(bot) -> None:
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ]
+    from app.services.global_pause import is_active as _global_pause_active
     from app.telegram.bot import notify_step_done
 
+    _last_pause_log = False
     while True:
+        # Глобальная пауза: маркер `data/.global_pause`. Когда активна —
+        # воркер не продвигает ни обычные проекты, ни массовые очереди
+        # (serial_tick_batches). Бот остаётся отзывчивым на «▶ Возобновить».
+        if _global_pause_active():
+            if not _last_pause_log:
+                logger.info("worker: global pause active — idling")
+                _last_pause_log = True
+            await asyncio.sleep(5)
+            continue
+        if _last_pause_log:
+            logger.info("worker: global pause снята — продолжаем")
+            _last_pause_log = False
         try:
             async with session_scope() as s:
                 projects = (
