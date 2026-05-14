@@ -141,10 +141,24 @@ INPUT_SELECTORS = [
     "div[contenteditable='true'][data-id='root']",
 ]
 SEND_BUTTON_SELECTORS = [
+    # Свежий UI 2025-Q2/Q3 — composer-submit-button
+    "button[data-testid='composer-submit-button']",
+    "button[data-testid='fruitjuice-send-button']",
+    "button#composer-submit-button",
+    # Старый testid (если ещё не удалили)
     "button[data-testid='send-button']",
+    # aria-label варианты — англ./рус., в т.ч. "Send message", "Отправить промт"
+    "button[aria-label='Send message']",
     "button[aria-label='Send prompt']",
+    "button[aria-label='Send']",
     "button[aria-label='Отправить сообщение']",
+    "button[aria-label='Отправить промт']",
+    "button[aria-label='Отправить']",
     "button[aria-label*='Send']",
+    "button[aria-label*='Отправить']",
+    # Композер-форма + submit-кнопка (универсальный fallback)
+    "form[data-type='unified-composer'] button[type='submit']",
+    "main form button[type='submit']",
 ]
 STOP_BUTTON_SELECTORS = [
     "button[data-testid='stop-button']",
@@ -273,18 +287,58 @@ class ChatGPTBot:
             pass
         await page.keyboard.insert_text(text)
         # Небольшая пауза, чтобы кнопка Send активировалась.
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
+        logger.info("ChatGPT: текст промта введён ({} символов), ищу Send", len(text))
 
         # Находим кнопку отправки — ждём, пока она активна
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=15)
+        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=8)
         if send_sel:
+            logger.info("ChatGPT: Send button найдена ({})", send_sel)
             try:
-                await page.locator(send_sel).first.click()
+                await page.locator(send_sel).first.click(timeout=5_000)
+                logger.info("ChatGPT: Send button нажата успешно")
                 return
-            except Exception:  # noqa: BLE001
-                pass
-        # запасной путь — Enter (в contenteditable ChatGPT реагирует)
-        await page.keyboard.press("Enter")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: Send button найдена ({}), но клик упал: {}",
+                    send_sel, e,
+                )
+        else:
+            logger.warning(
+                "ChatGPT: Send button НЕ найдена ни одним из {} селекторов "
+                "за 8 сек — UI ChatGPT мог измениться. Дамплю композер для диагностики.",
+                len(SEND_BUTTON_SELECTORS),
+            )
+            await self._dump_composer_html()
+            await self._dump_send_button_candidates(page)
+
+        # Запасной путь — Enter (в contenteditable ChatGPT часто реагирует).
+        logger.info("ChatGPT: fallback — жму Enter")
+        try:
+            await page.keyboard.press("Enter")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: Enter тоже упал: {}", e)
+
+    async def _dump_send_button_candidates(self, page: Page) -> None:
+        """Если SEND_BUTTON_SELECTORS не сработали — логируем outerHTML всех
+        кнопок внутри композера, чтобы вручную найти правильный селектор."""
+        try:
+            buttons = await page.evaluate(
+                """() => {
+                    const form = document.querySelector('main form')
+                        || document.querySelector('form[data-type="unified-composer"]')
+                        || document.querySelector('form');
+                    if (!form) return ['no form found in DOM'];
+                    const btns = form.querySelectorAll('button');
+                    return Array.from(btns).map(b => b.outerHTML.slice(0, 400));
+                }"""
+            )
+            for i, html in enumerate(buttons or []):
+                logger.info("ChatGPT: composer button[{}]: {}", i, html)
+            if not buttons:
+                logger.warning("ChatGPT: ни одной <button> внутри композера")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: dump_send_button_candidates упал: {}", e)
 
     async def _wait_until_done(self, *, timeout: float = 300) -> None:
         """Ждём, пока пропадёт кнопка "Stop generating"."""

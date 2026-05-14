@@ -720,6 +720,38 @@ _INPUT_REF_MARKERS = (
 )
 
 
+def _strip_url_query(url: str | None) -> str:
+    """Снимает `?query` и `#fragment`, оставляет scheme+host+path.
+
+    Outsee.io хранит thumb'ы в Yandex Cloud Storage с подписанными URL
+    `…image_X.jpg?X-Amz-Algorithm=...&X-Amz-Signature=…`. Подписи
+    перевыпускаются на каждом ререндере страницы, поэтому одна и та же
+    галерейная картинка в baseline и в DOM после Generate имеет РАЗНЫЕ
+    URL-строки — без нормализации все галерейные thumb'ы фолсли
+    помечались «новыми» и `clean[-1]/clean[0]` уносил случайную старую.
+
+    Stable-идентификатор картинки = host+path, потому что
+    `image_<ts>_<idx>_thumb.jpg` уникален на стороне outsee и не меняется
+    между перевыпусками подписи.
+    """
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(url)
+        return f"{p.scheme}://{p.netloc}{p.path}"
+    except Exception:  # noqa: BLE001
+        # На совсем странных URL'ах оставляем как есть.
+        i = url.find("?")
+        if i >= 0:
+            url = url[:i]
+        i = url.find("#")
+        if i >= 0:
+            url = url[:i]
+        return url
+
+
 def _url_is_fresh(
     url: str | None, net_events: list[tuple[float, str]] | None
 ) -> bool:
@@ -908,9 +940,17 @@ class OutseeBot:
 
         # Снимок «до» — все большие картинки и URL-ы, которые уже на странице.
         # Свежим результатом считаем ТОЛЬКО то, чего тут не было.
-        baseline_result_img = await self._result_img_src(page)
-        baseline_big_imgs = set(await self._all_big_imgs(page))
-        baseline_dom_srcs = set(await self._all_img_srcs(page))
+        # ВАЖНО: храним baseline как НОРМАЛИЗОВАННЫЕ host+path (без
+        # `?X-Amz-Signature=...`). Иначе re-sign на каждом ререндере
+        # делает все галерейные thumb'ы «новыми» и бот хватает старую
+        # картинку из истории outsee.
+        baseline_result_img = _strip_url_query(await self._result_img_src(page))
+        baseline_big_imgs = {
+            _strip_url_query(u) for u in await self._all_big_imgs(page)
+        }
+        baseline_dom_srcs = {
+            _strip_url_query(u) for u in await self._all_img_srcs(page)
+        }
         logger.info(
             "outsee.generate_image: baseline result_img={}, big_imgs={}, all_imgs={}",
             (baseline_result_img[:80] if baseline_result_img else None),
@@ -1044,9 +1084,16 @@ class OutseeBot:
             # Relax, референс) — клики по dropdown вызывают ререндер
             # правой панели и могут «принести» в DOM другую картинку,
             # которую мы иначе ошибочно посчитаем «новым результатом».
-            baseline_result_img = await self._result_img_src(page)
-            baseline_big_imgs = set(await self._all_big_imgs(page))
-            baseline_dom_srcs = set(await self._all_img_srcs(page))
+            # См. коммент выше про _strip_url_query.
+            baseline_result_img = _strip_url_query(
+                await self._result_img_src(page)
+            )
+            baseline_big_imgs = {
+                _strip_url_query(u) for u in await self._all_big_imgs(page)
+            }
+            baseline_dom_srcs = {
+                _strip_url_query(u) for u in await self._all_img_srcs(page)
+            }
             logger.info(
                 "outsee.generate_image: re-baseline перед Generate "
                 "result_img={}, big_imgs={}, all_imgs={}",
@@ -1173,9 +1220,13 @@ class OutseeBot:
         except Exception:
             pass
 
-        baseline_result_img = await self._result_img_src(page)
-        baseline_big_imgs = set(await self._all_big_imgs(page))
-        baseline_dom_srcs = set(await self._all_img_srcs(page))
+        baseline_result_img = _strip_url_query(await self._result_img_src(page))
+        baseline_big_imgs = {
+            _strip_url_query(u) for u in await self._all_big_imgs(page)
+        }
+        baseline_dom_srcs = {
+            _strip_url_query(u) for u in await self._all_img_srcs(page)
+        }
 
         # На regenerate тоже ведём список реальных сетевых image-ответов
         # ПОСЛЕ клика «Повторить» — это позволяет _wait_image_url_strict
@@ -1357,20 +1408,36 @@ class OutseeBot:
         self, page: Page, baseline_srcs: set[str]
     ) -> list[str]:
         """Возвращает src всех `<img>` на странице, которые:
-          - не были в baseline до старта генерации,
+          - не были в baseline до старта генерации (сравнение по host+path,
+            без `?query` — иначе перевыпуск AWS-подписи на каждом ререндере
+            фолсли помечает галерейные thumb'ы как «новые»),
           - уже полностью загружены (img.complete && naturalWidth>0),
           - имеют natural-размер ≥200×200 (отсекает иконки/аватары).
-        Список упорядочен в порядке появления в DOM (последний элемент —
-        обычно самая «новая» карточка результата)."""
+        Список упорядочен в порядке появления в DOM (первый элемент —
+        самая верхняя карточка в галерее outsee, обычно самая свежая —
+        outsee рендерит результаты сверху-вниз новейшими-первыми).
+
+        ВАЖНО: `baseline_srcs` должен быть множеством НОРМАЛИЗОВАННЫХ
+        URL (без query). Колл-сайт обязан использовать `_strip_url_query`
+        при формировании baseline."""
         baseline_list = list(baseline_srcs)
         try:
             res = await page.evaluate(
                 """(baseline) => {
                     const skip = new Set(baseline);
+                    const stripQ = (u) => {
+                        if (!u) return '';
+                        const hash = u.indexOf('#');
+                        if (hash >= 0) u = u.substring(0, hash);
+                        const q = u.indexOf('?');
+                        if (q >= 0) u = u.substring(0, q);
+                        return u;
+                    };
                     const out = [];
                     for (const img of document.querySelectorAll('img')) {
                         if (!img.src) continue;
-                        if (skip.has(img.src)) continue;
+                        const stable = stripQ(img.src);
+                        if (skip.has(stable)) continue;
                         if (img.src.startsWith('data:')) continue;
                         if (img.src.includes('/placeholder.svg')) continue;
                         if (!img.complete) continue;
@@ -1769,6 +1836,10 @@ class OutseeBot:
         # URL'ы, для которых клик-верификация уже была проведена и
         # ID не совпал. Чтобы не кликать одну и ту же чужую картинку
         # снова и снова.
+        # Храним НОРМАЛИЗОВАННЫЕ URL (без query), потому что re-sign
+        # на каждом ререндере меняет raw URL, и «та же» чужая
+        # картинка в следующем итерейшене click-verify выглядела бы как
+        # другой URL.
         rejected_candidates: set[str] = set()
 
         while asyncio.get_event_loop().time() < deadline:
@@ -1786,9 +1857,10 @@ class OutseeBot:
                     page, prompt_id_prefix
                 )
                 if by_id:
+                    by_id_norm = _strip_url_query(by_id)
                     fresh_ok = (
-                        by_id != baseline_result_img
-                        and by_id not in baseline_all_srcs
+                        by_id_norm != baseline_result_img
+                        and by_id_norm not in baseline_all_srcs
                         and not any(
                             m in by_id.lower() for m in _UI_ASSET_MARKERS
                         )
@@ -1814,9 +1886,10 @@ class OutseeBot:
             # как safety-net (с WARNING в лог).
             current = await self._result_img_src(page)
             last_seen_result = current
+            current_norm = _strip_url_query(current) if current else ""
             if (
                 current
-                and current != baseline_result_img
+                and current_norm != baseline_result_img
                 and not current.endswith("/placeholder.svg")
                 and "data:image" not in current
                 and not any(
@@ -1825,7 +1898,7 @@ class OutseeBot:
                 and not any(
                     m in current.lower() for m in _UI_ASSET_MARKERS
                 )
-                and current not in baseline_all_srcs
+                and current_norm not in baseline_all_srcs
             ):
                 if await self._img_is_loaded(page, current):
                     if _url_is_fresh(current, net_events):
@@ -1841,8 +1914,11 @@ class OutseeBot:
                             return current
                         else:
                             # С ID-верификацией — только запоминаем,
-                            # если ещё не отвергали этот URL.
-                            if current not in rejected_candidates:
+                            # если ещё не отвергали этот URL (по норм.).
+                            if (
+                                _strip_url_query(current)
+                                not in rejected_candidates
+                            ):
                                 fallback_candidate = current
                                 fallback_source = "result_block"
 
@@ -1855,11 +1931,22 @@ class OutseeBot:
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
                 ]
                 clean = [u for u in clean if _url_is_fresh(u, net_events)]
-                # Исключаем уже отвергнутых при ID-верификации.
+                # Исключаем уже отвергнутых при ID-верификации (сравнение
+                # по нормализованным URL'ам — см. _strip_url_query).
                 if prompt_id_prefix:
-                    clean = [u for u in clean if u not in rejected_candidates]
+                    clean = [
+                        u for u in clean
+                        if _strip_url_query(u) not in rejected_candidates
+                    ]
                 if clean:
-                    chosen = clean[-1]
+                    # ПИКАЕМ FIRST (не last): outsee рендерит результаты
+                    # сверху-вниз новейшими-первыми, поэтому первый элемент DOM
+                    # в `new_srcs` — самая свежая карточка. Старый код
+                    # брал clean[-1] — last — и в ситуации «все галерейные
+                    # thumb'ы выглядят new из-за re-sign URL» это приводило
+                    # к скачиванию старой картинки. Теперь baseline нормализован
+                    # (без query) + берём first.
+                    chosen = clean[0]
                     if not prompt_id_prefix:
                         logger.info(
                             "_wait_image_url_strict: новая <img> в DOM за "
@@ -1870,9 +1957,20 @@ class OutseeBot:
                         )
                         return chosen
                     else:
-                        # С ID-верификацией — только запоминаем как fallback.
+                        # С ID-верификацией — запоминаем как fallback,
+                        # но click-verify всё равно сработает (или net_events).
                         fallback_candidate = chosen
                         fallback_source = "new_dom"
+                        # Диагностика: сколько «новых» набралось в список —
+                        # если больше 1, то это признак re-sign или gallery
+                        # refresh — логируем, чтобы было понятно в логе.
+                        if len(clean) > 1:
+                            logger.info(
+                                "_wait_image_url_strict: new_srcs={} (>1) — "
+                                "беру первый по DOM (новейший в outsee), "
+                                "проверю click/net_events: {}",
+                                len(clean), chosen[:120],
+                            )
 
             # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его.
             #
@@ -1894,7 +1992,8 @@ class OutseeBot:
             if (
                 prompt_id_prefix
                 and fallback_candidate is not None
-                and fallback_candidate not in rejected_candidates
+                and _strip_url_query(fallback_candidate)
+                not in rejected_candidates
             ):
                 # A. net_events trust path. Если URL пришёл по сети
                 # после Generate-клика — это сильная гарантия, что
@@ -1932,7 +2031,9 @@ class OutseeBot:
                         "картинка из gallery, ждём дальше",
                         fallback_candidate[:100], fallback_source,
                     )
-                    rejected_candidates.add(fallback_candidate)
+                    rejected_candidates.add(
+                        _strip_url_query(fallback_candidate)
+                    )
                     fallback_candidate = None
                     fallback_source = None
                     # Подождём ещё пока придёт НОВАЯ картинка.
