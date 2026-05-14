@@ -624,6 +624,7 @@ from app.telegram.mass_menu import (  # noqa: E402
     mass_main_kb,
     mass_progress_kb,
     mass_settings_kb,
+    mass_settings_text,
     mass_topics_kb,
     progress_text,
     topics_text,
@@ -896,6 +897,7 @@ async def on_mass_sub_open(cb: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("mass:settings:"))
 async def on_mass_settings(cb: CallbackQuery) -> None:
+    """(BLOCK B) Открывает полноценное меню «⚙ Настройки массовой»."""
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -909,27 +911,86 @@ async def on_mass_settings(cb: CallbackQuery) -> None:
         if batch is None:
             await cb.answer("Массовый не найден", show_alert=True)
             return
-        snap = batch.settings_snapshot or {}
-        kb = mass_settings_kb(batch)
-        # Список ключей snapshot
-        lines: list[str] = [f"<b>⚙ Настройки шаблона «{batch.name}»</b>"]
-        if not snap:
-            lines.append(
-                "\nSnapshot пуст — настройки наследуются из проекта-шаблона "
-                "ИЛИ заполняются при создании первого подпроекта (через "
-                "обычный wizard). PR #2 добавит явное редактирование "
-                "шаблона на уровне массового."
-            )
-        else:
-            lines.append("\nТекущий snapshot настроек (применяется ко всем подпроектам):")
-            for k, v in snap.items():
-                if isinstance(v, (dict, list)):
-                    v_repr = f"<i>{type(v).__name__}, {len(v)} items</i>"
-                else:
-                    v_repr = f"<code>{str(v)[:50]}</code>"
-                lines.append(f"  • <b>{k}</b>: {v_repr}")
+        ms = batches_svc.get_mass_settings(batch)
+        kb = mass_settings_kb(batch, ms)
+        text = mass_settings_text(batch, ms)
     await cb.answer()
-    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:tog:"))
+async def on_mass_settings_toggle(cb: CallbackQuery) -> None:
+    """(BLOCK B) Toggle bool-поля в mass_settings."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) < 4:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    try:
+        bid = int(parts[2])
+    except ValueError:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    field = parts[3]
+    async with session_scope() as s:
+        batch = await batches_svc.toggle_mass_setting(s, bid, field)
+        if batch is None:
+            await cb.answer("Неизвестное поле", show_alert=True)
+            return
+        ms = batches_svc.get_mass_settings(batch)
+        kb = mass_settings_kb(batch, ms)
+        text = mass_settings_text(batch, ms)
+    await cb.answer("Сохранено")
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:setnum:"))
+async def on_mass_settings_setnum(cb: CallbackQuery) -> None:
+    """(BLOCK B) Инкремент/декремент int-поля в mass_settings."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) < 5:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    try:
+        bid = int(parts[2])
+        delta = int(parts[4])
+    except ValueError:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    field = parts[3]
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        ms = batches_svc.get_mass_settings(batch)
+        cur = int(ms.get(field, 0))
+        new_val = cur + delta
+        updated = await batches_svc.set_mass_setting(s, bid, field, new_val)
+        if updated is None:
+            await cb.answer("Неизвестное поле", show_alert=True)
+            return
+        ms2 = batches_svc.get_mass_settings(updated)
+        kb = mass_settings_kb(updated, ms2)
+        text = mass_settings_text(updated, ms2)
+    await cb.answer()
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "mass:noop")
+async def on_mass_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("mass:delete:"))

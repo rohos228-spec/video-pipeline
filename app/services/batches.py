@@ -624,6 +624,205 @@ def get_permanent_product(batch: BatchProject) -> dict | None:
 
 
 # ----------------------------------------------------------------------
+# BLOCK B — Настройки массовой генерации
+# ----------------------------------------------------------------------
+
+# Дефолты всех «переключателей» режима. Хранятся в
+# batch.settings_snapshot["mass_settings"] (JSON sub-dict).
+DEFAULT_MASS_SETTINGS: dict = {
+    "enrich_slots_count": 3,        # 1..5
+    "hero_count": 1,                # 1..5
+    "hero_variations": 1,           # 1..5 (применяется ко всем героям)
+    "excel_hero_enabled": False,    # bool
+    "auto_mode": True,              # bool — default for sub-projects
+    "bgm_enabled": False,           # bool
+    "bgm_level": 70,                # 0..100
+    "pause_minutes": 0,             # пауза между sub'ами, мин
+    "max_parallelism": 1,           # пока всегда 1
+    "auto_review_kinds": [],        # пусто — visual=auto-approve
+}
+
+_INT_LIMITS: dict[str, tuple[int, int]] = {
+    "enrich_slots_count": (1, 5),
+    "hero_count": (1, 5),
+    "hero_variations": (1, 5),
+    "bgm_level": (0, 100),
+    "pause_minutes": (0, 1440),
+    "max_parallelism": (1, 1),  # пока фиксируем 1
+}
+
+_BOOL_FIELDS = {
+    "excel_hero_enabled",
+    "auto_mode",
+    "bgm_enabled",
+}
+
+_KNOWN_AUTO_REVIEW_KINDS = (
+    "approve_plan",
+    "approve_script",
+    "approve_hero",
+    "approve_images",
+    "approve_videos",
+    "approve_final",
+)
+
+
+def get_mass_settings(batch: BatchProject) -> dict:
+    """Читает настройки массового с дефолтами.
+
+    Система хранения: batch.settings_snapshot["mass_settings"]
+    (JSON sub-dict). Суб-проекты при старте очереди получают
+    эти значения в свои поля / meta (см. apply_mass_settings_to_subs).
+    """
+    snap = batch.settings_snapshot or {}
+    raw = snap.get("mass_settings") or {}
+    merged: dict = dict(DEFAULT_MASS_SETTINGS)
+    if isinstance(raw, dict):
+        for k, default in DEFAULT_MASS_SETTINGS.items():
+            v = raw.get(k, default)
+            if isinstance(default, bool):
+                merged[k] = bool(v)
+            elif isinstance(default, int):
+                lo, hi = _INT_LIMITS.get(k, (None, None))
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    iv = int(default)
+                if lo is not None and hi is not None:
+                    iv = max(lo, min(hi, iv))
+                merged[k] = iv
+            elif isinstance(default, list):
+                if isinstance(v, list):
+                    merged[k] = [
+                        x for x in v
+                        if isinstance(x, str) and x in _KNOWN_AUTO_REVIEW_KINDS
+                    ]
+                else:
+                    merged[k] = list(default)
+    return merged
+
+
+async def set_mass_setting(
+    session: AsyncSession,
+    batch_id: int,
+    field: str,
+    value,
+) -> BatchProject | None:
+    """Установить одно поле масс-настроек (типы/границы сами
+    проверяем). Value-приведение: bool/int/list — по дефолтуф
+    в DEFAULT_MASS_SETTINGS[field]."""
+    batch = await get_batch(session, batch_id)
+    if batch is None or field not in DEFAULT_MASS_SETTINGS:
+        return None
+    current = get_mass_settings(batch)
+    default = DEFAULT_MASS_SETTINGS[field]
+    if isinstance(default, bool):
+        current[field] = bool(value)
+    elif isinstance(default, int):
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            iv = int(default)
+        lo, hi = _INT_LIMITS.get(field, (None, None))
+        if lo is not None and hi is not None:
+            iv = max(lo, min(hi, iv))
+        current[field] = iv
+    elif isinstance(default, list):
+        if isinstance(value, list):
+            current[field] = [
+                x for x in value
+                if isinstance(x, str) and x in _KNOWN_AUTO_REVIEW_KINDS
+            ]
+    snap = dict(batch.settings_snapshot or {})
+    snap["mass_settings"] = current
+    batch.settings_snapshot = snap
+    await session.flush()
+    return batch
+
+
+async def toggle_mass_setting(
+    session: AsyncSession, batch_id: int, field: str
+) -> BatchProject | None:
+    """Переключает bool-поле; для «ложных bool» мы трактуем
+    auto_review_kinds.<kind> как присутствие в списке."""
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return None
+    current = get_mass_settings(batch)
+    if field in _BOOL_FIELDS:
+        current[field] = not bool(current.get(field))
+    elif field.startswith("auto_review_kinds."):
+        kind = field.split(".", 1)[1]
+        if kind not in _KNOWN_AUTO_REVIEW_KINDS:
+            return batch
+        lst = list(current.get("auto_review_kinds") or [])
+        if kind in lst:
+            lst.remove(kind)
+        else:
+            lst.append(kind)
+        current["auto_review_kinds"] = lst
+    else:
+        return batch
+    snap = dict(batch.settings_snapshot or {})
+    snap["mass_settings"] = current
+    batch.settings_snapshot = snap
+    await session.flush()
+    return batch
+
+
+async def apply_mass_settings_to_subs(
+    session: AsyncSession, batch_id: int
+) -> int:
+    """Перед стартом очереди переносим масс-настройки в каждый
+    sub-project, который ещё не вышел из status==new (сохраняем
+    parity-принцип #7: in-flight sub'ы НЕ трогаем).
+
+    Маппинг:
+      enrich_slots_count, hero_count, hero_variations → прямо в колонки.
+      auto_mode                                       → прямо в колонку.
+      excel_hero_enabled                              → meta["excel_hero_enabled"].
+      bgm_*, pause_minutes, max_parallelism           → meta["mass_*"].
+      auto_review_kinds                               → meta["auto_review_kinds"].
+    Returns: количество обновлённых sub-проектов.
+    """
+    batch = await get_batch(session, batch_id)
+    if batch is None:
+        return 0
+    ms = get_mass_settings(batch)
+    subs = (
+        await session.execute(
+            select(Project).where(
+                Project.batch_id == batch_id,
+                Project.status == ProjectStatus.new,
+            )
+        )
+    ).scalars().all()
+    if not subs:
+        return 0
+    n_hero = int(ms["hero_count"])
+    n_var = int(ms["hero_variations"])
+    for p in subs:
+        p.enrich_slots_count = int(ms["enrich_slots_count"])
+        p.hero_count = n_hero
+        p.hero_variations = [n_var] * n_hero
+        p.auto_mode = bool(ms["auto_mode"])
+        m = dict(p.meta or {})
+        m["excel_hero_enabled"] = bool(ms["excel_hero_enabled"])
+        m["mass_bgm_enabled"] = bool(ms["bgm_enabled"])
+        m["mass_bgm_level"] = int(ms["bgm_level"])
+        m["mass_pause_minutes"] = int(ms["pause_minutes"])
+        m["mass_max_parallelism"] = int(ms["max_parallelism"])
+        m["auto_review_kinds"] = list(ms["auto_review_kinds"])
+        p.meta = m
+    await session.flush()
+    logger.info(
+        "batch #{} ({}): applied mass settings to {} sub(s)",
+        batch.id, batch.slug, len(subs),
+    )
+    return len(subs)
+
+
+# ----------------------------------------------------------------------
 # Управление очередью (PR #2)
 # ----------------------------------------------------------------------
 
@@ -641,16 +840,23 @@ async def start_batch_queue(
     if batch is None:
         return None
     batch.status = BatchStatus.running
-    # Включаем auto_mode для всех подпроектов которые ещё в работе.
+    # (BLOCK B) Перед стартом — переносим mass_settings в каждый
+    # sub (только в status==new). Остальные in-flight sub'ы неизменны.
+    await apply_mass_settings_to_subs(session, batch_id)
+    # Включаем auto_mode для всех подпроектов которые ещё в работе,
+    # переопределяя масс-настройкой auto_mode (юзер может хотеть
+    # ruchnoy режим внутри batch'а).
     subs = await get_batch_subprojects(session, batch_id)
     terminal = {ProjectStatus.published, ProjectStatus.failed}
+    ms = get_mass_settings(batch)
+    auto_default = bool(ms["auto_mode"])
     for p in subs:
         if p.status not in terminal:
-            p.auto_mode = True
+            p.auto_mode = auto_default
     await session.flush()
     logger.info(
-        "batch #{} ({}): очередь запущена, подпроектов в auto-режиме: {}",
-        batch.id, batch.slug,
+        "batch #{} ({}): очередь запущена, auto_mode default={}, субы: {}",
+        batch.id, batch.slug, auto_default,
         sum(1 for p in subs if p.status not in terminal),
     )
     return batch

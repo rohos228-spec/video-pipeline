@@ -245,23 +245,100 @@ def mass_delete_confirm_kb(batch: BatchProject) -> InlineKeyboardMarkup:
     )
 
 
-def mass_settings_kb(batch: BatchProject) -> InlineKeyboardMarkup:
-    """На стартовой PR — только просмотр текущих настроек snapshot.
+def mass_settings_kb(batch: BatchProject, ms: dict) -> InlineKeyboardMarkup:
+    """(BLOCK B) Полноценное меню «⚙ Настройки массовой» — ряд
+    переключателей/инкрементов, сохраняется в batch.settings_snapshot
+    ["mass_settings"]. Суб-проекты получают эти значения при
+    старте очереди (apply_mass_settings_to_subs).
 
-    Редактирование snapshot — в PR #2 (отдельная задача, нужно дублировать
-    весь wizard).
+    Коллбэки:
+      mass:setnum:<bid>:<field>:<delta>     # +/- для int-полей
+      mass:tog:<bid>:<field>                # bool toggle / auto_review_kinds.<kind>
+      mass:setval:<bid>:<field>:<value>     # фиксированное значение
     """
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="ℹ Шаблон редактируется через эталонный проект",
+    def _bool_btn(label: str, field: str) -> InlineKeyboardButton:
+        on = bool(ms.get(field))
+        icon = "✅" if on else "⚪"
+        return InlineKeyboardButton(
+            text=f"{icon} {label}",
+            callback_data=f"mass:tog:{batch.id}:{field}",
+        )
+
+    def _int_row(label: str, field: str, *, fmt: str = "{v}") -> list[InlineKeyboardButton]:
+        v = int(ms.get(field, 0))
+        return [
+            InlineKeyboardButton(
+                text="−",
+                callback_data=f"mass:setnum:{batch.id}:{field}:-1",
+            ),
+            InlineKeyboardButton(
+                text=f"{label}: {fmt.format(v=v)}",
                 callback_data="mass:noop",
-            )],
-            [InlineKeyboardButton(
-                text="⬅ К меню массового",
-                callback_data=f"mass:open:{batch.id}",
-            )],
+            ),
+            InlineKeyboardButton(
+                text="+",
+                callback_data=f"mass:setnum:{batch.id}:{field}:+1",
+            ),
         ]
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [_bool_btn("Auto-mode (GPT вместо кнопок)", "auto_mode")],
+        _int_row("Enrich слотов", "enrich_slots_count"),
+        _int_row("Hero count", "hero_count"),
+        _int_row("Hero variations", "hero_variations"),
+        [_bool_btn("Excel-режим персонажей", "excel_hero_enabled")],
+        [_bool_btn("BGM включён", "bgm_enabled")],
+        _int_row("BGM уровень (%)", "bgm_level"),
+        _int_row("Пауза между sub (мин)", "pause_minutes"),
+        _int_row(
+            "Макс параллельность", "max_parallelism",
+        ),
+    ]
+    # Visual auto-review kinds — свои toggle'ы.
+    rows.append([InlineKeyboardButton(
+        text="— GPT-vision проверяет —", callback_data="mass:noop",
+    )])
+    kinds_on = set(ms.get("auto_review_kinds") or [])
+    for kind, label in (
+        ("approve_hero", "Персонажи (hero)"),
+        ("approve_images", "Картинки (images)"),
+        ("approve_videos", "Видео (videos)"),
+        ("approve_final", "Финальное видео (final)"),
+    ):
+        icon = "✅" if kind in kinds_on else "⚪"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {label}",
+            callback_data=f"mass:tog:{batch.id}:auto_review_kinds.{kind}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="⬅ К меню массового",
+        callback_data=f"mass:open:{batch.id}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def mass_settings_text(batch: BatchProject, ms: dict) -> str:
+    """(BLOCK B) Текстовое описание текущих настроек."""
+    head = f"<b>⚙ Настройки массовой «{_html.escape(batch.name)}»</b>"
+    return (
+        f"{head}\n"
+        f"\n<b>Режим выполнения:</b>"
+        f"\n  Auto-mode: {'ДА' if ms.get('auto_mode') else 'НЕТ (ручные кнопки)'}"
+        f"\n  Макс параллельность: {ms.get('max_parallelism')}"
+        f"\n  Пауза между sub'ами: {ms.get('pause_minutes')} мин"
+        f"\n\n<b>Генерация:</b>"
+        f"\n  Enrich слотов: {ms.get('enrich_slots_count')} (1..5)"
+        f"\n  Hero count: {ms.get('hero_count')}"
+        f"\n  Hero variations: {ms.get('hero_variations')}"
+        f"\n  Excel-режим персонажей: {'ДА' if ms.get('excel_hero_enabled') else 'НЕТ'}"
+        f"\n\n<b>BGM:</b>"
+        f"\n  Включён: {'ДА' if ms.get('bgm_enabled') else 'НЕТ'}"
+        f"\n  Уровень: {ms.get('bgm_level')}%"
+        f"\n\n<b>GPT-vision включён для:</b>"
+        f"\n  {', '.join(ms.get('auto_review_kinds') or []) or '— (всё auto-approve)'}"
+        f"\n\n<i>Изменения сохраняются в settings_snapshot и применяются"
+        f"\nко всем sub-проектам в статусе 'new' при старте очереди. Суб'ы,"
+        f"\nкоторые уже в работе, НЕ перезаписываются.</i>"
     )
 
 
