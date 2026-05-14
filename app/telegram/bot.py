@@ -3509,9 +3509,12 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
     replace_with(proj_xlsx, tmp_path)
     tmp_path.unlink(missing_ok=True)
 
-    # Reload xlsx → БД.
+    # Reload xlsx → БД. Пробуем v8-импорт (лист «план», R45/R48/R49) и v7-синк
+    # (лист «Кадры», R29) — в любом порядке, тот что не подходит — no-op.
+    # Раньше был только v7, и на v8-xlsx image_prompt/animation_prompt не попадали в БД.
     try:
         from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
 
         async with session_scope() as s:
             project = (
@@ -3520,10 +3523,19 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
                 )
             ).scalar_one_or_none()
             if project is not None:
-                summary = await reload_from_xlsx(s, project, proj_xlsx)
-                logger.info(
-                    "xlsx_replace: reload_from_xlsx → {}", summary
-                )
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx,
+                        keep_fields=False, update_frames_voiceover=True,
+                    )
+                    logger.info("xlsx_replace: v8 import → {}", info_v8)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("xlsx_replace: v8 import failed: {}", e)
+                try:
+                    info_v7 = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info("xlsx_replace: v7 reload_from_xlsx → {}", info_v7)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("xlsx_replace: v7 reload_from_xlsx failed: {}", e)
     except Exception as e:  # noqa: BLE001
         logger.exception("xlsx_replace reload failed: {}", e)
 
@@ -3658,6 +3670,7 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         return
     pid = int((cb.data or "").split(":")[1])
     from app.services.xlsx_sync import reload_from_xlsx
+    from app.services.xlsx_v8_import import import_v8_xlsx
 
     async with session_scope() as s:
         project = (
@@ -3670,20 +3683,47 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         if not xlsx_path.exists():
             await cb.answer("xlsx-файла нет", show_alert=True)
             return
+        # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
+        # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
+        # ROOT FIX: раньше вызывался только v7 — и на v8-xlsx этот клик был пустым.
+        summary_v8: dict = {}
+        summary_v7: dict = {}
         try:
-            summary = await reload_from_xlsx(s, project, xlsx_path)
+            summary_v8 = await import_v8_xlsx(
+                s, project, xlsx_path,
+                keep_fields=False, update_frames_voiceover=True,
+            )
         except Exception as e:  # noqa: BLE001
-            logger.exception("reload_from_xlsx failed")
-            await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
-            return
-        proj_fields = summary.get("project_fields_changed") or []
-        frames_changed = summary.get("frames_changed") or []
+            logger.warning("reload_xlsx v8 import failed: {}", e)
+        try:
+            summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("reload_from_xlsx (v7) failed")
+            if not summary_v8:
+                await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
+                return
+        proj_fields = list(
+            dict.fromkeys(
+                (summary_v8.get("project_fields_changed") or [])
+                + (summary_v7.get("project_fields_changed") or [])
+            )
+        )
+        frames_changed = list(
+            dict.fromkeys(
+                (summary_v8.get("frames_updated") or [])
+                + (summary_v8.get("frames_created") or [])
+                + (summary_v7.get("frames_changed") or [])
+            )
+        )
+        prompts_synced = summary_v8.get("prompts_synced") or []
     await cb.answer("Перечитал")
     parts = []
     if proj_fields:
         parts.append("project: " + ", ".join(proj_fields))
     if frames_changed:
         parts.append(f"кадры: {len(frames_changed)} ({frames_changed})")
+    if prompts_synced:
+        parts.append(f"image/anim prompts: {prompts_synced}")
     if not parts:
         parts.append("ничего нового — ваши правки уже в БД")
     await cb.message.answer("🔄 Перечитал xlsx.\n" + "\n".join(parts))
