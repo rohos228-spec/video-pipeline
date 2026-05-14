@@ -55,6 +55,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services import gpt_text_builder as gtb
+from app.services.excel_characters import ExcelCharacter
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.prompt_library import (
@@ -163,6 +164,72 @@ async def _is_regen_for_pair(
     return False
 
 
+async def _approved_excel_ids(
+    session: AsyncSession, project: Project
+) -> set[str]:
+    """Множество ID персонажей из excel-режима, у которых HITL-карточка
+    `approve_hero` помечена как `approved`. ID берётся из `payload.excel_id`."""
+    rows = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+                HITLRequest.decision == HITLDecision.approved,
+            )
+        )
+    ).scalars().all()
+    out: set[str] = set()
+    for r in rows:
+        p = r.payload or {}
+        xid = p.get("excel_id")
+        if isinstance(xid, str) and xid:
+            out.add(xid)
+    return out
+
+
+async def _is_regen_for_excel_id(
+    session: AsyncSession, project: Project, excel_id: str
+) -> bool:
+    """True если последнее HITL-решение по этому excel_id — regenerate."""
+    rows = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+            )
+            .order_by(desc(HITLRequest.id))
+        )
+    ).scalars().all()
+    for r in rows:
+        p = r.payload or {}
+        if p.get("excel_id") == excel_id:
+            return r.decision is HITLDecision.regenerate
+    return False
+
+
+async def _excel_artifact_for_id(
+    session: AsyncSession, project: Project, excel_id: str
+) -> Artifact | None:
+    """Самый свежий артефакт hero_reference с meta.excel_id == excel_id."""
+    rows = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+            .order_by(desc(Artifact.id))
+        )
+    ).scalars().all()
+    for a in rows:
+        m = a.meta or {}
+        if m.get("excel_id") == excel_id:
+            return a
+    return None
+
+
 async def _v1_artifact_for_hero(
     session: AsyncSession, project: Project, hero_idx: int
 ) -> Artifact | None:
@@ -191,6 +258,16 @@ async def _v1_artifact_for_hero(
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
+        return
+
+    # Excel-режим: если юзер запустил генерацию из листа «Персонажи»
+    # (кнопка «🧾 Из EXCEL»), в project.meta['excel_hero'] лежит список
+    # персонажей. Идём по отдельной ветке — hero_descriptions/hero_count
+    # в этом режиме не используются.
+    meta = dict(project.meta or {})
+    excel_cfg = meta.get("excel_hero")
+    if excel_cfg and isinstance(excel_cfg, dict):
+        await _run_excel(session, project, bot, excel_cfg)
         return
 
     if project.hero_mode == "no_hero" or project.hero_count == 0:
@@ -433,7 +510,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         # 4) Генерация в outsee.
         outsee = OutseeBot(bs)
-        out_dir = Path(settings.data_dir) / "videos" / project.slug / "characters"
+        out_dir = project.data_dir / "characters"
         img_gen = IMAGE_GENERATORS_BY_ID.get(
             project.image_generator or DEFAULTS["image_generator"]
         )
@@ -614,6 +691,347 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "hero_total": n_total,
             "variation_index": v_idx,
             "variations_total": n_variations,
+            "hero_style": style_chosen,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Excel-режим (кнопка «🧾 Из EXCEL» в шаге 4): персонажи берутся из листа
+# «Персонажи» project.xlsx. Каждый персонаж — отдельная HITL-карточка.
+#   - Без ref_ids → полный GPT-промт (как v=1 обычного hero).
+#   - С ref_ids → без GPT, текст изменений из excel + reference image(s)
+#                 одобренных персонажей.
+# Имя файла на выходе = `<id>.png` (id из R1 листа «Персонажи»).
+# ---------------------------------------------------------------------------
+
+
+def _excel_characters_from_meta(cfg: dict) -> list[ExcelCharacter]:
+    raw = cfg.get("characters") or []
+    out: list[ExcelCharacter] = []
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        try:
+            out.append(ExcelCharacter.from_dict(d))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("excel_hero: пропускаю кривого персонажа {}: {}", d, e)
+    return out
+
+
+async def _run_excel(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    cfg: dict,
+) -> None:
+    """Одна итерация excel-режима: обрабатывает первого подходящего
+    не-одобренного персонажа. Worker дёргает run() заново до тех пор,
+    пока статус не уйдёт в `hero_ready`."""
+    chars = _excel_characters_from_meta(cfg)
+    if not chars:
+        logger.warning(
+            "[#{}] excel_hero: список персонажей пуст — переход в hero_ready",
+            project.id,
+        )
+        project.status = ProjectStatus.hero_ready
+        return
+
+    approved = await _approved_excel_ids(session, project)
+    if all(ch.id in approved for ch in chars):
+        logger.info(
+            "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
+            project.id, len(chars),
+        )
+        project.status = ProjectStatus.hero_ready
+        return
+
+    # Ищем первого подходящего:
+    #  - не одобрен;
+    #  - если есть ref_ids — ВСЕ они уже одобрены.
+    # Если такой не найден среди тех, что не одобрены — это deadlock:
+    # все оставшиеся ждут чужих рефов, которые тоже ждут (циклическая
+    # ссылка) или referenced id не существует.
+    target: ExcelCharacter | None = None
+    skipped: list[ExcelCharacter] = []
+    for ch in chars:
+        if ch.id in approved:
+            continue
+        if ch.ref_ids and not all(r in approved for r in ch.ref_ids):
+            skipped.append(ch)
+            continue
+        target = ch
+        break
+
+    if target is None:
+        # Deadlock: остались только реф-вариации с не-одобренными ссылками.
+        names = ", ".join(ch.id for ch in skipped)
+        msg = (
+            f"🚫 Проект #{project.id} excel-hero: "
+            f"остались только персонажи с не-одобренными ссылками "
+            f"({names}). Проверь правила (R7) листа «Персонажи» — "
+            "возможно, циклическая ссылка или ссылка на несуществующий "
+            "ID. Статус откатил в <b>frames_ready</b>."
+        )
+        logger.error("[#{}] excel_hero deadlock: {}", project.id, names)
+        project.status = ProjectStatus.frames_ready
+        await session.flush()
+        try:
+            await bot.send_message(
+                settings.telegram_owner_chat_id, msg, parse_mode="HTML"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
+        return
+
+    await _generate_one_excel_character(
+        session, project, bot, target, chars=chars, approved=approved
+    )
+
+
+async def _generate_one_excel_character(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    ch: ExcelCharacter,
+    *,
+    chars: list[ExcelCharacter],
+    approved: set[str],
+) -> None:
+    """Генерирует одну картинку для excel-персонажа `ch` и шлёт HITL."""
+    is_regen = await _is_regen_for_excel_id(session, project, ch.id)
+    used_refs = bool(ch.ref_ids)
+
+    # Reference image(s): берём пути к одобренным артефактам каждого ref.
+    ref_paths: list[Path] = []
+    if used_refs:
+        for rid in ch.ref_ids:
+            art = await _excel_artifact_for_id(session, project, rid)
+            if art is None or not art.path:
+                logger.warning(
+                    "[#{}] excel_hero {}: ref {} артефакт не найден",
+                    project.id, ch.id, rid,
+                )
+                continue
+            p = Path(art.path)
+            if not p.exists():
+                logger.warning(
+                    "[#{}] excel_hero {}: ref {} файл {} не существует",
+                    project.id, ch.id, rid, p,
+                )
+                continue
+            ref_paths.append(p)
+        if not ref_paths:
+            # Все ссылки одобрены, но файлы по ним пропали с диска —
+            # выходим, чтобы юзер понял в чём дело.
+            project.status = ProjectStatus.frames_ready
+            await session.flush()
+            try:
+                await bot.send_message(
+                    settings.telegram_owner_chat_id,
+                    f"🚫 Проект #{project.id} excel-hero {ch.id}: "
+                    f"референс-файлы для {ch.ref_ids} пропали с диска. "
+                    "Перегенери референсы.",
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[#{}] не удалось отправить TG", project.id)
+            return
+
+    # Стиль (общий для проекта — выбирается в обычном hero-flow).
+    hero_style_content = _read_hero_style(project) or ""
+    style_chosen = (
+        (getattr(project, "prompt_overrides", None) or {}).get("hero_style")
+        or "default"
+    )
+
+    out_dir = project.data_dir / "characters"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{ch.id}.png"
+    prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}]"
+
+    async with browser_session() as bs:
+        gpt = ChatGPTBot(bs)
+        outsee = OutseeBot(bs)
+
+        # Сборка промта.
+        if used_refs:
+            # Реф-вариация: НЕ дёргаем GPT. Шлём короткий текст изменений
+            # (имя/внешность/одежда/характер, БЕЗ правил) + reference image(s).
+            prompt_text = ch.changes_text()
+            if not prompt_text.strip():
+                prompt_text = (
+                    "Different pose, camera angle, or outfit for the "
+                    "character shown in the reference image."
+                )
+        else:
+            # Не-реф: полный GPT-промт по brief из excel + проектный стиль.
+            hero_template = gtb.get_effective_text(project, "hero")
+            brief = ch.brief_for_gpt()
+            hero_ask = gtb.render_hero_text(
+                hero_template, brief=brief, hero_style=hero_style_content,
+            )
+            OUTSEE_PROMPT_MAX = 5000
+            last_reply = ""
+            prompt_text = ""
+            for attempt in range(1, 4):
+                ask = hero_ask
+                if (
+                    attempt > 1
+                    and last_reply
+                    and len(last_reply) > OUTSEE_PROMPT_MAX
+                ):
+                    ask = (
+                        f"Прошлый ответ был {len(last_reply)} символов — "
+                        f"больше лимита {OUTSEE_PROMPT_MAX}. Сожми до "
+                        f"≤{OUTSEE_PROMPT_MAX} символов: убери повторы, "
+                        "оставь самое важное. Структуру сохрани. Верни "
+                        "ТОЛЬКО новый текст промта.\n\n"
+                        "Прошлый промт:\n\n" + last_reply
+                    )
+                reply = await gpt.ask_fresh(ask, timeout=600)
+                last_reply = reply or ""
+                logger.info(
+                    "[#{}] excel_hero {} GPT attempt {}: {} симв",
+                    project.id, ch.id, attempt, len(last_reply),
+                )
+                if not last_reply or len(last_reply) < 100:
+                    continue
+                prompt_text = last_reply.strip()
+                if len(prompt_text) <= OUTSEE_PROMPT_MAX:
+                    break
+            if not prompt_text:
+                raise RuntimeError(
+                    f"ChatGPT не вернул заполненный промт для excel "
+                    f"персонажа {ch.id} после 3 попыток"
+                )
+
+        # Генератор / разрешение / aspect_ratio — те же дефолты что в
+        # обычном hero (16:9, Relax=ON).
+        img_gen = IMAGE_GENERATORS_BY_ID.get(
+            project.image_generator or DEFAULTS["image_generator"]
+        )
+        ir = IMAGE_RESOLUTIONS_BY_ID.get(
+            project.image_resolution or DEFAULTS["image_resolution"]
+        )
+
+        result = None
+        if not used_refs and is_regen:
+            try:
+                result = await outsee.regenerate_image(out_path)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] excel_hero {} «Повторить» упала ({}), fresh "
+                    "generate", project.id, ch.id, e,
+                )
+                result = None
+
+        if result is None:
+            try:
+                result = await generate_image_with_retries(
+                    outsee, gpt,
+                    prompt=prompt_text,
+                    out_path=out_path,
+                    max_attempts_per_prompt=3,
+                    gpt_rewrite=not used_refs,
+                    aspect_ratio=HERO_ASPECT_RATIO,
+                    model_slug=img_gen.outsee_slug if img_gen else None,
+                    resolution=ir.outsee_slug if ir else None,
+                    relax=HERO_RELAX,
+                    prompt_id_prefix=prompt_id_prefix,
+                    reference_image=(ref_paths or None) if used_refs else None,
+                    timeout=600,
+                )
+            except OutseeImageError as e:
+                is_moderation = isinstance(e, OutseeContentRejectedError)
+                logger.error(
+                    "[#{}] excel_hero {} RAN OUT попыток: {}",
+                    project.id, ch.id,
+                    e.reason if hasattr(e, "reason") else str(e),
+                )
+                project.status = ProjectStatus.frames_ready
+                await session.flush()
+                project_label = (project.topic or project.slug or "")[:60]
+                if is_moderation:
+                    msg = (
+                        f"🚫 Проект #{project.id} «{project_label}» "
+                        f"excel-hero {ch.id}: 6 попыток в outsee отклонены "
+                        f"модерацией.\n"
+                        f"Поправь описание персонажа в листе «Персонажи» "
+                        f"(R3-R7 столбца {ch.id}) и тыкни «4. Hero» снова."
+                    )
+                else:
+                    msg = (
+                        f"🚫 Проект #{project.id} excel-hero {ch.id}: "
+                        f"outsee провалился ({(getattr(e, 'reason', None) or str(e))[:300]}).\n"
+                        f"Статус откатил в <b>frames_ready</b>."
+                    )
+                try:
+                    await bot.send_message(
+                        settings.telegram_owner_chat_id,
+                        msg[:3800],
+                        parse_mode="HTML",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] не удалось отправить TG-ошибку", project.id
+                    )
+                return
+
+    file_path = Path(result.file_path)
+    art_meta: dict = {
+        "excel_id": ch.id,
+        "excel_ref_ids": list(ch.ref_ids),
+        "excel_prompt_name": ch.prompt_name,
+        "excel_used_refs": used_refs,
+    }
+    if not used_refs:
+        art_meta["hero_prompt"] = prompt_text
+    art = Artifact(
+        project_id=project.id,
+        kind=ArtifactKind.hero_reference,
+        uuid=uuid.uuid4().hex,
+        path=str(file_path),
+        meta=art_meta,
+    )
+    session.add(art)
+    project.status = ProjectStatus.hero_ready
+    await session.flush()
+
+    # HITL.
+    remaining = [c for c in chars if c.id not in approved and c.id != ch.id]
+    if remaining:
+        approve_hint = (
+            f"✅ — принять (осталось {len(remaining)}); "
+            "🔁 — перегенерить этого персонажа."
+        )
+    else:
+        approve_hint = (
+            "✅ — принять (это последний персонаж); "
+            "🔁 — перегенерить этого персонажа."
+        )
+    await send_hitl_photo(
+        bot, session, project,
+        kind=HITLKind.approve_hero,
+        photo_path=str(file_path),
+        caption=(
+            f"{prompt_id_prefix}\n"
+            f"Персонаж <b>{ch.id}</b> (из EXCEL).\n"
+            f"Стиль: {style_chosen}\n"
+            + (
+                f"Реф: {', '.join(ch.ref_ids)}\n"
+                if used_refs else
+                f"Промт: {ch.prompt_name or 'default'}\n"
+            )
+            + approve_hint
+        ),
+        payload={
+            "step": "hero",
+            "artifact_id": art.id,
+            "prompt_id_prefix": prompt_id_prefix,
+            "photo_path": str(file_path),
+            "excel_id": ch.id,
+            "excel_ref_ids": list(ch.ref_ids),
+            "excel_used_refs": used_refs,
             "hero_style": style_chosen,
         },
     )

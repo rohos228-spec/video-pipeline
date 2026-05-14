@@ -74,7 +74,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         clips.append(ClipSpec(src=Path(video_art.path), duration=float(duration)))
 
     # субтитры
-    subs_dir = Path(settings.data_dir) / "videos" / project.slug / "subs"
+    subs_dir = project.data_dir / "subs"
     subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
     make_simple_ass(
         [((fr.start_ts or 0.0), (fr.end_ts or 0.0), fr.voiceover_text or "") for fr in frames],
@@ -86,7 +86,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     ))
 
     # сборка
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "final"
+    out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
     await assemble(clips, Path(audio.path), out_path, subtitles_ass=subs_path)
 

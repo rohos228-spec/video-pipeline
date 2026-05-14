@@ -47,7 +47,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
 
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "videos"
+    out_dir = project.data_dir / "videos"
 
     # Настройки видео из проекта (с дефолтами).
     vg = VIDEO_GENERATORS_BY_ID.get(

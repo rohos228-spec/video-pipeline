@@ -83,6 +83,66 @@ def is_supported(step_code: str) -> bool:
 # Сборка дефолтного текста по шагам
 # --------------------------------------------------------------------------- #
 
+
+def _build_topic_context_block(project: Project) -> str:
+    """Возвращает текстовый блок с расширенным контекстом ролика (карточка
+    темы + постоянный продукт массового). Используется в `_build_plan_default`
+    и `_build_script_default`, чтобы GPT увидел весь нюанс.
+
+    Если у проекта нет карточки и продукта (одиночный проект) — возвращает
+    пустую строку (текст не меняется).
+    """
+    meta = getattr(project, "meta", None) or {}
+    card = meta.get("topic_card") or {}
+    product = meta.get("permanent_product") or {}
+
+    lines: list[str] = []
+
+    # Карточка темы (только непустые поля).
+    card_lines: list[str] = []
+    if card.get("style"):
+        card_lines.append(f"  • Стиль: {card['style']}")
+    if card.get("hook_type"):
+        card_lines.append(f"  • Тип хука: {card['hook_type']}")
+    if card.get("emotion"):
+        card_lines.append(f"  • Эмоциональный фон: {card['emotion']}")
+    if card.get("fact"):
+        card_lines.append(f"  • Научпоп ядро / факт: {card['fact']}")
+    if card.get("logic"):
+        card_lines.append(f"  • Логическое объяснение: {card['logic']}")
+    if card.get("integration"):
+        card_lines.append(f"  • Интеграция продукта: {card['integration']}")
+    if card.get("shoot_note"):
+        card_lines.append(f"  • Примечание по съёмке: {card['shoot_note']}")
+    if card_lines:
+        lines.append("📋 Карточка ролика:")
+        lines.extend(card_lines)
+
+    # Постоянный продукт массового.
+    if product and product.get("name"):
+        if lines:
+            lines.append("")
+        lines.append("📦 Постоянный продукт (должен фигурировать в каждом ролике):")
+        lines.append(f"  • Название: {product['name']}")
+        if product.get("description"):
+            lines.append(f"  • Описание: {product['description']}")
+        if product.get("reference_image_path"):
+            lines.append(
+                "  • Референс-изображение приложено отдельно "
+                f"({product['reference_image_path']})."
+            )
+        lines.append(
+            "  • ВАЖНО: на этапе интеграции (по «Карточке ролика») органично "
+            "ввести этот продукт в сюжет, не противореча историческому/"
+            "научному контексту. Не оборачивать в кавычки и не заменять "
+            "плейсхолдером — использовать именно указанное название."
+        )
+
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n\n"
+
+
 def _build_plan_default(
     project: Project,
     *,
@@ -94,8 +154,10 @@ def _build_plan_default(
     без дублирования содержимого мастер-промта (он идёт файлом).
     """
     actual_topic = topic if topic is not None else (project.topic or "")
+    context_block = _build_topic_context_block(project)
     return (
         f"Тема ролика: «{actual_topic}».\n\n"
+        f"{context_block}"
         f"Прикреплены 2 файла:\n"
         f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
         f"  2. project.xlsx — рабочая таблица ролика.\n\n"
@@ -112,8 +174,10 @@ def _build_script_default(project: Project, *, prompt_file_name: str = "prompt.t
     «сопр. сообщение» — основной текст письма в чат.
     """
     topic = (project.topic or "").strip()
+    context_block = _build_topic_context_block(project)
     return (
         f"Тема ролика: «{topic}».\n\n"
+        f"{context_block}"
         f"Прикреплены 2 файла:\n"
         f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
         f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n\n"
@@ -130,9 +194,11 @@ def _build_split_default(
     `prompt.txt`, `project.xlsx`, `voiceover.txt`. Возвращаем chat_msg.
     """
     topic = (project.topic or "").strip()
+    context_block = _build_topic_context_block(project)
     return (
         f"Тема ролика: «{topic}».\n\n"
-        f"Прикреплены 3 файла:\n"
+        + (context_block + "\n\n" if context_block else "")
+        + f"Прикреплены 3 файла:\n"
         f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
         f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n"
         f"  3. voiceover.txt — закадровый текст, который нужно разбить "
@@ -205,45 +271,31 @@ def _build_img_pr_default(
     *,
     voiceover_line: str = "",
     n_frames: int = 0,
+    prompt_file_name: str = "prompt_img_pr.md",
 ) -> str:
-    """Шаг 5 — промты картинок (один батч на все кадры).
+    """Шаг 6 «Промты картинок» (xlsx-flow).
 
-    `voiceover_line` — закадровый текст по кадрам, склеенный знаком «-».
-    `n_frames` — кол-во кадров. Когда вызывается из UI «получить файл
-    с дефолтом», передаём фактические значения; если пусто — оставляем
-    плейсхолдеры (юзер видит структуру).
+    К чату прикладываются prompt_img_pr.md и project.xlsx.
+    Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
     """
-    image_master = get_project_prompt(project, "img_pr")
-    hero_text = (project.hero_description or "").strip()
-    descriptions = [d for d in (project.hero_descriptions or []) if d and d.strip()]
-    if not hero_text and descriptions:
-        hero_text = descriptions[0]
-    hero_section = ""
-    if hero_text:
-        hero_section = (
-            "\nЭталонное описание главного героя (использовать в кадрах "
-            "где он появляется):\n"
-            + hero_text
-            + "\n"
-        )
-
-    n_frames_str = str(n_frames) if n_frames > 0 else "<N>"
-    voiceover_str = voiceover_line if voiceover_line else "<закадровый текст по кадрам>"
+    context_block = _build_topic_context_block(project)
     return (
-        image_master.strip()
-        + "\n\n"
-        + hero_section
-        + "\n---\n"
-        + f"Кадров: {n_frames_str}.\n"
-        + "Закадровый текст по кадрам (между блоками знак «-»):\n"
-        + voiceover_str
-        + "\n\n"
-        + "Верни одним сообщением ровно "
-        + n_frames_str
-        + " промтов в том же порядке, разделяя их знаком «-». "
-        + "Без нумерации, без пояснений, без заголовков. "
-        + "Внутри самих промтов знак «-» не используй (если нужен дефис "
-        + "— замени на пробел или подчёркивание)."
+        (context_block + "\n\n" if context_block else "")
+        + f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция по генерации промтов "
+        f"для картинок.\n"
+        f"  2. project.xlsx — рабочая таблица ролика с кадрами и "
+        f"закадровым текстом.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), "
+        "опираясь на данные из project.xlsx. Заполни в xlsx строку "
+        "«промт картинки» (строка 29) для каждого кадра. "
+        "ЕСЛИ в контексте выше указан постоянный продукт — впиши его "
+        "в промты тех кадров, где по «Интеграции продукта» он "
+        "должен появиться. Референс-картинка продукта будет "
+        "автоматически прикреплена к Outsee в момент генерации кадра.\n\n"
+        "Верни обновлённый xlsx файлом (без обрезок и компрессии). "
+        "Кратким текстом ответь — что сделал — но главное верни файл."
     )
 
 

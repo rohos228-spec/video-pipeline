@@ -54,6 +54,13 @@ async def _init_db() -> None:
             ("enrich_slots_count", "INTEGER DEFAULT 3"),
             ("item_descriptions", "JSON"),
             ("item_variations", "JSON"),
+            # Массовое создание: каждая запись projects может принадлежать
+            # массовому проекту (BatchProject). batch_slug дублирован для
+            # быстрого построения data_dir без join к batch_projects.
+            ("batch_id", "INTEGER"),
+            ("batch_position", "INTEGER"),
+            ("batch_slug", "VARCHAR(120)"),
+            ("auto_mode", "BOOLEAN DEFAULT 0"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")
@@ -93,15 +100,12 @@ async def _backfill_from_disk() -> None:
     Этот бэкфилл — идемпотентный: если поля уже заполнены и совпадают
     с xlsx, ничего не меняется.
     """
-    from pathlib import Path
-
     from sqlalchemy import select
 
     from app.db import session_scope
     from app.models import Project
     from app.services.xlsx_sync import reload_from_xlsx
     from app.services.xlsx_v8_import import import_v8_xlsx
-    from app.settings import settings as _settings
 
     try:
         async with session_scope() as s:
@@ -109,7 +113,10 @@ async def _backfill_from_disk() -> None:
                 await s.execute(select(Project))
             ).scalars().all()
             for p in projects:
-                proj_dir = Path(_settings.data_dir) / "videos" / p.slug
+                # p.data_dir автоматически даёт правильный путь:
+                # для одиночных — data/videos/<slug>/,
+                # для батч-подпроектов — data/batches/<batch_slug>/sub/<slug>/.
+                proj_dir = p.data_dir
                 proj_xlsx = proj_dir / "project.xlsx"
                 voiceover_txt = proj_dir / "voiceover.txt"
 
@@ -347,6 +354,58 @@ async def _run_worker_loop(bot) -> None:
                             logger.warning(
                                 "не удалось отправить уведомление об ошибке в Telegram"
                             )
+
+                # --- auto_mode ---
+                # 1) auto-advance: для auto_mode проектов в *_ready
+                #    статусе запускаем GPT-чек / авто-апруф.
+                try:
+                    from app.orchestrator.auto_advance import (
+                        TRANSITIONS,
+                        maybe_auto_advance,
+                        serial_tick_batches,
+                    )
+
+                    ready_statuses = list(TRANSITIONS.keys())
+                    auto_projects = (
+                        await s.execute(
+                            select(Project).where(
+                                Project.auto_mode == True,  # noqa: E712
+                                Project.status.in_(ready_statuses),
+                            )
+                        )
+                    ).scalars().all()
+                    for ap in auto_projects:
+                        prev = ap.status.value
+                        try:
+                            advanced = await maybe_auto_advance(s, ap, bot)
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "auto_advance failed for #{}", ap.id
+                            )
+                            continue
+                        if advanced and ap.status.value != prev:
+                            new_status = ap.status.value
+                            project_id = ap.id
+                            await s.commit()
+                            try:
+                                await notify_step_done(
+                                    bot, project_id, prev, new_status
+                                )
+                            except Exception:  # noqa: BLE001
+                                logger.exception(
+                                    "notify_step_done({}) failed", project_id
+                                )
+
+                    # 2) serial worker: запускает следующий подпроект
+                    #    из активного массового, если нет «занятого».
+                    try:
+                        started = await serial_tick_batches(s)
+                        if started:
+                            await s.commit()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("serial_tick_batches failed")
+                except Exception:  # noqa: BLE001
+                    logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001
             logger.exception("worker loop iteration failed")
         await asyncio.sleep(15)

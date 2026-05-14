@@ -44,7 +44,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not script_text:
         raise RuntimeError("пустой сценарий для озвучки")
 
-    audio_dir = Path(settings.data_dir) / "videos" / project.slug / "audio"
+    audio_dir = project.data_dir / "audio"
     audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
 
     async with browser_session() as bs:
