@@ -515,9 +515,18 @@ async def set_permanent_product_field(
     # ссылку заново.
     batch.meta = dict(meta)
     await session.flush()
-    # Пробрасываем изменения в подпроекты, которые ещё не стартовали —
-    # они должны увидеть свежий продукт при первой генерации плана.
-    await _propagate_product_to_new_subs(session, batch.id, meta.get("permanent_product"))
+    # (parity #7) Пробрасываем изменения не только в new, но и в ожидающие
+    # пре-visual стадии (planning/scripting/splitting). Ниже оседаем
+    # в batch.meta["product_late_subs"] список суб-id'ов, которые уже
+    # прошли этот порог — юзер в меню увидит предупреждение.
+    too_late = await _propagate_product_to_new_subs(
+        session, batch.id, meta.get("permanent_product")
+    )
+    if too_late:
+        meta = dict(batch.meta or {})
+        meta["product_late_subs"] = too_late
+        batch.meta = meta
+        await session.flush()
     return batch
 
 
@@ -534,40 +543,75 @@ async def clear_permanent_product(
         meta.pop("permanent_product", None)
         batch.meta = meta
         await session.flush()
+    # При очистке продукта игнорируем «too_late» — без продукта
+    # нет риска несогласованности.
     await _propagate_product_to_new_subs(session, batch_id, None)
     return batch
+
+
+# (single-mass parity #7) Какие статусы мы считаем «безопасными» для
+# retro-replace permanent_product. После frames_ready (появились
+# именованные кадры) — менять продукт опасно: персонажи/предметы
+# уже сгенерируются в контексте старого продукта.
+_SAFE_PRODUCT_RETRO_STATUSES = {
+    ProjectStatus.new,
+    ProjectStatus.planning,
+    ProjectStatus.plan_ready,
+    ProjectStatus.scripting,
+    ProjectStatus.script_ready,
+    ProjectStatus.splitting,
+}
 
 
 async def _propagate_product_to_new_subs(
     session: AsyncSession,
     batch_id: int,
     product: dict | None,
-) -> None:
-    """Обновляет meta["permanent_product"] у всех new-подпроектов массового.
+) -> list[int]:
+    """Обновляет meta["permanent_product"] у подпроектов массового.
 
-    Подпроекты в статусах *_ready / *_running / *_done / paused НЕ
-    трогаем — у них уже могла начаться генерация со старой версией
-    продукта, и менять контекст на лету было бы непоследовательно.
+    (single-mass parity #7) Раньше обновлялись ТОЛЬКО подпроекты
+    в статусе new — это означало, что если юзер продукт поменял/добавил
+    после старта очереди, первые несколько видео рисуались без него.
+
+    Теперь продукт прописывается в любой sub-project в пре-visual
+    статусе (до frames_ready). Субы, которые уже перевалили за
+    frames_ready / hero, НЕ трогаются (это привело бы к несогласован-
+    ности герои/предметы внутри одного видео), но возвращаются
+    их ID — вызывающий код (меню «Продукт») может показать юзеру
+    список «вот в этих видео продукт не упомянется».
+
+    Returns: список sub-project id'ов, которые были «слишком далеко»
+    и НЕ получили обновленный продукт. Нужно для UI hint.
     """
     import copy as _copy
 
-    subs = (
+    all_subs = (
         await session.execute(
             select(Project).where(
                 Project.batch_id == batch_id,
-                Project.status == ProjectStatus.new,
+                Project.status.not_in(
+                    [ProjectStatus.published, ProjectStatus.failed]
+                ),
             )
         )
     ).scalars().all()
-    for p in subs:
+    too_late: list[int] = []
+    updated = 0
+    for p in all_subs:
+        if p.status not in _SAFE_PRODUCT_RETRO_STATUSES:
+            too_late.append(p.id)
+            continue
         m = dict(p.meta or {})
         if product and product.get("name"):
             m["permanent_product"] = _copy.deepcopy(product)
         else:
             m.pop("permanent_product", None)
         p.meta = m
-    if subs:
+        updated += 1
+    if updated:
         await session.flush()
+    return too_late
 
 
 def get_permanent_product(batch: BatchProject) -> dict | None:
