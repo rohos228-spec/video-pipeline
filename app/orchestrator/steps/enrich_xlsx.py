@@ -31,6 +31,7 @@ from app.models import Project, ProjectStatus
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_sync
 from app.services.prompt_library import get_project_prompt
+from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
 from app.storage import for_project as _sheet_for_project
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
@@ -168,22 +169,58 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ) from e
             continue
 
-    # 4. Reload xlsx → БД.
+    # 4. Reload xlsx → БД. Сначала смотрим формат: если есть лист «план» —
+    # это v8, читаем им (он подтягивает image_prompt/animation_prompt из
+    # R45/R48). Иначе fallback на старый xlsx_sync (лист «Кадры», R29).
+    #
+    # ROOT FIX: раньше тут вызывался ТОЛЬКО `xlsx_sync.reload_from_xlsx`,
+    # который ищет лист «Кадры» и на v8-xlsx тихо ничего не делал. В
+    # результате enrich-слот возвращал xlsx с заполненными промтами, но
+    # в БД они не попадали → шаг 7 «Картинки» ругался «нет image_prompt»
+    # хотя в xlsx промты были.
+    sync_info: dict | None = None
     try:
-        info = await xlsx_sync.reload_from_xlsx(session, project, xlsx_path)
-        logger.info(
-            "[#{}] enrich_xlsx slot={} reload_from_xlsx: {}",
-            project.id,
-            slot_idx,
-            info,
-        )
+        from openpyxl import load_workbook
+        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        is_v8 = SHEET_PLAN_V8 in wb.sheetnames
+        wb.close()
     except Exception as e:  # noqa: BLE001
+        is_v8 = False
         logger.warning(
-            "[#{}] enrich_xlsx slot={} reload_from_xlsx failed: {}",
-            project.id,
-            slot_idx,
-            e,
+            "[#{}] enrich_xlsx slot={} cannot peek sheet names: {}",
+            project.id, slot_idx, e,
         )
+
+    if is_v8:
+        try:
+            sync_info = await import_v8_xlsx(
+                session,
+                project,
+                xlsx_path,
+                keep_fields=False,
+                update_frames_voiceover=True,
+            )
+            logger.info(
+                "[#{}] enrich_xlsx slot={} import_v8_xlsx: {}",
+                project.id, slot_idx, sync_info,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] enrich_xlsx slot={} import_v8_xlsx failed: {}",
+                project.id, slot_idx, e,
+            )
+    else:
+        try:
+            sync_info = await xlsx_sync.reload_from_xlsx(session, project, xlsx_path)
+            logger.info(
+                "[#{}] enrich_xlsx slot={} reload_from_xlsx: {}",
+                project.id, slot_idx, sync_info,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] enrich_xlsx slot={} reload_from_xlsx failed: {}",
+                project.id, slot_idx, e,
+            )
 
     # 5. Ставим статус slot_<i>_ready (но не перебиваем более продвинутый).
     from app.telegram.menu import status_order as _ord
