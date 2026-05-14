@@ -323,11 +323,18 @@ def _clear_pending_state(user_id: int) -> None:
 
 async def _last_project_id_fallback() -> int | None:
     """Если для юзера нет запомненного last-project — возвращает id самого
-    свежесозданного проекта (по убыванию id) или None если проектов нет."""
+    свежесозданного ОДИНОЧНОГО проекта (по убыванию id)
+    или None. Бэтч-подпроекты (Project.batch_id IS NOT NULL) в фоллбэк
+    НЕ попадают — они живут внутри «Массовое создание» и не должны
+    «всплывать» в обычном меню по одиночному /menu или /status.
+    """
     async with session_scope() as s:
         proj = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(1)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(1)
             )
         ).scalar_one_or_none()
     return proj.id if proj is not None else None
@@ -499,9 +506,15 @@ async def cmd_status(msg: Message) -> None:
                 reply_markup=project_menu_kb(project),
             )
         else:
+            # Список ОБЫЧНЫХ проектов — бэтч-подпроекты (с batch_id)
+            # живут внутри «🎬 Массовое создание» и не должны пересекаться
+            # с одиночными — выводятся только в mass:* меню.
             rows = (
                 await s.execute(
-                    select(Project).order_by(Project.id.desc()).limit(20)
+                    select(Project)
+                    .where(Project.batch_id.is_(None))
+                    .order_by(Project.id.desc())
+                    .limit(20)
                 )
             ).scalars().all()
             if not rows:
@@ -563,10 +576,16 @@ async def on_menu_list(cb: CallbackQuery) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     _set_user_screen(cb.from_user.id, "project_list")
+    # ТОЛЬКО одиночные проекты (batch_id IS NULL). Бэтч-подпроекты
+    # отображаются исключительно в mass:* меню — эти два раздела
+    # принципиально не пересекаются.
     async with session_scope() as s:
         rows = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(30)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(30)
             )
         ).scalars().all()
     await cb.answer()
