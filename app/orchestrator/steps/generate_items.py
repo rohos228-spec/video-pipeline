@@ -109,7 +109,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
 
     already_done = await _existing_item_indices(session, project)
-    out_dir = Path(settings.data_dir) / "videos" / project.slug / "items"
+    out_dir = project.data_dir / "items"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Идём по предметам последовательно, пропускаем уже сгенерированные.

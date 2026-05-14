@@ -37,6 +37,7 @@ from aiogram.types import (
 )
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
@@ -58,7 +59,6 @@ from app.telegram.menu import (
     PERSISTENT_BACK_TEXT,
     PERSISTENT_HOME_TEXT,
     PERSISTENT_LAST_TEXT,
-    is_step_runnable,
     main_menu_kb,
     persistent_reply_kb,
     project_header,
@@ -180,7 +180,7 @@ _last_project_by_user: dict[int, int] = {}
 # нажатием не запустил параллельные прогоны одного и того же шага
 # (ChatGPT в одном чате не справляется с 2-3 параллельными upload'ами,
 # в итоге все три кладут в project.xlsx «пустышки»). Ключ —
-# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split'}.
+# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split', 'img_pr'}.
 _xlsx_flow_active: set[tuple[int, str]] = set()
 
 # Ожидание загрузки отредактированного xlsx обратно в проект.
@@ -189,6 +189,20 @@ _xlsx_flow_active: set[tuple[int, str]] = set()
 # подменим project.xlsx (с бэкапом + валидацией + reload в БД).
 # user_id → project_id.
 _pending_xlsx_replace: dict[int, int] = {}
+
+# Состояния «Массовое создание».
+# user_id → True: ждём название нового массового проекта.
+_pending_mass_name: dict[int, bool] = {}
+# user_id → batch_id: ждём текстовый список тем для массового.
+_pending_mass_topics_text: dict[int, int] = {}
+# user_id → batch_id: ждём topics.xlsx файлом для массового.
+_pending_mass_xlsx_upload: dict[int, int] = {}
+# user_id → batch_id: ждём название постоянного продукта (PR #3).
+_pending_mass_prod_name: dict[int, int] = {}
+# user_id → batch_id: ждём описание постоянного продукта (PR #3).
+_pending_mass_prod_desc: dict[int, int] = {}
+# user_id → batch_id: ждём фото-референс постоянного продукта (PR #3).
+_pending_mass_prod_photo: dict[int, int] = {}
 
 
 def _project_display_topic(project: Project) -> str:
@@ -244,12 +258,17 @@ def _remember_project(user_id: int, project_id: int) -> None:
 #
 # Возможные значения:
 #   ("project_menu", pid, None)        — карточка проекта (proj_menu_kb)
+#   ("project_list", None, None)       — список существующих проектов
 #   ("enrich_submenu", pid, None)      — подменю шага 5 со слотами
 #   ("picker", pid, step_code)         — picker промта для шага step_code
-#   ("step_submenu", pid, step_code)   — подменю шага (script/split/hero/items/…)
+#   ("step_submenu", pid, step_code)   — подменю шага (script/objects/hero/items/…)
+#   ("hero_wait_input", pid, stage)    — hero-flow ждёт ввод от юзера
+#                                        (style/count/brief/variation/modifier/run)
 #   ("main", None, None)               — главное меню
 #
-# Если значения для юзера нет — fallback на старое поведение (project_menu).
+# Если значения для юзера нет — fallback на главное меню (НЕ на «последний
+# проект»: раньше тут был автопрыжок в меню последнего проекта, что было
+# ровно тем самым багом «иногда Назад уносит к чужому экрану»).
 _user_screen: dict[int, tuple[str, int | None, str | None]] = {}
 
 
@@ -294,15 +313,28 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_script_prompt.pop(user_id, None)
     _pending_split_prompt.pop(user_id, None)
     _pending_voiceover_replace.pop(user_id, None)
+    _pending_mass_name.pop(user_id, None)
+    _pending_mass_topics_text.pop(user_id, None)
+    _pending_mass_xlsx_upload.pop(user_id, None)
+    _pending_mass_prod_name.pop(user_id, None)
+    _pending_mass_prod_desc.pop(user_id, None)
+    _pending_mass_prod_photo.pop(user_id, None)
 
 
 async def _last_project_id_fallback() -> int | None:
     """Если для юзера нет запомненного last-project — возвращает id самого
-    свежесозданного проекта (по убыванию id) или None если проектов нет."""
+    свежесозданного ОДИНОЧНОГО проекта (по убыванию id)
+    или None. Бэтч-подпроекты (Project.batch_id IS NOT NULL) в фоллбэк
+    НЕ попадают — они живут внутри «Массовое создание» и не должны
+    «всплывать» в обычном меню по одиночному /menu или /status.
+    """
     async with session_scope() as s:
         proj = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(1)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(1)
             )
         ).scalar_one_or_none()
     return proj.id if proj is not None else None
@@ -340,7 +372,9 @@ async def cmd_start(msg: Message) -> None:
 async def cmd_menu(msg: Message) -> None:
     if not is_owner(msg):
         return
-    _clear_pending_state(msg.from_user.id if msg.from_user else 0)
+    user_id = msg.from_user.id if msg.from_user else 0
+    _clear_pending_state(user_id)
+    _set_user_screen(user_id, "main")
     # Отдельным сообщением «активируем» постоянную клавиатуру (на случай
     # если юзер пришёл /menu без /start — Telegram запомнит её).
     await msg.answer(
@@ -458,20 +492,37 @@ async def cmd_status(msg: Message) -> None:
             if project is None:
                 await msg.answer(f"Проект #{pid} не найден")
                 return
+            _set_user_screen(
+                msg.from_user.id if msg.from_user else 0,
+                "project_menu",
+                pid,
+            )
+            _remember_project(
+                msg.from_user.id if msg.from_user else 0, pid
+            )
             await msg.answer(
                 project_header(project),
                 parse_mode="HTML",
                 reply_markup=project_menu_kb(project),
             )
         else:
+            # Список ОБЫЧНЫХ проектов — бэтч-подпроекты (с batch_id)
+            # живут внутри «🎬 Массовое создание» и не должны пересекаться
+            # с одиночными — выводятся только в mass:* меню.
             rows = (
                 await s.execute(
-                    select(Project).order_by(Project.id.desc()).limit(20)
+                    select(Project)
+                    .where(Project.batch_id.is_(None))
+                    .order_by(Project.id.desc())
+                    .limit(20)
                 )
             ).scalars().all()
             if not rows:
                 await msg.answer("Пока нет проектов. /menu → 📁 Новый проект")
                 return
+            _set_user_screen(
+                msg.from_user.id if msg.from_user else 0, "project_list"
+            )
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -495,6 +546,7 @@ async def on_menu_root(cb: CallbackQuery) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     _clear_pending_state(cb.from_user.id)
+    _set_user_screen(cb.from_user.id, "main")
     await cb.answer()
     # Шлём reply-клавиатуру отдельным сообщением — у callback'а нет
     # возможности вернуть reply-клавиатуру вместе с inline-кнопками.
@@ -523,10 +575,17 @@ async def on_menu_list(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
+    _set_user_screen(cb.from_user.id, "project_list")
+    # ТОЛЬКО одиночные проекты (batch_id IS NULL). Бэтч-подпроекты
+    # отображаются исключительно в mass:* меню — эти два раздела
+    # принципиально не пересекаются.
     async with session_scope() as s:
         rows = (
             await s.execute(
-                select(Project).order_by(Project.id.desc()).limit(30)
+                select(Project)
+                .where(Project.batch_id.is_(None))
+                .order_by(Project.id.desc())
+                .limit(30)
             )
         ).scalars().all()
     await cb.answer()
@@ -548,6 +607,819 @@ async def on_menu_list(cb: CallbackQuery) -> None:
         )
     )
     await cb.message.answer("Существующие проекты:", reply_markup=kb)
+
+
+# ---------------------------------------------------------------------------
+# Массовое создание (mass:*) — батч-проекты, каждый в своей изолированной
+# папке data/batches/<slug>/.
+
+import contextlib  # noqa: E402
+
+from app.services import batches as batches_svc  # noqa: E402
+from app.storage import batch_sheet  # noqa: E402
+from app.telegram.mass_menu import (  # noqa: E402
+    batch_header,
+    mass_delete_confirm_kb,
+    mass_list_kb,
+    mass_main_kb,
+    mass_progress_kb,
+    mass_settings_kb,
+    mass_settings_text,
+    mass_topics_kb,
+    progress_text,
+    topics_text,
+)
+
+
+async def _show_mass_list(cb_or_msg, *, edit: bool = False) -> None:
+    """Открывает список массовых проектов."""
+    async with session_scope() as s:
+        batches = await batches_svc.list_batches(s)
+    kb = mass_list_kb(batches)
+    text = (
+        "<b>🎬 Массовое создание</b>\n\n"
+        f"всего: {len(batches)}\n\n"
+        "Каждый «массовый проект» — это контейнер с собственной "
+        "изолированной папкой, общим списком тем (xlsx) и снапшотом "
+        "промптов. Внутри — N подпроектов (роликов), у каждого своя "
+        "папка characters/items/scenes/videos/audio/final."
+    )
+    target = cb_or_msg.message if hasattr(cb_or_msg, "message") else cb_or_msg
+    await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "mass:list")
+async def on_mass_list(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _clear_pending_state(cb.from_user.id)
+    _set_user_screen(cb.from_user.id, "mass_list")
+    await cb.answer()
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data == "mass:new")
+async def on_mass_new(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _pending_mass_name[cb.from_user.id] = True
+    await cb.answer()
+    await cb.message.answer(
+        "Введи название массового проекта (например: <code>Античность</code>).\n"
+        "Допустимы любые символы — кириллица будет транслитерирована в slug.",
+        parse_mode="HTML",
+    )
+
+
+async def _create_mass_from_name(msg: Message, name: str) -> None:
+    """Создаёт BatchProject + папку на диске + topics.xlsx."""
+    async with session_scope() as s:
+        try:
+            batch = await batches_svc.create_batch(s, name=name)
+        except ValueError as e:
+            await msg.answer(f"❌ {e}")
+            return
+        # init xlsx
+        batch_sheet.init_topics_xlsx(batch.topics_xlsx_path, batch.name)
+        # Перечитываем для рендера
+        await s.flush()
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, batch.id)
+        b_id = batch.id
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    _set_user_screen(msg.from_user.id, "mass_main", b_id)
+    await msg.answer(
+        head
+        + "\n\n📁 Создан. Папка: <code>data/batches/"
+        + f"{batch.slug}</code>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:open:"))
+async def on_mass_open(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    _set_user_screen(cb.from_user.id, "mass_main", bid)
+    await cb.answer()
+    await cb.message.answer(head, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:topics:"))
+async def on_mass_topics(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        text = topics_text(batch, subs)
+        kb = mass_topics_kb(batch)
+    _set_user_screen(cb.from_user.id, "mass_topics", bid)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:add_text:"))
+async def on_mass_add_text(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_topics_text[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли названия роликов — по одной на строку. Например:\n"
+        "<pre>Неандерталец с зубочисткой\nУтро в Месопотамии\n"
+        "Гиппократ советует порошок</pre>\n"
+        "Для каждого создам подпроект с папкой и project.xlsx.\n\n"
+        "💡 Если хочешь задать богатый контекст для каждого ролика "
+        "(стиль, тип хука, эмоция, факт, логика, интеграция продукта, "
+        "примечание по съёмке) — нажми «📥 Скачать topics.xlsx», "
+        "заполни нужные колонки и пришли файл обратно через "
+        "«📤 Залить topics.xlsx».",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:upload_xlsx:"))
+async def on_mass_upload_xlsx_btn(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_xlsx_upload[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли заполненный <code>topics.xlsx</code> файлом.\n"
+        "Я создам подпроекты для всех новых строк (где «Подпроект» пуст).",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:dl_xlsx:"))
+async def on_mass_dl_xlsx(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        path = batch.topics_xlsx_path
+        # Перезаписываем актуальной таблицей (со статусами + карточные поля).
+        rows = []
+        for p in subs:
+            meta = p.meta or {}
+            card = meta.get("topic_card") or {}
+            rows.append({
+                "position": p.batch_position,
+                "title": p.topic,
+                "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            })
+        batch_sheet.write_subprojects_table(path, rows, batch.name)
+    if not path.exists():
+        await cb.answer("Файл не найден", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.answer_document(
+        FSInputFile(str(path)),
+        caption=f"topics.xlsx · {len(subs)} подпроектов",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:progress:"))
+async def on_mass_progress(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        text = progress_text(batch, subs, progress)
+        kb = mass_progress_kb(batch, subs)
+    _set_user_screen(cb.from_user.id, "mass_progress", bid)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:sub:"))
+async def on_mass_sub_open(cb: CallbackQuery) -> None:
+    """Открывает подпроект через стандартное меню проекта."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _, _, _bid, pid_s = (cb.data or "").split(":", 3)
+        pid = int(pid_s)
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+    if project is None:
+        await cb.answer("Проект не найден", show_alert=True)
+        return
+    _set_user_screen(cb.from_user.id, "project_menu", pid)
+    _remember_project(cb.from_user.id, pid)
+    await cb.answer()
+    await cb.message.answer(
+        project_header(project),
+        parse_mode="HTML",
+        reply_markup=project_menu_kb(project),
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:settings:"))
+async def on_mass_settings(cb: CallbackQuery) -> None:
+    """(BLOCK B) Открывает полноценное меню «⚙ Настройки массовой»."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        ms = batches_svc.get_mass_settings(batch)
+        kb = mass_settings_kb(batch, ms)
+        text = mass_settings_text(batch, ms)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:tog:"))
+async def on_mass_settings_toggle(cb: CallbackQuery) -> None:
+    """(BLOCK B) Toggle bool-поля в mass_settings."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) < 4:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    try:
+        bid = int(parts[2])
+    except ValueError:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    field = parts[3]
+    async with session_scope() as s:
+        batch = await batches_svc.toggle_mass_setting(s, bid, field)
+        if batch is None:
+            await cb.answer("Неизвестное поле", show_alert=True)
+            return
+        ms = batches_svc.get_mass_settings(batch)
+        kb = mass_settings_kb(batch, ms)
+        text = mass_settings_text(batch, ms)
+    await cb.answer("Сохранено")
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:setnum:"))
+async def on_mass_settings_setnum(cb: CallbackQuery) -> None:
+    """(BLOCK B) Инкремент/декремент int-поля в mass_settings."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) < 5:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    try:
+        bid = int(parts[2])
+        delta = int(parts[4])
+    except ValueError:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    field = parts[3]
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        ms = batches_svc.get_mass_settings(batch)
+        cur = int(ms.get(field, 0))
+        new_val = cur + delta
+        updated = await batches_svc.set_mass_setting(s, bid, field, new_val)
+        if updated is None:
+            await cb.answer("Неизвестное поле", show_alert=True)
+            return
+        ms2 = batches_svc.get_mass_settings(updated)
+        kb = mass_settings_kb(updated, ms2)
+        text = mass_settings_text(updated, ms2)
+    await cb.answer()
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "mass:noop")
+async def on_mass_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("mass:delete:"))
+async def on_mass_delete_ask(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        kb = mass_delete_confirm_kb(batch)
+    await cb.answer()
+    await cb.message.answer(
+        f"❓ Точно удалить массовый «{batch.name}» (slug: <code>{batch.slug}</code>)?\n"
+        f"Подпроектов: {len(subs)}\n"
+        f"Папка на диске: <code>data/batches/{batch.slug}</code>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:delete_yes:"))
+async def on_mass_delete_yes(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        await batches_svc.delete_batch(s, bid, delete_files=True)
+    await cb.answer("Удалено")
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data.startswith("mass:delete_keep:"))
+async def on_mass_delete_keep(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        await batches_svc.delete_batch(s, bid, delete_files=False)
+    await cb.answer("Удалено из БД (файлы оставлены)")
+    await _show_mass_list(cb)
+
+
+@dp.callback_query(F.data == "mass:noop")
+async def on_mass_noop(cb: CallbackQuery) -> None:
+    await cb.answer("Заглушка — функция появится в PR #2")
+
+
+# --------- управление очередью (PR #2) ---------
+
+async def _refresh_mass_main(cb: CallbackQuery, bid: int) -> None:
+    """Перерисовать главное меню массового после изменения очереди."""
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        head = batch_header(batch, len(subs), progress)
+        kb = mass_main_kb(batch, len(subs))
+    await cb.message.answer(head, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:start:"))
+async def on_mass_start(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.start_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("▶ Очередь запущена")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:pause:"))
+async def on_mass_pause(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.pause_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("⏸ Очередь на паузе")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:resume:"))
+async def on_mass_resume(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.resume_batch_queue(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("▶ Снято с паузы")
+    await _refresh_mass_main(cb, bid)
+
+
+@dp.callback_query(F.data.startswith("mass:retry_paused:"))
+async def on_mass_retry_paused(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        n = await batches_svc.retry_paused_subprojects(s, bid)
+    await cb.answer(f"🔄 Вернули в очередь: {n}", show_alert=True)
+    await _refresh_mass_main(cb, bid)
+
+
+# ---------------------------------------------------------------------------
+# Постоянный продукт массового (PR #3)
+# ---------------------------------------------------------------------------
+
+
+@dp.callback_query(F.data.startswith("mass:prod:"))
+async def on_mass_prod(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await cb.answer()
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mass:prod_name:"))
+async def on_mass_prod_name(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_name[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>название продукта</b> — короткое, как будет фигурировать "
+        "в сценариях. Например: <code>пенка для рта [Бренд]</code>.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_desc:"))
+async def on_mass_prod_desc(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_desc[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>описание продукта</b>: как выглядит, как его используют, "
+        "чем он отличается, какие плюсы (для встраивания в текст ролика). "
+        "GPT использует эту описалку при генерации плана/сценария.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_photo:"))
+async def on_mass_prod_photo(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    _pending_mass_prod_photo[cb.from_user.id] = bid
+    await cb.answer()
+    await cb.message.answer(
+        "Пришли <b>референс-фото продукта</b> картинкой "
+        "(одно фото за сообщение). Сохраним рядом с массовым.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("mass:prod_clear:"))
+async def on_mass_prod_clear(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        bid = int((cb.data or "").split(":")[2])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.clear_permanent_product(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+    await cb.answer("🗑 Продукт удалён", show_alert=True)
+    # Перерисовать меню продукта.
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _show_mass_product(msg: Message, bid: int) -> None:
+    """Показать после обновления карточку продукта."""
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        from app.telegram.mass_menu import mass_product_kb, product_text
+        text = product_text(batch)
+        kb = mass_product_kb(batch)
+    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
+    """Парсит текстовый список тем и создаёт подпроекты."""
+    text = (msg.text or "").strip()
+    topics = [line.strip() for line in text.splitlines() if line.strip()]
+    if not topics:
+        await msg.answer("Пустой список — пришли темы по одной на строку.")
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        created = await batches_svc.add_topics(s, batch, topics)
+        for p in created:
+            # Создаём project.xlsx внутри папки подпроекта (как у одиночных).
+            try:
+                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+                sheet.write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "mass: project_sheet init failed for #{}: {}", p.id, e
+                )
+        # Обновляем topics.xlsx актуальной таблицей (с карточными полями).
+        all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
+        rows = []
+        for p in all_subs:
+            card = (p.meta or {}).get("topic_card") or {}
+            rows.append({
+                "position": p.batch_position,
+                "title": p.topic,
+                "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            })
+        batch_sheet.write_subprojects_table(
+            batch.topics_xlsx_path, rows, batch.name
+        )
+        progress = await batches_svc.batch_progress(s, batch)
+        head = batch_header(batch, len(all_subs), progress)
+        kb = mass_main_kb(batch, len(all_subs))
+    await msg.answer(
+        f"✅ Создано подпроектов: {len(created)}\n\n" + head,
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
+    """Принимает загруженный topics.xlsx и создаёт новые подпроекты."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp_path = _Path(tmp.name)
+    try:
+        await msg.bot.download(doc, destination=str(tmp_path))
+        # Берём реальные slug'и подпроектов из БД, чтобы collect_new_topics
+        # игнорировал любые посторонние значения в сервисной колонке L.
+        async with session_scope() as s_pre:
+            existing_subs = await batches_svc.get_batch_subprojects(s_pre, batch_id)
+            known_slugs = {p.slug for p in existing_subs if p.slug}
+        new_topics = batch_sheet.collect_new_topics(tmp_path, known_slugs=known_slugs)
+    except Exception as e:  # noqa: BLE001
+        await msg.answer(f"❌ Не смог прочитать xlsx: {e}")
+        tmp_path.unlink(missing_ok=True)
+        return
+
+    if not new_topics:
+        await msg.answer(
+            "В файле нет новых тем — все строки уже соответствуют существующим "
+            "подпроектам (по slug в служебной колонке).\n\n"
+            "Чтобы добавить новые ролики — заполни строки в свободных позициях, "
+            "оставляя сервисные колонки L–O пустыми."
+        )
+        tmp_path.unlink(missing_ok=True)
+        return
+
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            tmp_path.unlink(missing_ok=True)
+            return
+        # new_topics — список dict'ов с полным набором карточных полей.
+        created = await batches_svc.add_topics(s, batch, new_topics)
+        for p in created:
+            try:
+                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+                sheet.write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "mass: project_sheet init failed for #{}: {}", p.id, e
+                )
+        # Сохраняем актуальную топик-таблицу (со всеми карточными полями).
+        all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
+        rows = []
+        for p in all_subs:
+            card = (p.meta or {}).get("topic_card") or {}
+            rows.append({
+                "position": p.batch_position,
+                "title": p.topic,
+                "topic": p.topic,
+                "source": card.get("source"),
+                "style": card.get("style"),
+                "hook_type": card.get("hook_type"),
+                "emotion": card.get("emotion"),
+                "fact": card.get("fact"),
+                "logic": card.get("logic"),
+                "integration": card.get("integration"),
+                "shoot_note": card.get("shoot_note"),
+                "hero_mode": p.hero_mode,
+                "slug": p.slug,
+                "status": p.status.value,
+                "progress": "",
+            })
+        batch_sheet.write_subprojects_table(
+            batch.topics_xlsx_path, rows, batch.name
+        )
+        progress = await batches_svc.batch_progress(s, batch)
+        head = batch_header(batch, len(all_subs), progress)
+        kb = mass_main_kb(batch, len(all_subs))
+    tmp_path.unlink(missing_ok=True)
+    await msg.answer(
+        f"✅ Создано подпроектов из xlsx: {len(created)}\n\n" + head,
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
 
 
 @dp.callback_query(F.data == "noop")
@@ -743,23 +1615,20 @@ async def _continue_hero_flow_after_step(
                 all_modifiers_set = False
                 break
         all_done = all_described and all_var_set and all_modifiers_set
-        if all_done:
-            project.status = ProjectStatus.generating_hero
-            try:
-                _sheet_for_project(project).write_general(
-                    status=project.status.value,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("hero_variations xlsx write failed: {}", e)
+        # ВАЖНО: больше НЕ выставляем project.status автоматом — юзер
+        # должен явно жамнуть «▶ Запустить генерацию Hero». Ниже покажем
+        # подтверждающее сообщение с inline-кнопкой hero_run:<pid>.
         slug = project.slug
     if all_done:
         total_imgs = sum(int(v or 1) for v in variations[:n_total])
+        _set_user_screen(user_id, "hero_wait_input", pid, "run")
         await msg.answer(
             f"✅ Все описания, вариации и отличия собраны "
             f"(героев: {n_total}, всего изображений: {total_imgs}).\n"
-            f"Запускаю генерацию — воркер подхватит за ~15 сек.\n"
-            f"Slug: <code>{slug}</code>.",
+            f"Slug: <code>{slug}</code>.\n\n"
+            "Нажми «▶ Запустить генерацию Hero», чтобы отдать в работу.",
             parse_mode="HTML",
+            reply_markup=_hero_run_kb(pid),
         )
         return
     # Не все — переходим к следующему герою (описание).
@@ -959,22 +1828,141 @@ async def on_hero_menu_cb(cb: CallbackQuery) -> None:
                 parse_mode="HTML",
             )
             return
-        # Всё собрано → запускаем генерацию.
+        # Всё собрано → НЕ авто-запускаем, показываем явную кнопку
+        # «▶ Запустить генерацию Hero» (hero_run:<pid>).
         step = step_by_code("hero")
         if step is not None:
-            project.status = step.running_status
             total_variations = sum(int(v or 1) for v in variations[:n])
             style_chosen = (
                 dict(project.prompt_overrides or {}).get("hero_style") or "default"
             )
+            _set_user_screen(user_id, "hero_wait_input", pid, "run")
             await cb.message.answer(
-                f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
+                f"✅ Шаг {step.n}: <b>{step.title}</b> — всё собрано.\n"
                 f"Героев: {n}, всего изображений с вариациями: "
                 f"{total_variations}.\n"
-                f"Стиль: <code>{style_chosen}</code>\n"
-                f"Воркер подхватит за ~15 сек.",
+                f"Стиль: <code>{style_chosen}</code>\n\n"
+                "Нажми «▶ Запустить генерацию Hero», чтобы отдать в работу.",
                 parse_mode="HTML",
+                reply_markup=_hero_run_kb(pid),
             )
+
+
+# ----------------------------------------------------------------------
+# Шаг 4 (Hero) — финальный запуск генерации.
+# Эта кнопка появляется ТОЛЬКО когда все описания/вариации/модификаторы
+# собраны. Раньше шаг запускался автоматом, что было вразрез с
+# требованием юзера «каждый пункт запускается только по кнопке».
+
+@dp.callback_query(F.data.regexp(r"^hero_run:\d+$"))
+async def on_hero_run_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        # Не разрешаем повторный запуск, если уже бежит.
+        if project.status is ProjectStatus.generating_hero:
+            await cb.answer(
+                "⏳ Hero уже выполняется. Подожди.",
+                show_alert=True,
+            )
+            return
+        # Проверяем, что всё ещё собрано (юзер мог поменять данные).
+        n = project.hero_count or 0
+        descriptions = list(project.hero_descriptions or [])
+        variations = list(project.hero_variations or [])
+        modifiers_all = list(project.hero_variation_modifiers or [])
+        all_described = (
+            len(descriptions) >= n
+            and all(d.strip() for d in descriptions[:n])
+        )
+        all_var_set = (
+            len(variations) >= n
+            and all(int(v or 0) >= 1 for v in variations[:n])
+        )
+        all_modifiers_set = True
+        for i in range(n):
+            need = max(int(variations[i] or 1) - 1, 0)
+            cur = list(modifiers_all[i] or []) if i < len(modifiers_all) else []
+            if len(cur) < need:
+                all_modifiers_set = False
+                break
+        if not (all_described and all_var_set and all_modifiers_set):
+            await cb.answer(
+                "Не все данные собраны. Открой меню проекта → шаг 4.",
+                show_alert=True,
+            )
+            return
+        project.status = ProjectStatus.generating_hero
+        try:
+            _sheet_for_project(project).write_general(
+                status=project.status.value,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("hero_run xlsx write failed: {}", e)
+        slug = project.slug
+        topic = project.topic
+        total_imgs = sum(int(v or 1) for v in variations[:n])
+    await cb.answer(f"Запускаю Hero ({n} героев)")
+    await cb.message.answer(
+        f"▶ Шаг 4: <b>Hero</b> — старт.\n"
+        f"Героев: {n}, всего изображений: {total_imgs}.\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"Воркер подхватит за ~15 сек.",
+        parse_mode="HTML",
+    )
+
+
+# ----------------------------------------------------------------------
+# Запуск шага без prompt-picker'а (img/video/audio/assemble) — раньше
+# эти шаги запускались по одному клику в меню проекта, теперь требуется
+# явное подтверждение через эту кнопку.
+
+@dp.callback_query(F.data.regexp(r"^step_run:\d+:[a-z_0-9]+$"))
+async def on_step_run_cb(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    step_code = parts[2]
+    step = step_by_code(step_code)
+    if step is None:
+        await cb.answer("Неизвестный шаг", show_alert=True)
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if project.status is step.running_status:
+            await cb.answer(
+                f"⏳ {step.title} уже выполняется. Подожди.",
+                show_alert=True,
+            )
+            return
+        # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты — юзер
+        # может запустить любой шаг в любой момент. Если данных не хватает,
+        # воркер сам упадёт и откатит статус, но решение принимает юзер.
+        project.status = step.running_status
+        slug = project.slug
+        topic = project.topic
+    await cb.answer(f"Запускаю: {step.title}")
+    await cb.message.answer(
+        f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
+        parse_mode="HTML",
+    )
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:step:[a-z_0-9]+$"))
@@ -1035,26 +2023,20 @@ async def on_project_step(cb: CallbackQuery) -> None:
         # проверка runnable выполнится при попытке нажать
         # «▶ Запустить шаг» в picker'е (action="run" в
         # on_prompt_picker_cb).
-        if (
-            not is_hero_zombie
-            and not is_other_zombie
-            and not _is_enrich_slot(step.code)
-            and not is_step_runnable(step, project.status)
-        ):
-            await cb.answer(
-                f"Сначала пройди шаг до {step.requires.value if step.requires else '?'}",
-                show_alert=True,
-            )
-            return
+        # ПО ТРЕБОВАНИЮ: убрали все ограничения на вход в шаги — любой
+        # шаг можно открыть, даже если prerequisite не достигнут. Если
+        # шаг реально не сможет запуститься (нет данных) — это всплывёт
+        # внутри picker'а при попытке нажать «▶ Запустить шаг».
+        _ = is_hero_zombie  # переменные оставлены: используются ниже в логике
+        _ = is_other_zombie
 
         # Шаг 1 (План) — picker + «✏️ Сопр. сообщение» + «▶ Запустить шаг».
         # Flow аналогичен шагу 5 (enrich): выбрать шаблон, при желании
         # отредактировать сопр. сообщение, явно нажать «▶ Запустить».
         # Если тема ролика ещё не задана — сначала спрашиваем тему.
         if step.code == "plan":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 # Если тема не задана — просим ввести.
@@ -1098,9 +2080,8 @@ async def on_project_step(cb: CallbackQuery) -> None:
         #   [⬅ Назад]. Если ещё нет — сразу picker промтов из
         #   prompts/02_script/ (как было).
         if step.code == "script":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 voiceover_path = proj_xlsx.parent / "voiceover.txt"
@@ -1123,6 +2104,9 @@ async def on_project_step(cb: CallbackQuery) -> None:
                         "«▶ Сгенерировать», выбери промт и подожди ответ от "
                         "ChatGPT."
                     )
+                _set_user_screen(
+                    cb.from_user.id, "step_submenu", pid, "script"
+                )
                 await cb.message.answer(
                     header + body,
                     parse_mode="HTML",
@@ -1139,9 +2123,8 @@ async def on_project_step(cb: CallbackQuery) -> None:
         #      ждём ответ, скачиваем txt, бэкапим старый voiceover.txt в old/,
         #      сохраняем новый как voiceover.txt, статус → frames_ready.
         if step.code == "split":
-            from pathlib import Path as _Path
             proj_xlsx = (
-                _Path(settings.data_dir) / "videos" / project.slug / "project.xlsx"
+                project.data_dir / "project.xlsx"
             )
             if proj_xlsx.exists():
                 voiceover_path = proj_xlsx.parent / "voiceover.txt"
@@ -1168,6 +2151,9 @@ async def on_project_step(cb: CallbackQuery) -> None:
         if step.code == "objects":
             from app.telegram.menu import objects_submenu_kb
 
+            _set_user_screen(
+                cb.from_user.id, "step_submenu", pid, "objects"
+            )
             await cb.answer()
             await cb.message.answer(
                 f"<b>Шаг 4. Объекты</b>\n"
@@ -1311,20 +2297,22 @@ async def on_project_step(cb: CallbackQuery) -> None:
                     parse_mode="HTML",
                 )
                 return
-            # Всё собрано → запускаем генерацию первого/следующего.
-            project.status = step.running_status
+            # Всё собрано → не авто-запускаем, показываем явную кнопку
+            # «▶ Запустить генерацию Hero» (hero_run:<pid>).
             slug = project.slug
             topic = project.topic
             total_variations = sum(int(v or 1) for v in variations[:n])
-            await cb.answer(f"Запускаю: {step.title}")
+            _set_user_screen(cb.from_user.id, "hero_wait_input", pid, "run")
+            await cb.answer()
             await cb.message.answer(
-                f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
+                f"✅ Шаг {step.n}: <b>{step.title}</b> — всё собрано.\n"
                 f"Героев: {n}, всего изображений с вариациями: "
                 f"{total_variations}.\n"
                 f"Стиль: <code>{style_chosen}</code>\n"
-                f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-                f"Воркер подхватит за ~15 сек.",
+                f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n\n"
+                "Нажми «▶ Запустить генерацию Hero», чтобы отдать в работу.",
                 parse_mode="HTML",
+                reply_markup=_hero_run_kb(pid),
             )
             return
 
@@ -1345,21 +2333,20 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 and plib.prompt_path(step.code, chosen).exists()
             )
             need_picker = not chosen_ok
-            # Для enrich-слотов и xlsx-flow шагов (script, split):
-            # picker всегда видим, авто-запуска нет — только по кнопке
-            # «▶ Запустить шаг».
+            # Для enrich-слотов и всех шагов с promp-picker'ом (plan, script, split,
+            # img_pr, anim_pr, items): picker всегда видим, авто-запуска нет —
+            # только по кнопке «▶ Запустить шаг».
             always_picker = (
                 _is_enrich_slot(step.code)
-                or step.code in ("script", "split")
+                or step.code in (
+                    "script", "split", "img_pr", "anim_pr", "items"
+                )
             )
             if always_picker:
                 need_picker = True
             if need_picker:
                 has_msg_override = gtb.has_override(project, step.code)
-                if always_picker:
-                    show_run = bool(chosen_ok)
-                else:
-                    show_run = _can_run_enrich_slot_now(project, step.code)
+                show_run = bool(chosen_ok) if always_picker else _can_run_enrich_slot_now(project, step.code)
                 _set_user_screen(
                     cb.from_user.id, "picker", pid, step.code
                 )
@@ -1375,17 +2362,19 @@ async def on_project_step(cb: CallbackQuery) -> None:
                 )
                 return
 
-        # выставляем running-статус — воркер увидит и запустит шаг
-        project.status = step.running_status
+        # Шаги без picker'а (img, video, audio, assemble) — НЕ авто-старт,
+        # показываем явную кнопку «▶ Запустить шаг» (step_run:<pid>:<code>).
         slug = project.slug
         topic = project.topic
 
-    await cb.answer(f"Запускаю: {step.title}")
+    _set_user_screen(cb.from_user.id, "picker", pid, step.code)
+    await cb.answer()
     await cb.message.answer(
         f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
-        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-        f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n\n"
+        "Нажми «▶ Запустить шаг», чтобы отдать в работу.",
         parse_mode="HTML",
+        reply_markup=_step_run_kb(pid, step.code, step.title),
     )
 
 
@@ -1407,9 +2396,8 @@ async def on_script_view(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        slug = project.slug
         topic = project.topic
-    voiceover_path = settings.data_dir / "videos" / slug / "voiceover.txt"
+    voiceover_path = project.data_dir / "voiceover.txt"
     if not voiceover_path.exists():
         await cb.answer(
             "voiceover.txt ещё не сгенерирован — нечего показывать.",
@@ -1442,7 +2430,7 @@ async def on_script_regen(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         proj_xlsx = (
-            settings.data_dir / "videos" / project.slug / "project.xlsx"
+            project.data_dir / "project.xlsx"
         )
         if not proj_xlsx.exists():
             await cb.answer("Сначала Шаг 1 — нет project.xlsx", show_alert=True)
@@ -1556,18 +2544,25 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             has_msg_override = (
                 gtb.has_override(project, step_code) if project else False
             )
-            if step_code == "plan" and project is not None:
-                chosen = overrides.get("plan")
+            if (
+                step_code in (
+                    "plan", "script", "split", "img_pr", "anim_pr", "items"
+                )
+                and project is not None
+            ):
+                chosen = overrides.get(step_code)
                 show_run = bool(
                     chosen
                     and plib.is_valid_prompt_name(chosen)
-                    and plib.prompt_path("plan", chosen).exists()
+                    and plib.prompt_path(step_code, chosen).exists()
                 )
-            else:
+            elif _is_enrich_slot(step_code):
                 show_run = (
                     _can_run_enrich_slot_now(project, step_code)
                     if project else False
                 )
+            else:
+                show_run = False
         is_plan = step_code == "plan"
         topic_prefix = ""
         if is_plan and project is not None and (project.topic or "").strip():
@@ -1727,15 +2722,106 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             )
             return
 
+        # Шаг 6 (img_pr) — запуск xlsx-flow из picker'а.
+        if step_code == "img_pr":
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get("img_pr")
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path("img_pr", chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+            if (pid, "img_pr") in _xlsx_flow_active:
+                await cb.answer(
+                    "⏳ Уже идёт обработка «Промтов картинок», подожди.",
+                    show_alert=True,
+                )
+                return
+            await cb.answer(f"Запускаю промты картинок: {chosen}")
+            asyncio.create_task(
+                _run_xlsx_with_lock(
+                    _run_img_pr_xlsx(cb.message, pid, chosen),
+                    pid,
+                    "img_pr",
+                )
+            )
+            return
+
+        # Шаги 4b (items) и 8 (anim_pr) — явный запуск через running_status
+        # (без xlsx-flow). Для anim_pr это обычный воркер-шаг с мастер-промтом,
+        # для items — generate_items. Никакого авто-старта: юзер явно жмёт
+        # «▶ Запустить шаг» в picker'е.
+        if step_code in ("items", "anim_pr"):
+            from app.telegram.menu import (
+                step_by_code as _step_by_code,
+            )
+            sub_step = _step_by_code(step_code)
+            if sub_step is None:
+                await cb.answer("Неизвестный шаг", show_alert=True)
+                return
+            async with session_scope() as s:
+                project = (
+                    await s.execute(select(Project).where(Project.id == pid))
+                ).scalar_one_or_none()
+                if project is None:
+                    await cb.answer("Проект не найден", show_alert=True)
+                    return
+                overrides = dict(project.prompt_overrides or {})
+                chosen = overrides.get(step_code)
+                chosen_ok = (
+                    chosen
+                    and plib.is_valid_prompt_name(chosen)
+                    and plib.prompt_path(step_code, chosen).exists()
+                )
+                if not chosen_ok:
+                    await cb.answer(
+                        "Сначала выбери шаблон в списке.",
+                        show_alert=True,
+                    )
+                    return
+                if project.status is sub_step.running_status:
+                    await cb.answer(
+                        f"⏳ Шаг уже выполняется ({sub_step.title}). Подожди.",
+                        show_alert=True,
+                    )
+                    return
+                # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты —
+                # юзер может запустить любой шаг в любой момент, независимо
+                # от того, пройдены ли предыдущие.
+                project.status = sub_step.running_status
+                slug = project.slug
+                topic = project.topic
+            await cb.answer(f"Запускаю: {sub_step.title}")
+            await cb.message.answer(
+                f"▶ <b>{sub_step.title}</b>\n"
+                f"Шаблон: <code>{chosen}</code>\n"
+                f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+                f"Воркер подхватит за ~15 сек.",
+                parse_mode="HTML",
+            )
+            return
+
         if not _is_enrich_slot(step_code):
             await cb.answer(
-                "Кнопка «Запустить» доступна только для шагов 1–3 и "
-                "слотов «Доп работа с EXCEL» (шаг 5).",
+                "Кнопка «Запустить» доступна только для шагов 1–3, 6, 8, "
+                "«Предметов» и слотов «Доп работа с EXCEL» (шаг 5).",
                 show_alert=True,
             )
             return
         from app.telegram.menu import (
-            is_step_runnable,
             step_by_code as _step_by_code,
         )
         step = _step_by_code(step_code)
@@ -1769,19 +2855,9 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                     show_alert=True,
                 )
                 return
-            # Перезапуск из ready — разрешаем (юзер мог сменить шаблон).
-            if not is_step_runnable(step, project.status):
-                from app.telegram.menu import status_order
-                is_already_done = (
-                    status_order(project.status) >= status_order(step.ready_status)
-                )
-                if not is_already_done:
-                    await cb.answer(
-                        f"Сначала пройди шаг до "
-                        f"{step.requires.value if step.requires else '?'}",
-                        show_alert=True,
-                    )
-                    return
+            # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты —
+            # пользователь может запустить любой шаг в любой момент. Если
+            # данных не хватает — воркер упадёт, статус откатится.
             project.status = step.running_status
             slug = project.slug
             topic = project.topic
@@ -1947,9 +3023,10 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             )
             return
 
-        # Шаг 2 (script) и Шаг 3 (split) — picker остаётся видимым
-        # (как plan/enrich), авто-запуска нет — только по «▶ Запустить шаг».
-        if step_code in ("script", "split"):
+        # Шаги 2/3/6/8/4b (script, split, img_pr, anim_pr, items) — picker
+        # остаётся видимым (как plan/enrich), авто-запуска нет — только
+        # по кнопке «▶ Запустить шаг».
+        if step_code in ("script", "split", "img_pr", "anim_pr", "items"):
             async with session_scope() as s:
                 project = (
                     await s.execute(select(Project).where(Project.id == pid))
@@ -2271,7 +3348,6 @@ async def _handle_prompt_upload(msg: Message) -> None:
 async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
     """Бэкапит старый voiceover.txt в old/ и записывает новый."""
     from datetime import datetime as _dt
-    from pathlib import Path as _Path
 
     async with session_scope() as s:
         project = (
@@ -2280,10 +3356,9 @@ async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
         if project is None:
             await msg.answer("Проект не найден.")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_dir = _Path(settings.data_dir) / "videos" / slug
+    proj_dir = project.data_dir
     voiceover_path = proj_dir / "voiceover.txt"
 
     if voiceover_path.exists():
@@ -2304,12 +3379,63 @@ async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
     )
 
 
+@dp.message(F.photo)
+async def on_photo_message(msg: Message) -> None:
+    """Принимаем фото — пока только как референс постоянного продукта (PR #3)."""
+    if not is_owner(msg):
+        return
+    user_id = msg.from_user.id if msg.from_user else 0
+    mass_pp_bid = _pending_mass_prod_photo.get(user_id)
+    if mass_pp_bid is None:
+        return
+    _pending_mass_prod_photo.pop(user_id, None)
+    if not msg.photo:
+        await msg.answer("Фото не пришло — отправь ещё раз.")
+        return
+    # Берём самое большое разрешение (последнее в списке).
+    photo = msg.photo[-1]
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, mass_pp_bid)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        # Сохраняем рядом с массовым: data/batches/<slug>/product_reference.<ext>
+        target_dir = batch.data_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / "product_reference.jpg"
+        try:
+            await msg.bot.download(photo, destination=str(target_path))
+        except Exception as e:  # noqa: BLE001
+            await msg.answer(f"❌ Не смог сохранить фото: {e}")
+            return
+        await batches_svc.set_permanent_product_field(
+            s, mass_pp_bid, reference_image_path=str(target_path)
+        )
+    await msg.answer(
+        f"🖼 Референс продукта сохранён: <code>{target_path.name}</code>",
+        parse_mode="HTML",
+    )
+    await _show_mass_product(msg, mass_pp_bid)
+
+
 @dp.message(F.document)
 async def on_document_message(msg: Message) -> None:
     """Принимаем `.md`-файл (промт) или .txt (замена voiceover)."""
     if not is_owner(msg):
         return
     user_id = msg.from_user.id if msg.from_user else 0
+
+    # Загрузка topics.xlsx для массового — проверяем первым (юзер кликнул
+    # «📤 Залить topics.xlsx» в меню массового).
+    pending_mass_bid = _pending_mass_xlsx_upload.get(user_id)
+    if (
+        pending_mass_bid is not None
+        and msg.document is not None
+        and (msg.document.file_name or "").lower().endswith(".xlsx")
+    ):
+        _pending_mass_xlsx_upload.pop(user_id, None)
+        await _handle_mass_xlsx_upload(msg, pending_mass_bid, msg.document)
+        return
 
     # Документ как ответ на «✏️ Сопр. сообщение». Пытаемся определить
     # активный edit-сеанс: 1) по reply_to_message_id, 2) по user_id.
@@ -2422,10 +3548,9 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден.")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = _Path(tmp.name)
     await msg.bot.download(doc, destination=str(tmp_path))
@@ -2445,9 +3570,12 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
     replace_with(proj_xlsx, tmp_path)
     tmp_path.unlink(missing_ok=True)
 
-    # Reload xlsx → БД.
+    # Reload xlsx → БД. Пробуем v8-импорт (лист «план», R45/R48/R49) и v7-синк
+    # (лист «Кадры», R29) — в любом порядке, тот что не подходит — no-op.
+    # Раньше был только v7, и на v8-xlsx image_prompt/animation_prompt не попадали в БД.
     try:
         from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
 
         async with session_scope() as s:
             project = (
@@ -2456,10 +3584,19 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
                 )
             ).scalar_one_or_none()
             if project is not None:
-                summary = await reload_from_xlsx(s, project, proj_xlsx)
-                logger.info(
-                    "xlsx_replace: reload_from_xlsx → {}", summary
-                )
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx,
+                        keep_fields=False, update_frames_voiceover=True,
+                    )
+                    logger.info("xlsx_replace: v8 import → {}", info_v8)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("xlsx_replace: v8 import failed: {}", e)
+                try:
+                    info_v7 = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info("xlsx_replace: v7 reload_from_xlsx → {}", info_v7)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("xlsx_replace: v7 reload_from_xlsx failed: {}", e)
     except Exception as e:  # noqa: BLE001
         logger.exception("xlsx_replace reload failed: {}", e)
 
@@ -2492,8 +3629,7 @@ async def on_project_download_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        slug = project.slug
-    xlsx_path = settings.data_dir / "videos" / slug / "project.xlsx"
+    xlsx_path = project.data_dir / "project.xlsx"
     if not xlsx_path.exists():
         await cb.answer("xlsx-файл ещё не создан", show_alert=True)
         return
@@ -2527,7 +3663,7 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
 
     # Снимаем xlsx-flow локи для этого проекта.
     xlsx_stopped: list[str] = []
-    for code in ("plan", "script", "split"):
+    for code in ("plan", "script", "split", "img_pr"):
         key = (pid, code)
         if key in _xlsx_flow_active:
             _xlsx_flow_active.discard(key)
@@ -2595,6 +3731,7 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         return
     pid = int((cb.data or "").split(":")[1])
     from app.services.xlsx_sync import reload_from_xlsx
+    from app.services.xlsx_v8_import import import_v8_xlsx
 
     async with session_scope() as s:
         project = (
@@ -2603,24 +3740,51 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        xlsx_path = settings.data_dir / "videos" / project.slug / "project.xlsx"
+        xlsx_path = project.data_dir / "project.xlsx"
         if not xlsx_path.exists():
             await cb.answer("xlsx-файла нет", show_alert=True)
             return
+        # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
+        # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
+        # ROOT FIX: раньше вызывался только v7 — и на v8-xlsx этот клик был пустым.
+        summary_v8: dict = {}
+        summary_v7: dict = {}
         try:
-            summary = await reload_from_xlsx(s, project, xlsx_path)
+            summary_v8 = await import_v8_xlsx(
+                s, project, xlsx_path,
+                keep_fields=False, update_frames_voiceover=True,
+            )
         except Exception as e:  # noqa: BLE001
-            logger.exception("reload_from_xlsx failed")
-            await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
-            return
-        proj_fields = summary.get("project_fields_changed") or []
-        frames_changed = summary.get("frames_changed") or []
+            logger.warning("reload_xlsx v8 import failed: {}", e)
+        try:
+            summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("reload_from_xlsx (v7) failed")
+            if not summary_v8:
+                await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
+                return
+        proj_fields = list(
+            dict.fromkeys(
+                (summary_v8.get("project_fields_changed") or [])
+                + (summary_v7.get("project_fields_changed") or [])
+            )
+        )
+        frames_changed = list(
+            dict.fromkeys(
+                (summary_v8.get("frames_updated") or [])
+                + (summary_v8.get("frames_created") or [])
+                + (summary_v7.get("frames_changed") or [])
+            )
+        )
+        prompts_synced = summary_v8.get("prompts_synced") or []
     await cb.answer("Перечитал")
     parts = []
     if proj_fields:
         parts.append("project: " + ", ".join(proj_fields))
     if frames_changed:
         parts.append(f"кадры: {len(frames_changed)} ({frames_changed})")
+    if prompts_synced:
+        parts.append(f"image/anim prompts: {prompts_synced}")
     if not parts:
         parts.append("ничего нового — ваши правки уже в БД")
     await cb.message.answer("🔄 Перечитал xlsx.\n" + "\n".join(parts))
@@ -2644,15 +3808,19 @@ async def on_objects_persons(cb: CallbackQuery) -> None:
     await on_project_step(cb_clone)
 
 
-@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:items$"))
-async def on_objects_items(cb: CallbackQuery) -> None:
-    """Клик «Предметы» в submenu «Объекты» — запускаем generate_items.
-    Запускать можно только из hero_ready (или выше). Если ещё не достигли
-    hero_ready — refuse (требование сначала сделать Персонажей)."""
+@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:persons_xlsx$"))
+async def on_objects_persons_xlsx(cb: CallbackQuery) -> None:
+    """Клик «🧾 Из EXCEL» — парсим лист «Персонажи» из project.xlsx,
+    показываем по очереди picker промта для каждого. После того как
+    юзер выберет промт для последнего — статус становится
+    generating_hero и воркер запускает _run_excel."""
+    logger.info("excel-hero: persons_xlsx click cb.data={!r}", cb.data)
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
+    from app.services.excel_characters import parse_persons_sheet
+
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == pid))
@@ -2660,36 +3828,226 @@ async def on_objects_items(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        # Требование: hero_ready достигнут или превзойдён.
-        from app.telegram.menu import status_order as _ord
+    xlsx_path = project.data_dir / "project.xlsx"
+    if not xlsx_path.exists():
+        await cb.answer("project.xlsx не найден", show_alert=True)
+        await cb.message.answer(
+            "🚫 <code>project.xlsx</code> для этого проекта ещё не создан. "
+            "Сначала пройди шаги 1-3 (план/сценарий/разбивка), либо "
+            "загрузи xlsx вручную.",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        chars = parse_persons_sheet(xlsx_path)
+    except Exception as e:  # noqa: BLE001
+        await cb.answer("Ошибка чтения xlsx", show_alert=True)
+        await cb.message.answer(
+            f"🚫 Не смог прочитать лист «Персонажи»:\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
+        return
+    if not chars:
+        await cb.answer("Персонажи пустые", show_alert=True)
+        await cb.message.answer(
+            "🚫 В листе «Персонажи» project.xlsx не заполнен ни один "
+            "столбец. Заполни (R1=id, R3=имя, R4=внешность, R5=одежда, "
+            "R6=характер, R7=правила) и пришли xlsx обратно.",
+            parse_mode="HTML",
+        )
+        return
 
-        if _ord(project.status) < _ord(ProjectStatus.hero_ready):
-            await cb.answer(
-                "Сначала сделай «Персонажи» — нужен hero_ready",
-                show_alert=True,
-            )
+    # Сохраняем заготовку в project.meta — promt_name пока None.
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
             return
-        # Если item_descriptions пуст — спросим юзера в чате (на будущее),
-        # пока просто разрешим — generate_items сам отработает корректно
-        # (поставит items_ready, если описаний нет).
-        project.status = ProjectStatus.generating_items
-        slug = project.slug
-        topic = project.topic
-        n_items = len([
-            d for d in (project.item_descriptions or [])
-            if isinstance(d, str) and d.strip()
-        ])
-    await cb.answer(f"Запускаю: Предметы ({n_items} шт)")
+        meta = dict(project.meta or {})
+        meta["excel_hero"] = {
+            "characters": [c.to_dict() for c in chars],
+        }
+        project.meta = meta
+        flag_modified(project, "meta")
+        await s.flush()
+    summary = "\n".join(
+        f"• <b>{c.id}</b>: {c.name or '—'}"
+        + (f" → реф {', '.join(c.ref_ids)}" if c.ref_ids else "")
+        for c in chars
+    )
+    await cb.answer(f"Нашёл {len(chars)} персонажей")
     await cb.message.answer(
-        f"▶ Шаг 4b: <b>Предметы</b>\n"
-        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
-        f"К генерации: <b>{n_items}</b> предмет(ов).\n"
-        f"Если нужно описать предметы — отредактируй "
-        f"<code>item_descriptions</code> в БД или через xlsx-round-trip "
-        f"в шагах «Доп работа с EXCEL».\n"
-        f"Воркер подхватит за ~15 сек.",
+        f"🧾 <b>Из EXCEL</b> — нашёл персонажей: <b>{len(chars)}</b>.\n\n"
+        f"{summary}\n\n"
+        "Сейчас по очереди для каждого выбираем промт "
+        "(стиль). Реф-вариации тоже выберут промт, но при "
+        "генерации он не используется (используется referenced "
+        "image + краткий текст изменений).",
         parse_mode="HTML",
     )
+    await _excel_hero_show_next_picker(cb.message, pid)
+
+
+async def _excel_hero_show_next_picker(
+    msg: Message, project_id: int
+) -> None:
+    """Шлёт picker для первого ещё не выбранного персонажа.
+    Если все выбрали — стартует генерацию (status=generating_hero)."""
+    logger.info("excel-hero: show_next_picker pid={}", project_id)
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer("Проект не найден")
+            return
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or {}
+        chars = cfg.get("characters") or []
+        next_id: str | None = None
+        for c in chars:
+            if isinstance(c, dict) and not (c.get("prompt_name") or ""):
+                next_id = str(c.get("id") or "")
+                break
+        logger.info(
+            "excel-hero: next_id={!r} total_chars={}",
+            next_id, len(chars),
+        )
+        if next_id is None:
+            # Все выбрали — стартуем.
+            project.status = ProjectStatus.generating_hero
+            await s.flush()
+            topic = project.topic or project.slug
+            await msg.answer(
+                f"▶ Стартую генерацию из EXCEL: <b>{len(chars)}</b> "
+                f"персонаж(ей). Проект «{topic}». Воркер подхватит за ~15 сек.",
+                parse_mode="HTML",
+            )
+            return
+    kb = _excel_hero_prompt_kb(project_id, next_id)
+    await msg.answer(
+        f"Выбери промт для <b>{next_id}</b>:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+def _excel_hero_prompt_kb(pid: int, char_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора промта (из prompts/04_hero_style/) для одного
+    excel-персонажа. Callback: excel_prm:<pid>:<char_id>:<prompt_name>.
+
+    `char_id` может содержать любые символы (включая кириллицу) — мы
+    кладём его в callback as-is, но т.к. Telegram-лимит на callback_data
+    = 64 байта, обрезаем по 30 байт UTF-8 на всякий случай."""
+    names = plib.list_prompts("hero_style")
+    rows: list[list[InlineKeyboardButton]] = []
+    # Safety: truncate char_id to fit Telegram's 64-byte callback limit.
+    cid_safe = char_id.encode("utf-8")[:30].decode("utf-8", errors="ignore")
+    for name in names:
+        cb_data = f"excel_prm:{pid}:{cid_safe}:{name}"
+        if len(cb_data.encode("utf-8")) > 64:
+            # Имя промта слишком длинное — обрезаем.
+            cb_data = cb_data.encode("utf-8")[:64].decode("utf-8", errors="ignore")
+        rows.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=cb_data,
+            )
+        ])
+    if not rows:
+        # На случай пустой папки — даём дефолт.
+        rows.append([
+            InlineKeyboardButton(
+                text="default",
+                callback_data=f"excel_prm:{pid}:{cid_safe}:default",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("excel_prm:"))
+async def on_excel_hero_prompt_pick(cb: CallbackQuery) -> None:
+    """Юзер выбрал промт для одного excel-персонажа. Сохраняем выбор
+    в project.meta['excel_hero']['characters'][...]['prompt_name'] и
+    показываем picker для следующего."""
+    logger.info("excel-hero: prompt_pick cb.data={!r}", cb.data)
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        parts = (cb.data or "").split(":", 3)
+        if len(parts) != 4:
+            await cb.answer("Битый callback", show_alert=True)
+            logger.warning(
+                "excel-hero: битый callback parts={} cb.data={!r}",
+                len(parts), cb.data,
+            )
+            return
+        _, pid_s, char_id, prompt_name = parts
+        pid = int(pid_s)
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            meta = dict(project.meta or {})
+            cfg = dict(meta.get("excel_hero") or {})
+            chars = [dict(c) for c in (cfg.get("characters") or []) if isinstance(c, dict)]
+            found = False
+            for c in chars:
+                if str(c.get("id") or "") == char_id:
+                    c["prompt_name"] = prompt_name
+                    found = True
+                    break
+            cfg["characters"] = chars
+            meta["excel_hero"] = cfg
+            project.meta = meta
+            flag_modified(project, "meta")
+            await s.flush()
+            logger.info(
+                "excel-hero: saved prompt char_id={!r} prompt={!r} found={} "
+                "after_save_pmeta={!r}",
+                char_id, prompt_name, found,
+                [(c.get('id'), c.get('prompt_name')) for c in chars],
+            )
+        await cb.answer(f"{char_id} → {prompt_name}")
+        await _hide_buttons_with_badge(
+            cb.message, f"✅ {char_id}: <code>{prompt_name}</code>"
+        )
+        await _excel_hero_show_next_picker(cb.message, pid)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("excel-hero: prompt_pick failed")
+        try:
+            await cb.message.answer(
+                f"🚫 Ошибка picker'а промта: <code>{e}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:objects:items$"))
+async def on_objects_items(cb: CallbackQuery) -> None:
+    """Клик «Предметы» в submenu «Объекты» — НЕ запускаем сразу,
+    перенаправляем в step:items → покажется picker, запуск только
+    явным «▶ Запустить шаг» (требование юзера — никакого
+    авто-старта)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    # Поджимаем cb.data, чтобы on_project_step увидел proj:<pid>:step:items
+    # и показал picker (step.code=="items" попадёт в общий always_picker
+    # блок, см. on_project_step — step.code in plib.STEP_FOLDERS).
+    # Блокировка «hero_ready нужен» убрана (PR #11): пользователь может
+    # открыть «Предметы» в любой момент; явный запуск всё равно остаётся
+    # за кнопкой «▶ Запустить шаг» в picker'е.
+    cb_clone = cb.model_copy(update={"data": f"proj:{pid}:step:items"})
+    await on_project_step(cb_clone)
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:enrich_add_slot$"))
@@ -2878,6 +4236,7 @@ async def on_text_message(msg: Message) -> None:
     #     или имя промта — иначе из мастер-флоу не выйти.
     if text == PERSISTENT_HOME_TEXT:
         _clear_pending_state(user_id)
+        _set_user_screen(user_id, "main")
         await msg.answer(
             "Главное меню:",
             reply_markup=persistent_reply_kb(),
@@ -2912,6 +4271,7 @@ async def on_text_message(msg: Message) -> None:
             )
             return
         _remember_project(user_id, pid)
+        _set_user_screen(user_id, "project_menu", pid)
         await msg.answer(
             project_header(project),
             parse_mode="HTML",
@@ -3018,26 +4378,43 @@ async def on_text_message(msg: Message) -> None:
             await msg.answer("Что делаем?", reply_markup=main_menu_kb())
             return
 
-        # Fallback: если _user_screen ничего не знает — старое поведение
-        # (вернуть в меню последнего проекта).
-        pid = _last_project_by_user.get(user_id)
-        if pid is None:
-            pid = await _last_project_id_fallback()
-        if pid is not None:
+        if st == "project_list":
+            # «⬅ Назад» со списка проектов → главное меню.
+            _set_user_screen(user_id, "main")
+            await msg.answer(
+                "Главное меню:",
+                reply_markup=persistent_reply_kb(),
+            )
+            await msg.answer("Что делаем?", reply_markup=main_menu_kb())
+            return
+
+        if st == "hero_wait_input" and scr_pid is not None:
+            # Любой ввод hero-flow (style/count/brief/variation/modifier/
+            # run-confirm) → возвращаем в меню проекта (там кнопка «4.
+            # Объекты» снова поднимет hero-flow с нужного места).
+            _clear_pending_state(user_id)
             async with session_scope() as s:
                 project = (
-                    await s.execute(select(Project).where(Project.id == pid))
+                    await s.execute(
+                        select(Project).where(Project.id == scr_pid)
+                    )
                 ).scalar_one_or_none()
             if project is not None:
-                _set_user_screen(user_id, "project_menu", pid)
-                _remember_project(user_id, pid)
+                _set_user_screen(user_id, "project_menu", scr_pid)
+                _remember_project(user_id, scr_pid)
                 await msg.answer(
                     project_header(project),
                     parse_mode="HTML",
                     reply_markup=project_menu_kb(project),
                 )
                 return
-        # Уже совсем нет контекста — главное меню.
+
+        # Fallback (st == "main" или неизвестное состояние) — НЕ перепрыгиваем
+        # в чужой проект (раньше тут был автопрыжок в «меню последнего
+        # проекта», и это был БАГ: пользователь стоит на главном меню /
+        # списке проектов / неизвестном экране — а Назад уносит его в
+        # конкретный проект). Теперь Назад с главного меню просто
+        # перерисовывает главное меню.
         _set_user_screen(user_id, "main")
         await msg.answer(
             "Главное меню:",
@@ -3050,6 +4427,52 @@ async def on_text_message(msg: Message) -> None:
     if _pending_topic_input.get(user_id):
         _pending_topic_input.pop(user_id, None)
         await _create_new_project(msg)
+        return
+
+    # 1a) Если ждём название массового проекта.
+    if _pending_mass_name.get(user_id):
+        _pending_mass_name.pop(user_id, None)
+        await _create_mass_from_name(msg, (msg.text or "").strip())
+        return
+
+    # 1b) Если ждём список тем для массового (по строке на тему).
+    mass_bid = _pending_mass_topics_text.get(user_id)
+    if mass_bid is not None:
+        _pending_mass_topics_text.pop(user_id, None)
+        await _handle_mass_topics_text(msg, mass_bid)
+        return
+
+    # 1c) Если ждём название постоянного продукта массового.
+    mass_pn_bid = _pending_mass_prod_name.get(user_id)
+    if mass_pn_bid is not None:
+        _pending_mass_prod_name.pop(user_id, None)
+        new_name = (msg.text or "").strip()
+        if not new_name:
+            await msg.answer("Пустое название — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            await batches_svc.set_permanent_product_field(
+                s, mass_pn_bid, name=new_name
+            )
+        await msg.answer(f"✏ Название продукта: <b>{_html_escape(new_name)}</b>",
+                         parse_mode="HTML")
+        await _show_mass_product(msg, mass_pn_bid)
+        return
+
+    # 1d) Если ждём описание постоянного продукта массового.
+    mass_pd_bid = _pending_mass_prod_desc.get(user_id)
+    if mass_pd_bid is not None:
+        _pending_mass_prod_desc.pop(user_id, None)
+        new_desc = (msg.text or "").strip()
+        if not new_desc:
+            await msg.answer("Пустое описание — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            await batches_svc.set_permanent_product_field(
+                s, mass_pd_bid, description=new_desc
+            )
+        await msg.answer("📝 Описание продукта сохранено.")
+        await _show_mass_product(msg, mass_pd_bid)
         return
 
     # 2) Если ждём описание героя N для конкретного проекта
@@ -3089,13 +4512,11 @@ async def on_text_message(msg: Message) -> None:
                 await msg.answer("Проект не найден.")
                 return
             project.topic = topic
-            slug = project.slug
             overrides = dict(project.prompt_overrides or {})
             has_msg_override = gtb.has_override(project, "plan")
         # Обновляем тему и в xlsx (лист «Общий план ролика»).
         try:
-            from pathlib import Path as _Path
-            proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+            proj_xlsx = project.data_dir / "project.xlsx"
             if proj_xlsx.exists():
                 sheet = ProjectSheet(file_path=proj_xlsx)
                 sheet.write_general(topic=topic)
@@ -3233,6 +4654,38 @@ def _hero_reset_menu_kb(pid: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(
             text="🎨 Сменить стиль (всё с начала)",
             callback_data=f"hero_menu:{pid}:reset_all",
+        )],
+    ])
+
+
+def _hero_run_kb(pid: int) -> InlineKeyboardMarkup:
+    """Финальная кнопка «▶ Запустить генерацию Hero» — показывается когда
+    все описания+вариации+модификаторы собраны. Без этой кнопки шаг 4a
+    (Hero) не запускается автоматом — пользователь явно подтверждает."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="▶ Запустить генерацию Hero",
+            callback_data=f"hero_run:{pid}",
+        )],
+        [InlineKeyboardButton(
+            text="⬅ Меню проекта",
+            callback_data=f"proj:{pid}:menu",
+        )],
+    ])
+
+
+def _step_run_kb(pid: int, step_code: str, step_title: str) -> InlineKeyboardMarkup:
+    """Кнопка «▶ Запустить шаг N. <title>» для шагов без prompt-picker'а
+    (img/video/audio/assemble). Раньше эти шаги запускались по одному
+    клику в меню проекта — теперь требуется явное подтверждение."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"▶ Запустить шаг: {step_title}",
+            callback_data=f"step_run:{pid}:{step_code}",
+        )],
+        [InlineKeyboardButton(
+            text="⬅ Меню проекта",
+            callback_data=f"proj:{pid}:menu",
         )],
     ])
 
@@ -3432,9 +4885,8 @@ async def _run_plan_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -3633,10 +5085,9 @@ async def _run_script_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -3814,10 +5265,9 @@ async def _run_split_xlsx(
         if project is None:
             await msg.answer(f"Проект #{project_id} не найден")
             return
-        slug = project.slug
         topic = project.topic
 
-    proj_xlsx = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+    proj_xlsx = project.data_dir / "project.xlsx"
     if not proj_xlsx.exists():
         await msg.answer(
             f"project.xlsx не найден: <code>{proj_xlsx}</code>",
@@ -3992,6 +5442,192 @@ async def _run_split_xlsx(
         logger.warning("split_xlsx send doc failed: {}", e)
 
 
+async def _run_img_pr_xlsx(
+    msg: Message, project_id: int, prompt_name: str
+) -> None:
+    """Запускает xlsx-flow для шага 6 «Промты картинок»:
+
+    1) Открываем новый чат ChatGPT, прикрепляем project.xlsx + мастер-промт.
+    2) ChatGPT заполняет промты картинок прямо в xlsx и возвращает его.
+    3) Бэкапим старый project.xlsx, подменяем новым.
+    4) Синхронизируем xlsx → БД (image_prompt поля кадров).
+    5) Статус проекта → image_prompts_ready.
+
+    Никаких изменений в orchestrator — этот шаг полностью идёт мимо воркера.
+    """
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    from app.services.xlsx_versioning import (
+        backup_to_old,
+        replace_with,
+        validate_xlsx,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer(f"Проект #{project_id} не найден")
+            return
+        topic = project.topic or ""
+
+    proj_xlsx = project.data_dir / "project.xlsx"
+    if not proj_xlsx.exists():
+        await msg.answer(
+            f"project.xlsx не найден: <code>{proj_xlsx}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    prompt_path = plib.prompt_path("img_pr", prompt_name)
+    if not prompt_path.exists():
+        await msg.answer(
+            f"Файл промта не найден: <code>{prompt_path}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    from app.services.prompt_library import get_project_prompt
+    try:
+        master = get_project_prompt(project, "img_pr")
+    except FileNotFoundError:
+        master = (
+            "# img_pr\n\n"
+            "Мастер-промт для шага «Промты картинок» ещё не настроен. "
+            "Открой prompts/05_image_prompts/default.md и опиши там задачу."
+        )
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_dir = proj_xlsx.parent / "tmp_gpt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = out_dir / f"img_pr_{ts}.xlsx"
+
+    prompt_file = out_dir / f"prompt_img_pr_{ts}.md"
+    prompt_file.write_text(master.strip(), encoding="utf-8")
+
+    accompanying = gtb.get_effective_text(project, "img_pr")
+    text_was_overridden = gtb.has_override(project, "img_pr")
+
+    override_note = (
+        "\n<i>✏️ Сопр. сообщение: отредактировано пользователем</i>"
+        if text_was_overridden else ""
+    )
+    logger.info(
+        "img_pr_xlsx: prompt_file={}, size={}, accompanying_len={}, xlsx={}",
+        prompt_file, prompt_file.stat().st_size,
+        len(accompanying), proj_xlsx,
+    )
+    await msg.answer(
+        f"▶ <b>Промты картинок</b> (xlsx-flow)\n"
+        f"Проект #{project_id} «{topic}»\n"
+        f"Промт: <code>{prompt_name}</code>{override_note}\n"
+        f"Файл промта: <code>{prompt_file.name}</code> "
+        f"({prompt_file.stat().st_size} байт)\n\n"
+        f"Открываю ChatGPT, прикрепляю xlsx + промт-файл, жду ответ. "
+        f"До 15 минут. Не закрывай Chrome.",
+        parse_mode="HTML",
+    )
+
+    backup: _Path | None = None
+    try:
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            await gpt.new_conversation()
+            reply = await gpt.ask_with_files(
+                accompanying.strip(), [prompt_file, proj_xlsx], timeout=900
+            )
+            logger.info(
+                "img_pr_xlsx: GPT reply len={} (project #{}, prompt={})",
+                len(reply or ""),
+                project_id,
+                prompt_name,
+            )
+            await gpt.download_attachment_from_last_reply(
+                downloaded, timeout=900
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("img_pr_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз."
+        )
+        return
+
+    validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        logger.warning(
+            "img_pr_xlsx: скачанный файл не валиден ({}): {}",
+            validation_err,
+            downloaded,
+        )
+        await msg.answer(
+            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
+            f"Файл: <code>{downloaded}</code>\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз.",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        backup = backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, downloaded)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("img_pr_xlsx replace failed: {}", e)
+        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
+        return
+
+    try:
+        from app.services.xlsx_sync import reload_from_xlsx
+        from app.services.xlsx_v8_import import import_v8_xlsx
+
+        async with session_scope() as s:
+            project = (
+                await s.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+            ).scalar_one_or_none()
+            if project is not None:
+                try:
+                    info_v8 = await import_v8_xlsx(
+                        s, project, proj_xlsx, keep_fields=False
+                    )
+                    logger.info("img_pr_xlsx: v8 import → {}", info_v8)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("img_pr_xlsx: v8 import failed: {}", e)
+                try:
+                    info = await reload_from_xlsx(s, project, proj_xlsx)
+                    logger.info("img_pr_xlsx: v7 reload_from_xlsx → {}", info)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "img_pr_xlsx: v7 reload_from_xlsx failed: {}", e
+                    )
+                project.status = ProjectStatus.image_prompts_ready
+    except Exception as e:  # noqa: BLE001
+        logger.warning("img_pr_xlsx status update failed: {}", e)
+
+    backup_note = (
+        f"\nПредыдущая версия: <code>old/{backup.name}</code>"
+        if backup is not None
+        else ""
+    )
+    await msg.answer(
+        f"✅ Промты картинок готовы. project.xlsx обновлён.{backup_note}",
+        parse_mode="HTML",
+    )
+    try:
+        await msg.answer_document(
+            FSInputFile(str(proj_xlsx)),
+            caption=(
+                f"project.xlsx — промты картинок "
+                f"(промт «{prompt_name}»)"
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("img_pr_xlsx send doc failed: {}", e)
+
+
 async def _create_new_project(msg: Message) -> None:
     """Создаёт новый проект. Вход — только название проекта (короткое),
     тема ролика спрашивается отдельно при запуске шага 1 «План».
@@ -4027,7 +5663,7 @@ async def _create_new_project(msg: Message) -> None:
         pid = project.id
         try:
             sheet = ProjectSheet(
-                file_path=settings.data_dir / "videos" / slug / "project.xlsx",
+                file_path=project.data_dir / "project.xlsx",
             )
             sheet.ensure_initialized(project_id=pid, slug=slug)
             sheet.write_general(
@@ -4187,45 +5823,93 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             ).scalar_one_or_none()
             if project is not None:
                 payload = req.payload or {}
-                cur_hi = int(payload.get("hero_index") or 1)
-                cur_vi = int(payload.get("variation_index") or 1)
-                n_total = project.hero_count or 1
-                # Кол-во вариаций именно этого героя.
-                vars_cfg = list(project.hero_variations or [])
-                n_var = 1
-                if cur_hi - 1 < len(vars_cfg):
-                    try:
-                        n_var = int(vars_cfg[cur_hi - 1] or 1)
-                    except (TypeError, ValueError):
-                        n_var = 1
-                n_var = max(1, min(5, n_var))
+                # Excel-режим (кнопка «🧾 Из EXCEL»): payload содержит
+                # `excel_id`, hero_index/variation_index не используются.
+                # Решение каждой карточки — переход к следующему персонажу
+                # списка (или всё готово). Воркер сам берёт следующего.
+                excel_id = payload.get("excel_id")
+                if isinstance(excel_id, str) and excel_id:
+                    if action == "regen":
+                        project.status = ProjectStatus.generating_hero
+                        regen_step_msg = (
+                            f"\n\n▶ Перегенерирую персонажа {excel_id}."
+                        )
+                    elif action == "approve":
+                        # Считаем сколько ещё не одобрено в excel-списке.
+                        meta = dict(project.meta or {})
+                        cfg = meta.get("excel_hero") or {}
+                        all_ids = [
+                            str((c or {}).get("id") or "")
+                            for c in (cfg.get("characters") or [])
+                            if isinstance(c, dict)
+                        ]
+                        approved_rows = (
+                            await s.execute(
+                                select(HITLRequest).where(
+                                    HITLRequest.project_id == project.id,
+                                    HITLRequest.kind == HITLKind.approve_hero,
+                                    HITLRequest.decision == HITLDecision.approved,
+                                )
+                            )
+                        ).scalars().all()
+                        approved_ids = {
+                            (r.payload or {}).get("excel_id")
+                            for r in approved_rows
+                            if (r.payload or {}).get("excel_id")
+                        }
+                        approved_ids.add(excel_id)
+                        remaining = [
+                            i for i in all_ids if i and i not in approved_ids
+                        ]
+                        if remaining:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Осталось персонажей: {len(remaining)} "
+                                f"({', '.join(remaining[:5])}{'…' if len(remaining) > 5 else ''})."
+                            )
+                        # Если всё одобрено — статус уже hero_ready (его
+                        # выставил generate_hero после сохранения артефакта).
+                    await s.flush()
+                else:
+                    cur_hi = int(payload.get("hero_index") or 1)
+                    cur_vi = int(payload.get("variation_index") or 1)
+                    n_total = project.hero_count or 1
+                    # Кол-во вариаций именно этого героя.
+                    vars_cfg = list(project.hero_variations or [])
+                    n_var = 1
+                    if cur_hi - 1 < len(vars_cfg):
+                        try:
+                            n_var = int(vars_cfg[cur_hi - 1] or 1)
+                        except (TypeError, ValueError):
+                            n_var = 1
+                    n_var = max(1, min(5, n_var))
 
-                if action == "regen":
-                    # 🔁 эту же вариацию — выйдет в generating_hero,
-                    # generate_hero.run() увидит, что (hi, vi) не
-                    # одобрены, и перегенерит ровно её.
-                    project.status = ProjectStatus.generating_hero
-                    regen_step_msg = (
-                        f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
-                        f"вариацию {cur_vi}/{n_var}."
-                    )
-                elif action == "approve":
-                    # ✅ — определяем что дальше: следующая вариация
-                    # этого же героя; следующий герой; или всё готово.
-                    if cur_vi < n_var:
+                    if action == "regen":
+                        # 🔁 эту же вариацию — выйдет в generating_hero,
+                        # generate_hero.run() увидит, что (hi, vi) не
+                        # одобрены, и перегенерит ровно её.
                         project.status = ProjectStatus.generating_hero
                         regen_step_msg = (
-                            f"\n\n▶ Перехожу к герою {cur_hi}/{n_total} "
-                            f"вариации {cur_vi + 1}/{n_var}."
+                            f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
+                            f"вариацию {cur_vi}/{n_var}."
                         )
-                    elif cur_hi < n_total:
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перехожу к герою "
-                            f"{cur_hi + 1}/{n_total}, вариация 1."
-                        )
-                    # Если это последняя вариация последнего героя —
-                    # статус остаётся hero_ready (шаг полностью завершён).
+                    elif action == "approve":
+                        # ✅ — определяем что дальше: следующая вариация
+                        # этого же героя; следующий герой; или всё готово.
+                        if cur_vi < n_var:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Перехожу к герою {cur_hi}/{n_total} "
+                                f"вариации {cur_vi + 1}/{n_var}."
+                            )
+                        elif cur_hi < n_total:
+                            project.status = ProjectStatus.generating_hero
+                            regen_step_msg = (
+                                f"\n\n▶ Перехожу к герою "
+                                f"{cur_hi + 1}/{n_total}, вариация 1."
+                            )
+                        # Если это последняя вариация последнего героя —
+                        # статус остаётся hero_ready (шаг полностью завершён).
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",
@@ -4395,15 +6079,13 @@ async def _on_edit_reply(msg: Message) -> None:
             except Exception as e:  # noqa: BLE001
                 logger.warning("xlsx write_frame(image_prompt) failed: {}", e)
     if hitl_tg_msg_id:
-        try:
+        with contextlib.suppress(Exception):
             await msg.bot.edit_message_caption(
                 chat_id=settings.telegram_owner_chat_id,
                 message_id=hitl_tg_msg_id,
                 caption="✏️ Промт изменён — перегенерирую",
                 reply_markup=None,
             )
-        except Exception:
-            pass
     await msg.reply("✏️ Промт обновлён. Перегенерирую картинку с ним.")
 
 
@@ -4467,7 +6149,6 @@ async def notify_step_done(
                 "notify_step_done: project #{} не найден", project_id
             )
             return
-        slug = project.slug
         status_val = project.status.value
         try:
             await bot.send_message(
@@ -4488,9 +6169,8 @@ async def notify_step_done(
     # Для enrich-шагов (enrich_1_ready..enrich_5_ready) присылаем
     # обновлённый project.xlsx как документ.
     if new_status.startswith("enrich_") and new_status.endswith("_ready"):
-        from pathlib import Path as _Path
 
-        xlsx_path = _Path(settings.data_dir) / "videos" / slug / "project.xlsx"
+        xlsx_path = project.data_dir / "project.xlsx"
         if xlsx_path.exists():
             try:
                 await bot.send_document(

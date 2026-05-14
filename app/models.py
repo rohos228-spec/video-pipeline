@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import JSON, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from app.settings import settings
 
 
 class Base(DeclarativeBase):
@@ -117,6 +120,21 @@ class HITLDecision(str, enum.Enum):
     rejected = "rejected"
 
 
+class BatchStatus(str, enum.Enum):
+    """Состояние массового проекта (BatchProject).
+
+    new      — создан, но тем ещё нет / не запущен
+    running  — очередь идёт (в PR #2 это использует воркер)
+    paused   — юзер поставил на паузу
+    done     — все подпроекты в published/paused/failed
+    """
+
+    new = "new"
+    running = "running"
+    paused = "paused"
+    done = "done"
+
+
 def _now() -> datetime:
     return datetime.utcnow()
 
@@ -168,6 +186,19 @@ class Project(Base):
     # Сколько слотов «Доп работа с EXCEL» (xlsx round-trip с ChatGPT)
     # активно для этого проекта. По умолчанию 3, можно увеличить кнопкой
     # «➕ Добавить слот» в TG-меню (до 5 — лимит ProjectStatus.enriching_N).
+    # Ссылка на массовый проект (BatchProject). NULL = одиночный проект.
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batch_projects.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # Позиция в очереди внутри массового (1..N, сортировка).
+    batch_position: Mapped[int | None] = mapped_column(default=None, index=True)
+    # Денормализованный slug массового — чтобы project.data_dir работал
+    # без лишнего запроса в базу. Обновляется при создании
+    # подпроекта и никогда не меняется (slug батча иммутабельный).
+    batch_slug: Mapped[str | None] = mapped_column(String(120), default=None)
+    # Авто-режим: если True, воркер сам продвигает проект по шагам
+    # (PR #2). По умолчанию False — ручной режим.
+    auto_mode: Mapped[bool] = mapped_column(default=False)
     enrich_slots_count: Mapped[int] = mapped_column(default=3)
     # Описания предметов (по одному на каждый id в листе «Предметы»).
     # Аналог hero_descriptions, заполняется юзером в xlsx; шаг 4b
@@ -196,6 +227,22 @@ class Project(Base):
     hitl_requests: Mapped[list[HITLRequest]] = relationship(
         back_populates="project", cascade="all,delete-orphan"
     )
+
+    @property
+    def data_dir(self) -> Path:
+        """Корневая папка файлов проекта на диске.
+
+        Для бэтч-подпроекта (batch_id задан): вложена в папку массового —
+          data/batches/<batch_slug>/sub/<slug>/
+        Для одиночного проекта — как раньше:
+          data/videos/<slug>/
+
+        batch_slug денормализован на этой же записи, чтобы не дёргать
+        relationship batch при каждом вызове (он может быть не lazy-loaded).
+        """
+        if self.batch_id is not None and self.batch_slug:
+            return Path(settings.data_dir) / "batches" / self.batch_slug / "sub" / self.slug
+        return Path(settings.data_dir) / "videos" / self.slug
 
 
 class Frame(Base):
@@ -267,6 +314,69 @@ class Attempt(Base):
     logs: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime] = mapped_column(default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class BatchProject(Base):
+    """Массовый проект — контейнер для группы подпроектов (роликов).
+
+    Полностью изолирован:
+      - собственная папка на диске (data/batches/<slug>/)
+      - снапшот промптов (data/batches/<slug>/prompts/)
+      - общий topics.xlsx с перечнем тем
+      - снапшот настроек эталонного проекта в JSON (settings_snapshot)
+      - каждый подпроект — обычная запись в projects с batch_id=этого
+        массового + batch_position (порядок 1..N).
+    """
+
+    __tablename__ = "batch_projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Человеческое название (вводит юзер в TG, любые символы).
+    name: Mapped[str] = mapped_column(String(120))
+    # Слаг для путей на диске: latin/cyrillic→ASCII, без пробелов, unique.
+    slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    status: Mapped[BatchStatus] = mapped_column(
+        Enum(BatchStatus, name="batch_status"), default=BatchStatus.new, index=True
+    )
+    # Шаблон-проект: ID из projects, из которого скопированы настройки.
+    # NULL — настройки пустые (юзер задаст вручную позже).
+    template_project_id: Mapped[int | None] = mapped_column(default=None)
+    # JSON-снапшот всех настроек (image_generator, hero_mode, hero_count,
+    # hero_descriptions, prompt_overrides, gpt_text_overrides, и т.д.) —
+    # это именно те значения, которые будут применены ко всем
+    # подпроектам при их создании. Изменение settings_snapshot
+    # НЕ меняет уже созданные подпроекты.
+    settings_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Свободные поля для будущих расширений (PR #2 — авто/GPT-апрувы).
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    @property
+    def data_dir(self) -> Path:
+        """Базовая папка массового проекта на диске.
+
+        Структура:
+          data/batches/<slug>/
+            topics.xlsx           — общий список тем
+            prompts/              — снапшот промптов
+            sub/<sub_slug>/       — папки подпроектов
+        """
+        return Path(settings.data_dir) / "batches" / self.slug
+
+    @property
+    def prompts_dir(self) -> Path:
+        """Папка со снапшотом промптов этого массового."""
+        return self.data_dir / "prompts"
+
+    @property
+    def topics_xlsx_path(self) -> Path:
+        return self.data_dir / "topics.xlsx"
+
+    @property
+    def sub_root(self) -> Path:
+        """Корневая папка для всех подпроектов этого массового."""
+        return self.data_dir / "sub"
 
 
 class HITLRequest(Base):

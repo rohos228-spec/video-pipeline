@@ -462,20 +462,29 @@ def _stringify(value: Any) -> Any:
 
 
 def sheet_for_slug(slug: str, *, data_dir: Path) -> ProjectSheet:
-    """Конструирует ProjectSheet по slug-у проекта."""
+    """Конструирует ProjectSheet по slug-у проекта.
+
+    Внимание: эта функция знает только slug → собирает старый путь
+    `data/videos/<slug>/project.xlsx`. Для батч-подпроектов нужно
+    использовать `for_project(project)` — он берёт `project.data_dir`,
+    который корректно резолвится в `data/batches/<batch>/sub/<slug>/`.
+    """
     file_path = Path(data_dir) / "videos" / slug / "project.xlsx"
     return ProjectSheet(file_path)
 
 
 def for_project(project: Any) -> ProjectSheet:
-    """Сахар: ProjectSheet для текущего Project (берёт data_dir из settings).
+    """Сахар: ProjectSheet для текущего Project.
+
+    Использует `project.data_dir` — это автоматически даёт правильный путь
+    как для одиночных (`data/videos/<slug>/`), так и для батч-подпроектов
+    (`data/batches/<batch_slug>/sub/<slug>/`).
 
     Файл создаётся при первом обращении, если его ещё нет — это покрывает
     случай миграции старых проектов, заведённых до появления xlsx-хранилища.
     """
-    from app.settings import settings as _settings
-
-    sheet = sheet_for_slug(project.slug, data_dir=_settings.data_dir)
+    file_path = project.data_dir / "project.xlsx"
+    sheet = ProjectSheet(file_path)
     if not sheet.file_path.exists():
         sheet.ensure_initialized(project_id=project.id, slug=project.slug)
     return sheet
