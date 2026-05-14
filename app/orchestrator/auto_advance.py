@@ -46,9 +46,40 @@ from app.services.auto_review import ReviewResult
 from app.settings import settings
 from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
 
-# По умолчанию для визуальных шагов GPT-чек ВЫКЛ — авто-апруф.
-# Включить можно env-переменной AUTO_REVIEW_VISUAL=1.
+# (single-mass parity #4) Гранулярность визуального ревью.
+#
+# Раньше: одна булевая env AUTO_REVIEW_VISUAL=1 включала vision-чек ДЛЯ ВСЕХ
+# визуальных шагов (hero/images/videos/final). Юзер просил настройку «какие
+# именно шаги визуально проверять GPT'ом, а какие — авто-апруф».
+#
+# Теперь:
+#   * AUTO_REVIEW_VISUAL=1 (legacy)   → vision-чек включён для ВСЕХ visual
+#     kind'ов (полностью эквивалент старому поведению).
+#   * AUTO_REVIEW_VISUAL_KINDS="approve_hero,approve_videos" → только эти
+#     kind'ы будут уходить на GPT-vision. Остальные — auto-approve.
+#   * Per-project / per-batch override (settings_snapshot["auto_review_kinds"])
+#     читается из meta при каждом такте.
 AUTO_REVIEW_VISUAL: bool = os.environ.get("AUTO_REVIEW_VISUAL", "0") == "1"
+
+
+def _parse_kinds_env(raw: str | None) -> set[HITLKind]:
+    if not raw:
+        return set()
+    out: set[HITLKind] = set()
+    for tok in str(raw).split(","):
+        t = tok.strip().lower()
+        if not t:
+            continue
+        for k in HITLKind:
+            if k.value == t or k.name.lower() == t:
+                out.add(k)
+                break
+    return out
+
+
+AUTO_REVIEW_VISUAL_KINDS: set[HITLKind] = _parse_kinds_env(
+    os.environ.get("AUTO_REVIEW_VISUAL_KINDS")
+)
 
 # Максимум подряд `regen` на одном шаге → проект → paused.
 MAX_AUTO_REGEN_PER_STEP = 2
@@ -461,8 +492,10 @@ async def maybe_auto_advance(
         await _apply_approve(session, project, hitl, transition)
         return True
 
-    # Для визуальных kind'ов: если AUTO_REVIEW_VISUAL=0 — авто-апруф.
-    if transition.kind in VISUAL_REVIEW_KINDS and not AUTO_REVIEW_VISUAL:
+    # (single-mass parity #4) Решаем нужен ли vision-чек для этого kind'а.
+    if transition.kind in VISUAL_REVIEW_KINDS and not _should_vision_check(
+        project, transition.kind
+    ):
         logger.info(
             "auto_advance: #{} {} → auto-approve (visual, no GPT check)",
             project.id, status.value,
@@ -488,6 +521,26 @@ async def maybe_auto_advance(
     # Пока — auto-approve.
     await _apply_approve(session, project, hitl, transition)
     return True
+
+
+def _should_vision_check(project: Project, kind: HITLKind) -> bool:
+    """(single-mass parity #4) Per-project / env-driven решение, нужно ли
+    запускать GPT-vision на визуальный артефакт.
+
+    Приоритет:
+        1. project.meta["auto_review_kinds"] (массовый — наследуется из
+           batch.settings_snapshot, BLOCK B) — список kind-value строк.
+        2. AUTO_REVIEW_VISUAL_KINDS env (set of HITLKind).
+        3. AUTO_REVIEW_VISUAL=1 (legacy) → все визуальные kind'ы.
+    """
+    meta = getattr(project, "meta", None) or {}
+    override = meta.get("auto_review_kinds")
+    if isinstance(override, list):
+        wanted: set[str] = {str(x).strip().lower() for x in override}
+        return (kind.value in wanted) or (kind.name.lower() in wanted)
+    if kind in AUTO_REVIEW_VISUAL_KINDS:
+        return True
+    return AUTO_REVIEW_VISUAL
 
 
 def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
