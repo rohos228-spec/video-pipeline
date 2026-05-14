@@ -171,6 +171,48 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
 TRANSITIONS = _build_transitions()
 
 
+def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
+    """(single-mass parity #8) Ожидаемая последовательность
+    `*_running` статусов, которые проект ПРОШСДЕТ по пипалайну.
+
+    Используется:
+    * как Single Source of Truth в тестах BLOCK D (проверка,
+      что одиночный и массовый проходят одни и те же шаги в одном
+      порядке);
+    * как debug-туля в admin-меню (показывать юзеру «вот что будет
+      дальше»).
+
+    Учитывает enrich_slots_count (парити #3) — включает ровно
+    N слотов, где N = enabled_enrich_slots(project).
+    """
+    n_slots = enabled_enrich_slots(project)
+    progression: list[ProjectStatus] = [
+        ProjectStatus.planning,
+        ProjectStatus.scripting,
+        ProjectStatus.splitting,
+        ProjectStatus.generating_hero,
+        ProjectStatus.generating_items,
+    ]
+    enrich_running = [
+        ProjectStatus.enriching_1,
+        ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3,
+        ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+    ]
+    progression.extend(enrich_running[: max(1, min(5, n_slots))])
+    progression.extend([
+        ProjectStatus.generating_image_prompts,
+        ProjectStatus.generating_images,
+        ProjectStatus.generating_animation_prompts,
+        ProjectStatus.generating_videos,
+        ProjectStatus.generating_audio,
+        ProjectStatus.assembling,
+        ProjectStatus.publishing,
+    ])
+    return progression
+
+
 # Для каких kind мы запускаем GPT-чек (text or vision):
 TEXT_REVIEW_KINDS = {HITLKind.approve_plan, HITLKind.approve_script}
 VISUAL_REVIEW_KINDS = {
