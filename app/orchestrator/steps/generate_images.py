@@ -244,14 +244,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего генерировать")
 
-    # Все кадры должны иметь image_prompt (шаг 5 уже выполнен).
+    # Кадры без image_prompt: пробуем АВТО-РЕКАВЕРИ из xlsx (вдруг
+    # промты ЕСТЬ в xlsx, но не подтянулись в БД), затем — если всё
+    # ещё пусто — НЕ ВАЛИМ ВЕСЬ ШАГ, а помечаем такие кадры как
+    # failed и продолжаем работать с теми, у кого промт есть.
     missing_prompts = [fr.number for fr in frames if not fr.image_prompt]
     if missing_prompts:
-        # АВТО-РЕКАВЕРИ: типичный кейс — промты ЕСТЬ в xlsx, но
-        # в БД пустые (например, ре-сплит создал новые кадры, или v8
-        # импорт не подтянул). Пробуем перечитать xlsx и проверить
-        # снова, ПРЕЖДЕ чем падать. Это спасает от ситуаций «срочно
-        # пофиксить — шаг 5 ведь делали».
         proj_xlsx = project.data_dir / "project.xlsx"
         if proj_xlsx.exists():
             try:
@@ -275,7 +273,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[#{}] v7 reload failed: {}", project.id, e)
                 await session.flush()
-                # Пере-вычитываем кадры из БД и проверяем заново.
                 frames = (
                     await session.execute(
                         select(Frame)
@@ -291,14 +288,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "[#{}] generate_images авто-импорт упал: {}",
                     project.id, e,
                 )
+
         if missing_prompts:
-            raise RuntimeError(
-                f"нет image_prompt у кадров: {missing_prompts}. "
-                "В xlsx тоже пусто (проверил авто-импортом). "
-                "Запусти шаг 5 «Промты картинок» — он сгенерит их через GPT, "
-                "потом сразу шаг 7. Если 21 кадр — это новые кадры из "
-                "ре-сплита (шаг 3), и шаг 5 для них не запускали."
+            # Кадры без image_prompt — помечаем failed, остальные
+            # продолжают обрабатываться. Юзер увидит failed-кадры в
+            # TG-меню и сможет их перегенерить вручную (шаг 5 точечно
+            # / правка xlsx и reload).
+            logger.warning(
+                "[#{}] generate_images: у {} кадров нет image_prompt "
+                "ни в БД, ни в xlsx — помечаю как failed, продолжаю с "
+                "остальными {} кадрами. Failed-frames: {}",
+                project.id, len(missing_prompts),
+                len(frames) - len(missing_prompts), missing_prompts,
             )
+            failed_count = 0
+            for fr in frames:
+                if not fr.image_prompt and fr.status not in (
+                    FrameStatus.image_approved,
+                    FrameStatus.image_generated,
+                    FrameStatus.failed,
+                ):
+                    fr.status = FrameStatus.failed
+                    attrs = dict(fr.attrs or {})
+                    attrs["fail_reason"] = "no_image_prompt"
+                    fr.attrs = attrs
+                    failed_count += 1
+            await session.flush()
+            try:
+                await bot.send_message(
+                    settings.telegram_owner_chat_id,
+                    (
+                        f"⚠️ Проект #{project.id}: у {failed_count} кадров "
+                        f"({missing_prompts[:5]}{'...' if len(missing_prompts) > 5 else ''}) "
+                        f"нет image_prompt. Помечены failed, остальные "
+                        f"{len(frames) - failed_count} кадров пойдут в генерацию. "
+                        "Чтобы догнать — либо впиши промты в xlsx и нажми "
+                        "«🔄 Перечитать xlsx», либо запусти шаг 5 заново "
+                        "(он перегенерит для всех кадров)."
+                    )[:3800],
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     out_dir = project.data_dir / "scenes"
 
