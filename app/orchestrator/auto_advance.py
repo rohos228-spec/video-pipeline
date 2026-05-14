@@ -759,7 +759,18 @@ async def serial_next_to_start(
 
 
 async def serial_tick_batches(session: AsyncSession) -> int:
-    """Один такт сериализатора. Возвращает кол-во запущенных подпроектов."""
+    """Один такт сериализатора. Возвращает кол-во запущенных подпроектов.
+
+    (single-mass parity #6) Раньше между `serial_busy_in_batch` и
+    `next_p.status = planning` был await на выборке кандидата,
+    во время которого callback из TG или maybe_auto_advance могли
+    запустить другой sub-project того же batch'а — получали
+    два рунящих параллельно (нарушение max_parallelism=1).
+    Теперь повторяем busy-check ПОСЛЕ выбора кандидата и
+    ПЕРЕД flip'ом статуса. Двойная проверка покрывает распространённые
+    сценарии (await yield), полный SELECT...FOR UPDATE избыточен
+    для sqlite/single-process микро-воркера.
+    """
     from app.models import BatchProject, BatchStatus
 
     started = 0
@@ -776,6 +787,25 @@ async def serial_tick_batches(session: AsyncSession) -> int:
             continue
         next_p = await serial_next_to_start(session, batch.id)
         if next_p is None:
+            continue
+        # (parity #6) Повторный busy-check ПЕРЕД flip'ом.
+        busy_again = await serial_busy_in_batch(session, batch.id)
+        if busy_again is not None:
+            logger.info(
+                "auto_advance: batch #{} TOCTOU — «занятие» #{} появилось "
+                "между выбором next_p=#{} и flip\u2019ом, пропуск",
+                batch.id, busy_again, next_p.id,
+            )
+            continue
+        # Пересвежаем самого кандидата — вдруг callback в TG в эту же
+        # хрупкую миллисекунду уже поменял его статус (например
+        # юзер вручную поставил на паузу).
+        await session.refresh(next_p)
+        if next_p.status is not ProjectStatus.new:
+            logger.info(
+                "auto_advance: batch #{} sub #{} уже не new ({}), пропуск",
+                batch.id, next_p.id, next_p.status.value,
+            )
             continue
         # Стартуем подпроект: status new → planning.
         next_p.status = ProjectStatus.planning
