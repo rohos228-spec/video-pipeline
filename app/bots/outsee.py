@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import sys
 from dataclasses import dataclass
@@ -1166,10 +1167,26 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 5) скачиваем
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # 5) скачиваем — клик по зелёной кнопке «↓» на НАШЕЙ карточке
+        # (ID-привязка). Сам outsee отдаёт реальный финальный файл —
+        # это исключает все косяки с topaz.webp / input_*.png / svg-
+        # плейсхолдерами, которые подсовывал старый URL-путь.
+        # Если prompt_id_prefix не передан (legacy / recon-mode) —
+        # фолбэк на старую URL-выкачку.
         try:
-            await _download_via_context(page, img_url, out_path)
+            if prompt_id_prefix:
+                await _download_via_card_click(
+                    page,
+                    prompt_id_prefix=prompt_id_prefix,
+                    out_path=out_path,
+                )
+            else:
+                await _download_via_context(page, img_url, out_path)
+        except OutseeImageError as e:
+            e.context.setdefault("gen_id", gen_id)
+            e.context.setdefault("img_url", img_url)
+            e.dumps = list(dumps)
+            raise
         except Exception as e:  # noqa: BLE001
             raise OutseeImageError(
                 "outsee image: скачивание результата упало",
@@ -1181,11 +1198,11 @@ class OutseeBot:
                 dumps=dumps,
             ) from e
 
-        # 5.1) валидация скачанного файла. Защита от placeholder/skeleton:
-        # outsee.io иногда отдаёт «загрузочный» PNG (тёмный фон с тремя
-        # белыми квадратами) как результат генерации, и без этой проверки
-        # бот сохраняет его и шлёт в TG. На неудачу — кидаем OutseeImageError,
-        # retry-обёртка повторит генерацию.
+        # 5.1) Валидация скачанного файла. С click-Download через
+        # `expect_download()` подсунуть `topaz.webp` или
+        # `input_*.png` outsee уже не сможет, но базовая проверка
+        # (>50 KB + magic-байты PNG/JPEG/WebP) остаётся — на случай
+        # битого CDN-ответа.
         try:
             _validate_downloaded_image(
                 out_path, gen_id=gen_id, img_url=img_url
@@ -2415,6 +2432,109 @@ class OutseeBot:
                     return u
             await asyncio.sleep(1.5)
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
+
+
+async def _download_via_card_click(
+    page: Page,
+    *,
+    prompt_id_prefix: str,
+    out_path: Path,
+    timeout_s: float = 120.0,
+) -> None:
+    """Кликает зелёную «↓ Скачать» на карточке результата с нашим
+    `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
+    через `page.expect_download()`.
+
+    Преимущество перед старым `_download_via_context(page, img_url, ...)`:
+    мы НЕ извлекаем URL из `<img src>` — outsee часто кладёт туда
+    плейсхолдер (например `topaz.webp` пока работает upscale, или
+    `input_*.png` — ссылку на наш же референс). Реальный финальный
+    PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
+
+    Логика:
+      1) находим элемент с текстом `prompt_id_prefix` (он встроен в
+         промт первой строкой и outsee показывает его в карточке);
+      2) поднимаемся к ближайшему ancestor'у, в поддереве которого
+         есть `button > svg.lucide-download` — это и есть «карточка»;
+      3) скроллим её в видимую часть, наводим мышь (action-кнопки
+         появляются только на hover);
+      4) `expect_download` + click → сохраняем файл по пути out_path.
+    """
+    deadline_ms = int(timeout_s * 1000)
+
+    # 1) Якорь — элемент с нашим уникальным [ID: ...] токеном.
+    id_el = page.get_by_text(prompt_id_prefix, exact=False).first
+    try:
+        await id_el.wait_for(state="visible", timeout=deadline_ms)
+    except PWTimeoutError as e:
+        raise OutseeImageError(
+            "outsee image: не нашёл карточку с нашим ID за время ожидания "
+            "(скачивание по клику невозможно)",
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "timeout_s": timeout_s,
+            },
+        ) from e
+
+    # 2) Карточка = ближайший ancestor, у которого в поддереве есть
+    #    наша зелёная кнопка-стрелка (svg.lucide-download внутри button).
+    #    `ancestor::*[…][1]` в XPath — это самый близкий ancestor, потому
+    #    что XPath обходит ancestor-axis от child к корню.
+    card = id_el.locator(
+        "xpath=ancestor::*[descendant::button"
+        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+    )
+
+    # Не критично — карточка может быть и так в видимой области.
+    with contextlib.suppress(Exception):
+        await card.scroll_into_view_if_needed(timeout=5_000)
+
+    # 3) Кнопки действий (download/heart/regen/trash) появляются только
+    #    при hover на карточку — без этого click может не зарегаться,
+    #    т.к. кнопка не actionable (opacity:0/display:none по CSS).
+    try:
+        await card.hover(timeout=5_000)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_download_via_card_click: hover упал ({}), всё равно "
+            "пробуем кликнуть — Playwright auto-wait может обработать",
+            type(e).__name__,
+        )
+
+    # 4) Внутри карточки находим именно кнопку с lucide-download SVG.
+    #    Эта же иконка живёт в библиотеке lucide-icons — её класс
+    #    `lucide-download` стабилен и не зависит от Tailwind-стилей.
+    download_btn = card.locator("button:has(svg.lucide-download)").first
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        async with page.expect_download(timeout=deadline_ms) as dl_info:
+            await download_btn.click(timeout=10_000)
+        download = await dl_info.value
+        await download.save_as(str(out_path))
+    except PWTimeoutError as e:
+        raise OutseeImageError(
+            "outsee image: клик по кнопке «Скачать» не вызвал download "
+            "за отведённое время",
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "timeout_s": timeout_s,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        raise OutseeImageError(
+            "outsee image: download через клик по карточке упал",
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+
+    logger.info(
+        "_download_via_card_click: сохранил файл {} (prompt_id={})",
+        out_path, prompt_id_prefix,
+    )
 
 
 async def _download_via_context(
