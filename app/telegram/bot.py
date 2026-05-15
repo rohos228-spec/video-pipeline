@@ -4271,6 +4271,219 @@ async def on_test_delete(cb: CallbackQuery) -> None:
     await _render_test_root(cb)
 
 
+@dp.callback_query(F.data.regexp(r"^test:\d+:lab$"))
+async def on_test_lab_start(cb: CallbackQuery) -> None:
+    """Запуск визуальной лаборатории: auto N=5 итераций для проекта."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    await cb.answer("🧪 Запускаю лабораторию (5 итераций)…")
+    await _kick_visual_lab_auto(cb.bot, cb.from_user.id, tid, iterations=5)
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:lab_report$"))
+async def on_test_lab_report(cb: CallbackQuery) -> None:
+    """Отдаёт текущий отчёт лаборатории по проекту (без запуска)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    await cb.answer("📊 Готовлю отчёт…")
+
+    from aiogram.types import FSInputFile
+
+    from app.services.visual_lab.report import render_report
+    from app.services.visual_lab.storage import LabStorage
+
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(TestPromptProject.id == tid)
+            )
+        ).scalar_one_or_none()
+        if p is None:
+            await cb.bot.send_message(cb.from_user.id, "Проект не найден.")
+            return
+        slug = p.slug
+        name = p.name
+
+    storage = LabStorage(slug)
+    if not storage.project_path.exists():
+        await cb.bot.send_message(
+            cb.from_user.id,
+            f"🧪 Лаборатория для «{name}» ещё не запускалась — "
+            f"нажми «🧪 Лаборатория (auto ×5)» чтобы запустить первый прогон.",
+        )
+        return
+
+    try:
+        render_report(storage)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("visual_lab.report failed: {}", e)
+
+    sent_anything = False
+    if storage.report_path.exists():
+        await cb.bot.send_document(
+            cb.from_user.id, FSInputFile(str(storage.report_path))
+        )
+        sent_anything = True
+    if storage.excel_path.exists():
+        await cb.bot.send_document(
+            cb.from_user.id, FSInputFile(str(storage.excel_path))
+        )
+        sent_anything = True
+    if not sent_anything:
+        await cb.bot.send_message(
+            cb.from_user.id,
+            "🧪 Лаборатория инициализирована, но итераций ещё нет.",
+        )
+
+
+async def _kick_visual_lab_auto(
+    bot_obj: Bot, user_id: int, tid: int, *, iterations: int
+) -> None:
+    """Background task: запуск VisualLabRunner.run_auto для тест-проекта.
+
+    Использует existing TestPromptProject.visual_prompt как base_visual_prompt
+    лаборатории и пишет на диск в data/test_prompts/<slug>/.
+    """
+    from pathlib import Path
+
+    from app.bots.browser import browser_session
+    from app.bots.chatgpt import ChatGPTBot
+    from app.bots.outsee import OutseeBot
+    from app.services.visual_lab.references import copy_seed_references
+    from app.services.visual_lab.report import render_report
+    from app.services.visual_lab.runner import VisualLabRunner
+    from app.services.visual_lab.storage import LabStorage
+
+    existing = _test_running_tasks.get(tid)
+    if existing is not None and not existing.done():
+        await bot_obj.send_message(
+            user_id,
+            "⏳ Для этого проекта уже идёт цикл. Дождись окончания или 🛑.",
+        )
+        return
+
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(TestPromptProject.id == tid)
+            )
+        ).scalar_one_or_none()
+        if p is None:
+            await bot_obj.send_message(user_id, "Проект не найден.")
+            return
+        if not p.visual_prompt:
+            await bot_obj.send_message(
+                user_id,
+                "❌ Не задан визуальный промт — сначала «📝 Визуальный промт».",
+            )
+            return
+        slug = p.slug
+        name = p.name
+        visual_prompt = p.visual_prompt
+
+    async def _runner_task() -> None:
+        try:
+            storage = LabStorage(slug)
+            project = storage.ensure_skeleton(name)
+            if not project.base_visual_prompt:
+                project.base_visual_prompt = visual_prompt
+            if not project.master_prompt:
+                project.master_prompt = visual_prompt
+            project.aspect_ratio = "16:9"
+            storage.save_project(project)
+            if not project.references:
+                with contextlib.suppress(Exception):
+                    copy_seed_references(storage)
+
+            await bot_obj.send_message(
+                user_id,
+                f"🧪 Лаборатория «{name}» — запускаю {iterations} итераций.\n"
+                f"📁 data/test_prompts/{slug}/",
+            )
+
+            async with browser_session() as bs:
+                gpt = ChatGPTBot(bs)
+                outsee = OutseeBot(bs)
+
+                async def gen_image(
+                    prompt: str, out_path: Path, prefix: str
+                ) -> None:
+                    res = await outsee.generate_image(
+                        prompt=prompt,
+                        out_path=out_path,
+                        aspect_ratio="16:9",
+                        model_slug="nano-banana-pro",
+                        relax=True,
+                        prompt_id_prefix=prefix,
+                    )
+                    if not res.success or not out_path.exists():
+                        raise RuntimeError(
+                            f"outsee: success={res.success} no file at {out_path}"
+                        )
+
+                async def ask_with_files(
+                    prompt: str, attachments: list[Path]
+                ) -> str:
+                    await gpt.new_conversation()
+                    return await gpt.ask_with_files(
+                        prompt, attachments, timeout=900
+                    )
+
+                async def progress(msg: str) -> None:
+                    with contextlib.suppress(Exception):
+                        await bot_obj.send_message(user_id, msg)
+
+                runner = VisualLabRunner(
+                    storage,
+                    generate_image=gen_image,
+                    chatgpt_ask_with_files=ask_with_files,
+                    progress=progress,
+                )
+                done = await runner.run_auto(iterations=iterations)
+
+            render_report(storage)
+            best = max(done, key=lambda d: d.weighted_score, default=None)
+            summary = (
+                f"✅ Лаборатория «{name}» завершила {len(done)} итераций.\n"
+                + (
+                    f"Лучший: iter={best.iter}, "
+                    f"score={best.weighted_score:.2f}, verdict={best.verdict}"
+                    if best is not None
+                    else "Все итерации завершились с ошибкой."
+                )
+            )
+            await bot_obj.send_message(user_id, summary)
+
+            from aiogram.types import FSInputFile
+            if storage.excel_path.exists():
+                await bot_obj.send_document(
+                    user_id, FSInputFile(str(storage.excel_path))
+                )
+            if storage.report_path.exists():
+                await bot_obj.send_document(
+                    user_id, FSInputFile(str(storage.report_path))
+                )
+        except asyncio.CancelledError:
+            logger.info("visual_lab #{}: cancelled", tid)
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.exception("visual_lab #{}: failed: {}", tid, e)
+            with contextlib.suppress(Exception):
+                await bot_obj.send_message(
+                    user_id,
+                    f"❌ Лаборатория #{tid}: ошибка.\n"
+                    f"<code>{_html_escape(str(e))[:1500]}</code>",
+                    parse_mode="HTML",
+                )
+
+    task = asyncio.create_task(_runner_task())
+    _test_running_tasks[tid] = task
+
+
 async def _kick_test_iteration(
     bot_obj: Bot, user_id: int, tid: int, *, critique: str | None
 ) -> None:

@@ -107,6 +107,23 @@ def test_project_kb(p: TestPromptProject) -> InlineKeyboardMarkup:
                 ),
             ])
 
+    # Visual lab — opt-in auto-iteration mode that scores via GPT-Vision
+    # and rebuilds the master_prompt every iteration. Always visible —
+    # the runner itself enforces the project lock.
+    if has_visual:
+        rows.append([
+            InlineKeyboardButton(
+                text="🧪 Лаборатория (auto ×5)",
+                callback_data=f"test:{p.id}:lab",
+            ),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="📊 Отчёт лаборатории",
+                callback_data=f"test:{p.id}:lab_report",
+            ),
+        ])
+
     rows.append([
         InlineKeyboardButton(
             text="🗑 Удалить проект",
