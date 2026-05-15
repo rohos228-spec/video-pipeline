@@ -35,6 +35,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
+from app.services.reset_step import is_reset_supported
 
 
 def picker_text(step_code: str, project_overrides: dict | None) -> str:
@@ -132,6 +133,17 @@ def picker_kb(
             InlineKeyboardButton(
                 text="✏️ Сопр. сообщение (Hero)",
                 callback_data=f"prm:{pid}:hero:msgmenu",
+            ),
+        ])
+    # «🔁 Прогнать шаг с нуля» — удаляет все данные этого шага
+    # + downstream и сбрасывает project.status, чтобы шаг
+    # можно было прогнать заново. Безопасное для «пустых»
+    # шагов тоже (ничего не удалит — будет no-op).
+    if is_reset_supported(step_code):
+        rows.append([
+            InlineKeyboardButton(
+                text="🔁 Прогнать шаг с нуля",
+                callback_data=f"reset_ask:{pid}:{step_code}",
             ),
         ])
     rows.append([
