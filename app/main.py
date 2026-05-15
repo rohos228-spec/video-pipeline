@@ -245,6 +245,7 @@ async def _run_worker_loop(bot) -> None:
     from app.db import session_scope
     from app.models import Project, ProjectStatus
     from app.orchestrator.pipeline import advance_project
+    from app.services.step_cancel import StepCancelledError
 
     MAX_FAIL = 3
     # (project_id, status.value) -> кол-во подряд неудач на этом шаге
@@ -319,6 +320,15 @@ async def _run_worker_loop(bot) -> None:
                                 logger.exception(
                                     "notify_step_done({}) failed", project_id
                                 )
+                    except StepCancelledError:
+                        # ⏹ Остановить — это НЕ ошибка, юзер сам остановил.
+                        # Не накручиваем fail_counts, не шлём «ошибка на шаге»,
+                        # не пишем traceback. Шаг сам уже откатил статус.
+                        logger.info(
+                            "[#{}] advance_project cancelled by user (⏹)",
+                            p.id,
+                        )
+                        fail_counts.pop(key, None)
                     except Exception as e:  # noqa: BLE001
                         logger.exception("advance_project failed for #{}", p.id)
                         prev = fail_counts.get(key, 0)

@@ -33,6 +33,7 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.gpt_text_builder import get_effective_text
+from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
 
 # Минимальная длина одного image-промта в ответе. Меньше — почти
@@ -133,7 +134,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         gpt = ChatGPTBot(bs)
         last_reply = ""
         prompts: list[str] = []
+        cancelled = False
         for attempt in range(1, 3):  # до 2 попыток на весь батч
+            # ⏹ Остановить — проверка перед каждой попыткой (текущая
+            # GPT-операция доработается до конца). Если ⏹ нажат — выходим.
+            try:
+                raise_if_cancelled(project.id)
+            except StepCancelledError as e:
+                logger.info(
+                    "[#{}] generate_image_prompts: {} — выхожу", project.id, e,
+                )
+                cancelled = True
+                break
             reply = await gpt.ask_fresh(full_prompt, timeout=900)
             last_reply = (reply or "").strip()
             blocks = _parse_dash_prompts(last_reply)
@@ -153,6 +165,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id, attempt, len(blocks), len(frames),
                 last_reply[-200:],
             )
+        if cancelled:
+            # ⏹ Остановить — статус уже откатил обработчик кнопки. Чтобы
+            # worker-сессия не перезаписала откат старым running-статусом —
+            # рефрешим project.
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] не смог refresh project после ⏹", project.id,
+                )
+            return
         if len(prompts) != len(frames):
             raise RuntimeError(
                 f"GPT не вернул нужное число промтов: "
