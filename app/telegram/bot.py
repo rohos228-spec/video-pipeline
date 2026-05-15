@@ -52,6 +52,7 @@ from app.models import (
 )
 from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
+from app.services import reset_step as reset_step_svc
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
@@ -1961,6 +1962,140 @@ async def on_step_run_cb(cb: CallbackQuery) -> None:
         f"▶ Шаг {step.n}: <b>{step.title}</b>\n"
         f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
         f"Воркер подхватит за ~15 сек, по завершении пришлю результат.",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
+# «🔁 Прогнать шаг с нуля»: показать подтверждение → выполнить сброс.
+# Сброс удаляет данные шага + downstream (через app.services.reset_step)
+# и переписывает project.status на правильный ready-уровень. После сброса
+# юзер ткнёт «▶ Запустить шаг» и шаг пойдёт с нуля.
+
+def _reset_confirm_kb(pid: int, step_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Да, удалить и прогнать заново",
+            callback_data=f"reset_do:{pid}:{step_code}",
+        )],
+        [InlineKeyboardButton(
+            text="⬅ Отмена",
+            callback_data=f"proj:{pid}:menu",
+        )],
+    ])
+
+
+@dp.callback_query(F.data.regexp(r"^reset_ask:\d+:[a-z_0-9]+$"))
+async def on_step_reset_ask(cb: CallbackQuery) -> None:
+    """Показать подтверждение перед сбросом шага."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    step_code = parts[2]
+    step = step_by_code(step_code)
+    title = step.title if step else step_code
+    if not reset_step_svc.is_reset_supported(step_code):
+        await cb.answer("Сброс для этого шага не поддерживается", show_alert=True)
+        return
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        topic = project.topic
+        slug = project.slug
+    await cb.answer()
+    await cb.message.answer(
+        f"⚠ <b>Прогнать шаг с нуля?</b>\n"
+        f"Шаг: <b>{title}</b>\n"
+        f"Проект #{pid} «{topic}» (<code>{slug}</code>)\n\n"
+        f"Бот удалит все данные этого шага и всех последующих "
+        f"(downstream), затем сбросит статус проекта на «готов к "
+        f"этому шагу». После этого нажми «▶ Запустить шаг» — шаг "
+        f"пойдёт с нуля.\n\n"
+        f"Удалённые файлы (картинки/видео/аудио) восстановить нельзя.",
+        parse_mode="HTML",
+        reply_markup=_reset_confirm_kb(pid, step_code),
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^reset_do:\d+:[a-z_0-9]+$"))
+async def on_step_reset_do(cb: CallbackQuery) -> None:
+    """Реально выполнить сброс шага."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    pid = int(parts[1])
+    step_code = parts[2]
+    step = step_by_code(step_code)
+    title = step.title if step else step_code
+    if not reset_step_svc.is_reset_supported(step_code):
+        await cb.answer("Сброс для этого шага не поддерживается", show_alert=True)
+        return
+    await cb.answer("Сбрасываю…")
+    summary: dict | None = None
+    try:
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.message.answer(
+                    f"❌ Проект #{pid} не найден.", parse_mode="HTML",
+                )
+                return
+            summary = await reset_step_svc.reset_step(s, project, step_code)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "[#{}] reset_step UI: исключение при сбросе шага {}: {}",
+            pid, step_code, e,
+        )
+        await cb.message.answer(
+            f"❌ Сброс упал с ошибкой:\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Сформировать читабельный summary
+    if not summary:
+        summary = {}
+    status_old = summary.pop("__project_status_was", "?")
+    status_new = summary.pop("__project_status", "?")
+    steps_wiped = summary.pop("__steps_wiped", [])
+    body_lines: list[str] = [
+        "🔁 <b>Шаг сброшен.</b>",
+        f"Шаг: <b>{title}</b>",
+        f"Проект #{pid}",
+        f"Статус: <code>{status_old}</code> → <code>{status_new}</code>",
+        "",
+    ]
+    if steps_wiped:
+        body_lines.append(
+            f"Очищены шаги (с downstream): "
+            f"<code>{', '.join(steps_wiped)}</code>"
+        )
+    # Детализация по шагам (artifacts/files/frames)
+    detail_lines: list[str] = []
+    for k, v in summary.items():
+        if not isinstance(v, dict):
+            continue
+        parts_str = ", ".join(f"{kk}={vv}" for kk, vv in v.items())
+        detail_lines.append(f"  • <code>{k}</code>: {parts_str}")
+    if detail_lines:
+        body_lines.append("Детали:")
+        body_lines.extend(detail_lines)
+    body_lines.append("")
+    body_lines.append(
+        "Теперь нажми «▶ Запустить шаг» в меню проекта, чтобы погнать "
+        "его заново."
+    )
+    await cb.message.answer(
+        "\n".join(body_lines),
         parse_mode="HTML",
     )
 
@@ -4854,20 +4989,39 @@ def _hero_run_kb(pid: int) -> InlineKeyboardMarkup:
     ])
 
 
-def _step_run_kb(pid: int, step_code: str, step_title: str) -> InlineKeyboardMarkup:
+def _step_run_kb(
+    pid: int,
+    step_code: str,
+    step_title: str,
+) -> InlineKeyboardMarkup:
     """Кнопка «▶ Запустить шаг N. <title>» для шагов без prompt-picker'а
     (img/video/audio/assemble). Раньше эти шаги запускались по одному
-    клику в меню проекта — теперь требуется явное подтверждение."""
-    return InlineKeyboardMarkup(inline_keyboard=[
+    клику в меню проекта — теперь требуется явное подтверждение.
+
+    Для шагов, поддерживающих сброс (см. reset_step), добавляем
+    кнопку «🔁 Прогнать шаг с нуля» — удалит все данные шага
+    + downstream, вернёт project.status на «готов к этому шагу».
+    """
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
             text=f"▶ Запустить шаг: {step_title}",
             callback_data=f"step_run:{pid}:{step_code}",
         )],
-        [InlineKeyboardButton(
+    ]
+    if reset_step_svc.is_reset_supported(step_code):
+        rows.append([
+            InlineKeyboardButton(
+                text="🔁 Прогнать шаг с нуля",
+                callback_data=f"reset_ask:{pid}:{step_code}",
+            ),
+        ])
+    rows.append([
+        InlineKeyboardButton(
             text="⬅ Меню проекта",
             callback_data=f"proj:{pid}:menu",
-        )],
+        ),
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _hero_reset_menu_text(project: Project) -> str:
