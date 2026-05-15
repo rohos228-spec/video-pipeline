@@ -52,6 +52,7 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
+from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -376,24 +377,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
         # промт без триггеров модерации, потом ещё 3 попытки.
         gpt = ChatGPTBot(bs)
-        while True:
-            # 1) подхватить HITL-решения, требующие перегенерации
-            await _apply_pending_regens(session, project.id)
+        try:
+            while True:
+                # 0) юзер нажал «⏹ Остановить» — кооперативно выходим.
+                # Проверка между кадрами: текущий кадр (если уже в генерации)
+                # доработается, но новый цикл не начнётся. Браузер не трогаем.
+                raise_if_cancelled(project.id)
 
-            # 2) взять следующий кадр к обработке
-            target = await _next_frame_to_process(session, project.id)
-            if target is not None:
-                await _generate_and_send(
-                    session, bot, outsee, gpt, project, target, out_dir
-                )
-                continue
+                # 1) подхватить HITL-решения, требующие перегенерации
+                await _apply_pending_regens(session, project.id)
 
-            # 3) все кадры обработаны? (approved / failed / image_generated)
-            if await _all_frames_have_image_or_failed(session, project.id):
-                break
+                # 2) взять следующий кадр к обработке
+                target = await _next_frame_to_process(session, project.id)
+                if target is not None:
+                    await _generate_and_send(
+                        session, bot, outsee, gpt, project, target, out_dir
+                    )
+                    continue
 
-            # 4) иначе ждём пока пользователь нажмёт кнопку в TG
-            await asyncio.sleep(3)
+                # 3) все кадры обработаны? (approved / failed / image_generated)
+                if await _all_frames_have_image_or_failed(session, project.id):
+                    break
+
+                # 4) иначе ждём пока пользователь нажмёт кнопку в TG
+                await asyncio.sleep(3)
+        except StepCancelledError as e:
+            # ⏹ Остановить — статус уже откачен обработчиком кнопки в
+            # другой сессии. Обновляем наш ORM-объект, чтобы worker'овый
+            # commit() не перезаписал откат старым running-статусом.
+            # НЕ ставим images_ready.
+            logger.info("[#{}] generate_images: {} — выхожу из цикла",
+                        project.id, e)
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                logger.warning("[#{}] не смог refresh project после ⏹", project.id)
+            return
 
     project.status = ProjectStatus.images_ready
     await session.flush()

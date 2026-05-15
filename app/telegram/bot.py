@@ -3659,7 +3659,15 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
         return
     pid = int((cb.data or "").split(":")[1])
     from app.services.project_state import is_running_status
+    from app.services.step_cancel import request_stop
     from app.telegram.menu import step_by_running_status
+
+    # Помечаем проект как «нужно остановить» — длинные циклы шагов
+    # (generate_images / split / generate_videos / generate_audio / assemble)
+    # увидят флаг на следующей итерации и выйдут через StepCancelledError.
+    # Раньше ⏹ только менял статус в БД, но running-task этого не видел и
+    # продолжал гнать цикл до конца (сотни кадров).
+    request_stop(pid)
 
     # Снимаем xlsx-flow локи для этого проекта.
     xlsx_stopped: list[str] = []
