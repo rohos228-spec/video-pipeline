@@ -395,3 +395,53 @@ class HITLRequest(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
     project: Mapped[Project] = relationship(back_populates="hitl_requests")
+
+
+class TestPromptProject(Base):
+    """Отдельный «тестовый» проект — итеративный цикл доводки одного
+    визуального промта через ChatGPT и Nano Banana Pro (Relax).
+
+    Флоу (см. app/services/test_prompt.py):
+      1. Юзер задаёт `visual_prompt` (стартовый промт) и `system_prompt`
+         (инструкция для ChatGPT, как обрабатывать промт).
+      2. Нажимает «▶ Поехали».
+      3. Цикл: ChatGPT(system+visual) → txt; Outsee(banana-pro, relax,
+         prompt из txt) → картинка; присылаем юзеру с кнопкой
+         «✏ Добавить критику».
+      4. Юзер пишет критику → ChatGPT(system + критика + предыдущий
+         txt-вложение) → новый txt → Outsee → картинка → и т.д.
+
+    Артефакты на диске: data/test_prompts/<slug>/iter_<N>/{prompt.txt,
+    image.jpg, critique.txt}. Параллельно можно запускать только ОДИН
+    цикл — лочится по `status='running_*'` в этой таблице.
+    """
+
+    __tablename__ = "test_prompt_projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    # Стартовый визуальный промт от юзера. Используется в первой
+    # итерации; в последующих итерациях GPT работает поверх predыдущего
+    # txt + критики, но visual_prompt остаётся в проекте как «семя».
+    visual_prompt: Mapped[str | None] = mapped_column(Text, default=None)
+    # Инструкция для ChatGPT, как обрабатывать промт. Например:
+    # «Переформулируй этот визуальный промт так, чтобы он был
+    # максимально подробный и кинематографичный для генерации в
+    # Banana Pro. Верни ответ как .txt файл.»
+    system_prompt: Mapped[str | None] = mapped_column(Text, default=None)
+    # Номер текущей (последней) итерации. 0 — ещё не запускали.
+    current_iter: Mapped[int] = mapped_column(default=0)
+    # 'idle' | 'running_gpt' | 'running_outsee' | 'waiting_critique'
+    # | 'stopped' | 'error'
+    status: Mapped[str] = mapped_column(String(30), default="idle")
+    # Произвольные метаданные итераций (ошибки, last error, etc.).
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+    @property
+    def data_dir(self) -> Path:
+        return Path(settings.data_dir) / "test_prompts" / self.slug
+
+    def iter_dir(self, n: int) -> Path:
+        return self.data_dir / f"iter_{n:03d}"

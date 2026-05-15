@@ -49,6 +49,7 @@ from app.models import (
     HITLRequest,
     Project,
     ProjectStatus,
+    TestPromptProject,
 )
 from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
@@ -205,6 +206,16 @@ _pending_mass_prod_desc: dict[int, int] = {}
 # user_id → batch_id: ждём фото-референс постоянного продукта (PR #3).
 _pending_mass_prod_photo: dict[int, int] = {}
 
+# «🧪 Тестирование визуальных промтов» (см. app/services/test_prompt.py).
+# user_id → True: ждём имя нового тестового проекта.
+_pending_test_name: dict[int, bool] = {}
+# user_id → test_id: ждём визуальный промт для тестового проекта.
+_pending_test_visual: dict[int, int] = {}
+# user_id → test_id: ждём системный промт для GPT.
+_pending_test_system: dict[int, int] = {}
+# user_id → test_id: ждём критику для следующей итерации.
+_pending_test_critique: dict[int, int] = {}
+
 
 def _project_display_topic(project: Project) -> str:
     """Тема или slug для отображения в сообщениях."""
@@ -320,6 +331,10 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_mass_prod_name.pop(user_id, None)
     _pending_mass_prod_desc.pop(user_id, None)
     _pending_mass_prod_photo.pop(user_id, None)
+    _pending_test_name.pop(user_id, None)
+    _pending_test_visual.pop(user_id, None)
+    _pending_test_system.pop(user_id, None)
+    _pending_test_critique.pop(user_id, None)
 
 
 async def _last_project_id_fallback() -> int | None:
@@ -4039,6 +4054,372 @@ async def on_mass_global_resume(cb: CallbackQuery) -> None:
         pass
 
 
+# ===============================================================
+# «🧪 Тестирование визуальных промтов»
+# ===============================================================
+# Изолированная фича: главное меню → «🧪 Тестирование визуальных
+# промтов» → список тестовых проектов / создание нового. У проекта
+# своё мини-меню (визуальный промт + системный промт для GPT +
+# «▶ Поехали»). Цикл итераций: GPT обрабатывает визуальный промт →
+# .txt; outsee рендерит Banana-Pro/Relax картинку; юзер шлёт критику →
+# GPT поверх предыдущего txt + критика → новый txt → новая картинка.
+# Параллельно может работать только один тестовый цикл (лок по
+# TestPromptProject.status='running_*').
+
+
+# tid → asyncio.Task; чтобы юзер мог нажать «🛑 Стоп» и реально
+# прервать цикл (а не только пометить в БД).
+_test_running_tasks: dict[int, asyncio.Task] = {}
+
+
+async def _render_test_root(message: Message | CallbackQuery) -> None:
+    from app.telegram.test_prompt_menu import test_root_kb
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(TestPromptProject).order_by(TestPromptProject.id.desc())
+            )
+        ).scalars().all()
+    kb = test_root_kb(rows)
+    text = (
+        "🧪 <b>Тестирование визуальных промтов</b>\n\n"
+        "Итеративная доводка одного промта через ChatGPT и "
+        "Nano Banana Pro (Relax). После каждой картинки можно "
+        "прислать критику — следующая итерация учтёт её."
+    )
+    if isinstance(message, CallbackQuery):
+        await message.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _render_test_project(
+    target: Message | CallbackQuery, project_id: int
+) -> None:
+    from app.telegram.test_prompt_menu import test_project_kb
+
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(
+                    TestPromptProject.id == project_id
+                )
+            )
+        ).scalar_one_or_none()
+    if p is None:
+        msg = "Тестовый проект не найден."
+        if isinstance(target, CallbackQuery):
+            await target.message.answer(msg)
+        else:
+            await target.answer(msg)
+        return
+    text = (
+        f"🧪 <b>{_html_escape(p.name)}</b> (#{p.id})\n"
+        f"Итерация: <code>{p.current_iter}</code>\n"
+        f"Статус: <code>{p.status}</code>\n\n"
+        f"📝 Визуальный промт: "
+        f"{'<i>задан</i>' if p.visual_prompt else '<i>не задан</i>'}\n"
+        f"⚙ Системный промт для GPT: "
+        f"{'<i>задан</i>' if p.system_prompt else '<i>не задан</i>'}"
+    )
+    kb = test_project_kb(p)
+    if isinstance(target, CallbackQuery):
+        await target.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "test:list")
+async def on_test_list(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _clear_pending_state(cb.from_user.id)
+    await cb.answer()
+    await _render_test_root(cb)
+
+
+@dp.callback_query(F.data == "test:new")
+async def on_test_new(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    _pending_test_name[cb.from_user.id] = True
+    await cb.message.answer(
+        "Напиши название тестового проекта одним сообщением."
+    )
+
+
+@dp.callback_query(F.data == "test:noop")
+async def on_test_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:menu$"))
+async def on_test_project_menu(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    await cb.answer()
+    await _render_test_project(cb, tid)
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:set_visual$"))
+async def on_test_set_visual(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    _pending_test_visual[cb.from_user.id] = tid
+    await cb.answer()
+    await cb.message.answer(
+        f"📝 Пришли визуальный промт для тестового проекта #{tid} "
+        f"одним сообщением. Он будет использован в первой итерации."
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:set_system$"))
+async def on_test_set_system(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    _pending_test_system[cb.from_user.id] = tid
+    await cb.answer()
+    await cb.message.answer(
+        f"⚙ Пришли системный промт (инструкцию для ChatGPT) для "
+        f"тестового проекта #{tid}. Будет использован в каждой "
+        f"итерации перед визуальным промтом / критикой. Пример:\n\n"
+        f"<i>«Переформулируй визуальный промт так, чтобы он был "
+        f"максимально подробный и кинематографичный для Banana Pro. "
+        f"Верни ответ как .txt файл.»</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:critique$"))
+async def on_test_critique(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    _pending_test_critique[cb.from_user.id] = tid
+    await cb.answer()
+    await cb.message.answer(
+        f"✏ Пришли критику/комментарий для тестового проекта #{tid} "
+        f"одним сообщением. ChatGPT перепишет txt-промт с учётом "
+        f"критики, и outsee сгенерит новую картинку."
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:start$"))
+async def on_test_start(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+    await cb.answer("Стартую цикл…")
+    await _kick_test_iteration(cb.bot, cb.from_user.id, tid, critique=None)
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:stop$"))
+async def on_test_stop(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+
+    task = _test_running_tasks.pop(tid, None)
+    if task is not None and not task.done():
+        task.cancel()
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(TestPromptProject.id == tid)
+            )
+        ).scalar_one_or_none()
+        if p is not None:
+            p.status = "stopped"
+            await s.flush()
+    await cb.answer("🛑 Цикл остановлен.")
+    await _render_test_project(cb, tid)
+
+
+@dp.callback_query(F.data.regexp(r"^test:\d+:delete$"))
+async def on_test_delete(cb: CallbackQuery) -> None:
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    tid = int((cb.data or "").split(":")[1])
+
+    task = _test_running_tasks.pop(tid, None)
+    if task is not None and not task.done():
+        task.cancel()
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(TestPromptProject.id == tid)
+            )
+        ).scalar_one_or_none()
+        if p is not None:
+            await s.delete(p)
+            await s.flush()
+    await cb.answer("🗑 Удалён.")
+    await _render_test_root(cb)
+
+
+async def _kick_test_iteration(
+    bot_obj: Bot, user_id: int, tid: int, *, critique: str | None
+) -> None:
+    """Запускает фоновую задачу test_prompt.run_iteration и регистрирует
+    её в _test_running_tasks. Юзер получает результат и кнопки.
+    """
+    from app.services import test_prompt as tp
+
+    # Не даём запускать второй цикл, если уже идёт.
+    existing = _test_running_tasks.get(tid)
+    if existing is not None and not existing.done():
+        await bot_obj.send_message(
+            user_id,
+            "⏳ Для этого проекта уже запущена итерация. "
+            "Дождись завершения или нажми 🛑 Стоп.",
+        )
+        return
+
+    async with session_scope() as s:
+        # Проверяем глобальный лок (только один тестовый цикл).
+        running = await tp.get_running_project(s)
+        if running is not None and running.id != tid:
+            await bot_obj.send_message(
+                user_id,
+                f"⏳ Уже идёт тестовый цикл (проект #{running.id} "
+                f"«{running.name}»). Дождись его завершения или нажми "
+                f"🛑 Стоп в том проекте.",
+            )
+            return
+
+    async def _runner() -> None:
+        try:
+            async with session_scope() as s:
+                p = (
+                    await s.execute(
+                        select(TestPromptProject).where(
+                            TestPromptProject.id == tid
+                        )
+                    )
+                ).scalar_one_or_none()
+                if p is None:
+                    await bot_obj.send_message(user_id, "Проект не найден.")
+                    return
+                # Запускаем итерацию (внутри коммитит и обновляет p).
+                txt_path, img_path = await tp.run_iteration(
+                    s, p,
+                    critique=critique,
+                    bot=bot_obj,
+                    chat_id=user_id,
+                )
+                iter_n = p.current_iter
+                proj_id = p.id
+                proj_name = p.name
+            # Шлём результат.
+            try:
+                from aiogram.types import FSInputFile
+
+                photo = FSInputFile(str(img_path))
+                doc = FSInputFile(str(txt_path))
+                await bot_obj.send_photo(
+                    user_id,
+                    photo,
+                    caption=(
+                        f"🧪 #{proj_id} «{proj_name}» — "
+                        f"итерация {iter_n}"
+                    ),
+                )
+                await bot_obj.send_document(user_id, doc)
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "test_prompt: send result failed: {}", e
+                )
+                await bot_obj.send_message(
+                    user_id,
+                    f"❌ Не удалось отправить результат итерации "
+                    f"{iter_n}: {e}",
+                )
+            # Перерисуем меню — там теперь кнопка «✏ Добавить критику».
+            await _render_test_project_to_user(bot_obj, user_id, tid)
+        except asyncio.CancelledError:
+            logger.info("test_prompt #{}: cancelled by user", tid)
+            async with session_scope() as s:
+                p = (
+                    await s.execute(
+                        select(TestPromptProject).where(
+                            TestPromptProject.id == tid
+                        )
+                    )
+                ).scalar_one_or_none()
+                if p is not None and p.status in (
+                    "running_gpt", "running_outsee"
+                ):
+                    p.status = "stopped"
+                    await s.flush()
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.exception("test_prompt #{}: iteration failed: {}", tid, e)
+            async with session_scope() as s:
+                p = (
+                    await s.execute(
+                        select(TestPromptProject).where(
+                            TestPromptProject.id == tid
+                        )
+                    )
+                ).scalar_one_or_none()
+                if p is not None:
+                    p.status = "error"
+                    meta = dict(p.meta or {})
+                    meta["last_error"] = str(e)
+                    p.meta = meta
+                    await s.flush()
+            with contextlib.suppress(Exception):
+                await bot_obj.send_message(
+                    user_id,
+                    f"❌ Тестовый проект #{tid}: ошибка итерации.\n"
+                    f"<code>{_html_escape(str(e))[:1500]}</code>",
+                    parse_mode="HTML",
+                )
+                await _render_test_project_to_user(bot_obj, user_id, tid)
+
+    task = asyncio.create_task(_runner())
+    _test_running_tasks[tid] = task
+
+
+async def _render_test_project_to_user(
+    bot_obj: Bot, user_id: int, tid: int
+) -> None:
+    """Шлёт меню тестового проекта в ЛС юзеру (без callback'а)."""
+    from app.telegram.test_prompt_menu import test_project_kb
+
+    async with session_scope() as s:
+        p = (
+            await s.execute(
+                select(TestPromptProject).where(TestPromptProject.id == tid)
+            )
+        ).scalar_one_or_none()
+    if p is None:
+        return
+    kb = test_project_kb(p)
+    text = (
+        f"🧪 <b>{_html_escape(p.name)}</b> (#{p.id}) — "
+        f"итерация {p.current_iter}, статус: <code>{p.status}</code>"
+    )
+    with contextlib.suppress(Exception):
+        await bot_obj.send_message(
+            user_id, text, parse_mode="HTML", reply_markup=kb,
+        )
+
+
 @dp.callback_query(F.data.regexp(r"^proj:\d+:reload_xlsx$"))
 async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
     if cb.from_user.id != settings.telegram_owner_chat_id:
@@ -4788,6 +5169,97 @@ async def on_text_message(msg: Message) -> None:
             )
         await msg.answer("📝 Описание продукта сохранено.")
         await _show_mass_product(msg, mass_pd_bid)
+        return
+
+    # 1e-1h) «🧪 Тестирование визуальных промтов».
+    if _pending_test_name.get(user_id):
+        _pending_test_name.pop(user_id, None)
+        from app.services import test_prompt as tp
+
+        name = (msg.text or "").strip()
+        if not name:
+            await msg.answer("Пустое имя. Нажми «➕ Новый» ещё раз.")
+            return
+        async with session_scope() as s:
+            try:
+                proj = await tp.create_test_project(s, name)
+                tid = proj.id
+            except Exception as e:  # noqa: BLE001
+                await msg.answer(f"Не удалось создать: {e}")
+                return
+        await msg.answer(
+            f"🧪 Тестовый проект создан: #{tid} «{_html_escape(name)}».\n"
+            f"Задай 📝 визуальный промт и ⚙ системный промт, "
+            f"потом ▶ Поехали.",
+            parse_mode="HTML",
+        )
+        await _render_test_project(msg, tid)
+        return
+
+    test_visual_tid = _pending_test_visual.get(user_id)
+    if test_visual_tid is not None:
+        _pending_test_visual.pop(user_id, None)
+
+        txt = (msg.text or "").strip()
+        if not txt:
+            await msg.answer("Пустой промт — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            p = (
+                await s.execute(
+                    select(TestPromptProject).where(
+                        TestPromptProject.id == test_visual_tid
+                    )
+                )
+            ).scalar_one_or_none()
+            if p is None:
+                await msg.answer("Тестовый проект не найден.")
+                return
+            p.visual_prompt = txt
+            await s.flush()
+        await msg.answer("📝 Визуальный промт сохранён.")
+        await _render_test_project(msg, test_visual_tid)
+        return
+
+    test_system_tid = _pending_test_system.get(user_id)
+    if test_system_tid is not None:
+        _pending_test_system.pop(user_id, None)
+
+        txt = (msg.text or "").strip()
+        if not txt:
+            await msg.answer("Пустой промт — пришли ещё раз.")
+            return
+        async with session_scope() as s:
+            p = (
+                await s.execute(
+                    select(TestPromptProject).where(
+                        TestPromptProject.id == test_system_tid
+                    )
+                )
+            ).scalar_one_or_none()
+            if p is None:
+                await msg.answer("Тестовый проект не найден.")
+                return
+            p.system_prompt = txt
+            await s.flush()
+        await msg.answer("⚙ Системный промт для GPT сохранён.")
+        await _render_test_project(msg, test_system_tid)
+        return
+
+    test_critique_tid = _pending_test_critique.get(user_id)
+    if test_critique_tid is not None:
+        _pending_test_critique.pop(user_id, None)
+
+        critique = (msg.text or "").strip()
+        if not critique:
+            await msg.answer("Пустая критика — пришли ещё раз.")
+            return
+        await msg.answer(
+            f"✏ Критика принята, запускаю следующую итерацию #{test_critique_tid}…"
+        )
+        await _kick_test_iteration(
+            user_id, test_critique_tid, critique=critique
+        )
         return
 
     # 2) Если ждём описание героя N для конкретного проекта

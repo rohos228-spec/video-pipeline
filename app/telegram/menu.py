@@ -391,6 +391,10 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📁 Новый проект", callback_data="menu:new")],
         [InlineKeyboardButton(text="📋 Существующие проекты", callback_data="menu:list")],
         [InlineKeyboardButton(text="🎬 Массовое создание", callback_data="mass:list")],
+        [InlineKeyboardButton(
+            text="🧪 Тестирование визуальных промтов",
+            callback_data="test:list",
+        )],
     ]
     # Пауза МАССОВОЙ генерации (все батчи разом).
     # НЕ трогает индивидуальные проекты — те продолжают работать.
