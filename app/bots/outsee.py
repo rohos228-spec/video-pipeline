@@ -2515,99 +2515,231 @@ async def _download_via_card_click(
         with contextlib.suppress(Exception):
             await card.hover(timeout=5_000, force=True)
 
-    # 4) Кнопка «Скачать». Стратегия: ПЕРВИЧНО — структурно (2-я кнопка
-    #    в action-bar по DOM-порядку), вторично — title/aria/svg.
-    #    Эмпирически (декабрь 2025) порядок кнопок в action-bar:
-    #    [избранное, СКАЧАТЬ, оживить, повторить, удалить] — у Download
-    #    нет ни title, ни aria-label, ни lucide-download класса в текущей
-    #    разметке outsee, поэтому именованные селекторы не помогают.
+    # 4) Кнопка «Скачать» + клик через JS.
+    #    Главная фишка: outsee оборачивает кнопки в overlay-div с
+    #    `opacity-0 group-hover:opacity-100 pointer-events-none
+    #    group-hover:pointer-events-auto`. Это значит что:
+    #      - Playwright считает кнопку attached, но не «actionable»,
+    #        потому что хит-тест браузера блокируется pointer-events:none.
+    #      - `force=True` ОБХОДИТ Playwright actionability checks, но
+    #        НЕ обходит pointer-events: браузер всё равно не доставит
+    #        событие mouse в координату, где CSS говорит "не лови".
     #
-    #    Action-bar — это `<div class="absolute top-1.5 right-1.5 ...">`
-    #    внутри overlay-а. Берём ВТОРУЮ кнопку (nth(1), 0-indexed) из
-    #    этого контейнера.
-    action_bar = card.locator(
-        "xpath=.//div[contains(@class,'absolute') "
-        "and (contains(@class,'top-1.5') or contains(@class,'top-1') "
-        "     or contains(@class,'top-2')) "
-        "and (contains(@class,'right-1.5') or contains(@class,'right-1') "
-        "     or contains(@class,'right-2'))]"
-    ).first
-    action_buttons = action_bar.locator("> button")
-    download_btn = action_buttons.nth(1)
-
-    # Если структурный селектор не нашёл action-bar (outsee опять перестроил
-    # разметку) — fallback на каскад именованных селекторов.
+    #    Решение: вызвать `.click()` НА ЭЛЕМЕНТЕ через JavaScript. Это
+    #    не использует hit-testing — мы прямо триггерим click handler
+    #    у DOM-элемента. CSS pointer-events на это не влияет.
+    #
+    #    Чтобы найти именно download-кнопку, используем большой JS-блок:
+    #    он сам идёт от ID-текста вверх к карточке, находит action-bar,
+    #    берёт 2-ю кнопку (или ищет lucide-download), и кликает.
+    #    Возвращает src картинки из карточки — пригодится для URL-фолбэка.
+    img_src_from_card: str | None = None
+    click_via_js_err: str | None = None
     try:
-        await download_btn.wait_for(state="attached", timeout=2_000)
-    except PWTimeoutError:
-        logger.warning(
-            "_download_via_card_click: action-bar не найден структурно, "
-            "fallback на title/aria/svg-каскад"
+        img_src_from_card = await page.evaluate(
+            r"""
+            (idPrefix) => {
+                // 1) Найти первый текстовый элемент содержащий idPrefix.
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT, null
+                );
+                let textNode = null;
+                while (walker.nextNode()) {
+                    if (walker.currentNode.nodeValue
+                        && walker.currentNode.nodeValue.includes(idPrefix)) {
+                        textNode = walker.currentNode;
+                        break;
+                    }
+                }
+                if (!textNode) {
+                    throw new Error('text node with [ID:] not found');
+                }
+                // 2) Подняться до карточки — ближайший ancestor содержащий и <img>, и <button>.
+                let card = textNode.parentElement;
+                while (card) {
+                    if (card.querySelector('img') && card.querySelector('button')) {
+                        break;
+                    }
+                    card = card.parentElement;
+                }
+                if (!card) {
+                    throw new Error('card ancestor not found');
+                }
+                // 3) Сохранить src картинки для URL-фолбэка.
+                const img = card.querySelector('img');
+                const imgSrc = img ? img.src : null;
+                // 4) Найти download-кнопку. Несколько стратегий:
+                //    a) <button> с svg.lucide-download внутри
+                //    b) <button title="Скачать"|"Download">
+                //    c) 2-я <button> в любом div.absolute-блоке с >= 4 кнопками
+                let btn = card.querySelector('button:has(svg.lucide-download)')
+                    || card.querySelector('button[title="Скачать"]')
+                    || card.querySelector('button[title="Download"]')
+                    || card.querySelector('button[aria-label*="скач" i]')
+                    || card.querySelector('button[aria-label*="download" i]');
+                if (!btn) {
+                    // Найти все divs с position-absolute и >= 4 кнопками — это action-bar.
+                    const divs = Array.from(card.querySelectorAll('div'));
+                    for (const d of divs) {
+                        const cls = d.className || '';
+                        if (typeof cls !== 'string') continue;
+                        if (!cls.includes('absolute')) continue;
+                        const btns = d.querySelectorAll(':scope > button');
+                        if (btns.length >= 4) {
+                            btn = btns[1];  // 2-я по эмпирике
+                            break;
+                        }
+                    }
+                }
+                if (!btn) {
+                    throw new Error('download button not found inside card');
+                }
+                // 5) Тык!
+                btn.click();
+                return imgSrc;
+            }
+            """,
+            prompt_id_prefix,
         )
-        download_btn = card.locator(
-            ", ".join([
-                "button:has(svg.lucide-download)",
-                "button[title='Скачать']",
-                "button[title='Download']",
-                "button[aria-label*='скач' i]",
-                "button[aria-label*='download' i]",
-            ])
-        ).first
+        logger.info(
+            "_download_via_card_click: JS-click отправлен, img_src={}",
+            (img_src_from_card[:120] if img_src_from_card else None),
+        )
+    except Exception as e:  # noqa: BLE001
+        click_via_js_err = f"{type(e).__name__}: {e}"
+        logger.warning(
+            "_download_via_card_click: JS-click упал ({}), всё равно "
+            "пробую expect_download а потом URL-фолбэк",
+            click_via_js_err,
+        )
 
-    # Дополнительно: re-hover на саму кнопку (а не только на img),
-    # чтобы overlay точно был развёрнут и opacity-transition завершился.
-    # `force=True` НЕ используем — нам нужно чтобы Playwright дождался
-    # actionability, иначе click может уйти в пустоту до того как
-    # overlay получит pointer-events:auto.
-    with contextlib.suppress(Exception):
-        await download_btn.scroll_into_view_if_needed(timeout=3_000)
-    with contextlib.suppress(Exception):
-        await download_btn.hover(timeout=5_000)
-
-    # Небольшая пауза чтобы CSS transition opacity (duration-300) закончился —
-    # без неё click может пройти когда opacity ещё 0.x и Playwright решит
-    # что элемент не actionable.
-    await asyncio.sleep(0.5)
-
+    # 5) Пробуем поймать download через page.expect_download.
+    #    Если outsee действительно скачивает через стандартный механизм
+    #    (a[download] или Content-Disposition) — Playwright нам его отдаст.
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    download_caught = False
     try:
-        async with page.expect_download(timeout=deadline_ms) as dl_info:
-            await download_btn.click(timeout=20_000)
+        # expect_download нужно открывать ПЕРЕД click. Но JS-click уже улетел.
+        # Если страница использует event-based download — это будет асинхронно,
+        # дадим 8 секунд на ловлю.
+        async with page.expect_download(timeout=8_000) as dl_info:
+            # повторно триггерим click чтобы expect_download был открыт ДО клика.
+            with contextlib.suppress(Exception):
+                await page.evaluate(
+                    r"""
+                    (idPrefix) => {
+                        const walker = document.createTreeWalker(
+                            document.body, NodeFilter.SHOW_TEXT, null
+                        );
+                        let textNode = null;
+                        while (walker.nextNode()) {
+                            if (walker.currentNode.nodeValue
+                                && walker.currentNode.nodeValue.includes(idPrefix)) {
+                                textNode = walker.currentNode;
+                                break;
+                            }
+                        }
+                        if (!textNode) return;
+                        let card = textNode.parentElement;
+                        while (card) {
+                            if (card.querySelector('img') && card.querySelector('button')) break;
+                            card = card.parentElement;
+                        }
+                        if (!card) return;
+                        let btn = card.querySelector('button:has(svg.lucide-download)')
+                            || card.querySelector('button[title="Скачать"]')
+                            || card.querySelector('button[title="Download"]')
+                            || card.querySelector('button[aria-label*="скач" i]')
+                            || card.querySelector('button[aria-label*="download" i]');
+                        if (!btn) {
+                            const divs = Array.from(card.querySelectorAll('div'));
+                            for (const d of divs) {
+                                const cls = d.className || '';
+                                if (typeof cls !== 'string') continue;
+                                if (!cls.includes('absolute')) continue;
+                                const btns = d.querySelectorAll(':scope > button');
+                                if (btns.length >= 4) { btn = btns[1]; break; }
+                            }
+                        }
+                        if (btn) btn.click();
+                    }
+                    """,
+                    prompt_id_prefix,
+                )
         download = await dl_info.value
         await download.save_as(str(out_path))
-    except PWTimeoutError as e:
-        # Last-resort: повторим клик с force=True. Это пропускает actionability
-        # checks Playwright (visible, stable, receives-events) — если overlay
-        # всё ещё не считается «нормально кликабельным», force всё равно
-        # отправит событие. Download должен сработать если кнопка та самая.
-        logger.warning(
-            "_download_via_card_click: обычный click упал ({}), пробую force-click",
-            type(e).__name__,
+        download_caught = True
+        logger.info(
+            "_download_via_card_click: получили download через expect_download → {}",
+            out_path,
         )
-        try:
-            async with page.expect_download(timeout=deadline_ms) as dl_info:
-                await download_btn.click(timeout=10_000, force=True)
-            download = await dl_info.value
-            await download.save_as(str(out_path))
-        except Exception as inner_e:  # noqa: BLE001
+    except PWTimeoutError:
+        logger.warning(
+            "_download_via_card_click: expect_download не сработал за 8 сек "
+            "(outsee использует blob/fetch?), фолбэк на URL-загрузку"
+        )
+
+    # 6) Фолбэк: outsee может скачивать через blob URL (createObjectURL),
+    #    тогда page.expect_download не сработает. Берём `<img src>` карточки
+    #    и тянем напрямую через page.context.request — он имеет cookies,
+    #    т.е. CDN отдаст нам реальный файл.
+    if not download_caught:
+        if not img_src_from_card:
+            # Один последний шанс — попытаемся ещё раз достать src через JS.
+            with contextlib.suppress(Exception):
+                img_src_from_card = await page.evaluate(
+                    r"""
+                    (idPrefix) => {
+                        const walker = document.createTreeWalker(
+                            document.body, NodeFilter.SHOW_TEXT, null
+                        );
+                        let textNode = null;
+                        while (walker.nextNode()) {
+                            if (walker.currentNode.nodeValue
+                                && walker.currentNode.nodeValue.includes(idPrefix)) {
+                                textNode = walker.currentNode;
+                                break;
+                            }
+                        }
+                        if (!textNode) return null;
+                        let card = textNode.parentElement;
+                        while (card) {
+                            if (card.querySelector('img')) break;
+                            card = card.parentElement;
+                        }
+                        if (!card) return null;
+                        const img = card.querySelector('img');
+                        return img ? img.src : null;
+                    }
+                    """,
+                    prompt_id_prefix,
+                )
+        if not img_src_from_card:
             raise OutseeImageError(
-                "outsee image: клик по кнопке «Скачать» не вызвал download "
-                "за отведённое время (и force-click тоже)",
+                "outsee image: ни expect_download, ни <img src> в карточке "
+                "не сработали — скачивание невозможно",
                 context={
                     "prompt_id_prefix": prompt_id_prefix,
                     "timeout_s": timeout_s,
-                    "err": f"{type(e).__name__}: {e}",
-                    "force_err": f"{type(inner_e).__name__}: {inner_e}",
+                    "js_click_err": click_via_js_err or "—",
                 },
-            ) from inner_e
-    except Exception as e:  # noqa: BLE001
-        raise OutseeImageError(
-            "outsee image: download через клик по карточке упал",
-            context={
-                "prompt_id_prefix": prompt_id_prefix,
-                "err": f"{type(e).__name__}: {e}",
-            },
-        ) from e
+            )
+        try:
+            await _download_via_context(page, img_src_from_card, out_path)
+        except Exception as e:  # noqa: BLE001
+            raise OutseeImageError(
+                "outsee image: фолбэк-загрузка через page.context.request "
+                "упала",
+                context={
+                    "prompt_id_prefix": prompt_id_prefix,
+                    "img_src": img_src_from_card[:200],
+                    "err": f"{type(e).__name__}: {e}",
+                },
+            ) from e
+        logger.info(
+            "_download_via_card_click: фолбэк через URL → {} (src={})",
+            out_path, (img_src_from_card[:100] if img_src_from_card else None),
+        )
 
     logger.info(
         "_download_via_card_click: сохранил файл {} (prompt_id={})",
