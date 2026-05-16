@@ -534,7 +534,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id, hero_idx, n_total,
             )
             try:
-                result = await outsee.regenerate_image(out_path)
+                result = await outsee.regenerate_image(
+                    out_path, prompt_id_prefix=prompt_id_prefix,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[#{}] «Повторить» не сработала ({}), делаю fresh "
@@ -917,7 +919,9 @@ async def _generate_one_excel_character(
         result = None
         if not used_refs and is_regen:
             try:
-                result = await outsee.regenerate_image(out_path)
+                result = await outsee.regenerate_image(
+                    out_path, prompt_id_prefix=prompt_id_prefix,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[#{}] excel_hero {} «Повторить» упала ({}), fresh "
