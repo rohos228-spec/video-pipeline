@@ -2441,7 +2441,7 @@ async def _download_via_card_click(
     out_path: Path,
     timeout_s: float = 120.0,
 ) -> None:
-    """Кликает зелёную «↓ Скачать» на карточке результата с нашим
+    """Кликает «↓ Скачать» на карточке результата с нашим
     `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
     через `page.expect_download()`.
 
@@ -2452,59 +2452,102 @@ async def _download_via_card_click(
     PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
 
     Логика:
-      1) находим элемент с текстом `prompt_id_prefix` (он встроен в
-         промт первой строкой и outsee показывает его в карточке);
-      2) поднимаемся к ближайшему ancestor'у, в поддереве которого
-         есть `button > svg.lucide-download` — это и есть «карточка»;
-      3) скроллим её в видимую часть, наводим мышь (action-кнопки
-         появляются только на hover);
-      4) `expect_download` + click → сохраняем файл по пути out_path.
+      1) ищем элемент с текстом `prompt_id_prefix` в DOM (НЕ требуем
+         visible — outsee рендерит этот текст в overlay с
+         `opacity-0 group-hover:opacity-100`, поэтому элемент есть в
+         DOM, но visibility=0 пока не наведут мышь);
+      2) поднимаемся к ближайшему ancestor'у, у которого в поддереве
+         есть и `<img>`, и `<button>` — это карточка-обёртка с классом
+         `group`, на которой висит `group-hover` для overlay-а;
+      3) скроллим её в видимую часть, hover на `<img>` (overlay имеет
+         `pointer-events-none` пока невидим, поэтому hover именно на
+         картинку, а не на overlay);
+      4) ищем кнопку Download по каскаду селекторов
+         (svg.lucide-download → title="Скачать" → title="Download" →
+         aria-label) — outsee периодически меняет разметку action-бара;
+      5) `expect_download` + click → сохраняем файл по пути out_path.
     """
     deadline_ms = int(timeout_s * 1000)
 
     # 1) Якорь — элемент с нашим уникальным [ID: ...] токеном.
+    #    state="attached" (а НЕ "visible"), потому что overlay скрыт
+    #    через `opacity-0 group-hover:opacity-100` — текст есть в DOM,
+    #    но визуально невидим пока не наведут мышь.
     id_el = page.get_by_text(prompt_id_prefix, exact=False).first
     try:
-        await id_el.wait_for(state="visible", timeout=deadline_ms)
+        await id_el.wait_for(state="attached", timeout=deadline_ms)
     except PWTimeoutError as e:
         raise OutseeImageError(
             "outsee image: не нашёл карточку с нашим ID за время ожидания "
-            "(скачивание по клику невозможно)",
+            "(текст промта не появился в DOM)",
             context={
                 "prompt_id_prefix": prompt_id_prefix,
                 "timeout_s": timeout_s,
             },
         ) from e
 
-    # 2) Карточка = ближайший ancestor, у которого в поддереве есть
-    #    наша зелёная кнопка-стрелка (svg.lucide-download внутри button).
-    #    `ancestor::*[…][1]` в XPath — это самый близкий ancestor, потому
-    #    что XPath обходит ancestor-axis от child к корню.
+    # 2) Карточка = ближайший ancestor, у которого В ПОДДЕРЕВЕ есть
+    #    и <img>, и <button>. Это .group-обёртка с group-hover.
+    #    Раньше искали по svg.lucide-download, но outsee перестроил
+    #    разметку и иконку download может не быть в нужном виде —
+    #    более устойчиво искать просто по комбинации img+button.
     card = id_el.locator(
-        "xpath=ancestor::*[descendant::button"
-        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+        "xpath=ancestor::*[descendant::img and descendant::button][1]"
     )
 
-    # Не критично — карточка может быть и так в видимой области.
+    # Скроллим карточку в видимую часть — иначе hover ничего не даст.
     with contextlib.suppress(Exception):
         await card.scroll_into_view_if_needed(timeout=5_000)
 
-    # 3) Кнопки действий (download/heart/regen/trash) появляются только
-    #    при hover на карточку — без этого click может не зарегаться,
-    #    т.к. кнопка не actionable (opacity:0/display:none по CSS).
+    # 3) Hover на <img> карточки (overlay имеет pointer-events-none
+    #    пока невидим, поэтому hover именно на картинку, не на overlay).
+    #    После этого `group-hover:` активирует overlay и action-кнопки
+    #    становятся кликабельными.
+    card_img = card.locator("img").first
     try:
-        await card.hover(timeout=5_000)
+        await card_img.hover(timeout=5_000)
     except Exception as e:  # noqa: BLE001
         logger.warning(
-            "_download_via_card_click: hover упал ({}), всё равно "
-            "пробуем кликнуть — Playwright auto-wait может обработать",
+            "_download_via_card_click: hover на img упал ({}), "
+            "пробуем force-hover на саму карточку",
             type(e).__name__,
         )
+        with contextlib.suppress(Exception):
+            await card.hover(timeout=5_000, force=True)
 
-    # 4) Внутри карточки находим именно кнопку с lucide-download SVG.
-    #    Эта же иконка живёт в библиотеке lucide-icons — её класс
-    #    `lucide-download` стабилен и не зависит от Tailwind-стилей.
-    download_btn = card.locator("button:has(svg.lucide-download)").first
+    # 4) Кнопка «Скачать». Outsee периодически перестраивает action-bar,
+    #    поэтому ищем по нескольким сигналам: lucide-download SVG,
+    #    title="Скачать"/"Download", aria-label. CSS-селекторы
+    #    объединены через запятую — Playwright возьмёт первый матч.
+    download_btn = card.locator(
+        ", ".join([
+            "button:has(svg.lucide-download)",
+            "button[title='Скачать']",
+            "button[title='Download']",
+            "button[aria-label*='скач' i]",
+            "button[aria-label*='download' i]",
+        ])
+    ).first
+
+    # Если ни один из именованных селекторов не нашёл — fallback на
+    # 2-ю кнопку в action-bar. По эмпирическим наблюдениям (декабрь 2025)
+    # порядок: [избранное, скачать, оживить, повторить, удалить] —
+    # Download стоит вторым и не имеет title.
+    try:
+        await download_btn.wait_for(state="attached", timeout=3_000)
+    except PWTimeoutError:
+        logger.warning(
+            "_download_via_card_click: не нашёл Download по title/svg, "
+            "fallback на 2-ю кнопку в action-bar"
+        )
+        # Action-bar — это `<div class="absolute top-... right-...">`
+        # внутри overlay-а с группой кнопок.
+        action_buttons = card.locator(
+            "xpath=.//div[contains(@class,'absolute') "
+            "and contains(@class,'top') "
+            "and contains(@class,'right')]/button"
+        )
+        download_btn = action_buttons.nth(1)  # 0-indexed: 2-я кнопка
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
