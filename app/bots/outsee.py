@@ -2515,56 +2515,91 @@ async def _download_via_card_click(
         with contextlib.suppress(Exception):
             await card.hover(timeout=5_000, force=True)
 
-    # 4) Кнопка «Скачать». Outsee периодически перестраивает action-bar,
-    #    поэтому ищем по нескольким сигналам: lucide-download SVG,
-    #    title="Скачать"/"Download", aria-label. CSS-селекторы
-    #    объединены через запятую — Playwright возьмёт первый матч.
-    download_btn = card.locator(
-        ", ".join([
-            "button:has(svg.lucide-download)",
-            "button[title='Скачать']",
-            "button[title='Download']",
-            "button[aria-label*='скач' i]",
-            "button[aria-label*='download' i]",
-        ])
+    # 4) Кнопка «Скачать». Стратегия: ПЕРВИЧНО — структурно (2-я кнопка
+    #    в action-bar по DOM-порядку), вторично — title/aria/svg.
+    #    Эмпирически (декабрь 2025) порядок кнопок в action-bar:
+    #    [избранное, СКАЧАТЬ, оживить, повторить, удалить] — у Download
+    #    нет ни title, ни aria-label, ни lucide-download класса в текущей
+    #    разметке outsee, поэтому именованные селекторы не помогают.
+    #
+    #    Action-bar — это `<div class="absolute top-1.5 right-1.5 ...">`
+    #    внутри overlay-а. Берём ВТОРУЮ кнопку (nth(1), 0-indexed) из
+    #    этого контейнера.
+    action_bar = card.locator(
+        "xpath=.//div[contains(@class,'absolute') "
+        "and (contains(@class,'top-1.5') or contains(@class,'top-1') "
+        "     or contains(@class,'top-2')) "
+        "and (contains(@class,'right-1.5') or contains(@class,'right-1') "
+        "     or contains(@class,'right-2'))]"
     ).first
+    action_buttons = action_bar.locator("> button")
+    download_btn = action_buttons.nth(1)
 
-    # Если ни один из именованных селекторов не нашёл — fallback на
-    # 2-ю кнопку в action-bar. По эмпирическим наблюдениям (декабрь 2025)
-    # порядок: [избранное, скачать, оживить, повторить, удалить] —
-    # Download стоит вторым и не имеет title.
+    # Если структурный селектор не нашёл action-bar (outsee опять перестроил
+    # разметку) — fallback на каскад именованных селекторов.
     try:
-        await download_btn.wait_for(state="attached", timeout=3_000)
+        await download_btn.wait_for(state="attached", timeout=2_000)
     except PWTimeoutError:
         logger.warning(
-            "_download_via_card_click: не нашёл Download по title/svg, "
-            "fallback на 2-ю кнопку в action-bar"
+            "_download_via_card_click: action-bar не найден структурно, "
+            "fallback на title/aria/svg-каскад"
         )
-        # Action-bar — это `<div class="absolute top-... right-...">`
-        # внутри overlay-а с группой кнопок.
-        action_buttons = card.locator(
-            "xpath=.//div[contains(@class,'absolute') "
-            "and contains(@class,'top') "
-            "and contains(@class,'right')]/button"
-        )
-        download_btn = action_buttons.nth(1)  # 0-indexed: 2-я кнопка
+        download_btn = card.locator(
+            ", ".join([
+                "button:has(svg.lucide-download)",
+                "button[title='Скачать']",
+                "button[title='Download']",
+                "button[aria-label*='скач' i]",
+                "button[aria-label*='download' i]",
+            ])
+        ).first
+
+    # Дополнительно: re-hover на саму кнопку (а не только на img),
+    # чтобы overlay точно был развёрнут и opacity-transition завершился.
+    # `force=True` НЕ используем — нам нужно чтобы Playwright дождался
+    # actionability, иначе click может уйти в пустоту до того как
+    # overlay получит pointer-events:auto.
+    with contextlib.suppress(Exception):
+        await download_btn.scroll_into_view_if_needed(timeout=3_000)
+    with contextlib.suppress(Exception):
+        await download_btn.hover(timeout=5_000)
+
+    # Небольшая пауза чтобы CSS transition opacity (duration-300) закончился —
+    # без неё click может пройти когда opacity ещё 0.x и Playwright решит
+    # что элемент не actionable.
+    await asyncio.sleep(0.5)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
-            await download_btn.click(timeout=10_000)
+            await download_btn.click(timeout=20_000)
         download = await dl_info.value
         await download.save_as(str(out_path))
     except PWTimeoutError as e:
-        raise OutseeImageError(
-            "outsee image: клик по кнопке «Скачать» не вызвал download "
-            "за отведённое время",
-            context={
-                "prompt_id_prefix": prompt_id_prefix,
-                "timeout_s": timeout_s,
-                "err": f"{type(e).__name__}: {e}",
-            },
-        ) from e
+        # Last-resort: повторим клик с force=True. Это пропускает actionability
+        # checks Playwright (visible, stable, receives-events) — если overlay
+        # всё ещё не считается «нормально кликабельным», force всё равно
+        # отправит событие. Download должен сработать если кнопка та самая.
+        logger.warning(
+            "_download_via_card_click: обычный click упал ({}), пробую force-click",
+            type(e).__name__,
+        )
+        try:
+            async with page.expect_download(timeout=deadline_ms) as dl_info:
+                await download_btn.click(timeout=10_000, force=True)
+            download = await dl_info.value
+            await download.save_as(str(out_path))
+        except Exception as inner_e:  # noqa: BLE001
+            raise OutseeImageError(
+                "outsee image: клик по кнопке «Скачать» не вызвал download "
+                "за отведённое время (и force-click тоже)",
+                context={
+                    "prompt_id_prefix": prompt_id_prefix,
+                    "timeout_s": timeout_s,
+                    "err": f"{type(e).__name__}: {e}",
+                    "force_err": f"{type(inner_e).__name__}: {inner_e}",
+                },
+            ) from inner_e
     except Exception as e:  # noqa: BLE001
         raise OutseeImageError(
             "outsee image: download через клик по карточке упал",
