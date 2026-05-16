@@ -598,7 +598,11 @@ async def _generate_and_send(
     try:
         if use_regen_button:
             try:
-                result = await outsee.regenerate_image(file_path, gen_id=gen_id)
+                result = await outsee.regenerate_image(
+                    file_path,
+                    gen_id=gen_id,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая
                 # «структурная» ошибка regenerate) — падаем на полноценный
