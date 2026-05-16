@@ -551,6 +551,18 @@ class GenerationResult:
     # в TG для отладки селекторов.
     dumps: list[Path] | None = None
 
+    @property
+    def success(self) -> bool:
+        """True если файл реально сохранён на диск.
+
+        Неудачные генерации обычно кидают OutseeImageError, но
+        вызывающий код может проверить этот флаг на всякий случай.
+        """
+        try:
+            return self.file_path.exists() and self.file_path.stat().st_size > 0
+        except Exception:  # noqa: BLE001
+            return False
+
 
 class OutseeImageError(RuntimeError):
     """Ошибка с описательным контекстом — пайплайн использует это,
@@ -1167,21 +1179,27 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 5) скачиваем — клик по зелёной кнопке «↓» на НАШЕЙ карточке
-        # (ID-привязка). Сам outsee отдаёт реальный финальный файл —
-        # это исключает все косяки с topaz.webp / input_*.png / svg-
-        # плейсхолдерами, которые подсовывал старый URL-путь.
-        # Если prompt_id_prefix не передан (legacy / recon-mode) —
-        # фолбэк на старую URL-выкачку.
+        # 5) Скачивание результата.
+        #
+        # Архитектурный коммент (май 2026):
+        # Раньше здесь была ветка _download_via_card_click — она кликала
+        # «↓ Скачать» на карточке результата и ждала page.expect_download.
+        # Это регулярно залипало по нескольким причинам:
+        #   - overlay-панель с кнопками имеет CSS pointer-events:none
+        #     пока не наведён hover, и браузер блокирует hit-test в этих
+        #     координатах (даже force=True не спасает — CSS правила hit-testing
+        #     реализуются внутри браузера, Playwright их не обходит);
+        #   - outsee периодически меняет разметку action-bar (классы/порядок
+        #     кнопок/atributes), и селекторы бьются при каждом редизайне;
+        #   - outsee использует blob URL (createObjectURL) для фактического
+        #     скачивания, и page.expect_download его видит не всегда.
+        #
+        # Именно сейчас это всё не нужно: _wait_image_url_strict возвращает
+        # реальный CDN URL картинки (из net_events / DOM-верификации по [ID:]).
+        # Скачиваем напрямую через page.context.request — с сессией
+        # это работает надёжно и быстро (нет никаких click/hover).
         try:
-            if prompt_id_prefix:
-                await _download_via_card_click(
-                    page,
-                    prompt_id_prefix=prompt_id_prefix,
-                    out_path=out_path,
-                )
-            else:
-                await _download_via_context(page, img_url, out_path)
+            await _download_via_context(page, img_url, out_path)
         except OutseeImageError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("img_url", img_url)
