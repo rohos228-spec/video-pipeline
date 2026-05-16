@@ -551,6 +551,19 @@ class GenerationResult:
     # в TG для отладки селекторов.
     dumps: list[Path] | None = None
 
+    @property
+    def success(self) -> bool:
+        """True если файл реально сохранён на диск.
+
+        Неудачные генерации обычно кидают OutseeImageError, но
+        вызывающий код (test_prompt.py / visual_lab) может проверить
+        этот флаг на всякий случай.
+        """
+        try:
+            return self.file_path.exists() and self.file_path.stat().st_size > 0
+        except Exception:  # noqa: BLE001
+            return False
+
 
 class OutseeImageError(RuntimeError):
     """Ошибка с описательным контекстом — пайплайн использует это,
@@ -1167,21 +1180,41 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 5) скачиваем — клик по зелёной кнопке «↓» на НАШЕЙ карточке
-        # (ID-привязка). Сам outsee отдаёт реальный финальный файл —
-        # это исключает все косяки с topaz.webp / input_*.png / svg-
-        # плейсхолдерами, которые подсовывал старый URL-путь.
-        # Если prompt_id_prefix не передан (legacy / recon-mode) —
-        # фолбэк на старую URL-выкачку.
+        # 5) Скачивание результата — прямой GET по реальному CDN URL.
+        #
+        # Архитектурный коммент (май 2026):
+        # Раньше здесь был путь _download_via_card_click — клик по зелёной
+        # кнопке «↓ Скачать» на карточке с нашим [ID: ...] и ожидание
+        # page.expect_download(). На бумаге это исключало placeholder'ы
+        # (topaz.webp / input_*.png / svg-skeleton), но на практике
+        # регулярно залипало:
+        #   - кнопка "Скачать" живёт в overlay-панели с CSS
+        #     `pointer-events:none` пока не наведён hover; браузер
+        #     блокирует hit-test в этих координатах, и Playwright
+        #     не может её кликнуть (даже force=True не спасает —
+        #     hit-testing реализован внутри браузера, обойти его
+        #     инструментом нельзя);
+        #   - outsee периодически перетряхивает разметку action-bar
+        #     (классы / порядок кнопок / aria-атрибуты), и любой
+        #     селектор «svg.lucide-download / Nth-кнопка / data-…»
+        #     ломается при следующем редизайне;
+        #   - в части случаев outsee запускает скачивание через
+        #     blob URL (createObjectURL), и page.expect_download его
+        #     не видит вовсе.
+        #
+        # При этом _wait_image_url_strict выше уже возвращает реальный
+        # CDN URL финальной картинки — он подобран по сетевым ответам
+        # (image/* >= 50 KB) и/или DOM-верификации по нашему [ID:
+        # P{...}-F{...}-{8hex}]. Placeholder-URL (topaz.webp /
+        # input_*.png) фильтруются там же через `_UI_ASSET_MARKERS`
+        # и `_INPUT_REF_MARKERS`.
+        #
+        # Поэтому самый надёжный путь — _download_via_context: GET по
+        # этому URL через page.context.request (сессия и cookies
+        # outsee те же самые, что у браузера). Никаких click / hover /
+        # pointer-events headache.
         try:
-            if prompt_id_prefix:
-                await _download_via_card_click(
-                    page,
-                    prompt_id_prefix=prompt_id_prefix,
-                    out_path=out_path,
-                )
-            else:
-                await _download_via_context(page, img_url, out_path)
+            await _download_via_context(page, img_url, out_path)
         except OutseeImageError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("img_url", img_url)
@@ -1198,11 +1231,11 @@ class OutseeBot:
                 dumps=dumps,
             ) from e
 
-        # 5.1) Валидация скачанного файла. С click-Download через
-        # `expect_download()` подсунуть `topaz.webp` или
-        # `input_*.png` outsee уже не сможет, но базовая проверка
-        # (>50 KB + magic-байты PNG/JPEG/WebP) остаётся — на случай
-        # битого CDN-ответа.
+        # 5.1) Валидация скачанного файла. Защита от placeholder/skeleton:
+        # outsee.io иногда отдаёт «загрузочный» PNG (тёмный фон с тремя
+        # белыми квадратами) как результат генерации, и без этой проверки
+        # бот сохраняет его и шлёт в TG. На неудачу — кидаем OutseeImageError,
+        # retry-обёртка повторит генерацию.
         try:
             _validate_downloaded_image(
                 out_path, gen_id=gen_id, img_url=img_url
