@@ -2538,6 +2538,81 @@ async def _close_outsee_modal(
         await asyncio.sleep(0.4)
 
 
+async def _detect_outsee_modal_id(page: Page) -> str | None:
+    """Найти открытый outsee-лайтбокс (фуллскрин-модалку с превью + правой
+    панелью промта) и извлечь из его DOM-содержимого `[ID: ...]`-токен.
+
+    Зачем отдельная функция, а не просто regex по `body.innerText`:
+
+      1. Outsee рендерит правую панель промта через `<textarea readonly>`,
+         и `body.innerText` **не** включает `textarea.value` (это спека
+         `innerText`). Без чтения textarea-значений `[ID: ...]` теряется.
+      2. На странице постоянно живут другие `[ID: ...]`-токены (в композере,
+         в индикаторе «генерация в процессе»). Нам нужен ID именно из
+         модалки, а не «какой-то на странице». Поэтому ищем overlay-
+         элемент и берём текст ТОЛЬКО из него.
+
+    Считаем overlay'ем:
+      * любой `[role="dialog"]` / `[aria-modal="true"]`;
+      * либо fixed/absolute-позиционированный блок, занимающий ≥ 50%
+        viewport по обеим осям с видимостью != hidden / opacity ≥ 0.3.
+
+    Из такого overlay'я собираем `innerText + textarea.value + input.value`
+    и матчим `[ID: ...]`. Если совпадений несколько — берём последнее
+    (модалка обычно отрендерена в конце DOM).
+    Возвращает `[ID: ...]` или None.
+    """
+    try:
+        return await page.evaluate(
+            """() => {
+                const seen = new Set();
+                const candidates = [];
+                const add = (el) => {
+                    if (!el || seen.has(el)) return;
+                    seen.add(el);
+                    candidates.push(el);
+                };
+                for (const el of document.querySelectorAll(
+                    '[role="dialog"], [aria-modal="true"]'
+                )) add(el);
+                for (const el of document.querySelectorAll(
+                    'div, section, aside'
+                )) {
+                    const cs = window.getComputedStyle(el);
+                    if (cs.position !== 'fixed' && cs.position !== 'absolute') {
+                        continue;
+                    }
+                    if (cs.visibility === 'hidden' || cs.display === 'none') {
+                        continue;
+                    }
+                    if (parseFloat(cs.opacity || '1') < 0.3) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < window.innerWidth * 0.5) continue;
+                    if (r.height < window.innerHeight * 0.5) continue;
+                    add(el);
+                }
+                const re = /\\[ID:\\s*([A-Za-z0-9_-]+)\\s*\\]/g;
+                let last = null;
+                for (const el of candidates) {
+                    let txt = el.innerText || el.textContent || '';
+                    for (const ta of el.querySelectorAll('textarea')) {
+                        if (ta.value) txt += '\\n' + ta.value;
+                    }
+                    for (const inp of el.querySelectorAll('input')) {
+                        if (inp.value) txt += '\\n' + inp.value;
+                    }
+                    const matches = txt.match(re);
+                    if (matches && matches.length > 0) {
+                        last = matches[matches.length - 1];
+                    }
+                }
+                return last;
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _capture_image_via_manual_walk(
     page: Page,
     *,
@@ -2661,6 +2736,23 @@ async def _capture_image_via_manual_walk(
                 )
 
         # 1) Сканируем новые тайлы.
+        #
+        # Что отсеиваем:
+        #   * baseline_all_srcs + seen — уже были на странице / уже
+        #     обработаны нами;
+        #   * `data:`-URL, неполные `<img>`, маленькие (<200 nat-px);
+        #   * `/temp-images/` и `input_<digits>` — это наш референс,
+        #     не результат генерации. Если кликнуть его, outsee откроет
+        #     модалку, но там будет НЕ наш ID (или вообще другая
+        #     карточка) — будем зря отсеивать.
+        #   * bbox самой `<img>` < 100×100 (превьюшки/иконки).
+        #
+        # bbox для клика берём от САМОЙ `<img>`, не от ancestor'а.
+        # Раньше мы шли parents → button|a → 5 уровней вверх, и в
+        # outsee это приводило к выбору гигантского контейнера ленты
+        # с центром далеко за пределами viewport — клик улетал в
+        # пустоту. Сейчас bbox = bbox img → cx/cy внутри картинки →
+        # клик гарантированно попадает на тайлу.
         try:
             tiles = await page.evaluate(
                 """([baselineList, seenList]) => {
@@ -2675,38 +2767,24 @@ async def _capture_image_via_manual_walk(
                     const out = [];
                     for (const img of document.querySelectorAll('img')) {
                         if (!img.src || img.src.startsWith('data:')) continue;
+                        // input_<digits> или /temp-images/ — это твой
+                        // референс, не сгенерированная картинка.
+                        if (img.src.includes('/temp-images/')) continue;
+                        if (/input_\\d+/.test(img.src)) continue;
                         if (!img.complete) continue;
                         if (!img.naturalWidth || img.naturalWidth < 200) continue;
                         const stable = stripQ(img.src);
                         if (skip.has(stable)) continue;
-                        const rect = img.getBoundingClientRect();
-                        if (rect.width < 50 || rect.height < 50) continue;
-                        if (rect.right < 0 || rect.left > window.innerWidth) continue;
-                        if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
-                        // Кликабельный предок (button / a / role=button)
-                        // или сам <img>, если такого нет.
-                        let target = img;
-                        for (let i = 0; i < 5; i++) {
-                            if (!target.parentElement) break;
-                            const tag = target.tagName
-                                ? target.tagName.toLowerCase() : '';
-                            const role = target.getAttribute
-                                ? target.getAttribute('role') : null;
-                            if (
-                                tag === 'button'
-                                || tag === 'a'
-                                || role === 'button'
-                            ) break;
-                            target = target.parentElement;
-                        }
-                        const r = target.getBoundingClientRect();
+                        const r = img.getBoundingClientRect();
+                        if (r.width < 100 || r.height < 100) continue;
                         out.push({
                             src: img.src,
                             srcNorm: stable,
-                            cx: Math.round(r.left + r.width / 2),
-                            cy: Math.round(r.top + r.height / 2),
-                            w: Math.round(r.width),
-                            h: Math.round(r.height),
+                            // bbox самой <img> — не ancestor-walk.
+                            left: Math.round(r.left),
+                            top: Math.round(r.top),
+                            width: Math.round(r.width),
+                            height: Math.round(r.height),
                         });
                     }
                     return out;
@@ -2737,36 +2815,69 @@ async def _capture_image_via_manual_walk(
             logger.info(
                 "_capture_image_via_manual_walk: пробую тайлу {} "
                 "(bbox {}×{} @ ({},{}), iter={})",
-                tile["src"][:80], tile["w"], tile["h"],
-                tile["cx"], tile["cy"], iteration,
+                tile["src"][:80],
+                tile["width"], tile["height"],
+                tile["left"], tile["top"], iteration,
             )
 
-            # 2a) Снимок `[ID: ...]`-токенов в body.innerText ДО клика.
-            # Модалка отрисует свой ID в видимом тексте — его не будет в
-            # ids_before, но появится в ids_now.
+            # 2a) Скроллим тайлу в видимую область и заново снимаем bbox.
+            # Без этого outsee может вернуть нам тайлу из ленты ниже фолда —
+            # центр клика окажется за пределами viewport (CDP-клик «попадёт»
+            # туда, где ничего нет, и модалка не откроется).
             try:
-                ids_before = await page.evaluate(
-                    """() => {
-                        const text = (document.body.innerText
-                            || document.body.textContent || '');
-                        const out = [];
-                        const re = /\\[ID:\\s*([A-Za-z0-9_-]+)\\s*\\]/g;
-                        let m;
-                        while ((m = re.exec(text)) !== null) out.push(m[0]);
-                        return out;
-                    }"""
+                rect = await page.evaluate(
+                    """([targetSrc]) => {
+                        for (const img of document.querySelectorAll('img')) {
+                            if (img.src !== targetSrc) continue;
+                            img.scrollIntoView({
+                                block: 'center', inline: 'center',
+                            });
+                            const r = img.getBoundingClientRect();
+                            return {
+                                cx: Math.round(r.left + r.width / 2),
+                                cy: Math.round(r.top + r.height / 2),
+                                vw: window.innerWidth,
+                                vh: window.innerHeight,
+                            };
+                        }
+                        return null;
+                    }""",
+                    [tile["src"]],
                 )
-                ids_before_set = set(ids_before or [])
-            except Exception:  # noqa: BLE001
-                ids_before_set = set()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "_capture_image_via_manual_walk: scrollIntoView упал: {}",
+                    e,
+                )
+                rect = None
+            if not rect:
+                logger.warning(
+                    "_capture_image_via_manual_walk: <img src={}> исчез из DOM "
+                    "перед кликом — пропускаю",
+                    tile["src"][:80],
+                )
+                continue
+            cx, cy, vw, vh = (
+                int(rect["cx"]), int(rect["cy"]),
+                int(rect["vw"]), int(rect["vh"]),
+            )
+            if cx < 5 or cx > vw - 5 or cy < 5 or cy > vh - 5:
+                logger.warning(
+                    "_capture_image_via_manual_walk: после scrollIntoView центр "
+                    "тайлы всё ещё вне viewport (cx={}, cy={}, vw={}, vh={}) — "
+                    "пропускаю",
+                    cx, cy, vw, vh,
+                )
+                continue
+            # Даём странице 250ms на завершение скролла (smooth-behaviour
+            # outsee'я + любые animation-кадры).
+            await asyncio.sleep(0.25)
 
             # 2b) CDP-клик по тайле — trusted-event, как реальной мышью.
             try:
-                await page.mouse.move(tile["cx"], tile["cy"])
+                await page.mouse.move(cx, cy)
                 await asyncio.sleep(0.15)
-                await page.mouse.click(
-                    tile["cx"], tile["cy"], delay=50
-                )
+                await page.mouse.click(cx, cy, delay=50)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "_capture_image_via_manual_walk: click тайлы упал: {}",
@@ -2774,39 +2885,27 @@ async def _capture_image_via_manual_walk(
                 )
                 continue
 
-            # 2c) Polling модалки: ждём нового `[ID:...]`-токена.
+            # 2c) Polling модалки: ждём пока появится overlay с нашим ID.
+            # `_detect_outsee_modal_id` сканирует именно overlay-кандидат
+            # (role=dialog / fixed-position >50%×50% viewport) и читает
+            # его `innerText` + `textarea.value` + `input.value` — потому
+            # что outsee выкладывает промт в `<textarea readonly>`, и его
+            # `.value` НЕ попадает в `document.body.innerText`. Поэтому
+            # старый счётчик `[ID:]`-токенов по innerText не рос после
+            # клика → walk считал что модалка не открылась.
             modal_id: str | None = None
-            for _ in range(20):  # 20 × 0.3с = 6 сек
-                await asyncio.sleep(0.3)
-                try:
-                    ids_now = await page.evaluate(
-                        """() => {
-                            const text = (document.body.innerText
-                                || document.body.textContent || '');
-                            const out = [];
-                            const re = /\\[ID:\\s*([A-Za-z0-9_-]+)\\s*\\]/g;
-                            let m;
-                            while ((m = re.exec(text)) !== null) out.push(m[0]);
-                            return out;
-                        }"""
-                    )
-                except Exception:  # noqa: BLE001
-                    ids_now = []
-                new_ids = [
-                    i for i in (ids_now or []) if i not in ids_before_set
-                ]
-                if new_ids:
-                    # Берём ПОСЛЕДНИЙ — модалка обычно рендерится в конце
-                    # потока, и её ID — последний в порядке текста.
-                    modal_id = new_ids[-1]
+            for _ in range(24):  # 24 × 0.25с = 6 сек
+                await asyncio.sleep(0.25)
+                modal_id = await _detect_outsee_modal_id(page)
+                if modal_id:
                     break
 
             if modal_id is None:
                 logger.warning(
                     "_capture_image_via_manual_walk: модалка не появилась "
-                    "после клика тайлы {} (ids_before={}) — закрываю на "
+                    "после клика тайлы {} (cx={}, cy={}) — закрываю на "
                     "всякий случай, пропускаю",
-                    tile["src"][:80], len(ids_before_set),
+                    tile["src"][:80], cx, cy,
                 )
                 await _close_outsee_modal(page)
                 continue
