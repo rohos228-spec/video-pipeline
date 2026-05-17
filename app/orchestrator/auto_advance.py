@@ -43,6 +43,7 @@ from app.models import (
 )
 from app.services import auto_review
 from app.services.auto_review import ReviewResult
+from app.services.hitl import delete_hitl_artifact_file
 from app.settings import settings
 from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
 
@@ -499,6 +500,11 @@ async def _apply_regen(
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.regenerate
 
+    # Политика «без накопления вариантов в папке»: при auto-regen удаляем
+    # файл текущего HITL (только для photo-kinds — для текстовых noop).
+    if hitl is not None:
+        delete_hitl_artifact_file(hitl)
+
     count = _bump_retry_count(project, transition.ready_status)
 
     if count > MAX_AUTO_REGEN_PER_STEP:
@@ -557,6 +563,10 @@ async def _apply_reject(
 ) -> None:
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.rejected
+    # Политика «без накопления вариантов в папке»: при auto-reject
+    # удаляем файл текущего HITL (только photo-kinds).
+    if hitl is not None:
+        delete_hitl_artifact_file(hitl)
     project.status = ProjectStatus.paused
     meta = dict(project.meta or {})
     meta["auto_paused_reason"] = (

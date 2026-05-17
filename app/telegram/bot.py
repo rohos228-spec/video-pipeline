@@ -52,6 +52,7 @@ from app.models import (
     TestPromptProject,
 )
 from app.services import gpt_text_builder as gtb
+from app.services import hitl as _hitl_svc
 from app.services import prompt_library as plib
 from app.services import reset_step as reset_step_svc
 from app.settings import settings
@@ -7673,6 +7674,13 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         }.get(action, HITLDecision.pending)
         req.decision = decision
 
+        # Политика «без накопления вариантов в папке»: при regen/reject
+        # удаляем файл, на который ссылается этот HITL (scenes/<frame>.png
+        # или characters/<hero>.png). При approve файл остаётся — он будет
+        # использован дальше пайплайном.
+        if decision in (HITLDecision.regenerate, HITLDecision.rejected):
+            _hitl_svc.delete_hitl_artifact_file(req)
+
         # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4
         # для текущего героя» (с тем же описанием). На ✅ — если у проекта
         # больше одного героя и не все ещё сделаны, возвращаем проект в
@@ -7930,6 +7938,9 @@ async def _on_edit_reply(msg: Message) -> None:
             **(req.payload or {}),
             "edited_prompt": new_prompt[:2000],
         }
+        # edit_prompt = регенерация с новым текстом → файл текущей попытки
+        # больше не нужен (не копим варианты в scenes/).
+        _hitl_svc.delete_hitl_artifact_file(req)
         hitl_tg_msg_id = req.tg_message_id
         project = (
             await s.execute(select(Project).where(Project.id == frame.project_id))

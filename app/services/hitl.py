@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,6 +16,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.settings import settings
+
+# Kinds, у которых в payload['photo_path'] лежит файл на диске. Используется
+# для очистки файла при regen/reject (см. `delete_hitl_artifact_file`).
+_PHOTO_KINDS: frozenset[HITLKind] = frozenset({
+    HITLKind.approve_images,
+    HITLKind.approve_hero,
+})
+
+
+def delete_hitl_artifact_file(req: HITLRequest) -> bool:
+    """Удаляет файл, на который ссылается HITL (payload['photo_path']).
+
+    Политика: при regen/reject не копим разные варианты одной и той же
+    карточки в `scenes/` (или `characters/`). Подходит только для
+    photo-kinds — для текстовых/видео HITL ничего не делает.
+
+    Возвращает True если файл был и удалось удалить.
+    """
+    if req.kind not in _PHOTO_KINDS:
+        return False
+    payload = req.payload or {}
+    photo_path = payload.get("photo_path")
+    if not photo_path:
+        return False
+    p = Path(str(photo_path))
+    try:
+        if p.is_file():
+            p.unlink()
+            logger.info(
+                "hitl: удалил файл {} (HITL #{} kind={} decision={})",
+                p, req.id, req.kind.value,
+                req.decision.value if req.decision else "?",
+            )
+            return True
+    except OSError as e:
+        logger.warning(
+            "hitl: не удалось удалить {} (HITL #{}): {}",
+            p, req.id, e,
+        )
+    return False
 
 
 def _keyboard(

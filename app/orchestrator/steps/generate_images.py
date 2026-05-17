@@ -551,6 +551,30 @@ async def _generate_and_send(
     file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
     prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
 
+    # Политика «без накопления вариантов в папке»: если в scenes/ остались
+    # старые файлы того же кадра (orphan'ы от падений / прошлых regen) —
+    # удаляем их перед новой генерацией. Сюда мы попадаем только когда
+    # frame.status == image_prompt_ready, значит ни один файл frame_NNN_*.png
+    # не является «утверждённым».
+    try:
+        for stale in out_dir.glob(f"frame_{frame.number:03d}_*.png"):
+            try:
+                stale.unlink()
+                logger.info(
+                    "[#{}] frame {}: удалил orphan {}",
+                    project.id, frame.number, stale.name,
+                )
+            except OSError as e:
+                logger.warning(
+                    "[#{}] frame {}: не удалось удалить orphan {}: {}",
+                    project.id, frame.number, stale, e,
+                )
+    except OSError as e:
+        logger.warning(
+            "[#{}] frame {}: glob scenes/ failed: {}",
+            project.id, frame.number, e,
+        )
+
     # Настройки картинки из проекта (с дефолтами).
     img_gen = IMAGE_GENERATORS_BY_ID.get(
         project.image_generator or DEFAULTS["image_generator"]

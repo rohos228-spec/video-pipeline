@@ -544,6 +544,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"[ID: P{project.id}-HERO{hero_idx}-V{v_idx}-{short_uuid}]"
         )
 
+        # Политика «без накопления вариантов в папке»: чистим старые
+        # `hero_{hero_idx}_v{v_idx}_*.png` (orphan'ы от прошлых regen /
+        # падений). Другие пары (idx/v) НЕ трогаем — они могут быть уже
+        # утверждены и нужны как референсы.
+        try:
+            for stale in out_dir.glob(
+                f"hero_{hero_idx}_v{v_idx}_*.png"
+            ):
+                try:
+                    stale.unlink()
+                    logger.info(
+                        "[#{}] hero {}/v{}: удалил orphan {}",
+                        project.id, hero_idx, v_idx, stale.name,
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "[#{}] hero {}/v{}: не удалось удалить orphan {}: {}",
+                        project.id, hero_idx, v_idx, stale, e,
+                    )
+        except OSError as e:
+            logger.warning(
+                "[#{}] hero {}/v{}: glob characters/ failed: {}",
+                project.id, hero_idx, v_idx, e,
+            )
+
         result = None
         if v_idx == 1 and is_regen:
             logger.info(
