@@ -165,7 +165,7 @@ async def _outsee_generate(
         result = await bot.generate_image(
             prompt=prompt,
             out_path=out_image,
-            aspect_ratio="9:16",
+            aspect_ratio="16:9",
             model_slug="nano-banana-pro",
             relax=True,
             prompt_id_prefix=prompt_id_prefix,

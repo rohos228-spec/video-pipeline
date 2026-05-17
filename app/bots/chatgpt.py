@@ -341,11 +341,17 @@ class ChatGPTBot:
             logger.warning("ChatGPT: dump_send_button_candidates упал: {}", e)
 
     async def _wait_until_done(self, *, timeout: float = 300) -> None:
-        """Ждём, пока пропадёт кнопка "Stop generating"."""
+        """Ждём, пока пропадёт кнопка "Stop generating".
+
+        Полл каждые 0.25 сек (раньше было 0.5), без длинного initial wait.
+        Это значит что для коротких ответов мы перестаём ждать через
+        ~0.5 сек после исчезновения кнопки Stop вместо 2.3 сек.
+        """
         page = await self._page_ready()
         deadline = asyncio.get_event_loop().time() + timeout
-        # Сначала даём UI подгрузить кнопку stop (появится почти сразу)
-        await asyncio.sleep(0.8)
+        # Минимальный initial wait чтобы UI успел подгрузить Stop-кнопку.
+        # 0.2 сек достаточно — её рендерит React сразу после Send.
+        await asyncio.sleep(0.2)
         while asyncio.get_event_loop().time() < deadline:
             still_generating = False
             for sel in STOP_BUTTON_SELECTORS:
@@ -356,10 +362,10 @@ class ChatGPTBot:
                 except Exception:  # noqa: BLE001
                     continue
             if not still_generating:
-                # ещё 1.5 сек на docontextualise
-                await asyncio.sleep(1.5)
+                # Короткий tail (0.3 сек) на docontextualise — раньше было 1.5
+                await asyncio.sleep(0.3)
                 return
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
         raise TimeoutError("ChatGPT: таймаут ожидания ответа")
 
     async def _read_last_reply(self) -> str:
@@ -401,21 +407,20 @@ class ChatGPTBot:
         """Отправить один промт в текущий чат и вернуть финальный ответ.
 
         После того как кнопка «Stop generating» пропала, ждём пока текст
-        стабилизируется (не меняется 6 сек подряд), но не дольше 120 сек.
-        ChatGPT 5 thinking model часто продолжает рендерить ответ ещё
-        несколько десятков секунд после исчезновения кнопки stop — раньше
-        мы хватали обрезанную версию.
+        стабилизируется (не меняется 2 сек подряд), но не дольше 30 сек.
+        ChatGPT 5 thinking может дорисовывать ответ — 2 сек стабильности
+        достаточно чтобы поймать финальную версию без переожидания.
         """
         await self._send_prompt(prompt)
         await self._wait_until_done(timeout=timeout)
 
-        # Ждём стабилизации текста: не меняется 6 сек подряд, не дольше 120с total
+        # Стабилизация текста: не меняется 2 сек подряд (раньше 6), не дольше 30с
         page = await self._page_ready()
         last_text = ""
         stable_for = 0.0
-        deadline = asyncio.get_event_loop().time() + 120.0
+        deadline = asyncio.get_event_loop().time() + 30.0
         while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             text = await self._read_last_reply()
             # Если кнопка «Stop generating» снова появилась — модель всё ещё
             # генерирует, ждём дальше.
@@ -432,8 +437,8 @@ class ChatGPTBot:
                 last_text = text
                 continue
             if text == last_text and len(text) > 50:
-                stable_for += 1.0
-                if stable_for >= 6.0:
+                stable_for += 0.5
+                if stable_for >= 2.0:
                     break
             else:
                 stable_for = 0.0
@@ -821,12 +826,13 @@ class ChatGPTBot:
 
         # Ждём стабилизации текста (как в обычном ask), но не строго — Code
         # Interpreter иногда генерирует файл и сразу отдаёт короткий текст.
+        # Тайминги: poll 0.5 сек, стабильность 1.5 сек, deadline 30 сек.
         page = await self._page_ready()
         last_text = ""
         stable_for = 0.0
-        deadline = asyncio.get_event_loop().time() + 120.0
+        deadline = asyncio.get_event_loop().time() + 30.0
         while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             text = await self._read_last_reply()
             still_generating = False
             for sel in STOP_BUTTON_SELECTORS:
@@ -841,8 +847,8 @@ class ChatGPTBot:
                 last_text = text
                 continue
             if text == last_text and len(text) > 0:
-                stable_for += 1.0
-                if stable_for >= 4.0:
+                stable_for += 0.5
+                if stable_for >= 1.5:
                     break
             else:
                 stable_for = 0.0
