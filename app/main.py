@@ -381,6 +381,12 @@ async def _run_worker_loop(bot) -> None:
                                     # Шаг 1 (planning) — откатываемся в `new`.
                                     requires = ProjectStatus.new
                                 p.status = requires
+                                # КРИТИЧНО: снимаем auto_mode чтобы
+                                # auto_advance НЕ толкал статус обратно в
+                                # упавший шаг снова и снова (бесконечный
+                                # цикл fail → rollback → auto_advance →
+                                # fail). Юзер должен сам нажать кнопку.
+                                p.auto_mode = False
                                 await s.flush()
                                 # Сбрасываем счётчик, чтобы при ретрае было
                                 # 3 свежие попытки.
@@ -392,8 +398,9 @@ async def _run_worker_loop(bot) -> None:
                                         f"ошибок подряд на шаге "
                                         f"`{prev_running.value}`. Статус "
                                         f"откачен к `{requires.value}` — "
-                                        f"открой меню и нажми кнопку "
-                                        f"шага, чтобы повторить попытку. "
+                                        f"auto_mode выключен. Открой меню "
+                                        f"и нажми кнопку шага, чтобы "
+                                        f"повторить попытку. "
                                         f"Последняя ошибка: "
                                         f"{type(e).__name__}: {e}"
                                     )[:3800],
