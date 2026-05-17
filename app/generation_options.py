@@ -134,6 +134,10 @@ VIDEO_GENERATORS: list[OptionChoice] = [
         "Отличное соотношение цена-качество, идеально для базовых задач",
     ),
     OptionChoice(
+        "veo_3_fast", "Veo 3 Fast", "veo-3-fast",
+        "Стабильная Veo 3 Fast (исторический дефолт). Image-to-video поддерживается",
+    ),
+    OptionChoice(
         "veo_3_1_fast", "Veo 3.1 Fast", "veo-3-1-fast",
         "Вторая по популярности модель. Идеальная генерация русской речи",
     ),
@@ -183,7 +187,7 @@ DEFAULTS = {
     "image_generator": "nano_banana_2",
     "aspect_ratio": "9:16",
     "image_resolution": "2k",
-    "video_generator": "kling_2_6",
+    "video_generator": "veo_3_fast",
     "video_resolution": "1080p",
 }
 
