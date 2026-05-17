@@ -16,10 +16,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import re
 import sys
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1193,47 +1191,25 @@ class OutseeBot:
                     gen_id[:8],
                 )
 
-            # 4) Получаем НАШУ картинку.
-            #
-            # При `prompt_id_prefix` — manual-walk: проходим по ленте
-            # новых тайлов, кликаем каждую как живой пользователь,
-            # читаем `[ID: ...]` из правой панели открывшейся модалки,
-            # сравниваем с нашим токеном, и при совпадении кликаем
-            # download-иконку в overlay'е тайлы. Замена сразу для
-            # двух подсистем: ожидания НАШЕЙ картинки (был
-            # `_wait_image_url_strict`) и собственно скачивания (был
-            # `_download_via_card_click`). См. подробное обоснование в
-            # docstring'е `_capture_image_via_manual_walk`.
-            #
-            # При отсутствии `prompt_id_prefix` (legacy / recon-mode) —
-            # используем старый URL-путь: `_wait_image_url_strict` +
-            # `_download_via_context`.
+            # 4) строгое ожидание свежей картинки.
+            # `_wait_image_url_strict` с `prompt_id_prefix` через приоритет 0
+            # находит карточку с НАШИМ `[ID: ...]` (см. `_find_img_by_prompt_id`
+            # с bbox-card-check, чтобы не схватить чужую img из соседней галереи
+            # или composer-textarea). Дальше — фоллбэки: «Результат генерации»,
+            # `_completed_new_imgs`, click-verify, net_events. См. docstring
+            # `_wait_image_url_strict`.
             try:
-                if prompt_id_prefix:
-                    img_url = await _capture_image_via_manual_walk(
-                        page,
-                        prompt_id_prefix=prompt_id_prefix,
-                        out_path=out_path,
-                        baseline_all_srcs=baseline_dom_srcs,
-                        timeout_s=timeout,
-                        gen_id=gen_id,
-                        content_rejected_check=(
-                            lambda: self._content_rejected_text(page)
-                        ),
-                        pre_rejected_text=pre_rejected_text,
-                    )
-                else:
-                    img_url = await self._wait_image_url_strict(
-                        page,
-                        timeout=timeout,
-                        baseline_result_img=baseline_result_img,
-                        baseline_big_imgs=baseline_big_imgs,
-                        baseline_all_srcs=baseline_dom_srcs,
-                        net_events=net_events,
-                        gen_id=gen_id,
-                        pre_rejected_text=pre_rejected_text,
-                        prompt_id_prefix=None,
-                    )
+                img_url = await self._wait_image_url_strict(
+                    page,
+                    timeout=timeout,
+                    baseline_result_img=baseline_result_img,
+                    baseline_big_imgs=baseline_big_imgs,
+                    baseline_all_srcs=baseline_dom_srcs,
+                    net_events=net_events,
+                    gen_id=gen_id,
+                    pre_rejected_text=pre_rejected_text,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
                 # покажет, см. требование «не слать дампы при ошибках
@@ -1257,34 +1233,34 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 5) При manual-walk файл уже сохранён внутри
-        # `_capture_image_via_manual_walk` (через `page.expect_download`
-        # на overlay-иконке тайлы). При legacy-пути — докачиваем по
-        # URL через `_download_via_context`.
-        if not prompt_id_prefix:
-            try:
-                await _download_via_context(page, img_url, out_path)
-            except OutseeImageError as e:
-                e.context.setdefault("gen_id", gen_id)
-                e.context.setdefault("img_url", img_url)
-                e.dumps = list(dumps)
-                raise
-            except Exception as e:  # noqa: BLE001
-                raise OutseeImageError(
-                    "outsee image: скачивание результата упало",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": img_url,
-                        "err": f"{type(e).__name__}: {e}",
-                    },
-                    dumps=dumps,
-                ) from e
+        # 5) скачиваем картинку по найденному CDN URL через куки браузера.
+        # `_download_via_context` использует `page.context.request.get(url)` —
+        # ту же сессию и куки, что и у живого браузера, поэтому подписанный
+        # AWS-URL отдаст реальный JPEG/PNG, а не 403/redirect.
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await _download_via_context(page, img_url, out_path)
+        except OutseeImageError as e:
+            e.context.setdefault("gen_id", gen_id)
+            e.context.setdefault("img_url", img_url)
+            e.dumps = list(dumps)
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise OutseeImageError(
+                "outsee image: скачивание результата упало",
+                context={
+                    "gen_id": gen_id,
+                    "img_url": img_url,
+                    "err": f"{type(e).__name__}: {e}",
+                },
+                dumps=dumps,
+            ) from e
 
-        # 5.1) Валидация скачанного файла. Manual-walk сохраняет байты,
-        # пришедшие из `page.expect_download()` — никаких placeholder'ов
-        # (`topaz.webp`, `input_*.png`) тут уже не подсунуть, но базовая
-        # проверка (>50 KB + magic-байты PNG/JPEG/WebP) остаётся — на
-        # случай битого CDN-ответа.
+        # 5.1) Валидация скачанного файла. Защита от placeholder/skeleton:
+        # outsee.io иногда отдаёт «загрузочный» PNG (тёмный фон с тремя
+        # белыми квадратами) как результат генерации, и без этой проверки
+        # бот сохраняет его и шлёт в TG. На неудачу — кидаем
+        # OutseeImageError, retry-обёртка повторит генерацию.
         try:
             _validate_downloaded_image(
                 out_path, gen_id=gen_id, img_url=img_url
@@ -1314,11 +1290,11 @@ class OutseeBot:
           prompt_id_prefix — ID нашей текущей генерации, например
                              `[ID: P2-F1-1614874f]`. Outsee использует тот же
                              промт (с этим же ID-префиксом), и новая картинка
-                             будет иметь тот же `[ID: ...]` в модалке. Если
-                             передан — после клика «Повторить» используем
-                             `_capture_image_via_manual_walk` для поиска и
-                             скачивания НАШЕЙ новой тайлы. Иначе — legacy
-                             URL-путь (только для обратной совместимости).
+                             будет иметь тот же `[ID: ...]` в карточке. Если
+                             передан — `_wait_image_url_strict` через
+                             приоритет 0 матчит именно нашу карточку по
+                             `_find_img_by_prompt_id`, отсекая чужие из
+                             gallery / composer-textarea.
         """
         import time as _time
         import uuid as _uuid
@@ -1390,54 +1366,35 @@ class OutseeBot:
                 gen_id[:8], prompt_id_prefix,
             )
 
-            if prompt_id_prefix:
-                # Manual-walk: проходим по новым тайлам, читаем ID из
-                # модалок, при совпадении кликаем download-иконку.
-                # Файл сохраняется внутри функции.
-                img_url = await _capture_image_via_manual_walk(
-                    page,
-                    prompt_id_prefix=prompt_id_prefix,
-                    out_path=out_path,
-                    baseline_all_srcs=baseline_dom_srcs,
-                    timeout_s=timeout,
-                    gen_id=gen_id,
-                    content_rejected_check=(
-                        lambda: self._content_rejected_text(page)
-                    ),
-                    pre_rejected_text=pre_rejected_text,
-                )
-            else:
-                img_url = await self._wait_image_url_strict(
-                    page,
-                    timeout=timeout,
-                    baseline_result_img=baseline_result_img,
-                    baseline_big_imgs=baseline_big_imgs,
-                    baseline_all_srcs=baseline_dom_srcs,
-                    net_events=net_events,
-                    gen_id=gen_id,
-                    pre_rejected_text=pre_rejected_text,
-                )
+            img_url = await self._wait_image_url_strict(
+                page,
+                timeout=timeout,
+                baseline_result_img=baseline_result_img,
+                baseline_big_imgs=baseline_big_imgs,
+                baseline_all_srcs=baseline_dom_srcs,
+                net_events=net_events,
+                gen_id=gen_id,
+                pre_rejected_text=pre_rejected_text,
+                prompt_id_prefix=prompt_id_prefix,
+            )
         finally:
             try:
                 page.remove_listener("response", _on_response)
             except Exception:  # noqa: BLE001
                 pass
 
-        # Legacy URL-путь — только когда prompt_id_prefix не передан.
-        # При manual-walk файл уже сохранён.
-        if not prompt_id_prefix:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                await _download_via_context(page, img_url, out_path)
-            except Exception as e:  # noqa: BLE001
-                raise OutseeImageError(
-                    "outsee image: скачивание результата (regenerate) упало",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": img_url,
-                        "err": f"{type(e).__name__}: {e}",
-                    },
-                ) from e
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await _download_via_context(page, img_url, out_path)
+        except Exception as e:  # noqa: BLE001
+            raise OutseeImageError(
+                "outsee image: скачивание результата (regenerate) упало",
+                context={
+                    "gen_id": gen_id,
+                    "img_url": img_url,
+                    "err": f"{type(e).__name__}: {e}",
+                },
+            ) from e
 
         # Валидация скачанного файла — см. комментарий в `generate_image`.
         _validate_downloaded_image(out_path, gen_id=gen_id, img_url=img_url)
@@ -1592,35 +1549,34 @@ class OutseeBot:
         *,
         max_levels: int = 12,
     ) -> str | None:
-        """Ищет в DOM «карточку», в которой видимый текст содержит `id_token`,
-        и возвращает src ближайшей к этому тексту `<img>`, удовлетворяющей
-        проверкам (загружена, naturalWidth >= 200).
+        """Ищет в DOM `<img>`, у которой в *своей* tile-карточке (ближайший
+        ancestor, поместившийся в ≤ 60 % viewport по ширине) видимый текст
+        или `<textarea>.value` содержит `id_token`. Возвращает `img.src` или
+        None.
 
-        Пытается несколько токенов в порядке убывания строгости:
-          1) полный `[ID: P1-HERO1-V1-xxxxxxxx]` (как в промте);
-          2) то же без квадратных скобок и `ID:` — `P1-HERO1-V1-xxxxxxxx`
-             (на случай если outsee экранирует `[` `]` или вставляет
-             zero-width-чары между ними);
-          3) только 8-hex-tail (`xxxxxxxx`) — он глобально уникальный
-             (uuid.hex[:8]), и точно не подменится outsee'ем.
+        Зачем bbox-ограничение: composer-textarea, в которой мы только что
+        набили промт, тоже содержит наш `[ID: ...]`. Старая реализация
+        искала text-узел с токеном и поднималась вверх до `<img>` — и
+        ловила первый попавшийся `<img>` из соседней галереи (т.е. чужую
+        картинку). Здесь мы идём НАОБОРОТ: от каждой `<img>` поднимаемся
+        вверх и проверяем, есть ли в её небольшом контейнере наш токен.
+        Composer-img'и не имеют рядом результата — у них токен либо в
+        очень большом панель-ancestor'е (отсекаем по bbox), либо вообще
+        нет, потому что composer-textarea и img результата лежат в
+        разных поддеревьях.
 
-        Используется для строгой верификации: outsee показывает в карточке
-        результата начало промта, и так как мы кладём `[ID: P1-HERO1-V1-…]`
-        первой строкой каждого промта, у НАС всегда есть однозначный
-        идентификатор для сопоставления «картинка ↔ моя генерация».
-        Это отсекает любые старые/чужие фото из истории outsee.
+        Несколько токенов пробуем в порядке убывания строгости:
+          1) полный `[ID: P1-HERO1-V1-xxxxxxxx]`;
+          2) то же без квадратных скобок и `ID:` — `P1-HERO1-V1-xxxxxxxx`;
+          3) только 8-hex-tail (`xxxxxxxx`) — глобально уникален.
         """
-        # Готовим набор токенов для матчинга — от самого строгого
-        # к самому либеральному. Cильные первыми, чтобы не подхватить
-        # 8-hex-чужого uuid'а если случайно их два совпало.
+        # Готовим набор токенов от самого строгого к самому либеральному.
         tokens: list[str] = [id_token]
-        # Полное содержимое скобок: `P1-HERO1-V1-xxxxxxxx`.
         m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
         if m:
             inner = m.group(1)
             if inner not in tokens:
                 tokens.append(inner)
-        # 8-hex-tail. uuid.uuid4().hex[:8] всегда даёт ровно 8 hex-символов.
         m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
         if m2:
             tail = m2.group(1)
@@ -1629,58 +1585,37 @@ class OutseeBot:
 
         js = """
         ([tokens, maxLevels]) => {
-            // Хелпер: содержит ли элемент токен в видимом тексте
-            // ИЛИ в .value, если это textarea/input.
-            const hasToken = (el, idToken) => {
-                if (!el) return false;
-                const t = (el.innerText || el.textContent || '');
-                if (t.includes(idToken)) return true;
-                const tag = el.tagName && el.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    const v = el.value || '';
-                    if (v.includes(idToken)) return true;
+            // Ancestor считается tile-карточкой, если его ширина не
+            // превышает 60% viewport. Composer / правая панель промта
+            // обычно ≥ 70-100% (на planшетной верстке outsee). При
+            // первом превышении лимита прекращаем walk-up для этой img.
+            const MAX_CARD_W = window.innerWidth * 0.6;
+            const hasTokenInScope = (el, idToken) => {
+                // textContent — рекурсивно по subtree (включает <span>,
+                // <div>, <p>). textarea/input.value в textContent НЕ
+                // попадает — нужен отдельный обход.
+                const txt = el.textContent || '';
+                if (txt.includes(idToken)) return true;
+                for (const ta of el.querySelectorAll('textarea, input')) {
+                    if ((ta.value || '').includes(idToken)) return true;
                 }
                 return false;
             };
             for (const idToken of tokens) {
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (!el || !el.children) continue;
-                    if (el === document.body || el === document.documentElement) continue;
-                    if (!hasToken(el, idToken)) continue;
-                    // Спускаемся к самому мелкому уровню, где нашёлся idToken,
-                    // чтобы не схватить весь main с галереей.
-                    let smallest = el;
-                    for (const child of el.children) {
-                        if (hasToken(child, idToken)) {
-                            smallest = null;
-                            break;
-                        }
-                    }
-                    // Также проверяем «спрятанные» textarea/input внутри
-                    // (если у el есть descendant textarea с нашим токеном,
-                    // спустимся к нему).
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) {
-                                smallest = null;
-                                break;
-                            }
-                        }
-                    }
-                    if (!smallest) continue;
-                    // Поднимаемся вверх до уровня, где есть <img>.
-                    let cur = smallest;
+                for (const img of document.querySelectorAll('img')) {
+                    if (!img.src) continue;
+                    if (img.src.startsWith('data:')) continue;
+                    if (img.src.includes('/placeholder.svg')) continue;
+                    if (!img.complete) continue;
+                    if (!img.naturalWidth || img.naturalWidth < 200) continue;
+                    let cur = img.parentElement;
                     for (let i = 0; i < maxLevels && cur; i++) {
-                        const imgs = cur.querySelectorAll('img');
-                        for (const img of imgs) {
-                            if (!img.src) continue;
-                            if (img.src.startsWith('data:')) continue;
-                            if (!img.complete) continue;
-                            if (!img.naturalWidth || img.naturalWidth < 200) continue;
+                        const r = cur.getBoundingClientRect();
+                        // Дошли до больших layout-блоков — прекращаем,
+                        // иначе хватаем composer/main-page и матчим
+                        // чужой токен.
+                        if (r.width > MAX_CARD_W) break;
+                        if (hasTokenInScope(cur, idToken)) {
                             return img.src;
                         }
                         cur = cur.parentElement;
@@ -2776,898 +2711,6 @@ class OutseeBot:
                 next_log = now + log_every
             await asyncio.sleep(1.5)
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
-
-
-async def _close_outsee_modal(
-    page: Page, *, timeout_s: float = 2.5
-) -> None:
-    """Закрывает outsee-лайтбокс с картинкой (полноэкранный модальный
-    оверлей, где справа видна `[ID: ...]`-плашка).
-
-    Сначала пробует Escape — обычно этого достаточно. Если модалка
-    осталась открыта (виден top-right `<button>` с `svg.lucide-x`), —
-    кликает по этой кнопке через CDP-мышь (trusted-event). Это тот же
-    путь, что и у живого пользователя — без `pointer-events`-сюрпризов.
-
-    Best-effort: не падает, если ничего не вышло — caller всё равно
-    перейдёт к следующей итерации walk-цикла.
-    """
-    with contextlib.suppress(Exception):
-        await page.keyboard.press("Escape")
-
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(0.25)
-        try:
-            x_btn = await page.evaluate(
-                """() => {
-                    for (const btn of document.querySelectorAll(
-                        'button, [role="button"]'
-                    )) {
-                        const svg = btn.querySelector('svg');
-                        if (!svg) continue;
-                        const cls = (svg.getAttribute('class') || '').toLowerCase();
-                        if (!cls.includes('lucide-x')) continue;
-                        const r = btn.getBoundingClientRect();
-                        if (r.width <= 0 || r.height <= 0) continue;
-                        // X-кнопка модалки — обычно верхний-правый угол
-                        // viewport'а. Отсекаем все остальные lucide-x
-                        // (например, кнопки удаления тегов).
-                        if (r.top > window.innerHeight * 0.3) continue;
-                        if (r.right < window.innerWidth * 0.5) continue;
-                        return {
-                            cx: Math.round(r.left + r.width / 2),
-                            cy: Math.round(r.top + r.height / 2),
-                        };
-                    }
-                    return null;
-                }"""
-            )
-        except Exception:  # noqa: BLE001
-            return
-        if not x_btn:
-            return
-        with contextlib.suppress(Exception):
-            await page.mouse.click(
-                int(x_btn["cx"]), int(x_btn["cy"]), delay=50
-            )
-        await asyncio.sleep(0.4)
-
-
-async def _detect_outsee_modal_id(page: Page) -> str | None:
-    """Найти открытый outsee-лайтбокс (фуллскрин-модалку с превью + правой
-    панелью промта) и извлечь из его DOM-содержимого `[ID: ...]`-токен.
-
-    Зачем отдельная функция, а не просто regex по `body.innerText`:
-
-      1. Outsee рендерит правую панель промта через `<textarea readonly>`,
-         и `body.innerText` **не** включает `textarea.value` (это спека
-         `innerText`). Без чтения textarea-значений `[ID: ...]` теряется.
-      2. На странице постоянно живут другие `[ID: ...]`-токены (в композере,
-         в индикаторе «генерация в процессе»). Нам нужен ID именно из
-         модалки, а не «какой-то на странице». Поэтому ищем overlay-
-         элемент и берём текст ТОЛЬКО из него.
-
-    Считаем overlay'ем:
-      * любой `[role="dialog"]` / `[aria-modal="true"]`;
-      * либо fixed/absolute-позиционированный блок, занимающий ≥ 50%
-        viewport по обеим осям с видимостью != hidden / opacity ≥ 0.3.
-
-    Из такого overlay'я собираем `innerText + textarea.value + input.value`
-    и матчим `[ID: ...]`. Если совпадений несколько — берём последнее
-    (модалка обычно отрендерена в конце DOM).
-    Возвращает `[ID: ...]` или None.
-    """
-    try:
-        return await page.evaluate(
-            """() => {
-                const seen = new Set();
-                const candidates = [];
-                const add = (el) => {
-                    if (!el || seen.has(el)) return;
-                    seen.add(el);
-                    candidates.push(el);
-                };
-                for (const el of document.querySelectorAll(
-                    '[role="dialog"], [aria-modal="true"]'
-                )) add(el);
-                for (const el of document.querySelectorAll(
-                    'div, section, aside'
-                )) {
-                    const cs = window.getComputedStyle(el);
-                    if (cs.position !== 'fixed' && cs.position !== 'absolute') {
-                        continue;
-                    }
-                    if (cs.visibility === 'hidden' || cs.display === 'none') {
-                        continue;
-                    }
-                    if (parseFloat(cs.opacity || '1') < 0.3) continue;
-                    const r = el.getBoundingClientRect();
-                    if (r.width < window.innerWidth * 0.5) continue;
-                    if (r.height < window.innerHeight * 0.5) continue;
-                    add(el);
-                }
-                const re = /\\[ID:\\s*([A-Za-z0-9_-]+)\\s*\\]/g;
-                let last = null;
-                for (const el of candidates) {
-                    let txt = el.innerText || el.textContent || '';
-                    for (const ta of el.querySelectorAll('textarea')) {
-                        if (ta.value) txt += '\\n' + ta.value;
-                    }
-                    for (const inp of el.querySelectorAll('input')) {
-                        if (inp.value) txt += '\\n' + inp.value;
-                    }
-                    const matches = txt.match(re);
-                    if (matches && matches.length > 0) {
-                        last = matches[matches.length - 1];
-                    }
-                }
-                return last;
-            }"""
-        )
-    except Exception:  # noqa: BLE001
-        return None
-
-
-async def _capture_image_via_manual_walk(
-    page: Page,
-    *,
-    prompt_id_prefix: str,
-    out_path: Path,
-    baseline_all_srcs: set[str],
-    timeout_s: float = 600.0,
-    gen_id: str | None = None,
-    content_rejected_check: (
-        Callable[[], Awaitable[str | None]] | None
-    ) = None,
-    pre_rejected_text: str | None = None,
-) -> str:
-    """Имитирует ручной флоу пользователя для скачивания НАШЕЙ картинки
-    из правой ленты результатов на outsee.io.
-
-    Зачем нужно: предыдущие подходы по факту не работают.
-
-      * `_download_via_context(url)` — outsee регулярно отдаёт по этому
-        URL не финальный файл, а плейсхолдер (`topaz.webp` пока идёт
-        upscale, `input_*.png` — ссылка на наш же референс, re-signed
-        CDN-URL с истёкшей подписью). Сохраняем мусор как наш файл.
-      * `_download_via_card_click(prompt_id_prefix)` — ищет `[ID: ...]`
-        в DOM через `get_by_text`, но юзер указал, что ID-плашка
-        отрендерена ТОЛЬКО при наведении курсором или клике на тайлу;
-        в обычном состоянии либо её нет в видимом DOM, либо текст
-        приходит из `<textarea>`-промта (его `get_by_text` тоже находит,
-        и `xpath=ancestor::*[…lucide-download…]` тыкает в карточку
-        композера, а не в нашу).
-      * `Locator.screenshot()` — теряет разрешение (пере-рисовка через
-        `Page.captureScreenshot`, всегда PNG, DPR × CSS-size).
-
-    Подход (точная имитация ручного клика):
-      1. Сканируем ленту тайлов: все `<img>` в DOM, у которых нормализованный
-         (host+path, без `?X-Amz-Signature=...`) src **не** в baseline_all_srcs
-         **и** не в локальном `seen`-наборе.
-      2. Для каждой новой тайлы (в порядке появления в DOM):
-         a. CDP-мышь → центр bbox тайлы → click. Это `Input.dispatchMouseEvent`,
-            trusted-event с точки зрения браузера — hit-test проходит так
-            же, как и у живой мыши.
-         b. Ждём появления модалки (до 6 сек). Детектим через рост
-            количества `[ID: ...]`-токенов в `document.body.innerText`:
-            outsee рендерит ID в правой панели лайтбокса видимым текстом
-            (в отличие от `<textarea>`-промта, который в innerText не
-            попадает).
-         c. Извлекаем `[ID: ...]` из модалки. Сравниваем с
-            `prompt_id_prefix` на 3 уровнях: full → inner (`P*-F*-8hex`) →
-            8-hex tail. То же сравнение, что в `_find_img_by_prompt_id`.
-         d. **MATCH** → закрываем модалку (`Esc` → fallback клик по X),
-            наводим мышь на тайлу, ждём отрисовки action-overlay'я
-            (`opacity-transition`), кликаем `<button>` с `svg.lucide-download`
-            внутри карточки тайлы (это та самая стрелка-вниз в правом-
-            верхнем углу превью), оборачиваем в `page.expect_download()` —
-            сохраняем РЕАЛЬНЫЙ финальный файл от outsee в `out_path`.
-         e. **NO MATCH** → закрываем модалку, помечаем тайлу как `seen`,
-            отводим мышь в (0,0), переходим к следующей тайле.
-      3. Если за `timeout_s` ни одна новая тайла не показала наш ID —
-         `OutseeImageError`.
-
-    Параметры:
-      prompt_id_prefix  — наш ID-токен, например `[ID: P2-F1-1614874f]`.
-      out_path          — куда положить скачанный файл.
-      baseline_all_srcs — нормализованные src картинок, ужe бывших на
-                          странице до клика Generate (или Повторить).
-                          Эти тайлы пропускаем — они не наши.
-      timeout_s         — лимит ожидания.
-      gen_id            — для трейсинга в исключениях/логах.
-
-    Возвращает: `img.src` найденной (и скачанной) тайлы — для лога.
-    """
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Готовим набор токенов сравнения. Логика та же, что в
-    # `_find_img_by_prompt_id`: от строгого к либеральному.
-    tokens: list[str] = [prompt_id_prefix]
-    m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", prompt_id_prefix)
-    if m:
-        inner = m.group(1)
-        if inner not in tokens:
-            tokens.append(inner)
-    m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", prompt_id_prefix)
-    if m2:
-        tail = m2.group(1)
-        if tail and tail not in tokens:
-            tokens.append(tail)
-
-    def _modal_id_matches(modal_id: str) -> bool:
-        for tok in tokens:
-            if tok and tok in modal_id:
-                return True
-        return False
-
-    seen: set[str] = set()
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    last_log = 0.0
-    iteration = 0
-
-    while asyncio.get_event_loop().time() < deadline:
-        iteration += 1
-        elapsed = timeout_s - (deadline - asyncio.get_event_loop().time())
-
-        # 0) Проверка модерации (плашка «Контент отклонён»). Если outsee
-        # отклонил промт, новых тайлов вообще не будет — walk бы уходил в
-        # таймаут на 600 сек. Опрашиваем `content_rejected_check` и при
-        # появлении НОВОЙ плашки (отличающейся от `pre_rejected_text` —
-        # остатка предыдущей генерации) — пробрасываем
-        # OutseeContentRejectedError, как это делал старый
-        # `_wait_image_url_strict`.
-        if content_rejected_check is not None and elapsed >= 3.0:
-            try:
-                rejected = await content_rejected_check()
-            except Exception:  # noqa: BLE001
-                rejected = None
-            if rejected and rejected != pre_rejected_text:
-                raise OutseeContentRejectedError(
-                    "outsee image: контент отклонён модерацией",
-                    context={
-                        "gen_id": gen_id,
-                        "rejection": rejected[:200],
-                    },
-                )
-
-        # 1) Сканируем новые тайлы.
-        #
-        # Что отсеиваем:
-        #   * baseline_all_srcs + seen — уже были на странице / уже
-        #     обработаны нами;
-        #   * `data:`-URL, неполные `<img>`, маленькие (<200 nat-px);
-        #   * `/temp-images/` и `input_<digits>` — это наш референс,
-        #     не результат генерации. Если кликнуть его, outsee откроет
-        #     модалку, но там будет НЕ наш ID (или вообще другая
-        #     карточка) — будем зря отсеивать.
-        #   * bbox самой `<img>` < 100×100 (превьюшки/иконки).
-        #
-        # bbox для клика берём от САМОЙ `<img>`, не от ancestor'а.
-        # Раньше мы шли parents → button|a → 5 уровней вверх, и в
-        # outsee это приводило к выбору гигантского контейнера ленты
-        # с центром далеко за пределами viewport — клик улетал в
-        # пустоту. Сейчас bbox = bbox img → cx/cy внутри картинки →
-        # клик гарантированно попадает на тайлу.
-        try:
-            tiles = await page.evaluate(
-                """([baselineList, seenList]) => {
-                    const stripQ = (u) => {
-                        if (!u) return '';
-                        const i = u.indexOf('?');
-                        return i >= 0 ? u.slice(0, i) : u;
-                    };
-                    const skip = new Set();
-                    for (const s of baselineList) skip.add(s);
-                    for (const s of seenList) skip.add(s);
-                    const out = [];
-                    for (const img of document.querySelectorAll('img')) {
-                        if (!img.src || img.src.startsWith('data:')) continue;
-                        // input_<digits> или /temp-images/ — это твой
-                        // референс, не сгенерированная картинка.
-                        if (img.src.includes('/temp-images/')) continue;
-                        if (/input_\\d+/.test(img.src)) continue;
-                        if (!img.complete) continue;
-                        if (!img.naturalWidth || img.naturalWidth < 200) continue;
-                        const stable = stripQ(img.src);
-                        if (skip.has(stable)) continue;
-                        const r = img.getBoundingClientRect();
-                        if (r.width < 100 || r.height < 100) continue;
-                        out.push({
-                            src: img.src,
-                            srcNorm: stable,
-                            // bbox самой <img> — не ancestor-walk.
-                            left: Math.round(r.left),
-                            top: Math.round(r.top),
-                            width: Math.round(r.width),
-                            height: Math.round(r.height),
-                        });
-                    }
-                    return out;
-                }""",
-                [list(baseline_all_srcs), list(seen)],
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "_capture_image_via_manual_walk: скан тайлов упал: {}", e,
-            )
-            tiles = []
-
-        if not tiles:
-            if elapsed - last_log > 15:
-                last_log = elapsed
-                logger.info(
-                    "_capture_image_via_manual_walk: ждём... {:.0f} сек, "
-                    "новых тайлов нет (seen={}, baseline={})",
-                    elapsed, len(seen), len(baseline_all_srcs),
-                )
-            await asyncio.sleep(1.5)
-            continue
-
-        for tile in tiles:
-            src_norm = tile["srcNorm"]
-            seen.add(src_norm)
-
-            logger.info(
-                "_capture_image_via_manual_walk: пробую тайлу {} "
-                "(bbox {}×{} @ ({},{}), iter={})",
-                tile["src"][:80],
-                tile["width"], tile["height"],
-                tile["left"], tile["top"], iteration,
-            )
-
-            # 2a) Скроллим тайлу в видимую область и заново снимаем bbox.
-            # Без этого outsee может вернуть нам тайлу из ленты ниже фолда —
-            # центр клика окажется за пределами viewport (CDP-клик «попадёт»
-            # туда, где ничего нет, и модалка не откроется).
-            try:
-                rect = await page.evaluate(
-                    """([targetSrc]) => {
-                        for (const img of document.querySelectorAll('img')) {
-                            if (img.src !== targetSrc) continue;
-                            img.scrollIntoView({
-                                block: 'center', inline: 'center',
-                            });
-                            const r = img.getBoundingClientRect();
-                            return {
-                                cx: Math.round(r.left + r.width / 2),
-                                cy: Math.round(r.top + r.height / 2),
-                                vw: window.innerWidth,
-                                vh: window.innerHeight,
-                            };
-                        }
-                        return null;
-                    }""",
-                    [tile["src"]],
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "_capture_image_via_manual_walk: scrollIntoView упал: {}",
-                    e,
-                )
-                rect = None
-            if not rect:
-                logger.warning(
-                    "_capture_image_via_manual_walk: <img src={}> исчез из DOM "
-                    "перед кликом — пропускаю",
-                    tile["src"][:80],
-                )
-                continue
-            cx, cy, vw, vh = (
-                int(rect["cx"]), int(rect["cy"]),
-                int(rect["vw"]), int(rect["vh"]),
-            )
-            if cx < 5 or cx > vw - 5 or cy < 5 or cy > vh - 5:
-                logger.warning(
-                    "_capture_image_via_manual_walk: после scrollIntoView центр "
-                    "тайлы всё ещё вне viewport (cx={}, cy={}, vw={}, vh={}) — "
-                    "пропускаю",
-                    cx, cy, vw, vh,
-                )
-                continue
-            # Даём странице 250ms на завершение скролла (smooth-behaviour
-            # outsee'я + любые animation-кадры).
-            await asyncio.sleep(0.25)
-
-            # 2b) CDP-клик по тайле — trusted-event, как реальной мышью.
-            try:
-                await page.mouse.move(cx, cy)
-                await asyncio.sleep(0.15)
-                await page.mouse.click(cx, cy, delay=50)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "_capture_image_via_manual_walk: click тайлы упал: {}",
-                    e,
-                )
-                continue
-
-            # 2c) Polling модалки: ждём пока появится overlay с нашим ID.
-            # `_detect_outsee_modal_id` сканирует именно overlay-кандидат
-            # (role=dialog / fixed-position >50%×50% viewport) и читает
-            # его `innerText` + `textarea.value` + `input.value` — потому
-            # что outsee выкладывает промт в `<textarea readonly>`, и его
-            # `.value` НЕ попадает в `document.body.innerText`. Поэтому
-            # старый счётчик `[ID:]`-токенов по innerText не рос после
-            # клика → walk считал что модалка не открылась.
-            modal_id: str | None = None
-            for _ in range(24):  # 24 × 0.25с = 6 сек
-                await asyncio.sleep(0.25)
-                modal_id = await _detect_outsee_modal_id(page)
-                if modal_id:
-                    break
-
-            if modal_id is None:
-                logger.warning(
-                    "_capture_image_via_manual_walk: модалка не появилась "
-                    "после клика тайлы {} (cx={}, cy={}) — закрываю на "
-                    "всякий случай, пропускаю",
-                    tile["src"][:80], cx, cy,
-                )
-                await _close_outsee_modal(page)
-                continue
-
-            logger.info(
-                "_capture_image_via_manual_walk: модалка показала ID={}",
-                modal_id,
-            )
-
-            matched = _modal_id_matches(modal_id)
-
-            # В любом случае закрываем модалку перед следующим действием
-            # (download или поиск следующей тайлы).
-            await _close_outsee_modal(page)
-
-            if not matched:
-                logger.info(
-                    "_capture_image_via_manual_walk: ID НЕ наш "
-                    "(modal={}, target={}) — следующая тайла",
-                    modal_id, prompt_id_prefix,
-                )
-                with contextlib.suppress(Exception):
-                    await page.mouse.move(0, 0)
-                continue
-
-            # 2d) MATCH. Скачиваем эту тайлу.
-            logger.info(
-                "_capture_image_via_manual_walk: ID совпал → скачиваю {}",
-                tile["src"][:80],
-            )
-
-            # Hover тайлу — action-overlay появляется по `:hover`,
-            # `opacity-transition` ~200ms.
-            try:
-                await page.mouse.move(tile["cx"], tile["cy"])
-                await asyncio.sleep(0.5)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "_capture_image_via_manual_walk: hover тайлы упал: {}",
-                    e,
-                )
-
-            # Находим координаты стрелки-вниз: поднимаемся вверх от <img>
-            # до ancestor'а, в поддереве которого есть `<button>` с
-            # `svg.lucide-download`. Это та же иконка, что в action-bar'е.
-            try:
-                dl_info = await page.evaluate(
-                    """([targetSrc]) => {
-                        let img = null;
-                        for (const i of document.querySelectorAll('img')) {
-                            if (i.src === targetSrc) { img = i; break; }
-                        }
-                        if (!img) return null;
-                        let cur = img.parentElement;
-                        for (let i = 0; i < 10; i++) {
-                            if (!cur) break;
-                            const buttons = cur.querySelectorAll('button');
-                            for (const btn of buttons) {
-                                const svg = btn.querySelector('svg');
-                                if (!svg) continue;
-                                const cls = (
-                                    svg.getAttribute('class') || ''
-                                ).toLowerCase();
-                                if (!cls.includes('lucide-download')) continue;
-                                const r = btn.getBoundingClientRect();
-                                if (r.width <= 0 || r.height <= 0) continue;
-                                return {
-                                    cx: Math.round(r.left + r.width / 2),
-                                    cy: Math.round(r.top + r.height / 2),
-                                };
-                            }
-                            cur = cur.parentElement;
-                        }
-                        return null;
-                    }""",
-                    [tile["src"]],
-                )
-            except Exception as e:  # noqa: BLE001
-                dl_info = None
-                logger.warning(
-                    "_capture_image_via_manual_walk: поиск download-иконки "
-                    "упал: {}", e,
-                )
-
-            if dl_info is None:
-                raise OutseeImageError(
-                    "outsee image: ID совпал, но кнопка-стрелка «скачать» в "
-                    "overlay'е тайлы не найдена (action-bar не появился "
-                    "после hover?)",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": tile["src"][:200],
-                        "modal_id": modal_id,
-                    },
-                )
-
-            # CDP-клик по download-иконке + захват файла.
-            try:
-                async with page.expect_download(
-                    timeout=int(timeout_s * 1000)
-                ) as dl_ctx:
-                    await page.mouse.click(
-                        int(dl_info["cx"]),
-                        int(dl_info["cy"]),
-                        delay=50,
-                    )
-                download = await dl_ctx.value
-                await download.save_as(str(out_path))
-            except PWTimeoutError as e:
-                raise OutseeImageError(
-                    "outsee image: клик по download-иконке не вызвал "
-                    "page.expect_download за отведённое время",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": tile["src"][:200],
-                        "modal_id": modal_id,
-                        "timeout_s": timeout_s,
-                        "err": f"{type(e).__name__}: {e}",
-                    },
-                ) from e
-            except Exception as e:  # noqa: BLE001
-                raise OutseeImageError(
-                    "outsee image: download через CDP-клик по overlay-"
-                    "иконке упал",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": tile["src"][:200],
-                        "modal_id": modal_id,
-                        "err": f"{type(e).__name__}: {e}",
-                    },
-                ) from e
-
-            logger.info(
-                "_capture_image_via_manual_walk: сохранил файл {} "
-                "(modal_id={}, src={})",
-                out_path, modal_id, tile["src"][:60],
-            )
-            return tile["src"]
-
-        # После прохода по всем тайлам, если ни одна не подошла —
-        # подождём, пока появится следующая.
-        await asyncio.sleep(0.5)
-
-    raise OutseeImageError(
-        f"outsee image: за {int(timeout_s)} сек ни одна новая тайла не "
-        f"показала наш {prompt_id_prefix} в модалке",
-        context={
-            "gen_id": gen_id,
-            "prompt_id_prefix": prompt_id_prefix,
-            "seen_count": len(seen),
-            "baseline_count": len(baseline_all_srcs),
-        },
-    )
-
-
-async def _download_via_card_click(
-    page: Page,
-    *,
-    prompt_id_prefix: str,
-    out_path: Path,
-    timeout_s: float = 120.0,
-) -> None:
-    """Кликает «↓ Скачать» на карточке результата с нашим
-    `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
-    через `page.expect_download()`.
-
-    Преимущество перед старым `_download_via_context(page, img_url, ...)`:
-    мы НЕ извлекаем URL из `<img src>` — outsee часто кладёт туда
-    плейсхолдер (например `topaz.webp` пока работает upscale, или
-    `input_*.png` — ссылку на наш же референс). Реальный финальный
-    PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
-
-    Логика:
-      1) ищем элемент с текстом `prompt_id_prefix` в DOM (НЕ требуем
-         visible — outsee рендерит этот текст в overlay с
-         `opacity-0 group-hover:opacity-100`, поэтому элемент есть в
-         DOM, но visibility=0 пока не наведут мышь);
-      2) поднимаемся к ближайшему ancestor'у, у которого в поддереве
-         есть и `<img>`, и `<button>` — это карточка-обёртка с классом
-         `group`, на которой висит `group-hover` для overlay-а;
-      3) скроллим её в видимую часть, hover на `<img>` (overlay имеет
-         `pointer-events-none` пока невидим, поэтому hover именно на
-         картинку, а не на overlay);
-      4) ищем кнопку Download по каскаду селекторов
-         (svg.lucide-download → title="Скачать" → title="Download" →
-         aria-label) — outsee периодически меняет разметку action-бара;
-      5) `expect_download` + click → сохраняем файл по пути out_path.
-    """
-    deadline_ms = int(timeout_s * 1000)
-
-    # 1) Якорь — элемент с нашим уникальным [ID: ...] токеном.
-    #    state="attached" (а НЕ "visible"), потому что overlay скрыт
-    #    через `opacity-0 group-hover:opacity-100` — текст есть в DOM,
-    #    но визуально невидим пока не наведут мышь.
-    id_el = page.get_by_text(prompt_id_prefix, exact=False).first
-    try:
-        await id_el.wait_for(state="attached", timeout=deadline_ms)
-    except PWTimeoutError as e:
-        raise OutseeImageError(
-            "outsee image: не нашёл карточку с нашим ID за время ожидания "
-            "(текст промта не появился в DOM)",
-            context={
-                "prompt_id_prefix": prompt_id_prefix,
-                "timeout_s": timeout_s,
-            },
-        ) from e
-
-    # 2) Карточка = ближайший ancestor, у которого В ПОДДЕРЕВЕ есть
-    #    и <img>, и <button>. Это .group-обёртка с group-hover.
-    #    Раньше искали по svg.lucide-download, но outsee перестроил
-    #    разметку и иконку download может не быть в нужном виде —
-    #    более устойчиво искать просто по комбинации img+button.
-    card = id_el.locator(
-        "xpath=ancestor::*[descendant::img and descendant::button][1]"
-    )
-
-    # Скроллим карточку в видимую часть — иначе hover ничего не даст.
-    with contextlib.suppress(Exception):
-        await card.scroll_into_view_if_needed(timeout=5_000)
-
-    # 3) Hover на <img> карточки (overlay имеет pointer-events-none
-    #    пока невидим, поэтому hover именно на картинку, не на overlay).
-    #    После этого `group-hover:` активирует overlay и action-кнопки
-    #    становятся кликабельными.
-    card_img = card.locator("img").first
-    try:
-        await card_img.hover(timeout=5_000)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "_download_via_card_click: hover на img упал ({}), "
-            "пробуем force-hover на саму карточку",
-            type(e).__name__,
-        )
-        with contextlib.suppress(Exception):
-            await card.hover(timeout=5_000, force=True)
-
-    # 4) Кнопка «Скачать» + клик через JS.
-    #    Главная фишка: outsee оборачивает кнопки в overlay-div с
-    #    `opacity-0 group-hover:opacity-100 pointer-events-none
-    #    group-hover:pointer-events-auto`. Это значит что:
-    #      - Playwright считает кнопку attached, но не «actionable»,
-    #        потому что хит-тест браузера блокируется pointer-events:none.
-    #      - `force=True` ОБХОДИТ Playwright actionability checks, но
-    #        НЕ обходит pointer-events: браузер всё равно не доставит
-    #        событие mouse в координату, где CSS говорит "не лови".
-    #
-    #    Решение: вызвать `.click()` НА ЭЛЕМЕНТЕ через JavaScript. Это
-    #    не использует hit-testing — мы прямо триггерим click handler
-    #    у DOM-элемента. CSS pointer-events на это не влияет.
-    #
-    #    Чтобы найти именно download-кнопку, используем большой JS-блок:
-    #    он сам идёт от ID-текста вверх к карточке, находит action-bar,
-    #    берёт 2-ю кнопку (или ищет lucide-download), и кликает.
-    #    Возвращает src картинки из карточки — пригодится для URL-фолбэка.
-    img_src_from_card: str | None = None
-    click_via_js_err: str | None = None
-    try:
-        img_src_from_card = await page.evaluate(
-            r"""
-            (idPrefix) => {
-                // 1) Найти первый текстовый элемент содержащий idPrefix.
-                const walker = document.createTreeWalker(
-                    document.body, NodeFilter.SHOW_TEXT, null
-                );
-                let textNode = null;
-                while (walker.nextNode()) {
-                    if (walker.currentNode.nodeValue
-                        && walker.currentNode.nodeValue.includes(idPrefix)) {
-                        textNode = walker.currentNode;
-                        break;
-                    }
-                }
-                if (!textNode) {
-                    throw new Error('text node with [ID:] not found');
-                }
-                // 2) Подняться до карточки — ближайший ancestor содержащий и <img>, и <button>.
-                let card = textNode.parentElement;
-                while (card) {
-                    if (card.querySelector('img') && card.querySelector('button')) {
-                        break;
-                    }
-                    card = card.parentElement;
-                }
-                if (!card) {
-                    throw new Error('card ancestor not found');
-                }
-                // 3) Сохранить src картинки для URL-фолбэка.
-                const img = card.querySelector('img');
-                const imgSrc = img ? img.src : null;
-                // 4) Найти download-кнопку. Несколько стратегий:
-                //    a) <button> с svg.lucide-download внутри
-                //    b) <button title="Скачать"|"Download">
-                //    c) 2-я <button> в любом div.absolute-блоке с >= 4 кнопками
-                let btn = card.querySelector('button:has(svg.lucide-download)')
-                    || card.querySelector('button[title="Скачать"]')
-                    || card.querySelector('button[title="Download"]')
-                    || card.querySelector('button[aria-label*="скач" i]')
-                    || card.querySelector('button[aria-label*="download" i]');
-                if (!btn) {
-                    // Найти все divs с position-absolute и >= 4 кнопками — это action-bar.
-                    const divs = Array.from(card.querySelectorAll('div'));
-                    for (const d of divs) {
-                        const cls = d.className || '';
-                        if (typeof cls !== 'string') continue;
-                        if (!cls.includes('absolute')) continue;
-                        const btns = d.querySelectorAll(':scope > button');
-                        if (btns.length >= 4) {
-                            btn = btns[1];  // 2-я по эмпирике
-                            break;
-                        }
-                    }
-                }
-                if (!btn) {
-                    throw new Error('download button not found inside card');
-                }
-                // 5) Тык!
-                btn.click();
-                return imgSrc;
-            }
-            """,
-            prompt_id_prefix,
-        )
-        logger.info(
-            "_download_via_card_click: JS-click отправлен, img_src={}",
-            (img_src_from_card[:120] if img_src_from_card else None),
-        )
-    except Exception as e:  # noqa: BLE001
-        click_via_js_err = f"{type(e).__name__}: {e}"
-        logger.warning(
-            "_download_via_card_click: JS-click упал ({}), всё равно "
-            "пробую expect_download а потом URL-фолбэк",
-            click_via_js_err,
-        )
-
-    # 5) Пробуем поймать download через page.expect_download.
-    #    Если outsee действительно скачивает через стандартный механизм
-    #    (a[download] или Content-Disposition) — Playwright нам его отдаст.
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    download_caught = False
-    try:
-        # expect_download нужно открывать ПЕРЕД click. Но JS-click уже улетел.
-        # Если страница использует event-based download — это будет асинхронно,
-        # дадим 8 секунд на ловлю.
-        async with page.expect_download(timeout=8_000) as dl_info:
-            # повторно триггерим click чтобы expect_download был открыт ДО клика.
-            with contextlib.suppress(Exception):
-                await page.evaluate(
-                    r"""
-                    (idPrefix) => {
-                        const walker = document.createTreeWalker(
-                            document.body, NodeFilter.SHOW_TEXT, null
-                        );
-                        let textNode = null;
-                        while (walker.nextNode()) {
-                            if (walker.currentNode.nodeValue
-                                && walker.currentNode.nodeValue.includes(idPrefix)) {
-                                textNode = walker.currentNode;
-                                break;
-                            }
-                        }
-                        if (!textNode) return;
-                        let card = textNode.parentElement;
-                        while (card) {
-                            if (card.querySelector('img') && card.querySelector('button')) break;
-                            card = card.parentElement;
-                        }
-                        if (!card) return;
-                        let btn = card.querySelector('button:has(svg.lucide-download)')
-                            || card.querySelector('button[title="Скачать"]')
-                            || card.querySelector('button[title="Download"]')
-                            || card.querySelector('button[aria-label*="скач" i]')
-                            || card.querySelector('button[aria-label*="download" i]');
-                        if (!btn) {
-                            const divs = Array.from(card.querySelectorAll('div'));
-                            for (const d of divs) {
-                                const cls = d.className || '';
-                                if (typeof cls !== 'string') continue;
-                                if (!cls.includes('absolute')) continue;
-                                const btns = d.querySelectorAll(':scope > button');
-                                if (btns.length >= 4) { btn = btns[1]; break; }
-                            }
-                        }
-                        if (btn) btn.click();
-                    }
-                    """,
-                    prompt_id_prefix,
-                )
-        download = await dl_info.value
-        await download.save_as(str(out_path))
-        download_caught = True
-        logger.info(
-            "_download_via_card_click: получили download через expect_download → {}",
-            out_path,
-        )
-    except PWTimeoutError:
-        logger.warning(
-            "_download_via_card_click: expect_download не сработал за 8 сек "
-            "(outsee использует blob/fetch?), фолбэк на URL-загрузку"
-        )
-
-    # 6) Фолбэк: outsee может скачивать через blob URL (createObjectURL),
-    #    тогда page.expect_download не сработает. Берём `<img src>` карточки
-    #    и тянем напрямую через page.context.request — он имеет cookies,
-    #    т.е. CDN отдаст нам реальный файл.
-    if not download_caught:
-        if not img_src_from_card:
-            # Один последний шанс — попытаемся ещё раз достать src через JS.
-            with contextlib.suppress(Exception):
-                img_src_from_card = await page.evaluate(
-                    r"""
-                    (idPrefix) => {
-                        const walker = document.createTreeWalker(
-                            document.body, NodeFilter.SHOW_TEXT, null
-                        );
-                        let textNode = null;
-                        while (walker.nextNode()) {
-                            if (walker.currentNode.nodeValue
-                                && walker.currentNode.nodeValue.includes(idPrefix)) {
-                                textNode = walker.currentNode;
-                                break;
-                            }
-                        }
-                        if (!textNode) return null;
-                        let card = textNode.parentElement;
-                        while (card) {
-                            if (card.querySelector('img')) break;
-                            card = card.parentElement;
-                        }
-                        if (!card) return null;
-                        const img = card.querySelector('img');
-                        return img ? img.src : null;
-                    }
-                    """,
-                    prompt_id_prefix,
-                )
-        if not img_src_from_card:
-            raise OutseeImageError(
-                "outsee image: ни expect_download, ни <img src> в карточке "
-                "не сработали — скачивание невозможно",
-                context={
-                    "prompt_id_prefix": prompt_id_prefix,
-                    "timeout_s": timeout_s,
-                    "js_click_err": click_via_js_err or "—",
-                },
-            )
-        try:
-            await _download_via_context(page, img_src_from_card, out_path)
-        except Exception as e:  # noqa: BLE001
-            raise OutseeImageError(
-                "outsee image: фолбэк-загрузка через page.context.request "
-                "упала",
-                context={
-                    "prompt_id_prefix": prompt_id_prefix,
-                    "img_src": img_src_from_card[:200],
-                    "err": f"{type(e).__name__}: {e}",
-                },
-            ) from e
-        logger.info(
-            "_download_via_card_click: фолбэк через URL → {} (src={})",
-            out_path, (img_src_from_card[:100] if img_src_from_card else None),
-        )
-
-    logger.info(
-        "_download_via_card_click: сохранил файл {} (prompt_id={})",
-        out_path, prompt_id_prefix,
-    )
 
 
 async def _download_via_context(
