@@ -989,153 +989,208 @@ class OutseeBot:
         page.on("response", _on_response)
 
         try:
-            # 1) вбить промт
-            input_sel = await _first_visible(
-                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
-            )
-            if not input_sel:
-                h, p = await _dump_page(page, "prompt_input_notfound")
-                for x in (h, p):
-                    if x:
-                        dumps.append(x)
-                raise OutseeImageError(
-                    "outsee image: не найден ввод промта",
-                    context={"gen_id": gen_id},
-                    dumps=dumps,
-                )
-            logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
-            try:
-                await page.locator(input_sel).first.scroll_into_view_if_needed(
-                    timeout=5_000
-                )
-            except Exception:  # noqa: BLE001
-                pass
-            await page.locator(input_sel).first.click()
-            await page.locator(input_sel).first.fill(prompt)
-            logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
-
-            # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
-            if aspect_ratio:
-                await _select_aspect_ratio(
-                    page, aspect_ratio, where="generate_image", dumps=dumps,
-                )
-
-            # 2.5) выбрать разрешение 2K / 4K (best-effort)
-            if resolution:
-                res_sel = await _first_visible(
-                    page, _resolution_selectors(resolution), timeout_ms=3_000
-                )
-                if res_sel:
-                    try:
-                        await page.locator(res_sel).first.click()
-                        logger.info(
-                            "outsee.generate_image: {} выбран ({})",
-                            resolution, res_sel,
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "resolution {} не кликнулось ({})", resolution, res_sel
-                        )
-
-            # 2.7) Relax (если попросили)
-            await _toggle_relax(
-                page, want_on=relax, where="generate_image", dumps=dumps,
-            )
-
-            # 2.9) Reference-картинка (для hero-вариаций 2..N).
-            # На странице outsee.io image обычно есть СКРЫТЫй input[type=file]
-            # для подгрузки референса. Обычный _first_visible его НЕ найдёт
-            # (видимость=False), поэтому используем робастный хелпер
-            # `_attach_ref_image_robust`: он первым делом пытается видимый
-            # input, иначе берёт ЛЮБОЙ input[type=file] в DOM и бьёт
-            # set_input_files в него (по Playwright он работает на скрытых тоже).
-            if reference_image is not None:
-                # Поддержка single Path и list[Path]: для шага 8 «Картинки»
-                # передаётся [персонаж.png, предмет.png] (до 2 ref). Для
-                # старого hero-flow — один Path.
-                refs: list[Path] = (
-                    [reference_image]
-                    if isinstance(reference_image, Path)
-                    else list(reference_image)
-                )
-                for ref_idx, ref_path in enumerate(refs, start=1):
-                    if not ref_path.exists():
-                        logger.warning(
-                            "outsee.generate_image: reference_image #{} {} "
-                            "не найден на диске",
-                            ref_idx, ref_path,
-                        )
-                        continue
-                    attached = await self._attach_ref_image_robust(
-                        page, ref_path,
-                        where=f"generate_image[ref{ref_idx}]",
+            # 0) АНТИ-ДУБЛИКАТ: если на странице УЖЕ есть карточка с
+            # нашим `prompt_id_prefix` (например, прошлая попытка retry-
+            # обёртки кликнула Generate, упала по таймауту/валидации, а
+            # outsee тем временем продолжил рендерить и оставил карточку
+            # в галерее) — НЕ кликаем Generate повторно. Иначе outsee
+            # запустит ещё одну генерацию того же промта, и в истории
+            # окажется 2-3 одинаковые «не-фейл» картинки.
+            #
+            # Детект — по количеству вхождений `[ID: ...]` токена в
+            # тексте страницы. На свежей странице (attempt 1) count=0;
+            # на retry, если карточка от прошлой попытки осталась — >=1.
+            #
+            # Если найденная карточка уже отрендерила картинку, исключаем
+            # её URL из baseline, чтобы `_wait_image_url_strict` мог её
+            # принять через priority-0 (prompt_id-match), а не отверг
+            # как «была в baseline».
+            already_in_progress = False
+            pre_rejected_text: str | None = None
+            if prompt_id_prefix:
+                try:
+                    _counts = await self._count_id_tokens_in_page(
+                        [prompt_id_prefix]
                     )
-                    if not attached:
-                        h, p = await _dump_page(
-                            page, f"ref_input_notfound_{ref_idx}"
+                except Exception:  # noqa: BLE001
+                    _counts = {}
+                if _counts.get(prompt_id_prefix, 0) >= 1:
+                    already_in_progress = True
+                    existing_img = await self._find_img_by_prompt_id(
+                        page, prompt_id_prefix
+                    )
+                    if existing_img:
+                        existing_norm = _strip_url_query(existing_img)
+                        baseline_big_imgs.discard(existing_norm)
+                        baseline_dom_srcs.discard(existing_norm)
+                        if baseline_result_img == existing_norm:
+                            baseline_result_img = None
+                    logger.warning(
+                        "outsee.generate_image: на странице УЖЕ есть "
+                        "карточка с {} (видимо прошлая попытка retry'я "
+                        "кликнула Generate, а outsee продолжил рендерить) "
+                        "— НЕ кликаю Generate повторно, жду результат "
+                        "прошлого клика (gen_id={}, image_loaded={})",
+                        prompt_id_prefix, gen_id[:8], bool(existing_img),
+                    )
+
+            if not already_in_progress:
+                # 1) вбить промт
+                input_sel = await _first_visible(
+                    page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+                )
+                if not input_sel:
+                    h, p = await _dump_page(page, "prompt_input_notfound")
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
+                    raise OutseeImageError(
+                        "outsee image: не найден ввод промта",
+                        context={"gen_id": gen_id},
+                        dumps=dumps,
+                    )
+                logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
+                try:
+                    await page.locator(input_sel).first.scroll_into_view_if_needed(
+                        timeout=5_000
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                await page.locator(input_sel).first.click()
+                await page.locator(input_sel).first.fill(prompt)
+                logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
+
+                # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
+                if aspect_ratio:
+                    await _select_aspect_ratio(
+                        page, aspect_ratio, where="generate_image", dumps=dumps,
+                    )
+
+                # 2.5) выбрать разрешение 2K / 4K (best-effort)
+                if resolution:
+                    res_sel = await _first_visible(
+                        page, _resolution_selectors(resolution), timeout_ms=3_000
+                    )
+                    if res_sel:
+                        try:
+                            await page.locator(res_sel).first.click()
+                            logger.info(
+                                "outsee.generate_image: {} выбран ({})",
+                                resolution, res_sel,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "resolution {} не кликнулось ({})", resolution, res_sel
+                            )
+
+                # 2.7) Relax (если попросили)
+                await _toggle_relax(
+                    page, want_on=relax, where="generate_image", dumps=dumps,
+                )
+
+                # 2.9) Reference-картинка (для hero-вариаций 2..N).
+                # На странице outsee.io image обычно есть СКРЫТЫй input[type=file]
+                # для подгрузки референса. Обычный _first_visible его НЕ найдёт
+                # (видимость=False), поэтому используем робастный хелпер
+                # `_attach_ref_image_robust`: он первым делом пытается видимый
+                # input, иначе берёт ЛЮБОЙ input[type=file] в DOM и бьёт
+                # set_input_files в него (по Playwright он работает на скрытых тоже).
+                if reference_image is not None:
+                    # Поддержка single Path и list[Path]: для шага 8 «Картинки»
+                    # передаётся [персонаж.png, предмет.png] (до 2 ref). Для
+                    # старого hero-flow — один Path.
+                    refs: list[Path] = (
+                        [reference_image]
+                        if isinstance(reference_image, Path)
+                        else list(reference_image)
+                    )
+                    for ref_idx, ref_path in enumerate(refs, start=1):
+                        if not ref_path.exists():
+                            logger.warning(
+                                "outsee.generate_image: reference_image #{} {} "
+                                "не найден на диске",
+                                ref_idx, ref_path,
+                            )
+                            continue
+                        attached = await self._attach_ref_image_robust(
+                            page, ref_path,
+                            where=f"generate_image[ref{ref_idx}]",
                         )
-                        for x in (h, p):
-                            if x:
-                                dumps.append(x)
+                        if not attached:
+                            h, p = await _dump_page(
+                                page, f"ref_input_notfound_{ref_idx}"
+                            )
+                            for x in (h, p):
+                                if x:
+                                    dumps.append(x)
 
-            # 3) кнопка generate
-            gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
-            if not gen_sel:
-                h, p = await _dump_page(page, "generate_button_notfound")
-                for x in (h, p):
-                    if x:
-                        dumps.append(x)
-                raise OutseeImageError(
-                    "outsee image: не найдена кнопка Generate",
-                    context={"gen_id": gen_id},
-                    dumps=dumps,
+                # 3) кнопка generate
+                gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
+                if not gen_sel:
+                    h, p = await _dump_page(page, "generate_button_notfound")
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
+                    raise OutseeImageError(
+                        "outsee image: не найдена кнопка Generate",
+                        context={"gen_id": gen_id},
+                        dumps=dumps,
+                    )
+                logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
+                await self._wait_button_enabled(page, gen_sel, timeout_s=600)
+
+                # Re-baseline ПОСЛЕ всех настроек (aspect dropdown, разрешение,
+                # Relax, референс) — клики по dropdown вызывают ререндер
+                # правой панели и могут «принести» в DOM другую картинку,
+                # которую мы иначе ошибочно посчитаем «новым результатом».
+                # См. коммент выше про _strip_url_query.
+                baseline_result_img = _strip_url_query(
+                    await self._result_img_src(page)
                 )
-            logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
-            await self._wait_button_enabled(page, gen_sel, timeout_s=600)
-
-            # Re-baseline ПОСЛЕ всех настроек (aspect dropdown, разрешение,
-            # Relax, референс) — клики по dropdown вызывают ререндер
-            # правой панели и могут «принести» в DOM другую картинку,
-            # которую мы иначе ошибочно посчитаем «новым результатом».
-            # См. коммент выше про _strip_url_query.
-            baseline_result_img = _strip_url_query(
-                await self._result_img_src(page)
-            )
-            baseline_big_imgs = {
-                _strip_url_query(u) for u in await self._all_big_imgs(page)
-            }
-            baseline_dom_srcs = {
-                _strip_url_query(u) for u in await self._all_img_srcs(page)
-            }
-            logger.info(
-                "outsee.generate_image: re-baseline перед Generate "
-                "result_img={}, big_imgs={}, all_imgs={}",
-                (baseline_result_img[:80] if baseline_result_img else None),
-                len(baseline_big_imgs),
-                len(baseline_dom_srcs),
-            )
-
-            # Снимок текста плашки «Контент отклонён» ДО клика Generate.
-            # На свежеоткрытой странице outsee часто рендерит остаток
-            # rejection-плашки от предыдущего запроса (тот же браузерный
-            # контекст / history). Передаём этот текст в детектор, чтобы
-            # он не считал такую плашку «новой» ошибкой.
-            pre_rejected_text = await self._content_rejected_text(page)
-            if pre_rejected_text:
+                baseline_big_imgs = {
+                    _strip_url_query(u) for u in await self._all_big_imgs(page)
+                }
+                baseline_dom_srcs = {
+                    _strip_url_query(u) for u in await self._all_img_srcs(page)
+                }
                 logger.info(
-                    "outsee.generate_image: pre-click rejected_text"
-                    " обнаружена ({} симв) — игнорю, считаю её остатком"
-                    " предыдущей попытки",
-                    len(pre_rejected_text),
+                    "outsee.generate_image: re-baseline перед Generate "
+                    "result_img={}, big_imgs={}, all_imgs={}",
+                    (baseline_result_img[:80] if baseline_result_img else None),
+                    len(baseline_big_imgs),
+                    len(baseline_dom_srcs),
                 )
 
-            click_ts = _time.monotonic()
-            net_events.clear()
-            await page.locator(gen_sel).first.click()
-            logger.info(
-                "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
-                gen_id[:8],
-            )
+                # ВАЖНО: после re-baseline нужно повторно исключить URL
+                # уже-существующей карточки из baseline. Re-baseline
+                # пересобрал множества с нуля, и если карточка дошла
+                # до полной отрисовки между initial baseline и re-baseline
+                # — её URL снова попадёт в baseline_*. Делаем это ПОСЛЕ
+                # re-baseline, чтобы исключение точно сработало.
+                # (В ветке `already_in_progress` мы сюда не заходим —
+                # re-baseline не делается, baseline_* уже почищены.)
+
+                # Снимок текста плашки «Контент отклонён» ДО клика Generate.
+                # На свежеоткрытой странице outsee часто рендерит остаток
+                # rejection-плашки от предыдущего запроса (тот же браузерный
+                # контекст / history). Передаём этот текст в детектор, чтобы
+                # он не считал такую плашку «новой» ошибкой.
+                pre_rejected_text = await self._content_rejected_text(page)
+                if pre_rejected_text:
+                    logger.info(
+                        "outsee.generate_image: pre-click rejected_text"
+                        " обнаружена ({} симв) — игнорю, считаю её остатком"
+                        " предыдущей попытки",
+                        len(pre_rejected_text),
+                    )
+
+                click_ts = _time.monotonic()
+                net_events.clear()
+                await page.locator(gen_sel).first.click()
+                logger.info(
+                    "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
+                    gen_id[:8],
+                )
 
             # 4) строгое ожидание свежей картинки.
             # Передаём prompt_id_prefix — `_wait_image_url_strict` тогда

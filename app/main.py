@@ -487,7 +487,7 @@ async def _run_worker_loop(bot) -> None:
                     logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001
             logger.exception("worker loop iteration failed")
-        await asyncio.sleep(15)
+        await asyncio.sleep(60)
 
 
 async def main() -> None:
