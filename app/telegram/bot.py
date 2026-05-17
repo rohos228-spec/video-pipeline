@@ -3006,6 +3006,31 @@ async def on_project_step(cb: CallbackQuery) -> None:
             )
             return
 
+        # Шаг 7 «Картинки» — wrapper, показывает подменю «▶ Сгенерировать
+        # все» / «🔍 Добить недостающие» / «🔁 Прогнать шаг с нуля». Сам
+        # по себе step.code=="img" воркера НЕ запускает — юзер кликает
+        # кнопку в submenu.
+        if step.code == "img":
+            from app.telegram.menu import images_submenu_kb
+
+            _set_user_screen(
+                cb.from_user.id, "step_submenu", pid, "img"
+            )
+            await cb.answer()
+            await cb.message.answer(
+                f"<b>Шаг 7. Картинки</b>\n"
+                f"Проект #{pid} «{project.topic}»\n\n"
+                "<b>▶ Сгенерировать все</b> — стандартный запуск шага 7. "
+                "Воркер пройдётся по всем кадрам в image_prompt_ready, "
+                "сгенерит .png в <code>data/.../scenes/</code>.\n\n"
+                "<b>🔍 Добить недостающие</b> — найдёт кадры, у которых "
+                "в БД есть image_prompt, но на диске НЕТ файла "
+                "<code>frame_NNN_*.png</code>, и догенерит только их.",
+                reply_markup=images_submenu_kb(project),
+                parse_mode="HTML",
+            )
+            return
+
         # Шаг 5 «Доп работа с EXCEL» (wrapper) — показывает подменю
         # с N кнопками «Доп работа с EXCEL #i» и «➕ Добавить слот».
         # Сам по себе step.code=="enrich" воркера НЕ запускает —
@@ -5655,6 +5680,119 @@ async def on_objects_items(cb: CallbackQuery) -> None:
     # за кнопкой «▶ Запустить шаг» в picker'е.
     cb_clone = cb.model_copy(update={"data": f"proj:{pid}:step:items"})
     await on_project_step(cb_clone)
+
+
+# ---------------------------------------------------------------------------
+# Подменю шага 7 «Картинки» — «Сгенерировать все» / «Добить недостающие».
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:img:gen_all$"))
+async def on_img_gen_all(cb: CallbackQuery) -> None:
+    """Клик «▶ Сгенерировать все» в подменю шага 7 — эквивалент
+    «▶ Запустить шаг» для img: ставим project.status=generating_images,
+    воркер подхватит и пройдётся по всем кадрам, у которых пока нет
+    .png (см. generate_images.run — он сам помечает не-готовые кадры
+    как image_prompt_ready)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        if project.status is ProjectStatus.generating_images:
+            await cb.answer(
+                "⏳ Картинки уже генерируются. Подожди.",
+                show_alert=True,
+            )
+            return
+        project.status = ProjectStatus.generating_images
+        slug = project.slug
+        topic = project.topic
+    await cb.answer("Запускаю шаг 7…")
+    await cb.message.answer(
+        f"▶ Шаг 7: <b>Картинки</b>\n"
+        f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n"
+        f"Воркер подхватит за ~60 сек, по завершении пришлю результат.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.regexp(r"^proj:\d+:img:fill_missing$"))
+async def on_img_fill_missing(cb: CallbackQuery) -> None:
+    """Клик «🔍 Добить недостающие» — сканируем `scenes/`, находим
+    кадры, у которых в БД есть image_prompt, но на диске нет
+    `frame_<NNN>_*.png`, сбрасываем их в `image_prompt_ready` и
+    переключаем project.status на generating_images. Воркер
+    отработает только эти кадры (остальные останутся в
+    image_generated/image_approved и будут пропущены)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    pid = int((cb.data or "").split(":")[1])
+    from app.services.scan_frames import (
+        reset_frames_to_image_prompt_ready,
+        scan_missing_frames,
+    )
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if project is None:
+            await cb.answer("Проект не найден", show_alert=True)
+            return
+        missing = await scan_missing_frames(s, project)
+        if not missing:
+            await cb.answer()
+            await cb.message.answer(
+                "✅ <b>Все кадры на месте.</b>\n"
+                "В <code>scenes/</code> есть <code>frame_NNN_*.png</code> "
+                "для всех кадров с image_prompt. Генерировать нечего."
+                "\n\nЕсли это не то, что ожидалось — проверь, что в xlsx "
+                "(R45) реально проставлены image_prompt'ы и они подтянулись "
+                "в БД (можно нажать «🔄 Перечитать xlsx» в меню проекта).",
+                parse_mode="HTML",
+            )
+            return
+
+        already_running = project.status is ProjectStatus.generating_images
+        changed = await reset_frames_to_image_prompt_ready(s, project, missing)
+        if not already_running:
+            project.status = ProjectStatus.generating_images
+        topic = project.topic
+        slug = project.slug
+
+    # Список номеров в TG: чтобы не упереться в лимит сообщения,
+    # показываем первые 30, остальные — счётчиком.
+    head = ", ".join(str(n) for n in missing[:30])
+    if len(missing) > 30:
+        head += f", … +{len(missing) - 30}"
+    if already_running:
+        await cb.answer(f"Добавил {changed} в текущую очередь")
+        await cb.message.answer(
+            f"⏳ <b>Шаг 7 уже идёт.</b>\n"
+            f"Добавил <b>{changed}</b> кадров в очередь "
+            f"(image_prompt_ready):\n<code>{head}</code>",
+            parse_mode="HTML",
+        )
+    else:
+        await cb.answer(f"Найдено {len(missing)} — запускаю")
+        await cb.message.answer(
+            f"🔍 <b>Шаг 7. Добить недостающие.</b>\n"
+            f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n\n"
+            f"Кадров без .png на диске: <b>{changed}</b>.\n"
+            f"Номера: <code>{head}</code>\n\n"
+            "Воркер подхватит за ~60 сек, сгенерит только эти кадры. "
+            "Остальные (image_generated/image_approved) останутся как есть.",
+            parse_mode="HTML",
+        )
+
+
+# ---------------------------------------------------------------------------
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:enrich_add_slot$"))
