@@ -998,7 +998,7 @@ class OutseeBot:
             if prompt_id_prefix:
                 try:
                     _counts = await self._count_id_tokens_in_page(
-                        [prompt_id_prefix]
+                        page, [prompt_id_prefix]
                     )
                 except Exception:  # noqa: BLE001
                     _counts = {}
@@ -2409,68 +2409,229 @@ class OutseeBot:
         except Exception:
             pass
 
-        # 1) ввод промта
-        input_sel = await _first_visible(
-            page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+        # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
+        # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
+        # попытка retry'я кликнула Generate, упала по таймауту, а outsee
+        # продолжил рендерить видео) — НЕ кликаем Generate повторно.
+        # Иначе в истории outsee окажется 2-3 одинаковых ролика одного
+        # кадра, а аккаунт сожжёт лимиты на дубликатах.
+        #
+        # Видео генерится 5-15 минут — это ОЧЕНЬ дорогое действие
+        # дублировать. Поэтому проверка тут даже важнее, чем для картинок.
+        already_in_progress = False
+        if prompt_id_prefix:
+            try:
+                _counts = await self._count_id_tokens_in_page(
+                    page, [prompt_id_prefix]
+                )
+            except Exception:  # noqa: BLE001
+                _counts = {}
+            if _counts.get(prompt_id_prefix, 0) >= 1:
+                already_in_progress = True
+                logger.warning(
+                    "outsee.generate_video: на странице УЖЕ есть карточка "
+                    "с {} — НЕ кликаю Generate повторно, жду результат "
+                    "прошлого клика (video рендерится 5-15 мин)",
+                    prompt_id_prefix,
+                )
+
+        if not already_in_progress:
+            # 1) ввод промта
+            input_sel = await _first_visible(
+                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+            )
+            if not input_sel:
+                raise RuntimeError("outsee video: не найден ввод промта")
+            try:
+                await page.locator(input_sel).first.scroll_into_view_if_needed(
+                    timeout=5_000
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await page.locator(input_sel).first.click()
+            await page.locator(input_sel).first.fill(prompt)
+
+            # 2) аспект (с верификацией состояния)
+            if aspect_ratio:
+                await _select_aspect_ratio(
+                    page, aspect_ratio, where="generate_video"
+                )
+
+            # 2.5) разрешение 720p / 1080p (best-effort)
+            if resolution:
+                res_sel = await _first_visible(
+                    page, _resolution_selectors(resolution), timeout_ms=3_000
+                )
+                if res_sel:
+                    try:
+                        await page.locator(res_sel).first.click()
+                        logger.info(
+                            "outsee.generate_video: {} выбран", resolution
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
+            await _toggle_relax(page, want_on=relax, where="generate_video")
+
+            # 3) загрузка стартового кадра (если передан)
+            if start_frame is not None:
+                file_sel = await _first_visible(page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000)
+                if not file_sel:
+                    raise RuntimeError("outsee video: не найден input[type=file] для стартового кадра")
+                await page.locator(file_sel).first.set_input_files(str(start_frame))
+
+            # 4) generate
+            gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
+            if not gen_sel:
+                raise RuntimeError("outsee video: не найдена кнопка Generate")
+            await page.locator(gen_sel).first.click()
+
+        # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
+        # ищем `<video>` в карточке с нашим [ID: ...], только если не
+        # нашли — фолбэк на «любой видео-URL в DOM».
+        video_url = await self._wait_video_url(
+            page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
         )
-        if not input_sel:
-            raise RuntimeError("outsee video: не найден ввод промта")
-        try:
-            await page.locator(input_sel).first.scroll_into_view_if_needed(
-                timeout=5_000
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        await page.locator(input_sel).first.click()
-        await page.locator(input_sel).first.fill(prompt)
-
-        # 2) аспект (с верификацией состояния)
-        if aspect_ratio:
-            await _select_aspect_ratio(
-                page, aspect_ratio, where="generate_video"
-            )
-
-        # 2.5) разрешение 720p / 1080p (best-effort)
-        if resolution:
-            res_sel = await _first_visible(
-                page, _resolution_selectors(resolution), timeout_ms=3_000
-            )
-            if res_sel:
-                try:
-                    await page.locator(res_sel).first.click()
-                    logger.info(
-                        "outsee.generate_video: {} выбран", resolution
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
-        # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
-        await _toggle_relax(page, want_on=relax, where="generate_video")
-
-        # 3) загрузка стартового кадра (если передан)
-        if start_frame is not None:
-            file_sel = await _first_visible(page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000)
-            if not file_sel:
-                raise RuntimeError("outsee video: не найден input[type=file] для стартового кадра")
-            await page.locator(file_sel).first.set_input_files(str(start_frame))
-
-        # 4) generate
-        gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
-        if not gen_sel:
-            raise RuntimeError("outsee video: не найдена кнопка Generate")
-        await page.locator(gen_sel).first.click()
-
-        # 5) ждём результат
-        video_url = await self._wait_video_url(page, timeout=timeout)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         await _download_via_context(page, video_url, out_path)
         logger.info("outsee video saved → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=video_url)
 
-    async def _wait_video_url(self, page: Page, *, timeout: float) -> str:
+    async def _find_video_by_prompt_id(
+        self,
+        page: Page,
+        id_token: str,
+        *,
+        max_levels: int = 12,
+    ) -> str | None:
+        """Зеркало `_find_img_by_prompt_id`, но для `<video>` / `<source>` /
+        `a[download]`. Ищет в DOM карточку с нашим `[ID: ...]` и возвращает
+        URL ближайшего видео-элемента.
+
+        Порядок матчинга такой же:
+          1) полный `[ID: P*-F*-xxxxxxxx]`,
+          2) `P*-F*-xxxxxxxx` (без скобок и `ID:`),
+          3) 8-hex-tail (`xxxxxxxx`).
+        """
+        tokens: list[str] = [id_token]
+        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
+        if m:
+            inner = m.group(1)
+            if inner not in tokens:
+                tokens.append(inner)
+        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
+        if m2:
+            tail = m2.group(1)
+            if tail and tail not in tokens:
+                tokens.append(tail)
+
+        js = """
+        ([tokens, maxLevels]) => {
+            const hasToken = (el, idToken) => {
+                if (!el) return false;
+                const t = (el.innerText || el.textContent || '');
+                if (t.includes(idToken)) return true;
+                const tag = el.tagName && el.tagName.toLowerCase();
+                if (tag === 'textarea' || tag === 'input') {
+                    const v = el.value || '';
+                    if (v.includes(idToken)) return true;
+                }
+                return false;
+            };
+            const pickVideoSrc = (root) => {
+                // Сначала <video src>, потом <source src>, потом
+                // a[download] с .mp4 — последний наименее надёжен,
+                // зато подхватывает уже-готовый скачиваемый ролик.
+                const videos = root.querySelectorAll('video');
+                for (const v of videos) {
+                    if (v.src && !v.src.startsWith('data:')) return v.src;
+                    const sources = v.querySelectorAll('source');
+                    for (const s of sources) {
+                        if (s.src && !s.src.startsWith('data:')) return s.src;
+                    }
+                }
+                const links = root.querySelectorAll('a[download], a[href*=".mp4"]');
+                for (const a of links) {
+                    if (a.href && !a.href.startsWith('data:')) return a.href;
+                }
+                return null;
+            };
+            for (const idToken of tokens) {
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    if (!el || !el.children) continue;
+                    if (el === document.body || el === document.documentElement) continue;
+                    if (!hasToken(el, idToken)) continue;
+                    let smallest = el;
+                    for (const child of el.children) {
+                        if (hasToken(child, idToken)) { smallest = null; break; }
+                    }
+                    if (smallest) {
+                        const deepInputs = el.querySelectorAll('textarea, input');
+                        for (const di of deepInputs) {
+                            if (di === el) continue;
+                            const v = di.value || '';
+                            if (v.includes(idToken)) { smallest = null; break; }
+                        }
+                    }
+                    if (!smallest) continue;
+                    let cur = smallest;
+                    for (let i = 0; i < maxLevels && cur; i++) {
+                        const src = pickVideoSrc(cur);
+                        if (src) return src;
+                        cur = cur.parentElement;
+                    }
+                }
+            }
+            return null;
+        }
+        """
+        try:
+            res = await page.evaluate(js, [tokens, max_levels])
+            if isinstance(res, str) and res:
+                return res
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_find_video_by_prompt_id: ошибка JS-поиска: {}", e
+            )
+            return None
+
+    async def _wait_video_url(
+        self,
+        page: Page,
+        *,
+        timeout: float,
+        prompt_id_prefix: str | None = None,
+    ) -> str:
+        """Ждёт появление видео-результата в DOM.
+
+        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
+        карточке с нашим [ID: ...]. Это защищает от подмены чужим
+        видео из истории outsee и работает в паре с анти-дубликат
+        логикой в `generate_video` (когда мы не кликаем Generate
+        повторно, а ждём результат прошлого клика).
+
+        Fallback — генерический поиск любого видео-URL (для legacy/
+        recon без prompt_id_prefix).
+        """
         deadline = asyncio.get_event_loop().time() + timeout
+        log_every = 15.0  # сек, логи прогресса
+        next_log = asyncio.get_event_loop().time() + log_every
         while asyncio.get_event_loop().time() < deadline:
+            # Приоритет 0: видео в карточке с нашим [ID: ...].
+            if prompt_id_prefix:
+                try:
+                    by_id = await self._find_video_by_prompt_id(
+                        page, prompt_id_prefix
+                    )
+                except Exception:  # noqa: BLE001
+                    by_id = None
+                if by_id:
+                    return by_id
+            # Приоритет 1 (fallback): любой видео-URL в DOM.
             urls = await page.evaluate(
                 """() => {
                     const list = [];
@@ -2482,9 +2643,21 @@ class OutseeBot:
                     return list;
                 }"""
             )
-            for u in urls:
-                if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
-                    return u
+            # Без prompt_id_prefix берём первый похожий — legacy-режим.
+            if not prompt_id_prefix:
+                for u in urls:
+                    if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
+                        return u
+            now = asyncio.get_event_loop().time()
+            if now >= next_log:
+                logger.info(
+                    "outsee.generate_video: ждём результат… {:.0f} сек, "
+                    "video_urls_in_dom={}, prompt_id={}",
+                    timeout - (deadline - now),
+                    len(urls or []),
+                    prompt_id_prefix,
+                )
+                next_log = now + log_every
             await asyncio.sleep(1.5)
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
