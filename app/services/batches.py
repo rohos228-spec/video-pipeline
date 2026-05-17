@@ -868,23 +868,59 @@ async def start_batch_queue(
 async def pause_batch_queue(
     session: AsyncSession, batch_id: int
 ) -> BatchProject | None:
-    """Поставить очередь на паузу.
+    """Поставить очередь на паузу — ЖЁСТКО.
 
-    Текущий running-подпроект НЕ прерываем (он доработает текущий шаг
-    до *_ready, но дальше не пойдёт). Следующие подпроекты не стартуют.
+    Что делает:
+      1. `batch.status = paused` → serial_tick новых sub'ов не стартует.
+      2. Снимает `auto_mode` у sub'ов в `new`/`*_ready` — auto_advance не
+         двигает их в running.
+      3. **request_stop(pid)** для всех sub'ов в `*_running`-статусах —
+         длинные циклы (картинки/видео/аудио/ассембл/etc) увидят флаг
+         на следующей итерации и выйдут через `StepCancelledError`.
+         Текущая ВНУТРЕННЯЯ операция (например, картинка уже генерится
+         в outsee) досработает до конца — но НИКАКАЯ новая итерация не
+         запустится. Если шаг — это атомарный GPT-вызов (plan/script),
+         он доработает до возврата ответа, но дальше pipeline не пойдёт
+         потому что auto_mode выключен.
     """
+    # request_stop — локальный импорт, чтобы не тянуть на этот модуль.
+    from app.services.step_cancel import request_stop
+
     batch = await get_batch(session, batch_id)
     if batch is None:
         return None
     batch.status = BatchStatus.paused
-    # Снимаем auto_mode у подпроектов в *_ready состоянии и new,
-    # чтобы auto_advance их не двигал.
     subs = await get_batch_subprojects(session, batch_id)
+    stopped_running = 0
     for p in subs:
+        # 1) Снимаем auto_mode у не-running статусов — это блокирует
+        #    auto_advance.
         if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
             p.auto_mode = False
+        # 2) Для running-статусов — request_stop, чтобы шаг прервался
+        #    на следующей итерации.
+        if p.status.value.endswith("_running") or p.status in (
+            ProjectStatus.planning, ProjectStatus.scripting,
+            ProjectStatus.splitting, ProjectStatus.generating_hero,
+            ProjectStatus.generating_items,
+            ProjectStatus.enriching_1, ProjectStatus.enriching_2,
+            ProjectStatus.enriching_3, ProjectStatus.enriching_4,
+            ProjectStatus.enriching_5,
+            ProjectStatus.generating_image_prompts,
+            ProjectStatus.generating_images,
+            ProjectStatus.generating_animation_prompts,
+            ProjectStatus.generating_videos,
+            ProjectStatus.generating_audio,
+            ProjectStatus.assembling, ProjectStatus.publishing,
+        ):
+            request_stop(p.id)
+            p.auto_mode = False
+            stopped_running += 1
     await session.flush()
-    logger.info("batch #{} ({}): пауза", batch.id, batch.slug)
+    logger.info(
+        "batch #{} ({}): пауза, request_stop отправлен на {} running sub'ов",
+        batch.id, batch.slug, stopped_running,
+    )
     return batch
 
 

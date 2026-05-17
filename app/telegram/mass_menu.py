@@ -54,7 +54,7 @@ def mass_main_kb(batch: BatchProject, sub_count: int) -> InlineKeyboardMarkup:
     # Кнопка управления очередью меняется по текущему статусу.
     if batch.status.value == "running":
         queue_row = [InlineKeyboardButton(
-            text="⏸ Поставить на паузу",
+            text="🛑 Стоп / пауза (прервать шаги)",
             callback_data=f"mass:pause:{batch.id}",
         )]
     elif batch.status.value == "paused":

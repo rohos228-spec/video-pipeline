@@ -1168,6 +1168,13 @@ async def on_mass_start(cb: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("mass:pause:"))
 async def on_mass_pause(cb: CallbackQuery) -> None:
+    """Пауза массового — теперь ЖЁСТКАЯ.
+
+    Помимо `batch.status=paused` и `auto_mode=False` ещё кричит
+    `request_stop()` на все running sub'ы, чтобы длинные циклы шагов
+    (картинки/видео/аудио/ассембл) прервались между итерациями, а не
+    докручивались до конца.
+    """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -1176,12 +1183,38 @@ async def on_mass_pause(cb: CallbackQuery) -> None:
     except Exception:
         await cb.answer("Bad callback", show_alert=True)
         return
+    # Считаем сколько running sub'ов будут остановлены (для уведомления).
     async with session_scope() as s:
+        subs = await batches_svc.get_batch_subprojects(s, bid)
+        running_count = sum(
+            1 for p in subs
+            if p.status.value.endswith("_running")
+            or p.status in (
+                ProjectStatus.planning, ProjectStatus.scripting,
+                ProjectStatus.splitting, ProjectStatus.generating_hero,
+                ProjectStatus.generating_items,
+                ProjectStatus.enriching_1, ProjectStatus.enriching_2,
+                ProjectStatus.enriching_3, ProjectStatus.enriching_4,
+                ProjectStatus.enriching_5,
+                ProjectStatus.generating_image_prompts,
+                ProjectStatus.generating_images,
+                ProjectStatus.generating_animation_prompts,
+                ProjectStatus.generating_videos,
+                ProjectStatus.generating_audio,
+                ProjectStatus.assembling, ProjectStatus.publishing,
+            )
+        )
         batch = await batches_svc.pause_batch_queue(s, bid)
         if batch is None:
             await cb.answer("Массовый не найден", show_alert=True)
             return
-    await cb.answer("⏸ Очередь на паузе")
+    if running_count > 0:
+        await cb.answer(
+            f"⏸ Пауза + Stop отправлен в {running_count} активн. шаг(а)",
+            show_alert=True,
+        )
+    else:
+        await cb.answer("⏸ Очередь на паузе")
     await _refresh_mass_main(cb, bid)
 
 
