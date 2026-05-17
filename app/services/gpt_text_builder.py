@@ -50,6 +50,11 @@ from app.services.prompt_library import (
 # Шаги, для которых поддерживается edit-override «сопр. сообщения».
 SUPPORTED_STEPS: tuple[str, ...] = (
     "plan", "script", "hero", "split", "img_pr",
+    # Шаг 8 «Промты анимации» — теперь идёт ОДНИМ чатом ChatGPT:
+    # первое сообщение = xlsx + prompt-файл + сопр. сообщение, потом
+    # батчами по ~10 картинок отдаём в ТОТ ЖЕ чат и парсим ответы.
+    # Сопр. сообщение редактируется как у plan/script/img_pr.
+    "anim_pr",
     # Слоты «Доп работа с EXCEL» (шаг 5). Каждый слот хранит свой
     # override в `Project.gpt_text_overrides["enrich_<i>"]`. В отличие
     # от других шагов, тут «сопр. сообщение» = ТОЛЬКО сопровождающий
@@ -296,6 +301,48 @@ def render_hero_text(
     return out
 
 
+def _build_anim_pr_default(
+    project: Project,
+    *,
+    n_frames: int = 0,
+    prompt_file_name: str = "prompt_anim_pr.md",
+) -> str:
+    """Шаг 8 «Промты анимации» (batched-images-flow).
+
+    К ПЕРВОМУ сообщению чата прикладываются: ``prompt_anim_pr.md``
+    (мастер-промт) и ``project.xlsx`` (рабочая таблица ролика, чтобы
+    GPT видел контекст кадров — image_prompt'ы, длительности и т.п.).
+    Дальше в ТОТ ЖЕ чат батчами по ~10 картинок отправляются
+    сгенерированные изображения; GPT в ответе пишет для каждой
+    картинки её анимационный промт, бот парсит ответ по имени файла
+    (``frame_NNN_<uuid>.png``) и записывает промты в xlsx (лист «план»,
+    строка 48) + в БД.
+
+    Возвращает «сопр. сообщение» для ПЕРВОГО сообщения чата —
+    короткое (без дублирования мастер-промта).
+    """
+    context_block = _build_topic_context_block(project)
+    frames_line = (
+        f"Кадров в проекте: {n_frames}.\n"
+        if n_frames
+        else ""
+    )
+    return (
+        (context_block + "\n\n" if context_block else "")
+        + f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция по генерации промтов анимации.\n"
+        f"  2. project.xlsx — рабочая таблица ролика (план, image_prompt'ы, длительности).\n\n"
+        f"{frames_line}"
+        "Прочитай инструкцию из первого файла и подготовься к работе. "
+        "СРАЗУ ничего НЕ возвращай — кратко подтверди, что готов, и жди "
+        "следующих сообщений: я БУДУ ОТПРАВЛЯТЬ СГЕНЕРИРОВАННЫЕ КАРТИНКИ "
+        "ПОРЦИЯМИ (~10 штук в одном сообщении). Для каждой картинки нужно "
+        "вернуть промт анимации в формате, указанном в инструкции.\n\n"
+        "ВАЖНО: всё происходит в ОДНОМ чате — никаких новых диалогов "
+        "начинать не нужно, просто отвечай на каждое моё сообщение."
+    )
+
+
 def _build_img_pr_default(
     project: Project,
     *,
@@ -361,6 +408,8 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         return _build_hero_default(project, **ctx)
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
+    if step_code == "anim_pr":
+        return _build_anim_pr_default(project, **ctx)
     if step_code.startswith("enrich_"):
         return _build_enrich_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")

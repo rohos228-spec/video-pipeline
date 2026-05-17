@@ -7847,6 +7847,13 @@ async def _build_gpt_text_for_edit(pid: int, step_code: str) -> str:
                     (fr.voiceover_text or "").strip() for fr in frames
                 )
                 ctx["n_frames"] = len(frames)
+        elif step_code == "anim_pr":
+            n_frames = (
+                await s.execute(
+                    select(Frame).where(Frame.project_id == pid)
+                )
+            ).scalars().all()
+            ctx["n_frames"] = len(n_frames)
         return gtb.get_effective_text(project, step_code, **ctx)
 
 
