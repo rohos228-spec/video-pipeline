@@ -290,12 +290,19 @@ class ChatGPTBot:
         await asyncio.sleep(0.5)
         logger.info("ChatGPT: текст промта введён ({} символов), ищу Send", len(text))
 
-        # Находим кнопку отправки — ждём, пока она активна
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=8)
+        # Находим кнопку отправки. ВАЖНО: после аплоада тяжёлых файлов (xlsx,
+        # несколько картинок) кнопка может оставаться `disabled` несколько
+        # секунд — пока ChatGPT доинициализирует upload. Поэтому таймаут
+        # тут ДОЛГИЙ (120с), и мы ждём не просто появления селектора в DOM,
+        # а пока кнопка станет enabled (без атрибута `disabled` и без
+        # `aria-disabled='true'`). Это полностью убирает ситуацию, когда
+        # фоллбек на Enter срабатывает раньше, чем активируется реальная
+        # Send-кнопка.
+        send_sel = await self._wait_for_enabled_send_button(page, timeout=120.0)
         if send_sel:
-            logger.info("ChatGPT: Send button найдена ({})", send_sel)
+            logger.info("ChatGPT: Send button найдена и активна ({})", send_sel)
             try:
-                await page.locator(send_sel).first.click(timeout=5_000)
+                await page.locator(send_sel).first.click(timeout=10_000)
                 logger.info("ChatGPT: Send button нажата успешно")
                 return
             except Exception as e:  # noqa: BLE001
@@ -305,9 +312,9 @@ class ChatGPTBot:
                 )
         else:
             logger.warning(
-                "ChatGPT: Send button НЕ найдена ни одним из {} селекторов "
-                "за 8 сек — UI ChatGPT мог измениться. Дамплю композер для диагностики.",
-                len(SEND_BUTTON_SELECTORS),
+                "ChatGPT: Send button НЕ стала активной за 120с — "
+                "UI ChatGPT мог измениться или upload завис. "
+                "Дамплю композер для диагностики.",
             )
             await self._dump_composer_html()
             await self._dump_send_button_candidates(page)
@@ -356,6 +363,26 @@ class ChatGPTBot:
                     await asyncio.sleep(1.5)
                 except Exception as e2:  # noqa: BLE001
                     logger.warning("ChatGPT: dispatchEvent Enter упал: {}", e2)
+                # Финальная проверка: если после ВСЕХ фоллбеков текст всё
+                # ещё сидит в композере — send провалился. Никогда нельзя молча
+                # возвращаться — это приводит к ситуации, когда вызывающий видит «ответ
+                # длины 0 симв.» и может добавить ещё файлы/текст в тот же застрявший
+                # композер. Лучше громко упасть и отдать решение retry-логике выше.
+                try:
+                    composer_text2 = await locator.inner_text(timeout=3_000)
+                    first2 = " ".join((text or "").split())[:60].lower()
+                    got2 = " ".join((composer_text2 or "").split())[:60].lower()
+                    still_after_all = bool(first2) and (first2 in got2)
+                except Exception:  # noqa: BLE001
+                    still_after_all = False
+                if still_after_all:
+                    raise RuntimeError(
+                        "ChatGPT: send failed after all fallbacks "
+                        "(Send-click + Enter + dispatchEvent) — композер "
+                        "всё ещё содержит исходный текст"
+                    )
+        except RuntimeError:
+            raise
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: Enter тоже упал: {}", e)
 
@@ -379,6 +406,55 @@ class ChatGPTBot:
                 logger.warning("ChatGPT: ни одной <button> внутри композера")
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: dump_send_button_candidates упал: {}", e)
+
+    async def _wait_for_enabled_send_button(
+        self, page: Page, *, timeout: float = 120.0,
+    ) -> str | None:
+        """Ждёт пока в DOM появится Send-кнопка И станет ENABLED.
+
+        Возвращает успешный селектор или None если не дождались. ChatGPT
+        отрисовывает Send-кнопку быстро, но держит её `disabled` пока
+        идёт upload файлов (xlsx может тяжело инициализироваться). При
+        старых таймаутах (8 сек) код проваливался в Enter-фоллбек, который
+        работает нестабильно. Этот метод — главный фикс: ждём именно
+        «активную» кнопку, а не просто «видна в DOM».
+
+        Кнопку считаем активной если:
+        - её селектор найден,
+        - на ней НЕТ атрибута `disabled`,
+        - НЕТ `aria-disabled='true'`.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_log_at = 0.0
+        while asyncio.get_event_loop().time() < deadline:
+            for sel in SEND_BUTTON_SELECTORS:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() == 0:
+                        continue
+                    is_disabled = await loc.evaluate(
+                        """(el) => {
+                            if (el.disabled) return true;
+                            const ad = el.getAttribute('aria-disabled');
+                            if (ad === 'true') return true;
+                            return false;
+                        }"""
+                    )
+                    if not is_disabled:
+                        return sel
+                except Exception:  # noqa: BLE001
+                    continue
+            # Прогресс-лог раз в 10 сек.
+            now = asyncio.get_event_loop().time()
+            if now - last_log_at >= 10.0:
+                logger.info(
+                    "ChatGPT: жду пока Send-кнопка станет enabled "
+                    "(прошло ~{:.0f}с / {:.0f}с)",
+                    now - (deadline - timeout), timeout,
+                )
+                last_log_at = now
+            await asyncio.sleep(0.5)
+        return None
 
     async def _wait_until_done(self, *, timeout: float = 300) -> None:
         """Ждём, пока пропадёт кнопка "Stop generating".

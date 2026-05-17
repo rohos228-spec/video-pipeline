@@ -191,9 +191,18 @@ async def _send_first_message(
         [prompt_file, xlsx_path],
         timeout=_GPT_TIMEOUT,
     )
+    reply_text = (reply or "").strip()
+    if not reply_text:
+        # Это значит, что send из chatgpt.py не сработал (либо сработал, но
+        # GPT не успел ответить за timeout). В любом случае нельзя считать
+        # это успехом — иначе следующий батч уплывёт в застрявший композер.
+        raise RuntimeError(
+            "anim_pr: первое сообщение — пустой ответ GPT "
+            "(вероятно, send в композере не прошёл). Пойду в retry."
+        )
     logger.info(
         "[#{}] anim_pr: первое сообщение принято, GPT ответил {} симв.",
-        project.id, len(reply or ""),
+        project.id, len(reply_text),
     )
 
 
@@ -255,12 +264,21 @@ async def _process_batch(
     reply = await gpt.ask_with_files(
         batch_text, image_paths, timeout=_GPT_TIMEOUT,
     )
+    reply_text = (reply or "").strip()
     logger.info(
         "[#{}] anim_pr batch #{}: получил ответ {} симв.",
-        project.id, batch_index, len(reply or ""),
+        project.id, batch_index, len(reply_text),
     )
+    if not reply_text:
+        # Аналогично _send_first_message: пустой ответ = либо send в композере
+        # не прошёл, либо GPT не успел ответить. Не пишем «успех» — кидаем
+        # ошибку, чтобы retry-loop ушёл в 10-мин паузу и попробовал заново.
+        raise RuntimeError(
+            f"anim_pr batch #{batch_index}: пустой ответ GPT "
+            f"(вероятно, send в композере не прошёл)"
+        )
 
-    parsed = _parse_batch_reply(reply or "")
+    parsed = _parse_batch_reply(reply_text)
     # Оставляем только промты для кадров из этого батча.
     valid = {n: p for n, p in parsed.items() if n in frame_nums}
     missing = [n for n in frame_nums if n not in valid]
