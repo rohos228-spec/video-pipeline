@@ -601,6 +601,62 @@ def objects_submenu_kb(project: Project) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def images_submenu_kb(project: Project) -> InlineKeyboardMarkup:
+    """Подменю шага 7 «Картинки» — выбор между «Сгенерировать все» и
+    «Добить недостающие».
+
+    Иконка на «▶ Сгенерировать все»:
+      ⏳ — генерация идёт прямо сейчас (generating_images)
+      ✅ — шаг уже выполнен (images_ready и дальше), кликом перегенерим
+      ▶ — можно запустить
+
+    «🔍 Добить недостающие» — кликабельно всегда; в handler'е сначала
+    сканируется диск (scenes/), показывается список номеров кадров без
+    .png, и только при их наличии стартует генерация именно по ним.
+
+    «🔁 Прогнать шаг с нуля» — стандартный сброс шага (reset_step),
+    оставляем здесь, чтобы кнопка не потерялась после переноса под
+    submenu.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if project.status is ProjectStatus.generating_images:
+        gen_all_label = "⏳ Сгенерировать все · идёт…"
+    elif status_order(project.status) >= status_order(
+        ProjectStatus.images_ready
+    ):
+        gen_all_label = "✅ Сгенерировать все (перегенерировать)"
+    else:
+        gen_all_label = "▶ Сгенерировать все"
+    rows.append([
+        InlineKeyboardButton(
+            text=gen_all_label,
+            callback_data=f"proj:{project.id}:img:gen_all",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="🔍 Добить недостающие",
+            callback_data=f"proj:{project.id}:img:fill_missing",
+        )
+    ])
+    # «🔁 Прогнать шаг с нуля» — sub_step reset (поддерживается через
+    # reset_step_svc для шага 7). reset_ask handler есть в bot.py.
+    rows.append([
+        InlineKeyboardButton(
+            text="🔁 Прогнать шаг с нуля",
+            callback_data=f"reset_ask:{project.id}:img",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅ Назад в меню проекта",
+            callback_data=f"proj:{project.id}:menu",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def enrich_submenu_kb(project: Project) -> InlineKeyboardMarkup:
     """Подменю шага 5 «Доп работа с EXCEL».
 
