@@ -114,6 +114,36 @@ def _build_topic_context_block(project: Project) -> str:
         card_lines.append(f"  • Интеграция продукта: {card['integration']}")
     if card.get("shoot_note"):
         card_lines.append(f"  • Примечание по съёмке: {card['shoot_note']}")
+    # Жёсткие тех-ограничения по длительности и закадру (если указаны в xlsx).
+    duration = card.get("video_duration_sec")
+    chars = card.get("voiceover_chars_target")
+    if duration:
+        try:
+            duration_f = float(duration)
+            duration_str = (
+                f"{int(duration_f)}" if duration_f == int(duration_f)
+                else f"{duration_f:.1f}"
+            )
+            card_lines.append(
+                f"  • Длительность ролика: {duration_str} сек "
+                f"(ЖЁСТКОЕ ОГРАНИЧЕНИЕ — итог не должен превысить это время)"
+            )
+        except (TypeError, ValueError):
+            pass
+    if chars:
+        try:
+            chars_f = float(chars)
+            chars_str = (
+                f"{int(chars_f)}" if chars_f == int(chars_f)
+                else f"{chars_f:.1f}"
+            )
+            card_lines.append(
+                f"  • Бюджет закадрового текста: {chars_str} символов "
+                f"(1 сек ≈ 13,5 симв; следи, чтобы итоговый «закадровый текст» "
+                f"не превышал этот объём)"
+            )
+        except (TypeError, ValueError):
+            pass
     if card_lines:
         lines.append("📋 Карточка ролика:")
         lines.extend(card_lines)

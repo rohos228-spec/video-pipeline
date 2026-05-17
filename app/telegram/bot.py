@@ -631,6 +631,7 @@ async def on_menu_list(cb: CallbackQuery) -> None:
 
 import contextlib  # noqa: E402
 
+from app.services import batch_autofill as batch_autofill_svc  # noqa: E402
 from app.services import batches as batches_svc  # noqa: E402
 from app.storage import batch_sheet  # noqa: E402
 from app.telegram.mass_menu import (  # noqa: E402
@@ -1099,6 +1100,63 @@ async def on_mass_start(cb: CallbackQuery) -> None:
     except Exception:
         await cb.answer("Bad callback", show_alert=True)
         return
+
+    # Сначала — если в topics.xlsx есть пустые карточные ячейки (юзер
+    # добавил темы только текстом, не залил заполненный xlsx) —
+    # отправляем файл в ChatGPT, ждём заполненный xlsx и обновляем
+    # `Project.meta["topic_card"]` для всех подпроектов. Если всё уже
+    # заполнено или GPT упал — пропускаем и идём дальше.
+    #
+    # Проверка «нужно ли» отдельной транзакцией — чтобы можно было
+    # отправить сообщение «ждём GPT…» до начала роунд-трипа.
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        topics_path = batch.topics_xlsx_path
+        rows_preview = (
+            batch_sheet.read_topics(topics_path) if topics_path.exists() else []
+        )
+        will_autofill = bool(rows_preview) and (
+            batch_autofill_svc.has_empty_card_cells(rows_preview)
+        )
+
+    if will_autofill:
+        await cb.answer("✨ Запускаю авто-заполнение через ChatGPT…")
+        notice = await cb.message.answer(
+            "✨ Отправляю `topics.xlsx` в ChatGPT для авто-заполнения "
+            "пустых карточных полей… Это может занять пару минут.",
+            parse_mode="Markdown",
+        )
+    else:
+        notice = None
+
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        autofill_result = await batch_autofill_svc.autofill_topics_if_needed(s, batch)
+
+    if notice is not None:
+        with contextlib.suppress(Exception):
+            await notice.delete()
+    if autofill_result["triggered"]:
+        if autofill_result["failed"]:
+            await cb.message.answer(
+                "⚠️ Авто-заполнение `topics.xlsx` через ChatGPT не удалось: "
+                f"`{autofill_result.get('error') or 'unknown'}`. "
+                "Запуск очереди продолжится с текущим xlsx.",
+                parse_mode="Markdown",
+            )
+        else:
+            await cb.message.answer(
+                f"✨ ChatGPT дозаполнил `topics.xlsx`. "
+                f"Обновлено подпроектов: *{autofill_result['updated_subs']}*.",
+                parse_mode="Markdown",
+            )
+
     async with session_scope() as s:
         batch = await batches_svc.start_batch_queue(s, bid)
         if batch is None:

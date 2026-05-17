@@ -253,9 +253,12 @@ async def add_topics(
     created: list[Project] = []
 
     # Карточные поля, попадающие в Project.meta["topic_card"].
+    # video_duration_sec / voiceover_chars_target — для бюджета закадра
+    # (формула =L*13.5 в xlsx). См. app/storage/batch_sheet.py.
     CARD_KEYS = [
         "title", "source", "style", "hook_type", "emotion", "fact",
         "logic", "integration", "shoot_note",
+        "video_duration_sec", "voiceover_chars_target",
     ]
 
     # Снимок постоянного продукта массового — копируем в meta каждого

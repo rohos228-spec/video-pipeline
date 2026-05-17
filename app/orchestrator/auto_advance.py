@@ -743,9 +743,17 @@ async def serial_busy_in_batch(session: AsyncSession, batch_id: int) -> int | No
     возвращает его id. Иначе None.
 
     Используется чтобы НЕ запускать второй подпроект параллельно (юзер
-    хочет, чтобы массовое шло «по одному»).
+    хочет, чтобы массовое шло «по одному» от начала до конца).
+
+    (strict-sequential) В busy-список включаем И `*_running` (шаг прямо
+    сейчас работает), И `*_ready` (шаг закончился, ждём auto_advance до
+    следующего running). Это закрывает race-window: раньше между
+    `plan_ready → maybe_auto_advance → scripting` существовал момент,
+    когда sub считался «не занят», и `serial_tick_batches` мог запустить
+    следующий sub. В итоге шли 2-3 sub параллельно, хотя max_parallelism=1.
     """
     busy_running = [
+        # *_running (шаг работает)
         ProjectStatus.planning,
         ProjectStatus.scripting,
         ProjectStatus.splitting,
@@ -763,6 +771,24 @@ async def serial_busy_in_batch(session: AsyncSession, batch_id: int) -> int | No
         ProjectStatus.generating_audio,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
+        # *_ready (шаг закончился, ждём auto_advance) — тоже считаем «занят»,
+        # чтобы next sub не стартанул в зазоре между шагами.
+        ProjectStatus.plan_ready,
+        ProjectStatus.script_ready,
+        ProjectStatus.frames_ready,
+        ProjectStatus.hero_ready,
+        ProjectStatus.items_ready,
+        ProjectStatus.enrich_1_ready,
+        ProjectStatus.enrich_2_ready,
+        ProjectStatus.enrich_3_ready,
+        ProjectStatus.enrich_4_ready,
+        ProjectStatus.enrich_5_ready,
+        ProjectStatus.image_prompts_ready,
+        ProjectStatus.images_ready,
+        ProjectStatus.animation_prompts_ready,
+        ProjectStatus.videos_ready,
+        ProjectStatus.audio_ready,
+        ProjectStatus.assembled,
     ]
     busy = (
         await session.execute(
