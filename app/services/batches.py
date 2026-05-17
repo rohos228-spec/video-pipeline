@@ -660,7 +660,7 @@ def get_permanent_product(batch: BatchProject) -> dict | None:
 # Дефолты всех «переключателей» режима. Хранятся в
 # batch.settings_snapshot["mass_settings"] (JSON sub-dict).
 DEFAULT_MASS_SETTINGS: dict = {
-    "enrich_slots_count": 3,        # 1..5
+    "enrich_slots_count": 1,        # 1..5 (по дефолту 1, юзер добавляет
     "hero_count": 1,                # 1..5
     "hero_variations": 1,           # 1..5 (применяется ко всем героям)
     "excel_hero_enabled": False,    # bool

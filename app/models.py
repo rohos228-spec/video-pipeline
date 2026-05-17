@@ -199,7 +199,7 @@ class Project(Base):
     # Авто-режим: если True, воркер сам продвигает проект по шагам
     # (PR #2). По умолчанию False — ручной режим.
     auto_mode: Mapped[bool] = mapped_column(default=False)
-    enrich_slots_count: Mapped[int] = mapped_column(default=3)
+    enrich_slots_count: Mapped[int] = mapped_column(default=1)
     # Описания предметов (по одному на каждый id в листе «Предметы»).
     # Аналог hero_descriptions, заполняется юзером в xlsx; шаг 4b
     # «Предметы» генерит по одному изображению на каждое непустое описание.

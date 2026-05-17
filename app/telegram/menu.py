@@ -167,10 +167,11 @@ def _objects_requires_for_step5() -> ProjectStatus:
 
 def enabled_enrich_slots(project: Project | None) -> int:
     """Сколько enrich-слотов реально включено у проекта (1..5).
-    Если project=None или поле не выставлено — дефолт 3."""
+    Если project=None или поле не выставлено — дефолт 1 (юзер добавляет
+    кнопкой «➕ Добавить слот»)."""
     if project is None:
-        return 3
-    n = project.enrich_slots_count or 3
+        return 1
+    n = project.enrich_slots_count or 1
     return max(1, min(MAX_ENRICH_SLOTS, n))
 
 

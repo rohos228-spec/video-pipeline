@@ -51,7 +51,7 @@ async def _init_db() -> None:
             ("gpt_text_overrides", "JSON"),
             # Pipeline-redesign: «Объекты» (Персонажи+Предметы) и слоты
             # «Доп работа с EXCEL».
-            ("enrich_slots_count", "INTEGER DEFAULT 3"),
+            ("enrich_slots_count", "INTEGER DEFAULT 1"),
             ("item_descriptions", "JSON"),
             ("item_variations", "JSON"),
             # Массовое создание: каждая запись projects может принадлежать

@@ -5676,7 +5676,7 @@ async def on_enrich_add_slot(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        cur = project.enrich_slots_count or 3
+        cur = project.enrich_slots_count or 1
         if cur >= MAX_ENRICH_SLOTS:
             await cb.answer(
                 f"Уже максимум: {MAX_ENRICH_SLOTS} слотов",
