@@ -216,6 +216,10 @@ def mass_progress_kb(batch: BatchProject, subs: list[Project]) -> InlineKeyboard
 
     rows.append([
         InlineKeyboardButton(
+            text="🔄 Обновить",
+            callback_data=f"mass:progress:{batch.id}",
+        ),
+        InlineKeyboardButton(
             text="📥 Скачать topics.xlsx",
             callback_data=f"mass:dl_xlsx:{batch.id}",
         ),
@@ -294,11 +298,23 @@ def mass_settings_kb(batch: BatchProject, ms: dict) -> InlineKeyboardMarkup:
             "Макс параллельность", "max_parallelism",
         ),
     ]
-    # Visual auto-review kinds — свои toggle'ы.
+    # Auto-review kinds — свои toggle'ы.
+    kinds_on = set(ms.get("auto_review_kinds") or [])
+    rows.append([InlineKeyboardButton(
+        text="— GPT проверяет тексты —", callback_data="mass:noop",
+    )])
+    for kind, label in (
+        ("approve_plan", "План (plan)"),
+        ("approve_script", "Закадровый текст (script)"),
+    ):
+        icon = "✅" if kind in kinds_on else "⚪"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {label}",
+            callback_data=f"mass:tog:{batch.id}:auto_review_kinds.{kind}",
+        )])
     rows.append([InlineKeyboardButton(
         text="— GPT-vision проверяет —", callback_data="mass:noop",
     )])
-    kinds_on = set(ms.get("auto_review_kinds") or [])
     for kind, label in (
         ("approve_hero", "Персонажи (hero)"),
         ("approve_images", "Картинки (images)"),

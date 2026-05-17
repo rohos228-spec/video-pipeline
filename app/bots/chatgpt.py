@@ -313,9 +313,49 @@ class ChatGPTBot:
             await self._dump_send_button_candidates(page)
 
         # Запасной путь — Enter (в contenteditable ChatGPT часто реагирует).
-        logger.info("ChatGPT: fallback — жму Enter")
+        # ВАЖНО: между нажатием Send и фоллбеком фокус мог уйти. Нужно
+        # явно вернуть фокус на композер и подождать, чтобы UI отработал.
+        logger.info("ChatGPT: fallback — refocus composer + Enter")
         try:
+            await locator.focus()
+            await asyncio.sleep(0.4)
             await page.keyboard.press("Enter")
+            await asyncio.sleep(1.5)
+            # Проверка: если контент композера всё ещё содержит наш текст —
+            # Enter не сработал. Делаем ещё одну попытку через page.evaluate
+            # с прямой имитацией keydown.
+            still_has_text = False
+            try:
+                composer_text = await locator.inner_text(timeout=3_000)
+                # Сравниваем нормализованные первые 60 символов.
+                first = " ".join((text or "").split())[:60].lower()
+                got = " ".join((composer_text or "").split())[:60].lower()
+                still_has_text = bool(first) and (first in got)
+            except Exception:  # noqa: BLE001
+                still_has_text = False
+            if still_has_text:
+                logger.warning(
+                    "ChatGPT: после Enter композер не очистился, "
+                    "пробую отправку через dispatchEvent keydown"
+                )
+                try:
+                    await page.evaluate(
+                        """() => {
+                            const el = document.querySelector('main form [contenteditable=\"true\"]')
+                                || document.querySelector('[contenteditable=\"true\"]');
+                            if (!el) return false;
+                            el.focus();
+                            const ev = new KeyboardEvent('keydown', {
+                                key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                                bubbles: true, cancelable: true
+                            });
+                            el.dispatchEvent(ev);
+                            return true;
+                        }"""
+                    )
+                    await asyncio.sleep(1.5)
+                except Exception as e2:  # noqa: BLE001
+                    logger.warning("ChatGPT: dispatchEvent Enter упал: {}", e2)
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: Enter тоже упал: {}", e)
 

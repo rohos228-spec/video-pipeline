@@ -616,6 +616,17 @@ async def maybe_auto_advance(
 
     # GPT-чек для текстовых kind'ов:
     if transition.kind in TEXT_REVIEW_KINDS:
+        # (single-mass parity #7) Уважаем явный список auto_review_kinds
+        # для текстовых тоже. Если пользователь массового настроил пустой
+        # список (default) — текст не проверяем, просто auto-approve. Это
+        # совпадает с поведением одиночной (юзер сам жмёт approve в TG).
+        if not _should_text_check(project, transition.kind):
+            logger.info(
+                "auto_advance: #{} {} → auto-approve (text, no GPT check)",
+                project.id, status.value,
+            )
+            await _apply_approve(session, project, hitl, transition, bot=bot)
+            return True
         artifact = _artifact_for_kind(project, transition.kind)
         if not artifact:
             logger.warning(
@@ -631,6 +642,25 @@ async def maybe_auto_advance(
     # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1) — TODO.
     # Пока — auto-approve.
     await _apply_approve(session, project, hitl, transition, bot=bot)
+    return True
+
+
+def _should_text_check(project: Project, kind: HITLKind) -> bool:
+    """Решает, нужно ли запускать GPT-чек на текстовый артефакт
+    (план / сценарий).
+
+    Приоритет:
+        1. project.meta["auto_review_kinds"] (если задан явный список —
+           массовый из batch.settings_snapshot) — kind должен быть в нём.
+        2. По умолчанию (нет настройки) — True (legacy для одиночных с
+           auto_mode=True, где раньше всегда запускалась проверка).
+    """
+    meta = getattr(project, "meta", None) or {}
+    override = meta.get("auto_review_kinds")
+    if isinstance(override, list):
+        wanted: set[str] = {str(x).strip().lower() for x in override}
+        return (kind.value in wanted) or (kind.name.lower() in wanted)
+    # legacy: одиночный с auto_mode=True — оставляем как было.
     return True
 
 
