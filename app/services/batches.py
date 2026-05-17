@@ -133,10 +133,14 @@ def _snapshot_settings_from(project: Project) -> dict:
 
 
 def _copy_prompts_snapshot(target_dir: Path) -> None:
-    """Копирует всё содержимое `prompts/` в `target_dir`.
+    """Копирует всё содержимое `prompts/` в `target_dir`, затем накладывает
+    mass-global overlay.
 
     Структура сохраняется: `01_plan/default.md`, `02_script/default.md` и т.д.
     Если папка-цель уже существует — НЕ перезаписываем (снапшот неизменяем).
+
+    После копирования наслаивается `data/mass_template_prompts/` —
+    глобальный уровень для массовой генерации (не для одиночной).
     """
     if target_dir.exists():
         logger.info("batches: prompts snapshot already exists at {}", target_dir)
@@ -144,6 +148,12 @@ def _copy_prompts_snapshot(target_dir: Path) -> None:
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(PROMPTS_ROOT, target_dir, dirs_exist_ok=False)
     logger.info("batches: copied prompts snapshot → {}", target_dir)
+    # Наложение mass-global поверх (если есть). См. app.services.mass_prompts.
+    try:
+        from app.services.mass_prompts import overlay_mass_global_into_snapshot
+        overlay_mass_global_into_snapshot(target_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("batches: mass-global overlay failed: {}", e)
 
 
 async def create_batch(
@@ -176,6 +186,23 @@ async def create_batch(
         ).scalar_one_or_none()
         if template is not None:
             settings_snapshot = _snapshot_settings_from(template)
+
+    # Наслаиваем mass-global text-overrides: они должны примениться к
+    # новому батчу как дефолт (поверх того что пришло из template_project).
+    try:
+        from app.services.mass_prompts import mass_global_text_overrides_dir
+        gd = mass_global_text_overrides_dir()
+        if gd.exists():
+            text_overrides = dict(settings_snapshot.get("gpt_text_overrides") or {})
+            for f in gd.glob("*.md"):
+                step = f.stem
+                content = f.read_text(encoding="utf-8")
+                if content.strip():
+                    text_overrides[step] = content
+            if text_overrides:
+                settings_snapshot["gpt_text_overrides"] = text_overrides
+    except Exception as e:  # noqa: BLE001
+        logger.warning("batches: mass-global text overlay failed: {}", e)
 
     batch = BatchProject(
         name=name,

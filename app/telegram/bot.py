@@ -199,6 +199,23 @@ _pending_mass_name: dict[int, bool] = {}
 _pending_mass_topics_text: dict[int, int] = {}
 # user_id → batch_id: ждём topics.xlsx файлом для массового.
 _pending_mass_xlsx_upload: dict[int, int] = {}
+
+# === Mass-prompts UI state ===
+# Ожидание имени нового варианта промта на уровне массовой.
+# user_id → (batch_id, step_code).
+_pending_mass_prompt_name: dict[int, tuple[int, str]] = {}
+# Ожидание возврата `.md`-файла с промтом для массовой.
+# user_id → (batch_id, step_code, variant_name).
+_pending_mass_prompt_upload: dict[int, tuple[int, str, str]] = {}
+# Полученный контент промта, ждём выбор «локально / глобально».
+# (batch_id, step_code, variant_name) → content
+_pending_mass_prompt_content: dict[tuple[int, str, str], str] = {}
+# Ожидание возврата .md/.txt с сопр. сообщением для массовой.
+# user_id → (batch_id, step_code).
+_pending_mass_text_edit: dict[int, tuple[int, str]] = {}
+# Полученный контент сопр. сообщения, ждём выбор «локально / глобально».
+# (batch_id, step_code) → content.
+_pending_mass_text_content: dict[tuple[int, str], str] = {}
 # user_id → batch_id: ждём название постоянного продукта (PR #3).
 _pending_mass_prod_name: dict[int, int] = {}
 # user_id → batch_id: ждём описание постоянного продукта (PR #3).
@@ -328,6 +345,9 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_mass_name.pop(user_id, None)
     _pending_mass_topics_text.pop(user_id, None)
     _pending_mass_xlsx_upload.pop(user_id, None)
+    _pending_mass_prompt_name.pop(user_id, None)
+    _pending_mass_prompt_upload.pop(user_id, None)
+    _pending_mass_text_edit.pop(user_id, None)
     _pending_mass_prod_name.pop(user_id, None)
     _pending_mass_prod_desc.pop(user_id, None)
     _pending_mass_prod_photo.pop(user_id, None)
@@ -633,6 +653,7 @@ import contextlib  # noqa: E402
 
 from app.services import batch_autofill as batch_autofill_svc  # noqa: E402
 from app.services import batches as batches_svc  # noqa: E402
+from app.services import mass_prompts as mass_prompts_svc  # noqa: E402
 from app.storage import batch_sheet  # noqa: E402
 from app.telegram.mass_menu import (  # noqa: E402
     batch_header,
@@ -645,6 +666,33 @@ from app.telegram.mass_menu import (  # noqa: E402
     mass_topics_kb,
     progress_text,
     topics_text,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    delete_kb as mass_prm_delete_kb,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    msg_menu_kb as mass_prm_msg_menu_kb,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    msg_menu_text as mass_prm_msg_menu_text,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    overview_kb as mass_prm_overview_kb,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    overview_text as mass_prm_overview_text,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    picker_kb as mass_prm_picker_kb,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    picker_text as mass_prm_picker_text,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    save_choice_kb as mass_prm_save_choice_kb,
+)
+from app.telegram.mass_prompt_picker import (  # noqa: E402
+    text_save_choice_kb as mass_prm_text_save_choice_kb,
 )
 
 
@@ -1376,6 +1424,555 @@ async def _show_mass_product(msg: Message, bid: int) -> None:
         text = product_text(batch)
         kb = mass_product_kb(batch)
     await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ===========================================================================
+# Mass-prompt picker — UI для управления промтами и «сопр. сообщениями» на
+# уровне массовой генерации (с выбором локально / глобально при сохранении).
+# ===========================================================================
+
+async def _propagate_mass_settings_to_subs(
+    s, bid: int, *, key: str, new_value
+) -> None:
+    """Прокидывает изменение `settings_snapshot[key]` в активные sub'ы.
+
+    Для new sub'ов (status=new) поле обновляется полностью. Для остальных
+    логика наследования зависит от каждого конкретного шага — но
+    основное правило: для `prompt_overrides` мы безопасно меняем ВЕЗДЕ,
+    т.к. имя варианта читается каждый раз при старте шага. Для
+    `gpt_text_overrides` — тоже везде.
+    """
+    from sqlalchemy import update
+    subs = await batches_svc.get_batch_subprojects(s, bid)
+    for sub in subs:
+        cur = dict(getattr(sub, key) or {})
+        cur.update(new_value)
+        await s.execute(
+            update(Project)
+            .where(Project.id == sub.id)
+            .values(**{key: cur})
+        )
+
+
+async def _show_mass_prm_overview(cb: CallbackQuery, bid: int) -> None:
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        text = mass_prm_overview_text(batch)
+        kb = mass_prm_overview_kb(batch)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _show_mass_prm_picker(cb: CallbackQuery, bid: int, step_code: str) -> None:
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        text = mass_prm_picker_text(batch, step_code)
+        kb = mass_prm_picker_kb(batch, step_code)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("mprm:"))
+async def on_mass_prompt_cb(cb: CallbackQuery) -> None:  # noqa: PLR0911, PLR0912, PLR0915
+    """Главный обработчик callback'ов меню «Промты + тексты» массовой."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    # Форматы:
+    #   mprm:<bid>:overview
+    #   mprm:<bid>:<step>:<action>[:<arg>]
+    #   mprm:save:<bid>:<step>:<name>:<loc|glob>
+    #   mprm:txtsave:<bid>:<step>:<loc|glob>
+    if len(parts) < 3:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+
+    user_id = cb.from_user.id
+
+    # Save promt content (после выбора local/global).
+    if parts[1] == "save":
+        try:
+            bid = int(parts[2])
+            step_code = parts[3]
+            variant_name = parts[4]
+            scope = parts[5]  # loc | glob
+        except Exception:
+            await cb.answer("Bad callback", show_alert=True)
+            return
+        key = (bid, step_code, variant_name)
+        content = _pending_mass_prompt_content.pop(key, None)
+        if content is None:
+            await cb.answer(
+                "Содержимое промта потеряно — пришли файл ещё раз.",
+                show_alert=True,
+            )
+            return
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            slug = batch.slug
+            if scope == "glob":
+                mass_prompts_svc.write_variant_global(
+                    step_code, variant_name, content,
+                    also_write_to_batch_slug=slug,
+                )
+                scope_human = "🌐 глобально (и в этот массовый)"
+            else:
+                mass_prompts_svc.write_variant_local(
+                    slug, step_code, variant_name, content,
+                )
+                scope_human = "🏷 локально (только этот массовый)"
+            # Запишем выбранный вариант в settings_snapshot и в sub'ы.
+            overrides = dict(batch.settings_snapshot.get("prompt_overrides") or {})
+            overrides[step_code] = variant_name
+            batch.settings_snapshot["prompt_overrides"] = overrides
+            flag_modified(batch, "settings_snapshot")
+            await _propagate_mass_settings_to_subs(
+                s, bid,
+                key="prompt_overrides",
+                new_value={step_code: variant_name},
+            )
+            await s.commit()
+        await cb.answer(f"💾 Сохранено {scope_human}", show_alert=True)
+        await _show_mass_prm_picker(cb, bid, step_code)
+        return
+
+    # Save text-override (после выбора local/global).
+    if parts[1] == "txtsave":
+        try:
+            bid = int(parts[2])
+            step_code = parts[3]
+            scope = parts[4]
+        except Exception:
+            await cb.answer("Bad callback", show_alert=True)
+            return
+        key2 = (bid, step_code)
+        content = _pending_mass_text_content.pop(key2, None)
+        if content is None:
+            await cb.answer(
+                "Текст сообщения потерян — пришли файл ещё раз.",
+                show_alert=True,
+            )
+            return
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            if scope == "glob":
+                mass_prompts_svc.write_text_override_global(step_code, content)
+                scope_human = "🌐 глобально (и в этот массовый)"
+            else:
+                scope_human = "🏷 локально (только этот массовый)"
+            # В любом случае — пишем в snapshot текущего батча.
+            text_overrides = dict(
+                batch.settings_snapshot.get("gpt_text_overrides") or {}
+            )
+            text_overrides[step_code] = content
+            batch.settings_snapshot["gpt_text_overrides"] = text_overrides
+            flag_modified(batch, "settings_snapshot")
+            await _propagate_mass_settings_to_subs(
+                s, bid,
+                key="gpt_text_overrides",
+                new_value={step_code: content},
+            )
+            await s.commit()
+        await cb.answer(f"💾 Сохранено {scope_human}", show_alert=True)
+        await _show_mass_prm_msg_menu(cb, bid, step_code)
+        return
+
+    # Простые экраны.
+    try:
+        bid = int(parts[1])
+    except Exception:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+
+    if parts[2] == "overview":
+        await cb.answer()
+        await _show_mass_prm_overview(cb, bid)
+        return
+
+    if len(parts) < 4:
+        await cb.answer("Bad callback", show_alert=True)
+        return
+    step_code = parts[2]
+    action = parts[3]
+
+    if action == "menu":
+        await cb.answer()
+        await _show_mass_prm_picker(cb, bid, step_code)
+        return
+
+    if action == "sel":
+        if len(parts) < 5:
+            await cb.answer("Bad callback", show_alert=True)
+            return
+        name = parts[4]
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            overrides = dict(batch.settings_snapshot.get("prompt_overrides") or {})
+            overrides[step_code] = name
+            batch.settings_snapshot["prompt_overrides"] = overrides
+            flag_modified(batch, "settings_snapshot")
+            await _propagate_mass_settings_to_subs(
+                s, bid,
+                key="prompt_overrides",
+                new_value={step_code: name},
+            )
+            await s.commit()
+        await cb.answer(f"✅ Выбран: {name}", show_alert=True)
+        await _show_mass_prm_picker(cb, bid, step_code)
+        return
+
+    if action == "add":
+        _pending_mass_prompt_name[user_id] = (bid, step_code)
+        _pending_mass_prompt_upload.pop(user_id, None)
+        human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+        await cb.answer()
+        await cb.message.answer(
+            f"<b>Шаг 1 из 2.</b> Пришли текстом <b>имя</b> нового "
+            f"варианта мастер-промта для шага «{human}» (без расширения).\n\n"
+            f"Пример: <code>хоррор тёмная версия</code>.\n"
+            f"Допускаются буквы, цифры, пробел, дефис, подчёркивание. "
+            f"Латиница/кириллица.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "editcur":
+        # Текущий выбранный вариант.
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            name = (batch.settings_snapshot.get("prompt_overrides") or {}).get(
+                step_code
+            ) or plib.DEFAULT_NAME
+            slug = batch.slug
+        await _send_mass_prompt_for_edit(cb, bid, slug, step_code, name)
+        return
+
+    if action == "edit":
+        if len(parts) < 5:
+            await cb.answer("Bad callback", show_alert=True)
+            return
+        name = parts[4]
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            slug = batch.slug
+        await _send_mass_prompt_for_edit(cb, bid, slug, step_code, name)
+        return
+
+    if action == "delask":
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            kb = mass_prm_delete_kb(batch, step_code)
+        await cb.answer()
+        await cb.message.answer(
+            "Какой вариант удалить? <code>default</code> удалить нельзя.\n"
+            "Удаляется и из snapshot'а батча, и из глобального mass-уровня.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return
+
+    if action == "del":
+        if len(parts) < 5:
+            await cb.answer("Bad callback", show_alert=True)
+            return
+        name = parts[4]
+        if name == plib.DEFAULT_NAME:
+            await cb.answer("default удалять нельзя", show_alert=True)
+            return
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            slug = batch.slug
+            try:
+                mass_prompts_svc.delete_variant_local(slug, step_code, name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("mass-prm delete local failed: {}", e)
+            try:
+                mass_prompts_svc.delete_variant_global(step_code, name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("mass-prm delete global failed: {}", e)
+            # Сбросим override если был выбран этот вариант.
+            overrides = dict(batch.settings_snapshot.get("prompt_overrides") or {})
+            if overrides.get(step_code) == name:
+                overrides.pop(step_code, None)
+                batch.settings_snapshot["prompt_overrides"] = overrides
+                flag_modified(batch, "settings_snapshot")
+                await _propagate_mass_settings_to_subs(
+                    s, bid,
+                    key="prompt_overrides",
+                    new_value={step_code: plib.DEFAULT_NAME},
+                )
+            await s.commit()
+        await cb.answer(f"🗑 «{name}» удалён", show_alert=True)
+        await _show_mass_prm_picker(cb, bid, step_code)
+        return
+
+    if action == "msgmenu":
+        await cb.answer()
+        await _show_mass_prm_msg_menu(cb, bid, step_code)
+        return
+
+    if action == "msgsend":
+        await _send_mass_text_override_for_edit(cb, bid, step_code)
+        return
+
+    if action == "msgreset":
+        async with session_scope() as s:
+            batch = await batches_svc.get_batch(s, bid)
+            if batch is None:
+                await cb.answer("Массовый не найден", show_alert=True)
+                return
+            text_overrides = dict(
+                batch.settings_snapshot.get("gpt_text_overrides") or {}
+            )
+            text_overrides.pop(step_code, None)
+            batch.settings_snapshot["gpt_text_overrides"] = text_overrides
+            flag_modified(batch, "settings_snapshot")
+            # Сбросим у sub'ов тоже.
+            from sqlalchemy import update
+            subs = await batches_svc.get_batch_subprojects(s, bid)
+            for sub in subs:
+                cur = dict(sub.gpt_text_overrides or {})
+                if step_code in cur:
+                    cur.pop(step_code, None)
+                    await s.execute(
+                        update(Project)
+                        .where(Project.id == sub.id)
+                        .values(gpt_text_overrides=cur)
+                    )
+            await s.commit()
+        await cb.answer("🔄 Сброшено", show_alert=True)
+        await _show_mass_prm_msg_menu(cb, bid, step_code)
+        return
+
+    await cb.answer("Неизвестное действие", show_alert=True)
+
+
+async def _show_mass_prm_msg_menu(
+    cb: CallbackQuery, bid: int, step_code: str
+) -> None:
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            return
+        text = mass_prm_msg_menu_text(batch, step_code)
+        kb = mass_prm_msg_menu_kb(batch, step_code)
+    await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _send_mass_prompt_for_edit(
+    cb: CallbackQuery, bid: int, slug: str, step_code: str, name: str
+) -> None:
+    """Шлёт юзеру .md-файл из правильного слоя (snapshot > mass-global > global)."""
+    try:
+        content = mass_prompts_svc.read_variant_for_batch(slug, step_code, name)
+    except FileNotFoundError:
+        await cb.answer("Файл не найден", show_alert=True)
+        return
+    # Сохраним временный файл на диске чтобы Telegram мог его отправить
+    # как документ.
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(
+        suffix=".md", prefix=f"{step_code}_{name}_", delete=False
+    ) as tmp:
+        tmp_path = _Path(tmp.name)
+        tmp_path.write_text(content, encoding="utf-8")
+    user_id = cb.from_user.id
+    _pending_mass_prompt_upload[user_id] = (bid, step_code, name)
+    _pending_mass_prompt_name.pop(user_id, None)
+    await cb.answer()
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await cb.message.answer_document(
+        FSInputFile(str(tmp_path), filename=f"{name}.md"),
+        caption=(
+            f"📝 <b>Массовая</b> · «{human}» · вариант <b>{name}</b>.\n\n"
+            f"Отредактируй файл локально и пришли его <b>обратно как "
+            f"документ</b> в этот чат. Я спрошу — сохранить локально или "
+            f"глобально."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _send_mass_text_override_for_edit(
+    cb: CallbackQuery, bid: int, step_code: str
+) -> None:
+    """Шлёт юзеру .md с текущим сопр. сообщением (или дефолтом) и ставит
+    режим ожидания возврата отредактированного файла."""
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await cb.answer("Массовый не найден", show_alert=True)
+            return
+        # Текущий override на уровне батча, либо дефолтное содержимое.
+        text_overrides = batch.settings_snapshot.get("gpt_text_overrides") or {}
+        content = text_overrides.get(step_code)
+        if not content:
+            # Дефолт собираем из мастер-промта (он будет «как есть»).
+            try:
+                content = mass_prompts_svc.read_variant_for_batch(
+                    batch.slug, step_code,
+                    (batch.settings_snapshot.get("prompt_overrides") or {}).get(
+                        step_code
+                    ) or plib.DEFAULT_NAME,
+                )
+            except FileNotFoundError:
+                content = "# Сопр. сообщение\n\nНе задано."
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(
+        suffix=".md", prefix=f"msg_{step_code}_", delete=False
+    ) as tmp:
+        tmp_path = _Path(tmp.name)
+        tmp_path.write_text(content, encoding="utf-8")
+    user_id = cb.from_user.id
+    _pending_mass_text_edit[user_id] = (bid, step_code)
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await cb.answer()
+    await cb.message.answer_document(
+        FSInputFile(str(tmp_path), filename=f"msg_{step_code}.md"),
+        caption=(
+            f"✏️ Сопр. сообщение массовой для шага «{human}».\n\n"
+            f"Отредактируй и пришли <b>обратно как документ</b>. "
+            f"После — выбери локально / глобально."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_mass_prompt_name_input(
+    msg: Message, bid: int, step_code: str
+) -> None:
+    """Юзер прислал имя нового варианта на уровне массовой."""
+    name = (msg.text or "").strip()
+    user_id = msg.from_user.id if msg.from_user else 0
+    if not plib.is_valid_prompt_name(name):
+        await msg.answer(
+            "Имя пустое или слишком длинное / содержит запрещённые символы. "
+            "Попробуй ещё раз.",
+        )
+        if user_id:
+            _pending_mass_prompt_name[user_id] = (bid, step_code)
+        return
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, bid)
+        if batch is None:
+            await msg.answer("Массовый не найден.")
+            return
+        slug = batch.slug
+    # Создаём шаблон в snapshot'е (локально), если нет.
+    try:
+        content_existing = mass_prompts_svc.read_variant_for_batch(
+            slug, step_code, name,
+        )
+        content_for_user = content_existing
+    except FileNotFoundError:
+        content_for_user = plib.make_template_for_new(step_code, name)
+        mass_prompts_svc.write_variant_local(
+            slug, step_code, name, content_for_user,
+        )
+    if user_id:
+        _pending_mass_prompt_upload[user_id] = (bid, step_code, name)
+        _pending_mass_prompt_name.pop(user_id, None)
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(
+        suffix=".md", prefix=f"{step_code}_{name}_", delete=False
+    ) as tmp:
+        tmp_path = _Path(tmp.name)
+        tmp_path.write_text(content_for_user, encoding="utf-8")
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer_document(
+        FSInputFile(str(tmp_path), filename=f"{name}.md"),
+        caption=(
+            f"<b>Шаг 2 из 2.</b> Шаблон варианта <b>{name}</b> "
+            f"(шаг «{human}», массовая) создан. Замени содержимое на свой "
+            f"мастер-промт и пришли <b>обратно как документ</b>."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_mass_prompt_upload(msg: Message) -> None:
+    """Юзер прислал .md-файл для массовой — кешируем контент и спрашиваем
+    локально / глобально."""
+    user_id = msg.from_user.id if msg.from_user else 0
+    pending = _pending_mass_prompt_upload.get(user_id)
+    if pending is None or msg.document is None:
+        return
+    bid, step_code, variant_name = pending
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp:
+        tmp_path = _Path(tmp.name)
+    await msg.bot.download(msg.document, destination=str(tmp_path))
+    content = tmp_path.read_text(encoding="utf-8", errors="replace")
+    tmp_path.unlink(missing_ok=True)
+    _pending_mass_prompt_upload.pop(user_id, None)
+    _pending_mass_prompt_content[(bid, step_code, variant_name)] = content
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer(
+        f"📥 Получил файл варианта <b>{variant_name}</b> "
+        f"(шаг «{human}», {len(content)} симв).\n\n"
+        f"<b>Куда сохранить?</b>\n"
+        f"• 🏷 <b>Локально</b> — только этот массовый.\n"
+        f"• 🌐 <b>Глобально</b> — для всех будущих новых массовых "
+        f"(одиночная НЕ затронута).",
+        parse_mode="HTML",
+        reply_markup=mass_prm_save_choice_kb(bid, step_code, variant_name),
+    )
+
+
+async def _handle_mass_text_upload(msg: Message) -> None:
+    """Юзер прислал .md/.txt с сопр. сообщением для массовой."""
+    user_id = msg.from_user.id if msg.from_user else 0
+    pending = _pending_mass_text_edit.get(user_id)
+    if pending is None or msg.document is None:
+        return
+    bid, step_code = pending
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp:
+        tmp_path = _Path(tmp.name)
+    await msg.bot.download(msg.document, destination=str(tmp_path))
+    content = tmp_path.read_text(encoding="utf-8", errors="replace")
+    tmp_path.unlink(missing_ok=True)
+    _pending_mass_text_edit.pop(user_id, None)
+    _pending_mass_text_content[(bid, step_code)] = content
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer(
+        f"📥 Получил сопр. сообщение для шага «{human}» "
+        f"({len(content)} симв).\n\n"
+        f"<b>Куда сохранить?</b>",
+        parse_mode="HTML",
+        reply_markup=mass_prm_text_save_choice_kb(bid, step_code),
+    )
 
 
 async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
@@ -3678,6 +4275,16 @@ async def on_document_message(msg: Message) -> None:
         await _handle_mass_xlsx_upload(msg, pending_mass_bid, msg.document)
         return
 
+    # Загрузка отредактированного варианта мастер-промта для массовой.
+    if user_id in _pending_mass_prompt_upload:
+        await _handle_mass_prompt_upload(msg)
+        return
+
+    # Загрузка сопр. сообщения для массовой.
+    if user_id in _pending_mass_text_edit:
+        await _handle_mass_text_upload(msg)
+        return
+
     # Документ как ответ на «✏️ Сопр. сообщение». Пытаемся определить
     # активный edit-сеанс: 1) по reply_to_message_id, 2) по user_id.
     ed_pid_step: tuple[int, str] | None = None
@@ -5650,6 +6257,14 @@ async def on_text_message(msg: Message) -> None:
         pid_p, step_p = pending_name
         _pending_prompt_name.pop(user_id, None)
         await _handle_prompt_name_input(msg, pid_p, step_p)
+        return
+
+    # 3a) Имя нового варианта на уровне массовой.
+    pending_mass_name = _pending_mass_prompt_name.get(user_id)
+    if pending_mass_name is not None:
+        bid_m, step_m = pending_mass_name
+        _pending_mass_prompt_name.pop(user_id, None)
+        await _handle_mass_prompt_name_input(msg, bid_m, step_m)
         return
 
     # 4) Текст как ответ на «✏️ Сопр. сообщение». Сначала reply, потом

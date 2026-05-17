@@ -185,11 +185,37 @@ def delete_prompt(step_code: str, name: str) -> bool:
     return True
 
 
+def _batch_aware_variant_exists(
+    step_code: str, name: str, *, batch_slug: str | None
+) -> bool:
+    """Существует ли файл варианта для шага, с учётом batch-snapshot и
+    mass-global. Для одиночных (batch_slug=None) — только глобальный.
+    """
+    if prompt_path(step_code, name).exists():
+        return True
+    if not batch_slug:
+        return False
+    # Lazy import чтобы избежать циклов.
+    from app.services import mass_prompts as _mp
+    folder = STEP_FOLDERS.get(step_code, "")
+    for src in (
+        _mp.batch_snapshot_dir(batch_slug),
+        _mp.mass_global_prompts_dir(),
+    ):
+        if (src / folder / f"{name}.md").exists():
+            return True
+    return False
+
+
 def resolve_project_prompt_name(
-    overrides: dict | None, step_code: str
+    overrides: dict | None,
+    step_code: str,
+    *,
+    batch_slug: str | None = None,
 ) -> str:
     """Какой вариант выбран в проекте для шага. Если override не задан или
-    указанного файла нет — возвращаем `default`."""
+    указанного файла нет (с учётом batch-tiers) — возвращаем `default`.
+    """
     overrides = overrides or {}
     chosen = overrides.get(step_code)
     if not chosen:
@@ -197,7 +223,7 @@ def resolve_project_prompt_name(
     clean = _sanitize_name(chosen) if not is_valid_prompt_name(chosen) else chosen
     if not clean:
         return DEFAULT_NAME
-    if not prompt_path(step_code, clean).exists():
+    if not _batch_aware_variant_exists(step_code, clean, batch_slug=batch_slug):
         return DEFAULT_NAME
     return clean
 
@@ -205,11 +231,21 @@ def resolve_project_prompt_name(
 def get_project_prompt(project, step_code: str) -> str:
     """Прочитать выбранный для проекта мастер-промт с диска.
 
-    Проект приводится к dict-like через `getattr(project, "prompt_overrides", {})`
-    — так удобно работать и со SQLAlchemy-моделью, и с обычным dict.
+    Для batch-проектов (`project.batch_slug` задан): читает с учётом
+    приоритетов snapshot > mass-global > global single. Одиночные —
+    только из global single.
     """
     overrides = getattr(project, "prompt_overrides", None) or {}
-    name = resolve_project_prompt_name(overrides, step_code)
+    batch_slug = getattr(project, "batch_slug", None)
+    name = resolve_project_prompt_name(
+        overrides, step_code, batch_slug=batch_slug,
+    )
+    if batch_slug:
+        from app.services import mass_prompts as _mp
+        try:
+            return _mp.read_variant_for_batch(batch_slug, step_code, name)
+        except FileNotFoundError:
+            pass
     return read_prompt(step_code, name)
 
 

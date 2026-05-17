@@ -95,6 +95,10 @@ def mass_main_kb(batch: BatchProject, sub_count: int) -> InlineKeyboardMarkup:
                 callback_data=f"mass:settings:{batch.id}",
             )],
             [InlineKeyboardButton(
+                text="🧰 Промты + тексты",
+                callback_data=f"mprm:{batch.id}:overview",
+            )],
+            [InlineKeyboardButton(
                 text="🗑 Удалить весь массовый",
                 callback_data=f"mass:delete:{batch.id}",
             )],

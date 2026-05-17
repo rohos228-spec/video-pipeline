@@ -104,10 +104,10 @@ async def run_plan_xlsx_step(
         raise RuntimeError(f"project.xlsx не найден: {proj_xlsx}")
 
     overrides = getattr(project, "prompt_overrides", None) or {}
-    prompt_name = plib.resolve_project_prompt_name(overrides, "plan")
-    prompt_path = plib.prompt_path("plan", prompt_name)
-    if not prompt_path.exists():
-        raise RuntimeError(f"Файл промта не найден: {prompt_path}")
+    batch_slug = getattr(project, "batch_slug", None)
+    prompt_name = plib.resolve_project_prompt_name(
+        overrides, "plan", batch_slug=batch_slug,
+    )
 
     try:
         master = get_project_prompt(project, "plan")
@@ -238,11 +238,14 @@ async def run_script_xlsx_step(
         raise RuntimeError(f"project.xlsx не найден: {proj_xlsx}")
 
     overrides = getattr(project, "prompt_overrides", None) or {}
-    prompt_name = plib.resolve_project_prompt_name(overrides, "script")
-    prompt_path = plib.prompt_path("script", prompt_name)
-    if not prompt_path.exists():
-        raise RuntimeError(f"Файл промта не найден: {prompt_path}")
-    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+    batch_slug = getattr(project, "batch_slug", None)
+    prompt_name = plib.resolve_project_prompt_name(
+        overrides, "script", batch_slug=batch_slug,
+    )
+    try:
+        prompt_text = get_project_prompt(project, "script").strip()
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Файл промта script не найден: {e}") from e
 
     topic = project.topic
     voiceover = proj_xlsx.parent / "voiceover.txt"
@@ -375,11 +378,14 @@ async def run_split_xlsx_step(
         )
 
     overrides = getattr(project, "prompt_overrides", None) or {}
-    prompt_name = plib.resolve_project_prompt_name(overrides, "split")
-    prompt_path = plib.prompt_path("split", prompt_name)
-    if not prompt_path.exists():
-        raise RuntimeError(f"Файл промта не найден: {prompt_path}")
-    prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+    batch_slug = getattr(project, "batch_slug", None)
+    prompt_name = plib.resolve_project_prompt_name(
+        overrides, "split", batch_slug=batch_slug,
+    )
+    try:
+        prompt_text = get_project_prompt(project, "split").strip()
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Файл промта split не найден: {e}") from e
 
     topic = project.topic
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
