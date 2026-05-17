@@ -2410,12 +2410,65 @@ class OutseeBot:
         # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
         await _toggle_relax(page, want_on=relax, where="generate_video")
 
-        # 3) загрузка стартового кадра (если передан)
+        # 3) загрузка стартового кадра (если передан).
+        # Сначала ищем ВИДИМЫЙ input[type=file] (короткий таймаут — в outsee
+        # он часто скрыт, ожидать долго смысла нет). Если не нашли — fallback
+        # на скрытый input через `set_input_files` без проверки видимости
+        # (тот же приём что в _attach_reference_image для картинок).
         if start_frame is not None:
-            file_sel = await _first_visible(page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000)
-            if not file_sel:
-                raise RuntimeError("outsee video: не найден input[type=file] для стартового кадра")
-            await page.locator(file_sel).first.set_input_files(str(start_frame))
+            attached = False
+            file_sel = await _first_visible(
+                page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
+            )
+            if file_sel:
+                try:
+                    await page.locator(file_sel).first.set_input_files(
+                        str(start_frame)
+                    )
+                    logger.info(
+                        "outsee.generate_video: стартовый кадр {} загружен "
+                        "в видимый input ({})",
+                        start_frame.name, file_sel,
+                    )
+                    attached = True
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.generate_video: видимый input.set_input_files "
+                        "упал: {} — пробую скрытый input",
+                        e,
+                    )
+            if not attached:
+                # Fallback на скрытый input в DOM (берём последний — в
+                # outsee.io именно он привязан к UI-кнопке загрузки).
+                base = page.locator("input[type='file']")
+                try:
+                    n_inputs = await base.count()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.generate_video: locator count упал: {}", e,
+                    )
+                    n_inputs = 0
+                if n_inputs <= 0:
+                    raise RuntimeError(
+                        "outsee video: не найден input[type=file] для "
+                        "стартового кадра (видимый и скрытый, count=0). "
+                        "Возможно, модель не поддерживает image-to-video "
+                        "или сайт изменил DOM."
+                    )
+                try:
+                    await base.last.set_input_files(str(start_frame))
+                    logger.info(
+                        "outsee.generate_video: стартовый кадр {} загружен "
+                        "в скрытый input (count={}, взят last)",
+                        start_frame.name, n_inputs,
+                    )
+                    attached = True
+                except Exception as e:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"outsee video: set_input_files в скрытый input "
+                        f"упал: {e} (count={n_inputs})"
+                    ) from e
+            await asyncio.sleep(1.0)
 
         # 4) generate
         gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
