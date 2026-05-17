@@ -1,13 +1,15 @@
-"""Шаг 3: разбить закадровый текст на блоки 15-45 символов через ChatGPT
-(промт RAZBIVKA_SLOV) и создать записи Frame в БД + записать в xlsx.
+"""Шаг 3: разбить закадровый текст на блоки и создать записи Frame в БД.
 
-Источник входного текста — `project.script_text` (закадровый текст из шага 2).
-ChatGPT возвращает блоки, разделённые знаком «-» (см. RAZBIVKA_SLOV.v1.md).
-Каждый блок становится одним кадром: пишется в строку 32 («закадровый текст»)
-листа «Кадры», по одной колонке на кадр (B32, C32, D32, …).
+В массовой генерации (batch sub'ы) — через xlsx-flow: прикладываем
+`project.xlsx` + `voiceover.txt` + промт-файл, GPT возвращает обновлённый
+xlsx, бот его подменяет и пересоздаёт фреймы из xlsx (то же, что
+одиночный `_run_split_xlsx`). См. `app/services/xlsx_steps.py`.
 
-Длительность кадра распределяется пропорционально длине блока в окне 2-4 сек,
-сумма подгоняется к 60-75 сек (как раньше).
+Для одиночных проектов (если оркестратор всё-таки доходит до этого шага)
+работает текстовый fallback ниже — RAZBIVKA_SLOV-промт + script_text.
+Источник входного текста: `project.script_text`. ChatGPT возвращает блоки,
+разделённые знаком «-». Каждый блок → один Frame. Длительность блока
+распределяется пропорционально длине, окно 2-4 сек, сумма → 60-75 сек.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, Project, ProjectStatus
 from app.services.prompt_library import get_project_prompt
+from app.services.xlsx_steps import run_split_xlsx_step
 from app.storage import for_project as _sheet_for_project
 
 MIN_FRAME = 2.0
@@ -84,9 +87,27 @@ def _distribute_durations(cells: list[str]) -> list[float]:
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     if project.status is not ProjectStatus.splitting:
         return
+
+    # Массовый sub → xlsx-flow (как одиночный через TG-меню).
+    if project.batch_id is not None and bot is not None:
+        # Идемпотентность: если фреймы уже есть — не трогаем.
+        existing = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id)
+            )
+        ).scalars().all()
+        if existing:
+            logger.info(
+                "[#{}] frames уже есть ({}), пропуск", project.id, len(existing)
+            )
+            project.status = ProjectStatus.frames_ready
+            return
+        await run_split_xlsx_step(session, project, bot)
+        return
+
     if not project.script_text:
         raise RuntimeError("script_text пуст — нечего разбивать")
-    logger.info("[#{}] split_frames (RAZBIVKA_SLOV) starting", project.id)
+    logger.info("[#{}] split_frames (RAZBIVKA_SLOV text-fallback) starting", project.id)
 
     # Идемпотентность: если фреймы уже есть — не трогаем.
     existing = (

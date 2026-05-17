@@ -1,5 +1,16 @@
-"""Шаг 1–2: тема → общий план ролика (ChatGPT web + мастер-промт PLAN_SHORTS).
-Затем HITL-одобрение в Telegram."""
+"""Шаг 1–2: тема → общий план ролика.
+
+В массовой генерации (batch sub'ы) идёт через xlsx-flow — в чат ChatGPT
+прикладывается `project.xlsx` и промт-файл, GPT возвращает обновлённый
+xlsx, бот его подменяет (то же самое, что для одиночной кнопки
+«Шаг 1 → План» в TG-меню). См. `app/services/xlsx_steps.py`.
+
+Для одиночных проектов сохраняется старая ветка с текстовым промтом и
+HITL-одобрением: пользователь обычно гонит одиночный через TG-меню,
+которое запускает свой xlsx-flow напрямую через `_run_plan_xlsx`. Если же
+оркестратор всё-таки доходит до этого шага у одиночного (auto_mode=True),
+работает текстовый fallback ниже.
+"""
 
 from __future__ import annotations
 
@@ -12,13 +23,20 @@ from app.bots.chatgpt import ChatGPTBot
 from app.models import HITLKind, Project, ProjectStatus
 from app.services.hitl import send_hitl_text
 from app.services.prompt_library import get_project_prompt
+from app.services.xlsx_steps import run_plan_xlsx_step
 from app.storage import for_project as _sheet_for_project
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.planning:
         return
-    logger.info("[#{}] make_plan starting: '{}'", project.id, project.topic)
+
+    # Массовый sub → xlsx-flow (как одиночный через TG-меню).
+    if project.batch_id is not None:
+        await run_plan_xlsx_step(session, project, bot)
+        return
+
+    logger.info("[#{}] make_plan (text-only fallback) starting: '{}'", project.id, project.topic)
 
     master = get_project_prompt(project, "plan")
     hero_hint = {
