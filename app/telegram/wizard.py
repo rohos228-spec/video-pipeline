@@ -274,6 +274,184 @@ async def _send_wizard_complete(bot: Bot, chat_id: int, project: Project) -> Non
     )
 
 
+# ---------------------------------------------------------------------------
+# Подменю «⛙ Настройки» для уже пройденного мастера: поле-по-полю
+# редактирование. Чтобы поменять одну модель (например видео-генератор
+# с kling_2_6 на veo_3_fast) — не нужно сбрасывать все 7 полей, кликаем прямо
+# по нужному. Роутинг:
+#   «⛙ Настройки» в меню проекта → wiz:<pid>:start →
+#     - если мастер НЕ пройден: send_wizard_question (старый флоу)
+#     - если мастер пройден: _send_settings_overview (новый флоу)
+#   Клик по полю в overview → wiz:<pid>:edit:<field> → пикер с callback
+#   wiz:<pid>:setone:<field>:<option_id>. После setone — возврат в overview
+#   (в отличие от set, который ведёт к следующему вопросу мастера).
+
+_FIELD_LABELS: dict[str, str] = {
+    "image_generator": "🖌 Генератор картинок",
+    "aspect_ratio": "📐 Соотношение сторон",
+    "image_resolution": "🖼️ Разрешение картинки",
+    "image_relax": "⏱ Relax картинок",
+    "video_generator": "🎬 Видео-генератор",
+    "video_resolution": "📺 Разрешение видео",
+    "video_relax": "⏱ Relax видео",
+}
+
+
+def _current_value_label(project: Project, q: WizardQuestion) -> str:
+    """Человеческое имя текущего значения поля: '—' / 'Да' / 'Нет' / label
+    из каталога. Для boolean-полей (`image_relax` / `video_relax`)
+    хранится уже bool, в каталоге лежит 'yes'/'no' — конвертируем."""
+    val = getattr(project, q.field, None)
+    if val is None:
+        return "—"
+    if q.field in ("image_relax", "video_relax"):
+        return "Да" if val else "Нет"
+    choice = q.catalog.get(str(val))
+    if choice is None:
+        return str(val)
+    return choice.label
+
+
+def _settings_overview_text(project: Project) -> str:
+    topic = project.topic or project.slug
+    lines = [
+        f"<b>⛙ Настройки проекта #{project.id}</b>",
+        f"«{topic}»",
+        "",
+        "Кликни любое поле — поменяешь только его, остальные "
+        "не сбросятся.",
+        "",
+    ]
+    for q in _QUESTIONS:
+        if q.skip_if(project):
+            # Поле неприменимо для текущего проекта (например video_relax
+            # доступен только для veo_3_1_fast). Прячем из overview.
+            continue
+        lines.append(
+            f"• {_FIELD_LABELS.get(q.field, q.field)}: "
+            f"<b>{_current_value_label(project, q)}</b>"
+        )
+    return "\n".join(lines)
+
+
+def _settings_overview_kb(project: Project) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for q in _QUESTIONS:
+        if q.skip_if(project):
+            continue
+        rows.append([
+            InlineKeyboardButton(
+                text=(
+                    f"✏ {_FIELD_LABELS.get(q.field, q.field)}: "
+                    f"{_current_value_label(project, q)}"
+                ),
+                callback_data=f"wiz:{project.id}:edit:{q.field}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="↻ Сбросить все настройки",
+            callback_data=f"wiz:{project.id}:reset",
+        ),
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅ В меню проекта",
+            callback_data=f"proj:{project.id}:menu",
+        ),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_settings_overview(
+    bot: Bot, chat_id: int, project: Project
+) -> None:
+    await bot.send_message(
+        chat_id,
+        _settings_overview_text(project),
+        parse_mode="HTML",
+        reply_markup=_settings_overview_kb(project),
+    )
+
+
+def _kb_for_edit(
+    project_id: int, field: str, choices: list[OptionChoice], cols: int
+) -> InlineKeyboardMarkup:
+    """Пикер редактирования одного поля. Callback:
+    `wiz:<pid>:setone:<field>:<option_id>`. После клика — возврат в overview.
+    """
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for ch in choices:
+        row.append(
+            InlineKeyboardButton(
+                text=ch.label,
+                callback_data=f"wiz:{project_id}:setone:{field}:{ch.id}",
+            )
+        )
+        if len(row) >= cols:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([
+        InlineKeyboardButton(
+            text="⬅ Назад в настройки",
+            callback_data=f"wiz:{project_id}:start",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _send_edit_picker(
+    bot: Bot, chat_id: int, project: Project, field: str
+) -> None:
+    """Показать пикер выбора для одного поля. Использует те же
+    `choices` и `image_path`, что и мастер, но callback'и ведут на setone.
+    """
+    question = _QUESTIONS_BY_FIELD.get(field)
+    if question is None:
+        await bot.send_message(chat_id, f"wizard: неизвестное поле {field}")
+        return
+    kb = _kb_for_edit(project.id, field, question.choices, question.cols)
+    current = _current_value_label(project, question)
+    lines = [
+        f"<b>Меняем:</b> {_FIELD_LABELS.get(field, field)}",
+        f"<b>Сейчас:</b> {current}",
+        "",
+        question.title,
+        "",
+    ]
+    for ch in question.choices:
+        if ch.short_desc:
+            lines.append(f"• <b>{ch.label}</b> — {ch.short_desc}")
+        else:
+            lines.append(f"• <b>{ch.label}</b>")
+    body = "\n".join(lines)
+    image_path = question.image_path
+    if image_path is not None and image_path.exists():
+        caption = body if len(body) <= 1000 else (body[:997] + "…")
+        try:
+            await bot.send_photo(
+                chat_id,
+                FSInputFile(str(image_path)),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb if len(body) <= 1000 else None,
+            )
+            if len(body) > 1000:
+                tail = body[1000:]
+                await bot.send_message(
+                    chat_id, tail, parse_mode="HTML", reply_markup=kb
+                )
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wizard: send_photo failed in edit picker: {}", e
+            )
+    await bot.send_message(chat_id, body, parse_mode="HTML", reply_markup=kb)
+
+
 async def handle_wizard_callback(cb: CallbackQuery) -> None:
     """Обрабатывает `wiz:<pid>:set:<field>:<option_id>` и
     `wiz:<pid>:start`.
@@ -304,8 +482,104 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
             if project is None:
                 await cb.answer("Проект не найден", show_alert=True)
                 return
+            wiz_done = is_wizard_complete(project)
         await cb.answer()
-        await send_wizard_question(cb.bot, cb.message.chat.id, project)
+        if wiz_done:
+            # Мастер уже пройден — показываем подменю «Ячеика-по-ячейке»,
+            # из которого юзер может поменять любое одно поле.
+            await _send_settings_overview(cb.bot, cb.message.chat.id, project)
+        else:
+            await send_wizard_question(cb.bot, cb.message.chat.id, project)
+        return
+
+    if action == "edit" and len(parts) >= 4:
+        field = parts[3]
+        if field not in _QUESTIONS_BY_FIELD:
+            await cb.answer(
+                f"wizard: неизвестное поле {field}", show_alert=True
+            )
+            return
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == project_id))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+        await cb.answer()
+        await _send_edit_picker(cb.bot, cb.message.chat.id, project, field)
+        return
+
+    if action == "setone" and len(parts) >= 5:
+        # Аналог set, но после сохранения возвращаем юзера в overview
+        # настроек, а не в «следующий вопрос мастера». Используется,
+        # когда юзер редактирует одно поле через «⛙ Настройки» уже после
+        # полного прохождения мастера.
+        field = parts[3]
+        option_id = parts[4]
+        question = _QUESTIONS_BY_FIELD.get(field)
+        if question is None:
+            await cb.answer(
+                f"wizard: неизвестное поле {field}", show_alert=True
+            )
+            return
+        choice = question.catalog.get(option_id)
+        if choice is None:
+            await cb.answer(
+                f"wizard: неизвестный вариант {option_id}", show_alert=True
+            )
+            return
+        db_value = question.to_db(option_id)
+
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == project_id))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+            setattr(project, field, db_value)
+            # Если зависимые поля теперь попадают под skip_if (например
+            # сменили video_generator с veo_3_1_fast на другой — video_relax
+            # теперь не применим) и в них лежит None — выставляем skip_value.
+            # Без этого is_wizard_complete вернёт False, хотя по логике всё
+            # заполнено.
+            for q in _QUESTIONS:
+                if q.field == field:
+                    continue
+                if q.skip_if(project) and not q.is_set(project):
+                    setattr(project, q.field, q.skip_value)
+            # Зеркалим в xlsx (general-лист), чтобы пользователь видел настройки.
+            try:
+                from app.storage import for_project as _sheet_for_project
+
+                _sheet_for_project(project).write_general(
+                    **{field: choice.label}
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "wizard: xlsx write failed ({}): {}", field, e
+                )
+            await s.flush()
+            await s.refresh(project)
+            await s.commit()
+            snap = Project(
+                id=project.id,
+                slug=project.slug,
+                topic=project.topic,
+                hero_mode=project.hero_mode,
+                status=project.status,
+                image_generator=project.image_generator,
+                aspect_ratio=project.aspect_ratio,
+                image_resolution=project.image_resolution,
+                image_relax=project.image_relax,
+                video_generator=project.video_generator,
+                video_resolution=project.video_resolution,
+                video_relax=project.video_relax,
+            )
+
+        await cb.answer(f"{choice.label} ✓")
+        await _send_settings_overview(cb.bot, cb.message.chat.id, snap)
         return
 
     if action == "reset":
