@@ -283,24 +283,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     variations_cfg: list[int] = list(project.hero_variations or [])
     n_total = project.hero_count or (1 if project.hero_description else 0)
 
-    # Защита для массовой генерации: если у sub'а нет описания героя
-    # (типичный случай — батч не наполнил `hero_descriptions` для каждой
-    # темы), не падаем бесконечно, а пропускаем шаг (hero_ready). Юзер
-    # увидит проект на hero_ready, и сможет либо заполнить вручную
-    # через меню «4. Hero», либо двигаться дальше.
-    if project.batch_id is not None:
-        # Сколько реально описаний у нас? Если 0 — точно пропускаем.
-        non_empty = sum(1 for d in descriptions if (d or "").strip())
-        if n_total > 0 and non_empty == 0:
-            logger.warning(
-                "[#{}] mass-hero: hero_descriptions пусты — пропускаем "
-                "шаг (hero_mode→no_hero, status→hero_ready). Заполни "
-                "описания героев в шаблоне массового или в карточке sub'а.",
-                project.id,
-            )
-            project.hero_mode = "no_hero"
-            project.status = ProjectStatus.hero_ready
-            return
+    # Универсальный skip: если нет ни одного непустого описания героя —
+    # пропускаем шаг (hero_ready). Касается и одиночных, и массовых: если
+    # «нет героя» (или юзер забыл описать), бесконечного фейла не будет.
+    # В одиночной такой кейс редок (UI не отпустит без brief'а), в массовой —
+    # нормальная ситуация, шаблон не наполнял `hero_descriptions`.
+    non_empty = sum(1 for d in descriptions if (d or "").strip())
+    if n_total > 0 and non_empty == 0:
+        logger.warning(
+            "[#{}] hero: hero_descriptions пусты — пропускаем шаг "
+            "(hero_mode→no_hero, status→hero_ready). batch_id={}",
+            project.id, project.batch_id,
+        )
+        project.hero_mode = "no_hero"
+        project.status = ProjectStatus.hero_ready
+        return
 
     if n_total == 0:
         # legacy fallback: hero_description есть, hero_count не задан → 1.
