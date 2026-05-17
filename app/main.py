@@ -298,7 +298,30 @@ async def _run_worker_loop(bot) -> None:
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
+                # (strict-sequential) Защита от параллели НА УРОВНЕ
+                # WORKER LOOP. Раньше: если в батче случайно оказались
+                # ДВА sub'а в running-статусах (например, из-за гонки
+                # auto_review/regen, ручного клика, или старого состояния
+                # DB), worker честно продвигал ОБА в одной итерации — шла
+                # параллельная генерация. Теперь: для каждого batch'а
+                # за ОДИН tick worker продвигает ТОЛЬКО ОДИН sub'project
+                # (с наименьшим batch_position). Все остальные sub'ы
+                # того же батча ждут следующий tick.
+                # Индивидуальные (не-batch) проекты не затронуты.
+                projects = sorted(
+                    projects,
+                    key=lambda x: (
+                        x.batch_id or -1,
+                        x.batch_position or 0,
+                        x.id,
+                    ),
+                )
+                claimed_batches: set[int] = set()
                 for p in projects:
+                    if p.batch_id is not None:
+                        if p.batch_id in claimed_batches:
+                            continue
+                        claimed_batches.add(p.batch_id)
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
                     try:
@@ -399,11 +422,29 @@ async def _run_worker_loop(bot) -> None:
                             )
                         )
                     ).scalars().all()
+                    # (strict-sequential) Та же защита от параллели что и
+                    # выше — но уже на стадии auto_advance (sub в *_ready
+                    # ждёт GPT-ревью). claimed_batches содержит батчи у
+                    # которых уже продвинут sub в running-петле выше; теперь
+                    # также блокируем продвижение ready-sub'ов того же
+                    # батча, чтобы за tick двигался ровно один sub batch'а.
+                    auto_projects = sorted(
+                        auto_projects,
+                        key=lambda x: (
+                            x.batch_id or -1,
+                            x.batch_position or 0,
+                            x.id,
+                        ),
+                    )
                     for ap in auto_projects:
                         # При активной паузе массовой — пропускаем подпроекты
                         # батчей (но не индивидуальные проекты с auto_mode=True).
                         if mass_paused and ap.batch_id is not None:
                             continue
+                        if ap.batch_id is not None:
+                            if ap.batch_id in claimed_batches:
+                                continue
+                            claimed_batches.add(ap.batch_id)
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)
