@@ -50,11 +50,18 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
+
+_IMAGES_GPT_MAX_RETRIES = 5
 
 # Лист «план» v8 — какие строки в столбце кадра используются для рефов.
 _XLSX_SHEET_PLAN = "план"
@@ -371,11 +378,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         fr.status = FrameStatus.image_prompt_ready
     await session.flush()
 
+    # (Фаза 5) Загружаем промт GPT-проверки один раз.
+    try:
+        _images_check_prompt = load_check_prompt("images")
+    except FileNotFoundError:
+        _images_check_prompt = None
+        logger.warning("[#{}] промт check_images не найден, пропускаю GPT-check", project.id)
+
+    # (Фаза 5) Один ChatGPT-чат на весь шаг.
+    _gpt_chat_opened = False
+
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
-        # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
-        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
-        # промт без триггеров модерации, потом ещё 3 попытки.
         gpt = ChatGPTBot(bs)
         try:
             while True:
@@ -390,8 +404,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # 2) взять следующий кадр к обработке
                 target = await _next_frame_to_process(session, project.id)
                 if target is not None:
+                    # (Фаза 5) Открываем GPT-чат один раз для всего шага.
+                    if _images_check_prompt and not _gpt_chat_opened:
+                        await gpt.new_conversation()
+                        _gpt_chat_opened = True
                     await _generate_and_send(
-                        session, bot, outsee, gpt, project, target, out_dir
+                        session, bot, outsee, gpt, project, target, out_dir,
+                        check_prompt=_images_check_prompt,
                     )
                     continue
 
@@ -518,8 +537,10 @@ async def _generate_and_send(
     project: Project,
     frame: Frame,
     out_dir: Path,
+    *,
+    check_prompt: str | None = None,
 ) -> None:
-    """Один прогон outsee → сохранение артефакта → HITL-карточка."""
+    """Один прогон outsee → GPT-проверка 360p → сохранение артефакта → HITL-карточка."""
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
@@ -668,10 +689,6 @@ async def _generate_and_send(
                 reference_image=refs if refs else None,
             )
     except OutseeImageError as e:
-        # Не «возьму последнюю картинку», не silent retry: помечаем кадр
-        # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
-        # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика
-        # анти-зацикливания (MAX_FAIL=3) защитит проект целиком.
         logger.exception(
             "[#{}] frame {}: outsee fail (gen_id={})",
             project.id,
@@ -702,6 +719,89 @@ async def _generate_and_send(
             pass
         await session.commit()
         return
+
+    # (Фаза 5) GPT-проверка 360p — в ТОМ ЖЕ чате (new_conversation=False).
+    if check_prompt and result is not None:
+        import subprocess
+        original_path = Path(result.file_path)
+        for gpt_attempt in range(1, _IMAGES_GPT_MAX_RETRIES + 1):
+            if not original_path.exists():
+                break
+            # 1. Создаём 360p-копию.
+            thumb_path = original_path.with_suffix(".360p.webp")
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(original_path),
+                     "-vf", "scale=-2:360", str(thumb_path)],
+                    capture_output=True, timeout=30,
+                )
+            except Exception as exc:
+                logger.warning("[#{}] frame {}: ffmpeg 360p failed: {}", project.id, frame.number, exc)
+                break
+            if not thumb_path.exists():
+                break
+            # 2. Отправляем 360p в ChatGPT (тот же чат, new_conversation=False).
+            check_result = await gpt_check_file_artifact(
+                chatgpt_bot=gpt,
+                check_prompt=check_prompt,
+                artifact_path=thumb_path,
+                new_conversation=False,
+                timeout=1200.0,
+            )
+            logger.info(
+                "[#{}] frame {} GPT-check {}/{}: decision={}",
+                project.id, frame.number, gpt_attempt,
+                _IMAGES_GPT_MAX_RETRIES, check_result.decision.value,
+            )
+            # Удаляем 360p-копию.
+            try:
+                thumb_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if check_result.decision in (
+                GptCheckDecision.approved,
+                GptCheckDecision.parse_error,
+                GptCheckDecision.timeout,
+            ):
+                break
+            if gpt_attempt >= _IMAGES_GPT_MAX_RETRIES:
+                logger.warning(
+                    "[#{}] frame {}: GPT-check {} попыток исчерпано",
+                    project.id, frame.number, _IMAGES_GPT_MAX_RETRIES,
+                )
+                break
+            # 3. Перегенерация: удаляем старую картинку.
+            try:
+                original_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            new_uuid = uuid.uuid4().hex[:8]
+            new_file_path = out_dir / f"frame_{frame.number:03d}_{new_uuid}.png"
+            regen_prompt = frame.image_prompt
+            regen_ref = refs if refs else None
+            if (
+                check_result.decision is GptCheckDecision.regenerate_with_reference
+                and check_result.hint
+            ):
+                regen_prompt = check_result.hint
+            try:
+                result = await generate_image_with_retries(
+                    outsee, gpt,
+                    prompt=regen_prompt,
+                    out_path=new_file_path,
+                    max_attempts_per_prompt=3,
+                    gpt_rewrite=True,
+                    aspect_ratio=aspect_slug,
+                    model_slug=model_slug,
+                    resolution=res_slug,
+                    relax=bool(project.image_relax),
+                    prompt_id_prefix=build_gen_id_prefix(project.id, frame.number, new_uuid),
+                    reference_image=regen_ref,
+                )
+                original_path = Path(result.file_path)
+            except OutseeImageError:
+                logger.warning("[#{}] frame {} GPT-regen {} outsee failed", project.id, frame.number, gpt_attempt)
+                break
 
     art = Artifact(
         project_id=project.id,
