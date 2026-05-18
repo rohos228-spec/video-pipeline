@@ -3101,9 +3101,19 @@ class OutseeBot:
             if tail and tail not in tokens:
                 tokens.append(tail)
 
+        # baseline_urls приходит как set нормализованных URL (без
+        # query). В JS делаем то же — стрипим query из кандидатов
+        # перед сравнением. КЛЮЧЕВОЕ: кандидата с baseline-src НЕ
+        # пихаем в список вообще, иначе при iterate-в-DOM-порядке
+        # первым придёт thumb из composer-карточки (старый ролик),
+        # его ancestor будет содержать наш [ID:] (textarea рядом)
+        # → вернём baseline. Filter-out на старте решает.
+        baseline_list = sorted(baseline_urls) if baseline_urls else []
         js = """
-        ([tokens, maxLevels]) => {
+        ([tokens, maxLevels, baselineList]) => {
             const MAX_CARD_W = window.innerWidth * 0.6;
+            const baselineSet = new Set(baselineList || []);
+            const stripQ = (u) => (u || '').split('?')[0];
             const hasTokenInScope = (el, idToken) => {
                 const txt = el.textContent || '';
                 if (txt.includes(idToken)) return true;
@@ -3120,29 +3130,27 @@ class OutseeBot:
                 if (out !== src) return out;
                 return null;
             };
+            const addCandidate = (arr, src, el, fromThumb) => {
+                if (!src || src.startsWith('data:')) return;
+                if (baselineSet.has(stripQ(src))) return;
+                arr.push({ src, el, fromThumb: !!fromThumb });
+            };
             const candidates = [];
             document.querySelectorAll('a[href*=".mp4"], a[download]').forEach(a => {
-                if (a.href && !a.href.startsWith('data:')) {
-                    candidates.push({ src: a.href, el: a });
-                }
+                addCandidate(candidates, a.href, a, false);
             });
             document.querySelectorAll('video').forEach(v => {
-                if (v.src && !v.src.startsWith('data:')) {
-                    candidates.push({ src: v.src, el: v });
-                }
+                addCandidate(candidates, v.src, v, false);
                 v.querySelectorAll('source').forEach(s => {
-                    if (s.src && !s.src.startsWith('data:')) {
-                        candidates.push({ src: s.src, el: s });
-                    }
+                    addCandidate(candidates, s.src, s, false);
                 });
             });
             document.querySelectorAll('img').forEach(img => {
                 const s = img.src || '';
                 if (!s) return;
-                if (s.startsWith('data:')) return;
                 if (!(s.includes('video_') && s.includes('_thumb'))) return;
                 const mp4 = thumbToMp4(s);
-                if (mp4) candidates.push({ src: mp4, el: img, fromThumb: true });
+                if (mp4) addCandidate(candidates, mp4, img, true);
             });
             for (const idToken of tokens) {
                 for (const c of candidates) {
@@ -3161,14 +3169,13 @@ class OutseeBot:
         }
         """
         try:
-            res = await page.evaluate(js, [tokens, max_levels])
+            res = await page.evaluate(
+                js, [tokens, max_levels, baseline_list]
+            )
             if not (isinstance(res, str) and res):
                 return None
+            # Доп. защита (на случай если в JS не зашёл baseline).
             if baseline_urls and _strip_url_query(res) in baseline_urls:
-                # Сигналим вызывающему _wait_video_url'у что нашли
-                # baseline-URL — он считает это «новых=0». Не логируем
-                # тут (иначе спам каждые 1.5 сек), это видно по
-                # агрегированному логу каждые 15с.
                 return None
             return res
         except Exception as e:  # noqa: BLE001
