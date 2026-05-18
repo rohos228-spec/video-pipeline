@@ -396,6 +396,10 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             text="🧪 Тестирование визуальных промтов",
             callback_data="test:list",
         )],
+        [InlineKeyboardButton(
+            text="🧰 Промты (библиотека)",
+            callback_data="gprm:overview",
+        )],
     ]
     # Пауза МАССОВОЙ генерации (все батчи разом).
     # НЕ трогает индивидуальные проекты — те продолжают работать.
