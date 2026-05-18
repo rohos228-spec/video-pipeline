@@ -2697,14 +2697,44 @@ class OutseeBot:
                 # = end_frame, и форма считала «start пустой» → Generate
                 # после клика не запускалась.
                 #
-                # Решение: берём ЛЕВЫЙ input — определяем по позиции
-                # ближайшего видимого предка (drop-zone div). Берётся
-                # тот input, чья «зона» имеет минимальный X (= LEFT).
+                # === V3 МАРКЕР ===
+                # Если в логах нет строки "=== V3 generate_video ===" —
+                # значит запущен СТАРЫЙ код (Python кеш .pyc). Тогда:
+                #   - закрыть все процессы Python
+                #   - удалить app/__pycache__ и app/bots/__pycache__
+                #   - запустить python -m app.main заново
+                logger.info(
+                    "=== V3 generate_video: start_frame upload + "
+                    "physical click ==="
+                )
                 if start_frame is not None:
-                    # Через JS-evaluate находим индекс LEFT input'а в
-                    # списке всех input[type=file], плюс возвращаем
-                    # диагностические данные для лога (X-координаты
-                    # всех inputs).
+                    # ШАГ 1: дамп страницы ДО загрузки — чтобы видеть
+                    # реальную структуру DOM и понять что мы кликаем.
+                    # Пользователь может прислать этот HTML — тогда
+                    # подберём 100%-correct селекторы.
+                    h_pre, p_pre = await _dump_page(
+                        page, "video_before_upload",
+                    )
+                    if h_pre:
+                        logger.info(
+                            "=== V3: HTML дамп ДО upload сохранён: {} ===",
+                            h_pre,
+                        )
+                    if p_pre:
+                        logger.info(
+                            "=== V3: PNG дамп ДО upload сохранён: {} ===",
+                            p_pre,
+                        )
+                    # JS-evaluate: для каждого input[type=file] находим
+                    # позицию X. Источник X в порядке предпочтения:
+                    #   1) own — собственный rect input'а (если outsee
+                    #      использует opacity:0 overlay, у input есть
+                    #      реальный размер);
+                    #   2) anc<N> — N-й предок (если input display:none,
+                    #      его rect 0,0,0,0 — нужно подняться);
+                    #   3) dom — DOM-порядок (последний fallback).
+                    # `src` пишем в лог чтобы видеть как реально
+                    # детектились координаты.
                     pick_js = """() => {
                         const inputs = Array.from(
                             document.querySelectorAll("input[type='file']")
@@ -2712,33 +2742,49 @@ class OutseeBot:
                         if (!inputs.length) {
                             return {leftIdx: -1, total: 0, xs: []};
                         }
-                        // Для каждого input находим X его видимого
-                        // контейнера (предок с >= 50x50 px и не hidden).
                         const items = inputs.map((inp, idx) => {
-                            let el = inp;
-                            let x = null;
-                            for (let i = 0; i < 12 && el; i++) {
+                            // 1) Own rect (opacity:0 overlay-трюк)
+                            const ownR = inp.getBoundingClientRect();
+                            if (ownR.width > 5 && ownR.height > 5) {
+                                return {
+                                    idx, x: ownR.x,
+                                    src: 'own',
+                                    w: Math.round(ownR.width),
+                                    h: Math.round(ownR.height),
+                                };
+                            }
+                            // 2) Climb up — НЕ ВЫШЕ 6 уровней чтобы
+                            // не попасть в общий контейнер двух inputs.
+                            let el = inp.parentElement;
+                            for (let i = 0; i < 6 && el; i++) {
                                 const r = el.getBoundingClientRect();
-                                const cs = window.getComputedStyle(el);
-                                const visible = (
-                                    cs.display !== 'none' &&
-                                    cs.visibility !== 'hidden' &&
-                                    r.width >= 50 && r.height >= 50
-                                );
-                                if (visible) { x = r.x; break; }
+                                if (r.width >= 50 && r.height >= 50) {
+                                    return {
+                                        idx, x: r.x,
+                                        src: 'anc' + i,
+                                        w: Math.round(r.width),
+                                        h: Math.round(r.height),
+                                    };
+                                }
                                 el = el.parentElement;
                             }
-                            // Fallback: если ни один предок не «видим»,
-                            // берём DOM-порядок (idx) как proxy для
-                            // позиции.
-                            if (x === null) x = idx * 10000;
-                            return {idx, x};
+                            // 3) DOM-fallback
+                            return {
+                                idx, x: idx * 10000,
+                                src: 'dom', w: 0, h: 0,
+                            };
                         });
                         items.sort((a, b) => a.x - b.x);
                         return {
                             leftIdx: items[0].idx,
                             total: inputs.length,
-                            xs: items.map(it => ({idx: it.idx, x: it.x})),
+                            xs: items.map(it => ({
+                                idx: it.idx,
+                                x: Math.round(it.x),
+                                src: it.src,
+                                w: it.w,
+                                h: it.h,
+                            })),
                         };
                     }"""
                     try:
@@ -2927,6 +2973,21 @@ class OutseeBot:
                         type(e).__name__,
                     )
 
+                # Дамп страницы ПЕРЕД кликом — состояние формы после
+                # загрузки start_frame, для разбора почему Generate
+                # может быть no-op.
+                try:
+                    h_bc, p_bc = await _dump_page(
+                        page, "video_before_click",
+                    )
+                    if h_bc:
+                        logger.info(
+                            "=== V3: HTML дамп ПЕРЕД кликом Generate: {}",
+                            h_bc,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
                 if bbox and bbox.get("width", 0) > 0 and bbox.get("height", 0) > 0:
                     click_x = bbox["x"] + bbox["width"] / 2
                     click_y = bbox["y"] + bbox["height"] / 2
@@ -2946,20 +3007,30 @@ class OutseeBot:
                         pass
 
                     logger.info(
-                        "outsee.generate_video: ФИЗИЧЕСКИЙ клик по "
-                        "Generate в координаты ({:.0f},{:.0f}) "
-                        "[bbox={}x{} @ ({:.0f},{:.0f})]",
+                        "=== V3: ФИЗИЧЕСКИЙ клик по Generate в "
+                        "координаты ({:.0f},{:.0f}) "
+                        "[bbox={}x{} @ ({:.0f},{:.0f})] ===",
                         click_x, click_y,
                         int(bbox["width"]), int(bbox["height"]),
                         bbox["x"], bbox["y"],
                     )
-                    # Двигаем мышь к центру кнопки и кликаем.
-                    # Playwright под капотом эмитит mousemove + mousedown
-                    # + mouseup + click через CDP — реальный браузерный
-                    # input pipeline.
-                    await page.mouse.move(click_x, click_y)
-                    await asyncio.sleep(0.2)
-                    await page.mouse.click(click_x, click_y)
+                    # Реалистичное движение мыши: steps=20 даёт
+                    # промежуточные mousemove события (как живая мышь),
+                    # некоторые React-handlers слушают hover prior
+                    # к click.
+                    try:
+                        await page.mouse.move(
+                            click_x, click_y, steps=20,
+                        )
+                    except TypeError:
+                        # старая Playwright без steps-param
+                        await page.mouse.move(click_x, click_y)
+                    await asyncio.sleep(0.15)
+                    # Раздельные down/up — нужно если outsee слушает
+                    # pointerdown/pointerup отдельно от click.
+                    await page.mouse.down()
+                    await asyncio.sleep(0.08)
+                    await page.mouse.up()
                 else:
                     # Не получили bbox — fallback на обычный
                     # Playwright .click() по селектору. Это хуже
