@@ -32,6 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.gpt_text_builder import get_effective_text
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
@@ -205,6 +210,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "[#{}] frame {}: image_prompt готов ({} симв)",
             project.id, fr.number, len(img_prompt),
         )
+
+    # (Фаза 3) GPT-проверка xlsx после записи промтов.
+    try:
+        check_prompt = load_check_prompt("image_prompts")
+    except FileNotFoundError:
+        check_prompt = None
+        logger.warning("[#{}] промт check_image_prompts не найден, пропускаю GPT-check", project.id)
+    xlsx_path = sheet.ensure_initialized(project_id=project.id, slug=project.slug)
+    if check_prompt and xlsx_path.exists():
+        tmp_dir = xlsx_path.parent / "tmp_gpt"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            check_result = await gpt_check_file_artifact(
+                chatgpt_bot=gpt,
+                check_prompt=check_prompt,
+                artifact_path=xlsx_path,
+                new_conversation=True,
+                timeout=1200.0,
+                download_replacement_to=tmp_dir / "image_prompts_replaced.xlsx",
+            )
+            logger.info(
+                "[#{}] image_prompts GPT-check: decision={}",
+                project.id, check_result.decision.value,
+            )
+            if check_result.decision is GptCheckDecision.replace_artifact:
+                if check_result.replaced_path and check_result.replaced_path.exists():
+                    import shutil
+                    shutil.copy2(str(check_result.replaced_path), str(xlsx_path))
+                    logger.info("[#{}] image_prompts: GPT заменил xlsx", project.id)
+                    # Пересинк промтов из заменённого xlsx.
+                    from app.services.xlsx_v8_import import import_v8_xlsx
+                    try:
+                        await import_v8_xlsx(session, project, xlsx_path, keep_fields=False, update_frames_voiceover=False)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[#{}] image_prompts resync after replace failed: {}", project.id, e)
 
     project.status = ProjectStatus.image_prompts_ready
     await session.flush()

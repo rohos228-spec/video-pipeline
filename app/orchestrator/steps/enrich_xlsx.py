@@ -15,6 +15,9 @@ override (через `Project.gpt_text_overrides["enrich_<i>"]`).
   6. После успеха — `xlsx_sync.reload_from_xlsx()` → данные в БД,
      `recompute_status()` поднимет статус. И принудительно ставим
      статус `enrich_<i>_ready`.
+
+(Фаза 3) После round-trip + sync — GPT-проверка xlsx через
+`gpt_check_file_artifact`, ретраи до 3 раз при `regenerate`.
 """
 
 from __future__ import annotations
@@ -30,6 +33,11 @@ from app.bots.chatgpt import ChatGPTBot
 from app.models import Project, ProjectStatus
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_sync
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
 from app.storage import for_project as _sheet_for_project
@@ -221,6 +229,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 "[#{}] enrich_xlsx slot={} reload_from_xlsx failed: {}",
                 project.id, slot_idx, e,
             )
+
+    # 4b. (Фаза 3) GPT-проверка xlsx после round-trip.
+    try:
+        check_prompt = load_check_prompt("excel_extra")
+    except FileNotFoundError:
+        check_prompt = None
+        logger.warning(
+            "[#{}] enrich_xlsx slot={}: промт check_excel_extra не найден, пропускаю GPT-check",
+            project.id, slot_idx,
+        )
+    if check_prompt and xlsx_path.exists():
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            check_result = await gpt_check_file_artifact(
+                chatgpt_bot=gpt,
+                check_prompt=check_prompt,
+                artifact_path=xlsx_path,
+                new_conversation=True,
+                timeout=1200.0,
+                download_replacement_to=tmp_dir / f"enrich_{slot_idx}_replaced.xlsx",
+            )
+            logger.info(
+                "[#{}] enrich_xlsx slot={} GPT-check: decision={}",
+                project.id, slot_idx, check_result.decision.value,
+            )
+            if check_result.decision is GptCheckDecision.replace_artifact:
+                if check_result.replaced_path and check_result.replaced_path.exists():
+                    import shutil
+                    shutil.copy2(str(check_result.replaced_path), str(xlsx_path))
+                    logger.info(
+                        "[#{}] enrich_xlsx slot={}: GPT заменил xlsx",
+                        project.id, slot_idx,
+                    )
+                    # Пересинк после замены.
+                    try:
+                        if is_v8:
+                            await import_v8_xlsx(session, project, xlsx_path, keep_fields=False, update_frames_voiceover=True)
+                        else:
+                            await xlsx_sync.reload_from_xlsx(session, project, xlsx_path)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[#{}] enrich_xlsx slot={} resync after replace failed: {}", project.id, slot_idx, e)
 
     # 5. Ставим статус slot_<i>_ready (но не перебиваем более продвинутый).
     from app.telegram.menu import status_order as _ord
