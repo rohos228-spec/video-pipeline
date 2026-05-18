@@ -4828,6 +4828,18 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     Работает в двух случаях:
       1) Проект в running-статусе (воркер) → откат на prerequisite.
       2) Активен xlsx-flow (plan/script/split) → снимаем лок.
+
+    ВАЖНО про последовательность:
+      a) `request_stop(pid)` — in-memory флаг, СРАЗУ. Это то, что реально
+         останавливает worker'овый цикл (между кадрами). НЕ зависит от БД.
+      b) `cb.answer(...)` — ответ TG, СРАЗУ после (a). Иначе у юзера
+         «бесконечный спиннер» на кнопке: TG ждёт ответ ~3-5 сек, после
+         чего считает callback мёртвым. Раньше cb.answer шёл В КОНЦЕ
+         функции, после session_scope — и если БД заблокирована (другой
+         писатель), юзер ждал до 15 сек и видел «кнопка не работает».
+      c) Откат `project.status` в БД — best-effort. Если БД locked, цикл
+         всё равно остановится (по in-memory флагу), а статус допишется
+         сам в `run()` ветке `except StepCancelledError`.
     """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
@@ -4837,12 +4849,17 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     from app.services.step_cancel import request_stop
     from app.telegram.menu import step_by_running_status
 
-    # Помечаем проект как «нужно остановить» — длинные циклы шагов
+    # (a) СРАЗУ помечаем проект как «нужно остановить». Длинные циклы шагов
     # (generate_images / split / generate_videos / generate_audio / assemble)
     # увидят флаг на следующей итерации и выйдут через StepCancelledError.
-    # Раньше ⏹ только менял статус в БД, но running-task этого не видел и
-    # продолжал гнать цикл до конца (сотни кадров).
     request_stop(pid)
+
+    # (b) СРАЗУ подтверждаем callback TG — чтобы кнопка не висела в
+    # спиннере. Сам факт «принято» уже гарантирует остановку.
+    try:
+        await cb.answer("Останавливаю шаг — прервётся между кадрами")
+    except Exception:  # noqa: BLE001
+        pass
 
     # Снимаем xlsx-flow локи для этого проекта.
     xlsx_stopped: list[str] = []
@@ -4852,68 +4869,94 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
             _xlsx_flow_active.discard(key)
             xlsx_stopped.append(code)
 
-    async with session_scope() as s:
-        project = (
-            await s.execute(select(Project).where(Project.id == pid))
-        ).scalar_one_or_none()
-        if project is None:
-            await cb.answer("Проект не найден", show_alert=True)
-            return
-        slug = project.slug
+    # (c) Best-effort откат статуса. Если БД locked → не теряем стоп,
+    # просто шлём юзеру короткое уведомление и выходим. Worker-task
+    # сам откатит статус в `except StepCancelledError`.
+    try:
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                try:
+                    await cb.message.answer(
+                        f"⏹ Stop отправлен для #{pid}. Проект не найден в БД."
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            slug = project.slug
 
-        if is_running_status(project.status):
-            cur_running = project.status
-            step = step_by_running_status(cur_running)
-            rollback_to = (
-                step.requires if (step is not None and step.requires is not None)
-                else ProjectStatus.new
-            )
-            project.status = rollback_to
-            # Юзер нажал «⏹ Остановить» — НЕ хочет, чтобы воркер
-            # тут же снова запустил этот же шаг через auto_advance.
-            # Отрубаем auto_mode (для подпроекта батча это значит,
-            # что serial_tick_batches его не подхватит, пока юзер не
-            # переключит вручную).
-            project.auto_mode = False
-            meta = dict(project.meta or {})
-            chain_to = meta.pop("enrich_auto_chain_to", None)
-            if chain_to is not None:
-                project.meta = meta
-                logger.info(
-                    "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
-                    pid, chain_to,
+            if is_running_status(project.status):
+                cur_running = project.status
+                step = step_by_running_status(cur_running)
+                rollback_to = (
+                    step.requires if (step is not None and step.requires is not None)
+                    else ProjectStatus.new
                 )
-            step_title = step.title if step is not None else cur_running.value
-            logger.info(
-                "[#{}] STOP: rolled back {} -> {}, auto_mode=False "
-                "(user-requested via ⏹)",
-                pid, cur_running.value, rollback_to.value,
+                project.status = rollback_to
+                # Юзер нажал «⏹ Остановить» — НЕ хочет, чтобы воркер
+                # тут же снова запустил этот же шаг через auto_advance.
+                # Отрубаем auto_mode (для подпроекта батча это значит,
+                # что serial_tick_batches его не подхватит, пока юзер не
+                # переключит вручную).
+                project.auto_mode = False
+                meta = dict(project.meta or {})
+                chain_to = meta.pop("enrich_auto_chain_to", None)
+                if chain_to is not None:
+                    project.meta = meta
+                    logger.info(
+                        "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
+                        pid, chain_to,
+                    )
+                step_title = step.title if step is not None else cur_running.value
+                logger.info(
+                    "[#{}] STOP: rolled back {} -> {}, auto_mode=False "
+                    "(user-requested via ⏹)",
+                    pid, cur_running.value, rollback_to.value,
+                )
+                status_msg = (
+                    f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
+                    f"Проект #{pid} «{_project_display_topic(project)}» "
+                    f"(slug: <code>{slug}</code>)\n"
+                    f"Статус: <code>{cur_running.value}</code> → "
+                    f"<code>{rollback_to.value}</code>.\n"
+                    f"auto_mode выключен — воркер не будет автоматически "
+                    f"перезапускать шаг."
+                )
+            elif xlsx_stopped:
+                status_msg = (
+                    f"⏹ <b>Остановлено</b>: xlsx-flow ({', '.join(xlsx_stopped)})\n"
+                    f"Проект #{pid} «{_project_display_topic(project)}» "
+                    f"(slug: <code>{slug}</code>)\n"
+                    "Лок снят — можно запустить шаг заново."
+                )
+            else:
+                status_msg = (
+                    f"⏹ Stop отправлен для проекта #{pid} "
+                    f"(текущий статус: <code>{project.status.value}</code>).\n"
+                    f"Если активен длинный шаг — он прервётся между кадрами."
+                )
+    except Exception as e:  # noqa: BLE001
+        # БД locked / другая ошибка. Шаг всё равно остановится по
+        # in-memory флагу (request_stop выше). Уведомим юзера.
+        logger.warning(
+            "[#{}] on_project_stop_running БД-апдейт упал: {}", pid, e
+        )
+        try:
+            await cb.message.answer(
+                f"⏹ Stop отправлен для #{pid} (in-memory).\n"
+                f"БД временно занята — статус откатится сам, как только "
+                f"шаг остановится между кадрами."
             )
-            status_msg = (
-                f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
-                f"Проект #{pid} «{_project_display_topic(project)}» "
-                f"(slug: <code>{slug}</code>)\n"
-                f"Статус: <code>{cur_running.value}</code> → "
-                f"<code>{rollback_to.value}</code>.\n"
-                f"auto_mode выключен — воркер не будет автоматически "
-                f"перезапускать шаг."
-            )
-        elif xlsx_stopped:
-            status_msg = (
-                f"⏹ <b>Остановлено</b>: xlsx-flow ({', '.join(xlsx_stopped)})\n"
-                f"Проект #{pid} «{_project_display_topic(project)}» "
-                f"(slug: <code>{slug}</code>)\n"
-                "Лок снят — можно запустить шаг заново."
-            )
-        else:
-            await cb.answer(
-                f"Нет активных шагов (статус: {project.status.value}).",
-                show_alert=True,
-            )
-            return
+        except Exception:  # noqa: BLE001
+            pass
+        return
 
-    await cb.answer("Остановлено")
-    await cb.message.answer(status_msg, parse_mode="HTML")
+    try:
+        await cb.message.answer(status_msg, parse_mode="HTML")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:pause$"))
