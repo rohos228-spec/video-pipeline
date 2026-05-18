@@ -526,24 +526,32 @@ FILE_UPLOAD_SELECTORS = [
     "input[type='file']",
 ]
 
-# ----- Селекторы кнопки «Поменять» и модалки выбора модели (новый UI) -----
-# Карточка модели лежит в левой панели; над ней справа сверху висит
-# <button>Поменять</button> в `<div class="absolute top-2 right-2 ...">`.
-# Клик по ней открывает модалку со списком моделей.
+# ----- Селекторы кнопки выбора модели (новый UI 2026, «Классика») -----
+# В левой панели «Настройки» есть отдельная кнопка-селектор модели вида:
+#   <button>
+#     <img src="/videomobilepreview/<model>.webp">
+#     <span>Модель</span><span>Seedance Pro 1.5</span>
+#     <svg chevron-right>
+#   </button>
+# ВАЖНО: кнопка «Поменять» наверху, рядом с превьюшкой стиля, открывает
+# модалку «Выбор визуального стиля» (стили: Свободный/Взрыв/Аутфит), а
+# НЕ переключает модель. Для модели нужна именно эта кнопка ниже.
 MODEL_CHANGE_BUTTON_SELECTORS: list[str] = [
-    "button:text-is('Поменять')",
-    "button:has-text('Поменять')",
-    "[role='button']:has-text('Поменять')",
+    # Самое надёжное: кнопка содержит подпись «Модель» в span внутри.
+    "button:has(span:text-is('Модель'))",
+    # Запасной — span с «Модель» как подпись.
+    "button:has(span:has-text('Модель'))",
+    "[role='button']:has(span:text-is('Модель'))",
 ]
 
 # Текущее имя модели в карточке (используем чтобы понять — уже стоит нужная
-# или нет). На странице оно лежит в <span class="text-xs font-semibold ..."
-# > Veo 3.1 Lite </span>. Но т.к. другие spans могут совпасть, ищем по
-# совокупности — внутри карточки модели или рядом с «Поменять».
+# или нет). Структура: <button>...<span>Модель</span><span>X</span>...</button>.
 CURRENT_MODEL_NAME_SELECTORS: list[str] = [
-    "div:has(button:text-is('Поменять')) span.text-xs.font-semibold",
-    # Запасной — любой span со шрифтом-semibold рядом с «Поменять».
-    "div:has(button:has-text('Поменять')) span",
+    # Прицельно: <span>X</span> ИДУЩИЙ ПОСЛЕ <span>Модель</span> внутри кнопки.
+    "button:has(span:text-is('Модель')) span.text-xs.font-semibold",
+    # Запасные — структура та же, только классы могут отличаться.
+    "button:has(span:text-is('Модель')) span.font-semibold",
+    "button:has(span:has-text('Модель')) span:not(:text-is('Модель'))",
 ]
 
 
