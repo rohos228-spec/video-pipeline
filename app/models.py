@@ -106,9 +106,14 @@ class AttemptResult(str, enum.Enum):
 class HITLKind(str, enum.Enum):
     approve_plan = "approve_plan"
     approve_script = "approve_script"
+    approve_blocks = "approve_blocks"  # шаг 3: разбивка на блоки
     approve_hero = "approve_hero"
+    approve_excel_extra = "approve_excel_extra"  # шаг 5: доп работа с excel
+    approve_image_prompts = "approve_image_prompts"  # шаг 6: промты картинок
     approve_images = "approve_images"
+    approve_animation_prompts = "approve_animation_prompts"  # шаг 8: промты анимации
     approve_videos = "approve_videos"
+    approve_audio = "approve_audio"  # шаг 10: озвучка
     approve_final = "approve_final"
 
 

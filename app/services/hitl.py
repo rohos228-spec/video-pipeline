@@ -17,6 +17,25 @@ from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.settings import settings
 
 
+def _confirm_only_keyboard(hitl_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура с одной кнопкой «Подтвердить и идти дальше».
+
+    Используется в `wait_for_human_confirmation()` после того как GPT-проверка уже
+    одобрила этап — пользователю осталось только подтвердить переход
+    к следующему шагу.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить и идти дальше",
+                    callback_data=f"hitl:{hitl_id}:approve",
+                ),
+            ],
+        ]
+    )
+
+
 def _keyboard(
     hitl_id: int,
     *,
@@ -236,3 +255,77 @@ async def wait_for_decision(hitl_id: int, *, poll_seconds: float = 2.0) -> HITLD
                 logger.info("HITL {} decided: {}", hitl_id, req.decision.value)
                 return req.decision
         await asyncio.sleep(poll_seconds)
+
+
+async def send_confirmation_only(
+    bot: Bot,
+    session: AsyncSession,
+    project: Project,
+    kind: HITLKind,
+    title: str,
+    text: str,
+    payload: dict | None = None,
+    frame_id: int | None = None,
+) -> HITLRequest:
+    """Создаёт HITL-запрос с одной кнопкой «Подтвердить и идти дальше».
+
+    Отправляет в TG текстовое сообщение с одной кнопкой. Используется когда
+    GPT уже одобрил артефакт, и юзеру осталось лишь подтвердить переход.
+    """
+    import html as _html
+
+    req = await create_hitl(
+        session, project, kind, payload=payload, frame_id=frame_id
+    )
+    body = f"<b>{_html.escape(title)}</b>\n\n{_html.escape(text)}"
+    chunks = [body[i : i + 3800] for i in range(0, len(body), 3800)] or [body]
+    msg = None
+    for i, c in enumerate(chunks):
+        is_last = i == len(chunks) - 1
+        msg = await bot.send_message(
+            settings.telegram_owner_chat_id,
+            c,
+            parse_mode="HTML",
+            reply_markup=_confirm_only_keyboard(req.id) if is_last else None,
+        )
+    assert msg is not None
+    req.tg_message_id = msg.message_id
+    return req
+
+
+async def wait_for_human_confirmation(
+    bot: Bot,
+    project: Project,
+    kind: HITLKind,
+    title: str,
+    text: str,
+    payload: dict | None = None,
+    poll_seconds: float = 2.0,
+) -> HITLDecision:
+    """Создаёт HITL «подтвердить и идти дальше» и блокирует до клика юзера.
+
+    Это тонкая обёртка над `send_confirmation_only()` + `wait_for_decision()`.
+    Использовать ПОСЛЕ того как GPT-проверка (или ретраи) завершилась
+    одобрением, но ПЕРЕД тем как запускать следующий шаг.
+
+    Решение пользователя возвращается как HITLDecision (обычно approved,
+    но теоретически юзер может возвращать и другое решение вручную
+    через базу).
+    """
+    async with session_scope() as s:
+        # Перезагружаем project в текущую сессию — он может быть
+        # «детачен» из вызывающей сессии.
+        p = (
+            await s.execute(select(Project).where(Project.id == project.id))
+        ).scalar_one_or_none()
+        if p is None:
+            raise RuntimeError(
+                f"wait_for_human_confirmation: проект #{project.id} исчез"
+            )
+        req = await send_confirmation_only(
+            bot, s, p, kind, title, text, payload=payload
+        )
+        hitl_id = req.id
+        await s.commit()
+    decision = await wait_for_decision(hitl_id, poll_seconds=poll_seconds)
+    return decision
