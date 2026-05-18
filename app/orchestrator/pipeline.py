@@ -1,73 +1,115 @@
-"""Главный pipeline: стейт-машина, которая на основе `Project.status` решает,
-какой шаг запустить следующим. Отдельные шаги живут в app.orchestrator.steps.*
-и будут наполняться поэтапно.
+"""Главный pipeline в ручном режиме (управляется из Telegram-меню).
 
-Логика шагов (коротко):
-  new              → создаётся в боте
-  planning         → step_make_plan            (ChatGPT web)
-  plan_ready       → step_make_script          (ChatGPT web)   [HITL: approve_plan]
-  script_ready     → step_split_into_frames
-  frames_ready     → step_generate_hero        (outsee nano-banana-2)  [HITL: approve_hero]
-                     или skip if hero_mode=no_hero
-  hero_ready       → step_generate_images      (outsee nano-banana-2 на каждый кадр)
-                                                [GPT Vision auto-check,
-                                                 HITL: approve_images]
-  images_ready     → step_make_animation_prompts (ChatGPT web)
-  animation_prompts_ready → step_generate_videos (outsee veo-3-fast Relax)
-                                                [GPT Vision auto-check,
-                                                 HITL: approve_videos]
-  videos_ready     → step_generate_audio       (11Labs web)
-  audio_ready      → step_assemble             (Whisper → Mapper → FFmpeg)
-                                                [HITL: approve_final]
-  assembled        → step_publish              (MoreLogin: TikTok, YT Shorts,
-                                                IG Reels, VK Клипы, Likee)
-  published        → терминальный
+Никаких авто-переходов между шагами. Воркер видит только «running»-статусы и
+запускает соответствующий шаг. После шага статус становится «*_ready», и
+проект ждёт действия пользователя из бота. Все «ready»-статусы воркером
+пропускаются.
+
+Маппинг running-status → step.run:
+  planning                       → make_plan
+  scripting                      → make_script
+  splitting                      → split_frames
+  generating_hero                → generate_hero
+  generating_image_prompts       → generate_image_prompts (только промты)
+  generating_images              → generate_images        (только картинки)
+  generating_animation_prompts   → make_animation_prompts
+  generating_videos              → generate_videos
+  generating_audio               → generate_audio
+  assembling                     → assemble
+  publishing                     → publish
+
+Переходы между шагами инициирует пользователь, тыкая кнопки в бот-меню.
 """
 
 from __future__ import annotations
 
+from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
+from app.orchestrator.steps import (
+    assemble,
+    enrich_xlsx,
+    generate_audio,
+    generate_hero,
+    generate_image_prompts,
+    generate_images,
+    generate_items,
+    generate_videos,
+    make_animation_prompts,
+    make_plan,
+    make_script,
+    publish,
+    split_frames,
+)
 
 
-async def advance_project(session: AsyncSession, project: Project) -> None:
-    """Продвинуть проект на следующий шаг в зависимости от статуса.
-
-    Сейчас — только заглушки-роутер. Конкретные шаги будут реализованы
-    последовательно (MVP → image → animation → video → audio → assembly → publish).
-    """
+async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> None:
+    """Один такт стейт-машины. Запускает шаг, если статус — «running»; иначе
+    ничего не делает (ждём, пока пользователь нажмёт кнопку в боте)."""
     status = project.status
     logger.debug("advance #{} status={}", project.id, status.value)
 
-    # TODO: пока ничего не делаем — просто логируем.
-    # Реализация шагов:
-    #   from app.orchestrator.steps import make_plan, make_script, ...
-    #   if status == ProjectStatus.planning: await make_plan.run(session, project)
-    #   elif status == ProjectStatus.plan_ready: await make_script.run(session, project)
-    #   ...
-    if status == ProjectStatus.planning:
-        # Поставить HITL-запрос на одобрение после генерации плана
-        # Генерация через ChatGPT web (browser bot)
-        pass
-    elif status == ProjectStatus.plan_ready:
-        pass
-    elif status == ProjectStatus.script_ready:
-        pass
-    elif status == ProjectStatus.frames_ready:
-        pass
-    elif status == ProjectStatus.hero_ready:
-        pass
-    elif status == ProjectStatus.images_ready:
-        pass
-    elif status == ProjectStatus.animation_prompts_ready:
-        pass
-    elif status == ProjectStatus.videos_ready:
-        pass
-    elif status == ProjectStatus.audio_ready:
-        pass
-    elif status == ProjectStatus.assembled:
-        pass
-    else:
+    if status is ProjectStatus.planning:
+        await make_plan.run(session, project, bot)
         return
+
+    if status is ProjectStatus.scripting:
+        await make_script.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.splitting:
+        await split_frames.run(session, project)
+        return
+
+    if status is ProjectStatus.generating_hero:
+        await generate_hero.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_items:
+        await generate_items.run(session, project, bot)
+        return
+
+    # 3 (по умолчанию, до 5) слотов «Доп работа с EXCEL» — все через
+    # один generic step, который сам читает slot_idx из running-статуса.
+    if status in (
+        ProjectStatus.enriching_1,
+        ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3,
+        ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+    ):
+        await enrich_xlsx.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_image_prompts:
+        await generate_image_prompts.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_images:
+        await generate_images.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_animation_prompts:
+        await make_animation_prompts.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_videos:
+        await generate_videos.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.generating_audio:
+        await generate_audio.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.assembling:
+        await assemble.run(session, project, bot)
+        return
+
+    if status is ProjectStatus.publishing:
+        await publish.run(session, project, bot)
+        return
+
+    # Все «ready»-статусы и new/paused/failed/published — воркер их игнорит.
+    return

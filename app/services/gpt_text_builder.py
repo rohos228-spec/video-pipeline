@@ -1,0 +1,430 @@
+"""Сборщик «сопр. сообщения» (full_prompt / chat_msg) для шагов пайплайна,
+которые шлют текстовый запрос в ChatGPT.
+
+Зачем нужен этот модуль:
+  - На каждом этапе бот собирает один длинный текст и отправляет его в GPT
+    (через `ask_fresh`, `ask_with_file`, `ask_with_files`). Этот текст
+    собирается из мастер-промта (выбранный вариант с диска) + контекстных
+    данных проекта (тема, плана, сценария, ссылок на прикреплённые файлы).
+  - Пользователь хочет иметь возможность отредактировать ИМЕННО ЭТОТ текст
+    перед запуском шага. Для этого мы:
+      1) Выносим сборку дефолтного текста в отдельные функции (`build_*`).
+      2) Храним пользовательский override в поле `Project.gpt_text_overrides`
+         (JSON: {step_code -> текст}).
+      3) Возвращаем «эффективный» текст — override если задан, иначе дефолт
+         (`get_effective_text`).
+      4) Даём UI (см. `app/telegram/bot.py`) отправить файл с дефолтом,
+         принять отредактированную версию и сохранить через `set_override`.
+
+Поддерживаемые шаги (имеют мастер-промт + один батч-текст в GPT):
+  - `plan`   — Шаг 1 «План»
+  - `script` — Шаг 2 «Закадровый текст»
+  - `split`  — Шаг 3 «Разбивка на блоки»
+  - `hero`   — Шаг 4 «Hero» (per-hero/per-variation, с плейсхолдерами
+               `{{BRIEF}}` и `{{HERO_STYLE}}`, см. `_build_hero_default`)
+  - `img_pr` — Шаг 5 «Промты картинок» (батч на все кадры разом)
+
+Шаг `anim_pr` (7) собирает текст ПО-РАЗНОМУ для каждого кадра — для
+него override текста на проекте плохо подходит без отдельной системы
+плейсхолдеров `{{N}} / {{VOICEOVER}}`.
+Шаги 6 «Картинки» и 8 «Видео» не шлют текст в GPT (генерация в outsee),
+поэтому override для них тоже не нужен.
+
+Для `hero` шаблон (default или override) содержит литеральные плейсхолдеры
+`{{BRIEF}}` (описание конкретного героя) и `{{HERO_STYLE}}` (визуальный
+стиль из `prompts/04_hero_style/<name>.md`). Подстановка происходит в
+`generate_hero.py` для каждой пары (hero_idx, variation_idx) — так один
+и тот же шаблон работает и для нескольких героев в проекте.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Project
+from app.services.prompt_library import (
+    STEP_HUMAN_NAMES,
+    get_project_prompt,
+)
+
+# Шаги, для которых поддерживается edit-override «сопр. сообщения».
+SUPPORTED_STEPS: tuple[str, ...] = (
+    "plan", "script", "hero", "split", "img_pr",
+    # Слоты «Доп работа с EXCEL» (шаг 5). Каждый слот хранит свой
+    # override в `Project.gpt_text_overrides["enrich_<i>"]`. В отличие
+    # от других шагов, тут «сопр. сообщение» = ТОЛЬКО сопровождающий
+    # текст (без мастер-промта). Мастер-промт лежит отдельно в
+    # `prompts/05<a..e>_enrich_<i>/<name>.md`, в `enrich_xlsx.py` они
+    # склеиваются: master + "\n\n---\n\n" + accompanying.
+    "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
+)
+
+# Дефолтный «сопровождающий текст» для enrich-слотов. Единый источник
+# правды — используется и в UI (через `_build_enrich_default`), и в
+# самом воркере (см. `app/orchestrator/steps/enrich_xlsx.py`,
+# `_get_accompanying_text` через `get_effective_text`).
+ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
+    "Внеси изменения в приложенный xlsx согласно инструкциям выше.\n"
+    "ВАЖНО: в ответ ОБЯЗАТЕЛЬНО приложи обновлённый xlsx файлом."
+)
+
+# Плейсхолдеры в шаблоне «сопр. сообщения» шага `hero`. Подставляются
+# в `generate_hero.py` отдельно для каждой пары (hero_idx, variation_idx)
+# — поэтому в самом шаблоне они хранятся литерально.
+HERO_PLACEHOLDER_BRIEF = "{{BRIEF}}"
+HERO_PLACEHOLDER_STYLE = "{{HERO_STYLE}}"
+
+
+def is_supported(step_code: str) -> bool:
+    return step_code in SUPPORTED_STEPS
+
+
+# --------------------------------------------------------------------------- #
+# Сборка дефолтного текста по шагам
+# --------------------------------------------------------------------------- #
+
+
+def _build_topic_context_block(project: Project) -> str:
+    """Возвращает текстовый блок с расширенным контекстом ролика (карточка
+    темы + постоянный продукт массового). Используется в `_build_plan_default`
+    и `_build_script_default`, чтобы GPT увидел весь нюанс.
+
+    Если у проекта нет карточки и продукта (одиночный проект) — возвращает
+    пустую строку (текст не меняется).
+    """
+    meta = getattr(project, "meta", None) or {}
+    card = meta.get("topic_card") or {}
+    product = meta.get("permanent_product") or {}
+
+    lines: list[str] = []
+
+    # Карточка темы (только непустые поля).
+    card_lines: list[str] = []
+    if card.get("style"):
+        card_lines.append(f"  • Стиль: {card['style']}")
+    if card.get("hook_type"):
+        card_lines.append(f"  • Тип хука: {card['hook_type']}")
+    if card.get("emotion"):
+        card_lines.append(f"  • Эмоциональный фон: {card['emotion']}")
+    if card.get("fact"):
+        card_lines.append(f"  • Научпоп ядро / факт: {card['fact']}")
+    if card.get("logic"):
+        card_lines.append(f"  • Логическое объяснение: {card['logic']}")
+    if card.get("integration"):
+        card_lines.append(f"  • Интеграция продукта: {card['integration']}")
+    if card.get("shoot_note"):
+        card_lines.append(f"  • Примечание по съёмке: {card['shoot_note']}")
+    # Жёсткие тех-ограничения по длительности и закадру (если указаны в xlsx).
+    duration = card.get("video_duration_sec")
+    chars = card.get("voiceover_chars_target")
+    if duration:
+        try:
+            duration_f = float(duration)
+            duration_str = (
+                f"{int(duration_f)}" if duration_f == int(duration_f)
+                else f"{duration_f:.1f}"
+            )
+            card_lines.append(
+                f"  • Длительность ролика: {duration_str} сек "
+                f"(ЖЁСТКОЕ ОГРАНИЧЕНИЕ — итог не должен превысить это время)"
+            )
+        except (TypeError, ValueError):
+            pass
+    if chars:
+        try:
+            chars_f = float(chars)
+            chars_str = (
+                f"{int(chars_f)}" if chars_f == int(chars_f)
+                else f"{chars_f:.1f}"
+            )
+            card_lines.append(
+                f"  • Бюджет закадрового текста: {chars_str} символов "
+                f"(1 сек ≈ 13,5 симв; следи, чтобы итоговый «закадровый текст» "
+                f"не превышал этот объём)"
+            )
+        except (TypeError, ValueError):
+            pass
+    if card_lines:
+        lines.append("📋 Карточка ролика:")
+        lines.extend(card_lines)
+
+    # Постоянный продукт массового.
+    if product and product.get("name"):
+        if lines:
+            lines.append("")
+        lines.append("📦 Постоянный продукт (должен фигурировать в каждом ролике):")
+        lines.append(f"  • Название: {product['name']}")
+        if product.get("description"):
+            lines.append(f"  • Описание: {product['description']}")
+        if product.get("reference_image_path"):
+            lines.append(
+                "  • Референс-изображение приложено отдельно "
+                f"({product['reference_image_path']})."
+            )
+        lines.append(
+            "  • ВАЖНО: на этапе интеграции (по «Карточке ролика») органично "
+            "ввести этот продукт в сюжет, не противореча историческому/"
+            "научному контексту. Не оборачивать в кавычки и не заменять "
+            "плейсхолдером — использовать именно указанное название."
+        )
+
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n\n"
+
+
+def _build_plan_default(
+    project: Project,
+    *,
+    topic: str | None = None,
+    prompt_file_name: str = "prompt_plan.md",
+) -> str:
+    """Шаг 1 «План» (xlsx-flow): к чату прикладываются prompt_plan.md и
+    project.xlsx. Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
+    """
+    actual_topic = topic if topic is not None else (project.topic or "")
+    context_block = _build_topic_context_block(project)
+    return (
+        f"Тема ролика: «{actual_topic}».\n\n"
+        f"{context_block}"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
+        "второй (project.xlsx). Заполни xlsx согласно инструкции и пришли "
+        "мне обратно как .xlsx (без обрезок и компрессии). Кратким текстом "
+        "ответь — что сделал — но главное верни файл."
+    )
+
+
+def _build_script_default(project: Project, *, prompt_file_name: str = "prompt.txt") -> str:
+    """Шаг 2 — закадровый текст. В xlsx-flow к чату прикладываются
+    `prompt.txt` (мастер-промт + тема) и `project.xlsx`. Возвращаем
+    «сопр. сообщение» — основной текст письма в чат.
+    """
+    topic = (project.topic or "").strip()
+    context_block = _build_topic_context_block(project)
+    return (
+        f"Тема ролика: «{topic}».\n\n"
+        f"{context_block}"
+        f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь на "
+        "второй (project.xlsx).\n\n"
+        "Пришли результат txt файлом в чат."
+    )
+
+
+def _build_split_default(
+    project: Project, *, prompt_file_name: str = "prompt.txt"
+) -> str:
+    """Шаг 3 — разбивка на блоки (xlsx-flow). К чату прикладываются
+    `prompt.txt`, `project.xlsx`, `voiceover.txt`. Возвращаем chat_msg.
+    """
+    topic = (project.topic or "").strip()
+    context_block = _build_topic_context_block(project)
+    return (
+        f"Тема ролика: «{topic}».\n\n"
+        + (context_block + "\n\n" if context_block else "")
+        + f"Прикреплены 3 файла:\n"
+        f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
+        f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n"
+        f"  3. voiceover.txt — закадровый текст, который нужно разбить "
+        f"на блоки.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), опираясь "
+        "на структуру из project.xlsx и применяя к voiceover.txt.\n\n"
+        "Все результаты ЗАПИШИ В project.xlsx (в нужные листы и ячейки) и "
+        "пришли мне обратно ОБНОВЛЁННЫЙ project.xlsx как .xlsx-файл "
+        "(без обрезок и компрессии). Кратким текстом ответь — что сделал — "
+        "но главное верни файл."
+    )
+
+
+def _build_hero_default(project: Project) -> str:
+    """Шаг 4 — Hero. Один и тот же шаблон используется для всех героев
+    проекта и всех их вариаций. Конкретные `BRIEF` (описание героя) и
+    `HERO_STYLE` (визуальный стиль) подставляются в `generate_hero.py`
+    в момент запуска для каждой пары (hero_idx, variation_idx).
+
+    В шаблоне они оставлены литералами `{{BRIEF}}` / `{{HERO_STYLE}}`.
+    Override (если задан) тоже должен содержать эти плейсхолдеры — иначе
+    конкретное описание героя/стиля просто не попадёт в GPT.
+    """
+    hero_master = get_project_prompt(project, "hero").strip()
+    return (
+        "Сделай промт для генерации персонажа, который описан ниже. "
+        "Ты должен интегрировать персонажа в промт и прислать готовый "
+        "промт для генерации персонажа.\n\n"
+        "Структура промта (turnaround sheet) — ниже шаблоном. "
+        "Подставь в него характеристики персонажа из описания ниже, "
+        "верни ТОЛЬКО готовый текст промта (на английском, без кавычек, "
+        "без markdown-обрамления, без пояснений).\n\n"
+        "ВАЖНО: ОБЯЗАТЕЛЬНО учитывай блок «Visual style» ниже — он "
+        "описывает визуальный стиль (рендер, освещение, lens, цвет). "
+        "Эти инструкции должны быть отражены в финальном промте — "
+        "никакого «default» style; используем именно этот блок.\n\n"
+        "ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ 5000 "
+        "символов (включая пробелы). Если получается длиннее — "
+        "сожми описание, убери дубликаты, оставь только самое "
+        "важное. Главное чтобы влезло в 5000.\n\n"
+        "Шаблон:\n\n"
+        + hero_master
+        + "\n\n---\n\nVisual style (применять обязательно):\n"
+        + HERO_PLACEHOLDER_STYLE
+        + "\n\n---\n\nОписание персонажа:\n"
+        + HERO_PLACEHOLDER_BRIEF
+    )
+
+
+def render_hero_text(
+    template: str, *, brief: str, hero_style: str
+) -> str:
+    """Подставляет в шаблон «сопр. сообщения» шага `hero` конкретные
+    значения для одной пары (hero_idx, variation_idx).
+
+    Если в `hero_style` пусто — подставляется placeholder-фраза, чтобы
+    GPT не оставил пустую секцию (поведение совпадает с предыдущей
+    версией `generate_hero.py`).
+    """
+    style = (hero_style or "").strip() or (
+        "(не задан — используй кинематографический фото-реализм)"
+    )
+    out = template.replace(HERO_PLACEHOLDER_STYLE, style)
+    out = out.replace(HERO_PLACEHOLDER_BRIEF, (brief or "").strip())
+    return out
+
+
+def _build_img_pr_default(
+    project: Project,
+    *,
+    voiceover_line: str = "",
+    n_frames: int = 0,
+    prompt_file_name: str = "prompt_img_pr.md",
+) -> str:
+    """Шаг 6 «Промты картинок» (xlsx-flow).
+
+    К чату прикладываются prompt_img_pr.md и project.xlsx.
+    Возвращает «сопр. сообщение» — короткий текст в чат,
+    без дублирования содержимого мастер-промта (он идёт файлом).
+    """
+    context_block = _build_topic_context_block(project)
+    return (
+        (context_block + "\n\n" if context_block else "")
+        + f"Прикреплены 2 файла:\n"
+        f"  1. {prompt_file_name} — инструкция по генерации промтов "
+        f"для картинок.\n"
+        f"  2. project.xlsx — рабочая таблица ролика с кадрами и "
+        f"закадровым текстом.\n\n"
+        "Сделай всё, что написано в первом файле (инструкция), "
+        "опираясь на данные из project.xlsx. Заполни в xlsx строку "
+        "«промт картинки» (строка 29) для каждого кадра. "
+        "ЕСЛИ в контексте выше указан постоянный продукт — впиши его "
+        "в промты тех кадров, где по «Интеграции продукта» он "
+        "должен появиться. Референс-картинка продукта будет "
+        "автоматически прикреплена к Outsee в момент генерации кадра.\n\n"
+        "Верни обновлённый xlsx файлом (без обрезок и компрессии). "
+        "Кратким текстом ответь — что сделал — но главное верни файл."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Публичные функции
+# --------------------------------------------------------------------------- #
+
+def _build_enrich_default(project: Project, **_ctx) -> str:  # noqa: ARG001
+    """Дефолтный «сопровождающий текст» для enrich-слотов (1..5).
+
+    Здесь, в отличие от других шагов, возвращаем ТОЛЬКО короткую
+    инструкцию (без мастер-промта). Мастер-промт пользователь редактирует
+    отдельно — через picker → «✏ Редактировать выбранный». А «сопр.
+    сообщение» — это короткое сопровождение, которое склеивается с
+    мастер-промтом в `enrich_xlsx.py` через `master + "\\n---\\n" + ...`.
+    """
+    return ENRICH_DEFAULT_ACCOMPANYING_TEXT
+
+
+def build_default_text(project: Project, step_code: str, **ctx) -> str:
+    """Собирает дефолтный текст «сопр. сообщения» для шага.
+
+    `**ctx` — контекстные данные, специфичные для шага (для img_pr —
+    `voiceover_line`, `n_frames`; для script — `prompt_file_name`).
+    """
+    if step_code == "plan":
+        return _build_plan_default(project, **ctx)
+    if step_code == "script":
+        return _build_script_default(project, **ctx)
+    if step_code == "split":
+        return _build_split_default(project, **ctx)
+    if step_code == "hero":
+        return _build_hero_default(project, **ctx)
+    if step_code == "img_pr":
+        return _build_img_pr_default(project, **ctx)
+    if step_code.startswith("enrich_"):
+        return _build_enrich_default(project, **ctx)
+    raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")
+
+
+def get_override(project: Project, step_code: str) -> str | None:
+    """Возвращает пользовательский override-текст для шага или None."""
+    overrides = getattr(project, "gpt_text_overrides", None) or {}
+    val = overrides.get(step_code)
+    if isinstance(val, str) and val.strip():
+        return val
+    return None
+
+
+def has_override(project: Project, step_code: str) -> bool:
+    return get_override(project, step_code) is not None
+
+
+def get_effective_text(project: Project, step_code: str, **ctx) -> str:
+    """Возвращает текст, который реально пойдёт в GPT.
+
+    1. Если в `project.gpt_text_overrides[step_code]` есть непустой текст —
+       вернёт его.
+    2. Иначе соберёт дефолт из мастер-промта + контекста проекта.
+    """
+    override = get_override(project, step_code)
+    if override is not None:
+        return override
+    return build_default_text(project, step_code, **ctx)
+
+
+async def set_override(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+    text: str,
+) -> None:
+    """Сохраняет пользовательский override-текст для шага.
+
+    Пустая строка → удаляет override (см. `clear_override`).
+    """
+    if not text or not text.strip():
+        await clear_override(session, project, step_code)
+        return
+    if not is_supported(step_code):
+        raise ValueError(f"set_override: шаг {step_code!r} не поддерживается")
+    overrides = dict(getattr(project, "gpt_text_overrides", None) or {})
+    overrides[step_code] = text
+    project.gpt_text_overrides = overrides
+    await session.flush()
+
+
+async def clear_override(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+) -> None:
+    """Удаляет пользовательский override для шага."""
+    overrides = dict(getattr(project, "gpt_text_overrides", None) or {})
+    if step_code in overrides:
+        overrides.pop(step_code, None)
+        project.gpt_text_overrides = overrides
+        await session.flush()
+
+
+def step_human_name(step_code: str) -> str:
+    return STEP_HUMAN_NAMES.get(step_code, step_code)

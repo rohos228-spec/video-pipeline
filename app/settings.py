@@ -10,20 +10,24 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_chat_id: int = Field(..., alias="TELEGRAM_OWNER_CHAT_ID")
+    # Опциональный HTTP/SOCKS5 прокси для Telegram-API.
+    # Примеры: http://user:pass@host:port, socks5://user:pass@host:port
+    telegram_proxy_url: str | None = Field(None, alias="TELEGRAM_PROXY_URL")
 
-    # Database
-    postgres_user: str = Field("video", alias="POSTGRES_USER")
-    postgres_password: str = Field("video", alias="POSTGRES_PASSWORD")
-    postgres_db: str = Field("video", alias="POSTGRES_DB")
-    postgres_host: str = Field("postgres", alias="POSTGRES_HOST")
-    postgres_port: int = Field(5432, alias="POSTGRES_PORT")
+    # Database — SQLite file + aiosqlite.
+    # Пути в Windows: C:\Users\<user>\vp_state.db → пишется как C:/Users/<user>/vp_state.db
+    sqlite_path: Path = Field(Path("./data/state.db"), alias="SQLITE_PATH")
 
-    # Browser
-    browser_cdp_url: str = Field("http://host.docker.internal:29229", alias="BROWSER_CDP_URL")
+    # Browser — Chrome с --remote-debugging-port=29229 запущен локально на том же ПК
+    browser_cdp_url: str = Field("http://localhost:29229", alias="BROWSER_CDP_URL")
 
     # Service URLs
-    outsee_image_url: str = Field("https://outsee.io/image?model=nano-banana-2", alias="OUTSEE_IMAGE_URL")
-    outsee_video_url: str = Field("https://outsee.io/video?model=veo-3-fast", alias="OUTSEE_VIDEO_URL")
+    outsee_image_url: str = Field(
+        "https://outsee.io/image?model=nano-banana-2", alias="OUTSEE_IMAGE_URL"
+    )
+    outsee_video_url: str = Field(
+        "https://outsee.io/video?model=veo-3-fast", alias="OUTSEE_VIDEO_URL"
+    )
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
@@ -33,7 +37,10 @@ class Settings(BaseSettings):
     social_publish_enabled: bool = Field(False, alias="SOCIAL_PUBLISH_ENABLED")
 
     # Paths
-    data_dir: Path = Field(Path("/data"), alias="DATA_DIR")
+    data_dir: Path = Field(Path("./data"), alias="DATA_DIR")
+
+    # Whisper
+    whisper_model: str = Field("medium", alias="WHISPER_MODEL")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
@@ -41,10 +48,14 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        # SQLite path → sqlite+aiosqlite:///absolute_or_relative/path
+        p = self.sqlite_path
+        if not p.is_absolute():
+            # относительный путь — относительно CWD
+            p = Path.cwd() / p
+        # Для Windows путь начинается с буквы диска: sqlite+aiosqlite:///C:/Users/...
+        as_posix = p.as_posix()
+        return f"sqlite+aiosqlite:///{as_posix}"
 
 
 settings = Settings()  # type: ignore[call-arg]
