@@ -731,6 +731,28 @@ _INPUT_REF_MARKERS = (
     "/upload/",
 )
 
+# Маркеры URL'ов МИНИАТЮР outsee. Когда outsee рендерит карточку
+# результата генерации, в DOM сначала появляется URL миниатюры вида
+# `image_<ts>_<idx>_thumb.jpg` — он подгружается из CDN за <1 секунды
+# и выглядит как «новая <img> в DOM» для бота. Сама же финальная
+# картинка имеет URL `image_<ts>_<idx>.png/.jpg/.webp` (БЕЗ `_thumb`)
+# и приходит через 30-180 секунд после клика Generate. Если мы
+# принимаем `_thumb`-URL как финальный — скачиваем плейсхолдер-
+# миниатюру (единицы KB) или картинку от соседней / СТАРОЙ генерации
+# (history panel outsee лениво подгружает thumb'ы прошлых картинок).
+# Это и есть корень бага «при поиске готовой картинки делаются 2
+# изображения» / «отправил картинку другого кадра».
+_PREVIEW_THUMB_MARKERS = (
+    "_thumb.",  # ловит _thumb.jpg, _thumb.png, _thumb.webp
+)
+
+# Минимум секунд после клика Generate, прежде чем мы готовы принять
+# ЛЮБОЙ URL как финальный результат. nano-banana никогда не успевает
+# сгенерить картинку быстрее этого; всё, что прилетает раньше — это
+# либо превью-плейсхолдер, либо leak из истории outsee. Хорошо
+# работает в паре с фильтром _PREVIEW_THUMB_MARKERS.
+_MIN_GENERATE_ELAPSED_S = 10.0
+
 
 def _strip_url_query(url: str | None) -> str:
     """Снимает `?query` и `#fragment`, оставляет scheme+host+path.
@@ -824,6 +846,11 @@ def _is_candidate_image_response(resp: Any) -> bool:
         if any(marker in low for marker in _INPUT_REF_MARKERS):
             # Это URL ВХОДНОГО референса (тот файл, который мы только что
             # загрузили), а не результат генерации. Не считаем кандидатом.
+            return False
+        if any(marker in low for marker in _PREVIEW_THUMB_MARKERS):
+            # _thumb.jpg — миниатюра outsee, не финальная картинка.
+            # Не пускаем в net_events; финальный URL без `_thumb`
+            # прилетит чуть позже.
             return False
         # Content-Length — дешёвый способ отсечь мелочь без .body()
         cl = resp.headers.get("content-length")
@@ -1965,6 +1992,9 @@ class OutseeBot:
                 and not any(
                     m in current.lower() for m in _UI_ASSET_MARKERS
                 )
+                and not any(
+                    m in current.lower() for m in _PREVIEW_THUMB_MARKERS
+                )
                 and current_norm not in baseline_all_srcs
             ):
                 if await self._img_is_loaded(page, current):
@@ -1996,6 +2026,9 @@ class OutseeBot:
                     for u in new_srcs
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
+                    and not any(
+                        m in u.lower() for m in _PREVIEW_THUMB_MARKERS
+                    )
                 ]
                 clean = [u for u in clean if _url_is_fresh(u, net_events)]
                 # Исключаем уже отвергнутых при ID-верификации (сравнение
@@ -2067,9 +2100,27 @@ class OutseeBot:
                 # это наша картинка. Click-verification (которая
                 # часто врёт из-за textarea.value vs innerText)
                 # пропускаем.
+                #
+                # НО! Есть два сценария, когда net_events врёт:
+                #  1) URL `_thumb.jpg` — миниатюра-плейсхолдер, выгружается
+                #     CDN за <1 сек; это НЕ финальная картинка. Финальная
+                #     приходит как `image_<ts>_<idx>.png/.jpg/.webp` БЕЗ
+                #     суффикса `_thumb`.
+                #  2) elapsed < _MIN_GENERATE_ELAPSED_S (10 сек) — реальная
+                #     nano-banana никогда не успевает; всё, что прилетает
+                #     быстрее, — это leak из истории outsee (после reload'a
+                #     страницы history panel лениво подгружает thumb'ы
+                #     прошлых картинок, они попадают в net_events).
+                # В обоих случаях откидываем кандидата и фолбэчим на
+                # click-verification (или ждём настоящую картинку).
+                is_thumb = any(
+                    m in fallback_candidate.lower()
+                    for m in _PREVIEW_THUMB_MARKERS
+                )
+                too_early = elapsed < _MIN_GENERATE_ELAPSED_S
                 if net_events and _url_is_fresh(
                     fallback_candidate, net_events
-                ):
+                ) and not is_thumb and not too_early:
                     logger.info(
                         "_wait_image_url_strict: trusted by net_events "
                         "(source={}, URL пришёл по сети после Generate) "
@@ -2078,6 +2129,34 @@ class OutseeBot:
                         fallback_candidate[:140],
                     )
                     return fallback_candidate
+                if net_events and _url_is_fresh(
+                    fallback_candidate, net_events
+                ) and (is_thumb or too_early):
+                    # Логируем причину отказа — это полезно в проде:
+                    # видим, сколько раз outsee нам "подсовывает"
+                    # _thumb или ранние leak'и, и можем подкрутить
+                    # _MIN_GENERATE_ELAPSED_S при необходимости.
+                    reason = (
+                        "_thumb-URL (миниатюра outsee, не финальная картинка)"
+                        if is_thumb
+                        else (
+                            f"elapsed={elapsed:.1f}<"
+                            f"{_MIN_GENERATE_ELAPSED_S}сек "
+                            "(слишком быстро для nano-banana — leak из истории)"
+                        )
+                    )
+                    logger.warning(
+                        "_wait_image_url_strict: net_events match ОТКЛОНЁН "
+                        "({}): {}",
+                        reason, fallback_candidate[:140],
+                    )
+                    rejected_candidates.add(
+                        _strip_url_query(fallback_candidate)
+                    )
+                    fallback_candidate = None
+                    fallback_source = None
+                    await asyncio.sleep(2.0)
+                    continue
                 # B. Fallback — click-verification, когда нет net_events
                 # или URL не подтверждён сетью.
                 ok = await self._verify_img_by_clicking(
