@@ -10,6 +10,9 @@ xlsx, бот его подменяет и пересоздаёт фреймы и
 Источник входного текста: `project.script_text`. ChatGPT возвращает блоки,
 разделённые знаком «-». Каждый блок → один Frame. Длительность блока
 распределяется пропорционально длине, окно 2-4 сек, сумма → 60-75 сек.
+
+(Фаза 2) После разбивки — GPT-проверка через `gpt_check_text_artifact`,
+ретраи до 3 раз при `regenerate`.
 """
 
 from __future__ import annotations
@@ -22,6 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, HITLKind, Project, ProjectStatus
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_text_artifact,
+    load_check_prompt,
+)
 from app.services.hitl import send_hitl_text
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_steps import run_split_xlsx_step
@@ -35,6 +43,8 @@ TARGET_TOTAL = 65.0  # середина окна 60-75 сек
 # но без жёсткого реджекта (ChatGPT иногда чуть-чуть промахивается).
 _MIN_BLOCK_CHARS = 5
 _MAX_BLOCK_CHARS = 80
+
+MAX_GPT_CHECK_RETRIES = 3
 
 
 def _parse_dash_blocks(reply: str) -> list[str]:
@@ -127,20 +137,70 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     # 2) Шлём в ChatGPT: <RAZBIVKA_SLOV>\n\n---\n\n<script_text>.
     full_prompt = f"{master}\n\n---\n\n{project.script_text.strip()}"
 
-    async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
-        reply = await gpt.ask_fresh(full_prompt, timeout=300)
+    reply: str | None = None
+    cells: list[str] = []
 
-    if not reply or len(reply.strip()) < 10:
-        raise RuntimeError(f"ChatGPT вернул пустую разбивку: {reply!r}")
+    for attempt in range(1, MAX_GPT_CHECK_RETRIES + 1):
+        async with browser_session() as bs:
+            gpt = ChatGPTBot(bs)
+            reply = await gpt.ask_fresh(full_prompt, timeout=300)
 
-    cells = _parse_dash_blocks(reply)
-    if not cells:
-        raise RuntimeError(
-            f"не удалось распарсить разбивку (нет «-» или все блоки пустые); "
-            f"ответ модели: {reply[:500]!r}"
-        )
-    logger.info("[#{}] RAZBIVKA_SLOV → {} блоков", project.id, len(cells))
+            if not reply or len(reply.strip()) < 10:
+                raise RuntimeError(f"ChatGPT вернул пустую разбивку: {reply!r}")
+
+            cells = _parse_dash_blocks(reply)
+            if not cells:
+                raise RuntimeError(
+                    f"не удалось распарсить разбивку (нет «-» или все блоки пустые); "
+                    f"ответ модели: {reply[:500]!r}"
+                )
+            logger.info("[#{}] RAZBIVKA_SLOV → {} блоков", project.id, len(cells))
+
+            # (Фаза 2) GPT-проверка разбивки.
+            try:
+                check_prompt = load_check_prompt("blocks")
+            except FileNotFoundError:
+                logger.warning("[#{}] промт проверки разбивки не найден, пропускаю GPT-check", project.id)
+                break
+
+            blocks_text = "\n\n".join(
+                f"— ({i+1}) {cell}" for i, cell in enumerate(cells)
+            )
+            check_result = await gpt_check_text_artifact(
+                chatgpt_bot=gpt,
+                check_prompt=check_prompt,
+                artifact_text=blocks_text,
+                new_conversation=True,
+                timeout=1200.0,
+            )
+            logger.info(
+                "[#{}] blocks GPT-check attempt {}/{}: decision={}",
+                project.id, attempt, MAX_GPT_CHECK_RETRIES,
+                check_result.decision.value,
+            )
+
+            if check_result.decision is GptCheckDecision.approved:
+                break
+
+            if check_result.decision is GptCheckDecision.replace_artifact:
+                break
+
+            if check_result.decision is GptCheckDecision.regenerate:
+                if attempt < MAX_GPT_CHECK_RETRIES:
+                    logger.info(
+                        "[#{}] blocks: GPT просит перегенерацию (hint: {}), retry {}/{}",
+                        project.id, check_result.hint[:100],
+                        attempt, MAX_GPT_CHECK_RETRIES,
+                    )
+                    continue
+                logger.warning(
+                    "[#{}] blocks: {} ретраев исчерпано, оставляем последний вариант",
+                    project.id, MAX_GPT_CHECK_RETRIES,
+                )
+                break
+
+            # timeout / parse_error
+            break
 
     durations = _distribute_durations(cells)
     t = 0.0
