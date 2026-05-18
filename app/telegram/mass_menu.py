@@ -46,6 +46,16 @@ def mass_list_kb(batches: list[BatchProject]) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text=label, callback_data=f"mass:open:{b.id}")
         ])
+    # Глобальная библиотека промтов — UX только для потока массовой
+    # генерации (в индивидуальном меню её НЕТ, см. main_menu_kb).
+    # Из неё юзер редактирует базовые `prompts/*`, которые копируются
+    # в snapshot новых батчей при создании.
+    rows.append([
+        InlineKeyboardButton(
+            text="🧰 Промты (библиотека)",
+            callback_data="gprm:overview",
+        )
+    ])
     rows.append([InlineKeyboardButton(text="⬅ В главное меню", callback_data="menu:root")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
