@@ -31,9 +31,16 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.hitl import send_hitl_text
 from app.services.outsee_retry import generate_video_with_retries
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+
+_VIDEO_GPT_MAX_RETRIES = 3
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -63,11 +70,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     video_res_slug = vr_o.outsee_slug if vr_o else None
     aspect_slug = ar.outsee_slug if ar else "9:16"
 
+    # (Фаза 6) GPT-проверка видео.
+    try:
+        _video_check_prompt = load_check_prompt("video")
+    except FileNotFoundError:
+        _video_check_prompt = None
+        logger.warning("[#{}] промт check_video не найден, пропускаю GPT-check", project.id)
+
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
-        # `gpt` — для GPT-rewrite внутри generate_video_with_retries:
-        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
-        # animation_prompt без триггеров модерации, потом ещё 3 попытки.
         gpt = ChatGPTBot(bs)
 
         try:
@@ -108,20 +119,89 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 # До 3 попыток с исходным animation_prompt; если все 3 провалились
                 # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
-                result = await generate_video_with_retries(
-                    outsee, gpt,
-                    prompt=fr.animation_prompt,
-                    out_path=file_path,
-                    max_attempts_per_prompt=3,
-                    gpt_rewrite=True,
-                    start_frame=start_frame_path,
-                    aspect_ratio=aspect_slug,
-                    timeout=1200,
-                    model_slug=video_model_slug,
-                    resolution=video_res_slug,
-                    relax=video_relax,
-                    prompt_id_prefix=prompt_id_prefix,
-                )
+                # (Фаза 6) best-of-3 по GPT score.
+                best_result = None
+                best_score: float | None = None
+                for video_attempt in range(1, _VIDEO_GPT_MAX_RETRIES + 1):
+                    v_short = uuid.uuid4().hex[:8]
+                    v_file = out_dir / f"clip_{fr.number:03d}_{v_short}.mp4"
+                    v_prefix = build_gen_id_prefix(project.id, fr.number, v_short)
+                    result = await generate_video_with_retries(
+                        outsee, gpt,
+                        prompt=fr.animation_prompt,
+                        out_path=v_file,
+                        max_attempts_per_prompt=3,
+                        gpt_rewrite=True,
+                        start_frame=start_frame_path,
+                        aspect_ratio=aspect_slug,
+                        timeout=1200,
+                        model_slug=video_model_slug,
+                        resolution=video_res_slug,
+                        relax=video_relax,
+                        prompt_id_prefix=v_prefix,
+                    )
+                    if best_result is None:
+                        best_result = result
+                        best_score = None
+                    # GPT-проверка 360p.
+                    if _video_check_prompt and result is not None:
+                        import subprocess
+                        vid_path = Path(result.file_path)
+                        thumb_path = vid_path.with_suffix(".360p.mp4")
+                        try:
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", str(vid_path),
+                                 "-vf", "scale=-2:360", "-an", str(thumb_path)],
+                                capture_output=True, timeout=60,
+                            )
+                        except Exception as exc:
+                            logger.warning("[#{}] frame {} ffmpeg 360p failed: {}", project.id, fr.number, exc)
+                            thumb_path = None
+                        if thumb_path and thumb_path.exists():
+                            check_result = await gpt_check_file_artifact(
+                                chatgpt_bot=gpt,
+                                check_prompt=_video_check_prompt,
+                                artifact_path=thumb_path,
+                                new_conversation=True,
+                                timeout=1200.0,
+                            )
+                            logger.info(
+                                "[#{}] frame {} video GPT-check {}/{}: decision={} score={}",
+                                project.id, fr.number, video_attempt,
+                                _VIDEO_GPT_MAX_RETRIES,
+                                check_result.decision.value,
+                                check_result.score,
+                            )
+                            try:
+                                thumb_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            cur_score = check_result.score
+                            if cur_score is not None:
+                                if best_score is None or cur_score > best_score:
+                                    # Новый лучший — удаляем старый.
+                                    if best_result is not result:
+                                        try:
+                                            Path(best_result.file_path).unlink(missing_ok=True)
+                                        except OSError:
+                                            pass
+                                    best_result = result
+                                    best_score = cur_score
+                                else:
+                                    # Текущий хуже — удаляем его.
+                                    try:
+                                        Path(result.file_path).unlink(missing_ok=True)
+                                    except OSError:
+                                        pass
+                            if check_result.decision is GptCheckDecision.approved:
+                                best_result = result
+                                break
+                        else:
+                            break
+                    else:
+                        break
+
+                result = best_result
                 session.add(
                     Artifact(
                         project_id=project.id,
@@ -133,7 +213,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 fr.status = FrameStatus.video_generated
                 await session.flush()
-                logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
+                logger.info("[#{}] frame {} video: {} (score={})", project.id, fr.number, result.file_path, best_score)
         except StepCancelledError as e:
             logger.info("[#{}] generate_videos: {} — выхожу из цикла",
                         project.id, e)
