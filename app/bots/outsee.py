@@ -2754,7 +2754,57 @@ class OutseeBot:
                                     "n_inputs": n_inputs,
                                 },
                             ) from e
-                    await asyncio.sleep(1.0)
+
+                    # ВАЖНО: после set_input_files React-контролируемые
+                    # компоненты часто НЕ обновляют свой state —
+                    # `onChange`-prop у React-input привязан через
+                    # синтетическую событийную систему, а Playwright
+                    # эмитит «голый» change event. В итоге Generate
+                    # визуально активен (потому что disabled-чек идёт
+                    # от размера DOM-инпута), но клик по нему — no-op:
+                    # React-form-state думает «файла нет».
+                    #
+                    # Лечится принудительной диспатчем `input` +
+                    # `change` events с bubbles=true прямо на тот же
+                    # input element, в который мы set_input_files.
+                    # Это эквивалент того что пользователь руками
+                    # выбрал файл через диалог.
+                    try:
+                        await page.evaluate(
+                            """() => {
+                                const inputs = Array.from(
+                                    document.querySelectorAll(
+                                        "input[type='file']"
+                                    )
+                                );
+                                if (!inputs.length) return 0;
+                                // Берём last — тот же что использовали
+                                // в Playwright set_input_files.
+                                const inp = inputs[inputs.length - 1];
+                                if (!inp || !inp.files || !inp.files.length) {
+                                    return 0;
+                                }
+                                inp.dispatchEvent(
+                                    new Event('input', {bubbles: true})
+                                );
+                                inp.dispatchEvent(
+                                    new Event('change', {bubbles: true})
+                                );
+                                return inp.files.length;
+                            }"""
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: React-event dispatch "
+                            "на file input упал ({}), продолжаю",
+                            type(e).__name__,
+                        )
+                    # outsee нужно время на upload файла на их сервер
+                    # ПОСЛЕ change-event. 1 сек было мало — увеличиваем
+                    # до 3 сек: за это время React-form-state точно
+                    # успевает зарегистрировать файл и кнопка станет
+                    # реально, а не визуально, активной.
+                    await asyncio.sleep(3.0)
 
                 # 4) Generate
                 gen_sel = await _first_visible(
@@ -2805,14 +2855,155 @@ class OutseeBot:
                         len(pre_rejected_text),
                     )
 
+                # Снимок счётчика наших prompt_id ДО клика — пригодится
+                # для пост-клик верификации: если outsee реально начал
+                # генерацию по нашей кнопке, в DOM должны появиться
+                # дополнительные вхождения `[ID: P*-F*-…]` (карточка
+                # «в процессе» +, возможно, дубль в правой панели).
+                # Если за 5 сек после клика счётчик НЕ вырос И net_events
+                # пустой — значит клик был no-op (React-handler не
+                # сработал, кнопка визуально активна но кликабельна
+                # вхолостую). Тогда даём fallback-серию кликов.
+                pre_click_id_count: int = 0
+                if prompt_id_prefix:
+                    try:
+                        cnt_map = await self._count_id_tokens_in_page(
+                            page, [prompt_id_prefix]
+                        )
+                        pre_click_id_count = int(
+                            cnt_map.get(prompt_id_prefix, 0)
+                        )
+                    except Exception:  # noqa: BLE001
+                        pre_click_id_count = 0
+
                 click_ts = _time.monotonic()
                 net_events.clear()
                 await page.locator(gen_sel).first.click()
                 logger.info(
                     "outsee.generate_video: Generate кликнут, жду видео "
-                    "(gen_id={})",
-                    gen_id[:8],
+                    "(gen_id={}, pre_click_id_count={})",
+                    gen_id[:8], pre_click_id_count,
                 )
+
+                # Пост-клик верификация. За 5 сек проверяем что клик
+                # реально что-то запустил. Признаки успеха (любой
+                # выполнен — считаем что клик сработал):
+                #   a) счётчик нашего prompt_id_prefix в DOM вырос
+                #      (outsee создал новую карточку «в процессе»);
+                #   b) в net_events появились новые исходящие
+                #      запросы — outsee стучится на бэк начать
+                #      генерацию;
+                #   c) кнопка Generate стала disabled / aria-disabled.
+                #
+                # Если ни одного признака — пробуем fallback-клики
+                # в порядке возрастания «агрессии»:
+                #   1) JS-dispatch click event через evaluate();
+                #   2) Playwright click(force=True);
+                #   3) HTMLElement.click() через element_handle.
+                async def _click_worked(deadline_s: float = 5.0) -> bool:
+                    end = _time.monotonic() + deadline_s
+                    while _time.monotonic() < end:
+                        # (a) prompt_id token count grew?
+                        if prompt_id_prefix:
+                            try:
+                                cnt_map = await self._count_id_tokens_in_page(
+                                    page, [prompt_id_prefix]
+                                )
+                                cur = int(cnt_map.get(prompt_id_prefix, 0))
+                                if cur > pre_click_id_count:
+                                    return True
+                            except Exception:  # noqa: BLE001
+                                pass
+                        # (b) network activity?
+                        if net_events:
+                            return True
+                        # (c) button became disabled?
+                        try:
+                            loc = page.locator(gen_sel).first
+                            d = await loc.get_attribute("disabled")
+                            a = await loc.get_attribute("aria-disabled")
+                            if d is not None or (a or "").lower() == "true":
+                                return True
+                        except Exception:  # noqa: BLE001
+                            pass
+                        await asyncio.sleep(0.5)
+                    return False
+
+                worked = await _click_worked(5.0)
+                if not worked:
+                    logger.warning(
+                        "outsee.generate_video: клик по '{}' не дал эффекта "
+                        "за 5 сек — пробую JS-dispatch click", gen_sel,
+                    )
+                    try:
+                        await page.locator(gen_sel).first.evaluate(
+                            "(el) => el.click()"
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: JS-dispatch click "
+                            "упал: {}", e,
+                        )
+                    worked = await _click_worked(5.0)
+
+                if not worked:
+                    logger.warning(
+                        "outsee.generate_video: JS-dispatch не помог — "
+                        "пробую Playwright click(force=True)",
+                    )
+                    try:
+                        await page.locator(gen_sel).first.click(
+                            force=True, no_wait_after=True
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: force-click упал: {}", e,
+                        )
+                    worked = await _click_worked(5.0)
+
+                if not worked:
+                    logger.warning(
+                        "outsee.generate_video: force-click тоже не помог "
+                        "— пробую через element_handle.dispatch_event",
+                    )
+                    try:
+                        handle = await page.locator(
+                            gen_sel
+                        ).first.element_handle()
+                        if handle:
+                            await handle.dispatch_event("click")
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: dispatch_event упал: "
+                            "{}", e,
+                        )
+                    worked = await _click_worked(5.0)
+
+                if worked:
+                    logger.info(
+                        "outsee.generate_video: клик сработал "
+                        "(подтверждено: net_events={}, время с click={:.1f}с)",
+                        len(net_events), _time.monotonic() - click_ts,
+                    )
+                else:
+                    # Все 4 способа кликнуть не дали никаких признаков
+                    # запуска генерации. Скорее всего проблема не в
+                    # клике, а в форме (start_frame не загружен на
+                    # бэк / aspect не выбран / промт не вставлен).
+                    # Дампим страницу и идём в wait — может, генерация
+                    # всё-таки запустилась, но индикаторы лагают.
+                    logger.warning(
+                        "outsee.generate_video: ВСЕ 4 способа клика "
+                        "(normal/JS/force/dispatch) не дали признаков "
+                        "запуска генерации за 20 сек. Возможно форма "
+                        "невалидна. Иду в wait_video_url_strict —"
+                        " если генерация всё-таки началась, поймаем"
+                        " видео; иначе будет таймаут.",
+                    )
+                    h, p = await _dump_page(page, "video_click_noop")
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
 
             # 5) Жёсткое ожидание свежего видео — приоритет prompt_id_prefix,
             # потом result_video_src, потом completed_new_videos в DOM.
