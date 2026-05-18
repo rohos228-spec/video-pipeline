@@ -808,6 +808,39 @@ def _url_is_fresh(
     return False
 
 
+def _is_candidate_video_response(resp: Any) -> bool:
+    """Подходит ли сетевой ответ под «вероятно, это mp4 нашего нового
+    видео-результата»:
+      - URL содержит `.mp4` (case-insensitive),
+      - URL не data:/blob:,
+      - URL c CDN outsee/yandex (отсекаем UI-ассеты типа .next/static).
+
+    Используется в `generate_video` для сбора `net_events` — реальных
+    подписанных URL'ов mp4, прилетающих в браузер после клика Generate.
+    Подмена URL через thumb→mp4 не работает (X-Amz-Signature привязана
+    к пути thumb, прямой GET .mp4-варианта = HTTP 403), поэтому
+    сеть-listener — единственный надёжный источник реальных mp4-URL'ов
+    помимо клика по thumb и `<video>.src` в открывшемся lightbox.
+    """
+    try:
+        url = (resp.url or "").lower()
+        if not url:
+            return False
+        if url.startswith("data:") or url.startswith("blob:"):
+            return False
+        if ".mp4" not in url:
+            return False
+        if (
+            "storage.yandexcloud" not in url
+            and "outsee" not in url
+            and "cdn" not in url
+        ):
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _is_candidate_image_response(resp: Any) -> bool:
     """Подходит ли сетевой ответ под «вероятно, это результат nano-banana»:
     image/* (не svg/ico), не UI-ассет, тело ≥ 50 KB."""
@@ -2380,6 +2413,8 @@ class OutseeBot:
         relax: bool = False,
         prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
+        import time as _time
+
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
             logger.info(
@@ -2403,6 +2438,25 @@ class OutseeBot:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
             pass
+
+        # Сетевой listener — ловит ВСЕ ответы похожие на mp4-видео
+        # outsee/yandex CDN. Зеркало `_on_response` из generate_image,
+        # только под видео-фильтр. Используется как ПРИОРИТЕТНЫЙ источник
+        # реального подписанного mp4-URL'а в `_wait_video_url` и
+        # `_capture_video_via_thumb_click` (синтез mp4 из thumb даёт 403,
+        # потому что X-Amz-Signature привязана к thumb-пути).
+        click_ts = _time.monotonic()
+        net_events: list[tuple[float, str]] = []
+
+        def _on_response(resp: Any) -> None:
+            try:
+                if not _is_candidate_video_response(resp):
+                    return
+                net_events.append((_time.monotonic() - click_ts, resp.url))
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("response", _on_response)
 
         # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
         # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
@@ -2532,23 +2586,86 @@ class OutseeBot:
                         ) from e
                 await asyncio.sleep(1.0)
 
-            # 4) generate
+            # 4) generate. ДО клика — снимаем baseline всех уже-видных
+            # видео/thumb-URL'ов (без query, чтобы re-sign не давал false
+            # «новых») и ждём пока кнопка станет активной (иначе клик
+            # пропадает в void, mp4 никогда не прилетит).
+            baseline_urls: set[str] = set()
+            try:
+                base_urls = await page.evaluate(
+                    """() => {
+                        const list = [];
+                        document.querySelectorAll('a[href*=".mp4"], a[download]').forEach(a => {
+                            if (a.href) list.push(a.href);
+                        });
+                        document.querySelectorAll('video').forEach(v => {
+                            if (v.src) list.push(v.src);
+                            v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
+                        });
+                        document.querySelectorAll('img').forEach(img => {
+                            const s = img.src || '';
+                            if (s.includes('video_') && s.includes('_thumb')) list.push(s);
+                        });
+                        return list;
+                    }"""
+                )
+                for u in base_urls or []:
+                    n = _strip_url_query(u)
+                    if n:
+                        baseline_urls.add(n)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: baseline-сбор упал: {}", e,
+                )
+
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            try:
+                await self._wait_button_enabled(page, gen_sel, timeout_s=180)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: _wait_button_enabled упал: {} — "
+                    "кликаю как есть", e,
+                )
+            # net_events до клика очищаем — чтобы случайные mp4 от UI
+            # (preview hover, history) не попали в выборку.
+            net_events.clear()
+            click_ts = _time.monotonic()
             await page.locator(gen_sel).first.click()
+            logger.info(
+                "outsee.generate_video: Generate кликнут, жду видео "
+                "(timeout={:.0f}с, prompt_id={}, baseline_urls={})",
+                timeout, prompt_id_prefix, len(baseline_urls),
+            )
+        else:
+            # already_in_progress=True — baseline пустой, выборка идёт
+            # из любых mp4 в DOM/net_events с фильтром по prompt_id_prefix.
+            baseline_urls = set()
 
         # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
-        # ищем `<video>` в карточке с нашим [ID: ...], только если не
-        # нашли — фолбэк на «любой видео-URL в DOM».
-        video_url = await self._wait_video_url(
-            page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
-        )
+        # ищем `<video>` в карточке с нашим [ID: ...]; если найден только
+        # thumb — `_wait_video_url` сам кликнет thumb и поймает реальный
+        # mp4 через `_capture_video_via_thumb_click`. Без prompt_id_prefix
+        # — берём первый НЕ-baseline mp4 из net_events/DOM.
+        try:
+            video_url = await self._wait_video_url(
+                page,
+                timeout=timeout,
+                prompt_id_prefix=prompt_id_prefix,
+                baseline_urls=baseline_urls,
+                net_events=net_events,
+            )
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        await _download_via_context(page, video_url, out_path)
-        logger.info("outsee video saved → {}", out_path)
-        return GenerationResult(file_path=out_path, raw_url=video_url)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            await _download_via_context(page, video_url, out_path)
+            logger.info("outsee video saved → {}", out_path)
+            return GenerationResult(file_path=out_path, raw_url=video_url)
+        finally:
+            try:  # noqa: SIM105
+                page.remove_listener("response", _on_response)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _find_video_by_prompt_id(
         self,
@@ -2556,10 +2673,27 @@ class OutseeBot:
         id_token: str,
         *,
         max_levels: int = 12,
-    ) -> str | None:
-        """Зеркало `_find_img_by_prompt_id`, но для `<video>` / `<source>` /
-        `a[download]`. Ищет в DOM карточку с нашим `[ID: ...]` и возвращает
-        URL ближайшего видео-элемента.
+        baseline_urls: set[str] | None = None,
+    ) -> tuple[str, bool] | None:
+        """Зеркало `_find_img_by_prompt_id`, но для видео-карточки.
+
+        Возвращает `(url, is_real_mp4)`:
+          - `is_real_mp4=True`  — URL из `<a href*=.mp4>`, `<video>.src`
+            или `<source>.src`. Это реальный подписанный mp4-URL,
+            caller может скачивать его напрямую через
+            `_download_via_context`.
+          - `is_real_mp4=False` — URL из `<img src*=_thumb>`. Это
+            preview-jpg карточки, его НЕЛЬЗЯ конвертить в mp4
+            (X-Amz-Signature привязана к thumb-пути → HTTP 403).
+            Caller должен клик'нуть thumb через
+            `_capture_video_via_thumb_click`, чтобы outsee открыл
+            lightbox и подгрузил настоящий mp4.
+
+        baseline_urls — set нормализованных URL (`scheme://host/path`),
+        которые УЖЕ были в DOM на момент клика Generate. Кандидаты
+        с таким же `_strip_url_query(src)` отбрасываются, иначе из
+        composer-карточки сверху уносит старый thumb (его ancestor
+        содержит наш [ID:] через textarea промта рядом).
 
         Порядок матчинга такой же:
           1) полный `[ID: P*-F*-xxxxxxxx]`,
@@ -2578,60 +2712,59 @@ class OutseeBot:
             if tail and tail not in tokens:
                 tokens.append(tail)
 
+        baseline_list = sorted(baseline_urls) if baseline_urls else []
         js = """
-        ([tokens, maxLevels]) => {
-            const hasToken = (el, idToken) => {
-                if (!el) return false;
-                const t = (el.innerText || el.textContent || '');
-                if (t.includes(idToken)) return true;
-                const tag = el.tagName && el.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    const v = el.value || '';
-                    if (v.includes(idToken)) return true;
+        ([tokens, maxLevels, baselineList]) => {
+            const MAX_CARD_W = window.innerWidth * 0.6;
+            const baselineSet = new Set(baselineList || []);
+            const stripQ = (u) => (u || '').split('?')[0];
+            const hasTokenInScope = (el, idToken) => {
+                const txt = el.textContent || '';
+                if (txt.includes(idToken)) return true;
+                for (const ta of el.querySelectorAll('textarea, input')) {
+                    if ((ta.value || '').includes(idToken)) return true;
                 }
                 return false;
             };
-            const pickVideoSrc = (root) => {
-                // Сначала <video src>, потом <source src>, потом
-                // a[download] с .mp4 — последний наименее надёжен,
-                // зато подхватывает уже-готовый скачиваемый ролик.
-                const videos = root.querySelectorAll('video');
-                for (const v of videos) {
-                    if (v.src && !v.src.startsWith('data:')) return v.src;
-                    const sources = v.querySelectorAll('source');
-                    for (const s of sources) {
-                        if (s.src && !s.src.startsWith('data:')) return s.src;
-                    }
-                }
-                const links = root.querySelectorAll('a[download], a[href*=".mp4"]');
-                for (const a of links) {
-                    if (a.href && !a.href.startsWith('data:')) return a.href;
-                }
-                return null;
+            const addCandidate = (arr, src, el, isReal) => {
+                if (!src || src.startsWith('data:')) return;
+                if (baselineSet.has(stripQ(src))) return;
+                arr.push({ src, el, isReal: !!isReal });
             };
+            const candidates = [];
+            // Реальные mp4-URL'ы (если outsee их вообще рендерит в карточке).
+            document.querySelectorAll('a[href*=".mp4"], a[download]').forEach(a => {
+                addCandidate(candidates, a.href, a, true);
+            });
+            document.querySelectorAll('video').forEach(v => {
+                if (v.src && !v.src.startsWith('blob:')) {
+                    addCandidate(candidates, v.src, v, true);
+                }
+                v.querySelectorAll('source').forEach(s => {
+                    if (s.src && !s.src.startsWith('blob:')) {
+                        addCandidate(candidates, s.src, s, true);
+                    }
+                });
+            });
+            // Thumb-jpg — НЕ конвертируем в mp4 (подпись X-Amz-Signature
+            // привязана к thumb-пути, прямой GET .mp4-варианта = 403).
+            // Возвращаем как is_real=false, чтобы caller клик'нул thumb
+            // и поймал реальный mp4 из открывшегося lightbox.
+            document.querySelectorAll('img').forEach(img => {
+                const s = img.src || '';
+                if (!s) return;
+                if (!(s.includes('video_') && s.includes('_thumb'))) return;
+                addCandidate(candidates, s, img, false);
+            });
             for (const idToken of tokens) {
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (!el || !el.children) continue;
-                    if (el === document.body || el === document.documentElement) continue;
-                    if (!hasToken(el, idToken)) continue;
-                    let smallest = el;
-                    for (const child of el.children) {
-                        if (hasToken(child, idToken)) { smallest = null; break; }
-                    }
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) { smallest = null; break; }
-                        }
-                    }
-                    if (!smallest) continue;
-                    let cur = smallest;
+                for (const c of candidates) {
+                    let cur = c.el.parentElement;
                     for (let i = 0; i < maxLevels && cur; i++) {
-                        const src = pickVideoSrc(cur);
-                        if (src) return src;
+                        const r = cur.getBoundingClientRect();
+                        if (r.width > MAX_CARD_W) break;
+                        if (hasTokenInScope(cur, idToken)) {
+                            return { url: c.src, isReal: c.isReal };
+                        }
                         cur = cur.parentElement;
                     }
                 }
@@ -2640,9 +2773,13 @@ class OutseeBot:
         }
         """
         try:
-            res = await page.evaluate(js, [tokens, max_levels])
-            if isinstance(res, str) and res:
-                return res
+            res = await page.evaluate(js, [tokens, max_levels, baseline_list])
+            if (
+                isinstance(res, dict)
+                and isinstance(res.get("url"), str)
+                and res["url"]
+            ):
+                return (res["url"], bool(res.get("isReal")))
             return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -2650,39 +2787,235 @@ class OutseeBot:
             )
             return None
 
+    async def _capture_video_via_thumb_click(
+        self,
+        page: Page,
+        thumb_url: str,
+        *,
+        baseline_urls: set[str] | None = None,
+        net_events: list[tuple[float, str]] | None = None,
+        timeout_s: float = 45.0,
+    ) -> str | None:
+        """Кликает по thumb-`<img>` нашей карточки, чтобы outsee открыл
+        lightbox/плеер и подгрузил настоящий mp4 (с правильной подписью
+        `X-Amz-Signature`). Возвращает реальный mp4-URL или None.
+
+        Почему это нужно: thumb-URL вида `.../video_XXX_thumb.jpg?...`
+        имеет подпись для пути thumb. Прямой GET на `.mp4`-вариант с той
+        же подписью отдаёт HTTP 403. Реальный mp4-URL прилетает только
+        когда страница его реально подгружает (lightbox с `<video>`).
+
+        Стратегия:
+          0) Достаём из thumb-URL номер `video_XXX` — ключ матчинга.
+          1) Сначала проверяем `net_events`: outsee мог сам подгрузить
+             mp4 (превью, hover-preload). Если уже есть — возвращаем.
+          2) Иначе кликаем по thumb-`<img>` (через JS, чтобы не зависеть
+             от hit-test overlay).
+          3) Ждём (до `timeout_s` сек) пока в `net_events` появится mp4
+             с тем же `video_XXX`, ИЛИ пока в DOM появится `<video>` с
+             подходящим src.
+        """
+        norm = _strip_url_query(thumb_url)
+        seg = norm.rsplit("/", 1)[-1]  # video_1779114886169_thumb.jpg
+        m = re.search(r"video_(\d+)", seg)
+        if not m:
+            logger.warning(
+                "_capture_video_via_thumb_click: не удалось извлечь "
+                "video_XXX из thumb: {}", seg,
+            )
+            return None
+        video_id = m.group(1)
+
+        # (1) Сначала — может, mp4 уже прилетел через сеть.
+        def _scan_net_events() -> str | None:
+            if not net_events:
+                return None
+            target = f"video_{video_id}.mp4"
+            for _, url in net_events:
+                if target in url and not url.startswith("blob:"):
+                    norm_u = _strip_url_query(url)
+                    if not baseline_urls or norm_u not in baseline_urls:
+                        return url
+            return None
+
+        already = _scan_net_events()
+        if already:
+            logger.info(
+                "_capture_video_via_thumb_click: mp4 уже в net_events "
+                "(клик не нужен) → {}", already[:120],
+            )
+            return already
+
+        # (2) Кликаем по thumb-img.
+        try:
+            clicked = await page.evaluate(
+                """(seg) => {
+                    const imgs = document.querySelectorAll('img');
+                    for (const img of imgs) {
+                        if ((img.src || '').includes(seg)) {
+                            try {
+                                img.scrollIntoView({block: 'center'});
+                            } catch (e) {}
+                            // Сначала пробуем нативный click на img.
+                            try { img.click(); } catch (e) {}
+                            // Дополнительно — клик по ближайшему
+                            // кликабельному предку (button/a/role=button),
+                            // outsee обычно вешает обработчик на wrapper.
+                            let cur = img.parentElement;
+                            for (let i = 0; i < 6 && cur; i++) {
+                                const tag = (cur.tagName || '').toLowerCase();
+                                const role = cur.getAttribute('role');
+                                if (tag === 'button' || tag === 'a' ||
+                                    role === 'button') {
+                                    try { cur.click(); } catch (e) {}
+                                    break;
+                                }
+                                cur = cur.parentElement;
+                            }
+                            return true;
+                        }
+                    }
+                    return false;
+                }""", seg,
+            )
+            if not clicked:
+                logger.warning(
+                    "_capture_video_via_thumb_click: thumb с {} не "
+                    "найден в DOM для клика", seg,
+                )
+                return None
+            logger.info(
+                "_capture_video_via_thumb_click: клик по thumb {} "
+                "выполнен, жду mp4 (timeout={:.0f}с)", seg, timeout_s,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_capture_video_via_thumb_click: клик упал: {}", e,
+            )
+            return None
+
+        # (3) Ждём mp4 в net_events или <video> в DOM.
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        target = f"video_{video_id}"
+        while asyncio.get_event_loop().time() < deadline:
+            via_net = _scan_net_events()
+            if via_net:
+                logger.info(
+                    "_capture_video_via_thumb_click: mp4 пойман через "
+                    "net_events → {}", via_net[:120],
+                )
+                return via_net
+            try:
+                urls = await page.evaluate(
+                    """() => {
+                        const list = [];
+                        document.querySelectorAll('video').forEach(v => {
+                            if (v.src) list.push(v.src);
+                            v.querySelectorAll('source').forEach(s => {
+                                if (s.src) list.push(s.src);
+                            });
+                        });
+                        return list;
+                    }"""
+                )
+            except Exception:  # noqa: BLE001
+                urls = []
+            for u in urls or []:
+                if not u or u.startswith("blob:") or u.startswith("data:"):
+                    continue
+                if target in u and ".mp4" in u:
+                    norm_u = _strip_url_query(u)
+                    if not baseline_urls or norm_u not in baseline_urls:
+                        logger.info(
+                            "_capture_video_via_thumb_click: mp4 пойман "
+                            "из <video>.src → {}", u[:120],
+                        )
+                        return u
+            await asyncio.sleep(0.5)
+
+        logger.warning(
+            "_capture_video_via_thumb_click: за {:.0f}с mp4 с video_{} "
+            "так и не прилетел", timeout_s, video_id,
+        )
+        return None
+
     async def _wait_video_url(
         self,
         page: Page,
         *,
         timeout: float,
         prompt_id_prefix: str | None = None,
+        baseline_urls: set[str] | None = None,
+        net_events: list[tuple[float, str]] | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
-        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
-        карточке с нашим [ID: ...]. Это защищает от подмены чужим
-        видео из истории outsee и работает в паре с анти-дубликат
-        логикой в `generate_video` (когда мы не кликаем Generate
-        повторно, а ждём результат прошлого клика).
-
-        Fallback — генерический поиск любого видео-URL (для legacy/
-        recon без prompt_id_prefix).
+        Стратегия (зеркало `_wait_image_url_strict`):
+          0) Если есть `prompt_id_prefix` — ищем кандидата в карточке
+             с нашим [ID:] через `_find_video_by_prompt_id` →
+             возвращает `(url, is_real_mp4)`:
+               - `is_real=True`  → реальный mp4-URL, отдаём caller'у
+                 на прямое скачивание.
+               - `is_real=False` → это thumb-jpg, клик по нему через
+                 `_capture_video_via_thumb_click` → ждём реальный mp4
+                 из `net_events`/`<video>.src` в открывшемся lightbox.
+          1) Иначе (legacy без `prompt_id_prefix`) — берём первый
+             НЕ-baseline mp4 из `net_events` или из DOM (отсев `_thumb`).
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        log_every = 15.0  # сек, логи прогресса
+        log_every = 15.0
         next_log = asyncio.get_event_loop().time() + log_every
         while asyncio.get_event_loop().time() < deadline:
-            # Приоритет 0: видео в карточке с нашим [ID: ...].
+            # (0) Карточка с нашим [ID: ...].
             if prompt_id_prefix:
                 try:
                     by_id = await self._find_video_by_prompt_id(
-                        page, prompt_id_prefix
+                        page,
+                        prompt_id_prefix,
+                        baseline_urls=baseline_urls,
                     )
                 except Exception:  # noqa: BLE001
                     by_id = None
                 if by_id:
-                    return by_id
-            # Приоритет 1 (fallback): любой видео-URL в DOM.
+                    url, is_real = by_id
+                    if is_real:
+                        logger.info(
+                            "outsee.generate_video: реальный mp4 найден "
+                            "в карточке с {} → {}",
+                            prompt_id_prefix, url[:120],
+                        )
+                        return url
+                    # is_real=False → это thumb. Клик и захват настоящего mp4.
+                    logger.info(
+                        "outsee.generate_video: thumb найден в карточке "
+                        "с {} ({}), кликаю для захвата реального mp4",
+                        prompt_id_prefix, url[:120],
+                    )
+                    real = await self._capture_video_via_thumb_click(
+                        page, url,
+                        baseline_urls=baseline_urls,
+                        net_events=net_events,
+                    )
+                    if real:
+                        return real
+                    # Если клик не дал результат — продолжаем цикл, может
+                    # outsee сам срендерит <video> позже.
+
+            # (1) Legacy/fallback: первый НЕ-baseline mp4.
+            #   1a) Сначала net_events — самый надёжный источник.
+            if net_events:
+                for _, url in net_events:
+                    if (
+                        url
+                        and ".mp4" in url
+                        and not url.startswith("blob:")
+                        and "_thumb" not in url
+                    ):
+                        norm = _strip_url_query(url)
+                        if not baseline_urls or norm not in baseline_urls:
+                            return url
+
+            #   1b) Затем DOM (как legacy-fallback).
             urls = await page.evaluate(
                 """() => {
                     const list = [];
@@ -2690,22 +3023,31 @@ class OutseeBot:
                         if (v.src) list.push(v.src);
                         v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
                     });
-                    document.querySelectorAll("a[download]").forEach(a => a.href && list.push(a.href));
+                    document.querySelectorAll("a[download], a[href*='.mp4']").forEach(a => a.href && list.push(a.href));
                     return list;
                 }"""
             )
-            # Без prompt_id_prefix берём первый похожий — legacy-режим.
             if not prompt_id_prefix:
-                for u in urls:
-                    if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
-                        return u
+                for u in urls or []:
+                    if not u or u.startswith("blob:") or u.startswith("data:"):
+                        continue
+                    if "_thumb" in u:
+                        continue
+                    if ".mp4" not in u:
+                        continue
+                    norm = _strip_url_query(u)
+                    if baseline_urls and norm in baseline_urls:
+                        continue
+                    return u
+
             now = asyncio.get_event_loop().time()
             if now >= next_log:
                 logger.info(
                     "outsee.generate_video: ждём результат… {:.0f} сек, "
-                    "video_urls_in_dom={}, prompt_id={}",
+                    "video_urls_in_dom={}, net_events={}, prompt_id={}",
                     timeout - (deadline - now),
                     len(urls or []),
+                    len(net_events or []),
                     prompt_id_prefix,
                 )
                 next_log = now + log_every
