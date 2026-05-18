@@ -431,7 +431,19 @@ def _wizard_complete(project: Project) -> bool:
     )
 
 
-def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
+def project_menu_kb(
+    project: Project,
+    *,
+    actual_status: "ProjectStatus | None" = None,
+) -> InlineKeyboardMarkup:
+    """Клавиатура меню проекта.
+
+    actual_status — «реальный» статус, вычисленный по данным в БД
+    (compute_actual_status). Используется для иконок ✅/⬜: если проект
+    перепрыгнул в running-статус (generating_videos) без реальных данных
+    для промежуточных шагов, иконки отражают фактический прогресс,
+    а не формальный project.status.
+    """
     rows: list[list[InlineKeyboardButton]] = []
 
     wiz_ok = _wizard_complete(project)
@@ -447,8 +459,30 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
         ])
 
     steps = steps_for(project)
+
+    # Для иконок используем actual_status (если передан) или вычисляем
+    # «cap» — когда проект в running-статусе, иконки ✅ показываем только
+    # до prerequisite запущенного шага, а не по полной status_order.
+    if actual_status is not None:
+        icon_status = actual_status
+    else:
+        icon_status = project.status
+        # Если проект в running_* — найдём StepDef этого шага и используем
+        # его requires как потолок для ✅ иконок. Это не даёт «проставить
+        # все как сделанные» при прыжке на шаг 9 из hero_ready.
+        for _s in steps:
+            if project.status is _s.running_status and _s.requires is not None:
+                icon_status = _s.requires
+                break
+        # Аналогично для enrich running-статусов.
+        if project.status in ENRICH_RUNNING:
+            idx = ENRICH_RUNNING.index(project.status)
+            if idx > 0:
+                icon_status = ENRICH_READY[idx - 1]
+            else:
+                icon_status = ProjectStatus.items_ready
     for s in steps:
-        icon = step_icon(s, project.status)
+        icon = step_icon(s, icon_status)
 
         # Спец-кейс шаг 4 «Объекты»: считаем «running», если проект
         # в любом из generating_hero / generating_items.
@@ -466,8 +500,13 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
 
         # Спец-иконка для «Объекты»: ✅ если или hero_ready, или items_ready.
         if s.code == "objects" and not is_running_now:
-            done = status_order(project.status) >= status_order(ProjectStatus.hero_ready)
+            done = status_order(icon_status) >= status_order(ProjectStatus.hero_ready)
             icon = "✅" if done else "⬜"
+
+        # Если шаг сейчас выполняется (по project.status), всегда ⏳,
+        # даже если actual_status ещё не дотянулся до этого уровня.
+        if is_running_now:
+            icon = "⏳"
 
         if is_running_now:
             label = f"{icon} {s.n}. {s.title} · идёт… (тык — управление)"

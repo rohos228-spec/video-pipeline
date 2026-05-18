@@ -176,6 +176,7 @@ async def import_v8_xlsx(
     *,
     keep_fields: bool = True,
     update_frames_voiceover: bool = False,
+    delete_orphans: bool = False,
 ) -> dict[str, Any]:
     """Подтягиваем v8-xlsx в БД для проекта.
 
@@ -189,6 +190,9 @@ async def import_v8_xlsx(
     `update_frames_voiceover` — если True, обновляем voiceover_text у
     существующих Frame'ов (для xlsx-flow шага 3). Иначе только создаём
     недостающие.
+
+    `delete_orphans` — если True, удаляем из БД кадры, чьи номера
+    отсутствуют в xlsx (при подмене xlsx юзером).
     """
     from openpyxl import load_workbook
 
@@ -297,17 +301,27 @@ async def import_v8_xlsx(
                 if update_frames_voiceover and fr.voiceover_text != cell:
                     fr.voiceover_text = cell
                     changed = True
-                # ROOT FIX: подтягиваем image_prompt / animation_prompt из v8.
-                # Перезаписываем только когда в xlsx есть непустое значение и
-                # оно отличается от текущего — чтобы случайно очищенная ячейка
-                # не стёрла GPT-промт в БД.
+                # Подтягиваем image_prompt / animation_prompt из v8.
+                # При delete_orphans (явная подмена xlsx) — перезаписываем
+                # всегда, включая очистку пустых ячеек. Иначе — только
+                # непустые значения (безопасный бэкфилл).
                 new_imgp = fields.get("image_prompt")
-                if new_imgp and new_imgp != fr.image_prompt:
+                if delete_orphans:
+                    if new_imgp != fr.image_prompt:
+                        fr.image_prompt = new_imgp
+                        changed = True
+                        if new_imgp:
+                            prompts_synced.append(i)
+                elif new_imgp and new_imgp != fr.image_prompt:
                     fr.image_prompt = new_imgp
                     changed = True
                     prompts_synced.append(i)
                 new_animp = fields.get("animation_prompt")
-                if new_animp and new_animp != fr.animation_prompt:
+                if delete_orphans:
+                    if new_animp != fr.animation_prompt:
+                        fr.animation_prompt = new_animp
+                        changed = True
+                elif new_animp and new_animp != fr.animation_prompt:
                     fr.animation_prompt = new_animp
                     changed = True
                 new_dur = fields.get("duration_seconds")
@@ -317,6 +331,23 @@ async def import_v8_xlsx(
                 if changed and i not in summary["frames_updated"]:
                     summary["frames_updated"].append(i)
             t = end_ts
+
+        # Удаляем кадры, которых нет в xlsx.
+        if delete_orphans:
+            xlsx_frame_numbers = set(range(1, len(blocks) + 1))
+            orphans = [
+                f for f in by_number.values()
+                if f.number not in xlsx_frame_numbers
+            ]
+            if orphans:
+                summary["frames_deleted"] = sorted(f.number for f in orphans)
+                for f in orphans:
+                    await session.delete(f)
+                logger.info(
+                    "[#{}] xlsx-v8→DB: удалено {} лишних кадров: {}",
+                    project.id, len(orphans),
+                    summary["frames_deleted"],
+                )
 
         if prompts_synced:
             summary["prompts_synced"] = prompts_synced

@@ -4461,13 +4461,17 @@ async def _handle_xlsx_replace(msg: Message, project_id: int, doc) -> None:
                 try:
                     info_v8 = await import_v8_xlsx(
                         s, project, proj_xlsx,
-                        keep_fields=False, update_frames_voiceover=True,
+                        keep_fields=False,
+                        update_frames_voiceover=True,
+                        delete_orphans=True,
                     )
                     logger.info("xlsx_replace: v8 import → {}", info_v8)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("xlsx_replace: v8 import failed: {}", e)
                 try:
-                    info_v7 = await reload_from_xlsx(s, project, proj_xlsx)
+                    info_v7 = await reload_from_xlsx(
+                        s, project, proj_xlsx, delete_orphans=True,
+                    )
                     logger.info("xlsx_replace: v7 reload_from_xlsx → {}", info_v7)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("xlsx_replace: v7 reload_from_xlsx failed: {}", e)

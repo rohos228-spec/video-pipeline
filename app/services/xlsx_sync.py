@@ -61,10 +61,14 @@ def _to_float(v: Any) -> float | None:
 
 
 async def reload_from_xlsx(
-    session: AsyncSession, project: Project, xlsx_path: Path
+    session: AsyncSession, project: Project, xlsx_path: Path,
+    *, delete_orphans: bool = False,
 ) -> dict[str, Any]:
     """Читает xlsx и обновляет БД. Возвращает summary
-    {project_fields_changed: [...], frames_changed: [n, ...]}."""
+    {project_fields_changed: [...], frames_changed: [n, ...]}.
+
+    delete_orphans=True — удалить из БД кадры, которых нет в xlsx.
+    """
     from openpyxl import load_workbook
 
     if not xlsx_path.exists():
@@ -157,10 +161,18 @@ async def reload_from_xlsx(
             if new_meaning and new_meaning != fr.meaning:
                 fr.meaning = new_meaning
                 changed = True
-            if new_imgp and new_imgp != fr.image_prompt:
+            if delete_orphans:
+                if new_imgp != fr.image_prompt:
+                    fr.image_prompt = new_imgp
+                    changed = True
+            elif new_imgp and new_imgp != fr.image_prompt:
                 fr.image_prompt = new_imgp
                 changed = True
-            if new_vidp and new_vidp != fr.animation_prompt:
+            if delete_orphans:
+                if new_vidp != fr.animation_prompt:
+                    fr.animation_prompt = new_vidp
+                    changed = True
+            elif new_vidp and new_vidp != fr.animation_prompt:
                 fr.animation_prompt = new_vidp
                 changed = True
             if new_dur is not None and abs((fr.duration_seconds or 0.0) - new_dur) > 0.01:
@@ -169,6 +181,22 @@ async def reload_from_xlsx(
             if changed:
                 summary["frames_changed"].append(fnum)
                 logger.info("[#{}] xlsx→DB: кадр {} обновлён", project.id, fnum)
+
+        if delete_orphans:
+            xlsx_frame_numbers = set(col_to_frame.values())
+            orphans = [
+                f for f in by_number.values()
+                if f.number not in xlsx_frame_numbers
+            ]
+            if orphans:
+                summary["frames_deleted"] = sorted(f.number for f in orphans)
+                for f in orphans:
+                    await session.delete(f)
+                logger.info(
+                    "[#{}] xlsx→DB: удалено {} лишних кадров: {}",
+                    project.id, len(orphans),
+                    summary["frames_deleted"],
+                )
 
     await session.flush()
 
