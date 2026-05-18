@@ -7932,11 +7932,24 @@ async def _on_edit_reply(msg: Message) -> None:
         ).scalar_one_or_none()
         if frame is None:
             return
+        # Сохраняем ОРИГИНАЛЬНЫЙ image_prompt — он будет нужен для
+        # GPT-rewrite шага (отдадим ChatGPT'у: «вот старый промт +
+        # вот сообщение юзера, переделай так чтобы старое удовлетворяло
+        # новое»). Делаем это ДО перезаписи frame.image_prompt.
+        original_prompt = (frame.image_prompt or "").strip()
+        # frame.image_prompt = новое сообщение юзера. Это fallback на
+        # случай если GPT-rewrite в _generate_and_send упадёт — тогда
+        # хотя бы вернётся буквальный текст юзера, а не старый промт.
         frame.image_prompt = new_prompt
         req.decision = HITLDecision.edit_prompt
         req.payload = {
             **(req.payload or {}),
             "edited_prompt": new_prompt[:2000],
+            # Флаг для _generate_and_send: «надо переписать через GPT
+            # ДО outsee». Сам rewrite делается там, потому что у
+            # генератора уже открыта browser_session + ChatGPTBot.
+            "original_image_prompt": original_prompt[:4000],
+            "needs_gpt_rewrite": True,
         }
         # edit_prompt = регенерация с новым текстом → файл текущей попытки
         # больше не нужен (не копим варианты в scenes/).
@@ -7957,10 +7970,13 @@ async def _on_edit_reply(msg: Message) -> None:
             await msg.bot.edit_message_caption(
                 chat_id=settings.telegram_owner_chat_id,
                 message_id=hitl_tg_msg_id,
-                caption="✏️ Промт изменён — перегенерирую",
+                caption="✏️ Промт изменён — улучшаю через ChatGPT и перегенерирую",
                 reply_markup=None,
             )
-    await msg.reply("✏️ Промт обновлён. Перегенерирую картинку с ним.")
+    await msg.reply(
+        "✏️ Промт обновлён. Отдам в ChatGPT на улучшение, потом перегенерирую "
+        "картинку."
+    )
 
 
 # ---------------------------------------------------------------------------

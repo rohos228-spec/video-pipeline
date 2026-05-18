@@ -510,6 +510,122 @@ async def _apply_pending_regens(session: AsyncSession, project_id: int) -> None:
     await session.flush()
 
 
+# Точная формулировка от пользователя для ✏️ Изменить промт-флоу.
+# Шлём ChatGPT'у: <оригинальный промт> + эта подпись + <текст из TG>.
+_GPT_EDIT_PROMPT_META = (
+    "измени промт что бы он удовлетворял сообщение ниже"
+)
+
+# Минимальная длина «осмысленного» rewrite — отсекает «ок», «готово» и
+# прочие пустышки. То же значение что в outsee_retry._ask_gpt_to_rewrite.
+_MIN_GPT_EDIT_REWRITE_LEN = 30
+
+
+async def _gpt_rewrite_edited_prompt(
+    session: AsyncSession,
+    gpt: ChatGPTBot,
+    project: Project,
+    frame: Frame,
+    hitl: HITLRequest,
+    payload: dict,
+    bot: Bot,
+) -> None:
+    """Просит ChatGPT улучшить image_prompt по правке юзера из TG.
+
+    Контекст: юзер нажал ✏️ Изменить промт в HITL-карточке и написал
+    в TG свой текст (что подкрутить). В bot.py этот текст уже сохранён
+    в `frame.image_prompt` (как fallback) и в `payload`. Тут мы
+    переписываем `frame.image_prompt` через GPT, чтобы:
+      1) сохранить структуру/детали старого image_prompt;
+      2) учесть правки юзера.
+
+    Если GPT упал или вернул пустоту — оставляем frame.image_prompt
+    как есть (т.е. сырой текст юзера) и помечаем gpt_rewrite_done=True,
+    чтобы не зацикливать.
+    """
+    original_prompt = (payload.get("original_image_prompt") or "").strip()
+    user_edit = (payload.get("edited_prompt") or frame.image_prompt or "").strip()
+    if not original_prompt or not user_edit:
+        # Нечего комбинировать — отдадим сырой текст в outsee.
+        payload["gpt_rewrite_done"] = True
+        hitl.payload = payload
+        await session.flush()
+        logger.warning(
+            "[#{}] frame {}: GPT-rewrite пропущен — нет original_prompt "
+            "({} симв) или user_edit ({} симв)",
+            project.id, frame.number,
+            len(original_prompt), len(user_edit),
+        )
+        return
+
+    full_request = (
+        f"{original_prompt}\n\n{_GPT_EDIT_PROMPT_META}\n\n{user_edit}"
+    )
+    logger.info(
+        "[#{}] frame {}: ✏️ GPT-rewrite старт ({} симв original + "
+        "{} симв правка)",
+        project.id, frame.number,
+        len(original_prompt), len(user_edit),
+    )
+    try:
+        reply = await gpt.ask_fresh(full_request, timeout=900)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] frame {}: ChatGPT-rewrite упал ({}: {}) — fallback "
+            "на сырой текст юзера",
+            project.id, frame.number, type(e).__name__, e,
+        )
+        payload["gpt_rewrite_done"] = True
+        payload["gpt_rewrite_error"] = f"{type(e).__name__}: {e}"[:500]
+        hitl.payload = payload
+        await session.flush()
+        return
+
+    text = (reply or "").strip()
+    if len(text) < _MIN_GPT_EDIT_REWRITE_LEN:
+        logger.warning(
+            "[#{}] frame {}: ChatGPT-rewrite вернул слишком короткий "
+            "ответ ({} симв) — fallback на сырой текст юзера",
+            project.id, frame.number, len(text),
+        )
+        payload["gpt_rewrite_done"] = True
+        payload["gpt_rewrite_short_reply"] = text[:200]
+        hitl.payload = payload
+        await session.flush()
+        return
+
+    # Успех — пишем переписанный промт в БД и xlsx.
+    frame.image_prompt = text
+    payload["gpt_rewrite_done"] = True
+    payload["gpt_rewrite_result_len"] = len(text)
+    hitl.payload = payload
+    try:
+        _sheet_for_project(project).write_frame(
+            frame.number, image_prompt=text
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] frame {}: xlsx write_frame(image_prompt) failed: {}",
+            project.id, frame.number, e,
+        )
+    await session.flush()
+    logger.info(
+        "[#{}] frame {}: ✏️ GPT-rewrite OK ({} симв → {} симв)",
+        project.id, frame.number, len(user_edit), len(text),
+    )
+    # Информируем юзера в TG, что промт улучшен и сейчас идёт outsee.
+    try:
+        await bot.send_message(
+            settings.telegram_owner_chat_id,
+            (
+                f"✏️ Кадр #{frame.number}: ChatGPT улучшил промт "
+                f"({len(text)} симв). Запускаю outsee."
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
@@ -536,6 +652,32 @@ async def _generate_and_send(
         last_hitl is not None
         and last_hitl.decision is HITLDecision.regenerate
     )
+
+    # ✏️ Edit prompt: если юзер только что прислал в TG свой текст для
+    # правки промта (HITLDecision.edit_prompt + needs_gpt_rewrite=True
+    # в payload) — ДО outsee гоняем ChatGPT с meta-промтом:
+    #
+    #   <оригинальный image_prompt>
+    #
+    #   измени промт чтобы он удовлетворял сообщение ниже
+    #
+    #   <текст из TG-сообщения юзера>
+    #
+    # Ответ ChatGPT становится новым frame.image_prompt. Если GPT упал
+    # или вернул пустоту — fallback на сырой текст юзера (он уже
+    # записан в frame.image_prompt обработчиком в bot.py).
+    if (
+        last_hitl is not None
+        and last_hitl.decision is HITLDecision.edit_prompt
+    ):
+        payload = dict(last_hitl.payload or {})
+        if (
+            payload.get("needs_gpt_rewrite")
+            and not payload.get("gpt_rewrite_done")
+        ):
+            await _gpt_rewrite_edited_prompt(
+                session, gpt, project, frame, last_hitl, payload, bot,
+            )
 
     attempt = (
         await session.execute(
