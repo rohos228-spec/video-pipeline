@@ -29,7 +29,15 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PWTimeoutError
 
 from app.bots.browser import BrowserSession, browser_session
+from app.generation_options import VIDEO_GENERATORS
 from app.settings import settings
+
+# ----- Справочник outsee_slug → display_name для UI-выбора модели -----
+# Используется в `_select_video_model_via_button` чтобы клик'нуть нужную
+# карточку в модалке «Поменять» после открытия страницы.
+VIDEO_MODEL_DISPLAY_BY_SLUG: dict[str, str] = {
+    c.outsee_slug: c.label for c in VIDEO_GENERATORS if c.outsee_slug
+}
 
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
@@ -528,6 +536,188 @@ def _video_page_url(model_slug: str | None) -> str:
 FILE_UPLOAD_SELECTORS = [
     "input[type='file']",
 ]
+
+# ----- Селекторы кнопки «Поменять» и модалки выбора модели (новый UI) -----
+# Карточка модели лежит в левой панели; над ней справа сверху висит
+# <button>Поменять</button> в `<div class="absolute top-2 right-2 ...">`.
+# Клик по ней открывает модалку со списком моделей.
+MODEL_CHANGE_BUTTON_SELECTORS: list[str] = [
+    "button:text-is('Поменять')",
+    "button:has-text('Поменять')",
+    "[role='button']:has-text('Поменять')",
+]
+
+# Текущее имя модели в карточке (используем чтобы понять — уже стоит нужная
+# или нет). На странице оно лежит в <span class="text-xs font-semibold ..."
+# > Veo 3.1 Lite </span>. Но т.к. другие spans могут совпасть, ищем по
+# совокупности — внутри карточки модели или рядом с «Поменять».
+CURRENT_MODEL_NAME_SELECTORS: list[str] = [
+    "div:has(button:text-is('Поменять')) span.text-xs.font-semibold",
+    # Запасной — любой span со шрифтом-semibold рядом с «Поменять».
+    "div:has(button:has-text('Поменять')) span",
+]
+
+
+def _video_model_option_selectors(display_name: str) -> list[str]:
+    """Селекторы пункта выбора модели в открывшейся модалке.
+
+    Модалка outsee.io не задокументирована — пробуем самые вероятные
+    паттерны: явные роли (option/menuitem/button) + текст-метка модели.
+    """
+    return [
+        f"[role='option']:has-text('{display_name}')",
+        f"[role='menuitem']:has-text('{display_name}')",
+        f"button:has-text('{display_name}')",
+        f"li:has-text('{display_name}')",
+        f"div[role='button']:has-text('{display_name}')",
+        # Cards в модалке: <div ...>{name}</div> + что-то кликабельное вокруг.
+        f"*:has(> :text-is('{display_name}'))",
+    ]
+
+
+async def _select_video_model_via_button(
+    page: Any, slug: str | None, *, dumps: list[Path] | None = None,
+) -> bool:
+    """Выбирает нужную видео-модель через клик по «Поменять» на странице
+    outsee.io/video. Возвращает True если кнопка отжалась И селект
+    модели прошёл (или модель уже была выбрана), False если что-то
+    пошло не так (тогда полагаемся на ?model=… в URL).
+
+    Идея: страница могла открыться по URL `?model=<slug>`, и при этом
+    реально модель уже стоит правильная. Но если URL-параметр не
+    отработал (или юзер хочет «руками» переключиться), бот должен
+    явно кликнуть «Поменять» и выбрать модель в модалке.
+
+    Алгоритм:
+      1) Если slug пустой/неизвестный — пропускаем.
+      2) Читаем имя модели из карточки. Если уже совпадает с нашим
+         display_name — return True (ничего не трогаем).
+      3) Клик «Поменять» → ждём модалку.
+      4) Клик по пункту с display_name.
+      5) Если есть кнопка подтверждения «Применить»/«Выбрать»/«ОК» —
+         жмём её. Иначе модалка закрывается сама.
+    """
+    if not slug:
+        return True
+    display_name = VIDEO_MODEL_DISPLAY_BY_SLUG.get(slug)
+    if not display_name:
+        logger.warning(
+            "outsee.select_model: slug={} нет в "
+            "VIDEO_MODEL_DISPLAY_BY_SLUG — пропускаю UI-выбор", slug,
+        )
+        return True
+
+    # 1) Проверяем, не стоит ли уже нужная модель.
+    try:
+        for cur_sel in CURRENT_MODEL_NAME_SELECTORS:
+            try:
+                loc = page.locator(cur_sel).first
+                if (await loc.count()) <= 0:
+                    continue
+                cur = (await loc.inner_text(timeout=1_000)) or ""
+                cur = cur.strip()
+                if cur and cur.lower() == display_name.lower():
+                    logger.info(
+                        "outsee.select_model: модель '{}' уже выбрана "
+                        "(не кликаю «Поменять»)", display_name,
+                    )
+                    return True
+                if cur:
+                    logger.info(
+                        "outsee.select_model: текущая модель '{}' "
+                        "(хочу '{}'), жму «Поменять»", cur, display_name,
+                    )
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) Клик по «Поменять».
+    change_sel = await _first_visible(
+        page, MODEL_CHANGE_BUTTON_SELECTORS, timeout_ms=3_000
+    )
+    if not change_sel:
+        logger.warning(
+            "outsee.select_model: кнопка «Поменять» не найдена — "
+            "полагаюсь на ?model=… в URL",
+        )
+        h, p = await _dump_page(page, "model_change_button_notfound")
+        if dumps is not None:
+            for x in (h, p):
+                if x:
+                    dumps.append(x)
+        return False
+    try:
+        await page.locator(change_sel).first.click(timeout=3_000)
+        logger.info(
+            "outsee.select_model: «Поменять» нажато ({}) — жду модалку",
+            change_sel,
+        )
+        await asyncio.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee.select_model: клик по «Поменять» упал: {}", e,
+        )
+        return False
+
+    # 3) Выбор пункта с display_name.
+    opt_sel = await _first_visible(
+        page, _video_model_option_selectors(display_name), timeout_ms=5_000
+    )
+    if not opt_sel:
+        logger.warning(
+            "outsee.select_model: пункт '{}' в модалке не найден",
+            display_name,
+        )
+        h, p = await _dump_page(
+            page, f"model_option_{slug}_notfound",
+        )
+        if dumps is not None:
+            for x in (h, p):
+                if x:
+                    dumps.append(x)
+        # Пытаемся закрыть модалку Escape.
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        return False
+    try:
+        await page.locator(opt_sel).first.click(timeout=3_000)
+        logger.info(
+            "outsee.select_model: модель '{}' выбрана в модалке ({})",
+            display_name, opt_sel,
+        )
+        await asyncio.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee.select_model: клик по '{}' упал: {} ({})",
+            display_name, e, opt_sel,
+        )
+        return False
+
+    # 4) Подтверждение (если есть кнопка «Применить»/«Выбрать»).
+    confirm_selectors = [
+        "button:has-text('Применить'):not([disabled])",
+        "button:has-text('Выбрать'):not([disabled])",
+        "button:has-text('OK'):not([disabled])",
+        "button:has-text('ОК'):not([disabled])",
+        "button:has-text('Подтвердить'):not([disabled])",
+    ]
+    confirm_sel = await _first_visible(
+        page, confirm_selectors, timeout_ms=800
+    )
+    if confirm_sel:
+        try:
+            await page.locator(confirm_sel).first.click(timeout=2_000)
+            logger.info(
+                "outsee.select_model: confirm ({})", confirm_sel,
+            )
+            await asyncio.sleep(0.3)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.select_model: confirm-клик упал: {}", e,
+            )
+    return True
 
 # Селекторы для конкретно «Первый кадр» (новый UI outsee.io 2026).
 # В классическом дизайне VIDEO-страницы есть две карточки загрузки:
@@ -2507,6 +2697,18 @@ class OutseeBot:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
             pass
+
+        # 0.5) Явный UI-выбор модели через кнопку «Поменять».
+        # URL `?model=<slug>` обычно прокидывает модель, но юзер хочет
+        # чтобы бот гарантированно клик'нул выбор в UI. Если модель уже
+        # стоит правильная — функция тихо вернёт True и ничего не сделает.
+        try:
+            await _select_video_model_via_button(page, model_slug)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.generate_video: UI-выбор модели упал: {} — "
+                "продолжаю с тем, что прокинулось через ?model=…", e,
+            )
 
         # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
         # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
