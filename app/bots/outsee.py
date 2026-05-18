@@ -341,8 +341,18 @@ def _resolution_selectors(resolution: str) -> list[str]:
 
 
 # Кнопка/тогл «Relax» (для всех картиночных моделей и для veo-3-1-fast).
-# В outsee.io это просто кнопка/тогл с текстом «Relax».
+# В outsee.io 2026 в классическом дизайне это checkbox с текстом
+# «Relax Режим» (под надписью «Дешевле, но может генерировать дольше
+# обычного»). В старых выкатках это могло называться просто «Relax»
+# или тогл «Безлимит». Покрываем все три случая.
 RELAX_SELECTORS: list[str] = [
+    # Новый UI: чекбокс с текстом «Relax Режим».
+    "label:has-text('Relax Режим')",
+    "button:has-text('Relax Режим')",
+    "[role='checkbox']:near(:text-is('Relax Режим'))",
+    "div:has(> :text-is('Relax Режим')) input[type='checkbox']",
+    "*:has(> :text-is('Relax Режим'))",
+    # Старые варианты.
     "button:has-text('Relax')",
     "[role='switch']:has-text('Relax')",
     "label:has-text('Relax')",
@@ -517,6 +527,35 @@ def _video_page_url(model_slug: str | None) -> str:
 
 FILE_UPLOAD_SELECTORS = [
     "input[type='file']",
+]
+
+# Селекторы для конкретно «Первый кадр» (новый UI outsee.io 2026).
+# В классическом дизайне VIDEO-страницы есть две карточки загрузки:
+#   - «Первый кадр (опционально)»   ← нам сюда
+#   - «Последний кадр (опционально)»
+# Каждая карточка содержит свой скрытый input[type=file]. Раньше код
+# брал просто `input[type=file]` last — а это «Последний кадр». Неверно.
+# Теперь ищем именно по тексту-метке «Первый кадр».
+FIRST_FRAME_CARD_SELECTORS: list[str] = [
+    "label:has-text('Первый кадр')",
+    "button:has-text('Первый кадр')",
+    "div:has(> :text-is('Первый кадр'))",
+    "*:has(> :text-is('Первый кадр'))",
+]
+FIRST_FRAME_INPUT_SELECTORS: list[str] = [
+    "label:has-text('Первый кадр') input[type='file']",
+    "button:has-text('Первый кадр') input[type='file']",
+    "div:has(:text-is('Первый кадр')) input[type='file']",
+    "*:has(:text-is('Первый кадр')) input[type='file']",
+]
+LAST_FRAME_CARD_SELECTORS: list[str] = [
+    "label:has-text('Последний кадр')",
+    "button:has-text('Последний кадр')",
+    "div:has(> :text-is('Последний кадр'))",
+]
+LAST_FRAME_INPUT_SELECTORS: list[str] = [
+    "label:has-text('Последний кадр') input[type='file']",
+    "div:has(:text-is('Последний кадр')) input[type='file']",
 ]
 
 # Селекторы для скачивания результата. Покрываем два случая:
@@ -2535,37 +2574,51 @@ class OutseeBot:
             await _toggle_relax(page, want_on=relax, where="generate_video")
 
             # 3) загрузка стартового кадра (если передан).
-            # Сначала ищем ВИДИМЫЙ input[type=file] (короткий таймаут — в
-            # outsee он часто скрыт, ожидать долго смысла нет). Если не
-            # нашли — fallback на скрытый input через `set_input_files`
-            # без проверки видимости (тот же приём что в
-            # _attach_reference_image для картинок).
+            #
+            # На новом UI outsee.io 2026 (классический дизайн) есть ДВЕ
+            # карточки: «Первый кадр (опционально)» и «Последний кадр
+            # (опционально)». У каждой свой `<input type="file">`. Раньше
+            # код брал просто `input[type=file]` `.last` — это «Последний
+            # кадр», что НЕВЕРНО для image-to-video (там нужен ПЕРВЫЙ).
+            #
+            # Алгоритм поиска (по убыванию точности):
+            #   1) FIRST_FRAME_INPUT_SELECTORS — input под карточкой
+            #      «Первый кадр»; даже если он скрыт, set_input_files
+            #      работает (Playwright не требует видимости).
+            #   2) Если общий input[type=file] на странице ровно один —
+            #      используем его (single-input UI).
+            #   3) Несколько input[type=file] в DOM: вычитаем тот, что
+            #      под «Последний кадр», и берём первый из оставшихся.
+            #   4) Падаем с понятной ошибкой.
             if start_frame is not None:
                 attached = False
-                file_sel = await _first_visible(
-                    page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
-                )
-                if file_sel:
+                # --- (1) Прицельный поиск «Первый кадр» ---
+                for sel in FIRST_FRAME_INPUT_SELECTORS:
                     try:
-                        await page.locator(file_sel).first.set_input_files(
-                            str(start_frame)
-                        )
+                        loc = page.locator(sel).first
+                        n = await loc.count()
+                    except Exception:  # noqa: BLE001
+                        n = 0
+                    if n <= 0:
+                        continue
+                    try:
+                        await loc.set_input_files(str(start_frame))
                         logger.info(
                             "outsee.generate_video: стартовый кадр {} "
-                            "загружен в видимый input ({})",
-                            start_frame.name, file_sel,
+                            "загружен в «Первый кадр» ({})",
+                            start_frame.name, sel,
                         )
                         attached = True
+                        break
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
-                            "outsee.generate_video: видимый "
-                            "input.set_input_files упал: {} — "
-                            "пробую скрытый input",
-                            e,
+                            "outsee.generate_video: {}.set_input_files "
+                            "упал: {} — пробую следующий селектор",
+                            sel, e,
                         )
+
+                # --- (2)/(3) Fallback по общему input[type=file] ---
                 if not attached:
-                    # Fallback на скрытый input в DOM (берём последний — в
-                    # outsee.io именно он привязан к UI-кнопке загрузки).
                     base = page.locator("input[type='file']")
                     try:
                         n_inputs = await base.count()
@@ -2578,23 +2631,81 @@ class OutseeBot:
                     if n_inputs <= 0:
                         raise RuntimeError(
                             "outsee video: не найден input[type=file] для "
-                            "стартового кадра (видимый и скрытый, count=0). "
-                            "Возможно, модель не поддерживает image-to-video "
-                            "или сайт изменил DOM."
+                            "стартового кадра (count=0). Возможно, модель "
+                            "не поддерживает image-to-video или сайт "
+                            "изменил DOM."
                         )
-                    try:
-                        await base.last.set_input_files(str(start_frame))
-                        logger.info(
-                            "outsee.generate_video: стартовый кадр {} "
-                            "загружен в скрытый input (count={}, взят last)",
-                            start_frame.name, n_inputs,
-                        )
-                        attached = True
-                    except Exception as e:  # noqa: BLE001
-                        raise RuntimeError(
-                            f"outsee video: set_input_files в скрытый input "
-                            f"упал: {e} (count={n_inputs})"
-                        ) from e
+
+                    # Один input → он и есть «Первый кадр» (single-input UI).
+                    if n_inputs == 1:
+                        try:
+                            await base.first.set_input_files(str(start_frame))
+                            logger.info(
+                                "outsee.generate_video: стартовый кадр {} "
+                                "загружен в единственный input (count=1)",
+                                start_frame.name,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(
+                                f"outsee video: set_input_files в "
+                                f"единственный input упал: {e}"
+                            ) from e
+                    else:
+                        # Несколько input'ов. Узнаём индекс «Последнего
+                        # кадра», чтобы НЕ грузить в него.
+                        last_frame_idx = -1
+                        for sel_lf in LAST_FRAME_INPUT_SELECTORS:
+                            try:
+                                lf_loc = page.locator(sel_lf).first
+                                if (await lf_loc.count()) > 0:
+                                    # Совпадение есть; вычислим элемент,
+                                    # на который он указывает, и найдём
+                                    # его позицию среди base.
+                                    handle = await lf_loc.element_handle()
+                                    if handle is None:
+                                        break
+                                    for i in range(n_inputs):
+                                        bh = await base.nth(i).element_handle()
+                                        if bh is None:
+                                            continue
+                                        same = await page.evaluate(
+                                            "([a, b]) => a === b",
+                                            [handle, bh],
+                                        )
+                                        if same:
+                                            last_frame_idx = i
+                                            break
+                                    break
+                            except Exception:  # noqa: BLE001
+                                continue
+
+                        # Берём первый input, который НЕ «Последний кадр».
+                        target_idx = -1
+                        for i in range(n_inputs):
+                            if i != last_frame_idx:
+                                target_idx = i
+                                break
+                        if target_idx < 0:
+                            target_idx = 0
+                        try:
+                            await base.nth(target_idx).set_input_files(
+                                str(start_frame)
+                            )
+                            logger.info(
+                                "outsee.generate_video: стартовый кадр {} "
+                                "загружен в input[{}] (count={}, "
+                                "last_frame_idx={})",
+                                start_frame.name, target_idx, n_inputs,
+                                last_frame_idx,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(
+                                f"outsee video: set_input_files в "
+                                f"input[{target_idx}] упал: {e} "
+                                f"(count={n_inputs})"
+                            ) from e
                 await asyncio.sleep(1.0)
 
             # 4) generate
