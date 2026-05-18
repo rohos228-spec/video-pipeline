@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
+from app.bots.chatgpt import ChatGPTBot
 from app.bots.elevenlabs import ElevenLabsBot
 from app.models import (
     Artifact,
@@ -22,9 +23,16 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.mapper import map_frames
 from app.services.whisper import dump_words_json, transcribe_words
 from app.settings import settings
+
+_AUDIO_GPT_MAX_RETRIES = 5
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -47,9 +55,48 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     audio_dir = project.data_dir / "audio"
     audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
 
+    # (Фаза 7) GPT-проверка аудио.
+    try:
+        _audio_check_prompt = load_check_prompt("audio")
+    except FileNotFoundError:
+        _audio_check_prompt = None
+        logger.warning("[#{}] промт check_audio не найден, пропускаю GPT-check", project.id)
+
     async with browser_session() as bs:
         el = ElevenLabsBot(bs)
+        gpt = ChatGPTBot(bs)
+
         await el.tts(script_text, audio_path, timeout=600)
+
+        # (Фаза 7) GPT-проверка аудио — до 5 перегенераций.
+        if _audio_check_prompt and audio_path.exists():
+            for audio_attempt in range(1, _AUDIO_GPT_MAX_RETRIES + 1):
+                check_result = await gpt_check_file_artifact(
+                    chatgpt_bot=gpt,
+                    check_prompt=_audio_check_prompt,
+                    artifact_path=audio_path,
+                    new_conversation=True,
+                    timeout=1200.0,
+                )
+                logger.info(
+                    "[#{}] audio GPT-check {}/{}: decision={}",
+                    project.id, audio_attempt, _AUDIO_GPT_MAX_RETRIES,
+                    check_result.decision.value,
+                )
+                if check_result.decision is not GptCheckDecision.regenerate:
+                    break
+                if audio_attempt >= _AUDIO_GPT_MAX_RETRIES:
+                    logger.warning(
+                        "[#{}] audio GPT-check: {} попыток исчерпано",
+                        project.id, _AUDIO_GPT_MAX_RETRIES,
+                    )
+                    break
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
+                await el.tts(script_text, audio_path, timeout=600)
 
     session.add(Artifact(
         project_id=project.id,
