@@ -2690,98 +2690,125 @@ class OutseeBot:
                 )
 
                 # 3) start_frame.
-                # Сначала видимый input[type=file], потом fallback на
-                # скрытый — outsee.io часто рендерит file input как
-                # hidden (CSS `display:none`). set_input_files работает
-                # на скрытых input'ах по Playwright контракту.
+                # ВАЖНО: на outsee видео-странице есть ДВА file input —
+                # один для НАЧАЛЬНОГО кадра (LEFT, обязательный) и один
+                # для КОНЕЧНОГО (RIGHT, опциональный для keyframe-
+                # интерполяции). Раньше код брал `base.last` — это RIGHT
+                # = end_frame, и форма считала «start пустой» → Generate
+                # после клика не запускалась.
+                #
+                # Решение: берём ЛЕВЫЙ input — определяем по позиции
+                # ближайшего видимого предка (drop-zone div). Берётся
+                # тот input, чья «зона» имеет минимальный X (= LEFT).
                 if start_frame is not None:
-                    attached = False
-                    file_sel = await _first_visible(
-                        page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
-                    )
-                    if file_sel:
-                        try:
-                            await page.locator(file_sel).first.set_input_files(
-                                str(start_frame)
-                            )
-                            logger.info(
-                                "outsee.generate_video: start_frame {} "
-                                "загружен в видимый input ({})",
-                                start_frame.name, file_sel,
-                            )
-                            attached = True
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(
-                                "outsee.generate_video: видимый "
-                                "input.set_input_files упал: {} — "
-                                "пробую скрытый input",
-                                e,
-                            )
-                    if not attached:
-                        base = page.locator("input[type='file']")
-                        try:
-                            n_inputs = await base.count()
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(
-                                "outsee.generate_video: locator count упал: {}",
-                                e,
-                            )
-                            n_inputs = 0
-                        if n_inputs <= 0:
-                            raise OutseeImageError(
-                                "outsee video: не найден input[type=file] "
-                                "для стартового кадра",
-                                context={
-                                    "gen_id": gen_id,
-                                    "model_slug": model_slug or "—",
-                                },
-                            )
-                        try:
-                            await base.last.set_input_files(str(start_frame))
-                            logger.info(
-                                "outsee.generate_video: start_frame {} "
-                                "загружен в скрытый input (count={}, last)",
-                                start_frame.name, n_inputs,
-                            )
-                            attached = True
-                        except Exception as e:  # noqa: BLE001
-                            raise OutseeImageError(
-                                "outsee video: set_input_files в скрытый "
-                                "input упал",
-                                context={
-                                    "gen_id": gen_id,
-                                    "err": f"{type(e).__name__}: {e}",
-                                    "n_inputs": n_inputs,
-                                },
-                            ) from e
+                    # Через JS-evaluate находим индекс LEFT input'а в
+                    # списке всех input[type=file], плюс возвращаем
+                    # диагностические данные для лога (X-координаты
+                    # всех inputs).
+                    pick_js = """() => {
+                        const inputs = Array.from(
+                            document.querySelectorAll("input[type='file']")
+                        );
+                        if (!inputs.length) {
+                            return {leftIdx: -1, total: 0, xs: []};
+                        }
+                        // Для каждого input находим X его видимого
+                        // контейнера (предок с >= 50x50 px и не hidden).
+                        const items = inputs.map((inp, idx) => {
+                            let el = inp;
+                            let x = null;
+                            for (let i = 0; i < 12 && el; i++) {
+                                const r = el.getBoundingClientRect();
+                                const cs = window.getComputedStyle(el);
+                                const visible = (
+                                    cs.display !== 'none' &&
+                                    cs.visibility !== 'hidden' &&
+                                    r.width >= 50 && r.height >= 50
+                                );
+                                if (visible) { x = r.x; break; }
+                                el = el.parentElement;
+                            }
+                            // Fallback: если ни один предок не «видим»,
+                            // берём DOM-порядок (idx) как proxy для
+                            // позиции.
+                            if (x === null) x = idx * 10000;
+                            return {idx, x};
+                        });
+                        items.sort((a, b) => a.x - b.x);
+                        return {
+                            leftIdx: items[0].idx,
+                            total: inputs.length,
+                            xs: items.map(it => ({idx: it.idx, x: it.x})),
+                        };
+                    }"""
+                    try:
+                        pick = await page.evaluate(pick_js)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: JS-pick LEFT input упал "
+                            "({}), fallback на nth(0)", type(e).__name__,
+                        )
+                        pick = {"leftIdx": 0, "total": 0, "xs": []}
 
-                    # ВАЖНО: после set_input_files React-контролируемые
-                    # компоненты часто НЕ обновляют свой state —
-                    # `onChange`-prop у React-input привязан через
-                    # синтетическую событийную систему, а Playwright
-                    # эмитит «голый» change event. В итоге Generate
-                    # визуально активен (потому что disabled-чек идёт
-                    # от размера DOM-инпута), но клик по нему — no-op:
-                    # React-form-state думает «файла нет».
-                    #
-                    # Лечится принудительной диспатчем `input` +
-                    # `change` events с bubbles=true прямо на тот же
-                    # input element, в который мы set_input_files.
-                    # Это эквивалент того что пользователь руками
-                    # выбрал файл через диалог.
+                    n_inputs = int(pick.get("total", 0)) if pick else 0
+                    left_idx = int(pick.get("leftIdx", -1)) if pick else -1
+                    if n_inputs <= 0 or left_idx < 0:
+                        # Совсем нет input'ов на странице.
+                        raise OutseeImageError(
+                            "outsee video: не найден input[type=file] "
+                            "для стартового кадра",
+                            context={
+                                "gen_id": gen_id,
+                                "model_slug": model_slug or "—",
+                            },
+                        )
+
+                    logger.info(
+                        "outsee.generate_video: найдено {} input[type=file], "
+                        "X-coords={}, выбираю LEFT (idx={}) для start_frame",
+                        n_inputs,
+                        [(it["idx"], int(it["x"]))
+                         for it in (pick.get("xs") or [])],
+                        left_idx,
+                    )
+
+                    base = page.locator("input[type='file']")
+                    try:
+                        await base.nth(left_idx).set_input_files(
+                            str(start_frame)
+                        )
+                        logger.info(
+                            "outsee.generate_video: start_frame {} "
+                            "загружен в LEFT input (nth={})",
+                            start_frame.name, left_idx,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        raise OutseeImageError(
+                            "outsee video: set_input_files в LEFT input упал",
+                            context={
+                                "gen_id": gen_id,
+                                "err": f"{type(e).__name__}: {e}",
+                                "left_idx": left_idx,
+                                "n_inputs": n_inputs,
+                            },
+                        ) from e
+
+                    # React-event dispatch на КОНКРЕТНЫЙ LEFT input —
+                    # Playwright эмитит «голый» change, а React-state
+                    # слушает синтетическую событийную систему. Без
+                    # этого React-form-state думает «файла нет», даже
+                    # если файл реально в DOM-инпуте.
                     try:
                         await page.evaluate(
-                            """() => {
+                            """(leftIdx) => {
                                 const inputs = Array.from(
                                     document.querySelectorAll(
                                         "input[type='file']"
                                     )
                                 );
-                                if (!inputs.length) return 0;
-                                // Берём last — тот же что использовали
-                                // в Playwright set_input_files.
-                                const inp = inputs[inputs.length - 1];
-                                if (!inp || !inp.files || !inp.files.length) {
+                                const inp = inputs[leftIdx];
+                                if (!inp || !inp.files
+                                    || !inp.files.length) {
                                     return 0;
                                 }
                                 inp.dispatchEvent(
@@ -2791,19 +2818,19 @@ class OutseeBot:
                                     new Event('change', {bubbles: true})
                                 );
                                 return inp.files.length;
-                            }"""
+                            }""",
+                            left_idx,
                         )
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             "outsee.generate_video: React-event dispatch "
-                            "на file input упал ({}), продолжаю",
+                            "на LEFT input упал ({}), продолжаю",
                             type(e).__name__,
                         )
-                    # outsee нужно время на upload файла на их сервер
-                    # ПОСЛЕ change-event. 1 сек было мало — увеличиваем
-                    # до 3 сек: за это время React-form-state точно
-                    # успевает зарегистрировать файл и кнопка станет
-                    # реально, а не визуально, активной.
+                    # outsee аплоадит файл на свой сервер ПОСЛЕ change.
+                    # Даём 3с — за это время React-form-state точно
+                    # успевает зарегистрировать start_frame, и Generate
+                    # становится РЕАЛЬНО кликабелен (не просто визуально).
                     await asyncio.sleep(3.0)
 
                 # 4) Generate
@@ -2878,7 +2905,72 @@ class OutseeBot:
 
                 click_ts = _time.monotonic()
                 net_events.clear()
-                await page.locator(gen_sel).first.click()
+
+                # ФИЗИЧЕСКИЙ КЛИК через page.mouse.click(x, y) по
+                # ЦЕНТРУ bbox кнопки. Это эквивалент тому что юзер
+                # реально мышью кликнул в центр кнопки — никаких
+                # React-synthetic-events, никаких pointer-events:none
+                # вокруг, никаких overlay-CSS. Браузер сам генерит
+                # mousedown→mouseup→click в этих координатах.
+                #
+                # Получаем bbox именно того element'а, который выбрал
+                # `_first_visible` — гарантия что bbox = кнопка
+                # Generate, а не что-то рядом.
+                btn_loc = page.locator(gen_sel).first
+                bbox = None
+                try:
+                    bbox = await btn_loc.bounding_box()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.generate_video: bounding_box упал ({}), "
+                        "fallback на Playwright .click()",
+                        type(e).__name__,
+                    )
+
+                if bbox and bbox.get("width", 0) > 0 and bbox.get("height", 0) > 0:
+                    click_x = bbox["x"] + bbox["width"] / 2
+                    click_y = bbox["y"] + bbox["height"] / 2
+                    # Скроллим к кнопке (чтобы она была в viewport —
+                    # иначе click(x,y) попадёт за пределы видимой
+                    # области и браузер откажет).
+                    try:
+                        await btn_loc.scroll_into_view_if_needed(
+                            timeout=3_000,
+                        )
+                        # После скролла bbox мог измениться — обновим.
+                        bbox2 = await btn_loc.bounding_box()
+                        if bbox2:
+                            click_x = bbox2["x"] + bbox2["width"] / 2
+                            click_y = bbox2["y"] + bbox2["height"] / 2
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                    logger.info(
+                        "outsee.generate_video: ФИЗИЧЕСКИЙ клик по "
+                        "Generate в координаты ({:.0f},{:.0f}) "
+                        "[bbox={}x{} @ ({:.0f},{:.0f})]",
+                        click_x, click_y,
+                        int(bbox["width"]), int(bbox["height"]),
+                        bbox["x"], bbox["y"],
+                    )
+                    # Двигаем мышь к центру кнопки и кликаем.
+                    # Playwright под капотом эмитит mousemove + mousedown
+                    # + mouseup + click через CDP — реальный браузерный
+                    # input pipeline.
+                    await page.mouse.move(click_x, click_y)
+                    await asyncio.sleep(0.2)
+                    await page.mouse.click(click_x, click_y)
+                else:
+                    # Не получили bbox — fallback на обычный
+                    # Playwright .click() по селектору. Это хуже
+                    # координатного, потому что Playwright может
+                    # промахнуться если у элемента сложный hit-test.
+                    logger.warning(
+                        "outsee.generate_video: bbox не получен "
+                        "(width=0?), fallback на .click() по селектору",
+                    )
+                    await btn_loc.click()
+
                 logger.info(
                     "outsee.generate_video: Generate кликнут, жду видео "
                     "(gen_id={}, pre_click_id_count={})",
