@@ -82,6 +82,21 @@ AUTO_REVIEW_VISUAL_KINDS: set[HITLKind] = _parse_kinds_env(
     os.environ.get("AUTO_REVIEW_VISUAL_KINDS")
 )
 
+# (mass-gen Фаза 1) Обязательное человеческое подтверждение после каждого шага.
+#
+# Когда `1` (default): в `auto_mode=True` ШАГИ 1-11 ИСХОДЯТ в `*_ready` и
+# ждут явного клика пользователя в TG. GPT-проверка всё равно работает и может
+# триггерить `regen` / `reject` (это реальные действия), но auto-approve
+# при GPT-вердикте `approve` блокируется — юзер обязан нажать «✅» руками.
+#
+# Когда `0`: legacy-поведение — GPT может авто-одобрять и продвигать проект.
+#
+# Это реализация фичи «После каждого полноценно завершённого этапа 1-11 необходима
+# кнопка подтверждения».
+MASS_GEN_REQUIRE_CONFIRMATION: bool = (
+    os.environ.get("MASS_GEN_REQUIRE_CONFIRMATION", "1") == "1"
+)
+
 # Максимум подряд `regen` на одном шаге → проект → paused.
 MAX_AUTO_REGEN_PER_STEP = 2
 
@@ -459,8 +474,35 @@ async def _apply_approve(
     *,
     bot: Bot | None = None,
     badge: str | None = None,
+    _user_clicked: bool = False,
 ) -> None:
-    """Эмулируем клик `approve` пользователем в TG."""
+    """Эмулируем клик `approve` пользователем в TG.
+
+    (Масс-ген Фаза 1) Если `MASS_GEN_REQUIRE_CONFIRMATION` включён и
+    `_user_clicked=False` (т. е. одобрение пришло от GPT/auto-mode, а не от
+    клика пользователя) — НЕ продвигаем проект. Статус остаётся в
+    `*_ready`, бот показал кнопки И ждём явный клик.
+
+    `_user_clicked=True` ставится только когда `hitl.decision is
+    HITLDecision.approved` (юзер реально нажал в TG).
+    """
+    if (
+        MASS_GEN_REQUIRE_CONFIRMATION
+        and not _user_clicked
+        and getattr(project, "auto_mode", False)
+    ):
+        logger.info(
+            "auto_advance: #{} {} → GPT/auto-approve заблокирован, ждём явное подтверждение пользователя",
+            project.id, transition.ready_status.value,
+        )
+        # Дополнительно выставляем в meta «ждём клика» — для фильтров и UI.
+        meta = dict(project.meta or {})
+        meta["awaiting_user_confirmation"] = transition.ready_status.value
+        project.meta = meta
+        await session.flush()
+        # Кнопки не гасим — юзеру всё ещё нужно кликнуть.
+        return
+
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.approved
 
@@ -475,6 +517,10 @@ async def _apply_approve(
         if nxt is not None:
             project.status = nxt
     _reset_retry_count(project, transition.ready_status)
+    # (Масс-ген Фаза 1) Снимаем флаг ожидания если он был.
+    meta = dict(project.meta or {})
+    if meta.pop("awaiting_user_confirmation", None) is not None:
+        project.meta = meta
     await session.flush()
     logger.info(
         "auto_advance: #{} {} → approved → {}",
@@ -610,7 +656,10 @@ async def maybe_auto_advance(
     if hitl is not None and hitl.decision is HITLDecision.approved:
         # Юзер нажал в боте — bot.py уже погасил кнопки и добавил
         # бейдж. Ничего не рисуем.
-        await _apply_approve(session, project, hitl, transition, bot=None)
+        # (Масс-ген Фаза 1) _user_clicked=True — пропускаем гейт подтверждения.
+        await _apply_approve(
+            session, project, hitl, transition, bot=None, _user_clicked=True
+        )
         return True
 
     # (single-mass parity #4) Решаем нужен ли vision-чек для этого kind'а.

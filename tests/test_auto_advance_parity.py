@@ -89,7 +89,7 @@ async def test_enrich_cap_2_skips_to_image_prompts() -> None:
     hitl = _make_hitl(HITLKind.approve_hero)
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
-        bot=None, badge="",
+        bot=None, badge="", _user_clicked=True,
     )
     assert project.status is ProjectStatus.generating_image_prompts
 
@@ -106,7 +106,7 @@ async def test_enrich_cap_5_uses_full_chain() -> None:
     hitl = _make_hitl(HITLKind.approve_hero)
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
-        bot=None, badge="",
+        bot=None, badge="", _user_clicked=True,
     )
     assert project.status is ProjectStatus.enriching_3
 
@@ -130,7 +130,7 @@ async def test_hero_count_2_stays_in_generating_hero() -> None:
     )
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
-        bot=None, badge="",
+        bot=None, badge="", _user_clicked=True,
     )
     assert project.status is ProjectStatus.generating_hero
 
@@ -151,7 +151,7 @@ async def test_hero_count_1_advances_to_items() -> None:
     )
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
-        bot=None, badge="",
+        bot=None, badge="", _user_clicked=True,
     )
     assert project.status is ProjectStatus.generating_items
 
@@ -172,7 +172,7 @@ async def test_hero_variations_3_stays_for_remaining_variations() -> None:
     )
     await _apply_approve(
         _StubAsyncSession(), project, hitl, transition,
-        bot=None, badge="",
+        bot=None, badge="", _user_clicked=True,
     )
     assert project.status is ProjectStatus.generating_hero
 
