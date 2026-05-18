@@ -648,10 +648,20 @@ async def _generate_and_send(
             .limit(1)
         )
     ).scalar_one_or_none()
-    use_regen_button = (
-        last_hitl is not None
-        and last_hitl.decision is HITLDecision.regenerate
-    )
+    # ⚠️ ОТКЛЮЧЕНО: кнопка «Повторить» на outsee'е работает на ТЕКУЩЕМ
+    # видимом результате на странице. После генерации предыдущего кадра
+    # на странице остаётся ЕГО промт+картинка. «Повторить» в таком
+    # состоянии сделает копию ПРЕДЫДУЩЕГО кадра, а не текущего.
+    #
+    # Воспроизведение бага в проде: frame 131 сгенерирован → юзер жмёт
+    # 🔁 Перегенерировать для frame 130 → orchestrator вызывает
+    # `regenerate_image` → outsee «Повторить» → генерируется ещё одна
+    # копия frame 131 и сохраняется как frame 130.
+    #
+    # Лечение: всегда идём через `generate_image_with_retries` —
+    # фреш-открытие страницы, заполнение image_prompt именно этого
+    # кадра, нажатие Generate. Чуть дольше, но детерминированно.
+    use_regen_button = False
 
     # ✏️ Edit prompt: если юзер только что прислал в TG свой текст для
     # правки промта (HITLDecision.edit_prompt + needs_gpt_rewrite=True
