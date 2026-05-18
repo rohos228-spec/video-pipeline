@@ -395,12 +395,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         fr.status = FrameStatus.image_prompt_ready
     await session.flush()
 
-    # (Фаза 5) Загружаем промт GPT-проверки один раз.
-    try:
-        _images_check_prompt = load_check_prompt("images")
-    except FileNotFoundError:
+    # (Фаза 5) Автоматическая GPT-проверка после каждой генерации.
+    # По умолчанию ВЫКЛЮЧЕНА (см. settings.images_gpt_check_enabled).
+    # Причина: GPT слишком строг — почти всегда возвращает
+    # decision=regenerate, удаляет уже сгенерированную .png и
+    # стартует новую генерацию (до 5 раз). Это превращает «🔍 Добить
+    # недостающие» из ~1 минуты на кадр в ~15 минут — пользователь видит
+    # «бесконечную регенерацию». Кроме того, HITL-кнопки в Telegram уже
+    # позволяют человеку решить «принять / перегенирить» — дублировать
+    # это автомат-GPT не нужно.
+    _images_check_prompt: str | None
+    if settings.images_gpt_check_enabled:
+        try:
+            _images_check_prompt = load_check_prompt("images")
+        except FileNotFoundError:
+            _images_check_prompt = None
+            logger.warning("[#{}] промт check_images не найден, пропускаю GPT-check", project.id)
+    else:
         _images_check_prompt = None
-        logger.warning("[#{}] промт check_images не найден, пропускаю GPT-check", project.id)
+        logger.info("[#{}] Phase 5 GPT-check отключён (IMAGES_GPT_CHECK_ENABLED=0)", project.id)
 
     # (Фаза 5) Один ChatGPT-чат на весь шаг.
     _gpt_chat_opened = False

@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
+    # Phase 5: автоматическая GPT-проверка картинки после генерации (Outsee
+    # → ChatGPT в 360p → решение approve/regenerate, до 5 повторов на кадр).
+    # По умолчанию ВЫКЛЮЧЕНО, потому что:
+    #   * пользователь сам через HITL-кнопки решает «принять/перегенирить»;
+    #   * GPT часто слишком строг и зацикливает регенерации (5×3 мин/кадр
+    #     = ~15 мин/кадр × 12 кадров = ~3 часа на один «🔍 Добить
+    #     недостающие»);
+    #   * проигнорировать GPT-результат нельзя — Phase 5 удаляет старую
+    #     .png перед регенерацией, и если новая упадёт — у кадра вообще
+    #     не остаётся файла.
+    # Если хочется включить — выставить IMAGES_GPT_CHECK_ENABLED=1 в .env.
+    images_gpt_check_enabled: bool = Field(False, alias="IMAGES_GPT_CHECK_ENABLED")
 
     @property
     def db_url(self) -> str:
