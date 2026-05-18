@@ -193,6 +193,56 @@ async def test_gate_blocks_visual_kinds_too() -> None:
 
 
 @pytest.mark.asyncio
+async def test_frames_ready_uses_approve_blocks_kind() -> None:
+    """(Mass-gen Фаза 2) После шага 3 (разбивка на блоки) transition
+    использует HITLKind.approve_blocks, а не приклеенный approve_hero."""
+    transition = TRANSITIONS[ProjectStatus.frames_ready]
+    assert transition.kind is HITLKind.approve_blocks
+    assert transition.next_running is ProjectStatus.generating_hero
+
+
+@pytest.mark.asyncio
+async def test_gate_blocks_blocks_step() -> None:
+    """(Mass-gen Фаза 2) Гейт срабатывает на frames_ready (шаг 3 — блоки)."""
+    project = _make_project(
+        status=ProjectStatus.frames_ready, auto_mode=True
+    )
+    transition = TRANSITIONS[ProjectStatus.frames_ready]
+    hitl = _make_hitl(HITLKind.approve_blocks)
+
+    with patch.object(auto_advance, "MASS_GEN_REQUIRE_CONFIRMATION", True):
+        await _apply_approve(
+            _StubAsyncSession(), project, hitl, transition,
+            bot=None, badge="", _user_clicked=False,
+        )
+
+    assert project.status is ProjectStatus.frames_ready
+    assert (
+        (project.meta or {}).get("awaiting_user_confirmation")
+        == "frames_ready"
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocks_user_click_advances_to_hero() -> None:
+    """После клика на approve_blocks проект уходит в generating_hero."""
+    project = _make_project(
+        status=ProjectStatus.frames_ready, auto_mode=True
+    )
+    transition = TRANSITIONS[ProjectStatus.frames_ready]
+    hitl = _make_hitl(HITLKind.approve_blocks)
+    hitl.decision = HITLDecision.approved
+
+    with patch.object(auto_advance, "MASS_GEN_REQUIRE_CONFIRMATION", True):
+        await _apply_approve(
+            _StubAsyncSession(), project, hitl, transition,
+            bot=None, badge="", _user_clicked=True,
+        )
+
+    assert project.status is ProjectStatus.generating_hero
+
+
+@pytest.mark.asyncio
 async def test_gate_blocks_hero_step() -> None:
     """Гейт на hero_ready (шаг 4 — объекты)."""
     project = _make_project(

@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.models import Frame, Project, ProjectStatus
+from app.models import Frame, HITLKind, Project, ProjectStatus
+from app.services.hitl import send_hitl_text
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_steps import run_split_xlsx_step
 from app.storage import for_project as _sheet_for_project
@@ -161,6 +162,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     project.status = ProjectStatus.frames_ready
     await session.flush()
     logger.info("[#{}] split_frames: {} ячеек, итого {:.2f} сек", project.id, len(cells), t)
+
+    # (Mass-gen Фаза 2) HITL approve_blocks — кнопка подтверждения
+    # после шага 3 (разбивка на блоки). Без неё конвейер
+    # не пойдёт в шаг 4 (hero) при MASS_GEN_REQUIRE_CONFIRMATION=1.
+    if bot is not None:
+        blocks_preview = "\n\n".join(
+            f"— ({i+1}) {cell}"
+            for i, cell in enumerate(cells)
+        )
+        try:
+            await send_hitl_text(
+                bot, session, project,
+                kind=HITLKind.approve_blocks,
+                title=f"Разбивка на блоки #{project.id}",
+                text=blocks_preview,
+                payload={"step": "blocks", "count": len(cells)},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] approve_blocks HITL send failed: {}", project.id, e
+            )
 
     try:
         sheet = _sheet_for_project(project)

@@ -125,8 +125,10 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
         ProjectStatus.script_ready, ProjectStatus.splitting, HITLKind.approve_script
     )
     # frames_ready → generating_hero (объекты → персонажи)
+    # (Mass-gen Фаза 2) kind = approve_blocks: подтверждение шага 3
+    # «разбивка на блоки», а не унаследованное approve_hero.
     transitions[ProjectStatus.frames_ready] = StepTransition(
-        ProjectStatus.frames_ready, ProjectStatus.generating_hero, HITLKind.approve_hero
+        ProjectStatus.frames_ready, ProjectStatus.generating_hero, HITLKind.approve_blocks
     )
     # hero_ready → generating_items (если предметы есть) или enriching_1
     # Простой default — generating_items; если предметов нет, шаг сам сразу
