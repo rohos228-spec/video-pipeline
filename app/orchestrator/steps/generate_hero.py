@@ -56,6 +56,11 @@ from app.models import (
 )
 from app.services import gpt_text_builder as gtb
 from app.services.excel_characters import ExcelCharacter
+from app.services.gpt_check import (
+    GptCheckDecision,
+    gpt_check_file_artifact,
+    load_check_prompt,
+)
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.prompt_library import (
@@ -71,6 +76,7 @@ from app.storage import for_project as _sheet_for_project
 # влезает в 16:9, а Relax при этом дёшевле и идёт без очереди.
 HERO_ASPECT_RATIO = "16:9"
 HERO_RELAX = True
+_HERO_GPT_MAX_RETRIES = 5
 
 
 def _read_hero_style(project: Project) -> str | None:
@@ -664,6 +670,64 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # больше не будет автоматически брать на этой итерации.
                 return
 
+        # 4b) (Фаза 4) GPT-проверка героя — до 5 перегенераций.
+        try:
+            _hero_check_prompt = load_check_prompt("hero")
+        except FileNotFoundError:
+            _hero_check_prompt = None
+            logger.warning("[#{}] промт check_hero не найден, пропускаю GPT-check", project.id)
+        if _hero_check_prompt and result is not None:
+            for gpt_attempt in range(1, _HERO_GPT_MAX_RETRIES + 1):
+                img_file = Path(result.file_path)
+                if not img_file.exists():
+                    break
+                check_result = await gpt_check_file_artifact(
+                    chatgpt_bot=gpt,
+                    check_prompt=_hero_check_prompt,
+                    artifact_path=img_file,
+                    new_conversation=True,
+                    timeout=1200.0,
+                )
+                logger.info(
+                    "[#{}] hero GPT-check attempt {}/{}: decision={}",
+                    project.id, gpt_attempt, _HERO_GPT_MAX_RETRIES,
+                    check_result.decision.value,
+                )
+                if check_result.decision is not GptCheckDecision.regenerate:
+                    break
+                if gpt_attempt >= _HERO_GPT_MAX_RETRIES:
+                    logger.warning(
+                        "[#{}] hero GPT-check: {} попыток исчерпано, оставляю последний вариант",
+                        project.id, _HERO_GPT_MAX_RETRIES,
+                    )
+                    break
+                # Удаляем старую картинку и перегенерируем.
+                try:
+                    img_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                short_uuid = uuid.uuid4().hex[:8]
+                file_name = f"hero_{hero_idx}_v{v_idx}_{short_uuid}.png"
+                out_path = out_dir / file_name
+                try:
+                    result = await generate_image_with_retries(
+                        outsee, gpt,
+                        prompt=prompt_text,
+                        out_path=out_path,
+                        max_attempts_per_prompt=3,
+                        gpt_rewrite=True,
+                        aspect_ratio=HERO_ASPECT_RATIO,
+                        model_slug=img_gen.outsee_slug if img_gen else None,
+                        resolution=ir.outsee_slug if ir else None,
+                        relax=HERO_RELAX,
+                        prompt_id_prefix=f"[ID: P{project.id}-HERO{hero_idx}-V{v_idx}-{short_uuid}]",
+                        reference_image=ref_path,
+                        timeout=600,
+                    )
+                except OutseeImageError:
+                    logger.warning("[#{}] hero GPT-regen attempt {} outsee failed", project.id, gpt_attempt)
+                    break
+
     # 5) Сохраняем артефакт ОДНОЙ вариации.
     file_path = Path(result.file_path)
     art_meta: dict = {
@@ -1022,6 +1086,60 @@ async def _generate_one_excel_character(
                         "[#{}] не удалось отправить TG-ошибку", project.id
                     )
                 return
+
+        # (Фаза 4) GPT-проверка excel-героя — до 5 перегенераций.
+        try:
+            _hero_check_prompt = load_check_prompt("hero")
+        except FileNotFoundError:
+            _hero_check_prompt = None
+        if _hero_check_prompt and result is not None:
+            for gpt_attempt in range(1, _HERO_GPT_MAX_RETRIES + 1):
+                img_file = Path(result.file_path)
+                if not img_file.exists():
+                    break
+                check_result = await gpt_check_file_artifact(
+                    chatgpt_bot=gpt,
+                    check_prompt=_hero_check_prompt,
+                    artifact_path=img_file,
+                    new_conversation=True,
+                    timeout=1200.0,
+                )
+                logger.info(
+                    "[#{}] excel_hero {} GPT-check attempt {}/{}: decision={}",
+                    project.id, ch.id, gpt_attempt, _HERO_GPT_MAX_RETRIES,
+                    check_result.decision.value,
+                )
+                if check_result.decision is not GptCheckDecision.regenerate:
+                    break
+                if gpt_attempt >= _HERO_GPT_MAX_RETRIES:
+                    logger.warning(
+                        "[#{}] excel_hero {} GPT-check: {} попыток исчерпано",
+                        project.id, ch.id, _HERO_GPT_MAX_RETRIES,
+                    )
+                    break
+                try:
+                    img_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                new_out_path = out_dir / f"{ch.id}.png"
+                try:
+                    result = await generate_image_with_retries(
+                        outsee, gpt,
+                        prompt=prompt_text,
+                        out_path=new_out_path,
+                        max_attempts_per_prompt=3,
+                        gpt_rewrite=not used_refs,
+                        aspect_ratio=HERO_ASPECT_RATIO,
+                        model_slug=img_gen.outsee_slug if img_gen else None,
+                        resolution=ir.outsee_slug if ir else None,
+                        relax=HERO_RELAX,
+                        prompt_id_prefix=prompt_id_prefix,
+                        reference_image=(ref_paths or None) if used_refs else None,
+                        timeout=600,
+                    )
+                except OutseeImageError:
+                    logger.warning("[#{}] excel_hero {} GPT-regen attempt {} outsee failed", project.id, ch.id, gpt_attempt)
+                    break
 
     file_path = Path(result.file_path)
     art_meta: dict = {
