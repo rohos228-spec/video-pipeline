@@ -20,14 +20,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, FrameStatus, Project
 
 
-def _disk_has_frame_image(scenes_dir: Path, frame_number: int) -> bool:
+def disk_has_frame_image(scenes_dir: Path, frame_number: int) -> bool:
     """Есть ли на диске картинка для кадра. Формат имени —
-    `frame_<NNN>_<uuid8>.png` (см. generate_images.py:551)."""
+    `frame_<NNN>_<uuid8>.png` (см. generate_images.py:551).
+
+    Используется и в `scan_missing_frames` (поиск недостающих
+    кадров), и в `generate_images.run` (диск как источник истины
+    при «нормализации» статусов в начале шага)."""
     if not scenes_dir.exists():
         return False
     pattern = f"frame_{frame_number:03d}_*.png"
     # glob возвращает generator; any() короткозамыкается на первом hit.
     return any(scenes_dir.glob(pattern))
+
+
+# Старый private-алиас на случай, если где-то в коде ещё используется.
+_disk_has_frame_image = disk_has_frame_image
 
 
 async def scan_missing_frames(
@@ -56,7 +64,7 @@ async def scan_missing_frames(
         if not (fr.image_prompt or "").strip():
             continue
         total_with_prompt += 1
-        if not _disk_has_frame_image(scenes_dir, fr.number):
+        if not disk_has_frame_image(scenes_dir, fr.number):
             missing.append(fr.number)
     logger.info(
         "[#{}] scan_missing_frames: всего кадров={}, с image_prompt={}, "

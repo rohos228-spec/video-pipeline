@@ -57,6 +57,7 @@ from app.services.gpt_check import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
+from app.services.scan_frames import disk_has_frame_image
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
@@ -366,14 +367,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
-    # Кадры, у которых нет картинки (статус не image_generated/image_approved)
-    # → ставим в image_prompt_ready, чтобы цикл их подхватил.
+    # Нормализуем статусы кадров перед запуском цикла. Источник истины —
+    # ДИСК (см. docstring `scan_missing_frames`):
+    #   * кадры в финальных статусах (approved/failed/generated) не трогаем;
+    #   * кадры, у которых на диске УЖЕ есть `frame_NNN_*.png`, считаем
+    #     готовыми — синканём их статус в `image_generated`, не перегенирим;
+    #   * всё остальное — ставим в `image_prompt_ready`, чтобы цикл подхватил.
+    #
+    # Без проверки диска фича «🔍 Добить недостающие» ломалась: после
+    # `reset_frames_to_image_prompt_ready` 12 кадров — у остальных ~120
+    # с .png на диске мог быть «промежуточный» статус (например,
+    # `image_prompt_ready` после xlsx-replace, где recompute_status
+    # сдвигает только project.status, а frame.status — нет). Тогда воркер
+    # подхватывал такие кадры в `_next_frame_to_process`, а orphan-вычистка
+    # в `_generate_and_send` УДАЛЯЛА уже готовый .png и стартовала
+    # повторную генерацию.
     for fr in frames:
         if fr.status in (
             FrameStatus.image_approved,
             FrameStatus.failed,
             FrameStatus.image_generated,
         ):
+            continue
+        if disk_has_frame_image(out_dir, fr.number):
+            fr.status = FrameStatus.image_generated
             continue
         fr.status = FrameStatus.image_prompt_ready
     await session.flush()
