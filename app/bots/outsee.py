@@ -2802,6 +2802,9 @@ class OutseeBot:
                 pass
             await page.locator(input_sel).first.click()
             await page.locator(input_sel).first.fill(prompt)
+            logger.info(
+                "outsee.generate_video: промт вставлен ({} симв)", len(prompt)
+            )
 
             # 2) аспект (с верификацией состояния)
             if aspect_ratio:
@@ -2961,17 +2964,46 @@ class OutseeBot:
                             ) from e
                 await asyncio.sleep(1.0)
 
+            # 3.5) СНИМОК baseline ВИДЕО/ТАМБОВ ДО клика Generate —
+            # всё что уже в DOM (история outsee, чужие ролики) не считаем
+            # «свежим». Это зеркало baseline-логики из generate_image.
+            baseline_video_urls: set[str] = set()
+            try:
+                baseline_video_urls = set(
+                    await self._all_video_like_urls(page)
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: baseline snapshot упал: {}", e
+                )
+            logger.info(
+                "outsee.generate_video: baseline urls={} будем игнорировать (это прошлые ролики из истории)",
+                len(baseline_video_urls),
+            )
+
             # 4) generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            logger.info(
+                "outsee.generate_video: кнопка Generate найдена ({}), кликаю", gen_sel,
+            )
             await page.locator(gen_sel).first.click()
+            logger.info(
+                "outsee.generate_video: Generate кликнут, жду видео (timeout={:.0f}с, prompt_id={})",
+                timeout, prompt_id_prefix,
+            )
+        else:
+            # already_in_progress: baseline пустой (результатом
+            # считаем всё что на странице, привязанное к нашему [ID:]).
+            baseline_video_urls = set()
 
-        # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
-        # ищем `<video>` в карточке с нашим [ID: ...], только если не
-        # нашли — фолбэк на «любой видео-URL в DOM».
+        # 5) ждём результат — видео в карточке с нашим [ID: ...],
+        # причём URL ДОЛЖЕН отличаться от baseline (т.е. свеже-
+        # сгенеренный, а не чужой из истории).
         video_url = await self._wait_video_url(
             page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
+            baseline_urls=baseline_video_urls,
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2979,21 +3011,67 @@ class OutseeBot:
         logger.info("outsee video saved → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=video_url)
 
+    async def _all_video_like_urls(self, page: Page) -> list[str]:
+        """Снимок baseline: все URL'ы, похожие на видео-карточки outsee.
+
+        Собираем:
+          - <video>.src, <source>.src;
+          - <a href*=".mp4"> / <a download>;
+          - <img src> где src содержит "video_..._thumb" (галерейная
+            превьюшка готового видео).
+
+        Все URL'ы НОРМАЛИЗУЕМ (срезаем `?X-Amz-Signature=...`), иначе
+        re-sign на каждом ререндере делает «новые» URL'ы из тех же
+        старых роликов — и baseline-сравнение бы ломалось.
+        """
+        try:
+            urls = await page.evaluate(
+                """() => {
+                    const list = [];
+                    document.querySelectorAll('video').forEach(v => {
+                        if (v.src) list.push(v.src);
+                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
+                    });
+                    document.querySelectorAll('a[download], a[href*=".mp4"]').forEach(a => {
+                        if (a.href) list.push(a.href);
+                    });
+                    document.querySelectorAll('img').forEach(img => {
+                        const s = img.src || '';
+                        if (s.includes('video_') && s.includes('_thumb')) list.push(s);
+                    });
+                    return list;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            urls = []
+        return [_strip_url_query(u) for u in (urls or []) if u]
+
     async def _find_video_by_prompt_id(
         self,
         page: Page,
         id_token: str,
         *,
         max_levels: int = 12,
+        baseline_urls: set[str] | None = None,
     ) -> str | None:
-        """Зеркало `_find_img_by_prompt_id`, но для `<video>` / `<source>` /
-        `a[download]`. Ищет в DOM карточку с нашим `[ID: ...]` и возвращает
-        URL ближайшего видео-элемента.
+        """Зеркало `_find_img_by_prompt_id`, но для видео-карточек outsee.
 
-        Порядок матчинга такой же:
-          1) полный `[ID: P*-F*-xxxxxxxx]`,
-          2) `P*-F*-xxxxxxxx` (без скобок и `ID:`),
-          3) 8-hex-tail (`xxxxxxxx`).
+        КЛЮЧ: в галерее outsee финиш-видео отображается НЕ как `<video>`,
+        а как `<img>` с `_thumb.jpg`-превьюшкой. Сам mp4 лежит по тому
+        же пути, но без `_thumb` и с `.mp4` вместо `.jpg`. Пример:
+          thumb: `.../video_1779114886169_thumb.jpg?X-Amz-...`
+          mp4:   `.../video_1779114886169.mp4?X-Amz-...`
+
+        Алгоритм (зеркало _find_img_by_prompt_id):
+          итерируемся по медиа-кандидатам (a[href*=mp4], <video>,
+          img[src*=video_..._thumb]) → для каждого идём ВВЕРХ по DOM,
+          останавливаясь когда bound-rect ancestor'а становится >60%
+          viewport по ширине (защита от composer-textarea, в которой
+          тоже лежит наш [ID: ...]). Если внутри ancestor'а виден
+          токен — это НАША карточка, возвращаем URL.
+
+        Если передан `baseline_urls` (set нормализованных URL без
+        query) — URL'ы из baseline НЕ возвращаем (это старые ролики).
         """
         tokens: list[str] = [id_token]
         m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
@@ -3009,58 +3087,56 @@ class OutseeBot:
 
         js = """
         ([tokens, maxLevels]) => {
-            const hasToken = (el, idToken) => {
-                if (!el) return false;
-                const t = (el.innerText || el.textContent || '');
-                if (t.includes(idToken)) return true;
-                const tag = el.tagName && el.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    const v = el.value || '';
-                    if (v.includes(idToken)) return true;
+            const MAX_CARD_W = window.innerWidth * 0.6;
+            const hasTokenInScope = (el, idToken) => {
+                const txt = el.textContent || '';
+                if (txt.includes(idToken)) return true;
+                for (const ta of el.querySelectorAll('textarea, input')) {
+                    if ((ta.value || '').includes(idToken)) return true;
                 }
                 return false;
             };
-            const pickVideoSrc = (root) => {
-                // Сначала <video src>, потом <source src>, потом
-                // a[download] с .mp4 — последний наименее надёжен,
-                // зато подхватывает уже-готовый скачиваемый ролик.
-                const videos = root.querySelectorAll('video');
-                for (const v of videos) {
-                    if (v.src && !v.src.startsWith('data:')) return v.src;
-                    const sources = v.querySelectorAll('source');
-                    for (const s of sources) {
-                        if (s.src && !s.src.startsWith('data:')) return s.src;
-                    }
-                }
-                const links = root.querySelectorAll('a[download], a[href*=".mp4"]');
-                for (const a of links) {
-                    if (a.href && !a.href.startsWith('data:')) return a.href;
-                }
+            const thumbToMp4 = (src) => {
+                if (!src) return null;
+                let out = src.replace('_thumb.jpg', '.mp4');
+                out = out.replace('_thumb.png', '.mp4');
+                out = out.replace('_thumb.webp', '.mp4');
+                if (out !== src) return out;
                 return null;
             };
+            const candidates = [];
+            document.querySelectorAll('a[href*=".mp4"], a[download]').forEach(a => {
+                if (a.href && !a.href.startsWith('data:')) {
+                    candidates.push({ src: a.href, el: a });
+                }
+            });
+            document.querySelectorAll('video').forEach(v => {
+                if (v.src && !v.src.startsWith('data:')) {
+                    candidates.push({ src: v.src, el: v });
+                }
+                v.querySelectorAll('source').forEach(s => {
+                    if (s.src && !s.src.startsWith('data:')) {
+                        candidates.push({ src: s.src, el: s });
+                    }
+                });
+            });
+            document.querySelectorAll('img').forEach(img => {
+                const s = img.src || '';
+                if (!s) return;
+                if (s.startsWith('data:')) return;
+                if (!(s.includes('video_') && s.includes('_thumb'))) return;
+                const mp4 = thumbToMp4(s);
+                if (mp4) candidates.push({ src: mp4, el: img, fromThumb: true });
+            });
             for (const idToken of tokens) {
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (!el || !el.children) continue;
-                    if (el === document.body || el === document.documentElement) continue;
-                    if (!hasToken(el, idToken)) continue;
-                    let smallest = el;
-                    for (const child of el.children) {
-                        if (hasToken(child, idToken)) { smallest = null; break; }
-                    }
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) { smallest = null; break; }
-                        }
-                    }
-                    if (!smallest) continue;
-                    let cur = smallest;
+                for (const c of candidates) {
+                    let cur = c.el.parentElement;
                     for (let i = 0; i < maxLevels && cur; i++) {
-                        const src = pickVideoSrc(cur);
-                        if (src) return src;
+                        const r = cur.getBoundingClientRect();
+                        if (r.width > MAX_CARD_W) break;
+                        if (hasTokenInScope(cur, idToken)) {
+                            return c.src;
+                        }
                         cur = cur.parentElement;
                     }
                 }
@@ -3070,9 +3146,15 @@ class OutseeBot:
         """
         try:
             res = await page.evaluate(js, [tokens, max_levels])
-            if isinstance(res, str) and res:
-                return res
-            return None
+            if not (isinstance(res, str) and res):
+                return None
+            if baseline_urls and _strip_url_query(res) in baseline_urls:
+                logger.info(
+                    "_find_video_by_prompt_id: нашёл URL, но он в "
+                    "baseline — игнорирую (старый ролик из истории)"
+                )
+                return None
+            return res
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "_find_video_by_prompt_id: ошибка JS-поиска: {}", e
@@ -3085,56 +3167,66 @@ class OutseeBot:
         *,
         timeout: float,
         prompt_id_prefix: str | None = None,
+        baseline_urls: set[str] | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
-        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
-        карточке с нашим [ID: ...]. Это защищает от подмены чужим
-        видео из истории outsee и работает в паре с анти-дубликат
-        логикой в `generate_video` (когда мы не кликаем Generate
-        повторно, а ждём результат прошлого клика).
+        Стратегия (зеркало `_wait_image_url_strict`):
+          1) Если есть `prompt_id_prefix` — ищем видео-кандидата в
+             карточке с нашим [ID: ...] через `_find_video_by_prompt_id`.
+             URL должен быть НЕ из baseline (исключаем старые ролики).
+          2) Иначе (legacy) — берём первый НОВЫЙ (не-baseline) URL,
+             похожий на видео.
 
-        Fallback — генерический поиск любого видео-URL (для legacy/
-        recon без prompt_id_prefix).
+        Логи прогресса каждые 15 секунд: сколько кандидатов и сколько
+        из них новых.
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        log_every = 15.0  # сек, логи прогресса
-        next_log = asyncio.get_event_loop().time() + log_every
+        log_every = 15.0
+        start_time = asyncio.get_event_loop().time()
+        next_log = start_time + log_every
         while asyncio.get_event_loop().time() < deadline:
-            # Приоритет 0: видео в карточке с нашим [ID: ...].
+            # Приоритет 0: видео в карточке с [ID: ...].
             if prompt_id_prefix:
                 try:
                     by_id = await self._find_video_by_prompt_id(
-                        page, prompt_id_prefix
+                        page, prompt_id_prefix, baseline_urls=baseline_urls,
                     )
                 except Exception:  # noqa: BLE001
                     by_id = None
                 if by_id:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    logger.info(
+                        "outsee.generate_video: свежее видео найдено "
+                        "в карточке с {} за {:.0f} сек → {}",
+                        prompt_id_prefix, elapsed, by_id[:120],
+                    )
                     return by_id
-            # Приоритет 1 (fallback): любой видео-URL в DOM.
-            urls = await page.evaluate(
-                """() => {
-                    const list = [];
-                    document.querySelectorAll('video').forEach(v => {
-                        if (v.src) list.push(v.src);
-                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
-                    });
-                    document.querySelectorAll("a[download]").forEach(a => a.href && list.push(a.href));
-                    return list;
-                }"""
-            )
-            # Без prompt_id_prefix берём первый похожий — legacy-режим.
+            # Приоритет 1 (legacy): любой НОВЫЙ видео-URL (не в baseline).
+            cur_urls = await self._all_video_like_urls(page)
+            new_urls = [
+                u for u in cur_urls
+                if u not in (baseline_urls or set())
+            ]
             if not prompt_id_prefix:
-                for u in urls:
+                for u in new_urls:
                     if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
+                        if "_thumb." in u:
+                            return (
+                                u.replace("_thumb.jpg", ".mp4")
+                                .replace("_thumb.png", ".mp4")
+                                .replace("_thumb.webp", ".mp4")
+                            )
                         return u
             now = asyncio.get_event_loop().time()
             if now >= next_log:
                 logger.info(
-                    "outsee.generate_video: ждём результат… {:.0f} сек, "
-                    "video_urls_in_dom={}, prompt_id={}",
-                    timeout - (deadline - now),
-                    len(urls or []),
+                    "outsee.generate_video: жду результат… "
+                    "{:.0f}/{:.0f}сек, видео-похожих в DOM={} "
+                    "(из них новых={}), prompt_id={}",
+                    now - start_time, timeout,
+                    len(cur_urls or []),
+                    len(new_urls or []),
                     prompt_id_prefix,
                 )
                 next_log = now + log_every
