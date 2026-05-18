@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from loguru import logger
 from sqlalchemy import select
@@ -16,6 +19,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.settings import settings
+
+_T = TypeVar("_T")
+
+# Сетевые ошибки, на которые имеет смысл переотправлять TG-сообщение.
+# Включает aiogram-обёртку TelegramNetworkError, ошибки aiohttp/socks-прокси
+# и системные OSError (например WinError 64/121 при флапе SOCKS5).
+_NETWORK_EXC: tuple[type[BaseException], ...] = (
+    TelegramNetworkError,
+    asyncio.TimeoutError,
+    OSError,  # ClientOSError, WinError 64/121, и т.п.
+)
+
+# Задержки между ретраями (сек). Сумма ≈ 10 минут — даём прокси/сети ожить.
+_TG_RETRY_DELAYS: tuple[int, ...] = (2, 4, 8, 16, 30, 60, 60, 60, 60, 60, 60, 60)
+
+
+async def _send_with_network_retry(
+    coro_factory: Callable[[], Awaitable[_T]],
+    *,
+    op: str,
+) -> _T:
+    """Вызывает coro_factory() (фабрика корутин) с ретраями на сетевые ошибки.
+
+    Зачем factory, а не готовая корутина: корутину можно await'ить только один
+    раз. На каждой попытке нужен СВЕЖИЙ объект корутины — фабрика создаёт его
+    заново через `lambda: bot.send_photo(...)`.
+
+    После ВСЕХ попыток (≈10 минут) пробрасывает последнее исключение наверх.
+    """
+    last_exc: BaseException | None = None
+    total = len(_TG_RETRY_DELAYS) + 1
+    for attempt in range(1, total + 1):
+        try:
+            return await coro_factory()
+        except _NETWORK_EXC as e:
+            last_exc = e
+            if attempt >= total:
+                break
+            delay = _TG_RETRY_DELAYS[attempt - 1]
+            logger.warning(
+                "TG {} попытка {}/{} провалена ({}: {}) — ретрай через {}с",
+                op, attempt, total, type(e).__name__, e, delay,
+            )
+            await asyncio.sleep(delay)
+    logger.error(
+        "TG {}: исчерпал {} попыток, бросаю исключение", op, total,
+    )
+    assert last_exc is not None
+    raise last_exc
 
 # Kinds, у которых в payload['photo_path'] лежит файл на диске. Используется
 # для очистки файла при regen/reject (см. `delete_hitl_artifact_file`).
@@ -136,11 +188,16 @@ async def send_hitl_text(
     msg = None
     for i, c in enumerate(chunks):
         is_last = i == len(chunks) - 1
-        msg = await bot.send_message(
-            settings.telegram_owner_chat_id,
-            c,
-            parse_mode="HTML",
-            reply_markup=_keyboard(req.id) if is_last else None,
+        chunk_text = c
+        chunk_kb = _keyboard(req.id) if is_last else None
+        msg = await _send_with_network_retry(
+            lambda chunk=chunk_text, kb=chunk_kb: bot.send_message(
+                settings.telegram_owner_chat_id,
+                chunk,
+                parse_mode="HTML",
+                reply_markup=kb,
+            ),
+            op="send_message(text-chunk)",
         )
     assert msg is not None
     req.tg_message_id = msg.message_id
@@ -196,11 +253,14 @@ async def send_hitl_photo(
     msg = None
     if not use_document:
         try:
-            msg = await bot.send_photo(
-                settings.telegram_owner_chat_id,
-                FSInputFile(photo_path),
-                caption=short_caption,
-                reply_markup=photo_kb,
+            msg = await _send_with_network_retry(
+                lambda: bot.send_photo(
+                    settings.telegram_owner_chat_id,
+                    FSInputFile(photo_path),
+                    caption=short_caption,
+                    reply_markup=photo_kb,
+                ),
+                op=f"send_photo(frame={frame_id})",
             )
         except TelegramBadRequest as e:
             # «file ... too big for a photo» — фоллбэк в документ.
@@ -214,11 +274,14 @@ async def send_hitl_photo(
                 raise
 
     if use_document:
-        msg = await bot.send_document(
-            settings.telegram_owner_chat_id,
-            FSInputFile(photo_path),
-            caption=short_caption,
-            reply_markup=photo_kb,
+        msg = await _send_with_network_retry(
+            lambda: bot.send_document(
+                settings.telegram_owner_chat_id,
+                FSInputFile(photo_path),
+                caption=short_caption,
+                reply_markup=photo_kb,
+            ),
+            op=f"send_document(frame={frame_id})",
         )
     assert msg is not None
 
@@ -228,10 +291,15 @@ async def send_hitl_photo(
         chunks = [tail[i : i + 3800] for i in range(0, len(tail), 3800)] or [tail]
         for i, c in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            tail_msg = await bot.send_message(
-                settings.telegram_owner_chat_id,
-                c,
-                reply_markup=kb if is_last else None,
+            chunk_text = c
+            chunk_kb = kb if is_last else None
+            tail_msg = await _send_with_network_retry(
+                lambda chunk=chunk_text, _kb=chunk_kb: bot.send_message(
+                    settings.telegram_owner_chat_id,
+                    chunk,
+                    reply_markup=_kb,
+                ),
+                op="send_message(photo-caption-tail)",
             )
             if is_last:
                 msg = tail_msg
@@ -253,11 +321,14 @@ async def send_hitl_video(
     from aiogram.types import FSInputFile
 
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
-    msg = await bot.send_video(
-        settings.telegram_owner_chat_id,
-        FSInputFile(video_path),
-        caption=caption[:1000],
-        reply_markup=_keyboard(req.id),
+    msg = await _send_with_network_retry(
+        lambda: bot.send_video(
+            settings.telegram_owner_chat_id,
+            FSInputFile(video_path),
+            caption=caption[:1000],
+            reply_markup=_keyboard(req.id),
+        ),
+        op=f"send_video(frame={frame_id})",
     )
     req.tg_message_id = msg.message_id
     return req
