@@ -68,18 +68,24 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
-    # Сначала пытаемся найти АКТИВНУЮ кнопку; только если не нашли —
-    # берём любую (она может быть заблокирована пока не вставлен промт).
+    # САМЫЙ СТРОГИЙ: text-is исключает «Перегенерировать» /
+    # «Что генерируется?» и прочие substring-ловушки. Без
+    # `:not([disabled])` в первых вариантах — карточка может быть
+    # disabled пока не вставлен промт, но после разблокируется.
+    "button:text-is('Генерировать'):not([disabled])",
+    "button:text-is('Сгенерировать'):not([disabled])",
+    "button:text-is('Создать'):not([disabled])",
+    "button:text-is('Generate'):not([disabled])",
+    "button:text-is('Генерировать')",
+    "button:text-is('Сгенерировать')",
+    "button:text-is('Создать')",
+    "button:text-is('Generate')",
+    # Фаллбэки — has-text (substring): хватают «Перегенерировать»
+    # и т.п., но это всё равно триггер генерации — крайний случай.
     "button:has-text('Генерировать'):not([disabled])",
     "button:has-text('Сгенерировать'):not([disabled])",
-    "button:has-text('Создать'):not([disabled])",
-    "button:has-text('Generate'):not([disabled])",
     "button:has-text('Генерировать')",
-    "button:has-text('Генерация')",
     "button:has-text('Сгенерировать')",
-    "button:has-text('Создать')",
-    "button:has-text('Generate')",
-    "button:has-text('Run')",
     "button[data-testid='generate']",
     "button[type='submit']",
 ]
@@ -2985,14 +2991,39 @@ class OutseeBot:
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            # Проверим что кнопка из себя представляет — текст и enabled.
+            try:
+                gen_loc = page.locator(gen_sel).first
+                btn_text = (await gen_loc.text_content() or "").strip()
+                is_disabled = await gen_loc.is_disabled()
+            except Exception:  # noqa: BLE001
+                btn_text = "?"
+                is_disabled = False
             logger.info(
-                "outsee.generate_video: кнопка Generate найдена ({}), кликаю", gen_sel,
+                "outsee.generate_video: кнопка Generate найдена «{}» (disabled={}), кликаю ({})",
+                btn_text, is_disabled, gen_sel,
             )
             await page.locator(gen_sel).first.click()
             logger.info(
                 "outsee.generate_video: Generate кликнут, жду видео (timeout={:.0f}с, prompt_id={})",
                 timeout, prompt_id_prefix,
             )
+            # Через ~3 сек проверим, сработал ли клик — должен появиться
+            # spinner / placeholder, или хотя бы новый thumb-img. Если НЕТ —
+            # дамп страницы в data/outsee_dumps/.
+            try:
+                await asyncio.sleep(3.0)
+                after_urls = set(await self._all_video_like_urls(page))
+                if after_urls == baseline_video_urls:
+                    logger.warning(
+                        "outsee.generate_video: ЧЕРЕЗ 3с ПОСЛЕ КЛИКА GENERATE "
+                        "в DOM СТОЛЬКО ЖЕ video-тамбов ({}). "
+                        "Похоже кнопка НЕ сработала — дамп страницы.",
+                        len(baseline_video_urls),
+                    )
+                    await _dump_page(page, "generate_click_no_effect")
+            except Exception:  # noqa: BLE001
+                pass
         else:
             # already_in_progress: baseline пустой (результатом
             # считаем всё что на странице, привязанное к нашему [ID:]).
@@ -3149,10 +3180,10 @@ class OutseeBot:
             if not (isinstance(res, str) and res):
                 return None
             if baseline_urls and _strip_url_query(res) in baseline_urls:
-                logger.info(
-                    "_find_video_by_prompt_id: нашёл URL, но он в "
-                    "baseline — игнорирую (старый ролик из истории)"
-                )
+                # Сигналим вызывающему _wait_video_url'у что нашли
+                # baseline-URL — он считает это «новых=0». Не логируем
+                # тут (иначе спам каждые 1.5 сек), это видно по
+                # агрегированному логу каждые 15с.
                 return None
             return res
         except Exception as e:  # noqa: BLE001
