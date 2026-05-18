@@ -839,6 +839,125 @@ def _is_candidate_image_response(resp: Any) -> bool:
         return False
 
 
+# Минимум «настоящего» видео-файла. Реальный mp4 от outsee ≥ 1 MB обычно,
+# но дадим запас вниз: некоторые модели генерируют короткие 5-сек ролики
+# 200-500 KB. Всё что меньше 100KB — placeholder/error-page/skeleton.
+_MIN_VIDEO_BYTES = 100_000
+
+
+def _validate_downloaded_video(
+    out_path: Path, *, gen_id: str, video_url: str
+) -> None:
+    """Проверяет, что скачанный файл — настоящее видео, а не HTML-ответ
+    с 403 / placeholder / skeleton.
+
+    Зеркало `_validate_downloaded_image`: проверки размера + magic-байт.
+
+    mp4 / mov: первые 4 байта — длина бокса (любые), байты 4-8 = `ftyp`.
+    webm:      первые 4 байта = `1A 45 DF A3` (EBML magic).
+
+    На любую неудачу удаляем «битый» файл и кидаем `OutseeImageError`
+    (тот же класс ошибки что у картинок — caller'ы и retry-обёртка
+    уже умеют его обрабатывать)."""
+    try:
+        size = out_path.stat().st_size
+    except OSError as e:
+        raise OutseeImageError(
+            "outsee video: скачанный файл недоступен после download",
+            context={
+                "gen_id": gen_id,
+                "video_url": video_url,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+
+    if size < _MIN_VIDEO_BYTES:
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeImageError(
+            "outsee video: скачанный файл слишком мал — похоже на "
+            "placeholder / error-page (HTTP 403?), а не mp4",
+            context={
+                "gen_id": gen_id,
+                "video_url": video_url,
+                "size_bytes": size,
+                "min_bytes": _MIN_VIDEO_BYTES,
+            },
+        )
+
+    try:
+        with out_path.open("rb") as f:
+            head = f.read(16)
+    except OSError as e:
+        raise OutseeImageError(
+            "outsee video: не удалось прочитать заголовок скачанного файла",
+            context={
+                "gen_id": gen_id,
+                "video_url": video_url,
+                "err": f"{type(e).__name__}: {e}",
+            },
+        ) from e
+
+    # mp4/mov/m4v: байты 4..8 = "ftyp". webm: первые 4 = EBML magic.
+    is_mp4 = len(head) >= 8 and head[4:8] == b"ftyp"
+    is_webm = head[:4] == b"\x1a\x45\xdf\xa3"
+    if not (is_mp4 or is_webm):
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeImageError(
+            "outsee video: скачанный файл не выглядит как mp4 / webm "
+            "(возможно, error-page или HTML с 403)",
+            context={
+                "gen_id": gen_id,
+                "video_url": video_url,
+                "size_bytes": size,
+                "head_hex": head.hex(),
+            },
+        )
+
+
+def _is_candidate_video_response(resp: Any) -> bool:
+    """Зеркало `_is_candidate_image_response`, но для видео-ответов:
+    content-type video/*, не UI-ассет, тело ≥ 100 KB.
+
+    Используется listener'ом в `generate_video` чтобы отделить реальные
+    mp4-ответы (с CDN) от служебных запросов (метаданные, превью).
+    """
+    try:
+        url = resp.url or ""
+        ct = (resp.headers.get("content-type") or "").lower()
+        # Принимаем video/* (включая video/mp4, video/webm, video/quicktime).
+        # Дополнительно: некоторые CDN отдают mp4 как application/octet-stream
+        # с правильным расширением в URL.
+        url_low = url.lower()
+        looks_video_by_url = (
+            ".mp4" in url_low or ".webm" in url_low or ".mov" in url_low
+        )
+        ct_video = ct.startswith("video/")
+        ct_octet = ct.startswith("application/octet-stream")
+        if not (ct_video or (ct_octet and looks_video_by_url)):
+            return False
+        if any(marker in url_low for marker in _UI_ASSET_MARKERS):
+            return False
+        if any(marker in url_low for marker in _INPUT_REF_MARKERS):
+            # Это URL ВХОДНОГО старт-кадра — не считаем результатом.
+            return False
+        cl = resp.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) < _MIN_VIDEO_BYTES:
+                    return False
+            except ValueError:
+                pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _first_visible(
     page: Page, selectors: list[str], *, timeout_ms: int = 15_000
 ) -> str | None:
@@ -2389,6 +2508,26 @@ class OutseeBot:
         return None
 
     # ----- VIDEO (veo-3-fast Relax) -----
+    #
+    # Архитектурный коммент (май 2026):
+    # `generate_video` ниже — ПОЛНОЕ ЗЕРКАЛО `generate_image`.
+    # Это сделано осознанно: видео-flow раньше был «упрощённой»
+    # копией без baseline / net-listener / file-validation, и регулярно
+    # ловил три класса багов:
+    #   1) HTTP 403 при скачивании через context.request (старый URL
+    #      из DOM был временным CDN-токеном);
+    #   2) скачивался плейсхолдер / постер картинки вместо mp4;
+    #   3) подхватывался чужой видос из gallery (history outsee).
+    #
+    # Все три проблемы решены в image-flow:
+    #   - net_events listener фиксирует РЕАЛЬНЫЕ video-ответы, и
+    #     `_wait_video_url_strict` принимает только URL из этого списка;
+    #   - baseline snapshot до клика + diff после — отсекаем gallery-thumb'ы;
+    #   - magic-bytes валидация скачанного файла отсекает HTML с 403.
+    #
+    # Поэтому здесь идём по той же последовательности, не отступая
+    # ни в одной детали. Любые правки image-flow должны
+    # синхронно проливаться сюда (или наоборот).
 
     async def generate_video(
         self,
@@ -2403,17 +2542,27 @@ class OutseeBot:
         relax: bool = False,
         prompt_id_prefix: str | None = None,
     ) -> GenerationResult:
+        import time as _time
+        import uuid as _uuid
+
+        gen_id = _uuid.uuid4().hex
+        dumps: list[Path] = []
+
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
             logger.info(
-                "outsee.generate_video: prompt_id_prefix={}", prompt_id_prefix
+                "outsee.generate_video: prompt_id_prefix={} (gen_id={})",
+                prompt_id_prefix, gen_id[:8],
             )
+
         page_url = _video_page_url(model_slug)
-        logger.info("outsee.generate_video: open url={}", page_url)
+        logger.info(
+            "outsee.generate_video: open url={} (gen_id={})",
+            page_url, gen_id[:8],
+        )
         page = await self.session.open_page(page_url, reuse=True)
-        # ВАЖНО: всегда reload, чтобы сбросить состояние от предыдущей
-        # генерации — иначе на ретрае останутся форма + start_frame +
-        # возможная плашка ошибки от прошлой попытки.
+        # Всегда reload — иначе на retry'е останется форма / start_frame /
+        # rejection-плашка от предыдущей попытки.
         try:
             await page.goto(page_url, wait_until="domcontentloaded")
         except Exception as e:  # noqa: BLE001
@@ -2427,151 +2576,352 @@ class OutseeBot:
         except Exception:
             pass
 
-        # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
-        # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
-        # попытка retry'я кликнула Generate, упала по таймауту, а outsee
-        # продолжил рендерить видео) — НЕ кликаем Generate повторно.
-        # Иначе в истории outsee окажется 2-3 одинаковых ролика одного
-        # кадра, а аккаунт сожжёт лимиты на дубликатах.
-        #
-        # Видео генерится 5-15 минут — это ОЧЕНЬ дорогое действие
-        # дублировать. Поэтому проверка тут даже важнее, чем для картинок.
-        already_in_progress = False
-        if prompt_id_prefix:
-            try:
-                _counts = await self._count_id_tokens_in_page(
-                    page, [prompt_id_prefix]
-                )
-            except Exception:  # noqa: BLE001
-                _counts = {}
-            if _counts.get(prompt_id_prefix, 0) >= 1:
-                already_in_progress = True
-                logger.warning(
-                    "outsee.generate_video: на странице УЖЕ есть карточка "
-                    "с {} — НЕ кликаю Generate повторно, жду результат "
-                    "прошлого клика (video рендерится 5-15 мин)",
-                    prompt_id_prefix,
-                )
+        # Network listener: ловит все video-ответы ПОСЛЕ click Generate.
+        # `net_events` — список (offset_sec, url) для `_url_is_fresh`.
+        # См. зеркальный код в `generate_image` — там это закрыло баг с
+        # «старая картинка из кэша / history-thumb» (для видео он ещё
+        # острее: 403 на cdn-токене старого ролика).
+        net_events: list[tuple[float, str]] = []
+        click_ts = 0.0  # обновим прямо перед кликом
 
-        if not already_in_progress:
-            # 1) ввод промта
-            input_sel = await _first_visible(
-                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
-            )
-            if not input_sel:
-                raise RuntimeError("outsee video: не найден ввод промта")
+        def _on_response(resp: Any) -> None:
             try:
-                await page.locator(input_sel).first.scroll_into_view_if_needed(
-                    timeout=5_000
-                )
+                if not _is_candidate_video_response(resp):
+                    return
+                offset = _time.monotonic() - click_ts
+                net_events.append((offset, resp.url))
             except Exception:  # noqa: BLE001
                 pass
-            await page.locator(input_sel).first.click()
-            await page.locator(input_sel).first.fill(prompt)
 
-            # 2) аспект (с верификацией состояния)
-            if aspect_ratio:
-                await _select_aspect_ratio(
-                    page, aspect_ratio, where="generate_video"
+        page.on("response", _on_response)
+
+        baseline_result_video: str | None = None
+        baseline_videos: set[str] = set()
+        baseline_dom_video_srcs: set[str] = set()
+
+        try:
+            # Initial baseline (до любых кликов). Финальный re-baseline
+            # делаем непосредственно перед кликом Generate ниже.
+            baseline_result_video = _strip_url_query(
+                await self._result_video_src(page)
+            )
+            baseline_videos = {
+                _strip_url_query(u)
+                for u in await self._all_video_srcs(page)
+            }
+            baseline_dom_video_srcs = set(baseline_videos)
+            logger.info(
+                "outsee.generate_video: initial baseline "
+                "result_video={}, videos={}",
+                (baseline_result_video[:80] if baseline_result_video else None),
+                len(baseline_videos),
+            )
+
+            # 0) АНТИ-ДУБЛИКАТ — зеркало логики generate_image.
+            # Если на странице УЖЕ есть карточка с нашим prompt_id_prefix
+            # (предыдущая retry-попытка кликнула Generate, упала по
+            # таймауту, а outsee продолжает рендерить видео) — НЕ
+            # кликаем Generate второй раз. Видео генерится 5-15 минут,
+            # дублировать запрос — гарантированный пережог лимитов.
+            already_in_progress = False
+            if prompt_id_prefix:
+                try:
+                    _counts = await self._count_id_tokens_in_page(
+                        page, [prompt_id_prefix]
+                    )
+                except Exception:  # noqa: BLE001
+                    _counts = {}
+                if _counts.get(prompt_id_prefix, 0) >= 1:
+                    already_in_progress = True
+                    logger.warning(
+                        "outsee.generate_video: на странице УЖЕ есть "
+                        "карточка с {} — НЕ кликаю Generate повторно, "
+                        "жду результат прошлого клика "
+                        "(video рендерится 5-15 мин)",
+                        prompt_id_prefix,
+                    )
+
+            pre_rejected_text: str | None = None
+
+            if not already_in_progress:
+                # 1) ввод промта
+                input_sel = await _first_visible(
+                    page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+                )
+                if not input_sel:
+                    raise OutseeImageError(
+                        "outsee video: не найден ввод промта",
+                        context={"gen_id": gen_id},
+                    )
+                try:
+                    await page.locator(input_sel).first.scroll_into_view_if_needed(
+                        timeout=5_000
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                await page.locator(input_sel).first.click()
+                await page.locator(input_sel).first.fill(prompt)
+
+                # 2) аспект
+                if aspect_ratio:
+                    await _select_aspect_ratio(
+                        page, aspect_ratio, where="generate_video"
+                    )
+
+                # 2.5) разрешение
+                if resolution:
+                    res_sel = await _first_visible(
+                        page, _resolution_selectors(resolution),
+                        timeout_ms=3_000,
+                    )
+                    if res_sel:
+                        try:
+                            await page.locator(res_sel).first.click()
+                            logger.info(
+                                "outsee.generate_video: {} выбран",
+                                resolution,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                # 2.7) Relax
+                await _toggle_relax(
+                    page, want_on=relax, where="generate_video",
                 )
 
-            # 2.5) разрешение 720p / 1080p (best-effort)
-            if resolution:
-                res_sel = await _first_visible(
-                    page, _resolution_selectors(resolution), timeout_ms=3_000
+                # 3) start_frame.
+                # Сначала видимый input[type=file], потом fallback на
+                # скрытый — outsee.io часто рендерит file input как
+                # hidden (CSS `display:none`). set_input_files работает
+                # на скрытых input'ах по Playwright контракту.
+                if start_frame is not None:
+                    attached = False
+                    file_sel = await _first_visible(
+                        page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
+                    )
+                    if file_sel:
+                        try:
+                            await page.locator(file_sel).first.set_input_files(
+                                str(start_frame)
+                            )
+                            logger.info(
+                                "outsee.generate_video: start_frame {} "
+                                "загружен в видимый input ({})",
+                                start_frame.name, file_sel,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "outsee.generate_video: видимый "
+                                "input.set_input_files упал: {} — "
+                                "пробую скрытый input",
+                                e,
+                            )
+                    if not attached:
+                        base = page.locator("input[type='file']")
+                        try:
+                            n_inputs = await base.count()
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "outsee.generate_video: locator count упал: {}",
+                                e,
+                            )
+                            n_inputs = 0
+                        if n_inputs <= 0:
+                            raise OutseeImageError(
+                                "outsee video: не найден input[type=file] "
+                                "для стартового кадра",
+                                context={
+                                    "gen_id": gen_id,
+                                    "model_slug": model_slug or "—",
+                                },
+                            )
+                        try:
+                            await base.last.set_input_files(str(start_frame))
+                            logger.info(
+                                "outsee.generate_video: start_frame {} "
+                                "загружен в скрытый input (count={}, last)",
+                                start_frame.name, n_inputs,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            raise OutseeImageError(
+                                "outsee video: set_input_files в скрытый "
+                                "input упал",
+                                context={
+                                    "gen_id": gen_id,
+                                    "err": f"{type(e).__name__}: {e}",
+                                    "n_inputs": n_inputs,
+                                },
+                            ) from e
+                    await asyncio.sleep(1.0)
+
+                # 4) Generate
+                gen_sel = await _first_visible(
+                    page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000
                 )
-                if res_sel:
-                    try:
-                        await page.locator(res_sel).first.click()
-                        logger.info(
-                            "outsee.generate_video: {} выбран", resolution
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-
-            # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
-            await _toggle_relax(page, want_on=relax, where="generate_video")
-
-            # 3) загрузка стартового кадра (если передан).
-            # Сначала ищем ВИДИМЫЙ input[type=file] (короткий таймаут — в
-            # outsee он часто скрыт, ожидать долго смысла нет). Если не
-            # нашли — fallback на скрытый input через `set_input_files`
-            # без проверки видимости (тот же приём что в
-            # _attach_reference_image для картинок).
-            if start_frame is not None:
-                attached = False
-                file_sel = await _first_visible(
-                    page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
+                if not gen_sel:
+                    h, p = await _dump_page(page, "video_generate_btn_notfound")
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
+                    raise OutseeImageError(
+                        "outsee video: не найдена кнопка Generate",
+                        context={"gen_id": gen_id},
+                        dumps=dumps,
+                    )
+                logger.info(
+                    "outsee.generate_video: кнопка Generate найдена ({})",
+                    gen_sel,
                 )
-                if file_sel:
-                    try:
-                        await page.locator(file_sel).first.set_input_files(
-                            str(start_frame)
-                        )
-                        logger.info(
-                            "outsee.generate_video: стартовый кадр {} "
-                            "загружен в видимый input ({})",
-                            start_frame.name, file_sel,
-                        )
-                        attached = True
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "outsee.generate_video: видимый "
-                            "input.set_input_files упал: {} — "
-                            "пробую скрытый input",
-                            e,
-                        )
-                if not attached:
-                    # Fallback на скрытый input в DOM (берём последний — в
-                    # outsee.io именно он привязан к UI-кнопке загрузки).
-                    base = page.locator("input[type='file']")
-                    try:
-                        n_inputs = await base.count()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "outsee.generate_video: locator count упал: {}",
-                            e,
-                        )
-                        n_inputs = 0
-                    if n_inputs <= 0:
-                        raise RuntimeError(
-                            "outsee video: не найден input[type=file] для "
-                            "стартового кадра (видимый и скрытый, count=0). "
-                            "Возможно, модель не поддерживает image-to-video "
-                            "или сайт изменил DOM."
-                        )
-                    try:
-                        await base.last.set_input_files(str(start_frame))
-                        logger.info(
-                            "outsee.generate_video: стартовый кадр {} "
-                            "загружен в скрытый input (count={}, взят last)",
-                            start_frame.name, n_inputs,
-                        )
-                        attached = True
-                    except Exception as e:  # noqa: BLE001
-                        raise RuntimeError(
-                            f"outsee video: set_input_files в скрытый input "
-                            f"упал: {e} (count={n_inputs})"
-                        ) from e
-                await asyncio.sleep(1.0)
+                await self._wait_button_enabled(
+                    page, gen_sel, timeout_s=600,
+                )
 
-            # 4) generate
-            gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
-            if not gen_sel:
-                raise RuntimeError("outsee video: не найдена кнопка Generate")
-            await page.locator(gen_sel).first.click()
+                # Re-baseline ПОСЛЕ всех настроек — клики по aspect-dropdown /
+                # resolution / Relax могут вызвать ререндер карточек, и
+                # старый baseline тогда «промахивается».
+                baseline_result_video = _strip_url_query(
+                    await self._result_video_src(page)
+                )
+                baseline_videos = {
+                    _strip_url_query(u)
+                    for u in await self._all_video_srcs(page)
+                }
+                baseline_dom_video_srcs = set(baseline_videos)
+                logger.info(
+                    "outsee.generate_video: re-baseline перед Generate "
+                    "result_video={}, videos={}",
+                    (baseline_result_video[:80] if baseline_result_video else None),
+                    len(baseline_videos),
+                )
 
-        # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
-        # ищем `<video>` в карточке с нашим [ID: ...], только если не
-        # нашли — фолбэк на «любой видео-URL в DOM».
-        video_url = await self._wait_video_url(
-            page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
-        )
+                pre_rejected_text = await self._content_rejected_text(page)
+                if pre_rejected_text:
+                    logger.info(
+                        "outsee.generate_video: pre-click rejected_text "
+                        "({} симв) — игнорю, считаю остатком предыдущей "
+                        "попытки",
+                        len(pre_rejected_text),
+                    )
 
+                click_ts = _time.monotonic()
+                net_events.clear()
+                await page.locator(gen_sel).first.click()
+                logger.info(
+                    "outsee.generate_video: Generate кликнут, жду видео "
+                    "(gen_id={})",
+                    gen_id[:8],
+                )
+
+            # 5) Жёсткое ожидание свежего видео — приоритет prompt_id_prefix,
+            # потом result_video_src, потом completed_new_videos в DOM.
+            # Все кандидаты ДОПОЛНИТЕЛЬНО верифицируются через net_events
+            # (URL РЕАЛЬНО пришёл по сети после Generate).
+            try:
+                video_url = await self._wait_video_url_strict(
+                    page,
+                    timeout=timeout,
+                    baseline_result_video=baseline_result_video,
+                    baseline_videos=baseline_videos,
+                    baseline_all_srcs=baseline_dom_video_srcs,
+                    net_events=net_events,
+                    gen_id=gen_id,
+                    pre_rejected_text=pre_rejected_text,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
+            except OutseeContentRejectedError as e:
+                e.dumps = list(dumps)
+                raise
+            except OutseeImageError as e:
+                h, p = await _dump_page(page, "video_timeout")
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
+                e.dumps = list(dumps)
+                raise
+        finally:
+            try:
+                page.remove_listener("response", _on_response)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 6) Скачивание.
+        # Стратегия как в `generate_image` (см. там подробный коммент):
+        # `_wait_video_url_strict` уже вернул реальный CDN URL, который
+        # пришёл по сети ПОСЛЕ Generate — значит токен/подпись валидны.
+        # Скачиваем через page.context.request (использует cookies/auth
+        # того же контекста).
+        #
+        # На случай 403 (CDN-токен мог протухнуть пока ждали или у нас
+        # был URL не из net_events а из DOM-fallback) — есть фолбэк через
+        # `_download_via_card_click`: он кликает «↓ Скачать» прямо на
+        # карточке outsee, ловит реальный download event (Playwright
+        # `expect_download`). Это медленнее, но обходит CDN-token issue.
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        await _download_via_context(page, video_url, out_path)
-        logger.info("outsee video saved → {}", out_path)
-        return GenerationResult(file_path=out_path, raw_url=video_url)
+        download_via_context_failed = False
+        try:
+            await _download_via_context(page, video_url, out_path)
+        except Exception as e:  # noqa: BLE001
+            download_via_context_failed = True
+            logger.warning(
+                "outsee.generate_video: _download_via_context упал ({}), "
+                "пробую card-click фолбэк",
+                type(e).__name__,
+            )
+
+        if download_via_context_failed:
+            if not prompt_id_prefix:
+                # Без prompt_id_prefix card-click не сможет найти карточку.
+                raise OutseeImageError(
+                    "outsee video: скачивание через URL упало и нет "
+                    "prompt_id_prefix для card-click фолбэка",
+                    context={
+                        "gen_id": gen_id,
+                        "video_url": video_url,
+                    },
+                    dumps=dumps,
+                )
+            try:
+                await _download_via_card_click(
+                    page,
+                    prompt_id_prefix=prompt_id_prefix,
+                    out_path=out_path,
+                    timeout_s=120,
+                )
+            except OutseeImageError as e:
+                e.context.setdefault("gen_id", gen_id)
+                e.context.setdefault("video_url", video_url)
+                e.dumps = list(dumps)
+                raise
+            except Exception as e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee video: card-click download упал",
+                    context={
+                        "gen_id": gen_id,
+                        "video_url": video_url,
+                        "err": f"{type(e).__name__}: {e}",
+                    },
+                    dumps=dumps,
+                ) from e
+
+        # 6.5) Валидация скачанного файла (mp4/webm magic + >100KB).
+        try:
+            _validate_downloaded_video(
+                out_path, gen_id=gen_id, video_url=video_url,
+            )
+        except OutseeImageError as e:
+            e.dumps = list(dumps)
+            raise
+
+        logger.info(
+            "outsee video saved → {} (gen_id={})",
+            out_path, gen_id[:8],
+        )
+        return GenerationResult(
+            file_path=out_path, raw_url=video_url, gen_id=gen_id,
+            dumps=dumps or None,
+        )
 
     async def _find_video_by_prompt_id(
         self,
@@ -2673,29 +3023,195 @@ class OutseeBot:
             )
             return None
 
-    async def _wait_video_url(
+    # ----- VIDEO baseline / DOM helpers (зеркало image-хелперов) -----
+
+    async def _result_video_src(self, page: Page) -> str | None:
+        """Зеркало `_result_img_src`, но для блока «Результат генерации»
+        с `<video>`. Возвращает src/currentSrc большого `<video>` в
+        контексте текста «Результат»/«Result»."""
+        try:
+            return await page.evaluate(
+                """() => {
+                    const vids = Array.from(document.querySelectorAll('video'));
+                    const keywords = ['Результат генерации', 'Результат', 'Result'];
+                    for (const v of vids) {
+                        const r = v.getBoundingClientRect();
+                        if (r.width < 200 || r.height < 200) continue;
+                        let el = v;
+                        for (let i = 0; i < 14 && el; i++) {
+                            const t = el.textContent || '';
+                            for (const kw of keywords) {
+                                if (t.includes(kw)) {
+                                    return v.currentSrc || v.src || null;
+                                }
+                            }
+                            el = el.parentElement;
+                        }
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _all_video_srcs(self, page: Page) -> list[str]:
+        """Все непустые `src`/`currentSrc` от `<video>`/`<source>`/
+        `a[download]` на странице. Используется как baseline-снимок ДО
+        клика Generate и для diff'а ПОСЛЕ.
+
+        ВАЖНО: исключаем `blob:`/`data:` — они уникальны на каждом
+        рендере и фолсли всегда «новые». Реальный mp4 от outsee приходит
+        как https URL с CDN."""
+        try:
+            return await page.evaluate(
+                """() => {
+                    const out = [];
+                    const push = (u) => {
+                        if (!u) return;
+                        if (u.startsWith('blob:')) return;
+                        if (u.startsWith('data:')) return;
+                        out.push(u);
+                    };
+                    for (const v of document.querySelectorAll('video')) {
+                        push(v.currentSrc);
+                        push(v.src);
+                        for (const s of v.querySelectorAll('source')) {
+                            push(s.src);
+                        }
+                    }
+                    for (const a of document.querySelectorAll('a[download], a[href*=".mp4"], a[href*=".webm"]')) {
+                        push(a.href);
+                    }
+                    return out;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _all_big_videos(self, page: Page) -> list[str]:
+        """Все `<video>` на странице с bbox ≥ 200×200 — для диагностики
+        в логах wait-цикла (по аналогии с `_all_big_imgs`)."""
+        try:
+            return await page.evaluate(
+                """() => {
+                    const out = [];
+                    for (const v of document.querySelectorAll('video')) {
+                        const r = v.getBoundingClientRect();
+                        if (r.width >= 200 && r.height >= 200) {
+                            const u = v.currentSrc || v.src;
+                            if (u && !u.startsWith('blob:') && !u.startsWith('data:')) {
+                                out.push(u);
+                            }
+                        }
+                    }
+                    return out;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _completed_new_videos(
+        self, page: Page, baseline_srcs: set[str]
+    ) -> list[str]:
+        """Зеркало `_completed_new_imgs` для видео. Возвращает URL
+        `<video>`/`<source>`/`a[download]`, которых не было в baseline
+        (по нормализованному host+path — иначе re-sign CDN-токенов
+        ломает diff).
+
+        Дополнительно отсекаем `blob:`/`data:` и UI-ассеты. Для `<video>`
+        НЕ требуем `readyState >= 1` / `videoWidth >= 200` — outsee
+        часто не autoplay'ит результаты, и эти поля = 0 пока юзер сам
+        не нажал play. Реальный фильтр строгости работает через
+        net_events.fresh-проверку в `_wait_video_url_strict`."""
+        baseline_list = list(baseline_srcs)
+        try:
+            res = await page.evaluate(
+                """(baseline) => {
+                    const skip = new Set(baseline);
+                    const stripQ = (u) => {
+                        if (!u) return '';
+                        const hash = u.indexOf('#');
+                        if (hash >= 0) u = u.substring(0, hash);
+                        const q = u.indexOf('?');
+                        if (q >= 0) u = u.substring(0, q);
+                        return u;
+                    };
+                    const out = [];
+                    const push = (u) => {
+                        if (!u) return;
+                        if (u.startsWith('blob:')) return;
+                        if (u.startsWith('data:')) return;
+                        const stable = stripQ(u);
+                        if (skip.has(stable)) return;
+                        out.push(u);
+                    };
+                    for (const v of document.querySelectorAll('video')) {
+                        push(v.currentSrc);
+                        push(v.src);
+                        for (const s of v.querySelectorAll('source')) {
+                            push(s.src);
+                        }
+                    }
+                    for (const a of document.querySelectorAll('a[download], a[href*=".mp4"], a[href*=".webm"]')) {
+                        push(a.href);
+                    }
+                    return out;
+                }""",
+                baseline_list,
+            )
+            return list(res or [])
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _wait_video_url_strict(
         self,
         page: Page,
         *,
         timeout: float,
+        baseline_result_video: str | None,
+        baseline_videos: set[str],
+        baseline_all_srcs: set[str],
+        net_events: list[tuple[float, str]] | None = None,
+        gen_id: str,
+        pre_rejected_text: str | None = None,
         prompt_id_prefix: str | None = None,
     ) -> str:
-        """Ждёт появление видео-результата в DOM.
+        """Жёсткое ожидание свежего видео — зеркало
+        `_wait_image_url_strict`.
 
-        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
-        карточке с нашим [ID: ...]. Это защищает от подмены чужим
-        видео из истории outsee и работает в паре с анти-дубликат
-        логикой в `generate_video` (когда мы не кликаем Generate
-        повторно, а ждём результат прошлого клика).
+        ПРИОРИТЕТ 0 (если передан `prompt_id_prefix`): ищем в DOM карточку
+        с нашим `[ID: P*-F*-xxxxxxxx]` через `_find_video_by_prompt_id`
+        и возвращаем найденный URL. Это самая строгая проверка — она
+        исключает старые ролики из истории outsee.
 
-        Fallback — генерический поиск любого видео-URL (для legacy/
-        recon без prompt_id_prefix).
-        """
-        deadline = asyncio.get_event_loop().time() + timeout
-        log_every = 15.0  # сек, логи прогресса
-        next_log = asyncio.get_event_loop().time() + log_every
+        Если `prompt_id_prefix` не передан — работают альтернативные
+        правила:
+          1) `<video>` из блока «Результат генерации» с отличающимся от
+             baseline src;
+          2) самые новые `<video>`/`<source>` в DOM ПОСЛЕ Generate, не
+             пересекающиеся с baseline.
+
+        Все кандидаты ДОПОЛНИТЕЛЬНО верифицируются через `net_events`:
+        URL должен реально пройти по сети ПОСЛЕ Generate-клика. Без
+        net_events отдадим первого попавшегося — но в `generate_video`
+        мы listener регистрируем всегда, поэтому net_events не пустой
+        для не-recon вызова.
+
+        Никаких «возьму любой URL с .mp4» — это и есть источник 403,
+        потому что старые CDN-токены протухают. Если за timeout условие
+        не сработало — кидаем `OutseeImageError`."""
+        start = asyncio.get_event_loop().time()
+        deadline = start + timeout
+        last_log = 0.0
+        last_seen_result: str | None = None
+        fallback_candidate: str | None = None
+        fallback_source: str | None = None  # "result_block" | "new_dom" | "by_id"
+
         while asyncio.get_event_loop().time() < deadline:
-            # Приоритет 0: видео в карточке с нашим [ID: ...].
+            now = asyncio.get_event_loop().time()
+            elapsed = now - start
+
+            # 0) Высший приоритет — поиск по prompt_id_prefix.
             if prompt_id_prefix:
                 try:
                     by_id = await self._find_video_by_prompt_id(
@@ -2704,36 +3220,221 @@ class OutseeBot:
                 except Exception:  # noqa: BLE001
                     by_id = None
                 if by_id:
-                    return by_id
-            # Приоритет 1 (fallback): любой видео-URL в DOM.
-            urls = await page.evaluate(
-                """() => {
-                    const list = [];
-                    document.querySelectorAll('video').forEach(v => {
-                        if (v.src) list.push(v.src);
-                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
-                    });
-                    document.querySelectorAll("a[download]").forEach(a => a.href && list.push(a.href));
-                    return list;
-                }"""
-            )
-            # Без prompt_id_prefix берём первый похожий — legacy-режим.
-            if not prompt_id_prefix:
-                for u in urls:
-                    if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
-                        return u
-            now = asyncio.get_event_loop().time()
-            if now >= next_log:
-                logger.info(
-                    "outsee.generate_video: ждём результат… {:.0f} сек, "
-                    "video_urls_in_dom={}, prompt_id={}",
-                    timeout - (deadline - now),
-                    len(urls or []),
-                    prompt_id_prefix,
+                    by_id_norm = _strip_url_query(by_id)
+                    fresh_ok = (
+                        by_id_norm != baseline_result_video
+                        and by_id_norm not in baseline_all_srcs
+                        and not by_id.startswith("blob:")
+                        and not by_id.startswith("data:")
+                        and not any(
+                            m in by_id.lower() for m in _UI_ASSET_MARKERS
+                        )
+                        and not any(
+                            m in by_id.lower() for m in _INPUT_REF_MARKERS
+                        )
+                    )
+                    if fresh_ok:
+                        # Финальная проверка: URL пришёл по сети после
+                        # Generate (net_events fresh). Если net_events
+                        # доступны и URL подтверждён — возвращаем сразу,
+                        # это сильнейшая гарантия «наше видео».
+                        if _url_is_fresh(by_id, net_events):
+                            logger.info(
+                                "_wait_video_url_strict: matched by "
+                                "prompt_id {} + net_events за {:.0f} сек: "
+                                "{}",
+                                prompt_id_prefix, elapsed, by_id[:140],
+                            )
+                            return by_id
+                        # Без подтверждения сетью — запоминаем как
+                        # fallback, дальше попробуем подождать net_event.
+                        fallback_candidate = by_id
+                        fallback_source = "by_id"
+
+            # 1) Кандидат от «Результат генерации».
+            current = await self._result_video_src(page)
+            last_seen_result = current
+            current_norm = _strip_url_query(current) if current else ""
+            if (
+                current
+                and current_norm != baseline_result_video
+                and not current.startswith("blob:")
+                and not current.startswith("data:")
+                and not any(
+                    m in current.lower() for m in _INPUT_REF_MARKERS
                 )
-                next_log = now + log_every
+                and not any(
+                    m in current.lower() for m in _UI_ASSET_MARKERS
+                )
+                and current_norm not in baseline_all_srcs
+            ):
+                if _url_is_fresh(current, net_events):
+                    if not prompt_id_prefix:
+                        logger.info(
+                            "_wait_video_url_strict: «Результат генерации» "
+                            "за {:.0f} сек: {}",
+                            elapsed, current[:140],
+                        )
+                        return current
+                    elif fallback_candidate is None:
+                        fallback_candidate = current
+                        fallback_source = "result_block"
+
+            # 2) Кандидаты от diff'а DOM'а.
+            new_srcs = await self._completed_new_videos(
+                page, baseline_all_srcs
+            )
+            if new_srcs:
+                clean = [
+                    u
+                    for u in new_srcs
+                    if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
+                    and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
+                ]
+                clean = [u for u in clean if _url_is_fresh(u, net_events)]
+                if clean:
+                    chosen = clean[0]
+                    if not prompt_id_prefix:
+                        logger.info(
+                            "_wait_video_url_strict: новый <video> в DOM "
+                            "за {:.0f} сек: {} (всего: {})",
+                            elapsed, chosen[:140], len(clean),
+                        )
+                        return chosen
+                    elif fallback_candidate is None:
+                        fallback_candidate = chosen
+                        fallback_source = "new_dom"
+                        if len(clean) > 1:
+                            logger.info(
+                                "_wait_video_url_strict: new_srcs={} (>1) "
+                                "— беру первый по DOM: {}",
+                                len(clean), chosen[:120],
+                            )
+
+            # 2.5) Если есть fallback_candidate И net_events его
+            # подтверждают — возвращаем. Без click-verify (как у image):
+            # для видео клик по тайле обычно открывает встроенный плеер,
+            # а не «панель промпта», поэтому ID-проверка через клик не
+            # работает. Доверяем net_events.
+            if (
+                prompt_id_prefix
+                and fallback_candidate is not None
+                and net_events is not None
+                and _url_is_fresh(fallback_candidate, net_events)
+            ):
+                logger.info(
+                    "_wait_video_url_strict: trusted by net_events "
+                    "(source={}) за {:.0f} сек: {}",
+                    fallback_source, elapsed,
+                    fallback_candidate[:140],
+                )
+                return fallback_candidate
+
+            # 2.7) Детект плашки «Контент отклонён» (модерация).
+            if elapsed >= 3.0:
+                rejected_text = await self._content_rejected_text(page)
+                if rejected_text and rejected_text != pre_rejected_text:
+                    raise OutseeContentRejectedError(
+                        "outsee video: контент отклонён модерацией",
+                        context={
+                            "gen_id": gen_id,
+                            "rejection": rejected_text[:200],
+                        },
+                    )
+
+            # 3) Диагностика
+            if elapsed - last_log > 15:
+                last_log = elapsed
+                n_big = len(await self._all_big_videos(page))
+                if prompt_id_prefix:
+                    logger.info(
+                        "_wait_video_url_strict: ждём... {:.0f} сек, "
+                        "result_video={}, big_videos={}, fallback={}, "
+                        "net_events={}",
+                        elapsed,
+                        (current[:80] if current else None),
+                        n_big,
+                        (fallback_candidate[:80] if fallback_candidate else None),
+                        len(net_events) if net_events is not None else "—",
+                    )
+                else:
+                    logger.info(
+                        "_wait_video_url_strict: ждём... {:.0f} сек, "
+                        "result_video_src={}, big_videos_now={} "
+                        "(baseline={})",
+                        elapsed,
+                        (current[:80] if current else None),
+                        n_big,
+                        len(baseline_videos),
+                    )
+
             await asyncio.sleep(1.5)
-        raise PWTimeoutError("outsee video: результат не появился за отведённое время")
+
+        # timeout. Если есть fallback_candidate — возвращаем его как
+        # «безопасную сеть» (с WARNING'ом). Иначе падаем с диагностикой.
+        if fallback_candidate is not None:
+            logger.warning(
+                "_wait_video_url_strict: TIMEOUT, но есть fallback "
+                "(source={}, net_events НЕ подтвердили) — отдаю как "
+                "safety-net: {}",
+                fallback_source, fallback_candidate[:140],
+            )
+            return fallback_candidate
+
+        big_now = set(await self._all_big_videos(page))
+        new_big = big_now - baseline_videos
+        all_now_srcs = set(await self._all_video_srcs(page))
+        new_dom = all_now_srcs - baseline_all_srcs
+        ctx: dict[str, Any] = {
+            "gen_id": gen_id,
+            "baseline_result_video": baseline_result_video,
+            "last_result_video_src": last_seen_result,
+            "new_big_videos": ", ".join(list(new_big)[:3]) or "—",
+            "new_dom_srcs_count": len(new_dom),
+            "baseline_videos": len(baseline_videos),
+            "net_events_count": (
+                len(net_events) if net_events is not None else 0
+            ),
+        }
+        if prompt_id_prefix:
+            ctx["prompt_id_prefix"] = prompt_id_prefix
+            ctx["id_diag"] = await self._diag_id_in_page(
+                page, prompt_id_prefix
+            )
+        raise OutseeImageError(
+            f"outsee video: результат не появился за {int(timeout)} сек",
+            context=ctx,
+        )
+
+    # Старое имя `_wait_video_url` оставляем как алиас на новую
+    # реализацию: внешний `recon`-CLI вызывает его без baseline-
+    # параметров. Дёшево реализуем поверх strict-версии, передав
+    # пустые baseline'ы.
+    async def _wait_video_url(
+        self,
+        page: Page,
+        *,
+        timeout: float,
+        prompt_id_prefix: str | None = None,
+    ) -> str:
+        """Совместимый wrapper для legacy/recon: без baseline-снимков и
+        net_events. Делегирует в `_wait_video_url_strict` с пустыми
+        baseline'ами (тогда сравнение по «не в baseline» всегда True).
+
+        Для production-вызовов из `generate_video` используется
+        непосредственно `_wait_video_url_strict` с честным baseline
+        и net_events — см. там подробный коммент."""
+        return await self._wait_video_url_strict(
+            page,
+            timeout=timeout,
+            baseline_result_video=None,
+            baseline_videos=set(),
+            baseline_all_srcs=set(),
+            net_events=None,
+            gen_id="recon",
+            pre_rejected_text=None,
+            prompt_id_prefix=prompt_id_prefix,
+        )
 
 
 async def _download_via_card_click(
