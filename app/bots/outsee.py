@@ -38,6 +38,23 @@ VIDEO_MODEL_DISPLAY_BY_SLUG: dict[str, str] = {
     c.outsee_slug: c.label for c in VIDEO_GENERATORS if c.outsee_slug
 }
 
+# ----- Принудительный реремап slug'ов на этапе вызова outsee -----
+# По требованию юзера: Veo 3 Fast и Veo 3.1 Fast → всегда Veo 3.1 Lite.
+# (В настройках проекта остаётся исходная модель — для xlsx/GPT-контекста —
+# но в outsee.io бот выбирает Lite. Если нужно расширить — добавить сюда.)
+VIDEO_MODEL_SLUG_REMAP: dict[str, str] = {
+    "veo-3-fast": "veo-3-1-lite",
+    "veo-3-1-fast": "veo-3-1-lite",
+}
+
+
+def _remap_video_slug(slug: str | None) -> str | None:
+    """Применяет VIDEO_MODEL_SLUG_REMAP. Возвращает исходный slug если
+    маппинга нет."""
+    if not slug:
+        return slug
+    return VIDEO_MODEL_SLUG_REMAP.get(slug, slug)
+
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
     "textarea[placeholder*='prompt' i]",
@@ -524,6 +541,9 @@ def _image_page_url(model_slug: str | None) -> str:
 
 def _video_page_url(model_slug: str | None) -> str:
     base = settings.outsee_video_url
+    # Применяем VIDEO_MODEL_SLUG_REMAP — чтобы и в URL, и в UI отображалась
+    # одна и та же модель (например Veo 3.1 Fast → Veo 3.1 Lite).
+    model_slug = _remap_video_slug(model_slug)
     if not model_slug:
         return base
     if "?model=" in base:
@@ -606,6 +626,14 @@ async def _select_video_model_via_button(
     """
     if not slug:
         return True
+    # Применяем реремап (Veo 3 Fast / Veo 3.1 Fast → Veo 3.1 Lite и т.п.).
+    remapped = _remap_video_slug(slug)
+    if remapped != slug:
+        logger.info(
+            "outsee.select_model: slug '{}' переремапнут на '{}' "
+            "(см. VIDEO_MODEL_SLUG_REMAP)", slug, remapped,
+        )
+        slug = remapped
     display_name = VIDEO_MODEL_DISPLAY_BY_SLUG.get(slug)
     if not display_name:
         logger.warning(
