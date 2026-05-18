@@ -69,6 +69,21 @@ from app.telegram.menu import (
     script_step_kb,
     step_by_code,
 )
+from app.telegram.global_prompts_menu import (
+    delete_kb as _gprm_delete_kb,
+)
+from app.telegram.global_prompts_menu import (
+    overview_kb as _gprm_overview_kb,
+)
+from app.telegram.global_prompts_menu import (
+    overview_text as _gprm_overview_text,
+)
+from app.telegram.global_prompts_menu import (
+    picker_kb as _gprm_picker_kb,
+)
+from app.telegram.global_prompts_menu import (
+    picker_text as _gprm_picker_text,
+)
 from app.telegram.prompt_picker import (
     delete_kb as _prompt_delete_kb,
 )
@@ -135,6 +150,13 @@ _pending_prompt_name: dict[int, tuple[int, str]] = {}
 # Ожидание возврата `.md`-файла после редактирования / создания.
 # user_id → (project_id, step_code, prompt_name).
 _pending_prompt_upload: dict[int, tuple[int, str, str]] = {}
+
+# === Global-prompts UI state (Фаза 8: команда /prompts, callbacks gprm:*) ===
+# Глобальная библиотека `prompts/*` — без привязки к проекту/батчу.
+# Ожидание имени нового варианта.    user_id → step_code.
+_pending_global_prompt_name: dict[int, str] = {}
+# Ожидание возврата `.md`-файла.    user_id → (step_code, variant_name).
+_pending_global_prompt_upload: dict[int, tuple[str, str]] = {}
 
 # Ожидание темы для xlsx-плана (после клика «1. План»).
 # user_id → project_id.
@@ -338,6 +360,8 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_hero_style.pop(user_id, None)
     _pending_prompt_name.pop(user_id, None)
     _pending_prompt_upload.pop(user_id, None)
+    _pending_global_prompt_name.pop(user_id, None)
+    _pending_global_prompt_upload.pop(user_id, None)
     _pending_plan_topic.pop(user_id, None)
     _pending_plan_prompt.pop(user_id, None)
     _pending_script_prompt.pop(user_id, None)
@@ -4209,6 +4233,262 @@ async def _handle_prompt_upload(msg: Message) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Фаза 8: команда /prompts (глобальная библиотека `prompts/*`) и `gprm:*`-cb.
+
+@dp.message(Command("prompts"))
+async def cmd_prompts(msg: Message) -> None:
+    """Открывает глобальное меню редактирования библиотеки мастер-промтов.
+
+    Это НЕ привязано к проекту/массовой. Здесь юзер правит базовые
+    `prompts/<step>/default.md` и добавляет/удаляет любые варианты
+    шаблонов, которые потом будут видны новым одиночным и массовым
+    проектам.
+    """
+    if not is_owner(msg):
+        return
+    user_id = msg.from_user.id if msg.from_user else 0
+    _clear_pending_state(user_id)
+    _set_user_screen(user_id, "main")
+    await msg.answer(
+        _gprm_overview_text(),
+        reply_markup=_gprm_overview_kb(),
+        parse_mode="HTML",
+    )
+
+
+def _parse_gprm(data: str) -> tuple[str, str, str | None]:
+    """Разбирает callback_data `gprm:<step>:<action>[:<name>]`.
+
+    Особый кейс: `gprm:overview` → ("", "overview", None).
+    """
+    parts = data.split(":", 3)
+    if len(parts) < 2:
+        raise ValueError(f"bad gprm cb: {data!r}")
+    if parts[1] == "overview" and len(parts) == 2:
+        return "", "overview", None
+    if len(parts) < 3:
+        raise ValueError(f"bad gprm cb: {data!r}")
+    step_code = parts[1]
+    action = parts[2]
+    name = parts[3] if len(parts) >= 4 else None
+    return step_code, action, name
+
+
+@dp.callback_query(F.data.startswith("gprm:"))
+async def on_global_prompt_cb(cb: CallbackQuery) -> None:  # noqa: PLR0911, PLR0912
+    """Хендлер всех `gprm:*` callback'ов (глобальное меню промтов)."""
+    if cb.from_user.id != settings.telegram_owner_chat_id:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        step_code, action, name = _parse_gprm(cb.data or "")
+    except Exception:
+        await cb.answer("Плохой callback", show_alert=True)
+        return
+
+    if action == "overview":
+        await cb.answer()
+        await cb.message.answer(
+            _gprm_overview_text(),
+            reply_markup=_gprm_overview_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    if step_code not in plib.STEP_FOLDERS:
+        await cb.answer("Неизвестный шаг", show_alert=True)
+        return
+
+    if action == "cancel":
+        await cb.answer("Отменено")
+        await cb.message.answer(
+            "Закрыто. /prompts — открыть снова, /menu — главное меню."
+        )
+        return
+
+    if action == "menu":
+        await cb.answer()
+        await cb.message.answer(
+            _gprm_picker_text(step_code),
+            reply_markup=_gprm_picker_kb(step_code),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "add":
+        user_id = cb.from_user.id
+        _pending_global_prompt_name[user_id] = step_code
+        _pending_global_prompt_upload.pop(user_id, None)
+        human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+        await cb.answer()
+        await cb.message.answer(
+            f"<b>Шаг 1 из 2.</b> Назови новый вариант мастер-промта для "
+            f"шага «{human}» (глобальная библиотека) — отправь имя "
+            f"<b>текстовым сообщением</b>.\n\n"
+            f"Имя — это просто название для бота, чтобы потом выбирать его "
+            f"в списке вариантов. Можно по-русски, с пробелами и почти "
+            f"любыми символами (до ~20 кириллических или ~40 латинских "
+            f"симв). На шаге 2 пришлю шаблон <code>.md</code>, ты заменишь "
+            f"его содержимое и пришлёшь обратно документом.\n\n"
+            f"Например: <code>хоррор тёмный</code> или "
+            f"<code>horror_v1</code>.",
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "editcur":
+        # «Текущего» в глобальной библиотеке нет — это всегда `default`.
+        await _send_global_prompt_for_edit(cb, step_code, plib.DEFAULT_NAME)
+        return
+
+    if action == "edit" and name is not None:
+        if not plib.is_valid_prompt_name(name):
+            await cb.answer("Некорректное имя", show_alert=True)
+            return
+        if not plib.prompt_path(step_code, name).exists():
+            await cb.answer("Файл не найден", show_alert=True)
+            return
+        await _send_global_prompt_for_edit(cb, step_code, name)
+        return
+
+    if action == "delask":
+        await cb.answer()
+        await cb.message.answer(
+            "Выбери вариант для удаления (<code>default</code> "
+            "удалить нельзя):",
+            reply_markup=_gprm_delete_kb(step_code),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "del" and name is not None:
+        if name == plib.DEFAULT_NAME:
+            await cb.answer("default удалять нельзя", show_alert=True)
+            return
+        try:
+            removed = plib.delete_prompt(step_code, name)
+        except Exception as e:  # noqa: BLE001
+            await cb.answer(f"Не удалось удалить: {e}", show_alert=True)
+            return
+        await cb.answer("Удалено" if removed else "Файла не было")
+        await cb.message.answer(
+            _gprm_picker_text(step_code),
+            reply_markup=_gprm_picker_kb(step_code),
+            parse_mode="HTML",
+        )
+        return
+
+    await cb.answer("Неизвестное действие picker'а", show_alert=True)
+
+
+async def _send_global_prompt_for_edit(
+    cb: CallbackQuery, step_code: str, name: str
+) -> None:
+    """Шлёт юзеру `<step>/<name>.md` и переводит в режим ожидания
+    возврата отредактированного файла (`_pending_global_prompt_upload`)."""
+    path = plib.prompt_path(step_code, name)
+    if not path.exists():
+        await cb.answer("Файл не найден", show_alert=True)
+        return
+    user_id = cb.from_user.id
+    _pending_global_prompt_upload[user_id] = (step_code, name)
+    _pending_global_prompt_name.pop(user_id, None)
+    await cb.answer()
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await cb.message.answer_document(
+        FSInputFile(str(path)),
+        caption=(
+            f"📚 <b>Глобальная библиотека</b> · шаг «{human}» · "
+            f"вариант <b>{name}</b>.\n\n"
+            f"Поправь файл локально и пришли его <b>обратно как документ</b> "
+            f"в этот чат — сохраню в <code>prompts/"
+            f"{plib.STEP_FOLDERS[step_code]}/{name}.md</code>.\n"
+            f"Имя файла менять не обязательно."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_global_prompt_name_input(msg: Message, step_code: str) -> None:
+    """Юзер прислал имя нового глобального варианта. Создаём шаблон и
+    шлём файл, переводя его в режим ожидания возврата."""
+    name = (msg.text or "").strip()
+    if not plib.is_valid_prompt_name(name):
+        await msg.answer(
+            "Имя пустое или слишком длинное (лимит ~20 кириллических "
+            "/ ~40 латинских симв) или содержит запрещённые символы "
+            "(<code>/ \\ : * ? \" &lt; &gt; |</code>). Попробуй ещё раз или "
+            "нажми «⬅ К списку шагов» в picker'е.",
+            parse_mode="HTML",
+        )
+        user_id = msg.from_user.id if msg.from_user else 0
+        if user_id:
+            _pending_global_prompt_name[user_id] = step_code
+        return
+    # Если файла нет — создаём из шаблона; если уже есть — НЕ перезаписываем.
+    path = plib.prompt_path(step_code, name)
+    if not path.exists():
+        plib.write_prompt(
+            step_code, name, plib.make_template_for_new(step_code, name)
+        )
+    user_id = msg.from_user.id if msg.from_user else 0
+    if user_id:
+        _pending_global_prompt_upload[user_id] = (step_code, name)
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer_document(
+        FSInputFile(str(path)),
+        caption=(
+            f"<b>Шаг 2 из 2.</b> Создан шаблон для варианта <b>{name}</b> "
+            f"(глобальный, шаг «{human}»).\n\n"
+            f"📥 Скачай файл, замени содержимое на свой мастер-промт и "
+            f"пришли <b>обратно как документ</b> в этот чат "
+            f"(.md или .txt — без разницы). Имя файла менять не надо.\n\n"
+            f"После возврата я сохраню вариант в "
+            f"<code>prompts/{plib.STEP_FOLDERS[step_code]}/{name}.md</code>."
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _handle_global_prompt_upload(msg: Message) -> None:
+    """Юзер прислал отредактированный .md/.txt для глобального варианта —
+    сохраняем по адресу из `_pending_global_prompt_upload`."""
+    user_id = msg.from_user.id if msg.from_user else 0
+    pending = _pending_global_prompt_upload.get(user_id)
+    if pending is None:
+        return
+    step_code, name = pending
+    doc = msg.document
+    if doc is None:
+        await msg.answer("Жду документ (.md), не текст.")
+        return
+    try:
+        buf = await msg.bot.download(doc)
+        raw = buf.read() if hasattr(buf, "read") else bytes(buf)
+        content = raw.decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        await msg.answer(f"Не смог прочитать файл: {e}")
+        return
+    if len(content.strip()) < 5:
+        await msg.answer(
+            "Файл практически пустой. Пришли заново с реальным мастер-"
+            "промтом. (Жду тот же файл, режим ожидания не сброшен.)"
+        )
+        return
+    plib.write_prompt(step_code, name, content)
+    _pending_global_prompt_upload.pop(user_id, None)
+    human = plib.STEP_HUMAN_NAMES.get(step_code, step_code)
+    await msg.answer(
+        f"✅ Сохранено в глобальную библиотеку: "
+        f"<code>prompts/{plib.STEP_FOLDERS[step_code]}/{name}.md</code> "
+        f"({len(content)} симв).\n"
+        f"Шаг «{human}». Новые проекты увидят этот вариант сразу.",
+        parse_mode="HTML",
+        reply_markup=_gprm_picker_kb(step_code),
+    )
+
+
 async def _replace_voiceover(pid: int, new_text: str, msg: Message) -> None:
     """Бэкапит старый voiceover.txt в old/ и записывает новый."""
     from datetime import datetime as _dt
@@ -4376,6 +4656,23 @@ async def on_document_message(msg: Message) -> None:
     ):
         _pending_xlsx_replace.pop(user_id, None)
         await _handle_xlsx_replace(msg, pending_xlsx_pid, doc)
+        return
+
+    # Загрузка отредактированного варианта мастер-промта для глобальной
+    # библиотеки (`/prompts`).
+    if user_id in _pending_global_prompt_upload:
+        await _handle_global_prompt_upload(msg)
+        return
+
+    # Если юзер кликнул «+ Новый промт» (глобально) и сразу прислал файл
+    # вместо имени — напоминаем что сначала нужно имя.
+    if user_id in _pending_global_prompt_name:
+        await msg.answer(
+            "Сначала пришли <b>имя</b> нового варианта <b>текстовым "
+            "сообщением</b> (например: <code>хоррор тёмная версия</code>). "
+            "Потом я попрошу прислать <code>.md</code>-файл с промтом.",
+            parse_mode="HTML",
+        )
         return
 
     # Если юзер кликнул «+ Новый промт» и сразу прислал файл (не введя
@@ -6408,6 +6705,14 @@ async def on_text_message(msg: Message) -> None:
         bid_m, step_m = pending_mass_name
         _pending_mass_prompt_name.pop(user_id, None)
         await _handle_mass_prompt_name_input(msg, bid_m, step_m)
+        return
+
+    # 3b) Имя нового варианта в глобальной библиотеке (`/prompts`).
+    pending_global_name = _pending_global_prompt_name.get(user_id)
+    if pending_global_name is not None:
+        step_g = pending_global_name
+        _pending_global_prompt_name.pop(user_id, None)
+        await _handle_global_prompt_name_input(msg, step_g)
         return
 
     # 4) Текст как ответ на «✏️ Сопр. сообщение». Сначала reply, потом
