@@ -693,29 +693,14 @@ async def _generate_and_send(
     file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
     prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
 
-    # Политика «без накопления вариантов в папке»: если в scenes/ остались
-    # старые файлы того же кадра (orphan'ы от падений / прошлых regen) —
-    # удаляем их перед новой генерацией. Сюда мы попадаем только когда
-    # frame.status == image_prompt_ready, значит ни один файл frame_NNN_*.png
-    # не является «утверждённым».
-    try:
-        for stale in out_dir.glob(f"frame_{frame.number:03d}_*.png"):
-            try:
-                stale.unlink()
-                logger.info(
-                    "[#{}] frame {}: удалил orphan {}",
-                    project.id, frame.number, stale.name,
-                )
-            except OSError as e:
-                logger.warning(
-                    "[#{}] frame {}: не удалось удалить orphan {}: {}",
-                    project.id, frame.number, stale, e,
-                )
-    except OSError as e:
-        logger.warning(
-            "[#{}] frame {}: glob scenes/ failed: {}",
-            project.id, frame.number, e,
-        )
+    # Политика «без накопления вариантов в папке»: orphan-cleanup делается
+    # ТОЛЬКО ПОСЛЕ успешной новой генерации (см. ниже после save).
+    #
+    # Раньше cleanup делался ПЕРЕД генерацией — это приводило к тому, что
+    # если новая генерация падала (network/proxy/whatever), старый рабочий
+    # файл уже был удалён → шаг видео не мог найти исходник кадра и падал
+    # с WinError 2. Теперь старые файлы доживают до момента когда новый
+    # уже сохранён и валиден.
 
     # Настройки картинки из проекта (с дефолтами).
     img_gen = IMAGE_GENERATORS_BY_ID.get(
@@ -844,6 +829,32 @@ async def _generate_and_send(
             pass
         await session.commit()
         return
+
+    # Orphan-cleanup СЕЙЧАС (после успешной генерации): удаляем все
+    # старые frame_NNN_*.png кроме того что только что сохранили. Так
+    # сохраняется политика «без накопления вариантов в папке», но при
+    # этом если новая генерация упала бы выше — старый файл бы дожил.
+    try:
+        new_name = Path(str(result.file_path)).name
+        for stale in out_dir.glob(f"frame_{frame.number:03d}_*.png"):
+            if stale.name == new_name:
+                continue
+            try:
+                stale.unlink()
+                logger.info(
+                    "[#{}] frame {}: удалил старый вариант {}",
+                    project.id, frame.number, stale.name,
+                )
+            except OSError as e:
+                logger.warning(
+                    "[#{}] frame {}: не удалось удалить {}: {}",
+                    project.id, frame.number, stale, e,
+                )
+    except OSError as e:
+        logger.warning(
+            "[#{}] frame {}: post-save glob scenes/ failed: {}",
+            project.id, frame.number, e,
+        )
 
     art = Artifact(
         project_id=project.id,

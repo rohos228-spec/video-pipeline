@@ -80,8 +80,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if not fr.animation_prompt:
                     raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
 
-                # найдём картинку этого кадра (scene_image)
-                img = (
+                # найдём картинку этого кадра (scene_image).
+                # БЕРЁМ САМЫЙ СВЕЖИЙ Artifact, КОТОРЫЙ ЕЩЁ ЖИВ НА ДИСКЕ —
+                # старые могут быть удалены orphan-cleanup'ом из шага картинок
+                # (regen с тем же frame.number ⇒ старый файл удалён). Если
+                # просто брать последний по id и он указывает на удалённый
+                # файл — Outsee'у не получится сделать set_input_files и
+                # упадёт RuntimeError "WinError 2 файл не найден".
+                imgs = (
                     await session.execute(
                         select(Artifact)
                         .where(
@@ -90,10 +96,46 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             Artifact.kind == ArtifactKind.scene_image,
                         )
                         .order_by(Artifact.id.desc())
-                        .limit(1)
                     )
-                ).scalar_one_or_none()
-                start_frame_path: Path | None = Path(img.path) if img else None
+                ).scalars().all()
+                start_frame_path: Path | None = None
+                for cand in imgs:
+                    cand_path = Path(cand.path)
+                    if cand_path.is_file():
+                        start_frame_path = cand_path
+                        break
+
+                if start_frame_path is None:
+                    # Ни один Artifact'овский файл не жив. Помечаем кадр
+                    # как failed и пропускаем — пользователь должен
+                    # перегенерить картинку, иначе видео делать не из чего.
+                    msg_txt = (
+                        f"⚠️ Кадр #{fr.number} проекта #{project.id}: "
+                        f"картинка-источник для видео не найдена на диске "
+                        f"(scene_image artifacts найдено: {len(imgs)}). "
+                        f"Перегенерируй картинку этого кадра, потом перезапусти "
+                        f"шаг видео."
+                    )
+                    logger.warning(
+                        "[#{}] frame {}: scene_image file missing on disk "
+                        "(artifacts={}), skipping video step for this frame",
+                        project.id, fr.number,
+                        [str(a.path) for a in imgs],
+                    )
+                    fr.status = FrameStatus.failed
+                    await session.flush()
+                    try:
+                        from app.settings import settings as _settings
+                        await bot.send_message(
+                            _settings.telegram_owner_chat_id, msg_txt[:3800],
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[#{}] frame {}: не смог отправить TG-уведомление "
+                            "о пропавшем scene_image",
+                            project.id, fr.number,
+                        )
+                    continue
 
                 short_uuid = uuid.uuid4().hex[:8]
                 file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
