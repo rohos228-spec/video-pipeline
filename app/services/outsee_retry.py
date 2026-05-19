@@ -182,6 +182,12 @@ async def generate_video_with_retries(
                 )
             except OutseeImageError as e:
                 last_err = e
+                # Юзер нажал ⏹ Стоп шаг внутри _wait_video_url —
+                # ретраить нет смысла, шаг должен немедленно завершиться.
+                # generate_videos.py обернёт OutseeImageError в
+                # StepCancelledError. Здесь — просто пробрасываем.
+                if "cancelled by user" in (e.reason or "").lower():
+                    raise
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} "
                     "провалена: {}",

@@ -5380,12 +5380,40 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
     from app.services.xlsx_sync import reload_from_xlsx
     from app.services.xlsx_v8_import import import_v8_xlsx
 
+    # Если проект в одном из running-статусов — воркер сейчас держит
+    # write-lock на SQLite (длинная транзакция в `session_scope` +
+    # `advance_project`). С PRAGMA busy_timeout=15s rescan всё равно
+    # отваливается с `database is locked`, потому что шаг видео/картинок
+    # коммитит только при смене статуса (раз в десятки минут). Не даём
+    # юзеру в этом состоянии — просим сначала ⏹ Стоп шаг / 🔛 Пауза.
+    RUNNING_STATUSES = {
+        ProjectStatus.planning, ProjectStatus.scripting,
+        ProjectStatus.splitting,
+        ProjectStatus.generating_hero, ProjectStatus.generating_items,
+        ProjectStatus.enriching_1, ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3, ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+        ProjectStatus.generating_image_prompts,
+        ProjectStatus.generating_images,
+        ProjectStatus.generating_animation_prompts,
+        ProjectStatus.generating_videos,
+        ProjectStatus.generating_audio,
+        ProjectStatus.assembling, ProjectStatus.publishing,
+    }
+
     async with session_scope() as s:
         project = (
             await s.execute(select(Project).where(Project.id == pid))
         ).scalar_one_or_none()
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
+            return
+        if project.status in RUNNING_STATUSES:
+            await cb.answer(
+                f"Проект сейчас в работе ({project.status.value}). "
+                "Нажми «🔛 Пауза проекта» или «⏹ Стоп шаг», потом перечитай.",
+                show_alert=True,
+            )
             return
 
         # 1) xlsx → БД (если xlsx-файл есть; иначе просто пропускаем

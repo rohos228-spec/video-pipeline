@@ -56,7 +56,11 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_video
 from app.services.outsee_retry import generate_video_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import (
+    StepCancelledError,
+    is_stop_requested,
+    raise_if_cancelled,
+)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -500,6 +504,15 @@ async def _generate_and_send(
     )
 
     # 4) Сам outsee-прогон с retry/GPT-rewrite.
+    # cancel_check — даёт outsee реагировать на ⏹ Стоп шаг ВНУТРИ
+    # длинного ожидания результата (75-120 сек/ролик). Без этого юзер
+    # ждёт окончания текущего кадра до того, как цикл сверху увидит
+    # `raise_if_cancelled`.
+    _pid_for_cancel = project.id
+
+    def _cancel_check() -> bool:
+        return is_stop_requested(_pid_for_cancel)
+
     try:
         result = await generate_video_with_retries(
             outsee, gpt,
@@ -514,8 +527,17 @@ async def _generate_and_send(
             resolution=video_res_slug,
             relax=video_relax,
             prompt_id_prefix=prompt_id_prefix,
+            cancel_check=_cancel_check,
         )
     except OutseeImageError as e:
+        # «cancelled by user via ⏹» из _wait_video_url пробрасываем
+        # как StepCancelledError, чтобы шаг закрылся как «остановлен
+        # пользователем», а не как «упал».
+        if "cancelled by user" in (e.reason or "").lower():
+            raise StepCancelledError(
+                f"проект #{project.id}: остановка по запросу пользователя "
+                "(cancel внутри outsee wait)"
+            ) from e
         # Не silent retry: помечаем кадр failed и шлём в TG понятное
         # описание ошибки. Пайплайн пойдёт к следующему кадру.
         logger.exception(
