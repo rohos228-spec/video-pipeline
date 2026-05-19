@@ -1306,6 +1306,190 @@ async def _physical_click_element(
         return False
 
 
+# Регэксп для валидации текста Generate-кнопки. Строгий
+# case-sensitive prefix-match: текст ОБЯЗАН начинаться с заглавной
+# 'Г' (Cyrillic U+0413) / 'С' (U+0421) / 'G' — это исключает Relax-
+# кнопку с подписью 'РежимДешевле, но может генерировать
+# дольше обычного' (lowercase 'г' в 'генерировать'), которую
+# Playwright `:has-text('Генерировать')` ловит как substring
+# (и case-insensitive!), и клик уходит в Relax вместо Generate.
+_GENERATE_BUTTON_TEXT_RX = re.compile(
+    r"^\s*(Генерировать|Сгенерировать|Создать|Generate)(\s.*)?$"
+)
+
+
+async def _find_and_physical_click_generate(
+    page: Page,
+    *,
+    description: str = "Generate",
+    timeout_ms: int = 60_000,
+) -> tuple[bool, str, list[dict]]:
+    """Находит выходную CTA-кнопку Generate С СТРОГИМ фильтром по
+    тексту (должен начинаться с заглавной 'Генерировать' / и т.д.)
+    и кликает по ней ФИЗИЧЕСКОЙ мышью через CDP.
+
+    Зачем такая валидация текста: Playwright
+    `button:has-text('Генерировать')` делает substring +
+    case-insensitive match. На outsee.io в video-форме есть блок
+    'Relax РежимДешевле, но может генерировать дольше
+    обычного' — этот блок является button-элементом и его текст
+    содержит подстроку 'генерировать' (lowercase). Playwright
+    selector его ловит первым, и физ.клик уходит в Relax вместо
+    настоящей кнопки Generate (подтверждено в прод логах).
+
+    Регексп `_GENERATE_BUTTON_TEXT_RX` (case-sensitive, anchored ^)
+    проверяет что текст начинается с заглавной 'Г' (или 'С',
+    'С', 'G'), возможные варианты: 'Генерировать', 'Генерировать
+    видео', 'Генерировать (5 кредитов)' и т.д.
+
+    Параллельно проверяет visible + не disabled +
+    bbox-в-viewport. Поллит до `timeout_ms`мс; возвращает
+    `(success, clicked_text, candidates_diag)`, где candidates_diag —
+    все «Генерировать»-кнопки которые видели (для диагностики).
+    """
+    candidates_diag: list[dict] = []
+    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
+    chosen_handle = None
+    chosen_text = ""
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            buttons = page.locator(
+                "button:has-text('Генерировать'),"
+                "button:has-text('Сгенерировать'),"
+                "button:has-text('Создать'),"
+                "button:has-text('Generate')"
+            )
+            count = await buttons.count()
+            candidates_diag = []
+            for i in range(min(count, 30)):
+                loc = buttons.nth(i)
+                try:
+                    visible = await loc.is_visible()
+                except Exception:  # noqa: BLE001
+                    visible = False
+                if not visible:
+                    continue
+                try:
+                    handle = await loc.element_handle()
+                except Exception:  # noqa: BLE001
+                    handle = None
+                if handle is None:
+                    continue
+                try:
+                    info = await page.evaluate(
+                        """(el) => {
+                            const text = (
+                                el.innerText || el.textContent || ''
+                            ).trim();
+                            const disabled = el.disabled === true
+                                || el.hasAttribute('disabled')
+                                || el.getAttribute('aria-disabled') === 'true';
+                            return { text, disabled };
+                        }""",
+                        handle,
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                text = (info.get("text") or "").strip()
+                disabled = bool(info.get("disabled"))
+                candidates_diag.append(
+                    {"i": i, "text": text[:80], "disabled": disabled}
+                )
+                if disabled:
+                    continue
+                if _GENERATE_BUTTON_TEXT_RX.match(text):
+                    chosen_handle = handle
+                    chosen_text = text
+                    break
+            if chosen_handle is not None:
+                break
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_find_and_physical_click_generate[{}]: scan error: {}",
+                description, e,
+            )
+        await asyncio.sleep(0.5)
+
+    if chosen_handle is None:
+        logger.warning(
+            "_find_and_physical_click_generate[{}]: НЕ нашли правильную "
+            "Generate-кнопку за {}мс. Кандидаты: {}",
+            description, timeout_ms, candidates_diag,
+        )
+        return False, "", candidates_diag
+
+    # Скроллим, читаем bbox, физический CDP-клик
+    try:
+        await chosen_handle.scroll_into_view_if_needed(timeout=5_000)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rect = await page.evaluate(
+            """(el) => {
+                const r = el.getBoundingClientRect();
+                return {
+                    cx: Math.round(r.left + r.width / 2),
+                    cy: Math.round(r.top + r.height / 2),
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    w: Math.round(r.width),
+                    h: Math.round(r.height),
+                };
+            }""",
+            chosen_handle,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_find_and_physical_click_generate[{}]: bbox упал: {} — "
+            "фолбэк handle.click()", description, e,
+        )
+        try:
+            await chosen_handle.click()
+        except Exception:  # noqa: BLE001
+            pass
+        return False, chosen_text, candidates_diag
+
+    cx = int(rect["cx"])
+    cy = int(rect["cy"])
+    vw = int(rect["vw"])
+    vh = int(rect["vh"])
+    bw = rect.get("w")
+    bh = rect.get("h")
+    if cx < 1 or cx > vw - 1 or cy < 1 or cy > vh - 1:
+        logger.warning(
+            "_find_and_physical_click_generate[{}]: bbox вне viewport "
+            "(cx={}, cy={}, vw={}, vh={}, w={}, h={}, text={!r}) — "
+            "фолбэк handle.click()",
+            description, cx, cy, vw, vh, bw, bh, chosen_text,
+        )
+        try:
+            await chosen_handle.click()
+        except Exception:  # noqa: BLE001
+            pass
+        return False, chosen_text, candidates_diag
+
+    try:
+        await page.mouse.move(cx, cy)
+        await asyncio.sleep(0.15)
+        await page.mouse.click(cx, cy, delay=50)
+        logger.info(
+            "_find_and_physical_click_generate[{}]: физ.клик ({},{}) "
+            "bbox={}×{} text={!r}",
+            description, cx, cy, bw, bh, chosen_text,
+        )
+        return True, chosen_text, candidates_diag
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_find_and_physical_click_generate[{}]: page.mouse.click "
+            "упал: {} — фолбэк handle.click()", description, e,
+        )
+        try:
+            await chosen_handle.click()
+        except Exception:  # noqa: BLE001
+            pass
+        return False, chosen_text, candidates_diag
+
+
 class OutseeBot:
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
@@ -1621,18 +1805,45 @@ class OutseeBot:
 
                 click_ts = _time.monotonic()
                 net_events.clear()
-                # ФИЗИЧЕСКАЯ мышь через CDP — outsee.io иногда игнорит
-                # Playwright `locator.click()` сразу после settings.json,
-                # форма ещё «прогревается». Физ.клик проходит hit-test.
-                _phys_ok = await _physical_click_element(
-                    page, gen_sel,
+                # Find + физ.клик Generate в одном шаге: хелпер
+                # строго фильтрует по тексту (должен начинаться с
+                # заглавной 'Г/С/G'), исключает Relax-ловушку и кликает
+                # ФИЗИЧЕСКОЙ мышью через CDP. Предыдущий подход
+                # (`_first_visible` + `_physical_click_element`) попадал в
+                # Relax-кнопку в video-форме (см. _find_and_physical_
+                # click_generate для обоснования). Для изображений баг
+                # не воспроизводился, но единая логика = меньше рисков.
+                (
+                    _phys_ok,
+                    _phys_text,
+                    _phys_cands,
+                ) = await _find_and_physical_click_generate(
+                    page,
                     description="image:Generate",
+                    timeout_ms=60_000,
                 )
                 logger.info(
-                    "outsee.generate_image: Generate кликнут (физ={}), "
-                    "жду картинку (gen_id={})",
-                    _phys_ok, gen_id[:8],
+                    "outsee.generate_image: Generate кликнут "
+                    "(физ={}, text={!r}, candidates={}), жду картинку "
+                    "(gen_id={})",
+                    _phys_ok, _phys_text, len(_phys_cands), gen_id[:8],
                 )
+                if not _phys_ok:
+                    h, p = await _dump_page(
+                        page, "generate_btn_click_failed"
+                    )
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
+                    raise OutseeImageError(
+                        "outsee image: Generate не кликнут "
+                        f"(candidates={_phys_cands})",
+                        context={
+                            "gen_id": gen_id,
+                            "candidates": _phys_cands,
+                        },
+                        dumps=dumps,
+                    )
 
             # 4) Получаем НАШУ картинку.
             #
@@ -3188,26 +3399,41 @@ class OutseeBot:
                 "outsee.generate_video: кнопка Generate найдена ({})", gen_sel,
             )
             await self._wait_button_enabled(page, gen_sel, timeout_s=600)
-            try:
-                gen_loc = page.locator(gen_sel).first
-                btn_text = (await gen_loc.text_content() or "").strip()
-            except Exception:  # noqa: BLE001
-                btn_text = "?"
+            # gen_sel выше — это «первая видимая кнопка с текстом
+            # 'Генерировать'» по старой логике. В video-форме она может
+            # быть Relax-ловушкой (см. ниже), поэтому фактический клик
+            # делаем НЕ по gen_sel, а через `_find_and_physical_click_
+            # generate` со строгой валидацией текста.
             click_ts = _time.monotonic()
             net_events.clear()
-            # ФИЗИЧЕСКАЯ мышь через CDP — те же причины что в
-            # generate_image: синтетический click после загрузки формы
-            # / settings.json иногда уходит в пустоту. См. также
-            # `_physical_click_element`.
-            _phys_ok_v = await _physical_click_element(
-                page, gen_sel,
+            # Find + физ.клик Generate с СТРОГИМ фильтром по тексту.
+            # Старый подход (`_first_visible` + `_physical_click_element`)
+            # попадал в Relax-кнопку: её текст содержит 'может
+            # генерировать', и селектор has-text/case-insensitive
+            # ловил её первой — физ.клик уходил в Relax. См.
+            # _find_and_physical_click_generate для полного разбора.
+            (
+                _phys_ok_v,
+                _phys_text_v,
+                _phys_cands_v,
+            ) = await _find_and_physical_click_generate(
+                page,
                 description="video:Generate",
+                timeout_ms=60_000,
             )
             logger.info(
-                "outsee.generate_video: Generate кликнут «{}» (физ={}, "
-                "gen_sel={}), жду видео (timeout={:.0f}с, prompt_id={})",
-                btn_text, _phys_ok_v, gen_sel, timeout, prompt_id_prefix,
+                "outsee.generate_video: Generate кликнут (физ={}, "
+                "text={!r}, candidates={}), жду видео "
+                "(timeout={:.0f}с, prompt_id={})",
+                _phys_ok_v, _phys_text_v, len(_phys_cands_v),
+                timeout, prompt_id_prefix,
             )
+            if not _phys_ok_v:
+                await _dump_page(page, "generate_video_btn_click_failed")
+                raise RuntimeError(
+                    "outsee video: Generate не кликнут "
+                    f"(candidates={_phys_cands_v})"
+                )
             # Через ~3 сек проверим, сработал ли клик — должен появиться
             # spinner / placeholder, или хотя бы новый thumb-img. Если НЕТ —
             # дамп страницы в data/outsee_dumps/.
