@@ -50,6 +50,7 @@ from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import (
     GenerationResult,
     OutseeBot,
+    OutseeCancelledError,
     OutseeImageError,
 )
 
@@ -122,6 +123,12 @@ async def generate_image_with_retries(
                 return await outsee.generate_image(
                     current_prompt, out_path, **kwargs
                 )
+            except OutseeCancelledError:
+                # Юзер нажал «⏹ Остановить» во время ожидания —
+                # не ретраить и не пробовать GPT-rewrite, пробрасываем
+                # наверх (caller в generate_images.run / generate_hero.run
+                # поймает и роллбекнет под cancel-семантику).
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
@@ -180,6 +187,9 @@ async def generate_video_with_retries(
                 return await outsee.generate_video(
                     current_prompt, out_path, **kwargs
                 )
+            except OutseeCancelledError:
+                # ⏹ во время ожидания видео — не ретраить.
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
