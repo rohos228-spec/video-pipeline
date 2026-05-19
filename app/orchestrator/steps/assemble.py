@@ -17,6 +17,7 @@ from app.models import (
     Artifact,
     ArtifactKind,
     Frame,
+    FrameStatus,
     HITLKind,
     Project,
     ProjectStatus,
@@ -51,9 +52,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if audio is None:
         raise RuntimeError("нет артефакта аудио")
 
-    # клипы по кадрам
+    # клипы по кадрам.
+    # Кадры в FrameStatus.failed пропускаем — это либо «❌ Отклонить» из
+    # per-video HITL, либо «нет картинки-источника». Их клип в финальный
+    # ролик не вставляем, длительность хронометража просто сжимается.
     clips: list[ClipSpec] = []
+    used_frames: list[Frame] = []
+    skipped: list[int] = []
     for fr in frames:
+        if fr.status is FrameStatus.failed:
+            skipped.append(fr.number)
+            continue
         video_art = (
             await session.execute(
                 select(Artifact)
@@ -68,16 +77,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ).scalar_one_or_none()
         if video_art is None:
             raise RuntimeError(f"нет клипа для кадра {fr.number}")
+        # На случай если файл артефакта удалён orphan-cleanup'ом /
+        # delete_hitl_artifact_file — пропускаем кадр.
+        if not Path(video_art.path).is_file():
+            logger.warning(
+                "[#{}] frame {}: scene_video artifact указывает на "
+                "отсутствующий файл {} — пропускаю кадр",
+                project.id, fr.number, video_art.path,
+            )
+            skipped.append(fr.number)
+            continue
         duration = fr.duration_seconds or ((fr.end_ts or 0.0) - (fr.start_ts or 0.0))
         if duration <= 0:
             raise RuntimeError(f"длительность кадра {fr.number} ≤ 0")
         clips.append(ClipSpec(src=Path(video_art.path), duration=float(duration)))
+        used_frames.append(fr)
+    if not clips:
+        raise RuntimeError(
+            "нет ни одного клипа для финальной сборки "
+            f"(всего кадров: {len(frames)}, пропущено: {len(skipped)})"
+        )
+    if skipped:
+        logger.info(
+            "[#{}] assemble: пропущено кадров {} (failed/без клипа): {}",
+            project.id, len(skipped), skipped,
+        )
 
     # субтитры
     subs_dir = project.data_dir / "subs"
     subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
+    # Только реально вошедшие в сборку кадры — иначе строка субтитра
+    # появится в пустом месте таймлайна.
     make_simple_ass(
-        [((fr.start_ts or 0.0), (fr.end_ts or 0.0), fr.voiceover_text or "") for fr in frames],
+        [
+            ((fr.start_ts or 0.0), (fr.end_ts or 0.0), fr.voiceover_text or "")
+            for fr in used_frames
+        ],
         subs_path,
     )
     session.add(Artifact(

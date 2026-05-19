@@ -5359,12 +5359,47 @@ async def _render_test_project_to_user(
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:reload_xlsx$"))
 async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
+    """Перечитать всё: xlsx → БД + диск → БД.
+
+    Делает две вещи подряд:
+      1) Импортирует project.xlsx обратно в БД (v8 или v7).
+      2) Сканирует папки `scenes/` и `videos/` проекта и
+         регистрирует артефакты для файлов, которых нет в БД
+         (например, юзер перегенерил картинку вручную и в БД
+         осталась запись на удалённый файл).
+
+    Также сбрасывает кадры в `FrameStatus.failed`, если для них
+    нашлась свежая картинка на диске — иначе пайплайн их снова
+    пропустит.
+    """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
+    from app.services.rescan_disk import rescan_project_disk
     from app.services.xlsx_sync import reload_from_xlsx
     from app.services.xlsx_v8_import import import_v8_xlsx
+
+    # Если проект в одном из running-статусов — воркер сейчас держит
+    # write-lock на SQLite (длинная транзакция в `session_scope` +
+    # `advance_project`). С PRAGMA busy_timeout=15s rescan всё равно
+    # отваливается с `database is locked`, потому что шаг видео/картинок
+    # коммитит только при смене статуса (раз в десятки минут). Не даём
+    # юзеру в этом состоянии — просим сначала ⏹ Стоп шаг / 🔛 Пауза.
+    RUNNING_STATUSES = {
+        ProjectStatus.planning, ProjectStatus.scripting,
+        ProjectStatus.splitting,
+        ProjectStatus.generating_hero, ProjectStatus.generating_items,
+        ProjectStatus.enriching_1, ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3, ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+        ProjectStatus.generating_image_prompts,
+        ProjectStatus.generating_images,
+        ProjectStatus.generating_animation_prompts,
+        ProjectStatus.generating_videos,
+        ProjectStatus.generating_audio,
+        ProjectStatus.assembling, ProjectStatus.publishing,
+    }
 
     async with session_scope() as s:
         project = (
@@ -5373,29 +5408,36 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        xlsx_path = project.data_dir / "project.xlsx"
-        if not xlsx_path.exists():
-            await cb.answer("xlsx-файла нет", show_alert=True)
+        if project.status in RUNNING_STATUSES:
+            await cb.answer(
+                f"Проект сейчас в работе ({project.status.value}). "
+                "Нажми «🔛 Пауза проекта» или «⏹ Стоп шаг», потом перечитай.",
+                show_alert=True,
+            )
             return
-        # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
-        # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
-        # ROOT FIX: раньше вызывался только v7 — и на v8-xlsx этот клик был пустым.
+
+        # 1) xlsx → БД (если xlsx-файл есть; иначе просто пропускаем
+        #    эту часть и идём сразу к ресканy диска).
         summary_v8: dict = {}
         summary_v7: dict = {}
-        try:
-            summary_v8 = await import_v8_xlsx(
-                s, project, xlsx_path,
-                keep_fields=False, update_frames_voiceover=True,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("reload_xlsx v8 import failed: {}", e)
-        try:
-            summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("reload_from_xlsx (v7) failed")
-            if not summary_v8:
-                await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
-                return
+        xlsx_path = project.data_dir / "project.xlsx"
+        xlsx_error: str | None = None
+        if xlsx_path.exists():
+            # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
+            # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
+            try:
+                summary_v8 = await import_v8_xlsx(
+                    s, project, xlsx_path,
+                    keep_fields=False, update_frames_voiceover=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("reload_xlsx v8 import failed: {}", e)
+            try:
+                summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("reload_from_xlsx (v7) failed")
+                if not summary_v8:
+                    xlsx_error = type(e).__name__
         proj_fields = list(
             dict.fromkeys(
                 (summary_v8.get("project_fields_changed") or [])
@@ -5410,17 +5452,52 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
             )
         )
         prompts_synced = summary_v8.get("prompts_synced") or []
+
+        # 2) диск → БД (всегда, даже если xlsx нет).
+        try:
+            disk_summary = await rescan_project_disk(s, project)
+        except Exception:  # noqa: BLE001
+            logger.exception("rescan_project_disk failed")
+            disk_summary = {
+                "scene_images_added": [],
+                "scene_videos_added": [],
+                "frames_unfailed": [],
+                "skipped_no_frame": [],
+            }
     await cb.answer("Перечитал")
     parts = []
+    if not xlsx_path.exists():
+        parts.append("xlsx-файла нет — пропустил импорт")
+    elif xlsx_error:
+        parts.append(f"xlsx импорт упал: {xlsx_error}")
     if proj_fields:
         parts.append("project: " + ", ".join(proj_fields))
     if frames_changed:
-        parts.append(f"кадры: {len(frames_changed)} ({frames_changed})")
+        parts.append(f"кадры (xlsx): {len(frames_changed)} ({frames_changed})")
     if prompts_synced:
         parts.append(f"image/anim prompts: {prompts_synced}")
+    if disk_summary["scene_images_added"]:
+        parts.append(
+            f"картинки с диска: +{len(disk_summary['scene_images_added'])} "
+            f"({disk_summary['scene_images_added']})"
+        )
+    if disk_summary["scene_videos_added"]:
+        parts.append(
+            f"видео с диска: +{len(disk_summary['scene_videos_added'])} "
+            f"({disk_summary['scene_videos_added']})"
+        )
+    if disk_summary["frames_unfailed"]:
+        parts.append(
+            f"сняли failed: {disk_summary['frames_unfailed']}"
+        )
+    if disk_summary["skipped_no_frame"]:
+        parts.append(
+            f"файлы без кадра в БД: {len(disk_summary['skipped_no_frame'])} "
+            f"(пропустил)"
+        )
     if not parts:
-        parts.append("ничего нового — ваши правки уже в БД")
-    await cb.message.answer("🔄 Перечитал xlsx.\n" + "\n".join(parts))
+        parts.append("ничего нового — БД и диск уже синхронны")
+    await cb.message.answer("🔄 Перечитал xlsx + диск.\n" + "\n".join(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -7625,7 +7702,13 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 frame = (
                     await s.execute(select(Frame).where(Frame.id == req.frame_id))
                 ).scalar_one_or_none()
-            current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
+            # Для видео-HITL правим animation_prompt, для картинок — image_prompt.
+            if req.kind is HITLKind.approve_videos:
+                current_prompt = (
+                    frame.animation_prompt if frame else None
+                ) or "(пусто)"
+            else:
+                current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
             ask_msg = await cb.bot.send_message(
                 settings.telegram_owner_chat_id,
                 (
@@ -7902,7 +7985,8 @@ async def _on_gpt_text_edit_reply(
 
 async def _on_edit_reply(msg: Message) -> None:
     """Если пользователь ответил на наше edit-запрос-сообщение — записываем
-    новый текст в frame.image_prompt, ставим decision=edit_prompt."""
+    новый текст в frame.image_prompt (или frame.animation_prompt, если HITL
+    про видео), ставим decision=edit_prompt."""
     reply_to_id = msg.reply_to_message.message_id if msg.reply_to_message else None
     if reply_to_id is None:
         return
@@ -7932,27 +8016,41 @@ async def _on_edit_reply(msg: Message) -> None:
         ).scalar_one_or_none()
         if frame is None:
             return
-        # Сохраняем ОРИГИНАЛЬНЫЙ image_prompt — он будет нужен для
-        # GPT-rewrite шага (отдадим ChatGPT'у: «вот старый промт +
-        # вот сообщение юзера, переделай так чтобы старое удовлетворяло
-        # новое»). Делаем это ДО перезаписи frame.image_prompt.
-        original_prompt = (frame.image_prompt or "").strip()
-        # frame.image_prompt = новое сообщение юзера. Это fallback на
-        # случай если GPT-rewrite в _generate_and_send упадёт — тогда
-        # хотя бы вернётся буквальный текст юзера, а не старый промт.
-        frame.image_prompt = new_prompt
+        is_video = req.kind is HITLKind.approve_videos
+        # Сохраняем ОРИГИНАЛЬНЫЙ промт — он будет нужен для GPT-rewrite
+        # шага (отдадим ChatGPT'у: «вот старый промт + вот сообщение
+        # юзера, переделай так чтобы старое удовлетворяло новое»).
+        # Делаем это ДО перезаписи поля.
+        if is_video:
+            original_prompt = (frame.animation_prompt or "").strip()
+            # frame.animation_prompt = новое сообщение юзера. Это
+            # fallback на случай если GPT-rewrite в generate_videos упадёт
+            # — тогда хотя бы вернётся буквальный текст юзера.
+            frame.animation_prompt = new_prompt
+            req.payload = {
+                **(req.payload or {}),
+                "edited_prompt": new_prompt[:2000],
+                "original_animation_prompt": original_prompt[:4000],
+                "needs_gpt_rewrite": True,
+            }
+        else:
+            original_prompt = (frame.image_prompt or "").strip()
+            # frame.image_prompt = новое сообщение юзера. Это fallback на
+            # случай если GPT-rewrite в _generate_and_send упадёт — тогда
+            # хотя бы вернётся буквальный текст юзера, а не старый промт.
+            frame.image_prompt = new_prompt
+            req.payload = {
+                **(req.payload or {}),
+                "edited_prompt": new_prompt[:2000],
+                # Флаг для _generate_and_send: «надо переписать через GPT
+                # ДО outsee». Сам rewrite делается там, потому что у
+                # генератора уже открыта browser_session + ChatGPTBot.
+                "original_image_prompt": original_prompt[:4000],
+                "needs_gpt_rewrite": True,
+            }
         req.decision = HITLDecision.edit_prompt
-        req.payload = {
-            **(req.payload or {}),
-            "edited_prompt": new_prompt[:2000],
-            # Флаг для _generate_and_send: «надо переписать через GPT
-            # ДО outsee». Сам rewrite делается там, потому что у
-            # генератора уже открыта browser_session + ChatGPTBot.
-            "original_image_prompt": original_prompt[:4000],
-            "needs_gpt_rewrite": True,
-        }
         # edit_prompt = регенерация с новым текстом → файл текущей попытки
-        # больше не нужен (не копим варианты в scenes/).
+        # больше не нужен (не копим варианты в scenes/ / videos/).
         _hitl_svc.delete_hitl_artifact_file(req)
         hitl_tg_msg_id = req.tg_message_id
         project = (
@@ -7960,11 +8058,17 @@ async def _on_edit_reply(msg: Message) -> None:
         ).scalar_one_or_none()
         if project is not None:
             try:
-                _sheet_for_project(project).write_frame(
-                    frame.number, image_prompt=new_prompt
-                )
+                if is_video:
+                    _sheet_for_project(project).write_frame(
+                        frame.number, animation_prompt=new_prompt
+                    )
+                else:
+                    _sheet_for_project(project).write_frame(
+                        frame.number, image_prompt=new_prompt
+                    )
             except Exception as e:  # noqa: BLE001
-                logger.warning("xlsx write_frame(image_prompt) failed: {}", e)
+                logger.warning("xlsx write_frame({}_prompt) failed: {}",
+                               "animation" if is_video else "image", e)
     if hitl_tg_msg_id:
         with contextlib.suppress(Exception):
             await msg.bot.edit_message_caption(
@@ -7975,7 +8079,7 @@ async def _on_edit_reply(msg: Message) -> None:
             )
     await msg.reply(
         "✏️ Промт обновлён. Отдам в ChatGPT на улучшение, потом перегенерирую "
-        "картинку."
+        + ("видео." if is_video else "картинку.")
     )
 
 

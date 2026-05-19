@@ -69,30 +69,40 @@ async def _send_with_network_retry(
     assert last_exc is not None
     raise last_exc
 
-# Kinds, у которых в payload['photo_path'] лежит файл на диске. Используется
-# для очистки файла при regen/reject (см. `delete_hitl_artifact_file`).
+# Kinds, у которых в payload лежит ссылка на файл на диске.
+# `_PHOTO_KINDS` хранят путь в `payload['photo_path']`,
+# `_VIDEO_KINDS` — в `payload['video_path']`. Используется для очистки
+# файла при regen/reject (см. `delete_hitl_artifact_file`).
 _PHOTO_KINDS: frozenset[HITLKind] = frozenset({
     HITLKind.approve_images,
     HITLKind.approve_hero,
 })
+_VIDEO_KINDS: frozenset[HITLKind] = frozenset({
+    HITLKind.approve_videos,
+})
 
 
 def delete_hitl_artifact_file(req: HITLRequest) -> bool:
-    """Удаляет файл, на который ссылается HITL (payload['photo_path']).
+    """Удаляет файл, на который ссылается HITL.
+
+    Для photo-kinds (`approve_images`, `approve_hero`) — `payload['photo_path']`.
+    Для video-kinds (`approve_videos`) — `payload['video_path']`.
 
     Политика: при regen/reject не копим разные варианты одной и той же
-    карточки в `scenes/` (или `characters/`). Подходит только для
-    photo-kinds — для текстовых/видео HITL ничего не делает.
+    карточки в `scenes/` / `characters/` / `videos/`. Для текстовых
+    HITL ничего не делает.
 
     Возвращает True если файл был и удалось удалить.
     """
-    if req.kind not in _PHOTO_KINDS:
-        return False
     payload = req.payload or {}
-    photo_path = payload.get("photo_path")
-    if not photo_path:
+    file_path: str | None = None
+    if req.kind in _PHOTO_KINDS:
+        file_path = payload.get("photo_path")
+    elif req.kind in _VIDEO_KINDS:
+        file_path = payload.get("video_path")
+    if not file_path:
         return False
-    p = Path(str(photo_path))
+    p = Path(str(file_path))
     try:
         if p.is_file():
             p.unlink()
@@ -317,16 +327,30 @@ async def send_hitl_video(
     caption: str,
     payload: dict | None = None,
     frame_id: int | None = None,
+    allow_edit: bool = False,
 ) -> HITLRequest:
+    """Шлёт видео-карточку с inline-кнопками HITL.
+
+    `allow_edit=True` добавляет кнопку «✏️ Изменить промт» — используется
+    в per-frame HITL на шаге generate_videos: юзер может правкой текста
+    переписать `animation_prompt` для конкретного кадра.
+
+    Путь к файлу сохраняется в `payload['video_path']` (если не задан
+    явно), чтобы `delete_hitl_artifact_file` мог удалить файл при
+    regen/reject — политика «не копим варианты одного кадра в папке».
+    """
     from aiogram.types import FSInputFile
 
+    payload = dict(payload or {})
+    payload.setdefault("video_path", video_path)
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
+    kb = _keyboard(req.id, allow_edit=allow_edit)
     msg = await _send_with_network_retry(
         lambda: bot.send_video(
             settings.telegram_owner_chat_id,
             FSInputFile(video_path),
             caption=caption[:1000],
-            reply_markup=_keyboard(req.id),
+            reply_markup=kb,
         ),
         op=f"send_video(frame={frame_id})",
     )

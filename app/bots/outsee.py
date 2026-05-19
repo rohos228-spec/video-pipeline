@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -2730,6 +2731,7 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
@@ -3035,6 +3037,7 @@ class OutseeBot:
         video_url = await self._wait_video_url(
             page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
             baseline_urls=baseline_video_urls,
+            cancel_check=cancel_check,
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3206,6 +3209,7 @@ class OutseeBot:
         timeout: float,
         prompt_id_prefix: str | None = None,
         baseline_urls: set[str] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
@@ -3218,12 +3222,33 @@ class OutseeBot:
 
         Логи прогресса каждые 15 секунд: сколько кандидатов и сколько
         из них новых.
+
+        Если задан `cancel_check` — на каждой итерации цикла он
+        дёргается. Если возвращает True (юзер нажал ⏹ Стоп шаг) — мы
+        выходим из цикла с `OutseeImageError(reason="cancelled by user…")`
+        так, чтобы caller корректно завершился через `StepCancelledError`.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         log_every = 15.0
         start_time = asyncio.get_event_loop().time()
         next_log = start_time + log_every
         while asyncio.get_event_loop().time() < deadline:
+            # Проверка флага отмены — даёт реакцию на ⏹ Стоп шаг внутри
+            # длинного ожидания (75-120 сек на ролик). Без этого юзер
+            # ждёт окончания текущего кадра.
+            if cancel_check is not None:
+                try:
+                    cancelled = cancel_check()
+                except Exception:  # noqa: BLE001
+                    cancelled = False
+                if cancelled:
+                    logger.info(
+                        "outsee.generate_video: cancel_check сработал "
+                        "(юзер нажал ⏹) — прерываю ожидание видео",
+                    )
+                    raise OutseeImageError(
+                        reason="cancelled by user via ⏹"
+                    )
             # Приоритет 0: видео в карточке с [ID: ...].
             if prompt_id_prefix:
                 try:

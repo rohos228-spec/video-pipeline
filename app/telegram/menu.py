@@ -534,7 +534,7 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
 
     rows.append([
         InlineKeyboardButton(text="📥 Скачать xlsx", callback_data=f"proj:{project.id}:dl_xlsx"),
-        InlineKeyboardButton(text="🔄 Перечитать xlsx", callback_data=f"proj:{project.id}:reload_xlsx"),
+        InlineKeyboardButton(text="🔄 Перечитать xlsx+диск", callback_data=f"proj:{project.id}:reload_xlsx"),
     ])
     rows.append([
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"proj:{project.id}:delete"),
