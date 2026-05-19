@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,32 @@ from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PWTimeoutError
 
 from app.bots.browser import BrowserSession, browser_session
+from app.generation_options import VIDEO_GENERATORS
 from app.settings import settings
+
+# ----- Справочник outsee_slug → display_name для UI-выбора модели -----
+# Используется в `_select_video_model_via_button` чтобы клик'нуть нужную
+# карточку в модалке «Поменять» после открытия страницы.
+VIDEO_MODEL_DISPLAY_BY_SLUG: dict[str, str] = {
+    c.outsee_slug: c.label for c in VIDEO_GENERATORS if c.outsee_slug
+}
+
+# ----- Принудительный реремап slug'ов на этапе вызова outsee -----
+# По требованию юзера: Veo 3 Fast и Veo 3.1 Fast → всегда Veo 3.1 Lite.
+# (В настройках проекта остаётся исходная модель — для xlsx/GPT-контекста —
+# но в outsee.io бот выбирает Lite. Если нужно расширить — добавить сюда.)
+VIDEO_MODEL_SLUG_REMAP: dict[str, str] = {
+    "veo-3-fast": "veo-3-1-lite",
+    "veo-3-1-fast": "veo-3-1-lite",
+}
+
+
+def _remap_video_slug(slug: str | None) -> str | None:
+    """Применяет VIDEO_MODEL_SLUG_REMAP. Возвращает исходный slug если
+    маппинга нет."""
+    if not slug:
+        return slug
+    return VIDEO_MODEL_SLUG_REMAP.get(slug, slug)
 
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
@@ -42,18 +69,24 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
-    # Сначала пытаемся найти АКТИВНУЮ кнопку; только если не нашли —
-    # берём любую (она может быть заблокирована пока не вставлен промт).
+    # САМЫЙ СТРОГИЙ: text-is исключает «Перегенерировать» /
+    # «Что генерируется?» и прочие substring-ловушки. Без
+    # `:not([disabled])` в первых вариантах — карточка может быть
+    # disabled пока не вставлен промт, но после разблокируется.
+    "button:text-is('Генерировать'):not([disabled])",
+    "button:text-is('Сгенерировать'):not([disabled])",
+    "button:text-is('Создать'):not([disabled])",
+    "button:text-is('Generate'):not([disabled])",
+    "button:text-is('Генерировать')",
+    "button:text-is('Сгенерировать')",
+    "button:text-is('Создать')",
+    "button:text-is('Generate')",
+    # Фаллбэки — has-text (substring): хватают «Перегенерировать»
+    # и т.п., но это всё равно триггер генерации — крайний случай.
     "button:has-text('Генерировать'):not([disabled])",
     "button:has-text('Сгенерировать'):not([disabled])",
-    "button:has-text('Создать'):not([disabled])",
-    "button:has-text('Generate'):not([disabled])",
     "button:has-text('Генерировать')",
-    "button:has-text('Генерация')",
     "button:has-text('Сгенерировать')",
-    "button:has-text('Создать')",
-    "button:has-text('Generate')",
-    "button:has-text('Run')",
     "button[data-testid='generate']",
     "button[type='submit']",
 ]
@@ -339,8 +372,18 @@ def _resolution_selectors(resolution: str) -> list[str]:
 
 
 # Кнопка/тогл «Relax» (для всех картиночных моделей и для veo-3-1-fast).
-# В outsee.io это просто кнопка/тогл с текстом «Relax».
+# В outsee.io 2026 в классическом дизайне это checkbox с текстом
+# «Relax Режим» (под надписью «Дешевле, но может генерировать дольше
+# обычного»). В старых выкатках это могло называться просто «Relax»
+# или тогл «Безлимит». Покрываем все три случая.
 RELAX_SELECTORS: list[str] = [
+    # Новый UI: чекбокс с текстом «Relax Режим».
+    "label:has-text('Relax Режим')",
+    "button:has-text('Relax Режим')",
+    "[role='checkbox']:near(:text-is('Relax Режим'))",
+    "div:has(> :text-is('Relax Режим')) input[type='checkbox']",
+    "*:has(> :text-is('Relax Режим'))",
+    # Старые варианты.
     "button:has-text('Relax')",
     "[role='switch']:has-text('Relax')",
     "label:has-text('Relax')",
@@ -505,6 +548,9 @@ def _image_page_url(model_slug: str | None) -> str:
 
 def _video_page_url(model_slug: str | None) -> str:
     base = settings.outsee_video_url
+    # Применяем VIDEO_MODEL_SLUG_REMAP — чтобы и в URL, и в UI отображалась
+    # одна и та же модель (например Veo 3.1 Fast → Veo 3.1 Lite).
+    model_slug = _remap_video_slug(model_slug)
     if not model_slug:
         return base
     if "?model=" in base:
@@ -515,6 +561,233 @@ def _video_page_url(model_slug: str | None) -> str:
 
 FILE_UPLOAD_SELECTORS = [
     "input[type='file']",
+]
+
+# ----- Селекторы кнопки выбора модели (новый UI 2026, «Классика») -----
+# В левой панели «Настройки» есть отдельная кнопка-селектор модели вида:
+#   <button>
+#     <img src="/videomobilepreview/<model>.webp">
+#     <span>Модель</span><span>Seedance Pro 1.5</span>
+#     <svg chevron-right>
+#   </button>
+# ВАЖНО: кнопка «Поменять» наверху, рядом с превьюшкой стиля, открывает
+# модалку «Выбор визуального стиля» (стили: Свободный/Взрыв/Аутфит), а
+# НЕ переключает модель. Для модели нужна именно эта кнопка ниже.
+MODEL_CHANGE_BUTTON_SELECTORS: list[str] = [
+    # Самое надёжное: кнопка содержит подпись «Модель» в span внутри.
+    "button:has(span:text-is('Модель'))",
+    # Запасной — span с «Модель» как подпись.
+    "button:has(span:has-text('Модель'))",
+    "[role='button']:has(span:text-is('Модель'))",
+]
+
+# Текущее имя модели в карточке (используем чтобы понять — уже стоит нужная
+# или нет). Структура: <button>...<span>Модель</span><span>X</span>...</button>.
+CURRENT_MODEL_NAME_SELECTORS: list[str] = [
+    # Прицельно: <span>X</span> ИДУЩИЙ ПОСЛЕ <span>Модель</span> внутри кнопки.
+    "button:has(span:text-is('Модель')) span.text-xs.font-semibold",
+    # Запасные — структура та же, только классы могут отличаться.
+    "button:has(span:text-is('Модель')) span.font-semibold",
+    "button:has(span:has-text('Модель')) span:not(:text-is('Модель'))",
+]
+
+
+def _video_model_option_selectors(display_name: str) -> list[str]:
+    """Селекторы пункта выбора модели в открывшейся модалке.
+
+    Модалка outsee.io не задокументирована — пробуем самые вероятные
+    паттерны: явные роли (option/menuitem/button) + текст-метка модели.
+    """
+    return [
+        f"[role='option']:has-text('{display_name}')",
+        f"[role='menuitem']:has-text('{display_name}')",
+        f"button:has-text('{display_name}')",
+        f"li:has-text('{display_name}')",
+        f"div[role='button']:has-text('{display_name}')",
+        # Cards в модалке: <div ...>{name}</div> + что-то кликабельное вокруг.
+        f"*:has(> :text-is('{display_name}'))",
+    ]
+
+
+async def _select_video_model_via_button(
+    page: Any, slug: str | None, *, dumps: list[Path] | None = None,
+) -> bool:
+    """Выбирает нужную видео-модель через клик по «Поменять» на странице
+    outsee.io/video. Возвращает True если кнопка отжалась И селект
+    модели прошёл (или модель уже была выбрана), False если что-то
+    пошло не так (тогда полагаемся на ?model=… в URL).
+
+    Идея: страница могла открыться по URL `?model=<slug>`, и при этом
+    реально модель уже стоит правильная. Но если URL-параметр не
+    отработал (или юзер хочет «руками» переключиться), бот должен
+    явно кликнуть «Поменять» и выбрать модель в модалке.
+
+    Алгоритм:
+      1) Если slug пустой/неизвестный — пропускаем.
+      2) Читаем имя модели из карточки. Если уже совпадает с нашим
+         display_name — return True (ничего не трогаем).
+      3) Клик «Поменять» → ждём модалку.
+      4) Клик по пункту с display_name.
+      5) Если есть кнопка подтверждения «Применить»/«Выбрать»/«ОК» —
+         жмём её. Иначе модалка закрывается сама.
+    """
+    if not slug:
+        return True
+    # Применяем реремап (Veo 3 Fast / Veo 3.1 Fast → Veo 3.1 Lite и т.п.).
+    remapped = _remap_video_slug(slug)
+    if remapped != slug:
+        logger.info(
+            "outsee.select_model: slug '{}' переремапнут на '{}' "
+            "(см. VIDEO_MODEL_SLUG_REMAP)", slug, remapped,
+        )
+        slug = remapped
+    display_name = VIDEO_MODEL_DISPLAY_BY_SLUG.get(slug)
+    if not display_name:
+        logger.warning(
+            "outsee.select_model: slug={} нет в "
+            "VIDEO_MODEL_DISPLAY_BY_SLUG — пропускаю UI-выбор", slug,
+        )
+        return True
+
+    # 1) Проверяем, не стоит ли уже нужная модель.
+    try:
+        for cur_sel in CURRENT_MODEL_NAME_SELECTORS:
+            try:
+                loc = page.locator(cur_sel).first
+                if (await loc.count()) <= 0:
+                    continue
+                cur = (await loc.inner_text(timeout=1_000)) or ""
+                cur = cur.strip()
+                if cur and cur.lower() == display_name.lower():
+                    logger.info(
+                        "outsee.select_model: модель '{}' уже выбрана "
+                        "(не кликаю «Поменять»)", display_name,
+                    )
+                    return True
+                if cur:
+                    logger.info(
+                        "outsee.select_model: текущая модель '{}' "
+                        "(хочу '{}'), жму «Поменять»", cur, display_name,
+                    )
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) Клик по «Поменять».
+    change_sel = await _first_visible(
+        page, MODEL_CHANGE_BUTTON_SELECTORS, timeout_ms=3_000
+    )
+    if not change_sel:
+        logger.warning(
+            "outsee.select_model: кнопка «Поменять» не найдена — "
+            "полагаюсь на ?model=… в URL",
+        )
+        h, p = await _dump_page(page, "model_change_button_notfound")
+        if dumps is not None:
+            for x in (h, p):
+                if x:
+                    dumps.append(x)
+        return False
+    try:
+        await page.locator(change_sel).first.click(timeout=3_000)
+        logger.info(
+            "outsee.select_model: «Поменять» нажато ({}) — жду модалку",
+            change_sel,
+        )
+        await asyncio.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee.select_model: клик по «Поменять» упал: {}", e,
+        )
+        return False
+
+    # 3) Выбор пункта с display_name.
+    opt_sel = await _first_visible(
+        page, _video_model_option_selectors(display_name), timeout_ms=5_000
+    )
+    if not opt_sel:
+        logger.warning(
+            "outsee.select_model: пункт '{}' в модалке не найден",
+            display_name,
+        )
+        h, p = await _dump_page(
+            page, f"model_option_{slug}_notfound",
+        )
+        if dumps is not None:
+            for x in (h, p):
+                if x:
+                    dumps.append(x)
+        # Пытаемся закрыть модалку Escape.
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        return False
+    try:
+        await page.locator(opt_sel).first.click(timeout=3_000)
+        logger.info(
+            "outsee.select_model: модель '{}' выбрана в модалке ({})",
+            display_name, opt_sel,
+        )
+        await asyncio.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee.select_model: клик по '{}' упал: {} ({})",
+            display_name, e, opt_sel,
+        )
+        return False
+
+    # 4) Подтверждение (если есть кнопка «Применить»/«Выбрать»).
+    confirm_selectors = [
+        "button:has-text('Применить'):not([disabled])",
+        "button:has-text('Выбрать'):not([disabled])",
+        "button:has-text('OK'):not([disabled])",
+        "button:has-text('ОК'):not([disabled])",
+        "button:has-text('Подтвердить'):not([disabled])",
+    ]
+    confirm_sel = await _first_visible(
+        page, confirm_selectors, timeout_ms=800
+    )
+    if confirm_sel:
+        try:
+            await page.locator(confirm_sel).first.click(timeout=2_000)
+            logger.info(
+                "outsee.select_model: confirm ({})", confirm_sel,
+            )
+            await asyncio.sleep(0.3)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.select_model: confirm-клик упал: {}", e,
+            )
+    return True
+
+# Селекторы для конкретно «Первый кадр» (новый UI outsee.io 2026).
+# В классическом дизайне VIDEO-страницы есть две карточки загрузки:
+#   - «Первый кадр (опционально)»   ← нам сюда
+#   - «Последний кадр (опционально)»
+# Каждая карточка содержит свой скрытый input[type=file]. Раньше код
+# брал просто `input[type=file]` last — а это «Последний кадр». Неверно.
+# Теперь ищем именно по тексту-метке «Первый кадр».
+FIRST_FRAME_CARD_SELECTORS: list[str] = [
+    "label:has-text('Первый кадр')",
+    "button:has-text('Первый кадр')",
+    "div:has(> :text-is('Первый кадр'))",
+    "*:has(> :text-is('Первый кадр'))",
+]
+FIRST_FRAME_INPUT_SELECTORS: list[str] = [
+    "label:has-text('Первый кадр') input[type='file']",
+    "button:has-text('Первый кадр') input[type='file']",
+    "div:has(:text-is('Первый кадр')) input[type='file']",
+    "*:has(:text-is('Первый кадр')) input[type='file']",
+]
+LAST_FRAME_CARD_SELECTORS: list[str] = [
+    "label:has-text('Последний кадр')",
+    "button:has-text('Последний кадр')",
+    "div:has(> :text-is('Последний кадр'))",
+]
+LAST_FRAME_INPUT_SELECTORS: list[str] = [
+    "label:has-text('Последний кадр') input[type='file']",
+    "div:has(:text-is('Последний кадр')) input[type='file']",
 ]
 
 # Селекторы для скачивания результата. Покрываем два случая:
@@ -731,6 +1004,28 @@ _INPUT_REF_MARKERS = (
     "/upload/",
 )
 
+# Маркеры URL'ов МИНИАТЮР outsee. Когда outsee рендерит карточку
+# результата генерации, в DOM сначала появляется URL миниатюры вида
+# `image_<ts>_<idx>_thumb.jpg` — он подгружается из CDN за <1 секунды
+# и выглядит как «новая <img> в DOM» для бота. Сама же финальная
+# картинка имеет URL `image_<ts>_<idx>.png/.jpg/.webp` (БЕЗ `_thumb`)
+# и приходит через 30-180 секунд после клика Generate. Если мы
+# принимаем `_thumb`-URL как финальный — скачиваем плейсхолдер-
+# миниатюру (единицы KB) или картинку от соседней / СТАРОЙ генерации
+# (history panel outsee лениво подгружает thumb'ы прошлых картинок).
+# Это и есть корень бага «при поиске готовой картинки делаются 2
+# изображения» / «отправил картинку другого кадра».
+_PREVIEW_THUMB_MARKERS = (
+    "_thumb.",  # ловит _thumb.jpg, _thumb.png, _thumb.webp
+)
+
+# Минимум секунд после клика Generate, прежде чем мы готовы принять
+# ЛЮБОЙ URL как финальный результат. nano-banana никогда не успевает
+# сгенерить картинку быстрее этого; всё, что прилетает раньше — это
+# либо превью-плейсхолдер, либо leak из истории outsee. Хорошо
+# работает в паре с фильтром _PREVIEW_THUMB_MARKERS.
+_MIN_GENERATE_ELAPSED_S = 10.0
+
 
 def _strip_url_query(url: str | None) -> str:
     """Снимает `?query` и `#fragment`, оставляет scheme+host+path.
@@ -824,6 +1119,11 @@ def _is_candidate_image_response(resp: Any) -> bool:
         if any(marker in low for marker in _INPUT_REF_MARKERS):
             # Это URL ВХОДНОГО референса (тот файл, который мы только что
             # загрузили), а не результат генерации. Не считаем кандидатом.
+            return False
+        if any(marker in low for marker in _PREVIEW_THUMB_MARKERS):
+            # _thumb.jpg — миниатюра outsee, не финальная картинка.
+            # Не пускаем в net_events; финальный URL без `_thumb`
+            # прилетит чуть позже.
             return False
         # Content-Length — дешёвый способ отсечь мелочь без .body()
         cl = resp.headers.get("content-length")
@@ -1965,6 +2265,9 @@ class OutseeBot:
                 and not any(
                     m in current.lower() for m in _UI_ASSET_MARKERS
                 )
+                and not any(
+                    m in current.lower() for m in _PREVIEW_THUMB_MARKERS
+                )
                 and current_norm not in baseline_all_srcs
             ):
                 if await self._img_is_loaded(page, current):
@@ -1996,6 +2299,9 @@ class OutseeBot:
                     for u in new_srcs
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
+                    and not any(
+                        m in u.lower() for m in _PREVIEW_THUMB_MARKERS
+                    )
                 ]
                 clean = [u for u in clean if _url_is_fresh(u, net_events)]
                 # Исключаем уже отвергнутых при ID-верификации (сравнение
@@ -2067,9 +2373,27 @@ class OutseeBot:
                 # это наша картинка. Click-verification (которая
                 # часто врёт из-за textarea.value vs innerText)
                 # пропускаем.
+                #
+                # НО! Есть два сценария, когда net_events врёт:
+                #  1) URL `_thumb.jpg` — миниатюра-плейсхолдер, выгружается
+                #     CDN за <1 сек; это НЕ финальная картинка. Финальная
+                #     приходит как `image_<ts>_<idx>.png/.jpg/.webp` БЕЗ
+                #     суффикса `_thumb`.
+                #  2) elapsed < _MIN_GENERATE_ELAPSED_S (10 сек) — реальная
+                #     nano-banana никогда не успевает; всё, что прилетает
+                #     быстрее, — это leak из истории outsee (после reload'a
+                #     страницы history panel лениво подгружает thumb'ы
+                #     прошлых картинок, они попадают в net_events).
+                # В обоих случаях откидываем кандидата и фолбэчим на
+                # click-verification (или ждём настоящую картинку).
+                is_thumb = any(
+                    m in fallback_candidate.lower()
+                    for m in _PREVIEW_THUMB_MARKERS
+                )
+                too_early = elapsed < _MIN_GENERATE_ELAPSED_S
                 if net_events and _url_is_fresh(
                     fallback_candidate, net_events
-                ):
+                ) and not is_thumb and not too_early:
                     logger.info(
                         "_wait_image_url_strict: trusted by net_events "
                         "(source={}, URL пришёл по сети после Generate) "
@@ -2078,6 +2402,34 @@ class OutseeBot:
                         fallback_candidate[:140],
                     )
                     return fallback_candidate
+                if net_events and _url_is_fresh(
+                    fallback_candidate, net_events
+                ) and (is_thumb or too_early):
+                    # Логируем причину отказа — это полезно в проде:
+                    # видим, сколько раз outsee нам "подсовывает"
+                    # _thumb или ранние leak'и, и можем подкрутить
+                    # _MIN_GENERATE_ELAPSED_S при необходимости.
+                    reason = (
+                        "_thumb-URL (миниатюра outsee, не финальная картинка)"
+                        if is_thumb
+                        else (
+                            f"elapsed={elapsed:.1f}<"
+                            f"{_MIN_GENERATE_ELAPSED_S}сек "
+                            "(слишком быстро для nano-banana — leak из истории)"
+                        )
+                    )
+                    logger.warning(
+                        "_wait_image_url_strict: net_events match ОТКЛОНЁН "
+                        "({}): {}",
+                        reason, fallback_candidate[:140],
+                    )
+                    rejected_candidates.add(
+                        _strip_url_query(fallback_candidate)
+                    )
+                    fallback_candidate = None
+                    fallback_source = None
+                    await asyncio.sleep(2.0)
+                    continue
                 # B. Fallback — click-verification, когда нет net_events
                 # или URL не подтверждён сетью.
                 ok = await self._verify_img_by_clicking(
@@ -2379,6 +2731,7 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
@@ -2403,6 +2756,18 @@ class OutseeBot:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
             pass
+
+        # 0.5) Явный UI-выбор модели через кнопку «Поменять».
+        # URL `?model=<slug>` обычно прокидывает модель, но юзер хочет
+        # чтобы бот гарантированно клик'нул выбор в UI. Если модель уже
+        # стоит правильная — функция тихо вернёт True и ничего не сделает.
+        try:
+            await _select_video_model_via_button(page, model_slug)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.generate_video: UI-выбор модели упал: {} — "
+                "продолжаю с тем, что прокинулось через ?model=…", e,
+            )
 
         # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
         # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
@@ -2445,6 +2810,9 @@ class OutseeBot:
                 pass
             await page.locator(input_sel).first.click()
             await page.locator(input_sel).first.fill(prompt)
+            logger.info(
+                "outsee.generate_video: промт вставлен ({} симв)", len(prompt)
+            )
 
             # 2) аспект (с верификацией состояния)
             if aspect_ratio:
@@ -2470,37 +2838,51 @@ class OutseeBot:
             await _toggle_relax(page, want_on=relax, where="generate_video")
 
             # 3) загрузка стартового кадра (если передан).
-            # Сначала ищем ВИДИМЫЙ input[type=file] (короткий таймаут — в
-            # outsee он часто скрыт, ожидать долго смысла нет). Если не
-            # нашли — fallback на скрытый input через `set_input_files`
-            # без проверки видимости (тот же приём что в
-            # _attach_reference_image для картинок).
+            #
+            # На новом UI outsee.io 2026 (классический дизайн) есть ДВЕ
+            # карточки: «Первый кадр (опционально)» и «Последний кадр
+            # (опционально)». У каждой свой `<input type="file">`. Раньше
+            # код брал просто `input[type=file]` `.last` — это «Последний
+            # кадр», что НЕВЕРНО для image-to-video (там нужен ПЕРВЫЙ).
+            #
+            # Алгоритм поиска (по убыванию точности):
+            #   1) FIRST_FRAME_INPUT_SELECTORS — input под карточкой
+            #      «Первый кадр»; даже если он скрыт, set_input_files
+            #      работает (Playwright не требует видимости).
+            #   2) Если общий input[type=file] на странице ровно один —
+            #      используем его (single-input UI).
+            #   3) Несколько input[type=file] в DOM: вычитаем тот, что
+            #      под «Последний кадр», и берём первый из оставшихся.
+            #   4) Падаем с понятной ошибкой.
             if start_frame is not None:
                 attached = False
-                file_sel = await _first_visible(
-                    page, FILE_UPLOAD_SELECTORS, timeout_ms=3_000
-                )
-                if file_sel:
+                # --- (1) Прицельный поиск «Первый кадр» ---
+                for sel in FIRST_FRAME_INPUT_SELECTORS:
                     try:
-                        await page.locator(file_sel).first.set_input_files(
-                            str(start_frame)
-                        )
+                        loc = page.locator(sel).first
+                        n = await loc.count()
+                    except Exception:  # noqa: BLE001
+                        n = 0
+                    if n <= 0:
+                        continue
+                    try:
+                        await loc.set_input_files(str(start_frame))
                         logger.info(
                             "outsee.generate_video: стартовый кадр {} "
-                            "загружен в видимый input ({})",
-                            start_frame.name, file_sel,
+                            "загружен в «Первый кадр» ({})",
+                            start_frame.name, sel,
                         )
                         attached = True
+                        break
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
-                            "outsee.generate_video: видимый "
-                            "input.set_input_files упал: {} — "
-                            "пробую скрытый input",
-                            e,
+                            "outsee.generate_video: {}.set_input_files "
+                            "упал: {} — пробую следующий селектор",
+                            sel, e,
                         )
+
+                # --- (2)/(3) Fallback по общему input[type=file] ---
                 if not attached:
-                    # Fallback на скрытый input в DOM (берём последний — в
-                    # outsee.io именно он привязан к UI-кнопке загрузки).
                     base = page.locator("input[type='file']")
                     try:
                         n_inputs = await base.count()
@@ -2513,36 +2895,149 @@ class OutseeBot:
                     if n_inputs <= 0:
                         raise RuntimeError(
                             "outsee video: не найден input[type=file] для "
-                            "стартового кадра (видимый и скрытый, count=0). "
-                            "Возможно, модель не поддерживает image-to-video "
-                            "или сайт изменил DOM."
+                            "стартового кадра (count=0). Возможно, модель "
+                            "не поддерживает image-to-video или сайт "
+                            "изменил DOM."
                         )
-                    try:
-                        await base.last.set_input_files(str(start_frame))
-                        logger.info(
-                            "outsee.generate_video: стартовый кадр {} "
-                            "загружен в скрытый input (count={}, взят last)",
-                            start_frame.name, n_inputs,
-                        )
-                        attached = True
-                    except Exception as e:  # noqa: BLE001
-                        raise RuntimeError(
-                            f"outsee video: set_input_files в скрытый input "
-                            f"упал: {e} (count={n_inputs})"
-                        ) from e
+
+                    # Один input → он и есть «Первый кадр» (single-input UI).
+                    if n_inputs == 1:
+                        try:
+                            await base.first.set_input_files(str(start_frame))
+                            logger.info(
+                                "outsee.generate_video: стартовый кадр {} "
+                                "загружен в единственный input (count=1)",
+                                start_frame.name,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(
+                                f"outsee video: set_input_files в "
+                                f"единственный input упал: {e}"
+                            ) from e
+                    else:
+                        # Несколько input'ов. Узнаём индекс «Последнего
+                        # кадра», чтобы НЕ грузить в него.
+                        last_frame_idx = -1
+                        for sel_lf in LAST_FRAME_INPUT_SELECTORS:
+                            try:
+                                lf_loc = page.locator(sel_lf).first
+                                if (await lf_loc.count()) > 0:
+                                    # Совпадение есть; вычислим элемент,
+                                    # на который он указывает, и найдём
+                                    # его позицию среди base.
+                                    handle = await lf_loc.element_handle()
+                                    if handle is None:
+                                        break
+                                    for i in range(n_inputs):
+                                        bh = await base.nth(i).element_handle()
+                                        if bh is None:
+                                            continue
+                                        same = await page.evaluate(
+                                            "([a, b]) => a === b",
+                                            [handle, bh],
+                                        )
+                                        if same:
+                                            last_frame_idx = i
+                                            break
+                                    break
+                            except Exception:  # noqa: BLE001
+                                continue
+
+                        # Берём первый input, который НЕ «Последний кадр».
+                        target_idx = -1
+                        for i in range(n_inputs):
+                            if i != last_frame_idx:
+                                target_idx = i
+                                break
+                        if target_idx < 0:
+                            target_idx = 0
+                        try:
+                            await base.nth(target_idx).set_input_files(
+                                str(start_frame)
+                            )
+                            logger.info(
+                                "outsee.generate_video: стартовый кадр {} "
+                                "загружен в input[{}] (count={}, "
+                                "last_frame_idx={})",
+                                start_frame.name, target_idx, n_inputs,
+                                last_frame_idx,
+                            )
+                            attached = True
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(
+                                f"outsee video: set_input_files в "
+                                f"input[{target_idx}] упал: {e} "
+                                f"(count={n_inputs})"
+                            ) from e
                 await asyncio.sleep(1.0)
+
+            # 3.5) СНИМОК baseline ВИДЕО/ТАМБОВ ДО клика Generate —
+            # всё что уже в DOM (история outsee, чужие ролики) не считаем
+            # «свежим». Это зеркало baseline-логики из generate_image.
+            baseline_video_urls: set[str] = set()
+            try:
+                baseline_video_urls = set(
+                    await self._all_video_like_urls(page)
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: baseline snapshot упал: {}", e
+                )
+            logger.info(
+                "outsee.generate_video: baseline urls={} будем игнорировать (это прошлые ролики из истории)",
+                len(baseline_video_urls),
+            )
 
             # 4) generate
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            # Проверим что кнопка из себя представляет — текст и enabled.
+            try:
+                gen_loc = page.locator(gen_sel).first
+                btn_text = (await gen_loc.text_content() or "").strip()
+                is_disabled = await gen_loc.is_disabled()
+            except Exception:  # noqa: BLE001
+                btn_text = "?"
+                is_disabled = False
+            logger.info(
+                "outsee.generate_video: кнопка Generate найдена «{}» (disabled={}), кликаю ({})",
+                btn_text, is_disabled, gen_sel,
+            )
             await page.locator(gen_sel).first.click()
+            logger.info(
+                "outsee.generate_video: Generate кликнут, жду видео (timeout={:.0f}с, prompt_id={})",
+                timeout, prompt_id_prefix,
+            )
+            # Через ~3 сек проверим, сработал ли клик — должен появиться
+            # spinner / placeholder, или хотя бы новый thumb-img. Если НЕТ —
+            # дамп страницы в data/outsee_dumps/.
+            try:
+                await asyncio.sleep(3.0)
+                after_urls = set(await self._all_video_like_urls(page))
+                if after_urls == baseline_video_urls:
+                    logger.warning(
+                        "outsee.generate_video: ЧЕРЕЗ 3с ПОСЛЕ КЛИКА GENERATE "
+                        "в DOM СТОЛЬКО ЖЕ video-тамбов ({}). "
+                        "Похоже кнопка НЕ сработала — дамп страницы.",
+                        len(baseline_video_urls),
+                    )
+                    await _dump_page(page, "generate_click_no_effect")
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            # already_in_progress: baseline пустой (результатом
+            # считаем всё что на странице, привязанное к нашему [ID:]).
+            baseline_video_urls = set()
 
-        # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
-        # ищем `<video>` в карточке с нашим [ID: ...], только если не
-        # нашли — фолбэк на «любой видео-URL в DOM».
+        # 5) ждём результат — видео в карточке с нашим [ID: ...],
+        # причём URL ДОЛЖЕН отличаться от baseline (т.е. свеже-
+        # сгенеренный, а не чужой из истории).
         video_url = await self._wait_video_url(
             page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
+            baseline_urls=baseline_video_urls,
+            cancel_check=cancel_check,
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2550,21 +3045,67 @@ class OutseeBot:
         logger.info("outsee video saved → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=video_url)
 
+    async def _all_video_like_urls(self, page: Page) -> list[str]:
+        """Снимок baseline: все URL'ы, похожие на видео-карточки outsee.
+
+        Собираем:
+          - <video>.src, <source>.src;
+          - <a href*=".mp4"> / <a download>;
+          - <img src> где src содержит "video_..._thumb" (галерейная
+            превьюшка готового видео).
+
+        Все URL'ы НОРМАЛИЗУЕМ (срезаем `?X-Amz-Signature=...`), иначе
+        re-sign на каждом ререндере делает «новые» URL'ы из тех же
+        старых роликов — и baseline-сравнение бы ломалось.
+        """
+        try:
+            urls = await page.evaluate(
+                """() => {
+                    const list = [];
+                    document.querySelectorAll('video').forEach(v => {
+                        if (v.src) list.push(v.src);
+                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
+                    });
+                    document.querySelectorAll('a[download], a[href*=".mp4"]').forEach(a => {
+                        if (a.href) list.push(a.href);
+                    });
+                    document.querySelectorAll('img').forEach(img => {
+                        const s = img.src || '';
+                        if (s.includes('video_') && s.includes('_thumb')) list.push(s);
+                    });
+                    return list;
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            urls = []
+        return [_strip_url_query(u) for u in (urls or []) if u]
+
     async def _find_video_by_prompt_id(
         self,
         page: Page,
         id_token: str,
         *,
         max_levels: int = 12,
+        baseline_urls: set[str] | None = None,
     ) -> str | None:
-        """Зеркало `_find_img_by_prompt_id`, но для `<video>` / `<source>` /
-        `a[download]`. Ищет в DOM карточку с нашим `[ID: ...]` и возвращает
-        URL ближайшего видео-элемента.
+        """Зеркало `_find_img_by_prompt_id`, но для видео-карточек outsee.
 
-        Порядок матчинга такой же:
-          1) полный `[ID: P*-F*-xxxxxxxx]`,
-          2) `P*-F*-xxxxxxxx` (без скобок и `ID:`),
-          3) 8-hex-tail (`xxxxxxxx`).
+        КЛЮЧ: в галерее outsee финиш-видео отображается НЕ как `<video>`,
+        а как `<img>` с `_thumb.jpg`-превьюшкой. Сам mp4 лежит по тому
+        же пути, но без `_thumb` и с `.mp4` вместо `.jpg`. Пример:
+          thumb: `.../video_1779114886169_thumb.jpg?X-Amz-...`
+          mp4:   `.../video_1779114886169.mp4?X-Amz-...`
+
+        Алгоритм (зеркало _find_img_by_prompt_id):
+          итерируемся по медиа-кандидатам (a[href*=mp4], <video>,
+          img[src*=video_..._thumb]) → для каждого идём ВВЕРХ по DOM,
+          останавливаясь когда bound-rect ancestor'а становится >60%
+          viewport по ширине (защита от composer-textarea, в которой
+          тоже лежит наш [ID: ...]). Если внутри ancestor'а виден
+          токен — это НАША карточка, возвращаем URL.
+
+        Если передан `baseline_urls` (set нормализованных URL без
+        query) — URL'ы из baseline НЕ возвращаем (это старые ролики).
         """
         tokens: list[str] = [id_token]
         m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
@@ -2578,60 +3119,66 @@ class OutseeBot:
             if tail and tail not in tokens:
                 tokens.append(tail)
 
+        # baseline_urls приходит как set нормализованных URL (без
+        # query). В JS делаем то же — стрипим query из кандидатов
+        # перед сравнением. КЛЮЧЕВОЕ: кандидата с baseline-src НЕ
+        # пихаем в список вообще, иначе при iterate-в-DOM-порядке
+        # первым придёт thumb из composer-карточки (старый ролик),
+        # его ancestor будет содержать наш [ID:] (textarea рядом)
+        # → вернём baseline. Filter-out на старте решает.
+        baseline_list = sorted(baseline_urls) if baseline_urls else []
         js = """
-        ([tokens, maxLevels]) => {
-            const hasToken = (el, idToken) => {
-                if (!el) return false;
-                const t = (el.innerText || el.textContent || '');
-                if (t.includes(idToken)) return true;
-                const tag = el.tagName && el.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    const v = el.value || '';
-                    if (v.includes(idToken)) return true;
+        ([tokens, maxLevels, baselineList]) => {
+            const MAX_CARD_W = window.innerWidth * 0.6;
+            const baselineSet = new Set(baselineList || []);
+            const stripQ = (u) => (u || '').split('?')[0];
+            const hasTokenInScope = (el, idToken) => {
+                const txt = el.textContent || '';
+                if (txt.includes(idToken)) return true;
+                for (const ta of el.querySelectorAll('textarea, input')) {
+                    if ((ta.value || '').includes(idToken)) return true;
                 }
                 return false;
             };
-            const pickVideoSrc = (root) => {
-                // Сначала <video src>, потом <source src>, потом
-                // a[download] с .mp4 — последний наименее надёжен,
-                // зато подхватывает уже-готовый скачиваемый ролик.
-                const videos = root.querySelectorAll('video');
-                for (const v of videos) {
-                    if (v.src && !v.src.startsWith('data:')) return v.src;
-                    const sources = v.querySelectorAll('source');
-                    for (const s of sources) {
-                        if (s.src && !s.src.startsWith('data:')) return s.src;
-                    }
-                }
-                const links = root.querySelectorAll('a[download], a[href*=".mp4"]');
-                for (const a of links) {
-                    if (a.href && !a.href.startsWith('data:')) return a.href;
-                }
+            const thumbToMp4 = (src) => {
+                if (!src) return null;
+                let out = src.replace('_thumb.jpg', '.mp4');
+                out = out.replace('_thumb.png', '.mp4');
+                out = out.replace('_thumb.webp', '.mp4');
+                if (out !== src) return out;
                 return null;
             };
+            const addCandidate = (arr, src, el, fromThumb) => {
+                if (!src || src.startsWith('data:')) return;
+                if (baselineSet.has(stripQ(src))) return;
+                arr.push({ src, el, fromThumb: !!fromThumb });
+            };
+            const candidates = [];
+            document.querySelectorAll('a[href*=".mp4"], a[download]').forEach(a => {
+                addCandidate(candidates, a.href, a, false);
+            });
+            document.querySelectorAll('video').forEach(v => {
+                addCandidate(candidates, v.src, v, false);
+                v.querySelectorAll('source').forEach(s => {
+                    addCandidate(candidates, s.src, s, false);
+                });
+            });
+            document.querySelectorAll('img').forEach(img => {
+                const s = img.src || '';
+                if (!s) return;
+                if (!(s.includes('video_') && s.includes('_thumb'))) return;
+                const mp4 = thumbToMp4(s);
+                if (mp4) addCandidate(candidates, mp4, img, true);
+            });
             for (const idToken of tokens) {
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (!el || !el.children) continue;
-                    if (el === document.body || el === document.documentElement) continue;
-                    if (!hasToken(el, idToken)) continue;
-                    let smallest = el;
-                    for (const child of el.children) {
-                        if (hasToken(child, idToken)) { smallest = null; break; }
-                    }
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) { smallest = null; break; }
-                        }
-                    }
-                    if (!smallest) continue;
-                    let cur = smallest;
+                for (const c of candidates) {
+                    let cur = c.el.parentElement;
                     for (let i = 0; i < maxLevels && cur; i++) {
-                        const src = pickVideoSrc(cur);
-                        if (src) return src;
+                        const r = cur.getBoundingClientRect();
+                        if (r.width > MAX_CARD_W) break;
+                        if (hasTokenInScope(cur, idToken)) {
+                            return c.src;
+                        }
                         cur = cur.parentElement;
                     }
                 }
@@ -2640,10 +3187,15 @@ class OutseeBot:
         }
         """
         try:
-            res = await page.evaluate(js, [tokens, max_levels])
-            if isinstance(res, str) and res:
-                return res
-            return None
+            res = await page.evaluate(
+                js, [tokens, max_levels, baseline_list]
+            )
+            if not (isinstance(res, str) and res):
+                return None
+            # Доп. защита (на случай если в JS не зашёл baseline).
+            if baseline_urls and _strip_url_query(res) in baseline_urls:
+                return None
+            return res
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "_find_video_by_prompt_id: ошибка JS-поиска: {}", e
@@ -2656,56 +3208,88 @@ class OutseeBot:
         *,
         timeout: float,
         prompt_id_prefix: str | None = None,
+        baseline_urls: set[str] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
-        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
-        карточке с нашим [ID: ...]. Это защищает от подмены чужим
-        видео из истории outsee и работает в паре с анти-дубликат
-        логикой в `generate_video` (когда мы не кликаем Generate
-        повторно, а ждём результат прошлого клика).
+        Стратегия (зеркало `_wait_image_url_strict`):
+          1) Если есть `prompt_id_prefix` — ищем видео-кандидата в
+             карточке с нашим [ID: ...] через `_find_video_by_prompt_id`.
+             URL должен быть НЕ из baseline (исключаем старые ролики).
+          2) Иначе (legacy) — берём первый НОВЫЙ (не-baseline) URL,
+             похожий на видео.
 
-        Fallback — генерический поиск любого видео-URL (для legacy/
-        recon без prompt_id_prefix).
+        Логи прогресса каждые 15 секунд: сколько кандидатов и сколько
+        из них новых.
+
+        Если задан `cancel_check` — на каждой итерации цикла он
+        дёргается. Если возвращает True (юзер нажал ⏹ Стоп шаг) — мы
+        выходим из цикла с `OutseeImageError(reason="cancelled by user…")`
+        так, чтобы caller корректно завершился через `StepCancelledError`.
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        log_every = 15.0  # сек, логи прогресса
-        next_log = asyncio.get_event_loop().time() + log_every
+        log_every = 15.0
+        start_time = asyncio.get_event_loop().time()
+        next_log = start_time + log_every
         while asyncio.get_event_loop().time() < deadline:
-            # Приоритет 0: видео в карточке с нашим [ID: ...].
+            # Проверка флага отмены — даёт реакцию на ⏹ Стоп шаг внутри
+            # длинного ожидания (75-120 сек на ролик). Без этого юзер
+            # ждёт окончания текущего кадра.
+            if cancel_check is not None:
+                try:
+                    cancelled = cancel_check()
+                except Exception:  # noqa: BLE001
+                    cancelled = False
+                if cancelled:
+                    logger.info(
+                        "outsee.generate_video: cancel_check сработал "
+                        "(юзер нажал ⏹) — прерываю ожидание видео",
+                    )
+                    raise OutseeImageError(
+                        reason="cancelled by user via ⏹"
+                    )
+            # Приоритет 0: видео в карточке с [ID: ...].
             if prompt_id_prefix:
                 try:
                     by_id = await self._find_video_by_prompt_id(
-                        page, prompt_id_prefix
+                        page, prompt_id_prefix, baseline_urls=baseline_urls,
                     )
                 except Exception:  # noqa: BLE001
                     by_id = None
                 if by_id:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    logger.info(
+                        "outsee.generate_video: свежее видео найдено "
+                        "в карточке с {} за {:.0f} сек → {}",
+                        prompt_id_prefix, elapsed, by_id[:120],
+                    )
                     return by_id
-            # Приоритет 1 (fallback): любой видео-URL в DOM.
-            urls = await page.evaluate(
-                """() => {
-                    const list = [];
-                    document.querySelectorAll('video').forEach(v => {
-                        if (v.src) list.push(v.src);
-                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
-                    });
-                    document.querySelectorAll("a[download]").forEach(a => a.href && list.push(a.href));
-                    return list;
-                }"""
-            )
-            # Без prompt_id_prefix берём первый похожий — legacy-режим.
+            # Приоритет 1 (legacy): любой НОВЫЙ видео-URL (не в baseline).
+            cur_urls = await self._all_video_like_urls(page)
+            new_urls = [
+                u for u in cur_urls
+                if u not in (baseline_urls or set())
+            ]
             if not prompt_id_prefix:
-                for u in urls:
+                for u in new_urls:
                     if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
+                        if "_thumb." in u:
+                            return (
+                                u.replace("_thumb.jpg", ".mp4")
+                                .replace("_thumb.png", ".mp4")
+                                .replace("_thumb.webp", ".mp4")
+                            )
                         return u
             now = asyncio.get_event_loop().time()
             if now >= next_log:
                 logger.info(
-                    "outsee.generate_video: ждём результат… {:.0f} сек, "
-                    "video_urls_in_dom={}, prompt_id={}",
-                    timeout - (deadline - now),
-                    len(urls or []),
+                    "outsee.generate_video: жду результат… "
+                    "{:.0f}/{:.0f}сек, видео-похожих в DOM={} "
+                    "(из них новых={}), prompt_id={}",
+                    now - start_time, timeout,
+                    len(cur_urls or []),
+                    len(new_urls or []),
                     prompt_id_prefix,
                 )
                 next_log = now + log_every
