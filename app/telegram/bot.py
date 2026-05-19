@@ -7625,7 +7625,13 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 frame = (
                     await s.execute(select(Frame).where(Frame.id == req.frame_id))
                 ).scalar_one_or_none()
-            current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
+            # Для видео-HITL правим animation_prompt, для картинок — image_prompt.
+            if req.kind is HITLKind.approve_videos:
+                current_prompt = (
+                    frame.animation_prompt if frame else None
+                ) or "(пусто)"
+            else:
+                current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
             ask_msg = await cb.bot.send_message(
                 settings.telegram_owner_chat_id,
                 (
@@ -7902,7 +7908,8 @@ async def _on_gpt_text_edit_reply(
 
 async def _on_edit_reply(msg: Message) -> None:
     """Если пользователь ответил на наше edit-запрос-сообщение — записываем
-    новый текст в frame.image_prompt, ставим decision=edit_prompt."""
+    новый текст в frame.image_prompt (или frame.animation_prompt, если HITL
+    про видео), ставим decision=edit_prompt."""
     reply_to_id = msg.reply_to_message.message_id if msg.reply_to_message else None
     if reply_to_id is None:
         return
@@ -7932,27 +7939,41 @@ async def _on_edit_reply(msg: Message) -> None:
         ).scalar_one_or_none()
         if frame is None:
             return
-        # Сохраняем ОРИГИНАЛЬНЫЙ image_prompt — он будет нужен для
-        # GPT-rewrite шага (отдадим ChatGPT'у: «вот старый промт +
-        # вот сообщение юзера, переделай так чтобы старое удовлетворяло
-        # новое»). Делаем это ДО перезаписи frame.image_prompt.
-        original_prompt = (frame.image_prompt or "").strip()
-        # frame.image_prompt = новое сообщение юзера. Это fallback на
-        # случай если GPT-rewrite в _generate_and_send упадёт — тогда
-        # хотя бы вернётся буквальный текст юзера, а не старый промт.
-        frame.image_prompt = new_prompt
+        is_video = req.kind is HITLKind.approve_videos
+        # Сохраняем ОРИГИНАЛЬНЫЙ промт — он будет нужен для GPT-rewrite
+        # шага (отдадим ChatGPT'у: «вот старый промт + вот сообщение
+        # юзера, переделай так чтобы старое удовлетворяло новое»).
+        # Делаем это ДО перезаписи поля.
+        if is_video:
+            original_prompt = (frame.animation_prompt or "").strip()
+            # frame.animation_prompt = новое сообщение юзера. Это
+            # fallback на случай если GPT-rewrite в generate_videos упадёт
+            # — тогда хотя бы вернётся буквальный текст юзера.
+            frame.animation_prompt = new_prompt
+            req.payload = {
+                **(req.payload or {}),
+                "edited_prompt": new_prompt[:2000],
+                "original_animation_prompt": original_prompt[:4000],
+                "needs_gpt_rewrite": True,
+            }
+        else:
+            original_prompt = (frame.image_prompt or "").strip()
+            # frame.image_prompt = новое сообщение юзера. Это fallback на
+            # случай если GPT-rewrite в _generate_and_send упадёт — тогда
+            # хотя бы вернётся буквальный текст юзера, а не старый промт.
+            frame.image_prompt = new_prompt
+            req.payload = {
+                **(req.payload or {}),
+                "edited_prompt": new_prompt[:2000],
+                # Флаг для _generate_and_send: «надо переписать через GPT
+                # ДО outsee». Сам rewrite делается там, потому что у
+                # генератора уже открыта browser_session + ChatGPTBot.
+                "original_image_prompt": original_prompt[:4000],
+                "needs_gpt_rewrite": True,
+            }
         req.decision = HITLDecision.edit_prompt
-        req.payload = {
-            **(req.payload or {}),
-            "edited_prompt": new_prompt[:2000],
-            # Флаг для _generate_and_send: «надо переписать через GPT
-            # ДО outsee». Сам rewrite делается там, потому что у
-            # генератора уже открыта browser_session + ChatGPTBot.
-            "original_image_prompt": original_prompt[:4000],
-            "needs_gpt_rewrite": True,
-        }
         # edit_prompt = регенерация с новым текстом → файл текущей попытки
-        # больше не нужен (не копим варианты в scenes/).
+        # больше не нужен (не копим варианты в scenes/ / videos/).
         _hitl_svc.delete_hitl_artifact_file(req)
         hitl_tg_msg_id = req.tg_message_id
         project = (
@@ -7960,11 +7981,17 @@ async def _on_edit_reply(msg: Message) -> None:
         ).scalar_one_or_none()
         if project is not None:
             try:
-                _sheet_for_project(project).write_frame(
-                    frame.number, image_prompt=new_prompt
-                )
+                if is_video:
+                    _sheet_for_project(project).write_frame(
+                        frame.number, animation_prompt=new_prompt
+                    )
+                else:
+                    _sheet_for_project(project).write_frame(
+                        frame.number, image_prompt=new_prompt
+                    )
             except Exception as e:  # noqa: BLE001
-                logger.warning("xlsx write_frame(image_prompt) failed: {}", e)
+                logger.warning("xlsx write_frame({}_prompt) failed: {}",
+                               "animation" if is_video else "image", e)
     if hitl_tg_msg_id:
         with contextlib.suppress(Exception):
             await msg.bot.edit_message_caption(
@@ -7975,7 +8002,7 @@ async def _on_edit_reply(msg: Message) -> None:
             )
     await msg.reply(
         "✏️ Промт обновлён. Отдам в ChatGPT на улучшение, потом перегенерирую "
-        "картинку."
+        + ("видео." if is_video else "картинку.")
     )
 
 
