@@ -487,10 +487,6 @@ async def _generate_and_send(
     ).scalars().all()
     attempt_number = len(attempt) + 1
 
-    short_uuid = uuid.uuid4().hex[:8]
-    file_path = out_dir / f"clip_{frame.number:03d}_{short_uuid}.mp4"
-    prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
-
     # Relax по словам пользователя поддерживает только veo-3-1-fast.
     # Для остальных моделей даже если флаг True — _toggle_relax тихо
     # ничего не сделает (кнопки нет).
@@ -498,9 +494,46 @@ async def _generate_and_send(
         project.video_generator == "veo_3_1_fast"
     )
 
+    # КЛЮЧЕВОЕ: на КАЖДОЙ попытке (всего до 6: 3 original + 3 после
+    # GPT-rewrite) генерим НОВЫЙ short_uuid → НОВЫЙ prompt_id_prefix
+    # и НОВЫЙ путь файла. Иначе после первой провальной попытки в
+    # outsee остаётся карточка-«Ошибка» с тем же `[ID:]`, и
+    # `_video_error_tile_for_prompt_id` ловит ЕЁ ЖЕ на следующей
+    # попытке — все ретраи становятся no-op'ом.
+    _attempt_state: dict[int, tuple[str, Path]] = {}
+
+    def _ensure_state(attempt_no: int) -> tuple[str, Path]:
+        if attempt_no not in _attempt_state:
+            new_uuid = uuid.uuid4().hex[:8]
+            new_prefix = build_gen_id_prefix(
+                project.id, frame.number, new_uuid,
+            )
+            new_path = out_dir / f"clip_{frame.number:03d}_{new_uuid}.mp4"
+            _attempt_state[attempt_no] = (new_prefix, new_path)
+            logger.info(
+                "[#{}] frame {} video попытка {} gen_id={}: "
+                "новый prompt_id={}",
+                project.id, frame.number, attempt_no, new_uuid, new_prefix,
+            )
+        return _attempt_state[attempt_no]
+
+    def _make_prefix(attempt_no: int) -> str:
+        return _ensure_state(attempt_no)[0]
+
+    def _make_out_path(attempt_no: int) -> Path:
+        return _ensure_state(attempt_no)[1]
+
+    # Префикс для caption/payload — берём первый attempt (он же
+    # used-prefix самого первого «оригинального» прогона). После
+    # успеха обновим на тот, что реально дал результат.
+    prompt_id_prefix = build_gen_id_prefix(
+        project.id, frame.number, uuid.uuid4().hex[:8],
+    )  # fallback, перекроется при первом factory call
+
     logger.info(
-        "[#{}] frame {} video attempt {} gen_id={}: outsee generate_video",
-        project.id, frame.number, attempt_number, short_uuid,
+        "[#{}] frame {} video attempt {}: запускаю outsee generate_video "
+        "(до 6 попыток: 3 original + GPT-rewrite + 3 rewritten)",
+        project.id, frame.number, attempt_number,
     )
 
     # 4) Сам outsee-прогон с retry/GPT-rewrite.
@@ -517,7 +550,8 @@ async def _generate_and_send(
         result = await generate_video_with_retries(
             outsee, gpt,
             prompt=frame.animation_prompt,
-            out_path=file_path,
+            out_path_factory=_make_out_path,
+            prompt_id_prefix_factory=_make_prefix,
             max_attempts_per_prompt=3,
             gpt_rewrite=True,
             start_frame=start_frame_path,
@@ -531,7 +565,6 @@ async def _generate_and_send(
             model_slug=video_model_slug,
             resolution=video_res_slug,
             relax=video_relax,
-            prompt_id_prefix=prompt_id_prefix,
             cancel_check=_cancel_check,
         )
     except OutseeImageError as e:
@@ -545,9 +578,16 @@ async def _generate_and_send(
             ) from e
         # Не silent retry: помечаем кадр failed и шлём в TG понятное
         # описание ошибки. Пайплайн пойдёт к следующему кадру.
+        # Используем prompt_id_prefix последней попытки (если уже было
+        # хоть одно обращение к factory).
+        last_prefix = (
+            _attempt_state[max(_attempt_state)][0]
+            if _attempt_state else prompt_id_prefix
+        )
         logger.exception(
-            "[#{}] frame {} video: outsee fail (gen_id={})",
-            project.id, frame.number, short_uuid,
+            "[#{}] frame {} video: все попытки провалились "
+            "(last gen_id={})",
+            project.id, frame.number, last_prefix,
         )
         frame.status = FrameStatus.failed
         await session.flush()
@@ -556,13 +596,22 @@ async def _generate_and_send(
                 settings.telegram_owner_chat_id,
                 (
                     f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
-                    f"видео поймать не удалось.\n\n"
+                    f"видео поймать не удалось за 6 попыток "
+                    f"(3 original + GPT-rewrite + 3 rewritten).\n\n"
                     f"<pre>{_html_escape(e.format_text())}</pre>"
                 )[:3800],
                 parse_mode="HTML",
             )
         await session.commit()
         return
+
+    # Найдём prompt_id_prefix, который привёл к успешному результату
+    # (по совпадению file_path в state). Иначе оставим fallback.
+    result_path_str = str(result.file_path)
+    for pref, path in _attempt_state.values():
+        if str(path) == result_path_str:
+            prompt_id_prefix = pref
+            break
 
     # 5) Orphan-cleanup: удалить старые clip_NNN_*.mp4 кроме только что
     # сохранённого. Политика «без накопления вариантов в папке».

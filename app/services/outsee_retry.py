@@ -41,6 +41,7 @@ Caller'ы:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -156,7 +157,9 @@ async def generate_video_with_retries(
     gpt: ChatGPTBot | None,
     *,
     prompt: str,
-    out_path: Path,
+    out_path: Path | None = None,
+    out_path_factory: Callable[[int], Path] | None = None,
+    prompt_id_prefix_factory: Callable[[int], str] | None = None,
     max_attempts_per_prompt: int = 3,
     gpt_rewrite: bool = True,
     **kwargs: Any,
@@ -167,6 +170,21 @@ async def generate_video_with_retries(
     `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
     при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
     переиспользуем тот же except-handler.
+
+    КЛЮЧЕВОЕ ОТЛИЧИЕ от image-retries: для видео НА КАЖДОЙ попытке
+    желательно генерировать НОВЫЙ `prompt_id_prefix` (и соответствующий
+    `out_path`). Иначе после первой провальной попытки в outsee
+    остаётся карточка-«Ошибка» с тем же `[ID:]`, и `_wait_video_url`
+    немедленно ловит ЕЁ вместо новой генерации — все ретраи становятся
+    no-op'ом.
+
+    Каллер передаёт `prompt_id_prefix_factory(attempt_no)` и
+    `out_path_factory(attempt_no)`. `attempt_no` сквозной (1..N),
+    не сбрасывается между round'ами (original / rewritten).
+
+    Для обратной совместимости можно по-прежнему передавать `out_path`
+    и `prompt_id_prefix` через kwargs (legacy) — тогда все попытки
+    используют один и тот же id. Это путь для не-видео вызовов.
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
@@ -174,11 +192,28 @@ async def generate_video_with_retries(
     if gpt_rewrite and gpt is not None:
         rounds.append("rewritten")
 
+    overall_attempt = 0
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
+            overall_attempt += 1
+            this_out_path: Path | None
+            if out_path_factory is not None:
+                this_out_path = out_path_factory(overall_attempt)
+            else:
+                this_out_path = out_path
+            if this_out_path is None:
+                raise ValueError(
+                    "generate_video_with_retries: нужен out_path или "
+                    "out_path_factory"
+                )
+            this_kwargs: dict[str, Any] = dict(kwargs)
+            if prompt_id_prefix_factory is not None:
+                this_kwargs["prompt_id_prefix"] = prompt_id_prefix_factory(
+                    overall_attempt
+                )
             try:
                 return await outsee.generate_video(
-                    current_prompt, out_path, **kwargs
+                    current_prompt, this_out_path, **this_kwargs
                 )
             except OutseeImageError as e:
                 last_err = e
@@ -190,9 +225,9 @@ async def generate_video_with_retries(
                     raise
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} "
-                    "провалена: {}",
+                    "(overall {}) провалена: {}",
                     round_label, attempt, max_attempts_per_prompt,
-                    e.reason,
+                    overall_attempt, e.reason,
                 )
                 if attempt < max_attempts_per_prompt:
                     await asyncio.sleep(2.0)
