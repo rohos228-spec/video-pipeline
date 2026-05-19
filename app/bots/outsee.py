@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -588,6 +589,25 @@ class OutseeContentRejectedError(OutseeImageError):
     существующий error-handling в caller'ах продолжит работать без правок."""
 
 
+class OutseeCancelledError(RuntimeError):
+    """Пользователь нажал «⏹ Остановить» во время ожидания результата
+    в outsee (картинка/видео могут генериться 1–15 минут). Бросается
+    из `_wait_image_url_strict` / `_wait_video_url` через коллбэк
+    `cancel_check`.
+
+    Сознательно НЕ наследуется от `OutseeImageError` — иначе retry-обёртка
+    в `outsee_retry.py` (`generate_image_with_retries` /
+    `generate_video_with_retries`) попробует ретраить отменённую
+    генерацию, что не имеет смысла. Caller (`generate_videos.run`,
+    `generate_images.run`, `generate_hero.run`) ловит этот класс и
+    конвертит в `StepCancelledError`.
+    """
+
+    def __init__(self, reason: str = "outsee: cancelled by user") -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 # Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
 # (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
 _MIN_IMAGE_BYTES = 50_000
@@ -878,6 +898,7 @@ class OutseeBot:
         relax: bool = False,
         prompt_id_prefix: str | None = None,
         reference_image: Path | list[Path] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         """Генерирует картинку на outsee.io.
 
@@ -1198,6 +1219,7 @@ class OutseeBot:
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
                     prompt_id_prefix=prompt_id_prefix,
+                    cancel_check=cancel_check,
                 )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
@@ -1278,6 +1300,7 @@ class OutseeBot:
         *,
         timeout: float = 600,
         gen_id: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
         без перезаполнения промта. Сайт использует тот же промт и настройки."""
@@ -1359,6 +1382,7 @@ class OutseeBot:
                 net_events=net_events,
                 gen_id=gen_id,
                 pre_rejected_text=pre_rejected_text,
+                cancel_check=cancel_check,
             )
         finally:
             try:
@@ -1863,6 +1887,7 @@ class OutseeBot:
         gen_id: str,
         pre_rejected_text: str | None = None,
         prompt_id_prefix: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> str:
         """Жёсткое ожидание свежей картинки.
 
@@ -1917,6 +1942,25 @@ class OutseeBot:
         while asyncio.get_event_loop().time() < deadline:
             now = asyncio.get_event_loop().time()
             elapsed = now - start
+
+            # Кооперативная отмена — пользователь нажал «⏹ Остановить»
+            # в TG. Картинка может генериться до 5 мин, без этой проверки
+            # стоп срабатывал бы только между кадрами шага.
+            if cancel_check is not None:
+                try:
+                    cancelled = bool(cancel_check())
+                except Exception:  # noqa: BLE001
+                    cancelled = False
+                if cancelled:
+                    logger.info(
+                        "_wait_image_url_strict: cancel_check сработал — "
+                        "выхожу из ожидания (gen_id={}, prompt_id={})",
+                        gen_id[:8], prompt_id_prefix,
+                    )
+                    raise OutseeCancelledError(
+                        "outsee image: отмена по запросу пользователя (⏹ Остановить) "
+                        "во время ожидания картинки"
+                    )
 
             # 0) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
             # Outsee рендерит в карточке результата начало промта, и наш
@@ -2384,6 +2428,7 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
@@ -2490,8 +2535,13 @@ class OutseeBot:
         # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
         # ищем `<video>` в карточке с нашим [ID: ...], только если не
         # нашли — фолбэк на «любой видео-URL в DOM».
+        # `cancel_check` пробрасывается внутрь wait-loop, чтобы юзер мог
+        # реально прервать многоминутное ожидание видео из TG (⏹).
         video_url = await self._wait_video_url(
-            page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
+            page,
+            timeout=timeout,
+            prompt_id_prefix=prompt_id_prefix,
+            cancel_check=cancel_check,
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2605,6 +2655,7 @@ class OutseeBot:
         *,
         timeout: float,
         prompt_id_prefix: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
@@ -2616,11 +2667,32 @@ class OutseeBot:
 
         Fallback — генерический поиск любого видео-URL (для legacy/
         recon без prompt_id_prefix).
+
+        Если задан `cancel_check` — на каждой итерации цикла проверяем
+        его. При True — бросаем `OutseeCancelledError`, чтобы юзер мог
+        реально прервать многоминутное ожидание видео через «⏹ Остановить»
+        в TG, а не ждать все 5–15 минут отведённых на timeout.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         log_every = 15.0  # сек, логи прогресса
         next_log = asyncio.get_event_loop().time() + log_every
         while asyncio.get_event_loop().time() < deadline:
+            # Проверка отмены — до всех дорогих DOM-запросов.
+            if cancel_check is not None:
+                try:
+                    cancelled = bool(cancel_check())
+                except Exception:  # noqa: BLE001
+                    cancelled = False
+                if cancelled:
+                    logger.info(
+                        "outsee.generate_video: cancel_check сработал — "
+                        "выхожу из _wait_video_url (prompt_id={})",
+                        prompt_id_prefix,
+                    )
+                    raise OutseeCancelledError(
+                        "outsee video: отмена по запросу пользователя (⏹ Остановить) "
+                        "во время ожидания видео"
+                    )
             # Приоритет 0: видео в карточке с нашим [ID: ...].
             if prompt_id_prefix:
                 try:

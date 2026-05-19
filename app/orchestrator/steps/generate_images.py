@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot, OutseeImageError
+from app.bots.outsee import OutseeBot, OutseeCancelledError, OutseeImageError
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -52,7 +52,11 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import (
+    StepCancelledError,
+    is_stop_requested,
+    raise_if_cancelled,
+)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -401,6 +405,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
                 # 4) иначе ждём пока пользователь нажмёт кнопку в TG
                 await asyncio.sleep(3)
+        except OutseeCancelledError as e:
+            # Юзер нажал «⏹ Остановить» во время ожидания outsee. До лога
+            # из generate_video/_wait_image_url_strict (cancel_check==True)
+            # иначе флаг остался бы взведённым и следующий запуск
+            # шага сразу выпадал бы из между-кадровой проверки.
+            from app.services.step_cancel import consume_stop
+
+            consume_stop(project.id)
+            logger.info(
+                "[#{}] generate_images: проект #{}: отмена во время ожидания "
+                "outsee ({}) — выхожу из цикла",
+                project.id, project.id, e.reason,
+            )
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                logger.warning("[#{}] не смог refresh project после ⏹", project.id)
+            return
         except StepCancelledError as e:
             # ⏹ Остановить — статус уже откачен обработчиком кнопки в
             # другой сессии. Обновляем наш ORM-объект, чтобы worker'овый
@@ -598,7 +620,11 @@ async def _generate_and_send(
     try:
         if use_regen_button:
             try:
-                result = await outsee.regenerate_image(file_path, gen_id=gen_id)
+                result = await outsee.regenerate_image(
+                    file_path,
+                    gen_id=gen_id,
+                    cancel_check=lambda: is_stop_requested(project.id),
+                )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая
                 # «структурная» ошибка regenerate) — падаем на полноценный
@@ -621,6 +647,7 @@ async def _generate_and_send(
                     relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
+                    cancel_check=lambda: is_stop_requested(project.id),
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -638,6 +665,7 @@ async def _generate_and_send(
                 relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,
+                cancel_check=lambda: is_stop_requested(project.id),
             )
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр

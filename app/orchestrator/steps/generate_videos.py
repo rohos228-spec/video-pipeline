@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot
+from app.bots.outsee import OutseeBot, OutseeCancelledError
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -33,7 +33,11 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_text
 from app.services.outsee_retry import generate_video_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import (
+    StepCancelledError,
+    is_stop_requested,
+    raise_if_cancelled,
+)
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -108,6 +112,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 # До 3 попыток с исходным animation_prompt; если все 3 провалились
                 # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
+                #
+                # `cancel_check` пробрасывается внутрь `_wait_video_url` —
+                # без этого «⏹ Остановить» срабатывал бы только между
+                # кадрами, а внутри одного кадра юзер либо ждёт до 20 минут,
+                # либо переживает «жму стоп но ничего не происходит».
                 result = await generate_video_with_retries(
                     outsee, gpt,
                     prompt=fr.animation_prompt,
@@ -121,6 +130,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     resolution=video_res_slug,
                     relax=video_relax,
                     prompt_id_prefix=prompt_id_prefix,
+                    cancel_check=lambda: is_stop_requested(project.id),
                 )
                 session.add(
                     Artifact(
@@ -134,6 +144,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 fr.status = FrameStatus.video_generated
                 await session.flush()
                 logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
+        except OutseeCancelledError as e:
+            # Юзер нажал «⏹ Остановить» пока мы ждали видео в outsee.
+            # Приводим к тому же виду, что «между-кадровая» отмена: сбрасываем
+            # флаг (если вдруг всё ещё взведён) и конвертируем в StepCancelledError.
+            from app.services.step_cancel import consume_stop
+
+            consume_stop(project.id)
+            logger.info(
+                "[#{}] generate_videos: проект #{}: отмена во время ожидания "
+                "outsee ({}) — выхожу из цикла",
+                project.id, project.id, e.reason,
+            )
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                logger.warning("[#{}] не смог refresh project после ⏹", project.id)
+            return
         except StepCancelledError as e:
             logger.info("[#{}] generate_videos: {} — выхожу из цикла",
                         project.id, e)

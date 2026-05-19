@@ -50,6 +50,7 @@ from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import (
     GenerationResult,
     OutseeBot,
+    OutseeCancelledError,
     OutseeImageError,
 )
 
@@ -122,6 +123,12 @@ async def generate_image_with_retries(
                 return await outsee.generate_image(
                     current_prompt, out_path, **kwargs
                 )
+            except OutseeCancelledError:
+                # Пользователь нажал «⏹ Остановить» — не ретраить. Caller
+                # (шаг пайплайна) получит этот класс и конвертирует
+                # в StepCancelledError, который worker трактует как мягкий
+                # выход, а не как ошибку.
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
@@ -180,6 +187,11 @@ async def generate_video_with_retries(
                 return await outsee.generate_video(
                     current_prompt, out_path, **kwargs
                 )
+            except OutseeCancelledError:
+                # Пользователь нажал «⏹ Остановить» — не ретраить видео
+                # (пробрасываем класс выше — шаг пайплайна конвертирует
+                # в StepCancelledError).
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
