@@ -825,28 +825,9 @@ async def on_mass_dl_xlsx(cb: CallbackQuery) -> None:
             return
         subs = await batches_svc.get_batch_subprojects(s, bid)
         path = batch.topics_xlsx_path
-        # Перезаписываем актуальной таблицей (со статусами + карточные поля).
-        rows = []
-        for p in subs:
-            meta = p.meta or {}
-            card = meta.get("topic_card") or {}
-            rows.append({
-                "position": p.batch_position,
-                "title": p.topic,
-                "topic": p.topic,
-                "source": card.get("source"),
-                "style": card.get("style"),
-                "hook_type": card.get("hook_type"),
-                "emotion": card.get("emotion"),
-                "fact": card.get("fact"),
-                "logic": card.get("logic"),
-                "integration": card.get("integration"),
-                "shoot_note": card.get("shoot_note"),
-                "hero_mode": p.hero_mode,
-                "slug": p.slug,
-                "status": p.status.value,
-                "progress": "",
-            })
+        # Перезаписываем актуальной таблицей — все настройки подпроектов в новой
+        # 26-колоночной схеме (см. project_to_xlsx_row в services/batches.py).
+        rows = [batches_svc.project_to_xlsx_row(p) for p in subs]
         batch_sheet.write_subprojects_table(path, rows, batch.name)
     if not path.exists():
         await cb.answer("Файл не найден", show_alert=True)
@@ -1315,28 +1296,9 @@ async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
                 logger.warning(
                     "mass: project_sheet init failed for #{}: {}", p.id, e
                 )
-        # Обновляем topics.xlsx актуальной таблицей (с карточными полями).
+        # Обновляем topics.xlsx (новая 26-колоночная схема).
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
-        rows = []
-        for p in all_subs:
-            card = (p.meta or {}).get("topic_card") or {}
-            rows.append({
-                "position": p.batch_position,
-                "title": p.topic,
-                "topic": p.topic,
-                "source": card.get("source"),
-                "style": card.get("style"),
-                "hook_type": card.get("hook_type"),
-                "emotion": card.get("emotion"),
-                "fact": card.get("fact"),
-                "logic": card.get("logic"),
-                "integration": card.get("integration"),
-                "shoot_note": card.get("shoot_note"),
-                "hero_mode": p.hero_mode,
-                "slug": p.slug,
-                "status": p.status.value,
-                "progress": "",
-            })
+        rows = [batches_svc.project_to_xlsx_row(p) for p in all_subs]
         batch_sheet.write_subprojects_table(
             batch.topics_xlsx_path, rows, batch.name
         )
@@ -1402,28 +1364,9 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
                 logger.warning(
                     "mass: project_sheet init failed for #{}: {}", p.id, e
                 )
-        # Сохраняем актуальную топик-таблицу (со всеми карточными полями).
+        # Сохраняем актуальную топик-таблицу (новая 26-колоночная схема).
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
-        rows = []
-        for p in all_subs:
-            card = (p.meta or {}).get("topic_card") or {}
-            rows.append({
-                "position": p.batch_position,
-                "title": p.topic,
-                "topic": p.topic,
-                "source": card.get("source"),
-                "style": card.get("style"),
-                "hook_type": card.get("hook_type"),
-                "emotion": card.get("emotion"),
-                "fact": card.get("fact"),
-                "logic": card.get("logic"),
-                "integration": card.get("integration"),
-                "shoot_note": card.get("shoot_note"),
-                "hero_mode": p.hero_mode,
-                "slug": p.slug,
-                "status": p.status.value,
-                "progress": "",
-            })
+        rows = [batches_svc.project_to_xlsx_row(p) for p in all_subs]
         batch_sheet.write_subprojects_table(
             batch.topics_xlsx_path, rows, batch.name
         )

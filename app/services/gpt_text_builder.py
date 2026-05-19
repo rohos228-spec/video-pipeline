@@ -114,6 +114,17 @@ def _build_topic_context_block(project: Project) -> str:
         card_lines.append(f"  • Интеграция продукта: {card['integration']}")
     if card.get("shoot_note"):
         card_lines.append(f"  • Примечание по съёмке: {card['shoot_note']}")
+    # Целевая длительность (массовая генерация задаёт через xlsx, колонка K).
+    dur_sec = meta.get("duration_target_sec")
+    if dur_sec:
+        try:
+            dur_int = int(dur_sec)
+            card_lines.append(
+                f"  • Целевая длительность ролика: {dur_int} сек "
+                f"(≈ {round(dur_int / 13.5)} строк закадрового текста)."
+            )
+        except (TypeError, ValueError):
+            pass
     if card_lines:
         lines.append("📋 Карточка ролика:")
         lines.extend(card_lines)

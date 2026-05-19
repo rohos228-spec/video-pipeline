@@ -26,9 +26,171 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.generation_options import (
+    ASPECT_RATIOS,
+    IMAGE_GENERATORS,
+    IMAGE_RESOLUTIONS,
+    VIDEO_GENERATORS,
+    VIDEO_RESOLUTIONS,
+)
 from app.models import BatchProject, BatchStatus, Project, ProjectStatus
 from app.services.prompt_library import PROMPTS_ROOT
 from app.settings import settings
+
+# --- xlsx-mass helpers ---------------------------------------------------- #
+# Маппинг человекочитаемых лейблов из xlsx-выпадающих списков в внутренние
+# id'ы. Источник — `app.generation_options` (один источник правды и для
+# одиночной, и для массовой генерации). Поиск регистронезависимый и
+# устойчив к пробелам.
+
+def _label_index(choices) -> dict[str, str]:
+    return {c.label.lower().strip(): c.id for c in choices}
+
+
+_IMG_GEN_BY_LABEL = _label_index(IMAGE_GENERATORS)
+_VIDEO_GEN_BY_LABEL = _label_index(VIDEO_GENERATORS)
+_IMG_RES_BY_LABEL = _label_index(IMAGE_RESOLUTIONS)
+_VIDEO_RES_BY_LABEL = _label_index(VIDEO_RESOLUTIONS)
+_ASPECT_BY_LABEL = _label_index(ASPECT_RATIOS)
+
+
+def _norm_label_to_id(value, mapping: dict[str, str]) -> str | None:
+    """Лейбл ("Nano Banana Pro") → внутренний id ("nano_banana_pro").
+    Возвращает None, если лейбл не распознан или строка пустая.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    return mapping.get(s.lower())
+
+
+def _parse_hero_combo(value) -> tuple[int | None, list[int] | None]:
+    """Распарсить строку "NиM" (например, "1и3") в (hero_count, hero_variations).
+
+    Возвращает (None, None) если строка не парсится. "0и1" → (0, []) — нет
+    героев. "2и3" → (2, [3, 3]). "3и1" → (3, [1, 1, 1]).
+    """
+    if value is None:
+        return None, None
+    s = str(value).strip().lower()
+    if not s:
+        return None, None
+    # Допускаем латинскую "и" → "u" / "и" обе.
+    for sep in ("и", "x", "и".upper()):
+        if sep.lower() in s:
+            parts = s.split(sep.lower(), 1)
+            try:
+                heroes = int(parts[0].strip())
+                vars_ = int(parts[1].strip())
+            except (TypeError, ValueError):
+                return None, None
+            heroes = max(0, min(heroes, 9))
+            vars_ = max(1, min(vars_, 9))
+            if heroes == 0:
+                return 0, []
+            return heroes, [vars_] * heroes
+    return None, None
+
+
+def _apply_xlsx_settings(card: dict, kwargs: dict, meta: dict) -> None:
+    """Применяет настройки из xlsx-карточки (`card`) к `kwargs` (поля Project)
+    и `meta` (Project.meta).
+
+    Игнорирует None/пустые значения — что не задано в xlsx, остаётся из
+    snapshot'а батча. Любые распознанные значения ПЕРЕБИВАЮТ snapshot.
+    """
+    # --- prompt_overrides --------------------------------------------------
+    overrides = dict(kwargs.get("prompt_overrides") or {})
+    for xlsx_key, step_code in (
+        ("scenario",          "plan"),
+        ("script_style",      "script"),
+        ("anim_style",        "img_pr"),
+        ("video_prompts_gen", "anim_pr"),
+    ):
+        val = (card.get(xlsx_key) or "").strip() if card.get(xlsx_key) else None
+        if not val:
+            continue
+        # Допустимое имя — проверяет prompt_library (без path traversal).
+        # Если файл не найден — оставим как есть; resolve_project_prompt_name
+        # автоматически свалится на 'default' при чтении.
+        overrides[step_code] = val
+    if overrides:
+        kwargs["prompt_overrides"] = overrides
+
+    # --- hero combo "1и3" -------------------------------------------------
+    heroes, variations = _parse_hero_combo(card.get("hero_combo"))
+    if heroes is not None:
+        kwargs["hero_count"] = heroes
+        kwargs["hero_variations"] = list(variations or [])
+        # hero_mode выводим: 0 героев → no_hero, иначе hero.
+        kwargs["hero_mode"] = "no_hero" if heroes == 0 else "hero"
+        # Если есть hero_description в карточке — заполняем для всех героев.
+        hero_desc = (card.get("hero_description") or "").strip()
+        if heroes > 0 and hero_desc:
+            kwargs["hero_descriptions"] = [hero_desc] * heroes
+
+    # --- duration_sec → meta["duration_target_sec"] -----------------------
+    dur = card.get("duration_sec")
+    if dur:
+        try:
+            meta["duration_target_sec"] = int(float(dur))
+        except (TypeError, ValueError):
+            pass
+
+    # --- картинки: generator / quality / aspect / relax ------------------
+    img_id = _norm_label_to_id(card.get("image_generator"), _IMG_GEN_BY_LABEL)
+    if img_id:
+        kwargs["image_generator"] = img_id
+    img_q = card.get("image_quality")
+    if img_q:
+        s = str(img_q).strip().lower()
+        if s in ("2k", "2к"):
+            kwargs["image_resolution"] = "2k"
+        elif s in ("4k", "4к"):
+            kwargs["image_resolution"] = "4k"
+    img_a = (card.get("image_aspect") or "").strip() if card.get("image_aspect") else None
+    if img_a in ("16:9", "9:16"):
+        kwargs["aspect_ratio"] = img_a
+    img_relax = card.get("image_relax")
+    if isinstance(img_relax, bool):
+        kwargs["image_relax"] = img_relax
+
+    # --- видео: generator / quality / aspect / relax ---------------------
+    vid_id = _norm_label_to_id(card.get("video_generator"), _VIDEO_GEN_BY_LABEL)
+    if vid_id:
+        kwargs["video_generator"] = vid_id
+    vid_q = card.get("video_quality")
+    if vid_q:
+        s = str(vid_q).strip().lower().rstrip("p")
+        if s == "720":
+            kwargs["video_resolution"] = "720p"
+        elif s == "1080":
+            kwargs["video_resolution"] = "1080p"
+    # video_aspect — отдельной колонки в БД нет; если задан и отличается от
+    # картинного, всё равно перебиваем общий aspect_ratio (он используется
+    # и для картинок, и для видео).
+    vid_a = (card.get("video_aspect") or "").strip() if card.get("video_aspect") else None
+    if vid_a in ("16:9", "9:16") and "aspect_ratio" not in kwargs:
+        kwargs["aspect_ratio"] = vid_a
+    vid_relax = card.get("video_relax")
+    if isinstance(vid_relax, bool):
+        kwargs["video_relax"] = vid_relax
+
+
+# Ключи xlsx-карточки, которые должны попасть в Project.meta["topic_card"].
+# Сами по себе они не управляют генерацией (image/video настройки уходят в
+# отдельные колонки Project), но используются в gpt_text_builder.* и логах.
+TOPIC_CARD_KEYS = (
+    "fact",          # F: научпоп ядро / факт — попадает в плановый промт
+    "hook_type",     # E: тип хука — пока резерв
+    "integration",   # G: интеграция продукта — пока резерв
+    "hero_description",  # J: описание героя — для логов / отображения
+    "duration_sec",  # K: для отображения в карточке
+    # Старые ключи (legacy для совместимости с одиночными xlsx-импортами).
+    "source", "style", "emotion", "logic", "shoot_note",
+)
 
 # Поля Project, которые попадают в snapshot и применяются ко всем подпроектам
 # при их создании. ВНИМАНИЕ: тут перечислены только «настроечные» поля,
@@ -252,12 +414,6 @@ async def add_topics(
     snap = batch.settings_snapshot or {}
     created: list[Project] = []
 
-    # Карточные поля, попадающие в Project.meta["topic_card"].
-    CARD_KEYS = [
-        "title", "source", "style", "hook_type", "emotion", "fact",
-        "logic", "integration", "shoot_note",
-    ]
-
     # Снимок постоянного продукта массового — копируем в meta каждого
     # подпроекта, чтобы build-функции работали синхронно без запросов к БД.
     perm_product = (batch.meta or {}).get("permanent_product")
@@ -268,11 +424,15 @@ async def add_topics(
         base = make_sub_slug(batch.slug, position, title)
         slug = await _unique_project_slug(session, base)
 
-        # hero_mode из карточки (если указан) перебивает наследование из snapshot.
+        # Legacy hero_mode (из старого CARD format'а: 'hero'|'no_hero'|'auto') —
+        # если задан явно, используем как fallback (новая схема предпочитает
+        # `hero_combo` "NиM", который обработается ниже в _apply_xlsx_settings).
         card_hero_mode = (card.get("hero_mode") or "").strip().lower() or None
 
-        # Карточные поля, кроме служебных, → meta["topic_card"].
-        topic_card = {k: card[k] for k in CARD_KEYS if card.get(k)}
+        # Карточные поля, кроме служебных, → meta["topic_card"]. Хранится
+        # как «как было в xlsx» для read-only отображения. Управление
+        # генерацией идёт через отдельные колонки Project (см. ниже).
+        topic_card = {k: card[k] for k in TOPIC_CARD_KEYS if card.get(k)}
         meta: dict = {"topic_card": topic_card}
         if perm_product and perm_product.get("name"):
             import copy as _copy
@@ -297,11 +457,18 @@ async def add_topics(
                     v = _copy.deepcopy(v)
                 kwargs[f] = v
 
-        # hero_mode: явный из карточки > из snapshot > default 'auto'.
-        if card_hero_mode in ("hero", "no_hero", "auto"):
-            kwargs["hero_mode"] = card_hero_mode
-        elif "hero_mode" not in kwargs or not kwargs.get("hero_mode"):
-            kwargs["hero_mode"] = "auto"
+        # Применяем настройки из xlsx-карточки (приоритет над snapshot'ом).
+        # hero_count/hero_variations/hero_descriptions/prompt_overrides/
+        # image_*/video_* всё ставит он же.
+        _apply_xlsx_settings(card, kwargs, meta)
+
+        # hero_mode: новая схема (через `hero_combo`) перебивает всё, иначе
+        # legacy явный hero_mode, иначе snapshot, иначе 'auto'.
+        if not kwargs.get("hero_mode"):
+            if card_hero_mode in ("hero", "no_hero", "auto"):
+                kwargs["hero_mode"] = card_hero_mode
+            else:
+                kwargs["hero_mode"] = "auto"
 
         proj = Project(**kwargs)
         session.add(proj)
@@ -330,6 +497,118 @@ async def add_topics(
         )
 
     return created
+
+
+def project_to_xlsx_row(project: Project) -> dict:
+    """Готовит словарь с полями для записи в новую xlsx-схему (см.
+    `app/storage/batch_sheet.py`). Берёт текущие настройки подпроекта
+    из БД + карточные поля из meta + статус/slug.
+
+    Используется и в `📥 Скачать topics.xlsx`, и в `📤 Залить
+    topics.xlsx` (перевыпуск таблицы после добавления подпроектов).
+
+    Маппинг id → label (для image/video генераторов, релакса, разрешения)
+    инвертирует то, что делает `_apply_xlsx_settings` при чтении.
+    """
+    meta = project.meta or {}
+    card = meta.get("topic_card") or {}
+
+    # Image / video generator: id → label.
+    ig_id = project.image_generator or ""
+    img_gen_label: str | None = None
+    for c in IMAGE_GENERATORS:
+        if c.id == ig_id:
+            img_gen_label = c.label
+            break
+
+    vg_id = project.video_generator or ""
+    video_gen_label: str | None = None
+    for c in VIDEO_GENERATORS:
+        if c.id == vg_id:
+            video_gen_label = c.label
+            break
+
+    # 2k → "2K", 4k → "4K"; 720p → "720", 1080p → "1080".
+    img_quality_label: str | None = None
+    if project.image_resolution == "2k":
+        img_quality_label = "2K"
+    elif project.image_resolution == "4k":
+        img_quality_label = "4K"
+
+    video_quality_label: str | None = None
+    if project.video_resolution == "720p":
+        video_quality_label = "720"
+    elif project.video_resolution == "1080p":
+        video_quality_label = "1080"
+
+    # bool → "ДА"/"НЕТ" (None — оставляем None, дефолт подставит batch_sheet).
+    def _bool_to_label(b) -> str | None:
+        if b is True:
+            return "ДА"
+        if b is False:
+            return "НЕТ"
+        return None
+
+    # hero_count + hero_variations → "NиM".
+    heroes = project.hero_count
+    variations = project.hero_variations or []
+    hero_combo: str | None = None
+    if heroes == 0:
+        hero_combo = "0и1"
+    elif heroes is not None and variations:
+        # Берём первое значение из списка (мы заполняем одинаковыми).
+        hero_combo = f"{heroes}и{variations[0]}"
+
+    # hero_description: либо первый из hero_descriptions, либо одиночный
+    # (legacy hero_description), либо из карточки.
+    hero_desc: str | None = None
+    hd_list = list(project.hero_descriptions or [])
+    if hd_list:
+        hero_desc = hd_list[0]
+    elif project.hero_description:
+        hero_desc = project.hero_description
+    elif card.get("hero_description"):
+        hero_desc = card.get("hero_description")
+
+    overrides = project.prompt_overrides or {}
+
+    return {
+        # A..D — выбор промтов
+        "scenario":          overrides.get("plan"),
+        "title":             project.topic,
+        "topic":             project.topic,
+        "script_style":      overrides.get("script"),
+        "anim_style":        overrides.get("img_pr"),
+        # E..G — карточные поля
+        "hook_type":         card.get("hook_type"),
+        "fact":              card.get("fact"),
+        "integration":       card.get("integration"),
+        # H — выбор промта анимации
+        "video_prompts_gen": overrides.get("anim_pr"),
+        # I, J — герои
+        "hero_combo":        hero_combo,
+        "hero_description":  hero_desc,
+        # K — длительность ролика
+        "duration_sec":      meta.get("duration_target_sec"),
+        # L — формула (Excel сам вычислит)
+        # M..P — картинки
+        "image_generator":   img_gen_label,
+        "image_quality":     img_quality_label,
+        "image_aspect":      project.aspect_ratio,
+        "image_relax":       _bool_to_label(project.image_relax),
+        # Q..T — видео
+        "video_generator":   video_gen_label,
+        "video_quality":     video_quality_label,
+        "video_aspect":      project.aspect_ratio,  # общий aspect для видео
+        "video_relax":       _bool_to_label(project.video_relax),
+        # U, V — пока зарезервировано
+        "voice":             card.get("voice"),
+        "music":             card.get("music"),
+        # W..Z — сервисные
+        "slug":     project.slug,
+        "status":   project.status.value if project.status else None,
+        "progress": "",
+    }
 
 
 async def list_batches(session: AsyncSession) -> list[BatchProject]:
