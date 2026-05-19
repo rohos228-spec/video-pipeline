@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot, OutseeImageError
+from app.bots.outsee import OutseeBot, OutseeCancelledError, OutseeImageError
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -52,7 +52,12 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import (
+    StepCancelledError,
+    consume_stop,
+    is_stop_requested,
+    raise_if_cancelled,
+)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -753,6 +758,7 @@ async def _generate_and_send(
                     file_path,
                     gen_id=gen_id,
                     prompt_id_prefix=prompt_id_prefix,
+                    cancel_check=lambda: is_stop_requested(project.id),
                 )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая
@@ -776,6 +782,7 @@ async def _generate_and_send(
                     relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
+                    cancel_check=lambda: is_stop_requested(project.id),
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -793,7 +800,22 @@ async def _generate_and_send(
                 relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,
+                cancel_check=lambda: is_stop_requested(project.id),
             )
+    except OutseeCancelledError as e:
+        # Юзер нажал «⏹ Остановить» пока мы ждали картинку в outsee.
+        # Не помечаем кадр как failed (это не ошибка генерации), а
+        # пробрасываем StepCancelledError наверх — в caller (run) выше
+        # уже есть обработчик, который откатит статус.
+        consume_stop(project.id)
+        logger.info(
+            "[#{}] frame {}: отмена во время ожидания outsee ({}) — "
+            "выхожу из _generate_and_send",
+            project.id, frame.number, e.reason,
+        )
+        raise StepCancelledError(
+            f"проект #{project.id}: остановка по запросу пользователя"
+        ) from e
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
