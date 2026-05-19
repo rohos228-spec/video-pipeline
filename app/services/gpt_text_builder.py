@@ -114,7 +114,8 @@ def _build_topic_context_block(project: Project) -> str:
         card_lines.append(f"  • Интеграция продукта: {card['integration']}")
     if card.get("shoot_note"):
         card_lines.append(f"  • Примечание по съёмке: {card['shoot_note']}")
-    # Жёсткие тех-ограничения по длительности и закадру (если указаны в xlsx).
+    # Жёсткие тех-ограничения по длительности и закадру (одиночный xlsx-flow:
+    # поля `video_duration_sec` / `voiceover_chars_target` приходят из карточки).
     duration = card.get("video_duration_sec")
     chars = card.get("voiceover_chars_target")
     if duration:
@@ -144,6 +145,20 @@ def _build_topic_context_block(project: Project) -> str:
             )
         except (TypeError, ValueError):
             pass
+    # Целевая длительность из массовой генерации (xlsx-колонка K → meta).
+    # Добавляется только если одиночное `video_duration_sec` НЕ задано —
+    # иначе будет дублирующая строка.
+    if not duration:
+        dur_sec = meta.get("duration_target_sec")
+        if dur_sec:
+            try:
+                dur_int = int(dur_sec)
+                card_lines.append(
+                    f"  • Целевая длительность ролика: {dur_int} сек "
+                    f"(≈ {round(dur_int / 13.5)} строк закадрового текста)."
+                )
+            except (TypeError, ValueError):
+                pass
     if card_lines:
         lines.append("📋 Карточка ролика:")
         lines.extend(card_lines)

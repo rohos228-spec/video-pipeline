@@ -27,18 +27,29 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import BatchProject, Project
 from app.storage.batch_sheet import (
-    CARD_FIELDS,
+    CARD_FIELDS,  # noqa: F401  (часть публичного API модуля; используется в тестах)
     VOICEOVER_CHARS_PER_SECOND,
     read_topics,
 )
 
 # Карточные поля, которые ХОТИМ чтобы юзер/GPT заполнил перед стартом.
-# `title` обязателен и заполняется юзером — его не проверяем.
-# `voiceover_chars_target` — формула =L*13.5, заполняется Excel'ом сама,
-# его тоже не считаем «пробелом».
+# Это «исторический» набор полей одиночного xlsx-flow: они описывают
+# содержательную часть ролика, GPT-автозаполнение в первую очередь
+# подбирает значения для них (стиль/эмоция/факт/логика/...).
+#
+# Новые поля массовой xlsx v2 (image_generator, hero_combo, dropdown'ы
+# и т.п.) НЕ включены — у них в схеме уже стоят дефолты, и автозаполнение
+# их не должно ждать.
 _REQUIRED_CARD_FIELDS = [
-    f for f in CARD_FIELDS
-    if f not in ("title", "voiceover_chars_target")
+    "source",
+    "style",
+    "hook_type",
+    "emotion",
+    "fact",
+    "logic",
+    "integration",
+    "shoot_note",
+    "video_duration_sec",
 ]
 
 # Сколько попыток round-trip к ChatGPT при ошибке (скачивание xlsx, парсинг и т.п.).
