@@ -395,7 +395,7 @@ async def cmd_start(msg: Message) -> None:
         "Готов. Команды:\n"
         "  /menu — главное меню (создание/просмотр проектов)\n"
         "  /status — список проектов\n"
-        "  /status <id> — детали проекта\n\n"
+        "  /status &lt;id&gt; — детали проекта\n\n"
         "Внизу есть постоянные кнопки:\n"
         f"  • <b>{PERSISTENT_HOME_TEXT}</b> — главное меню\n"
         f"  • <b>{PERSISTENT_LAST_TEXT}</b> — последний проект\n"
