@@ -441,26 +441,29 @@ async def _toggle_relax(
     max_attempts: int = 3,
 ) -> bool:
     """Ставит тогл Relax в нужное состояние и ВЕРИФИЦИРУЕТ что состояние
-    реально сменилось. При несовпадении — повторяет физический CDP-клик
-    до `max_attempts` раз.
+    реально сменилось. При несовпадении — повторяет клик до
+    `max_attempts` раз.
 
     На outsee.io 2026 года тогл называется «Безлимит» — и это И ЕСТЬ
     Relax-режим (юзер подтвердил):
       Relax=ON  ⇔ Безлимит=ON
       Relax=OFF ⇔ Безлимит=OFF
 
-    Зачем физ.клик + верификация:
-      Раньше клик делался синтетический (`locator.click()`). Если форма
-      ещё не закончила гидрацию React'а, synthetic-click уходит впустую:
-      внешне всё ок (нет исключения), но `bg-primary` на тогле не
-      появляется, и следующий шаг `generate` стартует со старым Relax-
-      состоянием. Юзер видит «кнопка релакс не нажалась → Generate
-      слишком рано».
+    История попыток (что НЕ работает):
+      * Физический CDP-клик `_physical_click_element` по тогле
+        «Безлимит» НЕ срабатывает — кнопка широкая (`<button>` с
+        текстом «Безлимит» слева и switch'ом справа), центр bbox
+        попадает в «мёртвую зону» между ними, onclick не вызывается.
+      * Юзер: «работала же кнопка, почему она опять не работает» —
+        синтетический `locator.click()` дёргает onclick элемента
+        напрямую, без расчёта координат, и потому всегда срабатывал.
 
-      Решение: использовать `_physical_click_element` (Input.dispatch
-      MouseEvent через CDP, isTrusted=true) и после клика
-      перечитывать состояние через `_read_limit_toggle_on`. Если за
-      `settle_s` секунд состояние не сменилось — повторить.
+    Сейчас используем:
+      1. `page.locator(sel).first.click()` — synthetic click, дёргает
+         onclick handler элемента без зависимости от bbox-координат.
+      2. После клика sleep `settle_s` сек → перечитываем состояние
+         через `_read_limit_toggle_on` (или aria-* для fallback'а).
+      3. Если состояние не сменилось — повторяем (до `max_attempts`).
 
     Возвращает True если итоговое состояние совпало с want_on (или
     толла нет на странице и юзер просил want_on=False), иначе False.
@@ -485,16 +488,20 @@ async def _toggle_relax(
                 )
                 return True
             for attempt in range(1, max_attempts + 1):
-                ok = await _physical_click_element(
-                    page, limit_sel,
-                    description=f"{where}:Безлимит(att{attempt})",
-                    timeout_s=3.0,
-                )
+                try:
+                    await page.locator(limit_sel).first.click(timeout=3_000)
+                    click_ok = True
+                except Exception as ce:  # noqa: BLE001
+                    click_ok = False
+                    logger.warning(
+                        "outsee.{}: synthetic click по «Безлимит» #{}/{} "
+                        "упал: {}", where, attempt, max_attempts, ce,
+                    )
                 logger.info(
-                    "outsee.{}: физ.клик по тогле «Безлимит» #{}/{} "
+                    "outsee.{}: synthetic click по тогле «Безлимит» #{}/{} "
                     "(want={}, before={}, dispatched={})",
                     where, attempt, max_attempts, desired_label,
-                    current_on, ok,
+                    current_on, click_ok,
                 )
                 # Ждём пока React перерисует, потом перечитаем.
                 await asyncio.sleep(settle_s)
@@ -578,15 +585,19 @@ async def _toggle_relax(
             )
             return True
         for attempt in range(1, max_attempts + 1):
-            ok = await _physical_click_element(
-                page, sel,
-                description=f"{where}:RelaxFallback(att{attempt})",
-                timeout_s=3.0,
-            )
+            try:
+                await page.locator(sel).first.click(timeout=3_000)
+                click_ok = True
+            except Exception as ce:  # noqa: BLE001
+                click_ok = False
+                logger.warning(
+                    "outsee.{}: synthetic click по «Relax» #{}/{} упал: {}",
+                    where, attempt, max_attempts, ce,
+                )
             logger.info(
-                "outsee.{}: физ.клик по «Relax» #{}/{} (sel={}, want={}, "
-                "dispatched={})",
-                where, attempt, max_attempts, sel, desired_label, ok,
+                "outsee.{}: synthetic click по «Relax» #{}/{} (sel={}, "
+                "want={}, dispatched={})",
+                where, attempt, max_attempts, sel, desired_label, click_ok,
             )
             await asyncio.sleep(settle_s)
             after = await _read_aria_state()
