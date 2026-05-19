@@ -3202,6 +3202,134 @@ class OutseeBot:
             )
             return None
 
+    async def _video_error_tile_for_prompt_id(
+        self,
+        page: Page,
+        id_token: str,
+        *,
+        max_levels: int = 12,
+    ) -> str | None:
+        """Возвращает текст плашки «Ошибка», если она появилась
+        в карточке outsee, привязанной к нашему `[ID: ...]`.
+
+        Outsee рендерит провалившуюся генерацию как тайл с красным
+        треугольником ⚠ и текстом «Ошибка» (см. скрин юзера).
+        В этом же тайле в правом-нижнем углу видна первая строка
+        нашего промта — т.е. `[ID: P4-F1-XXXXXXXX]`. Мы ищем тайл,
+        у которого:
+          1) видимый текстContent содержит «Ошибка» (RU) или «Error» (EN);
+          2) видимый текстContent ИЛИ <textarea>.value содержит наш
+             id_token (полный `[ID: ...]`, или его inner-часть, или
+             8-hex-tail).
+          3) bbox ancestor'а ≤ 60% viewport — отсекаем composer-панель,
+             в которой тоже лежит наш [ID:].
+
+        Если нашлось — возвращаем сам текст тайла (≤300 симв), чтобы
+        caller мог положить его в OutseeImageError.reason / в TG. Иначе
+        None.
+
+        Зеркало `_find_video_by_prompt_id` + `_content_rejected_text`.
+        """
+        tokens: list[str] = [id_token]
+        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
+        if m:
+            inner = m.group(1)
+            if inner not in tokens:
+                tokens.append(inner)
+        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
+        if m2:
+            tail = m2.group(1)
+            if tail and tail not in tokens:
+                tokens.append(tail)
+
+        js = """
+        ([tokens, maxLevels]) => {
+            const MAX_CARD_W = window.innerWidth * 0.6;
+            const ERR_TRIGGERS = ['Ошибка', 'Error', 'Failed', 'Не удалось'];
+            const hasTokenInScope = (el, idToken) => {
+                const txt = el.textContent || '';
+                if (txt.includes(idToken)) return true;
+                for (const ta of el.querySelectorAll('textarea, input')) {
+                    if ((ta.value || '').includes(idToken)) return true;
+                }
+                return false;
+            };
+            function isTrulyVisible(el) {
+                const cs = window.getComputedStyle(el);
+                if (cs.display === 'none') return false;
+                if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+                if (parseFloat(cs.opacity) === 0) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) return false;
+                let p = el.parentElement;
+                while (p) {
+                    const pcs = window.getComputedStyle(p);
+                    if (pcs.display === 'none') return false;
+                    if (pcs.visibility === 'hidden' || pcs.visibility === 'collapse') return false;
+                    if (parseFloat(pcs.opacity) === 0) return false;
+                    p = p.parentElement;
+                }
+                return true;
+            }
+            // Ищем узлы, у которых text содержит триггер «Ошибка»
+            // (без учёта <script>/<style>/<template>/textarea/input).
+            const errLeaves = [];
+            for (const el of document.querySelectorAll('*')) {
+                const tag = (el.tagName || '').toLowerCase();
+                if (tag === 'textarea' || tag === 'input' ||
+                    tag === 'script' || tag === 'style' ||
+                    tag === 'template') continue;
+                // own text only (без потомков) — чтобы не пометить
+                // весь body как «содержит Ошибка».
+                let ownText = '';
+                for (const ch of el.childNodes) {
+                    if (ch.nodeType === 3) ownText += ch.nodeValue || '';
+                }
+                ownText = ownText.trim();
+                if (!ownText) continue;
+                if (ownText.length > 200) continue;
+                let hit = false;
+                for (const tr of ERR_TRIGGERS) {
+                    if (ownText.toLowerCase().includes(tr.toLowerCase())) {
+                        hit = true; break;
+                    }
+                }
+                if (!hit) continue;
+                if (!isTrulyVisible(el)) continue;
+                errLeaves.push(el);
+            }
+            if (!errLeaves.length) return null;
+            // Для каждой найденной «Ошибка» — идём ВВЕРХ, ищем
+            // tile-карточку (bbox ≤ 60% viewport), у которой видим
+            // наш id_token. Если нашлась — возвращаем её text.
+            for (const idToken of tokens) {
+                for (const leaf of errLeaves) {
+                    let cur = leaf.parentElement;
+                    for (let i = 0; i < maxLevels && cur; i++) {
+                        const r = cur.getBoundingClientRect();
+                        if (r.width > MAX_CARD_W) break;
+                        if (hasTokenInScope(cur, idToken)) {
+                            const t = (cur.textContent || '').trim();
+                            return t.slice(0, 300);
+                        }
+                        cur = cur.parentElement;
+                    }
+                }
+            }
+            return null;
+        }
+        """
+        try:
+            res = await page.evaluate(js, [tokens, max_levels])
+            if isinstance(res, str) and res.strip():
+                return res.strip()
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_video_error_tile_for_prompt_id: ошибка JS-поиска: {}", e
+            )
+            return None
+
     async def _wait_video_url(
         self,
         page: Page,
@@ -3219,6 +3347,14 @@ class OutseeBot:
              URL должен быть НЕ из baseline (исключаем старые ролики).
           2) Иначе (legacy) — берём первый НОВЫЙ (не-baseline) URL,
              похожий на видео.
+          3) НА КАЖДОЙ ИТЕРАЦИИ проверяем, не появилась ли в карточке
+             с нашим [ID: ...] плашка «Ошибка» (outsee рендерит её
+             вместо видео если генерация провалилась). Если да —
+             raise OutseeImageError(reason="outsee error tile: …"),
+             чтобы caller (generate_videos.py) пометил кадр failed
+             и отправил TG-уведомление, ровно как при ошибках в
+             картинках. Без этой проверки бот тупо висел до конца
+             timeout и потом таймаутился.
 
         Логи прогресса каждые 15 секунд: сколько кандидатов и сколько
         из них новых.
@@ -3248,6 +3384,29 @@ class OutseeBot:
                     )
                     raise OutseeImageError(
                         reason="cancelled by user via ⏹"
+                    )
+            # Приоритет -1: плашка «Ошибка» в нашей карточке.
+            # Если outsee упал — нет смысла ждать timeout, сразу
+            # raise OutseeImageError, caller пометит кадр failed
+            # и шлёт TG-уведомление (как у картинок).
+            if prompt_id_prefix:
+                try:
+                    err_text = await self._video_error_tile_for_prompt_id(
+                        page, prompt_id_prefix,
+                    )
+                except Exception:  # noqa: BLE001
+                    err_text = None
+                if err_text:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    logger.warning(
+                        "outsee.generate_video: плашка «Ошибка» в "
+                        "карточке {} за {:.0f} сек: {}",
+                        prompt_id_prefix, elapsed, err_text[:200],
+                    )
+                    raise OutseeImageError(
+                        reason=(
+                            f"outsee error tile detected: {err_text[:200]}"
+                        )
                     )
             # Приоритет 0: видео в карточке с [ID: ...].
             if prompt_id_prefix:

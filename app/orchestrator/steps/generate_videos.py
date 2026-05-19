@@ -522,7 +522,12 @@ async def _generate_and_send(
             gpt_rewrite=True,
             start_frame=start_frame_path,
             aspect_ratio=aspect_slug,
-            timeout=1200,
+            # 600 сек — даём outsee 10 минут на ролик. Если за это
+            # время не пришёл результат или плашка «Ошибка» в карточке
+            # с нашим [ID:] — _wait_video_url raise OutseeImageError,
+            # кадр помечается failed и юзер увидит TG-уведомление
+            # (та же логика, что у картинок).
+            timeout=600,
             model_slug=video_model_slug,
             resolution=video_res_slug,
             relax=video_relax,
