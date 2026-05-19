@@ -438,18 +438,38 @@ async def _read_limit_toggle_on(page: Any, sel: str) -> bool | None:
 async def _toggle_relax(
     page: Any, *, want_on: bool, where: str = "image",
     dumps: list[Path] | None = None,
-) -> None:
-    """Best-effort: ставит тогл Relax в нужное состояние.
+    max_attempts: int = 3,
+) -> bool:
+    """Ставит тогл Relax в нужное состояние и ВЕРИФИЦИРУЕТ что состояние
+    реально сменилось. При несовпадении — повторяет физический CDP-клик
+    до `max_attempts` раз.
 
     На outsee.io 2026 года тогл называется «Безлимит» — и это И ЕСТЬ
     Relax-режим (юзер подтвердил):
       Relax=ON  ⇔ Безлимит=ON
       Relax=OFF ⇔ Безлимит=OFF
 
-    Если тогл не нашёлся — пробуем старые «Relax»-селекторы. Если совсем
-    нет — тихо выходим (модель его не поддерживает). Если want_on=True и
-    кнопку не нашли — дампим страницу для отладки.
+    Зачем физ.клик + верификация:
+      Раньше клик делался синтетический (`locator.click()`). Если форма
+      ещё не закончила гидрацию React'а, synthetic-click уходит впустую:
+      внешне всё ок (нет исключения), но `bg-primary` на тогле не
+      появляется, и следующий шаг `generate` стартует со старым Relax-
+      состоянием. Юзер видит «кнопка релакс не нажалась → Generate
+      слишком рано».
+
+      Решение: использовать `_physical_click_element` (Input.dispatch
+      MouseEvent через CDP, isTrusted=true) и после клика
+      перечитывать состояние через `_read_limit_toggle_on`. Если за
+      `settle_s` секунд состояние не сменилось — повторить.
+
+    Возвращает True если итоговое состояние совпало с want_on (или
+    толла нет на странице и юзер просил want_on=False), иначе False.
+    Если want_on=True а тогла нет — дампим страницу для отладки и
+    возвращаем False.
     """
+    settle_s: float = 0.7  # сколько ждать после клика прежде чем перечитать
+    desired_label = "ON" if want_on else "OFF"
+
     # 1) Сначала пробуем NEW UI: «Безлимит».
     limit_sel = await _first_visible(
         page, LIMIT_TOGGLE_SELECTORS, timeout_ms=1_500
@@ -457,27 +477,56 @@ async def _toggle_relax(
     if limit_sel:
         try:
             current_on = await _read_limit_toggle_on(page, limit_sel)
-            # Семантика: relax want_on == True ⇔ Безлимит должно быть ON.
-            desired_limit_on = want_on
-            if current_on is desired_limit_on:
+            if current_on is want_on:
                 logger.info(
-                    "outsee.{}: Relax {} — Безлимит уже {} (тогл не трогаем)",
-                    where, "ON" if want_on else "OFF",
-                    "OFF" if desired_limit_on is False else "ON",
+                    "outsee.{}: Relax {} — Безлимит уже в нужном состоянии "
+                    "(тогл не трогаем)",
+                    where, desired_label,
                 )
-                return
-            if current_on is None:
+                return True
+            for attempt in range(1, max_attempts + 1):
+                ok = await _physical_click_element(
+                    page, limit_sel,
+                    description=f"{where}:Безлимит(att{attempt})",
+                    timeout_s=3.0,
+                )
                 logger.info(
-                    "outsee.{}: Relax {} — состояние «Безлимит» неизвестно, "
-                    "кликаю один раз",
-                    where, "ON" if want_on else "OFF",
+                    "outsee.{}: физ.клик по тогле «Безлимит» #{}/{} "
+                    "(want={}, before={}, dispatched={})",
+                    where, attempt, max_attempts, desired_label,
+                    current_on, ok,
                 )
-            await page.locator(limit_sel).first.click(timeout=2_000)
-            logger.info(
-                "outsee.{}: тогл «Безлимит» переключён → хочу Relax={}",
-                where, "ON" if want_on else "OFF",
+                # Ждём пока React перерисует, потом перечитаем.
+                await asyncio.sleep(settle_s)
+                after_on = await _read_limit_toggle_on(page, limit_sel)
+                logger.info(
+                    "outsee.{}: после клика «Безлимит» состояние = {} "
+                    "(хочу {})", where, after_on, desired_label,
+                )
+                if after_on is want_on:
+                    logger.info(
+                        "outsee.{}: Relax {} подтверждён (попыток: {})",
+                        where, desired_label, attempt,
+                    )
+                    return True
+                # Иначе — ещё одна попытка (state мог не успеть, либо
+                # клик прошёл мимо). Пауза между попытками.
+                await asyncio.sleep(0.5)
+                current_on = after_on
+            logger.warning(
+                "outsee.{}: Relax {} НЕ подтверждён после {} попыток "
+                "(финальное состояние={}) — дампим страницу",
+                where, desired_label, max_attempts, current_on,
             )
-            return
+            try:
+                h, p = await _dump_page(page, f"relax_not_confirmed_{where}")
+                if dumps is not None:
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
+            except Exception:  # noqa: BLE001
+                pass
+            return False
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "outsee.{}: тогл «Безлимит» поломался: {}", where, e,
@@ -497,39 +546,69 @@ async def _toggle_relax(
                 for x in (h, p):
                     if x:
                         dumps.append(x)
-        return
+            return False
+        return True
     try:
-        loc = page.locator(sel).first
-        state: str | None = None
-        for attr in ("aria-checked", "aria-pressed", "data-state"):
-            try:
-                v = await loc.get_attribute(attr, timeout=500)
-                if v is not None:
-                    state = str(v).lower()
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-        is_on: bool | None = None
-        if state in ("true", "on", "checked"):
-            is_on = True
-        elif state in ("false", "off", "unchecked"):
-            is_on = False
+        async def _read_aria_state() -> bool | None:
+            loc = page.locator(sel).first
+            for attr in ("aria-checked", "aria-pressed", "data-state"):
+                try:
+                    v = await loc.get_attribute(attr, timeout=500)
+                    if v is not None:
+                        s = str(v).lower()
+                        if s in ("true", "on", "checked"):
+                            return True
+                        if s in ("false", "off", "unchecked"):
+                            return False
+                except Exception:  # noqa: BLE001
+                    continue
+            return None
+
+        is_on = await _read_aria_state()
         if want_on and is_on is True:
             logger.info("outsee.{}: Relax уже включён, пропускаем клик", where)
-            return
+            return True
         if not want_on and is_on is False:
             logger.info("outsee.{}: Relax уже выключен, пропускаем клик", where)
-            return
+            return True
         if not want_on and is_on is None:
             logger.info(
-                "outsee.{}: Relax=off запрошен, но состояние неизвестно — не трогаем",
-                where,
+                "outsee.{}: Relax=off запрошен, но состояние неизвестно — "
+                "не трогаем", where,
             )
-            return
-        await loc.click(timeout=2_000)
-        logger.info("outsee.{}: Relax {} (sel={})", where, "ON" if want_on else "OFF", sel)
+            return True
+        for attempt in range(1, max_attempts + 1):
+            ok = await _physical_click_element(
+                page, sel,
+                description=f"{where}:RelaxFallback(att{attempt})",
+                timeout_s=3.0,
+            )
+            logger.info(
+                "outsee.{}: физ.клик по «Relax» #{}/{} (sel={}, want={}, "
+                "dispatched={})",
+                where, attempt, max_attempts, sel, desired_label, ok,
+            )
+            await asyncio.sleep(settle_s)
+            after = await _read_aria_state()
+            logger.info(
+                "outsee.{}: после клика «Relax» state={} (хочу {})",
+                where, after, desired_label,
+            )
+            if after is want_on:
+                logger.info(
+                    "outsee.{}: Relax {} подтверждён (попыток: {})",
+                    where, desired_label, attempt,
+                )
+                return True
+            await asyncio.sleep(0.5)
+        logger.warning(
+            "outsee.{}: Relax {} НЕ подтверждён через RELAX_SELECTORS "
+            "после {} попыток", where, desired_label, max_attempts,
+        )
+        return False
     except Exception as e:  # noqa: BLE001
         logger.warning("outsee.{}: Relax toggle упал: {}", where, e)
+        return False
 
 
 def _image_page_url(model_slug: str | None) -> str:
@@ -1703,9 +1782,21 @@ class OutseeBot:
                             )
 
                 # 2.7) Relax (если попросили)
-                await _toggle_relax(
+                _relax_ok = await _toggle_relax(
                     page, want_on=relax, where="generate_image", dumps=dumps,
                 )
+                # Дать React'у дорисовать UI после смены Relax-режима до
+                # того, как мы пойдём искать Generate-кнопку. Без этой
+                # паузы Generate в редких случаях стартует со старым
+                # Relax-состоянием (форма ещё не успела обновить
+                # disabled/aria-атрибуты).
+                if relax and not _relax_ok:
+                    logger.warning(
+                        "outsee.generate_image: Relax={} НЕ подтверждён — "
+                        "продолжаю Generate с тем, что есть (gen_id={})",
+                        relax, gen_id[:8],
+                    )
+                await asyncio.sleep(0.8)
 
                 # 2.9) Reference-картинка (для hero-вариаций 2..N).
                 # На странице outsee.io image обычно есть СКРЫТЫй input[type=file]
@@ -3228,8 +3319,24 @@ class OutseeBot:
                     except Exception:  # noqa: BLE001
                         pass
 
-            # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
-            await _toggle_relax(page, want_on=relax, where="generate_video")
+            # 2.7) Relax (только для veo-3-1-fast по словам пользователя).
+            # ВАЖНО: `_toggle_relax` теперь физически кликает мышью CDP'ом
+            # и верифицирует что состояние «Безлимит» реально сменилось
+            # ДО возврата управления. Это блокирует ситуацию «Generate
+            # стартует со старым Relax-режимом, потому что предыдущий
+            # синтетический клик не сработал, а флоу проскочил дальше».
+            _relax_ok_v = await _toggle_relax(
+                page, want_on=relax, where="generate_video",
+            )
+            if relax and not _relax_ok_v:
+                logger.warning(
+                    "outsee.generate_video: Relax={} НЕ подтверждён — "
+                    "продолжаю Generate с тем, что есть (prompt_id={})",
+                    relax, prompt_id_prefix,
+                )
+            # Пауза, чтобы React дорисовал форму после смены Relax-режима
+            # (иначе Generate может стартовать на «полу-готовом» UI).
+            await asyncio.sleep(0.8)
 
             # 3) загрузка стартового кадра (если передан).
             #
