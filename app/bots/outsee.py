@@ -1178,6 +1178,134 @@ async def _first_visible(
     return None
 
 
+async def _physical_click_element(
+    page: Page,
+    selector: str,
+    *,
+    description: str = "button",
+    timeout_s: float = 5.0,
+    fallback_locator_click: bool = True,
+) -> bool:
+    """Кликает по элементу ФИЗИЧЕСКОЙ мышью через CDP, а не через
+    Playwright `locator.click()`.
+
+    Зачем: outsee.io в ряде случаев игнорирует Playwright-click
+    (особенно по кнопке Generate в момент сразу после `settings.json`
+    — форма ещё «дорисовывается», и синтетический click уходит в
+    пустоту: `net_events=0` и DOM не меняется). Реальная мышь —
+    `Input.dispatchMouseEvent` с `isTrusted=true` — проходит
+    hit-test/обработчики так же как живой пользователь.
+
+    Алгоритм:
+      1) `locator.scroll_into_view_if_needed` — гарантирует видимость;
+      2) `getBoundingClientRect` через JS → центр (cx, cy) внутри
+         viewport;
+      3) `page.mouse.move(cx, cy)` + `page.mouse.click(cx, cy, delay=50)`.
+
+    Если шаг 2/3 упал, и `fallback_locator_click=True` — фолбэк на
+    обычный `locator.click()` (чтобы не рушить пайплайн, если bbox
+    вышел из viewport или element_handle устарел).
+
+    Возвращает True если физический CDP-клик выполнен, False если
+    был использован фолбэк или элемент недоступен.
+    """
+    try:
+        loc = page.locator(selector).first
+        try:
+            await loc.scroll_into_view_if_needed(
+                timeout=int(timeout_s * 1000)
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        handle = await loc.element_handle()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_physical_click_element[{}]: locator упал ({}): {}",
+            description, selector, e,
+        )
+        if fallback_locator_click:
+            try:
+                await page.locator(selector).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+    if handle is None:
+        logger.warning(
+            "_physical_click_element[{}]: element_handle=None ({})",
+            description, selector,
+        )
+        if fallback_locator_click:
+            try:
+                await page.locator(selector).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+    try:
+        rect = await page.evaluate(
+            """(el) => {
+                const r = el.getBoundingClientRect();
+                return {
+                    cx: Math.round(r.left + r.width / 2),
+                    cy: Math.round(r.top + r.height / 2),
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    w: Math.round(r.width),
+                    h: Math.round(r.height),
+                };
+            }""",
+            handle,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_physical_click_element[{}]: getBoundingClientRect упал: {}",
+            description, e,
+        )
+        if fallback_locator_click:
+            try:
+                await page.locator(selector).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+    cx = int(rect["cx"])
+    cy = int(rect["cy"])
+    vw = int(rect["vw"])
+    vh = int(rect["vh"])
+    bw = rect.get("w")
+    bh = rect.get("h")
+    if cx < 1 or cx > vw - 1 or cy < 1 or cy > vh - 1:
+        logger.warning(
+            "_physical_click_element[{}]: центр вне viewport "
+            "(cx={}, cy={}, vw={}, vh={}, w={}, h={}) — фолбэк locator.click()",
+            description, cx, cy, vw, vh, bw, bh,
+        )
+        if fallback_locator_click:
+            try:
+                await page.locator(selector).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+    try:
+        await page.mouse.move(cx, cy)
+        await asyncio.sleep(0.15)
+        await page.mouse.click(cx, cy, delay=50)
+        logger.info(
+            "_physical_click_element[{}]: физ.клик ({},{}) bbox={}×{}",
+            description, cx, cy, bw, bh,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_physical_click_element[{}]: page.mouse.click упал: {} — "
+            "фолбэк locator.click()", description, e,
+        )
+        if fallback_locator_click:
+            try:
+                await page.locator(selector).first.click()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
 class OutseeBot:
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
@@ -1493,10 +1621,17 @@ class OutseeBot:
 
                 click_ts = _time.monotonic()
                 net_events.clear()
-                await page.locator(gen_sel).first.click()
+                # ФИЗИЧЕСКАЯ мышь через CDP — outsee.io иногда игнорит
+                # Playwright `locator.click()` сразу после settings.json,
+                # форма ещё «прогревается». Физ.клик проходит hit-test.
+                _phys_ok = await _physical_click_element(
+                    page, gen_sel,
+                    description="image:Generate",
+                )
                 logger.info(
-                    "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
-                    gen_id[:8],
+                    "outsee.generate_image: Generate кликнут (физ={}), "
+                    "жду картинку (gen_id={})",
+                    _phys_ok, gen_id[:8],
                 )
 
             # 4) Получаем НАШУ картинку.
@@ -1689,7 +1824,16 @@ class OutseeBot:
             pre_rejected_text = await self._content_rejected_text(page)
             click_ts = _time.monotonic()
             net_events.clear()
-            await page.locator(retry_sel).first.click()
+            # Физ.мышь через CDP вместо Playwright `locator.click()` —
+            # см. _physical_click_element для обоснования.
+            _phys_ok_retry = await _physical_click_element(
+                page, retry_sel,
+                description="image:Повторить",
+            )
+            logger.info(
+                "outsee.regenerate_image: «Повторить» кликнут (физ={})",
+                _phys_ok_retry,
+            )
             logger.info(
                 "outsee.regenerate_image: «Повторить» кликнут, жду картинку "
                 "(gen_id={}, prompt_id_prefix={})",
@@ -3051,11 +3195,18 @@ class OutseeBot:
                 btn_text = "?"
             click_ts = _time.monotonic()
             net_events.clear()
-            await page.locator(gen_sel).first.click()
+            # ФИЗИЧЕСКАЯ мышь через CDP — те же причины что в
+            # generate_image: синтетический click после загрузки формы
+            # / settings.json иногда уходит в пустоту. См. также
+            # `_physical_click_element`.
+            _phys_ok_v = await _physical_click_element(
+                page, gen_sel,
+                description="video:Generate",
+            )
             logger.info(
-                "outsee.generate_video: Generate кликнут «{}» (gen_sel={}), "
-                "жду видео (timeout={:.0f}с, prompt_id={})",
-                btn_text, gen_sel, timeout, prompt_id_prefix,
+                "outsee.generate_video: Generate кликнут «{}» (физ={}, "
+                "gen_sel={}), жду видео (timeout={:.0f}с, prompt_id={})",
+                btn_text, _phys_ok_v, gen_sel, timeout, prompt_id_prefix,
             )
             # Через ~3 сек проверим, сработал ли клик — должен появиться
             # spinner / placeholder, или хотя бы новый thumb-img. Если НЕТ —
@@ -3331,9 +3482,10 @@ class OutseeBot:
             )
             return already
 
-        # (2) Кликаем по thumb-img.
+        # (2) Кликаем по thumb-img — ФИЗИЧЕСКОЙ мышью через CDP.
+        # JS-вариант (img.click()) — fallback если bbox вне viewport.
         try:
-            clicked = await page.evaluate(
+            bbox = await page.evaluate(
                 """(seg) => {
                     const imgs = document.querySelectorAll('img');
                     for (const img of imgs) {
@@ -3341,34 +3493,70 @@ class OutseeBot:
                             try {
                                 img.scrollIntoView({block: 'center'});
                             } catch (e) {}
-                            // Сначала пробуем нативный click на img.
-                            try { img.click(); } catch (e) {}
-                            // Дополнительно — клик по ближайшему
-                            // кликабельному предку (button/a/role=button),
-                            // outsee обычно вешает обработчик на wrapper.
-                            let cur = img.parentElement;
-                            for (let i = 0; i < 6 && cur; i++) {
-                                const tag = (cur.tagName || '').toLowerCase();
-                                const role = cur.getAttribute('role');
-                                if (tag === 'button' || tag === 'a' ||
-                                    role === 'button') {
-                                    try { cur.click(); } catch (e) {}
-                                    break;
-                                }
-                                cur = cur.parentElement;
-                            }
-                            return true;
+                            const r = img.getBoundingClientRect();
+                            return {
+                                cx: Math.round(r.left + r.width / 2),
+                                cy: Math.round(r.top + r.height / 2),
+                                vw: window.innerWidth,
+                                vh: window.innerHeight,
+                                w: Math.round(r.width),
+                                h: Math.round(r.height),
+                            };
                         }
                     }
-                    return false;
+                    return null;
                 }""", seg,
             )
-            if not clicked:
+            if not bbox:
                 logger.warning(
                     "_capture_video_via_thumb_click: thumb с {} не "
                     "найден в DOM для клика", seg,
                 )
                 return None
+            cx = int(bbox["cx"])
+            cy = int(bbox["cy"])
+            vw = int(bbox["vw"])
+            vh = int(bbox["vh"])
+            bw = bbox.get("w")
+            bh = bbox.get("h")
+            await asyncio.sleep(0.3)  # дать scrollIntoView отрисоваться
+            if cx < 1 or cx > vw - 1 or cy < 1 or cy > vh - 1:
+                logger.warning(
+                    "_capture_video_via_thumb_click: bbox thumb вне "
+                    "viewport (cx={}, cy={}, vw={}, vh={}, w={}, h={}) — "
+                    "фолбэк JS .click()", cx, cy, vw, vh, bw, bh,
+                )
+                await page.evaluate(
+                    """(seg) => {
+                        const imgs = document.querySelectorAll('img');
+                        for (const img of imgs) {
+                            if ((img.src || '').includes(seg)) {
+                                try { img.click(); } catch (e) {}
+                                let cur = img.parentElement;
+                                for (let i = 0; i < 6 && cur; i++) {
+                                    const tag = (cur.tagName || '').toLowerCase();
+                                    const role = cur.getAttribute('role');
+                                    if (tag === 'button' || tag === 'a' ||
+                                        role === 'button') {
+                                        try { cur.click(); } catch (e) {}
+                                        break;
+                                    }
+                                    cur = cur.parentElement;
+                                }
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""", seg,
+                )
+            else:
+                await page.mouse.move(cx, cy)
+                await asyncio.sleep(0.15)
+                await page.mouse.click(cx, cy, delay=50)
+                logger.info(
+                    "_capture_video_via_thumb_click: физ.клик ({},{}) "
+                    "bbox={}×{} по thumb {}", cx, cy, bw, bh, seg,
+                )
             logger.info(
                 "_capture_video_via_thumb_click: клик по thumb {} "
                 "выполнен, жду mp4 (timeout={:.0f}с)", seg, timeout_s,
