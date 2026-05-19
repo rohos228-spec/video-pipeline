@@ -5359,10 +5359,24 @@ async def _render_test_project_to_user(
 
 @dp.callback_query(F.data.regexp(r"^proj:\d+:reload_xlsx$"))
 async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
+    """Перечитать всё: xlsx → БД + диск → БД.
+
+    Делает две вещи подряд:
+      1) Импортирует project.xlsx обратно в БД (v8 или v7).
+      2) Сканирует папки `scenes/` и `videos/` проекта и
+         регистрирует артефакты для файлов, которых нет в БД
+         (например, юзер перегенерил картинку вручную и в БД
+         осталась запись на удалённый файл).
+
+    Также сбрасывает кадры в `FrameStatus.failed`, если для них
+    нашлась свежая картинка на диске — иначе пайплайн их снова
+    пропустит.
+    """
     if cb.from_user.id != settings.telegram_owner_chat_id:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
+    from app.services.rescan_disk import rescan_project_disk
     from app.services.xlsx_sync import reload_from_xlsx
     from app.services.xlsx_v8_import import import_v8_xlsx
 
@@ -5373,29 +5387,29 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        xlsx_path = project.data_dir / "project.xlsx"
-        if not xlsx_path.exists():
-            await cb.answer("xlsx-файла нет", show_alert=True)
-            return
-        # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
-        # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
-        # ROOT FIX: раньше вызывался только v7 — и на v8-xlsx этот клик был пустым.
+
+        # 1) xlsx → БД (если xlsx-файл есть; иначе просто пропускаем
+        #    эту часть и идём сразу к ресканy диска).
         summary_v8: dict = {}
         summary_v7: dict = {}
-        try:
-            summary_v8 = await import_v8_xlsx(
-                s, project, xlsx_path,
-                keep_fields=False, update_frames_voiceover=True,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("reload_xlsx v8 import failed: {}", e)
-        try:
-            summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("reload_from_xlsx (v7) failed")
-            if not summary_v8:
-                await cb.answer(f"Ошибка: {type(e).__name__}", show_alert=True)
-                return
+        xlsx_path = project.data_dir / "project.xlsx"
+        xlsx_error: str | None = None
+        if xlsx_path.exists():
+            # Пробуем оба формата. v8 (лист «план») хранит промты в R45/R48,
+            # v7 (лист «Кадры») — в R29/R30. Несоответствующий формат = no-op.
+            try:
+                summary_v8 = await import_v8_xlsx(
+                    s, project, xlsx_path,
+                    keep_fields=False, update_frames_voiceover=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("reload_xlsx v8 import failed: {}", e)
+            try:
+                summary_v7 = await reload_from_xlsx(s, project, xlsx_path)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("reload_from_xlsx (v7) failed")
+                if not summary_v8:
+                    xlsx_error = type(e).__name__
         proj_fields = list(
             dict.fromkeys(
                 (summary_v8.get("project_fields_changed") or [])
@@ -5410,17 +5424,52 @@ async def on_project_reload_xlsx(cb: CallbackQuery) -> None:
             )
         )
         prompts_synced = summary_v8.get("prompts_synced") or []
+
+        # 2) диск → БД (всегда, даже если xlsx нет).
+        try:
+            disk_summary = await rescan_project_disk(s, project)
+        except Exception:  # noqa: BLE001
+            logger.exception("rescan_project_disk failed")
+            disk_summary = {
+                "scene_images_added": [],
+                "scene_videos_added": [],
+                "frames_unfailed": [],
+                "skipped_no_frame": [],
+            }
     await cb.answer("Перечитал")
     parts = []
+    if not xlsx_path.exists():
+        parts.append("xlsx-файла нет — пропустил импорт")
+    elif xlsx_error:
+        parts.append(f"xlsx импорт упал: {xlsx_error}")
     if proj_fields:
         parts.append("project: " + ", ".join(proj_fields))
     if frames_changed:
-        parts.append(f"кадры: {len(frames_changed)} ({frames_changed})")
+        parts.append(f"кадры (xlsx): {len(frames_changed)} ({frames_changed})")
     if prompts_synced:
         parts.append(f"image/anim prompts: {prompts_synced}")
+    if disk_summary["scene_images_added"]:
+        parts.append(
+            f"картинки с диска: +{len(disk_summary['scene_images_added'])} "
+            f"({disk_summary['scene_images_added']})"
+        )
+    if disk_summary["scene_videos_added"]:
+        parts.append(
+            f"видео с диска: +{len(disk_summary['scene_videos_added'])} "
+            f"({disk_summary['scene_videos_added']})"
+        )
+    if disk_summary["frames_unfailed"]:
+        parts.append(
+            f"сняли failed: {disk_summary['frames_unfailed']}"
+        )
+    if disk_summary["skipped_no_frame"]:
+        parts.append(
+            f"файлы без кадра в БД: {len(disk_summary['skipped_no_frame'])} "
+            f"(пропустил)"
+        )
     if not parts:
-        parts.append("ничего нового — ваши правки уже в БД")
-    await cb.message.answer("🔄 Перечитал xlsx.\n" + "\n".join(parts))
+        parts.append("ничего нового — БД и диск уже синхронны")
+    await cb.message.answer("🔄 Перечитал xlsx + диск.\n" + "\n".join(parts))
 
 
 # ---------------------------------------------------------------------------
