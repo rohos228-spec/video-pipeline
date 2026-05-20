@@ -3343,7 +3343,10 @@ class OutseeBot:
                 page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
             )
             if not input_sel:
-                raise RuntimeError("outsee video: не найден ввод промта")
+                raise OutseeImageError(
+                    "outsee video: не найден ввод промта",
+                    context={"prompt_id": prompt_id_prefix},
+                )
             try:
                 await page.locator(input_sel).first.scroll_into_view_if_needed(
                     timeout=5_000
@@ -3451,7 +3454,7 @@ class OutseeBot:
                         )
                         n_inputs = 0
                     if n_inputs <= 0:
-                        raise RuntimeError(
+                        raise OutseeImageError(
                             "outsee video: не найден input[type=file] для "
                             "стартового кадра (count=0). Возможно, модель "
                             "не поддерживает image-to-video или сайт "
@@ -3469,7 +3472,7 @@ class OutseeBot:
                             )
                             attached = True
                         except Exception as e:  # noqa: BLE001
-                            raise RuntimeError(
+                            raise OutseeImageError(
                                 f"outsee video: set_input_files в "
                                 f"единственный input упал: {e}"
                             ) from e
@@ -3523,10 +3526,15 @@ class OutseeBot:
                             )
                             attached = True
                         except Exception as e:  # noqa: BLE001
-                            raise RuntimeError(
+                            raise OutseeImageError(
                                 f"outsee video: set_input_files в "
                                 f"input[{target_idx}] упал: {e} "
-                                f"(count={n_inputs})"
+                                f"(count={n_inputs})",
+                                context={
+                                    "prompt_id": prompt_id_prefix,
+                                    "target_idx": target_idx,
+                                    "n_inputs": n_inputs,
+                                },
                             ) from e
                 await asyncio.sleep(1.0)
 
@@ -3558,7 +3566,10 @@ class OutseeBot:
                 page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000
             )
             if not gen_sel:
-                raise RuntimeError("outsee video: не найдена кнопка Generate")
+                raise OutseeImageError(
+                    "outsee video: не найдена кнопка Generate",
+                    context={"prompt_id": prompt_id_prefix},
+                )
             logger.info(
                 "outsee.generate_video: кнопка Generate найдена ({})", gen_sel,
             )
@@ -3593,27 +3604,70 @@ class OutseeBot:
                 timeout, prompt_id_prefix,
             )
             if not _phys_ok_v:
-                await _dump_page(page, "generate_video_btn_click_failed")
-                raise RuntimeError(
+                dump_pair = await _dump_page(
+                    page, "generate_video_btn_click_failed"
+                )
+                click_dumps = [
+                    x for x in (
+                        dump_pair if isinstance(dump_pair, tuple)
+                        else (dump_pair,)
+                    ) if x
+                ]
+                raise OutseeImageError(
                     "outsee video: Generate не кликнут "
-                    f"(candidates={_phys_cands_v})"
+                    f"(candidates={_phys_cands_v})",
+                    context={
+                        "prompt_id": prompt_id_prefix,
+                        "candidates": _phys_cands_v,
+                    },
+                    dumps=click_dumps or None,
                 )
             # Через ~3 сек проверим, сработал ли клик — должен появиться
             # spinner / placeholder, или хотя бы новый thumb-img. Если НЕТ —
-            # дамп страницы в data/outsee_dumps/.
+            # это «клик в молоко». Раньше код просто логировал warning и
+            # дамп страницы, после чего висел в `_wait_video_url` до тайм-
+            # аута 1200 сек. Теперь — бросаем `OutseeImageError`, чтобы
+            # retry-обёртка (`outsee_retry.generate_video_with_retries`)
+            # попробовала ещё раз, а после исчерпания попыток — попросила
+            # GPT переписать промт.
+            no_effect = False
             try:
                 await asyncio.sleep(3.0)
                 after_urls = set(await self._all_video_like_urls(page))
-                if after_urls == baseline_video_urls and not net_events:
-                    logger.warning(
-                        "outsee.generate_video: ЧЕРЕЗ 3с ПОСЛЕ КЛИКА GENERATE "
-                        "в DOM СТОЛЬКО ЖЕ video-тамбов ({}) и net_events=0. "
-                        "Похоже кнопка НЕ сработала — дамп страницы.",
-                        len(baseline_video_urls),
-                    )
-                    await _dump_page(page, "generate_click_no_effect")
+                no_effect = (
+                    after_urls == baseline_video_urls and not net_events
+                )
             except Exception:  # noqa: BLE001
-                pass
+                no_effect = False
+            if no_effect:
+                logger.warning(
+                    "outsee.generate_video: ЧЕРЕЗ 3с ПОСЛЕ КЛИКА GENERATE "
+                    "в DOM СТОЛЬКО ЖЕ video-тамбов ({}) и net_events=0. "
+                    "Похоже кнопка НЕ сработала — дамп страницы + ошибка "
+                    "для retry-обёртки.",
+                    len(baseline_video_urls),
+                )
+                no_effect_dumps: list[Path] = []
+                try:
+                    ne_dump = await _dump_page(
+                        page, "generate_click_no_effect"
+                    )
+                    if isinstance(ne_dump, tuple):
+                        no_effect_dumps.extend(x for x in ne_dump if x)
+                    elif ne_dump:
+                        no_effect_dumps.append(ne_dump)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise OutseeImageError(
+                    "outsee video: клик Generate без эффекта — DOM не "
+                    "изменился и сетевых событий нет в течение 3 сек "
+                    "после клика",
+                    context={
+                        "prompt_id": prompt_id_prefix,
+                        "baseline_urls": len(baseline_video_urls),
+                    },
+                    dumps=no_effect_dumps or None,
+                )
         else:
             # already_in_progress: baseline пустой (результатом
             # считаем всё что на странице, привязанное к нашему [ID:]).

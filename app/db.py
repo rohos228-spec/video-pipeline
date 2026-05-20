@@ -7,10 +7,12 @@ GPT-ревью) ловим `OperationalError: database is locked`.
 `journal_mode=WAL`     — читатели не блокируют писателя, писатели
                          не блокируют читателей. Стандарт для
                          SQLite-сервисов с конкурентным доступом.
-`busy_timeout=15000`   — если писать всё-таки нельзя (другой писатель
-                         держит лок), aiosqlite будет ждать до 15 сек
+`busy_timeout=30000`   — если писать всё-таки нельзя (другой писатель
+                         держит лок), aiosqlite будет ждать до 30 сек
                          перед тем как кинуть `database is locked`.
-                         Хватает на любую нашу транзакцию.
+                         15 сек оказалось мало на Windows: openpyxl
+                         иногда коптит больше при создании topics.xlsx
+                         с тяжёлыми data-validation формулами.
 `synchronous=NORMAL`   — fsync только в WAL checkpoint'ах, не на
                          каждый commit. Безопасно для WAL, выигрыш
                          по производительности x2-3.
@@ -39,10 +41,10 @@ engine = create_async_engine(
     settings.db_url,
     echo=False,
     future=True,
-    # 15-секундный таймаут на уровне DB-API. aiosqlite использует это
+    # 30-секундный таймаут на уровне DB-API. aiosqlite использует это
     # для своего sqlite3-коннекшна (BusyTimeout). Дублирует PRAGMA, но
     # подстраховывает на случай если PRAGMA не успел применится.
-    connect_args={"timeout": 15.0},
+    connect_args={"timeout": 30.0},
 )
 
 
@@ -56,7 +58,7 @@ def _set_sqlite_pragma(dbapi_connection, _connection_record):  # type: ignore[no
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=15000")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()

@@ -740,20 +740,37 @@ async def on_mass_new(cb: CallbackQuery) -> None:
 
 
 async def _create_mass_from_name(msg: Message, name: str) -> None:
-    """Создаёт BatchProject + папку на диске + topics.xlsx."""
+    """Создаёт BatchProject + папку на диске + topics.xlsx.
+
+    Важно: SQLite-INSERT коммитим ДО `init_topics_xlsx` — иначе
+    write-lock держится на всё время файлового I/O (xlsx с тяжёлыми
+    data-validation формулами создаётся ~1–2 сек), и любая параллельная
+    запись (другой /mass, batch-worker, HITL-callback) ловит
+    `database is locked` ещё ДО busy_timeout (15 сек).
+    """
     async with session_scope() as s:
         try:
             batch = await batches_svc.create_batch(s, name=name)
         except ValueError as e:
             await msg.answer(f"❌ {e}")
             return
-        # init xlsx
-        batch_sheet.init_topics_xlsx(batch.topics_xlsx_path, batch.name)
-        # Перечитываем для рендера
-        await s.flush()
-        progress = await batches_svc.batch_progress(s, batch)
-        subs = await batches_svc.get_batch_subprojects(s, batch.id)
         b_id = batch.id
+        b_xlsx_path = batch.topics_xlsx_path
+        b_name = batch.name
+        # __aexit__ session_scope тут зафиксирует INSERT и отпустит
+        # write-lock — дальше работаем с диском без лока.
+
+    # Файловый I/O — вне любой DB-транзакции.
+    batch_sheet.init_topics_xlsx(b_xlsx_path, b_name)
+
+    # Перечитываем уже в новой короткой read-only сессии.
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, b_id)
+        if batch is None:
+            await msg.answer("❌ Массовый создан, но не нашёлся при перечитывании.")
+            return
+        progress = await batches_svc.batch_progress(s, batch)
+        subs = await batches_svc.get_batch_subprojects(s, b_id)
         head = batch_header(batch, len(subs), progress)
         kb = mass_main_kb(batch, len(subs))
     _set_user_screen(msg.from_user.id, "mass_main", b_id)
@@ -1958,44 +1975,69 @@ async def _handle_mass_text_upload(msg: Message) -> None:
 
 
 async def _handle_mass_topics_text(msg: Message, batch_id: int) -> None:
-    """Парсит текстовый список тем и создаёт подпроекты."""
+    """Парсит текстовый список тем и создаёт подпроекты.
+
+    Структура — как в `_create_mass_from_name`: сначала короткая сессия
+    с INSERT'ами через `add_topics`, потом весь файловый I/O вне DB-лока,
+    потом короткая сессия для финального рендера.
+    """
     text = (msg.text or "").strip()
     topics = [line.strip() for line in text.splitlines() if line.strip()]
     if not topics:
         await msg.answer("Пустой список — пришли темы по одной на строку.")
         return
+
+    # 1) Только DB-запись (INSERT'ы подпроектов) + sub-папки на диске
+    #    (mkdir дёшев). Сразу коммитим, отпускаем write-lock.
     async with session_scope() as s:
         batch = await batches_svc.get_batch(s, batch_id)
         if batch is None:
             await msg.answer("Массовый не найден.")
             return
         created = await batches_svc.add_topics(s, batch, topics)
-        for p in created:
-            # Создаём project.xlsx внутри папки подпроекта (как у одиночных).
-            try:
-                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
-                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
-                sheet.write_general(
-                    topic=p.topic,
-                    slug=p.slug,
-                    hero_mode=p.hero_mode,
-                    status=p.status.value,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "mass: project_sheet init failed for #{}: {}", p.id, e
-                )
-        # Обновляем topics.xlsx (новая 26-колоночная схема).
+        # Снимаем то, что потом понадобится для файлового I/O —
+        # после exit'а атрибуты detached-объектов могут стать
+        # недоступны (expire_on_commit=False у нас стоит, так что
+        # обычно ок, но снимаем явно для надёжности).
+        created_info = [
+            (p.id, p.slug, p.data_dir, p.topic, p.hero_mode, p.status.value)
+            for p in created
+        ]
+        b_xlsx_path = batch.topics_xlsx_path
+        b_name = batch.name
+
+    # 2) Файловый I/O — вне DB-лока. Здесь самое долгое: openpyxl
+    #    создаёт N project.xlsx + переписывает topics.xlsx с
+    #    тяжёлыми data-validation'ами.
+    for pid, p_slug, p_dir, p_topic, p_hero_mode, p_status in created_info:
+        try:
+            sheet = ProjectSheet(file_path=p_dir / "project.xlsx")
+            sheet.ensure_initialized(project_id=pid, slug=p_slug)
+            sheet.write_general(
+                topic=p_topic,
+                slug=p_slug,
+                hero_mode=p_hero_mode,
+                status=p_status,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "mass: project_sheet init failed for #{}: {}", pid, e
+            )
+
+    # 3) Короткая read-only сессия для финального рендера + перепись
+    #    общего topics.xlsx (тоже файловый I/O, но за пределами
+    #    INSERT-транзакции).
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
         rows = [batches_svc.project_to_xlsx_row(p) for p in all_subs]
-        batch_sheet.write_subprojects_table(
-            batch.topics_xlsx_path, rows, batch.name
-        )
         progress = await batches_svc.batch_progress(s, batch)
         head = batch_header(batch, len(all_subs), progress)
         kb = mass_main_kb(batch, len(all_subs))
+    batch_sheet.write_subprojects_table(b_xlsx_path, rows, b_name)
+
     await msg.answer(
-        f"✅ Создано подпроектов: {len(created)}\n\n" + head,
+        f"✅ Создано подпроектов: {len(created_info)}\n\n" + head,
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -2031,6 +2073,8 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
         tmp_path.unlink(missing_ok=True)
         return
 
+    # 1) Только DB-запись (INSERT'ы подпроектов). Файловый I/O — позже,
+    #    вне DB-лока (см. `_handle_mass_topics_text` для обоснования).
     async with session_scope() as s:
         batch = await batches_svc.get_batch(s, batch_id)
         if batch is None:
@@ -2039,32 +2083,43 @@ async def _handle_mass_xlsx_upload(msg: Message, batch_id: int, doc) -> None:
             return
         # new_topics — список dict'ов с полным набором карточных полей.
         created = await batches_svc.add_topics(s, batch, new_topics)
-        for p in created:
-            try:
-                sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
-                sheet.ensure_initialized(project_id=p.id, slug=p.slug)
-                sheet.write_general(
-                    topic=p.topic,
-                    slug=p.slug,
-                    hero_mode=p.hero_mode,
-                    status=p.status.value,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "mass: project_sheet init failed for #{}: {}", p.id, e
-                )
-        # Сохраняем актуальную топик-таблицу (новая 26-колоночная схема).
+        created_info = [
+            (p.id, p.slug, p.data_dir, p.topic, p.hero_mode, p.status.value)
+            for p in created
+        ]
+        b_xlsx_path = batch.topics_xlsx_path
+        b_name = batch.name
+
+    # 2) Файловый I/O — вне DB-лока.
+    for pid, p_slug, p_dir, p_topic, p_hero_mode, p_status in created_info:
+        try:
+            sheet = ProjectSheet(file_path=p_dir / "project.xlsx")
+            sheet.ensure_initialized(project_id=pid, slug=p_slug)
+            sheet.write_general(
+                topic=p_topic,
+                slug=p_slug,
+                hero_mode=p_hero_mode,
+                status=p_status,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "mass: project_sheet init failed for #{}: {}", pid, e
+            )
+
+    # 3) Финальный рендер + перепись topics.xlsx (тоже файловый I/O,
+    #    но уже без активной INSERT-транзакции).
+    async with session_scope() as s:
+        batch = await batches_svc.get_batch(s, batch_id)
         all_subs = await batches_svc.get_batch_subprojects(s, batch_id)
         rows = [batches_svc.project_to_xlsx_row(p) for p in all_subs]
-        batch_sheet.write_subprojects_table(
-            batch.topics_xlsx_path, rows, batch.name
-        )
         progress = await batches_svc.batch_progress(s, batch)
         head = batch_header(batch, len(all_subs), progress)
         kb = mass_main_kb(batch, len(all_subs))
+    batch_sheet.write_subprojects_table(b_xlsx_path, rows, b_name)
+
     tmp_path.unlink(missing_ok=True)
     await msg.answer(
-        f"✅ Создано подпроектов из xlsx: {len(created)}\n\n" + head,
+        f"✅ Создано подпроектов из xlsx: {len(created_info)}\n\n" + head,
         parse_mode="HTML",
         reply_markup=kb,
     )
