@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     morelogin_profile_id: str | None = Field(None, alias="MORELOGIN_PROFILE_ID")
     social_publish_enabled: bool = Field(False, alias="SOCIAL_PUBLISH_ENABLED")
 
+    # Dolphin Anty — антидетект-браузер для 11Labs (шаг 10).
+    # Локальный API Dolphin Anty по умолчанию слушает 127.0.0.1:3001.
+    # Токен берётся в Dolphin Anty → Settings → API → Generate token.
+    dolphin_api_host: str = Field(
+        "http://127.0.0.1:3001", alias="DOLPHIN_API_HOST"
+    )
+    dolphin_api_token: str | None = Field(None, alias="DOLPHIN_API_TOKEN")
+    dolphin_profile_id: str | None = Field(None, alias="DOLPHIN_PROFILE_ID")
+
     # Paths
     data_dir: Path = Field(Path("./data"), alias="DATA_DIR")
 

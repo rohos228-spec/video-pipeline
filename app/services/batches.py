@@ -188,6 +188,8 @@ TOPIC_CARD_KEYS = (
     "integration",   # G: интеграция продукта — пока резерв
     "hero_description",  # J: описание героя — для логов / отображения
     "duration_sec",  # K: для отображения в карточке (массовый формат)
+    "voice",         # U: имя голоса 11labs — читается на шаге 10
+    "music",         # V: резерв (фоновая музыка)
     # Жёсткие тех-ограничения из одиночного xlsx-flow (см. gpt_text_builder).
     "video_duration_sec",
     "voiceover_chars_target",

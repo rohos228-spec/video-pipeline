@@ -1,0 +1,13 @@
+{
+  "_description": "Каталог голосов 11labs для шага 10 (генерация аудио). Юзер правит руками. Поля: name — отображается в dropdown'е столбца U topics.xlsx; url — ссылка вида https://elevenlabs.io/app/voice-lab/share/<token>/<voice_id> (или прямая ссылка на конкретный голос в Library). При запуске шага 10 бот откроет url, дальше отработает Text-to-Speech.",
+  "voices": [
+    {
+      "name": "Adam (default)",
+      "url": "https://elevenlabs.io/app/voice-lab/share/example_token/Adam"
+    },
+    {
+      "name": "Rachel",
+      "url": "https://elevenlabs.io/app/voice-lab/share/example_token/Rachel"
+    }
+  ]
+}

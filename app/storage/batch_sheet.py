@@ -26,7 +26,7 @@
   R: Качество видео              dropdown 720/1080 · шаг 9
   S: Соотношение видео           dropdown 16:9/9:16 · шаг 9
   T: Релакс видео                dropdown ДА/НЕТ · шаг 9
-  U: Голос                       зарезервировано
+  U: Голос                       dropdown · шаг 10 (`prompts/voices.json` — name)
   V: Музыка                      зарезервировано
   W: СЛУЖ. — slug                сервис (бот пишет)
   X: СЛУЖ. — статус              сервис (бот пишет)
@@ -60,6 +60,7 @@ from loguru import logger
 
 from app.generation_options import IMAGE_GENERATORS, VIDEO_GENERATORS
 from app.services.prompt_library import list_prompts
+from app.services.voices import voice_names
 
 SHEET_NAME = "Темы"
 
@@ -90,7 +91,7 @@ CARD_FIELDS = [
     "video_quality",     # R: dropdown → project.video_resolution
     "video_aspect",      # S: dropdown (отдельно от картинок не сохраняется в БД)
     "video_relax",       # T: dropdown → project.video_relax
-    "voice",             # U: пока не используется
+    "voice",             # U: dropdown → topic_card["voice"] → шаг 10 (11labs)
     "music",             # V: пока не используется
 ]
 
@@ -248,6 +249,8 @@ def _apply_data_validations(ws) -> None:
     _add_dropdown(19, ASPECTS)
     # T — Релакс (видео)
     _add_dropdown(20, YES_NO)
+    # U — Голос (шаг 10) — варианты из prompts/voices.json
+    _add_dropdown(21, voice_names())
 
 
 def _apply_voiceover_formulas(ws, last_data_row: int | None = None) -> None:
