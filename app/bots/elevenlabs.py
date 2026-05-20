@@ -108,6 +108,40 @@ class _PageProvider(Protocol):
     async def open_page(self, url: str, *, reuse: bool = True) -> Page: ...
 
 
+async def _snapshot_audio_refs(page: Page) -> set[str]:
+    """Снять снимок всех URL'ов на аудио, видимых сейчас на странице.
+
+    Что собираем:
+      - `a[download]` href (как abs URL)
+      - `audio[src]`, `audio source[src]` (как abs URL)
+      - элементы со `data-href`/`href` оканчивающимся на `.mp3`/`.wav`
+
+    Возвращает множество строк. Полезно сравнивать **до** и **после**
+    клика Generate: разница = ссылка(и) на новое аудио.
+    """
+    try:
+        items: list[str] = await page.evaluate(
+            """() => {
+                const out = new Set();
+                const push = u => { if (u && typeof u === 'string') out.add(u); };
+                for (const a of document.querySelectorAll('a[download], a[href$=".mp3"], a[href$=".wav"]')) {
+                    push(a.href);
+                }
+                for (const au of document.querySelectorAll('audio')) {
+                    push(au.src);
+                    for (const s of au.querySelectorAll('source')) push(s.src);
+                }
+                for (const el of document.querySelectorAll('[data-href$=".mp3"], [data-href$=".wav"]')) {
+                    push(el.getAttribute('data-href'));
+                }
+                return Array.from(out);
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        return set()
+    return {x for x in items if x}
+
+
 async def _first_visible(
     page: Page, selectors: list[str], *, timeout_ms: int = 20_000
 ) -> str | None:
@@ -321,41 +355,78 @@ class ElevenLabsBot:
                 # Fallback на keyboard.type (медленнее, но работает).
                 await page.keyboard.type(text)
 
-        # 4) Generate
+        # 3.5) Пауза после вставки текста — даём 11labs «успокоиться»
+        # (валидация длины, считалка кредитов и т.п.) перед Generate.
+        # Требование пользователя: 10 секунд.
+        logger.info("11labs: текст вставлен, жду 10с перед Generate")
+        await asyncio.sleep(10.0)
+
+        # 4) Снимаем снимок «старых» mp3 на странице ДО Generate — потом
+        # будем ждать появления НОВОГО (которого не было в этом снимке).
+        # Иначе бот может ухватить файл от предыдущей генерации, который
+        # ещё висит в Studio/History.
+        before_refs = await _snapshot_audio_refs(page)
+        logger.info("11labs: до Generate видно {} аудио-ссылок", len(before_refs))
+
+        # Generate
         gen_sel = await _first_visible(page, GENERATE_SELECTORS, timeout_ms=15_000)
         if not gen_sel:
             raise RuntimeError("11Labs: не найдена кнопка Generate speech")
         await page.locator(gen_sel).first.click()
-        logger.info("11labs: Generate speech нажат, ждём mp3")
+        logger.info("11labs: Generate speech нажат, ждём новый mp3 (до {}с)", int(timeout))
 
-        # 5) Скачать mp3
+        # 5) Дождаться появления НОВОЙ ссылки на аудио (1–3 минуты по
+        # наблюдениям пользователя). Поллим разницу между текущим набором
+        # и снимком `before_refs`.
         out_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = asyncio.get_event_loop().time() + timeout
+        new_refs: set[str] = set()
         while asyncio.get_event_loop().time() < deadline:
-            sel = await _first_visible(page, DOWNLOAD_SELECTORS, timeout_ms=2_000)
-            if sel is None:
-                await asyncio.sleep(1.0)
-                continue
-            try:
-                async with page.expect_download(timeout=30_000) as dl_info:
-                    await page.locator(sel).first.click()
-                download = await dl_info.value
-                await download.save_as(str(out_path))
-                logger.info("11Labs mp3 saved → {}", out_path)
-                return out_path
-            except PWTimeoutError:
-                # Альтернативный путь: <a download href="...">
-                href = await page.locator(sel).first.get_attribute("href")
-                if href:
-                    ctx = page.context
-                    resp = await ctx.request.get(href)
+            cur_refs = await _snapshot_audio_refs(page)
+            new_refs = cur_refs - before_refs
+            if new_refs:
+                logger.info(
+                    "11labs: новая аудио-ссылка(и) появилась: {}",
+                    list(new_refs)[:3],
+                )
+                break
+            await asyncio.sleep(2.0)
+        else:
+            raise PWTimeoutError(
+                f"11Labs: новое аудио не появилось за {int(timeout)}с"
+            )
+
+        # 6) Скачать. Сначала пробуем напрямую через context.request по URL
+        # (надёжно — куки/auth у нас уже в Chrome'е). Если URL не http(s),
+        # то это blob: — тогда кликаем по кнопке Download (Playwright
+        # перехватит download event).
+        for href in sorted(new_refs):
+            if href.startswith("http://") or href.startswith("https://"):
+                try:
+                    resp = await page.context.request.get(href)
                     if resp.status < 400:
                         out_path.write_bytes(await resp.body())
                         logger.info("11Labs mp3 saved (via href) → {}", out_path)
                         return out_path
-                await asyncio.sleep(1.0)
-                continue
-        raise PWTimeoutError(f"11Labs: не дождались появления Download за {timeout}s")
+                    logger.warning("11labs: GET {} вернул {}", href, resp.status)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("11labs: fetch {} упал: {}", href, e)
+
+        # Фолбэк: клик по Download-кнопке и перехват download event.
+        sel = await _first_visible(page, DOWNLOAD_SELECTORS, timeout_ms=20_000)
+        if not sel:
+            raise RuntimeError("11Labs: новое аудио есть, но Download-кнопка не нашлась")
+        try:
+            async with page.expect_download(timeout=60_000) as dl_info:
+                await page.locator(sel).first.click()
+            download = await dl_info.value
+            await download.save_as(str(out_path))
+            logger.info("11Labs mp3 saved (via click) → {}", out_path)
+            return out_path
+        except PWTimeoutError as e:
+            raise RuntimeError(
+                "11Labs: клик по Download не дал download event"
+            ) from e
 
 
 # ---- CLI для разведки селекторов ------------------------------------------
