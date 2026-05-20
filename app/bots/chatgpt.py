@@ -18,7 +18,7 @@ import mimetypes
 from pathlib import Path
 
 from loguru import logger
-from playwright.async_api import Download, Page
+from playwright.async_api import Download, Locator, Page
 
 from app.bots.browser import BrowserSession
 
@@ -265,6 +265,86 @@ class ChatGPTBot:
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
         await self._dismiss_no_auth_modal(page)
 
+    async def _is_generating(self, page: Page) -> bool:
+        for sel in STOP_BUTTON_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    async def _composer_contains_prompt(self, locator: Locator, text: str) -> bool:
+        expected = " ".join((text or "").split())[:80].lower()
+        if not expected:
+            return False
+        try:
+            composer_text = await locator.evaluate(
+                """el => {
+                    if ('value' in el) return el.value || '';
+                    return el.innerText || el.textContent || '';
+                }""",
+                timeout=1_500,
+            )
+        except Exception:  # noqa: BLE001
+            try:
+                composer_text = await locator.inner_text(timeout=1_500)
+            except Exception:  # noqa: BLE001
+                try:
+                    composer_text = await locator.input_value(timeout=1_500)
+                except Exception:  # noqa: BLE001
+                    return False
+        actual = " ".join((composer_text or "").split())[:120].lower()
+        return expected in actual
+
+    async def _send_was_accepted(self, page: Page, locator: Locator, text: str) -> bool:
+        if await self._is_generating(page):
+            return True
+        return not await self._composer_contains_prompt(locator, text)
+
+    async def _click_send_button_with_retries(
+        self,
+        page: Page,
+        locator: Locator,
+        text: str,
+        send_sel: str,
+        *,
+        attempts: int = 4,
+    ) -> bool:
+        send_button = page.locator(send_sel).first
+        for attempt in range(1, attempts + 1):
+            try:
+                await send_button.wait_for(state="visible", timeout=5_000)
+                await send_button.scroll_into_view_if_needed(timeout=2_000)
+                await asyncio.sleep(0.35 * attempt)
+                if not await send_button.is_enabled(timeout=1_000):
+                    logger.warning(
+                        "ChatGPT: Send button пока disabled, попытка {}/{}",
+                        attempt, attempts,
+                    )
+                    await asyncio.sleep(0.7)
+                    continue
+                await send_button.click(timeout=5_000)
+                await asyncio.sleep(1.0 + 0.35 * attempt)
+                if await self._send_was_accepted(page, locator, text):
+                    logger.info(
+                        "ChatGPT: Send button сработала, попытка {}/{}",
+                        attempt, attempts,
+                    )
+                    return True
+                logger.warning(
+                    "ChatGPT: после клика Send промт всё ещё в композере, попытка {}/{}",
+                    attempt, attempts,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: клик Send упал, попытка {}/{}: {}",
+                    attempt, attempts, e,
+                )
+            await asyncio.sleep(0.6)
+        return False
+
     async def _send_prompt(self, text: str) -> None:
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
@@ -287,26 +367,20 @@ class ChatGPTBot:
             pass
         await page.keyboard.insert_text(text)
         # Небольшая пауза, чтобы кнопка Send активировалась.
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0)
         logger.info("ChatGPT: текст промта введён ({} символов), ищу Send", len(text))
 
         # Находим кнопку отправки — ждём, пока она активна
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=8)
+        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=12)
         if send_sel:
             logger.info("ChatGPT: Send button найдена ({})", send_sel)
-            try:
-                await page.locator(send_sel).first.click(timeout=5_000)
-                logger.info("ChatGPT: Send button нажата успешно")
+            if await self._click_send_button_with_retries(page, locator, text, send_sel):
                 return
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "ChatGPT: Send button найдена ({}), но клик упал: {}",
-                    send_sel, e,
-                )
+            logger.warning("ChatGPT: Send button не сработала после повторных кликов")
         else:
             logger.warning(
                 "ChatGPT: Send button НЕ найдена ни одним из {} селекторов "
-                "за 8 сек — UI ChatGPT мог измениться. Дамплю композер для диагностики.",
+                "за 12 сек — UI ChatGPT мог измениться. Дамплю композер для диагностики.",
                 len(SEND_BUTTON_SELECTORS),
             )
             await self._dump_composer_html()
@@ -321,16 +395,15 @@ class ChatGPTBot:
             await asyncio.sleep(0.4)
             await page.keyboard.press("Enter")
             await asyncio.sleep(1.5)
+            if await self._send_was_accepted(page, locator, text):
+                logger.info("ChatGPT: fallback Enter сработал")
+                return
             # Проверка: если контент композера всё ещё содержит наш текст —
             # Enter не сработал. Делаем ещё одну попытку через page.evaluate
             # с прямой имитацией keydown.
             still_has_text = False
             try:
-                composer_text = await locator.inner_text(timeout=3_000)
-                # Сравниваем нормализованные первые 60 символов.
-                first = " ".join((text or "").split())[:60].lower()
-                got = " ".join((composer_text or "").split())[:60].lower()
-                still_has_text = bool(first) and (first in got)
+                still_has_text = await self._composer_contains_prompt(locator, text)
             except Exception:  # noqa: BLE001
                 still_has_text = False
             if still_has_text:
@@ -354,10 +427,15 @@ class ChatGPTBot:
                         }"""
                     )
                     await asyncio.sleep(1.5)
+                    if await self._send_was_accepted(page, locator, text):
+                        logger.info("ChatGPT: dispatchEvent Enter сработал")
+                        return
                 except Exception as e2:  # noqa: BLE001
                     logger.warning("ChatGPT: dispatchEvent Enter упал: {}", e2)
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: Enter тоже упал: {}", e)
+        if not await self._send_was_accepted(page, locator, text):
+            raise RuntimeError("ChatGPT: не удалось отправить промт после повторных кликов и Enter")
 
     async def _dump_send_button_candidates(self, page: Page) -> None:
         """Если SEND_BUTTON_SELECTORS не сработали — логируем outerHTML всех
