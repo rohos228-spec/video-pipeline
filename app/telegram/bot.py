@@ -7352,7 +7352,7 @@ async def _run_img_pr_xlsx(
         master = (
             "# img_pr\n\n"
             "Мастер-промт для шага «Промты картинок» ещё не настроен. "
-            "Открой prompts/05_image_prompts/default.md и опиши там задачу."
+            "Открой prompts/06_image_prompts/default.md и опиши там задачу."
         )
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")

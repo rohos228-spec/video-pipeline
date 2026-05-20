@@ -6,8 +6,8 @@
     02_script/      → шаг 2 «Закадровый текст» (SCRIPT_SHORTS)
     03_razbivka/    → шаг 3 «Разбивка на блоки» (RAZBIVKA_SLOV)
     04_hero/        → шаг 4 «Hero» (HERO_SHORTS)
-    05_image_prompts/ → шаг 5 «Промты картинок» (IMAGE_SHORTS)
-    07_animation/   → шаг 7 «Промты анимации» (VIDEO_SHORTS)
+    06_image_prompts/ → шаг 6 «Промты картинок» (IMAGE_SHORTS)
+    07_video_prompts/ → шаг 8 «Промты анимации» (VIDEO_SHORTS)
 
 В каждой папке лежит `default.md` (дефолтный мастер-промт) + любые
 дополнительные `<имя>.md` файлы — это варианты, между которыми проект
@@ -58,8 +58,8 @@ STEP_FOLDERS: dict[str, str] = {
     # Папки оставлены с историческими номерами (05/07), чтобы не ломать
     # уже существующие промты в `prompts/`. Меню-нумерация шагов
     # переехала, но имя папки на диске не зависит от позиции в меню.
-    "img_pr":     "05_image_prompts",
-    "anim_pr":    "07_animation",
+    "img_pr":     "06_image_prompts",
+    "anim_pr":    "07_video_prompts",
 }
 
 # Человеческое имя шага (для текстовых сообщений в TG).

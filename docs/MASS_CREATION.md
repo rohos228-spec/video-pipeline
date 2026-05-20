@@ -122,9 +122,9 @@ GPT-vision, и решение приходит от GPT.
 | 5c | Enrich slot 3             | `prompts/05c_enrich_3/`             | `default.md`      |
 | 5d | Enrich slot 4             | `prompts/05d_enrich_4/`             | `default.md`      |
 | 5e | Enrich slot 5             | `prompts/05e_enrich_5/`             | `default.md`      |
-| 6  | Image prompts             | `prompts/05_image_prompts/`         | `default.md`      |
+| 6  | Image prompts             | `prompts/06_image_prompts/`         | `default.md`      |
 | 7  | Картинки                  | (генератор, не GPT-промпт)          | —                 |
-| 8  | Animation prompts         | `prompts/07_animation/`             | `default.md`      |
+| 8  | Animation prompts         | `prompts/07_video_prompts/`         | `default.md`      |
 | 9  | Видео                     | (генератор)                         | —                 |
 | 10 | Аудио / TTS               | (генератор)                         | —                 |
 | 11 | Финал (assemble)          | (нет GPT)                           | —                 |

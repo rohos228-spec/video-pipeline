@@ -9,11 +9,11 @@
   A: Сценарий                    dropdown · шаг 1  (`prompts/01_plan/*.md`)
   B: Название ролика             manual   · шаг 1
   C: Стиль текста                dropdown · шаг 2  (`prompts/02_script/*.md`)
-  D: Стиль анимации              dropdown · шаги 4, 6 (`prompts/05_image_prompts/*.md`)
+  D: Стиль анимации              dropdown · шаги 4, 6 (`prompts/06_image_prompts/*.md`)
   E: Тип хука                    зарезервировано (пока не используется)
   F: Научпоп ядро / факт         manual   · шаг 1 (краткое описание факта)
   G: Интеграция продукта         зарезервировано
-  H: Генерация видео промтов     dropdown · шаг 8  (`prompts/07_animation/*.md`)
+  H: Генерация видео промтов     dropdown · шаг 8  (`prompts/07_video_prompts/*.md`)
   I: hero_mode                   dropdown ("0и1".."4и5") · шаг 4
   J: hero описание               manual   · шаг 4
   K: Время ролика (сек)          manual   · шаг 1
