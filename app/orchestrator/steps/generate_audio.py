@@ -1,13 +1,16 @@
 """Шаг 10: озвучка всего сценария через 11Labs web → один mp3.
 
 Что делает шаг:
-  1. Берёт голос из топика (столбец U topics.xlsx → meta["topic_card"]["voice"]).
-     По имени голоса ищет URL в `prompts/voices.json` (см. `app/services/voices.py`).
+  1. Берёт имя голоса из топика (столбец U topics.xlsx →
+     meta["topic_card"]["voice"]). Список валидных имён — `prompts/voices.json`
+     (см. `app/services/voices.py`).
   2. Берёт «сырой» закадровый текст из `data/videos/<slug>/voiceover.txt`
      (формируется шагом 2 — make_script). Если файла нет — fallback на
      склейку Frame.voiceover_text всех кадров через `\\n`.
-  3. Через Dolphin Anty (`app/bots/dolphin.py`) открывает 11labs, заходит на
-     URL голоса, вставляет текст, жмёт Generate, скачивает mp3.
+  3. Открывает 11labs Text-to-Speech в обычном Chrome (через CDP —
+     `app/bots/browser.py`), выбирает голос по имени в правой панели
+     Settings, ставит Model = Eleven v3, вставляет текст, жмёт
+     Generate speech, скачивает mp3.
   4. Прогоняет mp3 через faster-whisper, проставляет реальные start_ts/end_ts
      на Frame'ах.
 
@@ -25,7 +28,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.dolphin import dolphin_session
+from app.bots.browser import browser_session
 from app.bots.elevenlabs import ElevenLabsBot
 from app.models import (
     Artifact,
@@ -94,32 +97,36 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id, len(script_text),
         )
 
-    # 2) Голос: имя из топика (U) → URL из prompts/voices.json.
+    # 2) Голос: имя из топика (U). URL из voices.json — legacy, больше
+    # не используется на новом TTS-UI; бот сам кликает в picker.
     voice_name = _topic_voice_name(project)
     voice = find_voice(voice_name)
-    voice_url: str | None = None
     if voice:
-        voice_url = voice.url
-        logger.info("[#{}] generate_audio: голос '{}' → {}", project.id, voice.name, voice.url)
+        logger.info("[#{}] generate_audio: голос '{}'", project.id, voice.name)
     elif voice_name:
         logger.warning(
             "[#{}] generate_audio: голос '{}' не найден в prompts/voices.json, "
-            "открываю дефолтную страницу 11labs",
+            "попробую выбрать в 11labs как есть",
             project.id, voice_name,
         )
     else:
         logger.info(
             "[#{}] generate_audio: голос в топике не задан (U в topics.xlsx), "
-            "открываю дефолтную страницу 11labs",
+            "берём текущий выбранный в 11labs",
             project.id,
         )
 
-    # 3) TTS через Dolphin Anty + 11labs
+    # 3) TTS через обычный Chrome + 11labs
     audio_dir = project.data_dir / "audio"
     audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
-    async with dolphin_session() as bs:
+    async with browser_session() as bs:
         el = ElevenLabsBot(bs)
-        await el.tts(script_text, audio_path, voice_url=voice_url, timeout=600)
+        await el.tts(
+            script_text,
+            audio_path,
+            voice_name=voice.name if voice else voice_name,
+            timeout=600,
+        )
 
     session.add(Artifact(
         project_id=project.id,

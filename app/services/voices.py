@@ -28,7 +28,7 @@ _VOICES_PATH = Path("prompts/voices.json")
 @dataclass(frozen=True)
 class Voice:
     name: str
-    url: str
+    url: str = ""  # legacy / опционально — раньше открывали страницу голоса напрямую
 
 
 def _load_raw() -> list[dict]:
@@ -60,7 +60,7 @@ def list_voices() -> list[Voice]:
             continue
         name = (raw.get("name") or "").strip()
         url = (raw.get("url") or "").strip()
-        if not name or not url:
+        if not name:
             continue
         out.append(Voice(name=name, url=url))
     return out
