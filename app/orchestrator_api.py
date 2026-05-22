@@ -257,14 +257,22 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
 
 
 async def _ai_plan_command(text: str) -> dict[str, Any]:
-    api_key = _env_value("OPENAI_API_KEY")
+    api_key = _env_value("ORCHESTRATOR_AI_API_KEY") or _env_value("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="OPENAI_API_KEY не задан. Добавь его в .env и перезапусти API.",
+            detail=(
+                "AI API key не задан. Добавь в .env ORCHESTRATOR_AI_API_KEY "
+                "или OPENAI_API_KEY и перезапусти API."
+            ),
         )
 
     model = _env_value("ORCHESTRATOR_AI_MODEL") or "gpt-4.1-mini"
+    base_url = (
+        _env_value("ORCHESTRATOR_AI_BASE_URL")
+        or _env_value("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
     instructions = (
         "Ты управляешь локальным API оркестратора video-pipeline. "
         "Преобразуй русский или английский текст пользователя в одно безопасное JSON-действие. "
@@ -276,16 +284,19 @@ async def _ai_plan_command(text: str) -> dict[str, Any]:
     )
     body = {
         "model": model,
-        "instructions": instructions,
-        "input": text,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "orchestrator_action",
-                "strict": True,
-                "schema": AI_ACTION_SCHEMA,
-            }
-        },
+        "messages": [
+            {"role": "system", "content": instructions},
+            {
+                "role": "user",
+                "content": (
+                    "Верни только JSON по этой схеме, без markdown:\n"
+                    f"{json.dumps(AI_ACTION_SCHEMA, ensure_ascii=False)}\n\n"
+                    f"Команда пользователя:\n{text}"
+                ),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -293,7 +304,7 @@ async def _ai_plan_command(text: str) -> dict[str, Any]:
     }
     async with aiohttp.ClientSession() as client:
         async with client.post(
-            "https://api.openai.com/v1/responses",
+            f"{base_url}/chat/completions",
             headers=headers,
             json=body,
             timeout=aiohttp.ClientTimeout(total=60),
@@ -302,19 +313,23 @@ async def _ai_plan_command(text: str) -> dict[str, Any]:
             if resp.status >= 400:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"OpenAI API error {resp.status}: {raw[:1000]}",
+                    detail=f"AI API error {resp.status} from {base_url}: {raw[:1000]}",
                 )
             payload = json.loads(raw)
 
-    out = _extract_output_text(payload)
+    out = ""
+    try:
+        out = payload["choices"][0]["message"]["content"]
+    except Exception:  # noqa: BLE001
+        out = _extract_output_text(payload)
     if not out:
-        raise HTTPException(status_code=502, detail="OpenAI API вернул пустой ответ")
+        raise HTTPException(status_code=502, detail="AI API вернул пустой ответ")
     try:
         return json.loads(out)
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=502,
-            detail=f"OpenAI API вернул не JSON: {e}: {out[:1000]}",
+            detail=f"AI API вернул не JSON: {e}: {out[:1000]}",
         ) from e
 
 

@@ -224,7 +224,7 @@ $btnFolder.Add_Click({
 Add-Log "Project: $ProjectPath"
 Add-Log "Branch:  $Branch"
 Add-Log "Checks:  $ProjectPath\prompts\check_*"
-Add-Log "Text box supports API commands and normal AI text if OPENAI_API_KEY is set in .env"
+Add-Log "Text box supports normal AI text if ORCHESTRATOR_AI_BASE_URL/API_KEY/MODEL are set in .env"
 
 if (-not $SkipGitPull) {
     try {
