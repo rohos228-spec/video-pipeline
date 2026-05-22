@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 from collections.abc import Iterable
 from typing import Any
 
 import aiohttp
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db import engine, session_scope
@@ -26,6 +28,17 @@ from app.prompts_loader import sync_prompts_from_files
 from app.services import batches as batches_svc
 
 app = FastAPI(title="video-pipeline orchestrator API", version="1.0")
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(_request, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(limit=8),
+        },
+    )
 
 
 class BatchCreateRequest(BaseModel):
@@ -256,6 +269,18 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def _strip_json_fence(text: str) -> str:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    return cleaned
+
+
 async def _ai_plan_command(text: str) -> dict[str, Any]:
     api_key = _env_value("ORCHESTRATOR_AI_API_KEY") or _env_value("OPENAI_API_KEY")
     if not api_key:
@@ -325,7 +350,7 @@ async def _ai_plan_command(text: str) -> dict[str, Any]:
     if not out:
         raise HTTPException(status_code=502, detail="AI API вернул пустой ответ")
     try:
-        return json.loads(out)
+        return json.loads(_strip_json_fence(out))
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=502,
@@ -407,6 +432,17 @@ async def command(req: CommandRequest) -> dict[str, Any]:
     if not parts:
         raise HTTPException(status_code=400, detail="empty command")
     cmd = parts[0].lower()
+
+    if cmd in {"hi", "hello", "hey", "привет", "ghbdtn"}:
+        return {
+            "message": (
+                "Orchestrator control is ready. Write a real command, for example:\n"
+                "  status\n"
+                "  create a mass batch about cottages\n"
+                "  add topics to batch 1: kitchen, bedroom, living room\n"
+                "  start batch 1"
+            )
+        }
 
     if cmd in {"help", "?"}:
         return {

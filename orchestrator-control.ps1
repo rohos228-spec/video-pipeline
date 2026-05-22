@@ -319,7 +319,19 @@ $jobTimer.Add_Tick({
                         Add-Log $r.Data
                     }
                     if ($r.Raw) {
-                        Add-Log $r.Raw
+                        try {
+                            $errObj = $r.Raw | ConvertFrom-Json
+                            if ($errObj.detail) {
+                                Add-Log ([string]$errObj.detail)
+                            } else {
+                                Add-Log $r.Raw
+                            }
+                            if ($errObj.traceback) {
+                                Add-Log ([string]$errObj.traceback)
+                            }
+                        } catch {
+                            Add-Log $r.Raw
+                        }
                     }
                 }
             } finally {
