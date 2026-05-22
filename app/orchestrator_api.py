@@ -11,9 +11,12 @@ orchestrator worker.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable
 from typing import Any
 
+import aiohttp
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -38,12 +41,58 @@ class CommandRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
 
+AI_ACTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "status",
+                "create_batch",
+                "add_topics",
+                "start_batch",
+                "pause_batch",
+                "resume_batch",
+                "list_projects",
+                "help",
+                "unknown",
+            ],
+        },
+        "batch_id": {"type": ["integer", "null"]},
+        "name": {"type": ["string", "null"]},
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string"},
+    },
+    "required": ["action", "batch_id", "name", "topics", "message"],
+}
+
+
 def _clean_topics(raw: list[str] | str) -> list[str]:
     if isinstance(raw, str):
         parts = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     else:
         parts = raw
     return [str(x).strip() for x in parts if str(x).strip()]
+
+
+def _env_value(name: str) -> str | None:
+    val = os.getenv(name)
+    if val:
+        return val.strip().strip('"').strip("'")
+    env_path = os.getcwd()
+    env_file = os.path.join(env_path, ".env")
+    if not os.path.exists(env_file):
+        return None
+    with open(env_file, encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if key.strip() == name:
+                return value.strip().strip('"').strip("'")
+    return None
 
 
 def _batch_dict(batch: BatchProject, progress: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -196,6 +245,145 @@ async def _command_status() -> dict[str, Any]:
     return {"message": _format_batches(data["batches"]), "data": data}
 
 
+def _extract_output_text(payload: dict[str, Any]) -> str:
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+    parts: list[str] = []
+    for item in payload.get("output") or []:
+        for content in item.get("content") or []:
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                parts.append(str(content["text"]))
+    return "\n".join(parts).strip()
+
+
+async def _ai_plan_command(text: str) -> dict[str, Any]:
+    api_key = _env_value("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="OPENAI_API_KEY не задан. Добавь его в .env и перезапусти API.",
+        )
+
+    model = _env_value("ORCHESTRATOR_AI_MODEL") or "gpt-4.1-mini"
+    instructions = (
+        "Ты управляешь локальным API оркестратора video-pipeline. "
+        "Преобразуй русский или английский текст пользователя в одно безопасное JSON-действие. "
+        "Если пользователь хочет создать массовую генерацию, action=create_batch. "
+        "Если дает список тем для уже созданного массового проекта, action=add_topics. "
+        "Если просит запустить/поставить на паузу/продолжить очередь, используй batch_id. "
+        "Если batch_id не указан и действие требует id, верни action=unknown и объясни, что нужен id. "
+        "Не придумывай id. Не выполняй удаление файлов. JSON only."
+    )
+    body = {
+        "model": model,
+        "instructions": instructions,
+        "input": text,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "orchestrator_action",
+                "strict": True,
+                "schema": AI_ACTION_SCHEMA,
+            }
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with aiohttp.ClientSession() as client:
+        async with client.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            json=body,
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as resp:
+            raw = await resp.text()
+            if resp.status >= 400:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"OpenAI API error {resp.status}: {raw[:1000]}",
+                )
+            payload = json.loads(raw)
+
+    out = _extract_output_text(payload)
+    if not out:
+        raise HTTPException(status_code=502, detail="OpenAI API вернул пустой ответ")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenAI API вернул не JSON: {e}: {out[:1000]}",
+        ) from e
+
+
+async def _execute_ai_action(plan: dict[str, Any]) -> dict[str, Any]:
+    action = plan.get("action")
+    batch_id = plan.get("batch_id")
+    name = (plan.get("name") or "").strip()
+    topics = _clean_topics(plan.get("topics") or [])
+
+    if action == "status":
+        return await _command_status()
+    if action == "help":
+        return await command(CommandRequest(text="help"))
+    if action == "create_batch":
+        if not name:
+            raise HTTPException(status_code=400, detail="AI не указал name для create_batch")
+        data = await create_batch(BatchCreateRequest(name=name))
+        b = data["batch"]
+        return {"message": f"AI: создан batch #{b['id']}: {b['name']}", "data": data, "ai": plan}
+    if action == "add_topics":
+        if not isinstance(batch_id, int):
+            raise HTTPException(status_code=400, detail="Для добавления тем нужен batch_id")
+        if not topics:
+            raise HTTPException(status_code=400, detail="AI не указал темы")
+        data = await add_topics(batch_id, TopicsRequest(topics=topics))
+        return {
+            "message": f"AI: добавлено {len(data['created'])} тем в batch #{batch_id}",
+            "data": data,
+            "ai": plan,
+        }
+    if action == "start_batch":
+        if not isinstance(batch_id, int):
+            raise HTTPException(status_code=400, detail="Для старта нужен batch_id")
+        data = await start_batch(batch_id)
+        return {"message": f"AI: запущен batch #{batch_id}", "data": data, "ai": plan}
+    if action == "pause_batch":
+        if not isinstance(batch_id, int):
+            raise HTTPException(status_code=400, detail="Для паузы нужен batch_id")
+        data = await pause_batch(batch_id)
+        return {"message": f"AI: batch #{batch_id} на паузе", "data": data, "ai": plan}
+    if action == "resume_batch":
+        if not isinstance(batch_id, int):
+            raise HTTPException(status_code=400, detail="Для продолжения нужен batch_id")
+        data = await resume_batch(batch_id)
+        return {"message": f"AI: batch #{batch_id} продолжен", "data": data, "ai": plan}
+    if action == "list_projects":
+        if not isinstance(batch_id, int):
+            raise HTTPException(status_code=400, detail="Для списка проектов нужен batch_id")
+        data = await list_batch_projects(batch_id)
+        rows = [
+            f"#{p['id']} pos={p['batch_position']} [{p['status']}] {p['topic']}"
+            for p in data["projects"]
+        ]
+        return {
+            "message": "\n".join(rows) if rows else "No projects in this batch.",
+            "data": data,
+            "ai": plan,
+        }
+
+    msg = plan.get("message") or "AI не понял команду. Уточни batch id и действие."
+    raise HTTPException(status_code=400, detail=msg)
+
+
+@app.post("/ai-command")
+async def ai_command(req: CommandRequest) -> dict[str, Any]:
+    plan = await _ai_plan_command(req.text.strip())
+    return await _execute_ai_action(plan)
+
+
 @app.post("/command")
 async def command(req: CommandRequest) -> dict[str, Any]:
     text = req.text.strip()
@@ -217,6 +405,11 @@ async def command(req: CommandRequest) -> dict[str, Any]:
                     "  batch pause <id>",
                     "  batch resume <id>",
                     "  batch projects <id>",
+                    "",
+                    "You can also write normal text, for example:",
+                    "  создай массовый проект про коттеджи",
+                    "  добавь в batch 1 темы: кухня, спальня, гостиная",
+                    "  запусти массовый проект 1",
                 ]
             )
         }
@@ -225,7 +418,7 @@ async def command(req: CommandRequest) -> dict[str, Any]:
         return await _command_status()
 
     if cmd != "batch" or len(parts) < 2:
-        raise HTTPException(status_code=400, detail="unknown command; send 'help'")
+        return await ai_command(req)
 
     action = parts[1].lower()
     if action == "new":
