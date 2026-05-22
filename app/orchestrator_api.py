@@ -422,9 +422,9 @@ async def command(req: CommandRequest) -> dict[str, Any]:
                     "  batch projects <id>",
                     "",
                     "You can also write normal text, for example:",
-                    "  создай массовый проект про коттеджи",
-                    "  добавь в batch 1 темы: кухня, спальня, гостиная",
-                    "  запусти массовый проект 1",
+                    "  create a mass batch about cottages",
+                    "  add topics to batch 1: kitchen, bedroom, living room",
+                    "  start batch 1",
                 ]
             )
         }

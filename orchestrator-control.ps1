@@ -125,6 +125,82 @@ function Invoke-OrchestratorCommand {
     }
 }
 
+function Start-OrchestratorCommand {
+    param([string]$Text)
+    if (-not $Text.Trim()) {
+        return
+    }
+    if (-not (Test-Api)) {
+        Start-OrchestratorApi
+    }
+    Add-Log "Sending: $($Text.Replace("`r", " ").Replace("`n", " ").Trim())"
+    $btnSend.Enabled = $false
+    $job = Start-Job -ArgumentList $Text, $ApiPort -ScriptBlock {
+        param([string]$Text, [int]$ApiPort)
+        $ErrorActionPreference = "Stop"
+        try {
+            $payload = @{ text = $Text } | ConvertTo-Json -Depth 20
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+            $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create(
+                "http://127.0.0.1:$ApiPort/command"
+            )
+            $req.Method = "POST"
+            $req.ContentType = "application/json; charset=utf-8"
+            $req.Accept = "application/json"
+            $req.Timeout = 45000
+            $req.ReadWriteTimeout = 45000
+            $req.ContentLength = $bytes.Length
+            $stream = $req.GetRequestStream()
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Close()
+            }
+            try {
+                $resp = [System.Net.HttpWebResponse]$req.GetResponse()
+                $reader = New-Object System.IO.StreamReader(
+                    $resp.GetResponseStream(),
+                    [System.Text.Encoding]::UTF8
+                )
+                $raw = $reader.ReadToEnd()
+                $reader.Close()
+                $obj = $raw | ConvertFrom-Json
+                [pscustomobject]@{
+                    Ok = $true
+                    Message = [string]$obj.message
+                    Data = if ($obj.data) { $obj.data | ConvertTo-Json -Depth 20 } else { "" }
+                    Raw = ""
+                }
+            } catch [System.Net.WebException] {
+                $errResp = $_.Exception.Response
+                $raw = $_.Exception.Message
+                if ($errResp) {
+                    $reader = New-Object System.IO.StreamReader(
+                        $errResp.GetResponseStream(),
+                        [System.Text.Encoding]::UTF8
+                    )
+                    $raw = $reader.ReadToEnd()
+                    $reader.Close()
+                }
+                [pscustomobject]@{
+                    Ok = $false
+                    Message = "API error"
+                    Data = ""
+                    Raw = $raw
+                }
+            }
+        } catch {
+            [pscustomobject]@{
+                Ok = $false
+                Message = "Request failed"
+                Data = ""
+                Raw = $_.Exception.Message
+            }
+        }
+    }
+    [void]$script:CommandJobs.Add($job)
+}
+
 Assert-Project
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -134,6 +210,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "video-pipeline orchestrator API"
 $form.Size = New-Object System.Drawing.Size(960, 720)
 $form.StartPosition = "CenterScreen"
+$script:CommandJobs = New-Object System.Collections.ArrayList
 
 $topPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $topPanel.Dock = "Top"
@@ -200,13 +277,13 @@ $btnSend.Width = 110
 $bottomPanel.Controls.Add($btnSend)
 
 $btnSend.Add_Click({
-    Invoke-OrchestratorCommand -Text $inputBox.Text
+    Start-OrchestratorCommand -Text $inputBox.Text
 })
 $btnStatus.Add_Click({
-    Invoke-OrchestratorCommand -Text "status"
+    Start-OrchestratorCommand -Text "status"
 })
 $btnHelp.Add_Click({
-    Invoke-OrchestratorCommand -Text "help"
+    Start-OrchestratorCommand -Text "help"
 })
 $btnGit.Add_Click({
     Invoke-GitSync
@@ -226,6 +303,37 @@ Add-Log "Branch:  $Branch"
 Add-Log "Checks:  $ProjectPath\prompts\check_*"
 Add-Log "Text box supports normal AI text if ORCHESTRATOR_AI_BASE_URL/API_KEY/MODEL are set in .env"
 
+$jobTimer = New-Object System.Windows.Forms.Timer
+$jobTimer.Interval = 500
+$jobTimer.Add_Tick({
+    for ($i = $script:CommandJobs.Count - 1; $i -ge 0; $i--) {
+        $job = $script:CommandJobs[$i]
+        if ($job.State -in @("Completed", "Failed", "Stopped")) {
+            try {
+                $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
+                foreach ($r in @($result)) {
+                    if ($r.Message) {
+                        Add-Log $r.Message
+                    }
+                    if ($r.Data) {
+                        Add-Log $r.Data
+                    }
+                    if ($r.Raw) {
+                        Add-Log $r.Raw
+                    }
+                }
+            } finally {
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                $script:CommandJobs.RemoveAt($i)
+            }
+        }
+    }
+    if ($script:CommandJobs.Count -eq 0) {
+        $btnSend.Enabled = $true
+    }
+})
+$jobTimer.Start()
+
 if (-not $SkipGitPull) {
     try {
         Invoke-GitSync
@@ -235,6 +343,6 @@ if (-not $SkipGitPull) {
 }
 
 Start-OrchestratorApi
-Invoke-OrchestratorCommand -Text "help"
+Start-OrchestratorCommand -Text "help"
 
 [void]$form.ShowDialog()
