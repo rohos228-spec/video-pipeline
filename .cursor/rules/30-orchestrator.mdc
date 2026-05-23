@@ -1,0 +1,31 @@
+---
+description: "Правила для app/orchestrator/** — State machine пайплайна"
+globs: ["app/orchestrator/**"]
+alwaysApply: true
+---
+
+# Правила для оркестратора
+
+## Идемпотентность
+- Каждый шаг (`app/orchestrator/steps/<name>.py`) **должен** быть
+  идемпотентным. Повторный запуск с теми же входами:
+  - не должен ломать БД,
+  - не должен создавать дубль артефактов,
+  - не должен повторно тратить деньги (повторно дёргать LLM/outsee).
+
+## Статусы
+- Все статусы — через `Enum` в `app/models.py`. Никаких magic strings.
+- Переходы статусов — в одном месте (`app/orchestrator/pipeline.py`).
+
+## Запреты
+- Не вызывай Telegram-бота напрямую из шага — используй `app.services.hitl`.
+- Не вызывай `bots/*` напрямую — через сервис-обёртку.
+- `MAX_FAIL=3` соблюдается на уровне `app/main.py`.
+
+## Параллельность
+- Параллельные ImageGen-задачи — через `_apply_pending_regens()` в
+  `generate_images.py` (см. ВАРИАНТ Б в HANDOVER).
+
+## Stop / pause
+- Каждый long-running шаг проверяет `request_stop` флаг в БД через
+  `cancel_check()` callback.

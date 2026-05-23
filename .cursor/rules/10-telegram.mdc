@@ -1,0 +1,40 @@
+---
+description: "Правила для app/telegram/** — Telegram-бот"
+globs: ["app/telegram/**"]
+alwaysApply: true
+---
+
+# Правила для Telegram-бота
+
+## Callback-data
+- Все callback-префиксы — в `app/telegram/callback_registry.py` (Enum `CB`).
+- **Нельзя** писать строковый литерал `callback_data="..."` напрямую —
+  используй `CB.X.value`.
+- Длина callback_data **≤ 64 байта** (лимит Telegram).
+- Тест `tests/test_callback_registry.py` ловит нарушения.
+
+## Клавиатуры
+- Любой экран обязан содержать кнопки **«Назад»** и **«В меню»**.
+- HITL-карточки: **4 кнопки** — `✅ Одобрить`, `🔁 Перегенерировать`,
+  `✏️ Изменить промт`, `❌ Отклонить`.
+- Шаг в процессе: кнопка **`⏹ Остановить`**.
+- `InlineKeyboardMarkup` не должен быть пустым.
+
+## Структура (целевая, фаза E)
+```
+app/telegram/
+  app.py                # Dispatcher (≤ 200 LOC)
+  callback_registry.py
+  keyboards/            # factory-функции клавиатур
+  handlers/             # router'ы по фичам
+```
+- Каждый файл ≤ 600 строк. `bot.py` — в процессе разбиения.
+
+## HTML-парсинг
+- При `parse_mode=HTML` все динамические значения **обязательно**
+  пропускаются через `html.escape()`.
+- Регрессионный тест на это — `tests/test_telegram_smoke.py`.
+
+## Доступ
+- Большинство админских команд (`/debug`, `/ai`, и т.п.) проверяют
+  `chat_id == TELEGRAM_OWNER_CHAT_ID`.

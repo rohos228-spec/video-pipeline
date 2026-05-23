@@ -1,0 +1,56 @@
+---
+description: "Правила для app/ai_agent/** — встроенный AI-агент в Telegram"
+globs: ["app/ai_agent/**", "app/telegram/handlers/ai_agent.py"]
+alwaysApply: true
+---
+
+# Правила для AI-агента
+
+## Безопасность путей
+- Все операции с файлами проходят через `app.ai_agent.safety.check_path(path, op)`.
+- Запрет read+write: `.env*` (кроме `.env.example`), `data/state.db*`,
+  `.git/**`, `.venv/**`, `__pycache__/**`, `*.pem`, `**/credentials*`.
+- Запрет write (read ok): `data/videos/**`, `tests/snapshots/**`,
+  `assets/**/reference_examples/**`, `legacy/**`.
+
+## Secret-scan
+- На каждый `read_file` / `git_diff` output — `app.ai_agent.safety.redact_secrets()`.
+- На каждый `edit_file.new` / `write_file.content` — `app.ai_agent.safety.scan_for_secrets()`,
+  при обнаружении — refuse + предупредить owner'а.
+- Паттерны:
+  - `sk-aitunnel-[A-Za-z0-9]+`
+  - `sk-[A-Za-z0-9]{20,}`
+  - `Bearer [A-Za-z0-9+/=]{30,}`
+  - `socks5://[^@]+:[^@]+@`
+
+## Tools
+- Никаких shell-tools (`run_command`, `exec`). Только whitelist'нутые:
+  `run_ruff`, `run_pytest`, `run_mypy`, `gh_*`.
+- `delete_file` — **не существует**. LLM может только move (через `git mv`,
+  и то с HITL-апрувом).
+- `git_push` — **не существует**. Owner пушит вручную.
+- `git_reset --hard`, `git rebase`, `git filter-branch` — **не существуют**.
+
+## Лимиты (из `app/ai_agent/config.py`)
+- `MAX_TOKENS_PER_SESSION=200_000`
+- `MAX_STEPS=30`
+- `MAX_TOKENS_PER_DAY=2_000_000`
+- `TOOL_TIMEOUT_SEC=120`
+
+## HITL
+- Любая правка файла → бот шлёт diff → ✅/🔁/✏️/❌.
+- Таймаут на решение — 30 минут, потом авто-cancel.
+
+## Доступ
+- Только `chat_id == TELEGRAM_OWNER_CHAT_ID`.
+
+## Логирование
+- Каждый шаг сессии (LLM-вызов, tool_call, owner-decision) — в БД
+  (`AISession`, `AIMessage`, `AIToolCall`).
+- Дамп через `/debug ai <session_id>` или `python -m scripts.ai_dump`.
+
+## Модель
+- Default: `gpt-4o-mini` через aitunnel.ru (function-calling + 128k context).
+- Pro: `gpt-4o`.
+- Code: `claude-opus-4.1` (для сложных рефакторингов).
+- `gpt-4.1-mini`, `gpt-5*` — пока не доступны через текущий ключ AITunnel.
