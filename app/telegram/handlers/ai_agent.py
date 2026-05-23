@@ -57,6 +57,16 @@ from app.telegram.keyboards import (
 
 router = Router(name="ai_agent")
 
+# ───── STARTUP MARKER (Phase autoreply v2) ────────────────────────────────
+# Если ты это видишь в логах при запуске бота — значит файл импортирован,
+# и autoreply v2 активен. Если строки НЕТ — Python грузит другую копию
+# (старый кеш, другой venv, pyc файл).
+logger.info(
+    "🔥 AI-agent autoreply v2 LOADED — "
+    "handlers: msg_autoreply, _should_autoreply, _build_final_message. "
+    "AI_AGENT_AUTOREPLY="
+)
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Глобальное состояние активных сессий (in-memory).
@@ -911,50 +921,50 @@ async def _should_autoreply(message: Message) -> bool:
 
     cfg = get_config()
     if not cfg.autoreply_enabled:
-        logger.debug("autoreply: SKIP — flag AI_AGENT_AUTOREPLY off (text={!r})", text_preview)
+        logger.info("autoreply: SKIP — flag AI_AGENT_AUTOREPLY off (text={!r})", text_preview)
         return False
     if not message.from_user or not _is_owner(message.from_user.id):
-        logger.debug(
+        logger.info(
             "autoreply: SKIP — not owner (user_id={}, owner_id={})",
             message.from_user.id if message.from_user else None,
             cfg.owner_chat_id,
         )
         return False
     if message.chat.type != "private":
-        logger.debug("autoreply: SKIP — chat.type={!r} (need 'private')", message.chat.type)
+        logger.info("autoreply: SKIP — chat.type={!r} (need 'private')", message.chat.type)
         return False
     text = (message.text or "").strip()
     if not text:
-        logger.debug("autoreply: SKIP — empty text")
+        logger.info("autoreply: SKIP — empty text")
         return False
     if text.startswith("/"):
-        logger.debug("autoreply: SKIP — command {!r}", text[:30])
+        logger.info("autoreply: SKIP — command {!r}", text[:30])
         return False
     if text in _PERSISTENT_BUTTON_TEXTS:
-        logger.debug("autoreply: SKIP — persistent button text {!r}", text)
+        logger.info("autoreply: SKIP — persistent button text {!r}", text)
         return False
 
     try:
         from app.telegram.bot import has_pending_input
     except Exception as e:  # noqa: BLE001
-        logger.debug("autoreply: SKIP — can't import has_pending_input: {}", e)
+        logger.info("autoreply: SKIP — can't import has_pending_input: {}", e)
         return False
     if has_pending_input(message.from_user.id):
-        logger.debug(
+        logger.info(
             "autoreply: SKIP — bot.py has_pending_input(user_id={}) (текст пойдёт в bot.py FSM)",
             message.from_user.id,
         )
         return False
 
     if message.chat.id in _active_sessions:
-        logger.debug(
+        logger.info(
             "autoreply: SKIP — уже идёт AI-сессия chat_id={} (нужно /ai cancel или дождаться)",
             message.chat.id,
         )
         return False
 
     if message.reply_to_message is not None:
-        logger.debug(
+        logger.info(
             "autoreply: SKIP — message.reply_to_message present (это reply-chain, bot.py handle)"
         )
         return False
