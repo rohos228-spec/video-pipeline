@@ -483,6 +483,12 @@ async def _run_session_task(
         logger.exception("ai_agent: session #{} failed: {}", runtime.db_id, e)
         runtime.final_answer = f"❌ Ошибка: {e}"
         runtime.finished = True
+    finally:
+        # Очистка выполняется ВСЕГДА — даже если финальное сообщение или
+        # запись в БД упадут. Без этого владелец не сможет запустить новую
+        # сессию до перезапуска бота.
+        _active_sessions.pop(runtime.chat_id, None)
+        _active_tasks.pop(runtime.chat_id, None)
 
     # Финальное сообщение
     final_text = (
@@ -497,9 +503,15 @@ async def _run_session_task(
             parse_mode="HTML",
         )
     except Exception:  # noqa: BLE001
-        await bot.send_message(
-            runtime.chat_id, final_text[:4000], parse_mode="HTML"
-        )
+        try:
+            await bot.send_message(
+                runtime.chat_id, final_text[:4000], parse_mode="HTML"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "ai_agent: session #{} — не удалось доставить финальное сообщение",
+                runtime.db_id,
+            )
 
     # Закрыть в БД
     final_status = (
@@ -509,20 +521,22 @@ async def _run_session_task(
         if runtime.finished
         else AISessionStatus.failed
     )
-    async with session_scope() as db:
-        db_sess = await db.get(AISession, runtime.db_id)
-        if db_sess:
-            db_sess.step_count = runtime.step_count
-            db_sess.cost_rub = runtime.cost_rub or runtime.estimate_cost()
-            await close_session(
-                db, db_sess,
-                status=final_status,
-                final_answer=runtime.final_answer,
-            )
-
-    # Очистка
-    _active_sessions.pop(runtime.chat_id, None)
-    _active_tasks.pop(runtime.chat_id, None)
+    try:
+        async with session_scope() as db:
+            db_sess = await db.get(AISession, runtime.db_id)
+            if db_sess:
+                db_sess.step_count = runtime.step_count
+                db_sess.cost_rub = runtime.cost_rub or runtime.estimate_cost()
+                await close_session(
+                    db, db_sess,
+                    status=final_status,
+                    final_answer=runtime.final_answer,
+                )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "ai_agent: session #{} — ошибка записи финального статуса в БД",
+            runtime.db_id,
+        )
 
 
 async def _ask_owner_for_hitl(
