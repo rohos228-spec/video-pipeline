@@ -68,6 +68,62 @@ jobs:
       - name: Audit Telegram buttons (fail only on callback_data > 64 bytes)
         run: python scripts/audit_buttons.py --fail
 
+      - name: Smoke — orchestrator_api поднимается + /health 200
+        run: |
+          # Запускаем FastAPI в фоне, ждём 3 сек, дёргаем /health.
+          # Проверяет: импорт без падений, биндинг на 127.0.0.1, /health OK.
+          python -m uvicorn app.orchestrator_api:app             --host 127.0.0.1 --port 8787             --log-level warning &
+          API_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:8787/health > /tmp/health.json
+          cat /tmp/health.json
+          kill $API_PID 2>/dev/null || true
+          # Защита от регрессии: в коде НЕ должно быть host="0.0.0.0" (правило 40-api.mdc).
+          python -c "
+          import re, pathlib, sys
+          pat = re.compile(r'host\\s*=\\s*["\']0\\.0\\.0\\.0["\']')
+          bad = []
+          for p in pathlib.Path('app').rglob('*.py'):
+              for i, ln in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                  if pat.search(ln):
+                      bad.append(f'{p}:{i}: {ln.strip()[:120]}')
+          if bad:
+              print('::error::Found host=0.0.0.0 — должно быть только 127.0.0.1')
+              for b in bad: print('  ' + b)
+              sys.exit(1)
+          print('no 0.0.0.0 bindings in app/')
+          "
+          echo "✅ orchestrator_api smoke OK"
+
+      - name: Smoke — AI-агент tools registry загружается (без LLM-вызова)
+        run: |
+          python -c "
+          from app.ai_agent.tools import ALL_TOOLS, get_openai_tools_schema
+          tools = list(ALL_TOOLS)
+          assert len(tools) >= 14, f'expected >=14 tools, got {len(tools)}'
+          schema = get_openai_tools_schema()
+          for s in schema:
+              assert s['type'] == 'function'
+              assert 'name' in s['function']
+              assert 'parameters' in s['function']
+          print(f'✅ AI-агент: {len(tools)} tools, schema valid')
+          "
+
+      - name: Smoke — callback_registry CB enum валиден
+        run: |
+          python -c "
+          from app.telegram.callback_registry import CB, is_registered, TG_CALLBACK_LIMIT
+          assert len(list(CB)) >= 50, 'expected 50+ prefixes'
+          # Случайные проверки
+          assert is_registered('ai:approve:42')
+          assert is_registered('proj:99:menu')
+          assert not is_registered('foo:bar')
+          # Все префиксы укладываются в половину лимита (оставляя место под vars)
+          for c in CB:
+              assert len(c.value.encode('utf-8')) <= TG_CALLBACK_LIMIT // 2
+          print(f'✅ callback_registry: {len(list(CB))} prefixes, all valid')
+          "
+
   detect-secrets:
     runs-on: ubuntu-latest
     steps:
