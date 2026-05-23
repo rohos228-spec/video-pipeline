@@ -98,6 +98,35 @@ def _hitl_kb(tool_call_db_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def _parse_callback_id(callback: CallbackQuery) -> int | None:
+    """Извлечь id из callback_data вида 'ai:foo:42' → 42, или None."""
+    data = callback.data
+    if not data:
+        return None
+    parts = data.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[2])
+    except ValueError:
+        return None
+
+
+async def _edit_markup_safe(
+    callback: CallbackQuery,
+    markup: InlineKeyboardMarkup,
+) -> None:
+    """Обновить reply_markup на callback.message, если он Message."""
+    from aiogram.types import Message  # noqa: PLC0415
+
+    msg = callback.message
+    if isinstance(msg, Message):
+        try:
+            await msg.edit_reply_markup(reply_markup=markup)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _format_args_preview(tool_name: str, args: dict) -> str:
     """Превью args для HITL-карточки. Для edit_file делаем diff-like."""
     if tool_name == "edit_file":
@@ -557,9 +586,9 @@ async def _ask_owner_for_hitl(
     # Запомнить hitl_message_id
     async with session_scope() as db:
         from app.models import AIToolCall
-        call = await db.get(AIToolCall, tool_call_db_id)
-        if call:
-            call.hitl_message_id = msg.message_id
+        existing_call: AIToolCall | None = await db.get(AIToolCall, tool_call_db_id)
+        if existing_call:
+            existing_call.hitl_message_id = msg.message_id
 
     # Создать future и ждать
     future: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -593,7 +622,10 @@ async def cb_approve(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
-    tool_call_id = int(callback.data.split(":")[2])
+    tool_call_id = _parse_callback_id(callback)
+    if tool_call_id is None:
+        await callback.answer("Битый callback_data", show_alert=True)
+        return
     future = _pending_hitl_futures.get(tool_call_id)
     if future is None or future.done():
         await callback.answer("Уже обработано или таймаут.", show_alert=True)
@@ -606,10 +638,11 @@ async def cb_approve(callback: CallbackQuery) -> None:
             await update_tool_call_status(
                 db, call, status=AIToolCallStatus.approved,
             )
-    await callback.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(
+    await _edit_markup_safe(
+        callback,
+        InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="✅ применено", callback_data=CB.AI_NOOP.value)]]
-        )
+        ),
     )
     await callback.answer("✅")
 
@@ -619,7 +652,10 @@ async def cb_reject(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
-    tool_call_id = int(callback.data.split(":")[2])
+    tool_call_id = _parse_callback_id(callback)
+    if tool_call_id is None:
+        await callback.answer("Битый callback_data", show_alert=True)
+        return
     future = _pending_hitl_futures.get(tool_call_id)
     if future is None or future.done():
         await callback.answer("Уже обработано.", show_alert=True)
@@ -632,10 +668,11 @@ async def cb_reject(callback: CallbackQuery) -> None:
             await update_tool_call_status(
                 db, call, status=AIToolCallStatus.rejected,
             )
-    await callback.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(
+    await _edit_markup_safe(
+        callback,
+        InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="❌ отклонено", callback_data=CB.AI_NOOP.value)]]
-        )
+        ),
     )
     await callback.answer("❌")
 
@@ -646,7 +683,10 @@ async def cb_regen(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
-    tool_call_id = int(callback.data.split(":")[2])
+    tool_call_id = _parse_callback_id(callback)
+    if tool_call_id is None:
+        await callback.answer("Битый callback_data", show_alert=True)
+        return
     future = _pending_hitl_futures.get(tool_call_id)
     if future is None or future.done():
         await callback.answer("Уже обработано.", show_alert=True)
@@ -663,10 +703,11 @@ async def cb_regen(callback: CallbackQuery) -> None:
                 db, call, status=AIToolCallStatus.rejected,
                 error="regen requested",
             )
-    await callback.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(
+    await _edit_markup_safe(
+        callback,
+        InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="🔁 regen", callback_data=CB.AI_NOOP.value)]]
-        )
+        ),
     )
     await callback.answer("🔁")
 
@@ -677,13 +718,21 @@ async def cb_clarify(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
-    tool_call_id = int(callback.data.split(":")[2])
+    tool_call_id = _parse_callback_id(callback)
+    if tool_call_id is None:
+        await callback.answer("Битый callback_data", show_alert=True)
+        return
     if tool_call_id not in _pending_hitl_futures:
         await callback.answer("Уже обработано.", show_alert=True)
         return
-    chat_id = callback.message.chat.id
-    _clarification_waits[chat_id] = tool_call_id
-    await callback.message.reply(
+    from aiogram.types import Message  # noqa: PLC0415
+
+    msg = callback.message
+    if not isinstance(msg, Message):
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    _clarification_waits[msg.chat.id] = tool_call_id
+    await msg.reply(
         "✏️ Напиши уточнение текстом — оно попадёт в LLM как новый hint, "
         "а текущая правка будет отклонена. /ai cancel — отмена."
     )
@@ -692,10 +741,16 @@ async def cb_clarify(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(CB.AI_CANCEL.value + ":"))
 async def cb_cancel_session(callback: CallbackQuery) -> None:
+    from aiogram.types import Message  # noqa: PLC0415
+
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
-    chat_id = callback.message.chat.id
+    msg = callback.message
+    if not isinstance(msg, Message):
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    chat_id = msg.chat.id
     runtime = _active_sessions.get(chat_id)
     if runtime is None:
         await callback.answer("Нет активной сессии.", show_alert=True)
@@ -709,7 +764,13 @@ async def cb_cancel_session(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(CB.AI_STATUS.value + ":"))
 async def cb_status(callback: CallbackQuery) -> None:
-    chat_id = callback.message.chat.id
+    from aiogram.types import Message  # noqa: PLC0415
+
+    msg = callback.message
+    if not isinstance(msg, Message):
+        await callback.answer("Сообщение недоступно", show_alert=True)
+        return
+    chat_id = msg.chat.id
     runtime = _active_sessions.get(chat_id)
     if runtime is None:
         await callback.answer("Нет активной сессии.", show_alert=True)
