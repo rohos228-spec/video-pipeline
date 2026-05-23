@@ -217,16 +217,130 @@ Footer — `Closes #N`, `BREAKING CHANGE:` (если меняет публичн
 
 ---
 
-## 16. Запуск AI-агента в Telegram
+## 16. AI-агент в Telegram (Phase I — реализовано)
 
-Если задача — поручить правку через `/ai <запрос>` в боте:
-- Сессии длятся до 30 шагов или 200k токенов.
-- На правку файла — **обязательный** HITL-апрув (✅/🔁/✏️/❌).
-- Никакого shell-tool — только whitelist'нутые `run_pytest`/`run_ruff`/etc.
-- Запрещены пути: `.env*`, `data/state.db*`, `.git/**`, `.venv/**`,
-  `__pycache__/**`, `data/videos/**` (только read, не write).
+В Telegram-боте есть команда **`/ai`** — это встроенный LLM-агент уровня
+Cursor/Devin внутри пайплайна. Owner может в боте написать:
+- `/ai какие проекты в статусе failed` — агент сходит в БД и ответит.
+- `/ai почини callback hitl:re в bot.py — он длиннее 64 байт` — найдёт
+  место, покажет diff, после ✅ применит и предложит создать PR.
+- `/ai объясни как работает шаг split_frames` — прочитает код и
+  расскажет в чате.
 
-См. подробности: `app/ai_agent/README.md` (создаётся в Phase I).
+### Архитектура
+
+```
+app/ai_agent/
+  config.py         — env (model, лимиты)
+  client.py         — OpenAI-compat через aiohttp
+  safety.py         — whitelist путей, secret-scan
+  audit.py          — AISession/AIMessage/AIToolCall в БД
+  session.py        — runtime state
+  loop.py           — ReAct loop
+  knowledge/
+    builder.py      — project_context для system prompt
+  tools/
+    fs.py           — read/list/search + edit/write (HITL)
+    db.py           — describe_db + db_query (только SELECT)
+    git.py          — status/diff/log + branch/commit (HITL)
+    gh.py           — pr_list/view + pr_create (HITL)
+    quality.py      — run_ruff/pytest/mypy
+    answer.py       — final_answer (terminal)
+
+app/telegram/handlers/ai_agent.py
+  Router 'ai_agent' с командами /ai* и колбэками ai:*
+```
+
+### Модель и провайдер
+
+- **Default**: `gpt-4o-mini` через **aitunnel.ru** (`https://api.aitunnel.ru/v1/`).
+- Pro (через `/ai pro`): `gpt-4o`.
+- Code (через `/ai claude`): `claude-opus-4.1`.
+- Ключ в `.env` → `ORCHESTRATOR_AI_API_KEY=sk-aitunnel-...`.
+- НЕ работают через текущий AITunnel-ключ: `gpt-4.1-mini`, `gpt-5*`.
+- Live-стоимость: ~0.15-0.25₽ за типичную сессию из 2-3 шагов.
+
+### Команды
+
+- `/ai <запрос>` — стартовать сессию (HITL-edit, gpt-4o-mini).
+- `/ai pro <запрос>` — gpt-4o (умнее, в ~3 раза дороже).
+- `/ai claude <запрос>` — claude-opus-4.1 (сложные рефакторинги).
+- `/ai auto <запрос>` — auto-режим в feature-ветке без HITL (Phase I.5).
+- `/ai cancel` — стоп активной сессии.
+- `/ai status` — текущая сессия.
+- `/ai history` — последние 10 сессий.
+- `/ai dump <id>` — детали конкретной сессии (audit-лог).
+
+### HITL flow
+
+На каждую правку файла (edit_file / write_file / git_commit / gh_pr_create
+/ git_branch) бот шлёт owner'у карточку:
+
+```
+📝 Правка файла app/telegram/bot.py
+− Было:
+  callback_data="hitl:re:img:{frame_id}:{retry}"
++ Стало:
+  callback_data=f"hr:{frame_id}:{retry}"
+
+[✅ Применить]  [🔁 Перегенерить]
+[✏️ Уточнить]  [❌ Отменить]
+```
+
+- ✅ → tool выполняется.
+- ❌ → tool возвращает rejected → LLM может попробовать иначе.
+- 🔁 → то же что ❌ но с подсказкой «попробуй иначе».
+- ✏️ → owner пишет text, он попадает в LLM как hint, LLM пробует снова.
+
+Таймаут на ответ — 30 мин (`AI_AGENT_HITL_TIMEOUT_SEC`).
+
+### Лимиты (см. `.env.example` `AI_AGENT_*`)
+
+- `MAX_TOKENS_PER_SESSION=200_000` — ~$0.30 на gpt-4o-mini.
+- `MAX_STEPS=30` — защита от runaway loop.
+- `MAX_TOKENS_PER_DAY=2_000_000` — ~$3/день.
+- `HITL_TIMEOUT_SEC=1800` — 30 мин на решение owner'а.
+- `IDLE_TIMEOUT_SEC=3600` — авто-cancel idle сессии.
+- `TOOL_TIMEOUT_SEC=120` — на каждый tool (pytest и т.п.).
+
+### Безопасность
+
+- Доступ только `chat_id == TELEGRAM_OWNER_CHAT_ID`.
+- Whitelist путей через `safety.check_path()`:
+  - Полный запрет: `.env*`, `data/state.db*`, `.git/**`, `.venv/**`,
+    `**/__pycache__/**`, `**/*.pem`, `**/*.key`, `**/credentials*`,
+    `**/secrets*`.
+  - Запрет write (read ok): `data/videos/**`, `data/test_prompts/**`,
+    `tests/snapshots/**`, `assets/**/reference_examples/**`, `legacy/**`.
+  - `.env.example` специально разрешён.
+- Secret-scan на output (`read_file`, `git_diff`) — маскирует найденные
+  ключи перед отправкой в Telegram.
+- Secret-scan на input (`edit_file.new_string`, `write_file.content`) —
+  refuse при попытке записать ключ.
+- `db_query` — только SELECT/WITH; INSERT/UPDATE/DROP/PRAGMA блокируются
+  на уровне regex.
+- НЕТ shell-tool (`run_command`), НЕТ `delete_file`, НЕТ `git_push`,
+  НЕТ `git_reset --hard`.
+
+### Audit-лог
+
+Каждый шаг сессии (LLM-вызов, tool_call, owner-decision) пишется в БД
+(`AISession`, `AIMessage`, `AIToolCall`).
+
+- `/ai dump <id>` в TG — краткий дамп.
+- `python -m scripts.ai_dump <id>` — полный JSON.
+- `python -m scripts.ai_dump --list --limit 20` — последние сессии.
+- `python -m scripts.ai_dump --list --status failed` — только failed.
+
+### Health-check на старте бота
+
+`app/main.py` при `python -m app.main` печатает:
+```
+AI-агент: model=gpt-4o-mini base=https://api.aitunnel.ru/v1 баланс 1473.41₽
+```
+
+Если ключ не задан / API не отвечает — warning, бот всё равно стартует
+(агент опциональный).
 
 ---
 

@@ -188,7 +188,9 @@ async def cmd_ai(message: Message, command: CommandObject) -> None:
             "<code>/ai claude &lt;запрос&gt;</code> — на claude-opus-4.1 (рефакторинги).\n"
             "<code>/ai auto &lt;запрос&gt;</code> — в feature-ветке без HITL.\n"
             "<code>/ai cancel</code> — остановить текущую сессию.\n"
-            "<code>/ai status</code> — статус активной сессии.\n\n"
+            "<code>/ai status</code> — статус активной сессии.\n"
+            "<code>/ai history</code> — последние 10 сессий.\n"
+            "<code>/ai dump &lt;id&gt;</code> — дамп сессии по ID.\n\n"
             "Что умеет:\n"
             "• читать файлы, искать в коде, смотреть БД;\n"
             "• править файлы (требует ✅ от тебя);\n"
@@ -224,6 +226,9 @@ async def cmd_ai(message: Message, command: CommandObject) -> None:
         return
     if first == "history":
         await _cmd_history(message)
+        return
+    if first == "dump":
+        await _cmd_dump(message, parts[1] if len(parts) > 1 else "")
         return
 
     # Выбираем модель
@@ -352,6 +357,58 @@ async def _cmd_history(message: Message) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Session task (фоновый run_loop)
 # ────────────────────────────────────────────────────────────────────────────
+
+
+async def _cmd_dump(message: Message, session_id_str: str) -> None:
+    """Дамп конкретной AI-сессии (по ID) — последние messages + tool_calls."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    try:
+        session_id = int(session_id_str.strip())
+    except (ValueError, AttributeError):
+        await message.answer(
+            "Использование: <code>/ai dump &lt;session_id&gt;</code>\n"
+            "<code>/ai history</code> — список ID.",
+            parse_mode="HTML",
+        )
+        return
+
+    async with session_scope() as db:
+        stmt = (
+            select(AISession)
+            .where(AISession.id == session_id, AISession.chat_id == message.chat.id)
+            .options(
+                selectinload(AISession.messages),
+                selectinload(AISession.tool_calls),
+            )
+        )
+        s = (await db.execute(stmt)).scalar_one_or_none()
+
+    if s is None:
+        await message.answer(f"Сессия #{session_id} не найдена.")
+        return
+
+    lines = [
+        f"<b>🤖 AI-сессия #{s.id}</b>",
+        f"<code>{s.status.value}</code> · <code>{s.mode.value}</code> · <code>{s.model}</code>",
+        f"Шагов: {s.step_count}",
+        f"Токены: {s.total_tokens_in}+{s.total_tokens_out} (~{s.cost_rub:.2f}₽)",
+        "",
+        f"<b>Запрос:</b> <i>{html.escape((s.initial_query or '')[:200])}</i>",
+        "",
+        f"<b>Tool calls ({len(s.tool_calls)}):</b>",
+    ]
+    for tc in s.tool_calls[-15:]:
+        args_str = html.escape(json.dumps(tc.args_json or {}, ensure_ascii=False)[:80])
+        lines.append(f"  • <code>{tc.tool_name}</code> [{tc.status.value}] {args_str}")
+    if s.final_answer:
+        lines.extend([
+            "",
+            f"<b>Итог:</b>\n<pre>{html.escape((s.final_answer or '')[:1000])}</pre>",
+        ])
+    text_out = "\n".join(lines)
+    await message.answer(text_out[:4000], parse_mode="HTML")
 
 
 async def _run_session_task(
