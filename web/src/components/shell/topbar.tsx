@@ -16,7 +16,7 @@ const UiContext = createContext<UiState | null>(null);
 
 export function useUi(): UiState {
   const ctx = useContext(UiContext);
-  if (!ctx) throw new Error("useUi must be used within Topbar");
+  if (!ctx) throw new Error("useUi must be used within AppShell / Topbar");
   return ctx;
 }
 
@@ -33,6 +33,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
 
   return (
     <UiContext.Provider value={{ framesProjectId, openFrames }}>
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/30 px-4 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
@@ -78,7 +79,10 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         open={framesOpen}
         onOpenChange={setFramesOpen}
       />
-      {children}
+      {children != null ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
+      ) : null}
+      </div>
     </UiContext.Provider>
   );
 }
