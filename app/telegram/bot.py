@@ -6075,9 +6075,32 @@ async def on_text_message(msg: Message) -> None:
          проекта» или «имя промта».
       1) ввод темы нового проекта (после клика на «📁 Новый проект»)
       2) ответ на сообщение-запрос нового промта (HITL edit)
+      3) AI auto-reply (Phase E.4 autoreply) — если ничто из выше
+         не подходит и AI_AGENT_AUTOREPLY=true, делегируем AI-агенту.
     """
     if not is_owner(msg):
         return
+
+    # ──────────── AI auto-reply delegation ────────────
+    # В aiogram 3 dp.message.handlers идут ПЕРЕД sub_routers, поэтому
+    # без этой проверки мой msg_autoreply никогда не получит event.
+    # _should_autoreply САМ проверяет flag, owner, private chat, pending
+    # state, active session, reply_to — то есть все случаи когда
+    # bot.py должен обработать. Если фильтр True — bot.py гарантированно
+    # не имел бы что сказать на этот текст.
+    try:
+        from app.telegram.handlers.ai_agent import (
+            _should_autoreply,
+            msg_autoreply,
+        )
+
+        if await _should_autoreply(msg):
+            await msg_autoreply(msg)
+            return
+    except Exception as _autoreply_err:  # noqa: BLE001
+        logger.warning(
+            "on_text_message: autoreply check failed: {}", _autoreply_err
+        )
 
     user_id = msg.from_user.id if msg.from_user else 0
     text = (msg.text or "").strip()
