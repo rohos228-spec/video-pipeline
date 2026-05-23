@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
 
+    # Web UI (локальный FastAPI + Next.js)
+    web_enabled: bool = Field(True, alias="WEB_ENABLED")
+    web_host: str = Field("127.0.0.1", alias="WEB_HOST")
+    web_port: int = Field(8765, alias="WEB_PORT")
+
     @property
     def db_url(self) -> str:
         # SQLite path → sqlite+aiosqlite:///absolute_or_relative/path

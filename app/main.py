@@ -460,12 +460,39 @@ async def main() -> None:
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     )
     worker_task = asyncio.create_task(_run_worker_loop(bot))
+    tasks: list[asyncio.Task] = [polling_task, worker_task]
+
+    # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
+    web_task: asyncio.Task | None = None
+    if settings.web_enabled:
+        from app.web import create_app
+
+        web_app = create_app()
+        import uvicorn
+
+        config = uvicorn.Config(
+            web_app,
+            host=settings.web_host,
+            port=settings.web_port,
+            log_level=settings.log_level.lower(),
+            access_log=False,
+            loop="asyncio",
+        )
+        server = uvicorn.Server(config)
+        web_task = asyncio.create_task(server.serve())
+        tasks.append(web_task)
+        logger.info(
+            "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}})",
+            settings.web_host,
+            settings.web_port,
+        )
+
     try:
         # FIRST_COMPLETED, а не FIRST_EXCEPTION: воркер-петля ловит все исключения
         # внутри себя и никогда «не падает», так что FIRST_EXCEPTION ждал бы
         # вечно, если поллинг завершится штатно (Ctrl+C, graceful disconnect).
         done, pending = await asyncio.wait(
-            [polling_task, worker_task], return_when=asyncio.FIRST_COMPLETED
+            tasks, return_when=asyncio.FIRST_COMPLETED
         )
         for t in pending:
             t.cancel()
