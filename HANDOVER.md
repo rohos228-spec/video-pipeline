@@ -1,16 +1,101 @@
 # Handover — video-pipeline (локальный Windows-запуск)
 
-> **🟢 Канонная ветка на 2026-05-14:** `devin/windows-installer`
-> Это default-ветка репо. На ней есть и одиночный пайплайн, и массовая
-> генерация («🎬 Массовое создание» в `/menu` → `mass:*`, меню «⚙ Настройки
-> массовой», парити single↔mass #1-#8, доки `docs/MASS_CREATION.md`,
-> тесты `tests/test_auto_advance_parity.py`).
-> Локально работать так:
-> `git fetch --all --prune && git checkout devin/windows-installer && git pull --ff-only`.
-> Ветка `main` — старый skeleton, **в неё не коммитить**.
+> **🟢 Канонная ветка на 2026-05-22:** `vetka-final`
+> (переходно: `devin/1779156871-combine-A-and-C-physical-clicks` до Phase 0 rename).
+>
+> Старый default `devin/windows-installer` будет переименован в
+> `legacy/windows-installer-pre-2026-05-22` и зафризится.
+>
+> Локально:
+> `git fetch --all --prune && git checkout vetka-final && git pull --ff-only`.
+
+> **⚠️ TODO после Phase 0** — пропущены 2 outsee anti-dup фикса из old default
+> при автоматическом merge:
+> - `eb259cd` fix(outsee): не кликаем Generate если карточка уже есть
+> - `2e7954f` fix(outsee video): анти-дубликат для генерации видео
+>
+> Cherry-pick дал бы конфликты (canonical outsee.py имеет +2680 строк с
+> physical CDP кликами). Если будут случаи дубль-генерации картинок/видео при
+> retry — портировать вручную: добавить `_count_id_tokens_in_page` перед
+> Generate в `generate_image()` и `generate_video()`. См.
+> `git show eb259cd 2e7954f` на ветке `legacy/windows-installer-pre-2026-05-22`.
 
 Прочитать это ВНИМАТЕЛЬНО перед первым ответом пользователю. Это не код-ревью
 и не новый проект — это **живая отладка на машине пользователя**.
+
+---
+
+## 🆕 Что нового на 2026-05-23 (PR #39)
+
+Этот PR — большой инфраструктурный апдейт (12+ commits). После его merge'а:
+
+### Новые инструменты для ИИ-агентов
+- **`AGENTS.md`** — правила игры для любого ИИ-агента в репо (350 строк):
+  канон-ветка, naming, запреты, lock-матрица, hand-off протокол.
+- **`.cursor/rules/*.mdc`** (6 файлов) — Cursor Rules с globs по областям.
+- **`docs/E4_MIGRATION_GUIDE.md`** — 7-шаговый алгоритм миграции
+  handler'ов из bot.py + таблица 13 групп.
+- **`docs/TRIAGE_2026-05-23.md`** — отчёт по 25 OPEN PR'ам с действиями.
+- **`docs/CALLBACK_INVENTORY.md`** — auto-generated, какой callback где
+  используется.
+
+### AI-агент в Telegram (Phase I)
+- Команда `/ai <запрос>` — Cursor/Devin-стиль агент через aitunnel.ru
+  + `gpt-4o-mini` (~0.20₽/сессия).
+- 19 tools: read/edit/search/db_query/git_*/gh_*/run_pytest/ruff/mypy.
+- HITL на каждую правку файла (4 кнопки ✅🔁✏️❌, таймаут 30 мин).
+- Safety: whitelist путей (`.env*`, `data/state.db*`, `.git/**`),
+  secret-scan, SELECT-only `db_query`, никаких shell/delete/push.
+- Audit в БД: AISession/AIMessage/AIToolCall. CLI: `scripts/ai_dump.py`.
+- Подробнее: `app/ai_agent/`, AGENTS.md §16.
+
+### Расширенный /debug в Telegram (Phase G)
+```
+/debug status / project <id> / locks / logs <id> [N]
+/debug ai [sid] / selftest / api
+```
+- `selftest` проверяет SQLite WAL / FFmpeg / CDP Chrome / AI-агент
+  баланс / orchestrator_api / disk space.
+- CLI: `scripts/project_dump.py` для полного JSON-дампа проекта.
+
+### CI workflow (Phase B + B.2)
+- 13 step'ов: ruff (BLOCKING — 0 errors), mypy strict для моих модулей
+  (BLOCKING), pytest, 4 smoke (imports, orchestrator_api /health,
+  AI tools registry, CB enum), audit_buttons (FAIL если callback > 64
+  байт), detect-secrets (паттерны `sk-aitunnel-*`, `sk-*`, `socks5://`).
+
+### Phase E.4 foundation (без модификации bot.py)
+- `app/telegram/callback_registry.py` — **58 CB-префиксов** покрывают
+  100% callback'ов в репо. AST-инвариант в CI.
+- `app/telegram/keyboards/` — типизированные фабрики
+  (common/main_menu/project_menu/hitl_buttons/wizard) с 64-byte guard.
+- `scripts/migrate_callback_to_cb.py` — auto-rewrite tool: inline
+  `callback_data="x:y"` → `make_callback(CB.X_Y, ...)`. Dry-run + apply.
+- `scripts/cb_inventory.py` — генератор CALLBACK_INVENTORY.md.
+- **`bot.py` НЕ ТРОНУТ** — параллельные cursor-агенты правят его, риск
+  merge-конфликтов слишком высок. Foundation готов для миграции отдельными
+  PR'ами (Phase E.4 steps 3-9).
+
+### Фиксы применённые из параллельных PR'ов
+- **PR #40** (`638f1f0`): cleanup `_active_sessions` в `finally:` —
+  иначе owner залочен после редкого сбоя send_message.
+- **PR #41** (`a431314`): cleanup `_clarification_waits` тоже в `finally:` —
+  иначе после ✏️ Clarify без текста stale-entry съест любой следующий
+  обычный текст owner'а.
+
+### Тесты
+- **348 тестов** ✅ (на старте было 100 → **+248**).
+- 0 ruff errors. 0 mypy strict errors на 32 модулях.
+
+### TODO для owner'а ПЕРЕД merge
+
+1. 🚨 **Ротировать AITunnel API key** — старый `sk-aitunnel-cNT...`
+   засветился в чате 2026-05-22.
+2. Переименовать `devin/1779156871-...` → `vetka-final`.
+3. Settings → Branches → default = `vetka-final` + branch protection
+   (CI required, 1 review, linear history, squash-only).
+4. Положить новый ключ в `.env` (не в репо!): `ORCHESTRATOR_AI_API_KEY=...`.
+5. Проверить `/ai статус` и `/debug selftest` в боте.
 
 ---
 

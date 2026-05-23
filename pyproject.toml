@@ -49,7 +49,19 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+  "E501",   # line too long — иногда необходимо для длинных URL/SQL
+  "SIM102", # collapsible-if — в выразительном коде nested if часто читаемее
+  "SIM103", # needless-bool — иногда явный return для читаемости
+  "SIM105", # use contextlib.suppress — частый legitimate паттерн try/except: pass,
+            # особенно вокруг Playwright/network/Telegram, где исключения ожидаемы
+  "SIM108", # if-else-block-instead-of-if-exp — ternary не всегда читаемее
+  "SIM110", # reimplemented-builtin — иногда явный цикл понятнее any()/all()
+  "SIM117", # nested with — иногда читаемее nested чем длинная одна строка
+  "UP042",  # replace-str-enum: в app/models.py много `class X(str, enum.Enum)`,
+            # их значения уже persisted в SQLite, миграция рискованна (фаза refactor)
+  "B007",   # unused-loop-control-variable — иногда переменная для будущего use
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

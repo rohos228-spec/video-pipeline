@@ -327,20 +327,19 @@ async def _ai_plan_command(text: str) -> dict[str, Any]:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    async with aiohttp.ClientSession() as client:
-        async with client.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=aiohttp.ClientTimeout(total=60),
-        ) as resp:
-            raw = await resp.text()
-            if resp.status >= 400:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"AI API error {resp.status} from {base_url}: {raw[:1000]}",
-                )
-            payload = json.loads(raw)
+    async with aiohttp.ClientSession() as client, client.post(
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json=body,
+        timeout=aiohttp.ClientTimeout(total=60),
+    ) as resp:
+        raw = await resp.text()
+        if resp.status >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"AI API error {resp.status} from {base_url}: {raw[:1000]}",
+            )
+        payload = json.loads(raw)
 
     out = ""
     try:

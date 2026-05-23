@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, FrameStatus, Project
 
-
 _FRAME_PNG_RE = re.compile(
     r"^frame_(\d+)(?:_[A-Za-z0-9._-]+)?\.png$", re.IGNORECASE
 )

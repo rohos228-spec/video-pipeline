@@ -1,0 +1,175 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - vetka-final
+      - "devin/1779156871-combine-A-and-C-physical-clicks"
+      - devin/windows-installer
+  push:
+    branches:
+      - vetka-final
+      - "devin/1779156871-combine-A-and-C-physical-clicks"
+      - cursor/full-implementation
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Ruff lint (blocking — фаза B.2 закрыта, baseline = 0 errors)
+        run: ruff check .
+
+      - name: Ruff format check (warn-mode пока что)
+        run: ruff format --check . || echo "::warning::ruff format check failed"
+        continue-on-error: true
+
+      - name: Mypy (strict для новых модулей, blocking)
+        run: |
+          # Strict для моих новых модулей (ai_agent, keyboards, callback_registry,
+          # handlers/ai_agent.py, handlers/debug.py, scripts/).
+          mypy app/ai_agent/ app/telegram/keyboards/ \
+               app/telegram/callback_registry.py \
+               app/telegram/handlers/ai_agent.py \
+               app/telegram/handlers/debug.py \
+               scripts/
+
+      - name: Mypy (warn-mode для legacy bot.py / models.py / bots/ / orchestrator/)
+        run: |
+          mypy app/main.py app/models.py app/bots/ app/orchestrator/ \
+               app/telegram/bot.py app/telegram/menu.py \
+               app/telegram/mass_menu.py app/telegram/wizard.py \
+               || echo "::warning::mypy failures in legacy code (миграция отдельным PR'ом)"
+        continue-on-error: true
+
+      - name: Pytest
+        run: pytest -q tests/
+
+      - name: Smoke — все ключевые модули импортируются
+        run: |
+          python -c "
+          import app.main
+          import app.telegram.bot
+          import app.telegram.handlers.ai_agent
+          import app.orchestrator.pipeline
+          import app.orchestrator_api
+          import app.ai_agent
+          from app.ai_agent.tools import ALL_TOOLS
+          print(f'ai_agent: {len(ALL_TOOLS)} tools registered')
+          print('all critical imports ok')
+          "
+
+      - name: Audit Telegram buttons (fail only on callback_data > 64 bytes)
+        run: python scripts/audit_buttons.py --fail
+
+      - name: Callback inventory (warn-mode — fail только при <UNKNOWN> prefixes)
+        run: python -m scripts.cb_inventory --fail-on-unknown > /dev/null
+        continue-on-error: false
+
+      - name: Smoke — orchestrator_api поднимается + /health 200
+        run: |
+          # Запускаем FastAPI в фоне, ждём 3 сек, дёргаем /health.
+          # Проверяет: импорт без падений, биндинг на 127.0.0.1, /health OK.
+          python -m uvicorn app.orchestrator_api:app             --host 127.0.0.1 --port 8787             --log-level warning &
+          API_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:8787/health > /tmp/health.json
+          cat /tmp/health.json
+          kill $API_PID 2>/dev/null || true
+          # Защита от регрессии: в коде НЕ должно быть host="0.0.0.0" (правило 40-api.mdc).
+          python -c "
+          import re, pathlib, sys
+          pat = re.compile(r'host\\s*=\\s*["\']0\\.0\\.0\\.0["\']')
+          bad = []
+          for p in pathlib.Path('app').rglob('*.py'):
+              for i, ln in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                  if pat.search(ln):
+                      bad.append(f'{p}:{i}: {ln.strip()[:120]}')
+          if bad:
+              print('::error::Found host=0.0.0.0 — должно быть только 127.0.0.1')
+              for b in bad: print('  ' + b)
+              sys.exit(1)
+          print('no 0.0.0.0 bindings in app/')
+          "
+          echo "✅ orchestrator_api smoke OK"
+
+      - name: Smoke — AI-агент tools registry загружается (без LLM-вызова)
+        run: |
+          python -c "
+          from app.ai_agent.tools import ALL_TOOLS, get_openai_tools_schema
+          tools = list(ALL_TOOLS)
+          assert len(tools) >= 14, f'expected >=14 tools, got {len(tools)}'
+          schema = get_openai_tools_schema()
+          for s in schema:
+              assert s['type'] == 'function'
+              assert 'name' in s['function']
+              assert 'parameters' in s['function']
+          print(f'✅ AI-агент: {len(tools)} tools, schema valid')
+          "
+
+      - name: Smoke — callback_registry CB enum валиден
+        run: |
+          python -c "
+          from app.telegram.callback_registry import CB, is_registered, TG_CALLBACK_LIMIT
+          assert len(list(CB)) >= 50, 'expected 50+ prefixes'
+          # Случайные проверки
+          assert is_registered('ai:approve:42')
+          assert is_registered('proj:99:menu')
+          assert not is_registered('foo:bar')
+          # Все префиксы укладываются в половину лимита (оставляя место под vars)
+          for c in CB:
+              assert len(c.value.encode('utf-8')) <= TG_CALLBACK_LIMIT // 2
+          print(f'✅ callback_registry: {len(list(CB))} prefixes, all valid')
+          "
+
+  detect-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets
+
+      - name: Scan для запрещённых паттернов
+        run: |
+          # Жёсткие паттерны: AITunnel / OpenAI ключи, SOCKS5 креды.
+          # Если найдено в diff — fail.
+          BLOCKED=$(grep -rEn --include='*.py' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.ps1' \
+            --exclude-dir=.git --exclude-dir=.venv --exclude-dir=node_modules \
+            -e 'sk-aitunnel-[A-Za-z0-9]{20,}' \
+            -e 'sk-[A-Za-z0-9]{40,}' \
+            -e 'socks5://[A-Za-z0-9]+:[A-Za-z0-9]+@' \
+            . 2>/dev/null | grep -v -E '\.example|AGENTS\.md|PLAN\.md|HANDOVER\.md' || true)
+          if [ -n "$BLOCKED" ]; then
+            echo "::error::Found hardcoded secrets:"
+            echo "$BLOCKED"
+            exit 1
+          fi
+          echo "no hardcoded secrets found"

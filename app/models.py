@@ -445,3 +445,154 @@ class TestPromptProject(Base):
 
     def iter_dir(self, n: int) -> Path:
         return self.data_dir / f"iter_{n:03d}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# AI-агент (Phase I) — встроенный LLM-агент в Telegram-боте.
+# Через aitunnel.ru + gpt-4o-mini с function-calling. См. app/ai_agent/*.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class AISessionStatus(str, enum.Enum):
+    """Статус AI-сессии (один заход /ai в боте)."""
+
+    active = "active"  # сессия идёт, LLM думает или ждём HITL
+    waiting_hitl = "waiting_hitl"  # ждём ✅/❌ owner'а на правку
+    completed = "completed"  # final_answer вернулся
+    cancelled = "cancelled"  # /ai cancel или idle-timeout
+    failed = "failed"  # ошибка / превышен лимит токенов / steps
+
+
+class AISessionMode(str, enum.Enum):
+    """Режим сессии."""
+
+    qa = "qa"  # только read-only tools, без правок
+    hitl_edit = "hitl_edit"  # правки с обязательным апрувом owner'а
+    auto = "auto"  # auto-режим в feature-ветке agent/ai-<uuid>
+
+
+class AIMessageRole(str, enum.Enum):
+    system = "system"
+    user = "user"
+    assistant = "assistant"
+    tool = "tool"
+
+
+class AIToolCallStatus(str, enum.Enum):
+    pending = "pending"  # LLM попросил вызов, ещё не разрешён
+    approved = "approved"  # owner ✅
+    rejected = "rejected"  # owner ❌ или safety refuse
+    executed = "executed"  # выполнен (для read-only — сразу после parse)
+    failed = "failed"  # exception при выполнении
+
+
+class AISession(Base):
+    """Одна сессия общения с AI-агентом."""
+
+    __tablename__ = "ai_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(index=True)
+    started_at: Mapped[datetime] = mapped_column(default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    status: Mapped[AISessionStatus] = mapped_column(
+        Enum(AISessionStatus), default=AISessionStatus.active, index=True
+    )
+    mode: Mapped[AISessionMode] = mapped_column(
+        Enum(AISessionMode), default=AISessionMode.hitl_edit
+    )
+
+    # Конфиг сессии
+    model: Mapped[str] = mapped_column(String(80))
+    # Ветка, в которой работает auto-mode (None для qa/hitl_edit)
+    branch: Mapped[str | None] = mapped_column(String(255), default=None)
+
+    # Исходный запрос owner'а
+    initial_query: Mapped[str] = mapped_column(Text)
+
+    # Учёт токенов и стоимости (rub).
+    total_tokens_in: Mapped[int] = mapped_column(default=0)
+    total_tokens_out: Mapped[int] = mapped_column(default=0)
+    cost_rub: Mapped[float] = mapped_column(default=0.0)
+    step_count: Mapped[int] = mapped_column(default=0)
+
+    # Финальное сообщение от LLM (final_answer)
+    final_answer: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # Telegram message id «сводки», который мы редактируем по ходу сессии
+    summary_message_id: Mapped[int | None] = mapped_column(default=None)
+
+    messages: Mapped[list[AIMessage]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="AIMessage.id",
+    )
+    tool_calls: Mapped[list[AIToolCall]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="AIToolCall.id",
+    )
+
+
+class AIMessage(Base):
+    """Сообщение в истории сессии (system / user / assistant / tool)."""
+
+    __tablename__ = "ai_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[AIMessageRole] = mapped_column(Enum(AIMessageRole))
+    content: Mapped[str | None] = mapped_column(Text, default=None)
+    # tool_calls в формате OpenAI — список dict'ов id/type/function
+    tool_calls_json: Mapped[list | None] = mapped_column(JSON, default=None)
+    # для role=tool — id запроса (из tool_calls_json)
+    tool_call_id: Mapped[str | None] = mapped_column(String(120), default=None)
+    # для role=tool — имя вызванного инструмента (быстрый поиск)
+    tool_name: Mapped[str | None] = mapped_column(String(60), default=None)
+
+    tokens_in: Mapped[int] = mapped_column(default=0)
+    tokens_out: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+    session: Mapped[AISession] = relationship(back_populates="messages")
+
+
+class AIToolCall(Base):
+    """Конкретный вызов инструмента в сессии (для аудита и HITL-стейта)."""
+
+    __tablename__ = "ai_tool_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_sessions.id", ondelete="CASCADE"), index=True
+    )
+    # связь с сообщением, в котором LLM попросил вызов
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_messages.id", ondelete="SET NULL"), default=None
+    )
+    # id из OpenAI tool_calls (call_xxx)
+    openai_call_id: Mapped[str] = mapped_column(String(120), index=True)
+    tool_name: Mapped[str] = mapped_column(String(60))
+    args_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[AIToolCallStatus] = mapped_column(
+        Enum(AIToolCallStatus), default=AIToolCallStatus.pending, index=True
+    )
+    # Результат выполнения (JSON-сериализуемый) — то, что вернётся LLM
+    # как tool message. Может быть string или dict.
+    result_json: Mapped[dict | list | str | None] = mapped_column(
+        JSON, default=None
+    )
+    # Telegram message_id с HITL-карточкой (для редактирования)
+    hitl_message_id: Mapped[int | None] = mapped_column(default=None)
+    # Если HITL-tool — комментарий owner'а на ✏️
+    owner_clarification: Mapped[str | None] = mapped_column(Text, default=None)
+    # Текст ошибки при failed
+    error_message: Mapped[str | None] = mapped_column(Text, default=None)
+
+    requested_at: Mapped[datetime] = mapped_column(default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    executed_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    session: Mapped[AISession] = relationship(back_populates="tool_calls")

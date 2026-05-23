@@ -1,0 +1,32 @@
+---
+description: "Правила для app/orchestrator_api.py и app/services/** — Local HTTP API + services"
+globs: ["app/orchestrator_api.py", "app/services/**"]
+alwaysApply: true
+---
+
+# Правила для оркестратор-API и сервисов
+
+## API
+- Биндинг **только** на `127.0.0.1`. Никогда не `0.0.0.0`, не публичный
+  IP — это локальная control-plane.
+- Все endpoints — с Pydantic `BaseModel` request + `response_model=`.
+- Обязательный endpoint `GET /health`.
+- Без `eval`, `exec`, динамического SQL — все SQL через SQLAlchemy ORM.
+
+## Аутентификация
+- API локальный → доступа из внешней сети нет. Дополнительная аутентификация
+  не нужна, но не светить URL'ы наружу.
+
+## Сервисы (`app/services/**`)
+- Чистые функции (без I/O в верхнем уровне модуля).
+- Все долгие операции — `async`.
+- Если сервис ходит во внешний API (LLM, outsee) — через `aiohttp.ClientSession`
+  с retry+timeout.
+
+## Логи
+- `loguru` с `logger.bind(project_id=..., step=...)`.
+- `LOG_LEVEL` из env.
+
+## Тесты
+- На каждый publicный endpoint — тест в `tests/test_orchestrator_api.py`.
+- Проверка: биндинг 127.0.0.1, `response_model` присутствует.

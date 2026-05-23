@@ -1,0 +1,37 @@
+---
+description: "Правила для app/bots/** — Playwright-боты"
+globs: ["app/bots/**"]
+alwaysApply: true
+---
+
+# Правила для Playwright-ботов
+
+## Селекторы
+- Все CSS/XPath селекторы — в **константе модуля** (верх файла), не inline.
+- При обновлении: **добавляй** в список (`PROMPT_INPUT_SELECTORS = [..., "новый"]`),
+  не удаляй старые (помогает на legacy-версиях UI).
+- Тест `tests/test_outsee_selectors.py` валидирует синтаксис.
+
+## Таймауты
+- Для outsee.io (nano-banana / veo-3) — **≥ 600 секунд** на ожидание
+  результата.
+- Для ChatGPT (web) — ≥ 120 секунд.
+- Никаких `await asyncio.sleep(N)` где N < 0.5 — кроме редких UI-нюансов
+  (комментарием объяснить).
+
+## CDP
+- Подключение к Chrome — только через `localhost:29229` (BROWSER_CDP_URL).
+- Не запускай свой браузер — переиспользуй существующий через CDP.
+
+## HITL и регенерация
+- На 🔁 регенерацию **НЕ дёргаем ChatGPT** повторно. Только
+  `outsee.regenerate_image()` — она знает предыдущий промт.
+
+## Антидубликат
+- Перед `click(generate)` — проверяй, нет ли уже карточки с текущим
+  prompt_id на странице.
+- `prompt_id_prefix` — свежий для каждого attempt'а.
+
+## Отмена
+- Все длинные wait-loops должны принимать `cancel_check` callback
+  (см. `fix(stop): respect ⏹ during outsee wait loops`).

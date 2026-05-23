@@ -380,12 +380,12 @@ class ProjectSheet:
     # ---- internal --------------------------------------------------------
 
     def _open(self):  # type: ignore[no-untyped-def]
-        from openpyxl import load_workbook
-
         # Если Excel открыл файл — он держит его на чтение, и load_workbook
         # обычно проходит. Но если открыто в режиме редактирования и lock
         # держится жёстко, делаем 3 ретрая по 0.2 сек.
         import time as _t
+
+        from openpyxl import load_workbook
 
         last: Exception | None = None
         for _ in range(3):

@@ -20,7 +20,6 @@ from sqlalchemy import select
 
 from app.db import engine, session_scope
 from app.models import Base, Project, ProjectStatus
-from app.settings import settings
 from app.storage import ProjectSheet
 
 DEFAULT_TOPIC = "5 фактов о рачках в стиле киберпанк"

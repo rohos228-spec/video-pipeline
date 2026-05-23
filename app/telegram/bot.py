@@ -97,6 +97,25 @@ from app.telegram.wizard import (
 
 dp = Dispatcher()
 
+# ──── AI-агент (Phase I) — отдельный router в новой структуре handlers/ ────
+try:
+    from app.telegram.handlers.ai_agent import router as _ai_agent_router
+
+    dp.include_router(_ai_agent_router)
+except Exception as _ai_router_err:  # noqa: BLE001
+    # Не валим бот если AI-агент сломан — он опциональный
+    from loguru import logger as _logger
+    _logger.warning("AI-агент не подключён: {}", _ai_router_err)
+
+# ──── /debug команды (Phase G) — observability ─────────────────────────────
+try:
+    from app.telegram.handlers.debug import router as _debug_router
+
+    dp.include_router(_debug_router)
+except Exception as _debug_router_err:  # noqa: BLE001
+    from loguru import logger as _logger
+    _logger.warning("/debug не подключён: {}", _debug_router_err)
+
 # Ожидание текстового ответа (тема нового проекта). user_id → True.
 _pending_topic_input: dict[int, bool] = {}
 
@@ -1116,12 +1135,9 @@ async def on_mass_delete_keep(cb: CallbackQuery) -> None:
     await _show_mass_list(cb)
 
 
-@dp.callback_query(F.data == "mass:noop")
-async def on_mass_noop(cb: CallbackQuery) -> None:
-    await cb.answer("Заглушка — функция появится в PR #2")
-
-
 # --------- управление очередью (PR #2) ---------
+# (дубликат on_mass_noop здесь удалён в фазе B.2 — он перекрывался
+#  тем что на ~1074. Aiogram использовал первый, второй был dead code.)
 
 async def _refresh_mass_main(cb: CallbackQuery, bid: int) -> None:
     """Перерисовать главное меню массового после изменения очереди."""

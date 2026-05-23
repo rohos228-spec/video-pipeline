@@ -1,0 +1,25 @@
+# CODEOWNERS — кто ревьюит PR'ы по модулям.
+# Подробнее: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-configuration/customizing-your-repository/about-code-owners
+
+# Глобальный owner
+*                                @rohos228-spec
+
+# Критичные модули — явный owner
+/app/telegram/                   @rohos228-spec
+/app/bots/                       @rohos228-spec
+/app/orchestrator/               @rohos228-spec
+/app/orchestrator_api.py         @rohos228-spec
+/app/ai_agent/                   @rohos228-spec
+/app/services/visual_lab/        @rohos228-spec
+/app/models.py                   @rohos228-spec
+
+# Конфиги / инфра
+/.github/                        @rohos228-spec
+/.cursor/                        @rohos228-spec
+/AGENTS.md                       @rohos228-spec
+/HANDOVER.md                     @rohos228-spec
+/pyproject.toml                  @rohos228-spec
+/.env.example                    @rohos228-spec
+
+# Промпты — отдельный owner (на будущее)
+/prompts/                        @rohos228-spec

@@ -1303,8 +1303,9 @@ async def pause_all_running_batches(
 
     Возвращает {"batches": N, "rolled_back": M, "auto_mode_off": K}.
     """
-    from app.telegram.menu import step_by_running_status
     from sqlalchemy import select as _sel
+
+    from app.telegram.menu import step_by_running_status
 
     out = {"batches": 0, "rolled_back": 0, "auto_mode_off": 0}
 
