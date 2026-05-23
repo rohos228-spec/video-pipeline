@@ -1,0 +1,40 @@
+# Pre-commit hooks для video-pipeline.
+# Установка: `pip install pre-commit && pre-commit install`.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: no-hardcoded-secrets
+        name: Запрет хардкода секретов (AITunnel, OpenAI, SOCKS5)
+        entry: bash -c '
+          if grep -rEn --include="*.py" --include="*.md" --include="*.yml" --include="*.yaml" --include="*.ps1"
+              -e "sk-aitunnel-[A-Za-z0-9]{20,}"
+              -e "sk-[A-Za-z0-9]{40,}"
+              -e "socks5://[A-Za-z0-9]+:[A-Za-z0-9]+@"
+              "$@" 2>/dev/null | grep -v -E "\\.example|AGENTS\\.md|PLAN\\.md|HANDOVER\\.md"; then
+            echo "ERROR: hardcoded secret found. Use .env (gitignored) instead.";
+            exit 1;
+          fi;'
+        language: system
+        pass_filenames: true
+        types_or: [python, markdown, yaml, powershell]
