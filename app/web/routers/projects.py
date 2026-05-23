@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.event_bus import publish_project_event
+from app.services.project_steps import list_step_codes, start_step
 from app.web.deps import get_session
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
@@ -47,6 +48,12 @@ async def list_projects(
         await session.execute(select(Project).order_by(Project.id.desc()))
     ).scalars().all()
     return list(rows)
+
+
+@router.get("/steps/catalog")
+async def steps_catalog() -> list[dict[str, str]]:
+    """Каталог шагов пайплайна (для веб-UI без Telegram)."""
+    return list_step_codes()
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
@@ -173,3 +180,27 @@ async def media_review(
             }
         )
     return out
+
+
+@router.post("/{project_id}/steps/{step_code}/run", response_model=ProjectDetail)
+async def run_project_step(
+    project_id: int,
+    step_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> Project:
+    """Запустить шаг: статус → running, воркер выполнит advance_project."""
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        await start_step(session, p, step_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"step": step_code, "status": p.status.value},
+    )
+    return p

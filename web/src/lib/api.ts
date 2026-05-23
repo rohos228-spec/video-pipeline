@@ -73,6 +73,14 @@ export const api = {
     http<ProjectDetail>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  listStepCatalog: () =>
+    http<{ code: string; label: string; running_status: string; ready_status: string }[]>(
+      `/api/projects/steps/catalog`
+    ),
+  runProjectStep: (projectId: number, stepCode: string) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run`, {
+      method: "POST",
+    }),
 
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>

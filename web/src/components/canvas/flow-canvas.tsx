@@ -393,12 +393,13 @@ function RunOverlay({
       const created = await api.startRunFromWorkflow(workflow.id, {
         project_id: projectId,
       });
+      await api.runProjectStep(projectId, "plan");
       onRunCreated();
-      toast.success(`Run #${created.id} создан`, {
-        description: `${created.node_runs.length} нод готовы к запуску`,
+      toast.success(`Run #${created.id} · шаг «План» запущен`, {
+        description: "Воркер подхватит planning — HITL в веб-UI",
       });
     } catch (e) {
-      toast.error(`Не получилось создать Run: ${String(e)}`);
+      toast.error(`Не получилось запустить: ${String(e)}`);
     } finally {
       setBusy(false);
     }

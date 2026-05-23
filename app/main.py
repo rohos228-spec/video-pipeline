@@ -229,7 +229,7 @@ def _running_status_requires(
     return step.requires if step is not None else None
 
 
-async def _run_worker_loop(bot) -> None:
+async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     """Фоновая петля воркера: сканирует БД и продвигает проекты.
 
     Анти-зацикливание: если один и тот же шаг падает >= MAX_FAIL раз
@@ -341,9 +341,10 @@ async def _run_worker_loop(bot) -> None:
                                     f"(статус={p.status.value}): "
                                     f"{type(e).__name__}: {e}"
                                 )
-                                await bot.send_message(
-                                    settings.telegram_owner_chat_id, msg[:3800]
-                                )
+                                if bot and settings.telegram_active:
+                                    await bot.send_message(
+                                        settings.telegram_owner_chat_id, msg[:3800]
+                                    )
                             elif fail_counts[key] >= MAX_FAIL:
                                 # Проект зависает на одном шаге — откатываем
                                 # на prerequisite предыдущего шага. Юзер
@@ -453,14 +454,31 @@ async def main() -> None:
     await _recompute_all_projects()
     await sync_prompts_from_files()
 
-    bot, _ = await build_bot()
-    logger.info("telegram bot + worker started")
-    # Крутим поллинг и воркер параллельно. Если один упадёт — оба завершаются.
-    polling_task = asyncio.create_task(
-        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    )
-    worker_task = asyncio.create_task(_run_worker_loop(bot))
-    tasks: list[asyncio.Task] = [polling_task, worker_task]
+    from app.telegram.noop_bot import get_worker_bot
+
+    real_bot = None
+    polling_task: asyncio.Task | None = None
+    if settings.telegram_active:
+        real_bot, _ = await build_bot()
+        logger.info("telegram bot polling started")
+        polling_task = asyncio.create_task(
+            dp.start_polling(
+                real_bot, allowed_updates=dp.resolve_used_update_types()
+            )
+        )
+    else:
+        logger.info(
+            "telegram disabled — web-only mode (HITL и шаги через http://{}:{})",
+            settings.web_host,
+            settings.web_port,
+        )
+
+    worker_bot = get_worker_bot(real_bot)
+    worker_task = asyncio.create_task(_run_worker_loop(worker_bot))
+    tasks: list[asyncio.Task] = [worker_task]
+    if polling_task is not None:
+        tasks.insert(0, polling_task)
+    logger.info("background worker started")
 
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None
@@ -507,7 +525,8 @@ async def main() -> None:
             if exc is not None:
                 raise exc
     finally:
-        await bot.session.close()
+        if real_bot is not None:
+            await real_bot.session.close()
 
 
 if __name__ == "__main__":

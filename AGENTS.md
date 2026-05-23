@@ -19,7 +19,7 @@
 
 ### Key caveats
 
-- **`TELEGRAM_BOT_TOKEN` is required** to start the app. Without a valid token, the process exits at `build_bot()` with `TokenValidationError`. All other initialization (DB, prompts, backfill) runs before that point.
+- **Telegram optional**: set `TELEGRAM_ENABLED=false` (and leave `TELEGRAM_BOT_TOKEN` empty) for web-only mode — worker + FastAPI on `:8765`, HITL via web UI. Use `.\start-studio.ps1` on Windows. With a valid token, `.\start.ps1` runs bot + worker + web as before.
 - **SQLite DB** is at `data/state.db` (auto-created on first run). Delete it to reset state: `rm -f data/state.db`.
 - **No `python` alias** — use `python3` on Linux. The system has Python 3.12 which satisfies the `>=3.11,<3.13` constraint.
 - **PATH**: Dev tools (`ruff`, `mypy`, `pytest`, `playwright`) install to `~/.local/bin` — ensure it's on `PATH`.

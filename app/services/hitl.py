@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
 from app.models import HITLDecision, HITLKind, HITLRequest, Project
+from app.services.event_bus import publish_hitl_event
 from app.settings import settings
 
 
@@ -71,7 +72,7 @@ async def create_hitl(
 
 
 async def send_hitl_text(
-    bot: Bot,
+    bot: Bot | None,
     session: AsyncSession,
     project: Project,
     kind: HITLKind,
@@ -83,6 +84,21 @@ async def send_hitl_text(
     import html as _html
 
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
+    if not settings.telegram_active:
+        await publish_hitl_event(
+            project.id,
+            req.id,
+            event_type="hitl_pending",
+            payload={
+                "kind": kind.value,
+                "title": title,
+                "text": text[:500],
+                "frame_id": frame_id,
+            },
+        )
+        return req
+    if bot is None:
+        raise RuntimeError("telegram_active but bot is None")
     # Используем HTML parse_mode и экранируем произвольный текст — так Telegram
     # не спотыкается о «грязный» markdown из LLM-ответа (звёздочки, скобки,
     # бэктики в непредвидимых местах).
@@ -107,7 +123,7 @@ async def send_hitl_text(
 
 
 async def send_hitl_photo(
-    bot: Bot,
+    bot: Bot | None,
     session: AsyncSession,
     project: Project,
     kind: HITLKind,
@@ -132,6 +148,21 @@ async def send_hitl_photo(
     payload = dict(payload or {})
     payload.setdefault("photo_path", photo_path)
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
+    if not settings.telegram_active:
+        await publish_hitl_event(
+            project.id,
+            req.id,
+            event_type="hitl_pending",
+            payload={
+                "kind": kind.value,
+                "photo_path": photo_path,
+                "caption": caption[:500],
+                "frame_id": frame_id,
+            },
+        )
+        return req
+    if bot is None:
+        raise RuntimeError("telegram_active but bot is None")
     kb = _keyboard(req.id, allow_edit=allow_edit, allow_original=True)
 
     # Если caption длиннее лимита TG — шлём фото без кнопок, потом текст
@@ -200,7 +231,7 @@ async def send_hitl_photo(
 
 
 async def send_hitl_video(
-    bot: Bot,
+    bot: Bot | None,
     session: AsyncSession,
     project: Project,
     kind: HITLKind,
@@ -212,6 +243,21 @@ async def send_hitl_video(
     from aiogram.types import FSInputFile
 
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
+    if not settings.telegram_active:
+        await publish_hitl_event(
+            project.id,
+            req.id,
+            event_type="hitl_pending",
+            payload={
+                "kind": kind.value,
+                "video_path": video_path,
+                "caption": caption[:500],
+                "frame_id": frame_id,
+            },
+        )
+        return req
+    if bot is None:
+        raise RuntimeError("telegram_active but bot is None")
     msg = await bot.send_video(
         settings.telegram_owner_chat_id,
         FSInputFile(video_path),

@@ -7,9 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Telegram
-    telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
-    telegram_owner_chat_id: int = Field(..., alias="TELEGRAM_OWNER_CHAT_ID")
+    # Telegram (опционально — пустой токен = web-only, без бота)
+    telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
+    telegram_owner_chat_id: int = Field(279887118, alias="TELEGRAM_OWNER_CHAT_ID")
+    # false / 0 — не поднимать бота даже если токен задан
+    telegram_enabled: bool = Field(True, alias="TELEGRAM_ENABLED")
     # Опциональный HTTP/SOCKS5 прокси для Telegram-API.
     # Примеры: http://user:pass@host:port, socks5://user:pass@host:port
     telegram_proxy_url: str | None = Field(None, alias="TELEGRAM_PROXY_URL")
@@ -50,6 +52,13 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
+
+    @property
+    def telegram_active(self) -> bool:
+        """Нужен ли живой Telegram-бот (поллинг + уведомления)."""
+        if not self.telegram_enabled:
+            return False
+        return bool((self.telegram_bot_token or "").strip())
 
     @property
     def db_url(self) -> str:

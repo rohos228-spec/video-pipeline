@@ -38,10 +38,14 @@ if (-not (Test-Path ".env")) {
 }
 
 $envText = Get-Content ".env" -Raw
+$tgDisabled = $envText -match "(?m)^TELEGRAM_ENABLED\s*=\s*(false|0|no)\s*$"
 $tokenLine = ($envText -split "`n" | Where-Object { $_ -match "^TELEGRAM_BOT_TOKEN=\s*\S" })
-if (-not $tokenLine) {
-    Write-Host "ERROR: TELEGRAM_BOT_TOKEN не задан в .env. Открой .env и впиши токен от @BotFather." -ForegroundColor Red
+if (-not $tgDisabled -and -not $tokenLine) {
+    Write-Host "ERROR: TELEGRAM_BOT_TOKEN не задан. Либо впиши токен, либо TELEGRAM_ENABLED=false и .\start-studio.ps1" -ForegroundColor Red
     exit 1
+}
+if ($tgDisabled) {
+    Write-Warn "TELEGRAM_ENABLED=false — запускаю без бота (как start-studio.ps1)"
 }
 
 # ---------- 2. Chrome с remote-debugging-port=29229 ----------
@@ -116,7 +120,7 @@ if ($cdpRunning) {
 
 # ---------- 3. Запуск бота ----------
 
-Write-Step "Запускаю бота (python -m app.main)"
+Write-Step "Запускаю video-pipeline (python -m app.main)"
 Write-Host "    Ctrl+C для остановки." -ForegroundColor Yellow
 Write-Host ""
 

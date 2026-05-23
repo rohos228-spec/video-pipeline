@@ -7050,7 +7050,7 @@ _HITL_DRIVEN_READY_STATUSES: set[str] = {
 
 
 async def notify_step_done(
-    bot: Bot,
+    bot: Bot | None,
     project_id: int,
     prev_status: str,
     new_status: str,
@@ -7077,6 +7077,8 @@ async def notify_step_done(
         prev_status,
         new_status,
     )
+    if not settings.telegram_active or bot is None:
+        return
     if new_status in _HITL_DRIVEN_READY_STATUSES:
         logger.info(
             "notify_step_done: статус {} — это HITL-одобрение, "

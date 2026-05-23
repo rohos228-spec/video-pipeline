@@ -34,3 +34,15 @@ prompts/
 ## UI
 
 Студия ноды (правая панель) → вкладки Настройки / Промты GPT / Результаты.
+
+## Без Telegram
+
+В `.env`:
+
+```env
+TELEGRAM_ENABLED=false
+TELEGRAM_BOT_TOKEN=
+```
+
+Запуск: `.\start-studio.ps1` или `python -m app.main` — воркер + API, HITL через веб.
+Шаги: `POST /api/projects/{id}/steps/plan/run` или кнопка «Создать Run» на графе.
