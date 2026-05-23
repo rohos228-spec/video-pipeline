@@ -1,0 +1,48 @@
+---
+description: "Глобальные правила для video-pipeline (читать ВСЕМ агентам)"
+alwaysApply: true
+---
+
+# Глобальные правила
+
+Этот репо обслуживает несколько ИИ-агентов параллельно. Прочитай
+`AGENTS.md` — там полный набор правил. Ниже — выжимка для системного
+промпта.
+
+## Канон
+- Default ветка: **`vetka-final`** (переходно `devin/1779156871-combine-A-and-C-physical-clicks`).
+- PR'ы — только в неё. В `main` и `legacy/*` не коммитить.
+
+## Запреты
+1. UI.Vision запрещён — только Playwright/CDP.
+2. `MAX_FAIL=3` в пайплайне, никаких бесконечных retry.
+3. На 🔁 в HITL — НЕ дёргать ChatGPT, только `outsee.regenerate_image`.
+4. Не коммитить креды в репо. `.env` gitignored.
+5. Не делать `git push --force` без явного permission.
+6. Не удалять файлы и не делать `git reset --hard` без HITL-апрува.
+
+## Стиль
+- Коммиты: `<тип>(<scope>): <описание>`.
+  Типы: `feat | fix | chore | docs | test | refactor`.
+  Scope: `ai | telegram | bots | orchestrator | api | tests | docs`.
+- Размер PR: ≤ 400 LOC.
+- Один PR — одна задача.
+
+## Проверки перед PR
+```bash
+ruff check . && ruff format --check . && mypy app && pytest -q
+```
+
+## Куда смотреть
+- `HANDOVER.md` — живой контекст.
+- `AGENTS.md` — полные правила.
+- `app/orchestrator/pipeline.py` — state machine.
+- `app/models.py` — БД.
+
+## Светофор «останови работу и спроси»
+- PR > 600 LOC.
+- Удаляется тест.
+- Меняется `models.py` (схема БД).
+- Alembic-миграция.
+- Меняется внешний API outsee / ChatGPT / orchestrator_api.
+- Затрагиваются `prompts/*`.
