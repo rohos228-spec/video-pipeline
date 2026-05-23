@@ -57,16 +57,17 @@ jobs:
           python -c "
           import app.main
           import app.telegram.bot
+          import app.telegram.handlers.ai_agent
           import app.orchestrator.pipeline
           import app.orchestrator_api
-          # ai_agent появляется в Phase I, поэтому опциональный импорт
-          try:
-              import app.ai_agent
-              print('ai_agent: ok')
-          except ImportError as e:
-              print(f'ai_agent not yet implemented ({e})')
+          import app.ai_agent
+          from app.ai_agent.tools import ALL_TOOLS
+          print(f'ai_agent: {len(ALL_TOOLS)} tools registered')
           print('all critical imports ok')
           "
+
+      - name: Audit Telegram buttons (fail only on callback_data > 64 bytes)
+        run: python scripts/audit_buttons.py --fail
 
   detect-secrets:
     runs-on: ubuntu-latest
