@@ -4,53 +4,16 @@ from __future__ import annotations
 
 from app.models import Project, ProjectStatus
 
-# step_code (Telegram / API) → node_type (workflow / UI).
-STEP_CODE_TO_NODE_TYPE: dict[str, str] = {
-    "plan": "plan",
-    "script": "script",
-    "split": "split",
-    "hero": "hero",
-    "items": "items",
-    "enrich_1": "enrich_1",
-    "enrich_2": "enrich_2",
-    "enrich_3": "enrich_3",
-    "enrich_4": "enrich_4",
-    "enrich_5": "enrich_5",
-    "img_pr": "image_prompts",
-    "img": "images",
-    "anim_pr": "animation_prompts",
-    "video": "videos",
-    "audio": "audio",
-    "assemble": "assemble",
-    "publish": "publish",
-}
+from app.orchestrator.node_registry import (
+    LINEAR_RUNNING_PIPELINE,
+    STEP_CODE_TO_NODE_TYPE,
+)
 
 KNOWN_NODE_TYPES: tuple[str, ...] = tuple(
     sorted(set(STEP_CODE_TO_NODE_TYPE.values()), key=len, reverse=True)
 )
 
-# Линейный порядок running-статусов (как в воркере).
-RUNNING_PIPELINE: list[tuple[ProjectStatus, str]] = [
-    (ProjectStatus.planning, "plan"),
-    (ProjectStatus.scripting, "script"),
-    (ProjectStatus.splitting, "split"),
-    (ProjectStatus.generating_hero, "hero"),
-    (ProjectStatus.generating_items, "items"),
-    (ProjectStatus.enriching_1, "enrich_1"),
-    (ProjectStatus.enriching_2, "enrich_2"),
-    (ProjectStatus.enriching_3, "enrich_3"),
-    (ProjectStatus.enriching_4, "enrich_4"),
-    (ProjectStatus.enriching_5, "enrich_5"),
-    (ProjectStatus.generating_image_prompts, "image_prompts"),
-    (ProjectStatus.generating_images, "images"),
-    (ProjectStatus.generating_animation_prompts, "animation_prompts"),
-    (ProjectStatus.generating_videos, "videos"),
-    (ProjectStatus.generating_audio, "audio"),
-    (ProjectStatus.assembling, "assemble"),
-    (ProjectStatus.publishing, "publish"),
-]
-
-_RUNNING_BY_TYPE = {typ: st for st, typ in RUNNING_PIPELINE}
+RUNNING_PIPELINE = LINEAR_RUNNING_PIPELINE
 
 
 def node_type_from_key(node_key: str) -> str | None:
@@ -99,9 +62,13 @@ def skip_disabled_running(
     project: Project,
     target: ProjectStatus | None,
 ) -> ProjectStatus | None:
-    """Если running-шаг отключён в UI — перейти к следующему включённому."""
+    """Если running-шаг отключён — перейти к следующему включённому (граф или линейно)."""
+    from app.orchestrator.graph.planner import WorkflowGraph, graph_executor_enabled
+
     if target is None:
         return None
+    if graph_executor_enabled(project):
+        return WorkflowGraph.default().skip_disabled_running(project, target)
     disabled = disabled_node_types(project)
     if not disabled:
         return target
@@ -114,3 +81,23 @@ def skip_disabled_running(
         if typ not in disabled:
             return st
     return None
+
+
+async def skip_disabled_running_async(
+    session,
+    project: Project,
+    target: ProjectStatus | None,
+) -> ProjectStatus | None:
+    """Graph-aware skip с загрузкой snapshot проекта."""
+    from app.orchestrator.graph.planner import (
+        WorkflowGraph,
+        graph_executor_enabled,
+        load_graph_for_project,
+    )
+
+    if target is None:
+        return None
+    if not graph_executor_enabled(project):
+        return skip_disabled_running(project, target)
+    graph = await load_graph_for_project(session, project)
+    return graph.skip_disabled_running(project, target)

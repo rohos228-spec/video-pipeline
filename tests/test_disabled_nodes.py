@@ -34,7 +34,7 @@ def test_skip_disabled_running() -> None:
     p = Project(
         topic="t",
         slug="t",
-        meta={"disabled_nodes": ["n_script", "n_split"]},
+        meta={"disabled_nodes": ["n_script", "n_split"], "graph_executor": False},
     )
     nxt = skip_disabled_running(p, ProjectStatus.scripting)
     assert nxt == ProjectStatus.generating_hero

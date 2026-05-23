@@ -142,6 +142,12 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
         return run.id
 
 
+from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
+from app.orchestrator.node_registry import (
+    LINEAR_NODE_TYPES,
+    READY_TO_NODE_TYPE,
+    RUNNING_TO_NODE_TYPE,
+)
 from app.services.disabled_nodes import disabled_node_types
 
 
@@ -197,6 +203,13 @@ async def sync_run_for_project(project_id: int) -> None:
             project.status,
             disabled_node_types(project),
         )
+        derived_by_key: dict[str, NodeRunStatus] | None = None
+        if graph_executor_enabled(project):
+            try:
+                graph = await load_graph_for_project(s, project)
+                derived_by_key = graph.derived_node_states(project)
+            except Exception:  # noqa: BLE001
+                logger.exception("graph derived states failed for #{}", project_id)
         if not derived:
             return
 
@@ -205,10 +218,14 @@ async def sync_run_for_project(project_id: int) -> None:
         any_pending = False
         any_failed = False
         for nr in run.node_runs:
-            # hitl-ноды пока трогать не будем — у них своя логика.
-            if nr.node_type.startswith("hitl"):
-                continue
-            target = derived.get(nr.node_type)
+            if derived_by_key is not None:
+                target = derived_by_key.get(nr.node_key)
+                if target is None and nr.node_type in derived:
+                    target = derived.get(nr.node_type)
+            else:
+                if nr.node_type.startswith("hitl"):
+                    continue
+                target = derived.get(nr.node_type)
             if target is None:
                 continue
             if nr.status != target:

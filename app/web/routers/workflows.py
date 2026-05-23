@@ -13,7 +13,8 @@ from app.web.schemas import (
     WorkflowSaveRequest,
     WorkflowSummary,
 )
-from app.web.settings_default import _default_graph
+from app.services.workflow_run_sync import sync_runs_from_workflow
+from app.orchestrator.default_graph import default_graph as _default_graph
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -67,6 +68,7 @@ async def update_workflow(
     wf.nodes = [n.model_dump() for n in payload.nodes]
     wf.edges = [e.model_dump() for e in payload.edges]
     wf.version = (wf.version or 1) + 1
+    await sync_runs_from_workflow(session, wf)
     await session.commit()
     await session.refresh(wf)
     return wf
@@ -129,6 +131,7 @@ async def reset_default(session: AsyncSession = Depends(get_session)) -> Workflo
         wf.nodes = nodes
         wf.edges = edges
         wf.version = (wf.version or 1) + 1
+    await sync_runs_from_workflow(session, wf)
     await session.commit()
     await session.refresh(wf)
     return wf

@@ -41,7 +41,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.disabled_nodes import skip_disabled_running
+from app.services.disabled_nodes import skip_disabled_running, skip_disabled_running_async
 from app.services.auto_review import ReviewResult
 from app.settings import settings
 from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
@@ -169,6 +169,19 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
 
 
 TRANSITIONS = _build_transitions()
+
+
+async def _graph_next_running(
+    session: AsyncSession,
+    project: Project,
+    ready_status: ProjectStatus,
+) -> ProjectStatus | None:
+    from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
+
+    if not graph_executor_enabled(project):
+        return None
+    graph = await load_graph_for_project(session, project)
+    return graph.next_running_after_ready(project, ready_status)
 
 
 def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
@@ -470,11 +483,15 @@ async def _apply_approve(
     # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
-        project.status = skip_disabled_running(project, nxt) or nxt
+        skipped = await skip_disabled_running_async(session, project, nxt)
+        project.status = skipped or nxt
     else:
         nxt = _next_running_with_enrich_cap(project, transition)
         if nxt is not None:
-            project.status = skip_disabled_running(project, nxt) or nxt
+            graph_nxt = await _graph_next_running(session, project, transition.ready_status)
+            candidate = graph_nxt or nxt
+            skipped = await skip_disabled_running_async(session, project, candidate)
+            project.status = skipped or candidate
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
     logger.info(

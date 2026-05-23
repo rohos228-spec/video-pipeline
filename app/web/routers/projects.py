@@ -93,6 +93,7 @@ async def create_project(
         hero_mode=payload.hero_mode,
         status=ProjectStatus.new,
         auto_mode=auto_mode,
+        meta={"graph_executor": True},
     )
     session.add(p)
     await session.flush()
