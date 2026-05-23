@@ -118,8 +118,16 @@ def emit_event(
 
     with _lock:
         if _events_file is not None:
-            _events_file.write(line)
-            _events_file.flush()
+            try:
+                _events_file.write(line)
+                _events_file.flush()
+            except OSError as exc:
+                # Swallow I/O errors so that a full disk or broken file
+                # handle never propagates into the wrapped pipeline methods
+                # (emit_event is called both before and inside finally blocks
+                # of the wrappers — an unhandled exception there would prevent
+                # the actual pipeline work from running or discard its result).
+                logger.warning("monitor: events write failed ({}): {}", event_type, exc)
 
     logger.debug("monitor event: {}", event_type)
 
