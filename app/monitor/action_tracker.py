@@ -33,7 +33,14 @@ async def _screenshot_if_available(label: str) -> list[str]:
     if _watcher is not None:
         try:
             return await _watcher.take_screenshot_now(label=label)
-        except Exception:
+        except BaseException:
+            # Catch CancelledError (BaseException, not Exception, in Python 3.8+)
+            # in addition to regular exceptions.  Screenshots are monitoring
+            # artefacts and must never affect the pipeline: a CancelledError
+            # raised here would otherwise escape into the finally block of
+            # _wrap_async / _tracked_hero_run, replacing a successful return
+            # value with an exception and causing the completed pipeline work
+            # (e.g. an outsee image that was already saved to disk) to be lost.
             pass
     return []
 

@@ -1,10 +1,12 @@
-"""Tests verifying that emit_event() never propagates I/O errors.
+"""Tests verifying that emit_event() never propagates I/O errors, and that
+_screenshot_if_available() never propagates CancelledError.
 
-Critical correctness requirement: emit_event() is called (a) before the
-wrapped pipeline method runs and (b) inside finally blocks after it runs.
-If emit_event() raised, the pipeline method would either never execute or
-have its successful result discarded.  We verify the safe-by-default
-behaviour: file write errors are swallowed and logged as warnings.
+Critical correctness requirement: both emit_event() and
+_screenshot_if_available() are called (a) before the wrapped pipeline method
+runs and (b) inside finally blocks after it runs.  If either raised, the
+pipeline method would either never execute or have its successful result
+discarded.  We verify the safe-by-default behaviour: errors are swallowed
+and logged as warnings.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -171,4 +173,86 @@ class TestEmitEventNeverRaises:
         assert returned == "pipeline-output", (
             "Successful pipeline result must not be discarded when emit_event "
             "write fails in the finally block"
+        )
+
+
+class TestScreenshotCancelledError:
+    """`_screenshot_if_available` must swallow CancelledError.
+
+    CancelledError is a BaseException (not Exception) in Python 3.8+.  The
+    old `except Exception` guard missed it, so a CancelledError raised inside
+    `take_screenshot_now()` would escape into the `finally` block of
+    `_wrap_async`, replacing a successfully computed return value with an
+    exception.  Concrete impact: an outsee image that was already saved to
+    disk would be lost because the `Artifact` record was never committed.
+    """
+
+    def setup_method(self):
+        _reset_log_sink()
+
+    def teardown_method(self):
+        _reset_log_sink()
+
+    def test_screenshot_if_available_swallows_cancelled_error(self):
+        """_screenshot_if_available must not propagate CancelledError."""
+        from app.monitor import action_tracker
+
+        watcher = MagicMock()
+        watcher.take_screenshot_now = AsyncMock(
+            side_effect=asyncio.CancelledError("task cancelled during screenshot")
+        )
+
+        # Temporarily inject the mock watcher.
+        original_watcher = action_tracker._watcher
+        action_tracker._watcher = watcher
+        try:
+            result = asyncio.get_event_loop().run_until_complete(
+                action_tracker._screenshot_if_available("test_label")
+            )
+        finally:
+            action_tracker._watcher = original_watcher
+
+        assert result == [], (
+            "_screenshot_if_available must return [] when take_screenshot_now "
+            "raises CancelledError"
+        )
+
+    def test_cancelled_error_in_finally_does_not_discard_pipeline_result(self):
+        """A CancelledError from the post-operation screenshot must not
+        replace the successful return value of the wrapped pipeline method.
+
+        This is the concrete bug scenario:
+        1. outsee.generate_image() completes — file saved to disk.
+        2. In the finally block, _screenshot_if_available raises CancelledError.
+        3. Before fix: CancelledError escapes, result is lost — pipeline must
+           re-generate the image (wasted API credits, potential duplicate file).
+        4. After fix: CancelledError is swallowed, result is returned normally.
+        """
+        from app.monitor import action_tracker
+
+        watcher = MagicMock()
+        watcher.take_screenshot_now = AsyncMock(
+            side_effect=asyncio.CancelledError("task cancelled")
+        )
+
+        original_watcher = action_tracker._watcher
+        action_tracker._watcher = watcher
+        try:
+            async def simulate_wrap_async_finally():
+                """Mirrors _wrap_async's finally block with screenshot_after=True."""
+                try:
+                    return "pipeline-output"
+                finally:
+                    # This is exactly what _wrap_async's finally block does.
+                    await action_tracker._screenshot_if_available("some_step_after")
+
+            returned = asyncio.get_event_loop().run_until_complete(
+                simulate_wrap_async_finally()
+            )
+        finally:
+            action_tracker._watcher = original_watcher
+
+        assert returned == "pipeline-output", (
+            "Successful pipeline result must not be discarded when "
+            "_screenshot_if_available raises CancelledError in the finally block"
         )
