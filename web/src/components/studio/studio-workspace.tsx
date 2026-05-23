@@ -87,6 +87,10 @@ export function StudioWorkspace({
       },
       onRunNode: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;
+        if (disabledNodes.has(nodeKey)) {
+          toast.error("Нода отключена — включите её в меню V");
+          return;
+        }
         const step = stepCodeForNodeType(nodeType);
         if (!step) {
           toast.error("У этой ноды нет шага для запуска");
@@ -186,6 +190,7 @@ export function StudioWorkspace({
         nodeKey={selectedNodeKey}
         initialTab={studioTab}
         promptFocus={promptFocus}
+        nodeDisabled={selectedNodeKey != null && disabledNodes.has(selectedNodeKey)}
       />
     </CanvasActionsProvider>
   );

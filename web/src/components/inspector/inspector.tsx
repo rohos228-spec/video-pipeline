@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
+import { nodeTypeFromKey } from "@/lib/node-key";
 import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
@@ -153,7 +154,7 @@ function FramesPreview({
 
 function NodeInspector({ nodeKey }: { nodeKey: string }) {
   // nodeKey формата "n_plan" / "n_script" → восстанавливаем тип.
-  const type = nodeKey.startsWith("n_") ? nodeKey.slice(2) : nodeKey;
+  const type = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(type);
   return (
     <div className="flex flex-col gap-3">

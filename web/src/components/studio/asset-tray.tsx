@@ -25,6 +25,13 @@ const KIND_LABELS: Record<AssetTrayKind, string> = {
   project: "Проект",
 };
 
+const HITL_KIND_BY_TRAY: Partial<Record<AssetTrayKind, string>> = {
+  hero: "approve_hero",
+  items: "approve_hero",
+  images: "approve_images",
+  videos: "approve_videos",
+};
+
 export function AssetTray({
   projectId,
   kind,
@@ -78,8 +85,11 @@ export function AssetTray({
   const hitlApprove = useMutation({
     mutationFn: async () => {
       const pending = await api.listProjectHitl(projectId);
-      const match = pending[0];
-      if (!match) throw new Error("Нет ожидающих проверок");
+      const want = HITL_KIND_BY_TRAY[kind];
+      const match = want
+        ? pending.find((h) => h.kind === want) ?? pending[0]
+        : pending[0];
+      if (!match) throw new Error("Нет ожидающих проверок для этого типа");
       return api.submitHitlDecision(match.id, { decision: "approve" });
     },
     onSuccess: () => {

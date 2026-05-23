@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
+from app.services.disabled_nodes import is_step_disabled
 from app.telegram.menu import step_by_code
 
 
@@ -36,6 +37,9 @@ async def start_step(
     step = step_by_code(step_code)
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
+    if is_step_disabled(project, step_code):
+        label = step_code.replace("_", " ")
+        raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

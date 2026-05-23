@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
+import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import { defaultPromptSlots, isEnrichNode, type NodePromptSlot } from "@/lib/node-prompts";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ export function NodeStudio({
   nodeKey,
   initialTab = "settings",
   promptFocus,
+  nodeDisabled = false,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -43,8 +45,9 @@ export function NodeStudio({
   nodeKey: string | null;
   initialTab?: StudioTab;
   promptFocus?: NodePromptSlot | null;
+  nodeDisabled?: boolean;
 }) {
-  const nodeType = nodeKey?.startsWith("n_") ? nodeKey.slice(2) : nodeKey ?? "";
+  const nodeType = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(nodeType);
   const stepCode = stepCodeForNodeType(nodeType);
 
@@ -224,7 +227,8 @@ export function NodeStudio({
                     size="sm"
                     variant="default"
                     onClick={() => runStep.mutate()}
-                    disabled={!projectId || runStep.isPending}
+                    disabled={!projectId || runStep.isPending || nodeDisabled}
+                    title={nodeDisabled ? "Нода отключена в графе" : undefined}
                   >
                     {runStep.isPending ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />

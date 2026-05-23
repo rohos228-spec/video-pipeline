@@ -49,9 +49,11 @@ async def reset_project_step(
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     try:
-        await reset_step(session, p, step_code)
+        summary = await reset_step(session, p, step_code)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if summary.get("error"):
+        raise HTTPException(status_code=400, detail=str(summary["error"]))
     await session.commit()
     await session.refresh(p)
     await publish_project_event(

@@ -32,6 +32,7 @@ import type {
 } from "@/lib/types";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
+import { nodeTypeFromKey } from "@/lib/node-key";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -81,26 +82,51 @@ export function FlowCanvas({
     refetchInterval: 4000,
   });
 
-  // 3) Конвертим Workflow + Run в React Flow ноды.
-  const initialNodes = useMemo(() => {
+  // Базовая структура графа — только при смене workflow (не при каждом poll run).
+  const baseNodes = useMemo(() => {
     if (!workflow.data) return [];
-    return workflowToReactFlowNodes(workflow.data, run.data ?? null);
-  }, [workflow.data, run.data]);
-  const initialEdges = useMemo(() => {
+    return workflowToReactFlowNodes(workflow.data, null);
+  }, [workflow.data]);
+  const baseEdges = useMemo(() => {
     if (!workflow.data) return [];
     return workflowToReactFlowEdges(workflow.data);
   }, [workflow.data]);
 
   const [nodes, setNodes] = useNodesState<Node<PipelineNodeData>>([]);
   const [edges, setEdges] = useEdgesState<Edge>([]);
+  const [graphVersion, setGraphVersion] = useState<string>("");
 
-  // Каждый раз когда меняется initialNodes/Edges — синхронизируем.
   useEffect(() => {
-    setNodes(initialNodes as Node<PipelineNodeData>[]);
-  }, [initialNodes, setNodes]);
+    if (!workflow.data) return;
+    const ver = `${workflow.data.id}:${workflow.data.updated_at}`;
+    if (ver === graphVersion && nodes.length > 0) return;
+    setGraphVersion(ver);
+    setNodes(baseNodes as Node<PipelineNodeData>[]);
+    setEdges(baseEdges);
+  }, [workflow.data, baseNodes, baseEdges, graphVersion, nodes.length, setNodes, setEdges]);
+
+  // Статусы run — отдельно, без сброса позиций нод.
   useEffect(() => {
-    setEdges(initialEdges);
-  }, [initialEdges, setEdges]);
+    if (!run.data || nodes.length === 0) return;
+    const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
+    setNodes((prev) =>
+      prev.map((n) => {
+        const nr = nodeRunByKey.get(n.id);
+        if (!nr) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            status: nr.status as PipelineNodeData["status"],
+            progress: nr.progress ?? 0,
+            progressText: nr.progress_text ?? null,
+            error: nr.error ?? null,
+            attempts: nr.attempts ?? 0,
+          },
+        };
+      }),
+    );
+  }, [run.data, setNodes, nodes.length]);
 
   // WS: обновления статуса нод (event-driven, без ожидания polling).
   useRunEvents(run.data?.id ?? null, (evt) => {
@@ -436,10 +462,8 @@ function RunOverlay({
   const [pausing, setPausing] = useState(false);
   if (!workflow) return null;
 
-  const nodeType = selectedNodeKey?.startsWith("n_")
-    ? selectedNodeKey.slice(2)
-    : selectedNodeKey ?? "";
-  const stepCode = stepCodeForNodeType(nodeType) ?? "plan";
+  const nodeType = nodeTypeFromKey(selectedNodeKey);
+  const stepCode = stepCodeForNodeType(nodeType);
 
   const handlePause = async () => {
     setPausing(true);
@@ -469,6 +493,10 @@ function RunOverlay({
   };
 
   const handleResetStep = async () => {
+    if (!stepCode) {
+      toast.error("У выбранной ноды нет шага для сброса");
+      return;
+    }
     setBusy(true);
     try {
       await api.resetProjectStep(projectId, stepCode);
@@ -482,6 +510,10 @@ function RunOverlay({
   };
 
   const handleStart = async () => {
+    if (!stepCode) {
+      toast.error("Выберите ноду с шагом пайплайна");
+      return;
+    }
     setBusy(true);
     try {
       const created = await api.startRunFromWorkflow(workflow.id, {

@@ -57,10 +57,10 @@ STATUS_TO_NODE: dict[ProjectStatus, tuple[str, NodeRunStatus]] = {
     ProjectStatus.enrich_2_ready: ("enrich_2", NodeRunStatus.done),
     ProjectStatus.enriching_3: ("enrich_3", NodeRunStatus.running),
     ProjectStatus.enrich_3_ready: ("enrich_3", NodeRunStatus.done),
-    ProjectStatus.enriching_4: ("enrich_3", NodeRunStatus.running),
-    ProjectStatus.enrich_4_ready: ("enrich_3", NodeRunStatus.done),
-    ProjectStatus.enriching_5: ("enrich_3", NodeRunStatus.running),
-    ProjectStatus.enrich_5_ready: ("enrich_3", NodeRunStatus.done),
+    ProjectStatus.enriching_4: ("enrich_4", NodeRunStatus.running),
+    ProjectStatus.enrich_4_ready: ("enrich_4", NodeRunStatus.done),
+    ProjectStatus.enriching_5: ("enrich_5", NodeRunStatus.running),
+    ProjectStatus.enrich_5_ready: ("enrich_5", NodeRunStatus.done),
     ProjectStatus.generating_image_prompts: ("image_prompts", NodeRunStatus.running),
     ProjectStatus.image_prompts_ready: ("image_prompts", NodeRunStatus.done),
     ProjectStatus.generating_images: ("images", NodeRunStatus.running),
@@ -87,6 +87,8 @@ NODE_TYPE_ORDER: list[str] = [
     "enrich_1",
     "enrich_2",
     "enrich_3",
+    "enrich_4",
+    "enrich_5",
     "image_prompts",
     "images",
     "animation_prompts",
@@ -140,8 +142,12 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
         return run.id
 
 
+from app.services.disabled_nodes import disabled_node_types
+
+
 def _derived_node_states(
     current_status: ProjectStatus,
+    disabled_types: set[str] | None = None,
 ) -> dict[str, NodeRunStatus]:
     """Из ProjectStatus вычислить ожидаемый статус для каждого `node_type`.
 
@@ -150,12 +156,16 @@ def _derived_node_states(
     HITL-gate ноды (типа `hitl_*`) пока остаются pending — их синхронизация
     придёт через event-bus, когда воркер реально создаст HITLRequest.
     """
+    disabled_types = disabled_types or set()
     if current_status not in STATUS_TO_NODE:
         return {}
     target_type, target_state = STATUS_TO_NODE[current_status]
     out: dict[str, NodeRunStatus] = {}
     target_reached = False
     for typ in NODE_TYPE_ORDER:
+        if typ in disabled_types:
+            out[typ] = NodeRunStatus.skipped
+            continue
         if typ == target_type:
             out[typ] = target_state
             target_reached = True
@@ -183,7 +193,10 @@ async def sync_run_for_project(project_id: int) -> None:
         if run is None:
             return
 
-        derived = _derived_node_states(project.status)
+        derived = _derived_node_states(
+            project.status,
+            disabled_node_types(project),
+        )
         if not derived:
             return
 

@@ -21,15 +21,22 @@ from app.settings import settings
 
 ACTIVE_STATUSES = [
     ProjectStatus.planning,
-    ProjectStatus.plan_ready,
-    ProjectStatus.script_ready,
-    ProjectStatus.frames_ready,
-    ProjectStatus.hero_ready,
-    ProjectStatus.images_ready,
-    ProjectStatus.animation_prompts_ready,
-    ProjectStatus.videos_ready,
-    ProjectStatus.audio_ready,
-    ProjectStatus.assembled,
+    ProjectStatus.scripting,
+    ProjectStatus.splitting,
+    ProjectStatus.generating_hero,
+    ProjectStatus.generating_items,
+    ProjectStatus.enriching_1,
+    ProjectStatus.enriching_2,
+    ProjectStatus.enriching_3,
+    ProjectStatus.enriching_4,
+    ProjectStatus.enriching_5,
+    ProjectStatus.generating_image_prompts,
+    ProjectStatus.generating_images,
+    ProjectStatus.generating_animation_prompts,
+    ProjectStatus.generating_videos,
+    ProjectStatus.generating_audio,
+    ProjectStatus.assembling,
+    ProjectStatus.publishing,
 ]
 
 

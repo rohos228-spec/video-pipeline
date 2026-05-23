@@ -41,7 +41,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services import auto_review
+from app.services.disabled_nodes import skip_disabled_running
 from app.services.auto_review import ReviewResult
 from app.settings import settings
 from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
@@ -374,7 +374,8 @@ async def _next_status_after_hero_approve(
         remaining = [i for i in all_ids if i not in approved_ids]
         if remaining:
             return ProjectStatus.generating_hero
-        return ProjectStatus.generating_items
+        nxt = ProjectStatus.generating_items
+        return skip_disabled_running(project, nxt) or nxt
 
     # --- Multi-character / multi-variation (parity #1) ---
     try:
@@ -397,7 +398,8 @@ async def _next_status_after_hero_approve(
     if cur_hi < n_total:
         return ProjectStatus.generating_hero
     # Последняя вариация последнего героя — шаг полностью завершён.
-    return ProjectStatus.generating_items
+    nxt = ProjectStatus.generating_items
+    return skip_disabled_running(project, nxt) or nxt
 
 
 async def _hide_hitl_buttons_with_badge(
@@ -468,11 +470,11 @@ async def _apply_approve(
     # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
-        project.status = nxt
+        project.status = skip_disabled_running(project, nxt) or nxt
     else:
         nxt = _next_running_with_enrich_cap(project, transition)
         if nxt is not None:
-            project.status = nxt
+            project.status = skip_disabled_running(project, nxt) or nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
     logger.info(
