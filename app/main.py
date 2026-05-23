@@ -442,6 +442,23 @@ async def _run_worker_loop(bot) -> None:
         await asyncio.sleep(60)
 
 
+async def _migrate_batch_paused_flags() -> None:
+    """Run the one-time legacy migration that stamps ``_batch_paused`` flags
+    on sub-projects of batches that were paused before the flag mechanism
+    was introduced.  Idempotent — safe to call on every startup."""
+    from app.db import session_scope
+    from app.services.batches import migrate_legacy_batch_paused_flags
+
+    try:
+        async with session_scope() as s:
+            n = await migrate_legacy_batch_paused_flags(s)
+            if n:
+                await s.commit()
+                logger.info("startup migration: stamped _batch_paused on {} sub(s)", n)
+    except Exception:  # noqa: BLE001
+        logger.exception("_migrate_batch_paused_flags failed (non-fatal)")
+
+
 async def main() -> None:
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
@@ -452,6 +469,7 @@ async def main() -> None:
     await _backfill_from_disk()
     await _recompute_all_projects()
     await sync_prompts_from_files()
+    await _migrate_batch_paused_flags()
 
     bot, _ = await build_bot()
     logger.info("telegram bot + worker started")

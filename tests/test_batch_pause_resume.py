@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, BatchProject, BatchStatus, Project, ProjectStatus
 from app.services.batches import (
+    migrate_legacy_batch_paused_flags,
     pause_all_running_batches,
     pause_batch_queue,
     resume_all_paused_batches,
@@ -287,3 +288,112 @@ async def test_start_batch_queue_clears_stale_batch_paused_flags(session):
     assert not (p.meta or {}).get("_batch_paused"), (
         "start_batch_queue must clear stale _batch_paused flags"
     )
+
+
+# ---------------------------------------------------------------------------
+# Migration tests for legacy databases (paused before _batch_paused existed)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_batch_paused_flags_stamps_flag(session):
+    """migrate_legacy_batch_paused_flags must stamp _batch_paused=True on
+    sub-projects of paused batches that have auto_mode=False but no flag.
+
+    This covers databases produced by the old code where pause_batch_queue
+    set auto_mode=False without stamping the flag.
+    """
+    b = await _mk_batch(session, status=BatchStatus.paused)
+    # Legacy state: auto_mode=False, no _batch_paused flag
+    p = await _mk_sub(session, b, status=ProjectStatus.hero_ready, auto_mode=False)
+
+    count = await migrate_legacy_batch_paused_flags(session)
+    await session.refresh(p)
+
+    assert count == 1, "migration must stamp 1 sub-project"
+    assert (p.meta or {}).get("_batch_paused"), (
+        "migration must stamp _batch_paused=True on legacy paused sub"
+    )
+
+
+@pytest.mark.asyncio
+async def test_migrate_then_resume_re_enables_legacy_paused_batch(session):
+    """End-to-end: after migration, resume_batch_queue must re-enable a
+    sub-project that was paused with the old code (no _batch_paused flag).
+
+    Regression for the silent-stuck-batch bug: without the migration,
+    batch.status flips to 'running' but no sub-project gets auto_mode=True
+    and the batch silently produces nothing.
+    """
+    b = await _mk_batch(session, status=BatchStatus.paused)
+    p = await _mk_sub(session, b, status=ProjectStatus.hero_ready, auto_mode=False)
+
+    # Run migration first (simulates what _migrate_batch_paused_flags does
+    # at app startup)
+    await migrate_legacy_batch_paused_flags(session)
+    await session.refresh(p)
+    assert (p.meta or {}).get("_batch_paused"), "precondition: flag stamped by migration"
+
+    # Now user presses Resume — should work correctly
+    await resume_batch_queue(session, b.id)
+    await session.refresh(p)
+    await session.refresh(b)
+
+    assert b.status is BatchStatus.running, "batch must be running after resume"
+    assert p.auto_mode, (
+        "legacy-paused sub must have auto_mode=True after migration + resume"
+    )
+    assert not (p.meta or {}).get("_batch_paused"), "_batch_paused flag must be cleared"
+
+
+@pytest.mark.asyncio
+async def test_migrate_is_idempotent(session):
+    """Running migrate_legacy_batch_paused_flags twice must not double-stamp
+    or corrupt any flags."""
+    b = await _mk_batch(session, status=BatchStatus.paused)
+    p = await _mk_sub(session, b, status=ProjectStatus.new, auto_mode=False)
+
+    n1 = await migrate_legacy_batch_paused_flags(session)
+    n2 = await migrate_legacy_batch_paused_flags(session)
+
+    assert n1 == 1, "first run stamps 1 sub"
+    assert n2 == 0, "second run is a no-op (already stamped)"
+    await session.refresh(p)
+    assert (p.meta or {}).get("_batch_paused"), "flag must still be present"
+
+
+@pytest.mark.asyncio
+async def test_migrate_skips_running_batches(session):
+    """migrate_legacy_batch_paused_flags must only process PAUSED batches,
+    not running ones — to avoid interfering with live batches."""
+    b_running = await _mk_batch(session, status=BatchStatus.running)
+    p = await _mk_sub(session, b_running, status=ProjectStatus.hero_ready, auto_mode=False)
+
+    count = await migrate_legacy_batch_paused_flags(session)
+    await session.refresh(p)
+
+    assert count == 0, "running-batch subs must NOT be stamped"
+    assert not (p.meta or {}).get("_batch_paused"), (
+        "sub in running batch must not receive _batch_paused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_migrate_skips_terminal_status_projects(session):
+    """migrate_legacy_batch_paused_flags must not stamp published/failed/paused
+    sub-projects — those are not eligible for resume anyway."""
+    b = await _mk_batch(session, status=BatchStatus.paused)
+    p_pub = await _mk_sub(
+        session, b, status=ProjectStatus.published, auto_mode=False
+    )
+    p_failed = await _mk_sub(
+        session, b, status=ProjectStatus.failed, auto_mode=False
+    )
+
+    count = await migrate_legacy_batch_paused_flags(session)
+    await session.refresh(p_pub)
+    await session.refresh(p_failed)
+
+    assert count == 0, "terminal projects must NOT be stamped"
+    assert not (p_pub.meta or {}).get("_batch_paused")
+    assert not (p_failed.meta or {}).get("_batch_paused")
