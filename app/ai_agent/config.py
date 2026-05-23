@@ -48,6 +48,11 @@ class AIAgentConfig:
     # Telegram
     owner_chat_id: int
 
+    # Autoreply: AI отвечает на ЛЮБОЙ текст owner'а в personal chat
+    # (когда нет pending input'а в bot.py). По умолчанию выключено —
+    # включи через .env AI_AGENT_AUTOREPLY=true.
+    autoreply_enabled: bool
+
     # Каталог репо (root). Все file-операции должны быть внутри.
     repo_root: Path
 
@@ -71,6 +76,9 @@ def get_config(repo_root: Path | None = None) -> AIAgentConfig:
         "OPENAI_API_KEY", ""
     )
 
+    autoreply_raw = _env_str("AI_AGENT_AUTOREPLY", "false").lower()
+    autoreply_enabled = autoreply_raw in ("1", "true", "yes", "on")
+
     return AIAgentConfig(
         base_url=base_url,
         api_key=api_key,
@@ -88,5 +96,6 @@ def get_config(repo_root: Path | None = None) -> AIAgentConfig:
         idle_timeout_sec=_env_int("AI_AGENT_IDLE_TIMEOUT_SEC", 3600),
         tool_timeout_sec=_env_int("AI_AGENT_TOOL_TIMEOUT_SEC", 120),
         owner_chat_id=_env_int("TELEGRAM_OWNER_CHAT_ID", 0),
+        autoreply_enabled=autoreply_enabled,
         repo_root=repo_root,
     )

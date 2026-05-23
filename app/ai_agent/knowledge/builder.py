@@ -102,6 +102,84 @@ def _build_active_rules_section(repo_root: Path) -> str:
 """
 
 
+def _build_runtime_snapshot(repo_root: Path) -> str:
+    """Свежие runtime-данные: failed проекты + последние коммиты.
+
+    Best-effort: если БД нет / git недоступен — возвращаем что есть, без
+    crash. Этот раздел даёт LLM context который "тёпленький" и часто
+    помогает диагностировать "что-то сломалось" без вопросов.
+    """
+    parts: list[str] = ["## Runtime snapshot (актуальные данные)"]
+
+    # 1. Свежие failed проекты из SQLite
+    try:
+        import os
+        import sqlite3
+        db_path_raw = os.environ.get("SQLITE_PATH", "./data/state.db").strip()
+        db_path = Path(db_path_raw)
+        if not db_path.is_absolute():
+            db_path = (repo_root / db_path).resolve()
+        if db_path.exists():
+            with sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                # Project.meta — JSON, в нём может лежать last_error.
+                # Если колонки нет (старая БД) — graceful empty.
+                rows = conn.execute(
+                    "SELECT id, slug, status, "
+                    "       COALESCE(topic, '') AS topic, "
+                    "       COALESCE(meta, '{}') AS meta_json "
+                    "FROM projects "
+                    "WHERE status IN ('failed', 'paused') "
+                    "ORDER BY id DESC LIMIT 5"
+                ).fetchall()
+            if rows:
+                import json as _json
+                parts.append("\n### ⚠️ Свежие failed/paused проекты")
+                for r in rows:
+                    slug = (r["slug"] or "?")[:40]
+                    status = r["status"]
+                    topic = (r["topic"] or "")[:60]
+                    parts.append(f"- #{r['id']} `{slug}` [{status}] {topic}")
+                    # Распарсить meta для поиска last_error
+                    try:
+                        meta = _json.loads(r["meta_json"] or "{}")
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                    last_err = str(
+                        meta.get("last_error")
+                        or meta.get("error")
+                        or meta.get("last_failure")
+                        or ""
+                    )[:120].replace("\n", " ")
+                    if last_err:
+                        parts.append(f"  error: {last_err}")
+            else:
+                parts.append("\n### Свежие failed/paused проекты: НЕТ ✅")
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"\n_DB snapshot unavailable: {e}_")
+
+    # 2. Последние 3 коммита git
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["git", "log", "--oneline", "-3", "--no-decorate"],
+            cwd=str(repo_root),
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        commits = out.decode("utf-8", errors="replace").strip()
+        if commits:
+            parts.append("\n### Последние коммиты")
+            for line in commits.split("\n"):
+                parts.append(f"- `{line}`")
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"\n_git log unavailable: {e}_")
+
+    return "\n".join(parts)
+
+
 def _build_tooling_section() -> str:
     return """## Команды для проверки
 
@@ -128,6 +206,8 @@ def build_project_context(repo_root: Path | None = None) -> str:
 
     branch = _detect_current_branch(repo_root)
 
+    # Свежие runtime-данные (best-effort, fail silent)
+    runtime_section = _build_runtime_snapshot(repo_root)
     sections = [
         f"""# Project: video-pipeline
 
@@ -147,8 +227,9 @@ Playwright (через CDP к существующему Chrome), faster-whisper
         _build_key_files_section(repo_root),
         _build_active_rules_section(repo_root),
         _build_tooling_section(),
+        runtime_section,
     ]
-    return "\n\n".join(sections)
+    return "\n\n".join(s for s in sections if s)
 
 
 def _detect_current_branch(repo_root: Path) -> str:
@@ -183,24 +264,60 @@ def build_system_prompt(
     ctx = build_project_context(repo_root)
 
     role = """Ты — AI-агент внутри Telegram-бота проекта video-pipeline.
+Ты НЕ генеральный ассистент. Ты знаешь этот конкретный проект (см.
+project_context ниже), у тебя есть tools для чтения файлов и БД, и
+владелец платит токены за каждый твой ответ.
 
-Твоя задача:
-- Помогать owner'у разобраться в коде, ответить на вопросы.
-- Найти и исправить баги.
-- Подсказать как добавить фичу.
-- Сделать рефакторинг.
+## ЖЕЛЕЗНОЕ ПРАВИЛО ИССЛЕДОВАНИЯ
 
-Принципы работы:
-1. **Сначала исследуй** — прочитай нужные файлы (`read_file`), поищи по коду
-   (`search_code`), посмотри схему БД (`describe_db` / `db_query`).
-2. **Потом думай** — что именно надо изменить, какие side-effects.
-3. **Потом действуй** — внеси правки (edit_file), проверь линтером (run_ruff),
-   запусти тесты (run_pytest).
-4. **Всегда** завершай сессию вызовом `final_answer` с понятным резюме для
-   owner'а.
+Прежде чем задать пользователю ЛЮБОЙ уточняющий вопрос — ВСЕГДА сначала
+собирай факты через tools. Большинство ответов уже есть в коде или БД.
 
-Соблюдай запреты (см. секцию ниже). Если нужно нарушить — спроси через
-`final_answer` и заверши сессию (owner откроет новую с уточнением).
+Минимум исследования для типичных запросов:
+
+### "бот зациклился / висит / падает / не работает X"
+1. db_query "SELECT id, status, last_error FROM projects WHERE status='failed' ORDER BY id DESC LIMIT 5"
+2. read_file HANDOVER.md (там список свежих проблем и тонкостей)
+3. search_code по ключевому слову из жалобы (например 'retry', 'MAX_FAIL')
+4. ТОЛЬКО потом final_answer с конкретикой (id проекта, файл:строка, что делать)
+
+### "как работает X / объясни X"
+1. search_code "X" — где упоминается
+2. read_file первого matched файла
+3. final_answer с цитатами кода
+
+### "добавь / измени / поправь X"
+1. search_code по имени символа / строки
+2. read_file релевантный кусок
+3. edit_file с конкретным diff (HITL обработает)
+4. run_ruff и run_pytest после правки
+5. final_answer что сделано + результаты тестов
+
+### "какие проекты есть / статус / прогресс"
+1. describe_db (если ещё не видел схему)
+2. db_query с фильтрами по запросу
+3. final_answer с цифрами
+
+ЗАПРЕЩЕНО:
+- Спрашивать "дай больше информации" БЕЗ предварительного исследования.
+- Отвечать общими словами "посмотри логи / проверь конфиг" — это работа,
+  которую ТЫ должен сделать через tools.
+- Делать final_answer с одним только вопросом — это бесполезный шаг.
+
+ИСКЛЮЧЕНИЕ: если после 3-5 tool-вызовов всё ещё непонятно — можно
+final_answer с уточнением, но **с приложением фактов которые ты уже
+нашёл** ("я смотрел X, нашёл Y, теперь скажи Z").
+
+## Что делать дальше
+
+1. **Сначала исследуй** через tools (см. правило выше).
+2. **Потом думай** что нужно изменить и какие side-effects.
+3. **Потом действуй** — edit_file (HITL), run_ruff, run_pytest.
+4. **Всегда** завершай сессию вызовом `final_answer` с конкретным резюме
+   (что сделал / нашёл / предложил, не "помог разобраться").
+
+Соблюдай запреты (см. ниже). Если нужно нарушить — спроси через
+final_answer и заверши.
 """
 
     edit_hint = ""

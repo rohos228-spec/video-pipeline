@@ -65,3 +65,73 @@ ignore = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+# ───── Mypy ─────────────────────────────────────────────────────────────────
+# Стратегия: новые модули — strict. Старый код (bot.py, models.py, bots/,
+# orchestrator/) — warn-mode через ignore_errors.
+[tool.mypy]
+python_version = "3.11"
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+disallow_any_generics = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.ai_agent.*",
+    "app.telegram.callback_registry",
+    "app.telegram.keyboards.*",
+    "app.telegram.handlers.ai_agent",
+    "app.telegram.handlers.debug",
+    "scripts.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.models",
+    "app.main",
+    "app.worker",
+    "app.bots.*",
+    "app.orchestrator.*",
+    "app.telegram.bot",
+    "app.telegram.menu",
+    "app.telegram.mass_menu",
+    "app.telegram.wizard",
+    "app.telegram.prompt_picker",
+    "app.telegram.mass_prompt_picker",
+    "app.telegram.test_prompt_menu",
+    "app.services.*",
+    "app.storage.*",
+    "app.orchestrator_api",
+    "app.prompts_loader",
+    "app.settings",
+    "app.db",
+    "app.generation_options",
+    "app.seed_pilot",
+    "cleanup_hero_v3",
+    "import_from_xlsx",
+    "recover_project_state",
+]
+disallow_any_generics = false
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "aiohttp_socks",
+    "ffmpeg",
+    "faster_whisper",
+    "openpyxl.*",
+    "playwright.*",
+    "uvicorn.*",
+    "alembic.*",
+]
+ignore_missing_imports = true

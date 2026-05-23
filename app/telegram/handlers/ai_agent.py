@@ -65,8 +65,8 @@ router = Router(name="ai_agent")
 
 
 _active_sessions: dict[int, RuntimeSession] = {}  # chat_id → session
-_active_tasks: dict[int, asyncio.Task] = {}  # chat_id → loop task
-_pending_hitl_futures: dict[int, asyncio.Future] = {}  # tool_call_id (db) → future
+_active_tasks: dict[int, asyncio.Task[Any]] = {}  # chat_id → loop task
+_pending_hitl_futures: dict[int, asyncio.Future[dict[str, Any]]] = {}  # tool_call_id (db) → future
 _clarification_waits: dict[int, int] = {}  # chat_id → tool_call_db_id (ждём текст-уточнение)
 
 
@@ -127,7 +127,39 @@ async def _edit_markup_safe(
             pass
 
 
-def _format_args_preview(tool_name: str, args: dict) -> str:
+_MAX_FINAL_MSG_CHARS = 3800
+_TRUNCATE_HINT_TPL = (
+    "\n\n…\n\n<i>📄 Сообщение обрезано (Telegram лимит). "
+    "Полный ответ: <code>/ai dump {sid}</code></i>"
+)
+
+
+def _build_final_message(session_id: int, summary_body: str) -> str:
+    """Собрать финальное сообщение с заголовком и красивой обрезкой.
+
+    Telegram лимит — 4096 байт. Если итог длинный — обрезаем по границе
+    слова и добавляем подсказку про /ai dump.
+    """
+    header = f"🤖 <b>AI-сессия #{session_id} завершена</b>\n\n"
+    body_escaped = html.escape(summary_body)
+    text_msg = header + body_escaped
+    if len(text_msg) <= _MAX_FINAL_MSG_CHARS:
+        return text_msg
+
+    hint = _TRUNCATE_HINT_TPL.format(sid=session_id)
+    budget = _MAX_FINAL_MSG_CHARS - len(header) - len(hint)
+    if budget < 100:
+        return header.rstrip() + hint
+    snippet = body_escaped[:budget]
+    for sep in ("\n\n", "\n", ". ", " "):
+        idx = snippet.rfind(sep)
+        if idx > budget * 0.7:
+            snippet = snippet[:idx]
+            break
+    return header + snippet.rstrip() + hint
+
+
+def _format_args_preview(tool_name: str, args: dict[str, Any]) -> str:
     """Превью args для HITL-карточки. Для edit_file делаем diff-like."""
     if tool_name == "edit_file":
         path = html.escape(str(args.get("path", "")))
@@ -427,7 +459,7 @@ async def _run_session_task(
     cfg = get_config()
     client = AIClient(cfg)
 
-    async def hitl_callback(tool_name: str, args: dict, sess: RuntimeSession) -> dict:
+    async def hitl_callback(tool_name: str, args: dict[str, Any], sess: RuntimeSession) -> dict[str, Any]:
         """HITL: создаём AIToolCall с pending, шлём карточку, ждём callback."""
         return await _ask_owner_for_hitl(
             bot, runtime.chat_id, runtime.db_id, tool_name, args
@@ -468,7 +500,7 @@ async def _run_session_task(
                 db_sess.step_count = sess.step_count
                 db_sess.cost_rub = sess.cost_rub or sess.estimate_cost()
 
-    async def on_tool_call_audit(name: str, args: dict, tc_id: str, sess: RuntimeSession) -> None:
+    async def on_tool_call_audit(name: str, args: dict[str, Any], tc_id: str, sess: RuntimeSession) -> None:
         async with session_scope() as db:
             db_sess = await db.get(AISession, sess.db_id)
             if db_sess:
@@ -506,25 +538,25 @@ async def _run_session_task(
         # перехвачен фильтром _is_awaiting_clarification и съеден. Чистим.
         _clarification_waits.pop(runtime.chat_id, None)
 
-    # Финальное сообщение
-    final_text = (
-        f"🤖 <b>AI-сессия #{runtime.db_id} завершена</b>\n\n"
-        + html.escape(runtime.summary_text())
-    )
+    # Финальное сообщение с красивой обрезкой (Telegram лимит 4096 байт).
+    # Если ответ длинный — обрезаем по границе слова и добавляем подсказку
+    # про /ai dump для полного варианта.
+    summary_body = runtime.summary_text()
+    final_text = _build_final_message(runtime.db_id, summary_body)
+
     try:
         await bot.edit_message_text(
             chat_id=runtime.chat_id,
             message_id=summary_msg_id,
-            text=final_text[:4000],
+            text=final_text,
             parse_mode="HTML",
         )
     except Exception:  # noqa: BLE001
         # Inner try: если fallback send_message тоже упадёт (Telegram flood,
-        # network), просто залогируем — не пробрасываем выше, чтобы DB-close
-        # ниже выполнился.
+        # network), просто залогируем — не пробрасываем выше.
         try:
             await bot.send_message(
-                runtime.chat_id, final_text[:4000], parse_mode="HTML"
+                runtime.chat_id, final_text, parse_mode="HTML"
             )
         except Exception:  # noqa: BLE001
             logger.warning(
@@ -561,8 +593,8 @@ async def _run_session_task(
 
 
 async def _ask_owner_for_hitl(
-    bot: Any, chat_id: int, session_id: int, tool_name: str, args: dict
-) -> dict:
+    bot: Any, chat_id: int, session_id: int, tool_name: str, args: dict[str, Any]
+) -> dict[str, Any]:
     """Создать AIToolCall(pending), послать карточку, ждать callback owner'а."""
 
     # Создать запись в БД
@@ -596,7 +628,7 @@ async def _ask_owner_for_hitl(
             existing_call.hitl_message_id = msg.message_id
 
     # Создать future и ждать
-    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
     _pending_hitl_futures[tool_call_db_id] = future
 
     cfg = get_config()
@@ -843,3 +875,139 @@ async def msg_text_clarification(message: Message) -> None:
                 owner_clarification=text,
             )
     await message.answer(f"✏️ передал LLM: «{html.escape(text[:200])}»", parse_mode="HTML")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# AUTOREPLY: AI отвечает на любой текст owner'а если AI_AGENT_AUTOREPLY=true
+# ────────────────────────────────────────────────────────────────────────────
+
+
+# Тексты persistent reply-keyboard в bot.py — их НЕ нужно перехватывать
+# (они роутятся в bot.py:on_text_message в начале).
+_PERSISTENT_BUTTON_TEXTS = (
+    "🏠 Главное меню",
+    "📁 Последний проект",
+    "↩ Назад",
+)
+
+
+async def _should_autoreply(message: Message) -> bool:
+    """Custom filter — AI перехватывает обычный текст owner'а в личке
+    ТОЛЬКО когда:
+    - флаг AI_AGENT_AUTOREPLY включён в .env;
+    - сообщение в personal chat (не group);
+    - автор — owner;
+    - текст не пустой и не команда;
+    - текст не равен persistent reply-button label;
+    - bot.py не ждёт у owner'а text-input (через has_pending_input);
+    - нет активной AI-сессии у owner'а;
+    - нет pending HITL clarification.
+
+    Если хоть одно условие нарушено → False → aiogram идёт дальше в
+    bot.py:on_text_message, где сработает прежняя логика.
+    """
+    cfg = get_config()
+    if not cfg.autoreply_enabled:
+        return False
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return False
+    if message.chat.type != "private":
+        return False
+    text = (message.text or "").strip()
+    if not text or text.startswith("/"):
+        return False
+    if text in _PERSISTENT_BUTTON_TEXTS:
+        return False
+
+    # Если bot.py ждёт от owner'а текст — пропускаем (он обработает).
+    try:
+        from app.telegram.bot import has_pending_input
+    except Exception:  # noqa: BLE001 — bot.py может ещё не быть импортирован
+        return False
+    if has_pending_input(message.from_user.id):
+        return False
+
+    # Если уже идёт AI-сессия — текст возможно для clarification (фильтр
+    # выше уже сработал бы) или для cancel/status. Пропускаем чтобы юзер
+    # мог писать /ai cancel явно.
+    if message.chat.id in _active_sessions:
+        return False
+
+    # reply_to_message — обычно это ответ на конкретное сообщение бота,
+    # bot.py сам разрулит.
+    if message.reply_to_message is not None:
+        return False
+
+    return True
+
+
+@router.message(F.text & ~F.text.startswith("/"), _should_autoreply)
+async def msg_autoreply(message: Message) -> None:
+    """AI-агент отвечает на любой обычный текст owner'а (без префикса /ai).
+
+    Модель выбирается автоматически через `model_router.pick_model()`:
+    - простой запрос → gpt-4o-mini
+    - длинный / 'проанализируй' → gpt-4o
+    - код / 'рефактор' / 'почему падает' → claude-opus-4.1
+
+    Override префиксы в запросе:
+    - '!pro <...>' → gpt-4o
+    - '!claude <...>' → claude-opus-4.1
+    - '!mini <...>' → gpt-4o-mini
+    """
+    from app.ai_agent.model_router import pick_model
+
+    cfg = get_config()
+    if not cfg.is_configured:
+        await message.answer(
+            "⚠️ AI-агент не сконфигурирован (ORCHESTRATOR_AI_API_KEY).",
+        )
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    choice = pick_model(text, cfg)
+    chat_id = message.chat.id
+
+    # Записать сессию в БД
+    async with session_scope() as db:
+        db_session = await create_session(
+            db,
+            chat_id=chat_id,
+            initial_query=choice.cleaned_query,
+            model=choice.model,
+            mode=AISessionMode.hitl_edit,
+        )
+        db_session_id = db_session.id
+
+    runtime = await create_runtime_session(
+        cfg,
+        chat_id=chat_id,
+        initial_query=choice.cleaned_query,
+        model=choice.model,
+        mode=AISessionMode.hitl_edit,
+        db_id=db_session_id,
+    )
+    _active_sessions[chat_id] = runtime
+
+    initial_msg = await message.answer(
+        f"🤖 <b>AI-сессия #{db_session_id}</b> запущена\n"
+        f"Модель: <code>{choice.model}</code> "
+        f"<i>(autoreply, {html.escape(choice.reason)})</i>\n\n"
+        f"<i>{html.escape(choice.cleaned_query[:300])}</i>\n\n"
+        f"⏳ Думаю…",
+        parse_mode="HTML",
+        reply_markup=_summary_kb(db_session_id),
+    )
+
+    async with session_scope() as db:
+        db_obj = await db.get(AISession, db_session_id)
+        if db_obj:
+            db_obj.summary_message_id = initial_msg.message_id
+
+    task = asyncio.create_task(
+        _run_session_task(runtime, message.bot, initial_msg.message_id)
+    )
+    _active_tasks[chat_id] = task

@@ -377,6 +377,48 @@ def _clear_pending_state(user_id: int) -> None:
     _pending_test_critique.pop(user_id, None)
 
 
+def has_pending_input(user_id: int) -> bool:
+    """Возвращает True если бот сейчас ждёт от user'а текстовый ответ.
+
+    Используется AI-агентом (handlers/ai_agent.py:msg_autoreply) чтобы НЕ
+    перехватывать текст когда bot.py занят с FSM (тема нового проекта,
+    редактирование промта, название продукта, и т.д.).
+
+    Если в bot.py появится новый pending-state dict — добавь его сюда
+    одной строкой, иначе AI auto-reply его «съест».
+    """
+    return (
+        user_id in _pending_topic_input
+        or user_id in _pending_hero_brief
+        or user_id in _pending_hero_variation
+        or user_id in _pending_hero_var_modifier
+        or user_id in _pending_hero_style
+        or user_id in _pending_prompt_name
+        or user_id in _pending_prompt_upload
+        or user_id in _pending_plan_topic
+        or user_id in _pending_plan_prompt
+        or user_id in _pending_script_prompt
+        or user_id in _pending_split_prompt
+        or user_id in _pending_voiceover_replace
+        or user_id in _pending_gpt_text_edit
+        or user_id in _pending_gpt_text_edit_by_user
+        or user_id in _pending_xlsx_replace
+        or user_id in _pending_mass_name
+        or user_id in _pending_mass_topics_text
+        or user_id in _pending_mass_xlsx_upload
+        or user_id in _pending_mass_prompt_name
+        or user_id in _pending_mass_prompt_upload
+        or user_id in _pending_mass_text_edit
+        or user_id in _pending_mass_prod_name
+        or user_id in _pending_mass_prod_desc
+        or user_id in _pending_mass_prod_photo
+        or user_id in _pending_test_name
+        or user_id in _pending_test_visual
+        or user_id in _pending_test_system
+        or user_id in _pending_test_critique
+    )
+
+
 async def _last_project_id_fallback() -> int | None:
     """Если для юзера нет запомненного last-project — возвращает id самого
     свежесозданного ОДИНОЧНОГО проекта (по убыванию id)
