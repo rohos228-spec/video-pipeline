@@ -1,0 +1,102 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - vetka-final
+      - "devin/1779156871-combine-A-and-C-physical-clicks"
+      - devin/windows-installer
+  push:
+    branches:
+      - vetka-final
+      - "devin/1779156871-combine-A-and-C-physical-clicks"
+      - cursor/full-implementation
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Ruff lint (warn-mode — baseline 66 ошибок, фаза B.2 ruff-fix PR)
+        run: ruff check . || echo "::warning::ruff failures, non-blocking until phase B.2"
+        continue-on-error: true
+
+      - name: Ruff format check
+        run: ruff format --check . || echo "::warning::ruff format check failed (non-blocking until phase B.2)"
+        continue-on-error: true
+
+      - name: Mypy (warn-mode, не блокирует)
+        run: mypy app || echo "::warning::mypy failures, non-blocking for now (фаза B.B)"
+        continue-on-error: true
+
+      - name: Pytest
+        run: pytest -q tests/
+
+      - name: Smoke — все ключевые модули импортируются
+        run: |
+          python -c "
+          import app.main
+          import app.telegram.bot
+          import app.telegram.handlers.ai_agent
+          import app.orchestrator.pipeline
+          import app.orchestrator_api
+          import app.ai_agent
+          from app.ai_agent.tools import ALL_TOOLS
+          print(f'ai_agent: {len(ALL_TOOLS)} tools registered')
+          print('all critical imports ok')
+          "
+
+      - name: Audit Telegram buttons (fail only on callback_data > 64 bytes)
+        run: python scripts/audit_buttons.py --fail
+
+  detect-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets
+
+      - name: Scan для запрещённых паттернов
+        run: |
+          # Жёсткие паттерны: AITunnel / OpenAI ключи, SOCKS5 креды.
+          # Если найдено в diff — fail.
+          BLOCKED=$(grep -rEn --include='*.py' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.ps1' \
+            --exclude-dir=.git --exclude-dir=.venv --exclude-dir=node_modules \
+            -e 'sk-aitunnel-[A-Za-z0-9]{20,}' \
+            -e 'sk-[A-Za-z0-9]{40,}' \
+            -e 'socks5://[A-Za-z0-9]+:[A-Za-z0-9]+@' \
+            . 2>/dev/null | grep -v -E '\.example|AGENTS\.md|PLAN\.md|HANDOVER\.md' || true)
+          if [ -n "$BLOCKED" ]; then
+            echo "::error::Found hardcoded secrets:"
+            echo "$BLOCKED"
+            exit 1
+          fi
+          echo "no hardcoded secrets found"

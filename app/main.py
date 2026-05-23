@@ -51,7 +51,7 @@ async def _init_db() -> None:
             ("gpt_text_overrides", "JSON"),
             # Pipeline-redesign: «Объекты» (Персонажи+Предметы) и слоты
             # «Доп работа с EXCEL».
-            ("enrich_slots_count", "INTEGER DEFAULT 1"),
+            ("enrich_slots_count", "INTEGER DEFAULT 3"),
             ("item_descriptions", "JSON"),
             ("item_variations", "JSON"),
             # Массовое создание: каждая запись projects может принадлежать
@@ -298,30 +298,7 @@ async def _run_worker_loop(bot) -> None:
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
-                # (strict-sequential) Защита от параллели НА УРОВНЕ
-                # WORKER LOOP. Раньше: если в батче случайно оказались
-                # ДВА sub'а в running-статусах (например, из-за гонки
-                # auto_review/regen, ручного клика, или старого состояния
-                # DB), worker честно продвигал ОБА в одной итерации — шла
-                # параллельная генерация. Теперь: для каждого batch'а
-                # за ОДИН tick worker продвигает ТОЛЬКО ОДИН sub'project
-                # (с наименьшим batch_position). Все остальные sub'ы
-                # того же батча ждут следующий tick.
-                # Индивидуальные (не-batch) проекты не затронуты.
-                projects = sorted(
-                    projects,
-                    key=lambda x: (
-                        x.batch_id or -1,
-                        x.batch_position or 0,
-                        x.id,
-                    ),
-                )
-                claimed_batches: set[int] = set()
                 for p in projects:
-                    if p.batch_id is not None:
-                        if p.batch_id in claimed_batches:
-                            continue
-                        claimed_batches.add(p.batch_id)
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
                     try:
@@ -381,12 +358,6 @@ async def _run_worker_loop(bot) -> None:
                                     # Шаг 1 (planning) — откатываемся в `new`.
                                     requires = ProjectStatus.new
                                 p.status = requires
-                                # КРИТИЧНО: снимаем auto_mode чтобы
-                                # auto_advance НЕ толкал статус обратно в
-                                # упавший шаг снова и снова (бесконечный
-                                # цикл fail → rollback → auto_advance →
-                                # fail). Юзер должен сам нажать кнопку.
-                                p.auto_mode = False
                                 await s.flush()
                                 # Сбрасываем счётчик, чтобы при ретрае было
                                 # 3 свежие попытки.
@@ -398,9 +369,8 @@ async def _run_worker_loop(bot) -> None:
                                         f"ошибок подряд на шаге "
                                         f"`{prev_running.value}`. Статус "
                                         f"откачен к `{requires.value}` — "
-                                        f"auto_mode выключен. Открой меню "
-                                        f"и нажми кнопку шага, чтобы "
-                                        f"повторить попытку. "
+                                        f"открой меню и нажми кнопку "
+                                        f"шага, чтобы повторить попытку. "
                                         f"Последняя ошибка: "
                                         f"{type(e).__name__}: {e}"
                                     )[:3800],
@@ -429,29 +399,11 @@ async def _run_worker_loop(bot) -> None:
                             )
                         )
                     ).scalars().all()
-                    # (strict-sequential) Та же защита от параллели что и
-                    # выше — но уже на стадии auto_advance (sub в *_ready
-                    # ждёт GPT-ревью). claimed_batches содержит батчи у
-                    # которых уже продвинут sub в running-петле выше; теперь
-                    # также блокируем продвижение ready-sub'ов того же
-                    # батча, чтобы за tick двигался ровно один sub batch'а.
-                    auto_projects = sorted(
-                        auto_projects,
-                        key=lambda x: (
-                            x.batch_id or -1,
-                            x.batch_position or 0,
-                            x.id,
-                        ),
-                    )
                     for ap in auto_projects:
                         # При активной паузе массовой — пропускаем подпроекты
                         # батчей (но не индивидуальные проекты с auto_mode=True).
                         if mass_paused and ap.batch_id is not None:
                             continue
-                        if ap.batch_id is not None:
-                            if ap.batch_id in claimed_batches:
-                                continue
-                            claimed_batches.add(ap.batch_id)
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)
@@ -502,6 +454,38 @@ async def main() -> None:
     await sync_prompts_from_files()
 
     bot, _ = await build_bot()
+
+    # ─── Health-check AI-агента (Phase I.5) ───────────────────────────────
+    try:
+        from app.ai_agent import get_config
+        from app.ai_agent.client import AIClient
+
+        ai_cfg = get_config()
+        if ai_cfg.is_configured:
+            ai_client = AIClient(ai_cfg)
+            balance = await ai_client.check_balance()
+            bal_str = (
+                f"баланс {balance:.2f}₽" if balance is not None else "баланс ?"
+            )
+            logger.info(
+                "AI-агент: model={} base={} {}",
+                ai_cfg.default_model,
+                ai_cfg.base_url,
+                bal_str,
+            )
+            if balance is not None and balance < 100:
+                logger.warning(
+                    "⚠️ AI баланс низкий: {:.2f}₽. Пополни на aitunnel.ru",
+                    balance,
+                )
+        else:
+            logger.warning(
+                "AI-агент: ORCHESTRATOR_AI_API_KEY не задан, "
+                "команда /ai в TG будет ругаться"
+            )
+    except Exception as ai_err:  # noqa: BLE001
+        logger.warning("AI-агент health-check failed: {}", ai_err)
+
     logger.info("telegram bot + worker started")
     # Крутим поллинг и воркер параллельно. Если один упадёт — оба завершаются.
     polling_task = asyncio.create_task(

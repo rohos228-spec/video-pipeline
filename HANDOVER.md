@@ -1,13 +1,27 @@
 # Handover — video-pipeline (локальный Windows-запуск)
 
-> **🟢 Канонная ветка на 2026-05-14:** `devin/windows-installer`
-> Это default-ветка репо. На ней есть и одиночный пайплайн, и массовая
-> генерация («🎬 Массовое создание» в `/menu` → `mass:*`, меню «⚙ Настройки
-> массовой», парити single↔mass #1-#8, доки `docs/MASS_CREATION.md`,
-> тесты `tests/test_auto_advance_parity.py`).
-> Локально работать так:
-> `git fetch --all --prune && git checkout devin/windows-installer && git pull --ff-only`.
-> Ветка `main` — старый skeleton, **в неё не коммитить**.
+> **🟢 Канонная ветка на 2026-05-22:** `vetka-final`
+> (переходно: `devin/1779156871-combine-A-and-C-physical-clicks` до Phase 0 rename).
+>
+> Старый default `devin/windows-installer` будет переименован в
+> `legacy/windows-installer-pre-2026-05-22` и зафризится.
+>
+> Локально:
+> `git fetch --all --prune && git checkout vetka-final && git pull --ff-only`.
+
+> **⚠️ TODO после Phase 0** — пропущены 2 outsee anti-dup фикса из old default
+> при автоматическом merge:
+> - `eb259cd` fix(outsee): не кликаем Generate если карточка уже есть
+> - `2e7954f` fix(outsee video): анти-дубликат для генерации видео
+>
+> Cherry-pick дал бы конфликты (canonical outsee.py имеет +2680 строк с
+> physical CDP кликами). Если будут случаи дубль-генерации картинок/видео при
+> retry — портировать вручную: добавить `_count_id_tokens_in_page` перед
+> Generate в `generate_image()` и `generate_video()`. См.
+> `git show eb259cd 2e7954f` на ветке `legacy/windows-installer-pre-2026-05-22`.
+
+Прочитать это ВНИМАТЕЛЬНО перед первым ответом пользователю. Это не код-ревью
+и не новый проект — это **живая отладка на машине пользователя**.
 
 Прочитать это ВНИМАТЕЛЬНО перед первым ответом пользователю. Это не код-ревью
 и не новый проект — это **живая отладка на машине пользователя**.
