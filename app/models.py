@@ -135,6 +135,37 @@ class BatchStatus(str, enum.Enum):
     done = "done"
 
 
+class NodeRunStatus(str, enum.Enum):
+    """Состояние одной ноды в рамках WorkflowRun.
+
+    pending      — ещё не запущена (ждёт upstream-ы или ручной триггер)
+    running      — выполняется прямо сейчас (воркер взял в работу)
+    waiting_hitl — ждёт решения пользователя (HITL-gate)
+    done         — успешно завершена
+    failed       — упала с ошибкой (детали в `error`)
+    skipped      — пропущена (например, HITL `rejected` отбросил проект)
+    """
+
+    pending = "pending"
+    running = "running"
+    waiting_hitl = "waiting_hitl"
+    done = "done"
+    failed = "failed"
+    skipped = "skipped"
+
+
+class WorkflowRunStatus(str, enum.Enum):
+    """Состояние WorkflowRun целиком."""
+
+    new = "new"
+    running = "running"
+    paused = "paused"
+    waiting_hitl = "waiting_hitl"
+    done = "done"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 def _now() -> datetime:
     return datetime.utcnow()
 
@@ -445,3 +476,136 @@ class TestPromptProject(Base):
 
     def iter_dir(self, n: int) -> Path:
         return self.data_dir / f"iter_{n:03d}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Веб-UI: Workflow graph (node-based pipeline)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class Workflow(Base):
+    """Шаблон ролика как граф нод (ComfyUI-style).
+
+    `nodes` хранит массив объектов вида
+        {
+            "id": "n1",
+            "type": "plan" | "script" | "split" | "hero" | "items" |
+                    "enrich" | "image_prompts" | "images" |
+                    "animation_prompts" | "videos" | "audio" |
+                    "assemble" | "publish" | "hitl_gate",
+            "position": {"x": 120, "y": 80},
+            "data": {...},            # параметры конкретной ноды
+        }
+
+    `edges` — массив
+        {"id": "e1", "source": "n1", "target": "n2",
+         "sourceHandle": "out", "targetHandle": "in"}
+
+    Это «чертёж». Конкретное выполнение — WorkflowRun (с привязкой к Project).
+    """
+
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    # Граф. Дефолт: пустой граф; шаблонные дефолты создаются seed-функцией.
+    nodes: Mapped[list] = mapped_column(JSON, default=list)
+    edges: Mapped[list] = mapped_column(JSON, default=list)
+    # Версия графа (бампается на каждом save). Удобно для conflict detection.
+    version: Mapped[int] = mapped_column(default=1)
+    # Является ли граф «системным» дефолтным шаблоном — его нельзя удалить.
+    is_default: Mapped[bool] = mapped_column(default=False)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    runs: Mapped[list[WorkflowRun]] = relationship(
+        back_populates="workflow", cascade="all,delete-orphan"
+    )
+
+
+class WorkflowRun(Base):
+    """Конкретное исполнение Workflow.
+
+    Привязан к Project (один Project = один Run, но Workflow можно
+    запускать многократно — каждый запуск создаёт новый Project).
+
+    Состояние агрегируется из NodeRun: если хоть одна running → running;
+    если хоть одна waiting_hitl → waiting_hitl; если все done → done;
+    если есть failed без retry → failed.
+    """
+
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    status: Mapped[WorkflowRunStatus] = mapped_column(
+        Enum(WorkflowRunStatus, name="workflow_run_status"),
+        default=WorkflowRunStatus.new,
+        index=True,
+    )
+    # Снапшот графа на момент запуска (на случай если шаблон отредактируют).
+    nodes_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    edges_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    workflow: Mapped[Workflow] = relationship(back_populates="runs")
+    node_runs: Mapped[list[NodeRun]] = relationship(
+        back_populates="run", cascade="all,delete-orphan"
+    )
+
+
+class NodeRun(Base):
+    """Одна нода в рамках WorkflowRun.
+
+    `node_key` — это `id` ноды из `Workflow.nodes` (например "n1"). Не FK,
+    т.к. ноды живут в JSON. По связке (workflow_run_id, node_key) — уникальные.
+    """
+
+    __tablename__ = "node_runs"
+    __table_args__ = (
+        UniqueConstraint("workflow_run_id", "node_key", name="uq_node_runs_run_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_run_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True
+    )
+    node_key: Mapped[str] = mapped_column(String(60), index=True)
+    # Тип ноды (`plan`, `script`, ...). Дублируется из `Workflow.nodes[*].type`
+    # для удобства SQL-запросов и отображения.
+    node_type: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[NodeRunStatus] = mapped_column(
+        Enum(NodeRunStatus, name="node_run_status"),
+        default=NodeRunStatus.pending,
+        index=True,
+    )
+    # Прогресс в процентах [0..100] для UI; шаги сами решают, как обновлять.
+    progress: Mapped[int] = mapped_column(default=0)
+    # Краткое описание текущего действия (например, "генерация кадра 3/15").
+    progress_text: Mapped[str | None] = mapped_column(String(200), default=None)
+    # Текст последней ошибки (если failed) — для UI tooltip.
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    # Опциональная ссылка на HITLRequest, если нода типа `hitl_gate`.
+    hitl_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("hitl_requests.id", ondelete="SET NULL"), default=None
+    )
+    # Подсчёт попыток (retry-счётчик).
+    attempts: Mapped[int] = mapped_column(default=0)
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    run: Mapped[WorkflowRun] = relationship(back_populates="node_runs")
