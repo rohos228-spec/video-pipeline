@@ -106,7 +106,7 @@ async def run_loop(
                 model=session.model,
                 tools=tools_schema,
                 tool_choice="auto",
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.2,
             )
         except Exception as e:  # noqa: BLE001

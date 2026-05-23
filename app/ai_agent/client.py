@@ -60,7 +60,7 @@ class AIClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         timeout_sec: float = 60.0,
     ) -> AIChatResponse:
         """Сделать одиночный вызов /chat/completions.
@@ -123,6 +123,12 @@ class AIClient:
                 f"AI API malformed response: {payload}"
             ) from e
 
+        logger.info(
+            "ai_agent.client.chat: response finish_reason={} usage={}+{}",
+            finish_reason,
+            int(usage.get("prompt_tokens", 0)),
+            int(usage.get("completion_tokens", 0)),
+        )
         return AIChatResponse(
             content=content,
             tool_calls=tool_calls,
