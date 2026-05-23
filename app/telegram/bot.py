@@ -97,6 +97,16 @@ from app.telegram.wizard import (
 
 dp = Dispatcher()
 
+# ──── AI-агент (Phase I) — отдельный router в новой структуре handlers/ ────
+try:
+    from app.telegram.handlers.ai_agent import router as _ai_agent_router
+
+    dp.include_router(_ai_agent_router)
+except Exception as _ai_router_err:  # noqa: BLE001
+    # Не валим бот если AI-агент сломан — он опциональный
+    from loguru import logger as _logger
+    _logger.warning("AI-агент не подключён: {}", _ai_router_err)
+
 # Ожидание текстового ответа (тема нового проекта). user_id → True.
 _pending_topic_input: dict[int, bool] = {}
 
