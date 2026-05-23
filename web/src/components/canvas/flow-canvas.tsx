@@ -18,14 +18,17 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Play } from "lucide-react";
+import { Loader2, Play, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
   NodeRunDTO,
   WorkflowDetail,
+  WorkflowEdge,
+  WorkflowNode,
   WorkflowRunDetail,
 } from "@/lib/types";
+import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -122,6 +125,90 @@ export function FlowCanvas({
     [setNodes]
   );
 
+  const [saving, setSaving] = useState(false);
+
+  const persistWorkflow = useCallback(async () => {
+    if (!workflow.data) return;
+    setSaving(true);
+    try {
+      const wfNodes: WorkflowNode[] = nodes.map((n) => ({
+        id: n.id,
+        type: (n.data as PipelineNodeData).type,
+        position: n.position,
+        data: { label: getNodeSpec((n.data as PipelineNodeData).type).label },
+      }));
+      const wfEdges: WorkflowEdge[] = edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle ?? "out",
+        targetHandle: e.targetHandle ?? "in",
+      }));
+      await api.saveWorkflow(workflow.data.id, {
+        nodes: wfNodes,
+        edges: wfEdges,
+      });
+      toast.success("Граф сохранён");
+      await workflow.refetch();
+    } catch (e) {
+      toast.error(`Не сохранилось: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [workflow, nodes, edges]);
+
+  const addNode = useCallback(
+    (type: string) => {
+      if (!workflow.data) return;
+      const id = `n_${type}_${Date.now()}`;
+      const maxX = nodes.reduce((m, n) => Math.max(m, n.position.x), 80);
+      const spec = getNodeSpec(type);
+      const newNode: Node<PipelineNodeData> = {
+        id,
+        type: "pipeline",
+        position: { x: maxX + 290, y: 200 },
+        data: {
+          nodeKey: id,
+          type,
+          status: "pending",
+          progress: 0,
+          progressText: null,
+          error: null,
+          attempts: 0,
+        },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+      };
+      setNodes((prev) => [...prev, newNode]);
+      if (nodes.length > 0) {
+        const last = nodes[nodes.length - 1];
+        setEdges((prev) => [
+          ...prev,
+          {
+            id: `e_${last.id}_${id}`,
+            source: last.id,
+            target: id,
+            sourceHandle: "out",
+            targetHandle: "in",
+            type: "smoothstep",
+          },
+        ]);
+      }
+      toast.message(`Добавлена нода: ${spec.label}`);
+    },
+    [workflow.data, nodes, setNodes, setEdges]
+  );
+
+  const deleteSelectedNode = useCallback(() => {
+    if (!selectedNodeKey) return;
+    setNodes((prev) => prev.filter((n) => n.id !== selectedNodeKey));
+    setEdges((prev) =>
+      prev.filter((e) => e.source !== selectedNodeKey && e.target !== selectedNodeKey)
+    );
+    onSelectNode(null);
+    toast.success("Нода удалена (нажми «Сохранить граф»)");
+  }, [selectedNodeKey, setNodes, setEdges, onSelectNode]);
+
   if (workflows.isLoading || workflow.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -201,6 +288,13 @@ export function FlowCanvas({
           maskColor="hsl(var(--background) / 0.7)"
         />
       </ReactFlow>
+      <WorkflowToolbar
+        onSave={persistWorkflow}
+        saving={saving}
+        onAddNode={addNode}
+        onDelete={deleteSelectedNode}
+        canDelete={!!selectedNodeKey}
+      />
       <RunOverlay
         projectId={projectId}
         workflow={workflow.data ?? null}
@@ -209,6 +303,58 @@ export function FlowCanvas({
       />
       <HitlBanner projectId={projectId} />
     </>
+  );
+}
+
+function WorkflowToolbar({
+  onSave,
+  saving,
+  onAddNode,
+  onDelete,
+  canDelete,
+}: {
+  onSave: () => void;
+  saving: boolean;
+  onAddNode: (type: string) => void;
+  onDelete: () => void;
+  canDelete: boolean;
+}) {
+  const addable = Object.keys(NODE_CATALOG).filter((t) => !t.startsWith("hitl_"));
+  return (
+    <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
+      <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
+        <select
+          className="h-8 max-w-[140px] rounded-md bg-transparent px-2 text-xs"
+          defaultValue=""
+          onChange={(e) => {
+            if (e.target.value) {
+              onAddNode(e.target.value);
+              e.target.value = "";
+            }
+          }}
+        >
+          <option value="">+ Нода</option>
+          {addable.map((t) => (
+            <option key={t} value={t}>
+              {getNodeSpec(t).label}
+            </option>
+          ))}
+        </select>
+        <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
+          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          Сохранить граф
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1 text-xs text-destructive"
+          onClick={onDelete}
+          disabled={!canDelete}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
   );
 }
 

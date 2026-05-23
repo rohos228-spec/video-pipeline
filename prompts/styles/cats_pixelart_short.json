@@ -1,0 +1,25 @@
+{
+  "label": "Cats Pixelart Shorts",
+  "description": "Антропоморфные коты, mature cinematic pixel art, вертикальные shorts 60 сек",
+  "blocks": {
+    "world": "cats_anthropomorphic",
+    "visual_style": "micro_pixelart",
+    "lighting": "cinematic_chiaroscuro",
+    "negative": "no_humans_no_text",
+    "voice_tone": "documentary_calm",
+    "composition": "vertical_9_16_character",
+    "background_density": "isolated_no_background",
+    "camera_framing": "medium_full_mix",
+    "camera_motion": "slow_push_in",
+    "forbidden_phrases": "ai_cliches_ru",
+    "narrative_structure": "shorts_hook_insight",
+    "character_anatomy": "anthro_cat_sheet"
+  },
+  "vars": {
+    "VIDEO_DURATION_SEC": 60,
+    "VOICEOVER_MIN_CHARS": 800,
+    "VOICEOVER_MAX_CHARS": 900,
+    "ASPECT_RATIO_VIDEO": "9:16",
+    "ASPECT_RATIO_HERO": "16:9"
+  }
+}

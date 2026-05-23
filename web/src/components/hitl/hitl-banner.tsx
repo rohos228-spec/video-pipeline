@@ -28,6 +28,7 @@ import {
 import { Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useHotkeysInDialog } from "@/hooks/use-hotkeys";
+import { VisualHitlGallery } from "@/components/hitl/visual-hitl-gallery";
 
 const HITL_TITLES: Record<HITLKind, string> = {
   approve_plan: "Общий план",
@@ -175,7 +176,13 @@ function HitlModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent
+        className={
+          current.kind === "approve_images" || current.kind === "approve_videos"
+            ? "max-w-5xl max-h-[90vh] overflow-y-auto"
+            : "max-w-2xl"
+        }
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span className="flex h-6 w-6 items-center justify-center rounded-md bg-warning/15 text-warning">
@@ -188,9 +195,13 @@ function HitlModal({
           </DialogDescription>
         </DialogHeader>
 
-        <HitlPreview hitl={current} />
+        {current.kind === "approve_images" || current.kind === "approve_videos" ? (
+          <VisualHitlGallery hitl={current} onDecided={() => onOpenChange(false)} />
+        ) : (
+          <HitlPreview hitl={current} />
+        )}
 
-        {editMode ? (
+        {(current.kind === "approve_images" || current.kind === "approve_videos") ? null : editMode ? (
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-muted-foreground">
               Что поменять?
@@ -206,6 +217,7 @@ function HitlModal({
           </div>
         ) : null}
 
+        {(current.kind === "approve_images" || current.kind === "approve_videos") ? null : (
         <DialogFooter className="!justify-between sm:!justify-between">
           {!editMode ? (
             <>
@@ -282,6 +294,7 @@ function HitlModal({
             </>
           )}
         </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );

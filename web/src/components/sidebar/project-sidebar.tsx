@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Loader2, Search, FolderOpen } from "lucide-react";
+import { Plus, Trash2, Loader2, Search, FolderOpen, PanelLeftClose, PanelLeft } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { ProjectStatus, ProjectSummary } from "@/lib/types";
@@ -24,9 +24,13 @@ import { cn, formatRelativeTime } from "@/lib/utils";
 export function ProjectSidebar({
   selectedProjectId,
   onSelect,
+  collapsed,
+  onToggleCollapsed,
 }: {
   selectedProjectId: number | null;
   onSelect: (id: number) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   const [filter, setFilter] = useState("");
   const projects = useQuery({
@@ -52,8 +56,33 @@ export function ProjectSidebar({
         p.slug.toLowerCase().includes(filter.toLowerCase())
   );
 
+  if (collapsed) {
+    return (
+      <aside className="flex w-11 shrink-0 flex-col items-center border-r border-border bg-card/20 py-2">
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          title="Показать проекты"
+          onClick={onToggleCollapsed}
+        >
+          <PanelLeft className="h-4 w-4" />
+        </Button>
+        <NewProjectDialog
+          trigger={
+            <Button size="icon" variant="ghost" className="mt-2 h-8 w-8" title="Новый проект">
+              <Plus className="h-4 w-4" />
+            </Button>
+          }
+          onCreated={(p) => onSelect(p.id)}
+        />
+      </aside>
+    );
+  }
+
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-card/20">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-card/20 transition-[width]">
       <div className="flex items-center justify-between gap-2 border-b border-border p-3">
         <div className="flex items-center gap-2">
           <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
@@ -66,14 +95,26 @@ export function ProjectSidebar({
             </Badge>
           )}
         </div>
-        <NewProjectDialog
-          trigger={
-            <Button size="icon" variant="ghost" className="h-7 w-7">
-              <Plus className="h-4 w-4" />
-            </Button>
-          }
-          onCreated={(p) => onSelect(p.id)}
-        />
+        <div className="flex items-center gap-0.5">
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            title="Скрыть панель"
+            onClick={onToggleCollapsed}
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </Button>
+          <NewProjectDialog
+            trigger={
+              <Button size="icon" variant="ghost" className="h-7 w-7">
+                <Plus className="h-4 w-4" />
+              </Button>
+            }
+            onCreated={(p) => onSelect(p.id)}
+          />
+        </div>
       </div>
       <div className="border-b border-border p-2">
         <div className="relative">

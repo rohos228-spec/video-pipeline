@@ -1,0 +1,18 @@
+{
+  "label": "Humans Documentary",
+  "description": "Документальный тон, люди в кадре (блок world — заглушка, расширьте при необходимости)",
+  "blocks": {
+    "world": "cats_anthropomorphic",
+    "visual_style": "micro_pixelart",
+    "lighting": "cinematic_chiaroscuro",
+    "negative": "no_humans_no_text",
+    "voice_tone": "documentary_calm",
+    "narrative_structure": "shorts_hook_insight",
+    "forbidden_phrases": "ai_cliches_ru"
+  },
+  "vars": {
+    "VIDEO_DURATION_SEC": 90,
+    "VOICEOVER_MIN_CHARS": 1000,
+    "VOICEOVER_MAX_CHARS": 1200
+  }
+}

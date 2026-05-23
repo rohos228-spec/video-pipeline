@@ -207,8 +207,35 @@ def get_project_prompt(project, step_code: str) -> str:
 
     Проект приводится к dict-like через `getattr(project, "prompt_overrides", {})`
     — так удобно работать и со SQLAlchemy-моделью, и с обычным dict.
+
+    Если в `prompt_overrides` включена компонентная сборка (blocks / use_blocks_v2)
+    и для шага есть template в `prompts/steps/` — собираем из блоков.
     """
     overrides = getattr(project, "prompt_overrides", None) or {}
+    from app.services.prompt_composer import (
+        STEP_CODE_TO_COMPOSE,
+        compose_step,
+        merge_project_prompt_config,
+        project_uses_blocks_v2,
+    )
+
+    if project_uses_blocks_v2(overrides):
+        step_id = STEP_CODE_TO_COMPOSE.get(step_code)
+        if step_id:
+            blocks, vars_ = merge_project_prompt_config(
+                overrides,
+                hero_description=(
+                    (getattr(project, "hero_descriptions", None) or [None])[0]
+                    if isinstance(getattr(project, "hero_descriptions", None), list)
+                    else None
+                ),
+                topic=getattr(project, "topic", None),
+            )
+            try:
+                return compose_step(step_id, blocks, vars_)
+            except FileNotFoundError:
+                pass
+
     name = resolve_project_prompt_name(overrides, step_code)
     return read_prompt(step_code, name)
 

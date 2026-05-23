@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models import Project, ProjectStatus
+from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.web.deps import get_session
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
@@ -131,3 +132,44 @@ async def patch_project(
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated")
     return p
+
+
+@router.get("/{project_id}/media-review")
+async def media_review(
+    project_id: int,
+    kind: str = Query("images", pattern="^(images|videos)$"),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Кадры с путями к последним scene_image / scene_video для визуального HITL."""
+    artifact_kind = (
+        ArtifactKind.scene_image if kind == "images" else ArtifactKind.scene_video
+    )
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .options(selectinload(Frame.artifacts))
+            .order_by(Frame.number.asc())
+        )
+    ).scalars().all()
+    out: list[dict] = []
+    for fr in frames:
+        arts = [a for a in fr.artifacts if a.kind == artifact_kind]
+        arts.sort(key=lambda a: a.id, reverse=True)
+        art = arts[0] if arts else None
+        out.append(
+            {
+                "frame_id": fr.id,
+                "number": fr.number,
+                "voiceover_text": fr.voiceover_text,
+                "image_prompt": fr.image_prompt,
+                "animation_prompt": fr.animation_prompt,
+                "status": fr.status.value if hasattr(fr.status, "value") else str(fr.status),
+                "artifact_uuid": art.uuid if art else None,
+                "file_path": art.path if art else None,
+                "preview_url": (
+                    f"/api/files?path={art.path}" if art and art.path else None
+                ),
+            }
+        )
+    return out

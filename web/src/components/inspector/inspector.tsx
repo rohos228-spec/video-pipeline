@@ -13,9 +13,11 @@ import { useUi } from "@/components/shell/topbar";
 export function Inspector({
   projectId,
   selectedNodeKey,
+  onOpenNodeStudio,
 }: {
   projectId: number | null;
   selectedNodeKey: string | null;
+  onOpenNodeStudio?: () => void;
 }) {
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -45,7 +47,14 @@ export function Inspector({
             </p>
           )}
           {selectedNodeKey && (
-            <NodeInspector nodeKey={selectedNodeKey} />
+            <div className="flex flex-col gap-3">
+              <NodeInspector nodeKey={selectedNodeKey} />
+              {onOpenNodeStudio && (
+                <Button size="sm" variant="default" className="w-full" onClick={onOpenNodeStudio}>
+                  Открыть студию ноды (GPT)
+                </Button>
+              )}
+            </div>
           )}
           {projectId != null && !selectedNodeKey && project.data && (
             <div className="flex flex-col gap-4">

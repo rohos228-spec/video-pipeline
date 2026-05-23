@@ -124,6 +124,55 @@ export const api = {
     return http<ArtifactDTO[]>(`/api/artifacts?${q.toString()}`);
   },
   artifactFileUrl: (uuid: string) => `/api/artifacts/${uuid}/file`,
+
+  // ── Prompt studio (blocks v2) ────────────────────────────────────
+  promptStudioCatalog: () =>
+    http<{
+      block_categories: Record<string, string[]>;
+      steps: string[];
+      node_type_to_step: Record<string, string>;
+      style_presets: { id: string; label: string; description?: string }[];
+    }>(`/api/prompt-studio/catalog`),
+  composePrompt: (body: {
+    node_type?: string;
+    step_id?: string;
+    project_id?: number;
+    blocks?: Record<string, string>;
+    vars?: Record<string, string | number>;
+    style_preset?: string;
+  }) =>
+    http<{ text: string; blocks: Record<string, string>; vars: Record<string, string> }>(
+      `/api/prompt-studio/compose`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  patchProjectPromptConfig: (
+    projectId: number,
+    body: {
+      style_profile?: string;
+      blocks?: Record<string, string>;
+      vars?: Record<string, string | number>;
+      use_blocks_v2?: boolean;
+      legacy?: Record<string, string>;
+    }
+  ) =>
+    http<{ prompt_overrides: Record<string, unknown> }>(
+      `/api/prompt-studio/projects/${projectId}/prompt-config`,
+      { method: "PATCH", body: JSON.stringify(body) }
+    ),
+  listMediaReview: (projectId: number, kind: "images" | "videos") =>
+    http<
+      {
+        frame_id: number;
+        number: number;
+        voiceover_text: string;
+        image_prompt: string | null;
+        animation_prompt: string | null;
+        status: string;
+        artifact_uuid: string | null;
+        file_path: string | null;
+        preview_url: string | null;
+      }[]
+    >(`/api/projects/${projectId}/media-review?kind=${kind}`),
 };
 
 /**
