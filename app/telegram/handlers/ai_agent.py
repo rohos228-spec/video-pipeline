@@ -892,52 +892,79 @@ _PERSISTENT_BUTTON_TEXTS = (
 
 
 async def _should_autoreply(message: Message) -> bool:
-    """Custom filter — AI перехватывает обычный текст owner'а в личке
-    ТОЛЬКО когда:
-    - флаг AI_AGENT_AUTOREPLY включён в .env;
-    - сообщение в personal chat (не group);
-    - автор — owner;
-    - текст не пустой и не команда;
-    - текст не равен persistent reply-button label;
-    - bot.py не ждёт у owner'а text-input (через has_pending_input);
-    - нет активной AI-сессии у owner'а;
-    - нет pending HITL clarification.
+    """Custom filter — AI перехватывает обычный текст owner'а в личке.
 
-    Если хоть одно условие нарушено → False → aiogram идёт дальше в
-    bot.py:on_text_message, где сработает прежняя логика.
+    На каждое сообщение логирует ПРИЧИНУ отказа (или 'accepted'), чтобы
+    можно было быстро диагностировать почему autoreply не сработал.
+
+    Условия — все должны быть выполнены:
+    - флаг AI_AGENT_AUTOREPLY=true в .env;
+    - personal chat (не группа);
+    - автор — owner;
+    - текст не пустой и не команда (/...);
+    - текст не равен persistent reply-button label;
+    - bot.py не ждёт у owner'а text-input (has_pending_input);
+    - нет активной AI-сессии у owner'а;
+    - нет reply_to_message.
     """
+    text_preview = (message.text or "")[:50]
+
     cfg = get_config()
     if not cfg.autoreply_enabled:
+        logger.debug("autoreply: SKIP — flag AI_AGENT_AUTOREPLY off (text={!r})", text_preview)
         return False
     if not message.from_user or not _is_owner(message.from_user.id):
+        logger.debug(
+            "autoreply: SKIP — not owner (user_id={}, owner_id={})",
+            message.from_user.id if message.from_user else None,
+            cfg.owner_chat_id,
+        )
         return False
     if message.chat.type != "private":
+        logger.debug("autoreply: SKIP — chat.type={!r} (need 'private')", message.chat.type)
         return False
     text = (message.text or "").strip()
-    if not text or text.startswith("/"):
+    if not text:
+        logger.debug("autoreply: SKIP — empty text")
+        return False
+    if text.startswith("/"):
+        logger.debug("autoreply: SKIP — command {!r}", text[:30])
         return False
     if text in _PERSISTENT_BUTTON_TEXTS:
+        logger.debug("autoreply: SKIP — persistent button text {!r}", text)
         return False
 
-    # Если bot.py ждёт от owner'а текст — пропускаем (он обработает).
     try:
         from app.telegram.bot import has_pending_input
-    except Exception:  # noqa: BLE001 — bot.py может ещё не быть импортирован
+    except Exception as e:  # noqa: BLE001
+        logger.debug("autoreply: SKIP — can't import has_pending_input: {}", e)
         return False
     if has_pending_input(message.from_user.id):
+        logger.debug(
+            "autoreply: SKIP — bot.py has_pending_input(user_id={}) (текст пойдёт в bot.py FSM)",
+            message.from_user.id,
+        )
         return False
 
-    # Если уже идёт AI-сессия — текст возможно для clarification (фильтр
-    # выше уже сработал бы) или для cancel/status. Пропускаем чтобы юзер
-    # мог писать /ai cancel явно.
     if message.chat.id in _active_sessions:
+        logger.debug(
+            "autoreply: SKIP — уже идёт AI-сессия chat_id={} (нужно /ai cancel или дождаться)",
+            message.chat.id,
+        )
         return False
 
-    # reply_to_message — обычно это ответ на конкретное сообщение бота,
-    # bot.py сам разрулит.
     if message.reply_to_message is not None:
+        logger.debug(
+            "autoreply: SKIP — message.reply_to_message present (это reply-chain, bot.py handle)"
+        )
         return False
 
+    logger.info(
+        "autoreply: ACCEPTED — user={} chat={} text={!r}",
+        message.from_user.id,
+        message.chat.id,
+        text_preview,
+    )
     return True
 
 
