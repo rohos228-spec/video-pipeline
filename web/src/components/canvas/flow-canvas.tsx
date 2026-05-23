@@ -12,7 +12,9 @@ import {
   useNodesState,
   useEdgesState,
   type NodeChange,
+  type Connection,
   applyNodeChanges,
+  addEdge,
   Position,
   Handle,
 } from "@xyflow/react";
@@ -43,10 +45,12 @@ export function FlowCanvas({
   projectId,
   selectedNodeKey,
   onSelectNode,
+  disabledNodes = new Set<string>(),
 }: {
   projectId: number | null;
   selectedNodeKey: string | null;
   onSelectNode: (key: string | null) => void;
+  disabledNodes?: Set<string>;
 }) {
   // 1) Дефолтный Workflow с бэкенда.
   const workflows = useQuery({
@@ -125,6 +129,43 @@ export function FlowCanvas({
       setNodes((ns) => applyNodeChanges(changes, ns) as Node<PipelineNodeData>[]),
     [setNodes]
   );
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...connection,
+            id: `e_${connection.source}_${connection.target}_${Date.now()}`,
+            type: "smoothstep",
+          },
+          eds,
+        ),
+      );
+      toast.message("Связь добавлена");
+    },
+    [setEdges],
+  );
+
+  useEffect(() => {
+    const onDetach = (ev: Event) => {
+      const key = (ev as CustomEvent<{ nodeKey: string }>).detail?.nodeKey;
+      if (!key) return;
+      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
+    };
+    const onDelete = (ev: Event) => {
+      const key = (ev as CustomEvent<{ nodeKey: string }>).detail?.nodeKey;
+      if (!key) return;
+      setNodes((prev) => prev.filter((n) => n.id !== key));
+      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
+    };
+    window.addEventListener("canvas-detach-node", onDetach);
+    window.addEventListener("canvas-delete-node", onDelete);
+    return () => {
+      window.removeEventListener("canvas-detach-node", onDetach);
+      window.removeEventListener("canvas-delete-node", onDelete);
+    };
+  }, [setNodes, setEdges]);
 
   const [saving, setSaving] = useState(false);
 
@@ -256,8 +297,11 @@ export function FlowCanvas({
         maxZoom={1.5}
         proOptions={{ hideAttribution: true }}
         nodesDraggable
-        nodesConnectable={false}
+        nodesConnectable
+        edgesReconnectable
+        onConnect={onConnect}
         elementsSelectable
+        deleteKeyCode={["Backspace", "Delete"]}
         onSelectionChange={(sel) => {
           const first = sel.nodes[0];
           onSelectNode(first ? (first.data as PipelineNodeData).nodeKey : null);
@@ -389,12 +433,53 @@ function RunOverlay({
   onRunCreated: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [pausing, setPausing] = useState(false);
   if (!workflow) return null;
 
   const nodeType = selectedNodeKey?.startsWith("n_")
     ? selectedNodeKey.slice(2)
     : selectedNodeKey ?? "";
   const stepCode = stepCodeForNodeType(nodeType) ?? "plan";
+
+  const handlePause = async () => {
+    setPausing(true);
+    try {
+      await api.pauseProject(projectId);
+      toast.success("Проект на паузе");
+      onRunCreated();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setPausing(false);
+    }
+  };
+
+  const handleCancelRun = async () => {
+    if (!run) return;
+    setBusy(true);
+    try {
+      await api.cancelRun(run.id);
+      toast.success("Run отменён");
+      onRunCreated();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetStep = async () => {
+    setBusy(true);
+    try {
+      await api.resetProjectStep(projectId, stepCode);
+      toast.success(`Шаг «${stepCode}» сброшен`);
+      onRunCreated();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleStart = async () => {
     setBusy(true);
@@ -422,6 +507,36 @@ function RunOverlay({
           {run ? `#${run.id} · ${run.status}` : "не запущен"}
         </span>
       </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handlePause}
+        disabled={pausing}
+        className="pointer-events-auto gap-1 text-xs"
+      >
+        {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        Пауза
+      </Button>
+      {run && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleCancelRun}
+          disabled={busy}
+          className="pointer-events-auto gap-1 text-xs text-destructive"
+        >
+          Стоп
+        </Button>
+      )}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={handleResetStep}
+        disabled={busy}
+        className="pointer-events-auto text-xs"
+      >
+        Сброс шага
+      </Button>
       <Button
         size="sm"
         onClick={handleStart}

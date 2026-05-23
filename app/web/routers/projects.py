@@ -143,7 +143,7 @@ async def patch_project(
         "hero_variation_modifiers",
         "item_descriptions", "item_variations",
         "enrich_slots_count", "prompt_overrides", "gpt_text_overrides",
-        "auto_mode",
+        "auto_mode", "meta",
     }
     for k, v in payload.items():
         if k in ALLOWED:

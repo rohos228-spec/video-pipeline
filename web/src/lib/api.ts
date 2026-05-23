@@ -42,6 +42,28 @@ async function http<T>(
   return res.json() as Promise<T>;
 }
 
+export interface XlsxPreview {
+  path: string;
+  sheets: string[];
+  active_sheet: string;
+  headers: string[];
+  rows: string[][];
+}
+
+export interface ProjectAsset {
+  source: string;
+  id: string;
+  kind: string;
+  path: string | null;
+  preview_url: string | null;
+  label?: string;
+  frame_id?: number | null;
+  meta?: Record<string, unknown>;
+  voiceover?: string;
+  description?: string | null;
+  uuid?: string;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, public detail: string | object) {
     super(typeof detail === "string" ? detail : JSON.stringify(detail));
@@ -167,6 +189,33 @@ export const api = {
       `/api/prompt-studio/projects/${projectId}/prompt-config`,
       { method: "PATCH", body: JSON.stringify(body) }
     ),
+  pauseProject: (projectId: number) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
+  resetProjectStep: (projectId: number, stepCode: string) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/reset`, {
+      method: "POST",
+    }),
+  downloadProjectXlsx: (projectId: number) =>
+    `/api/projects/${projectId}/xlsx`,
+  reloadProjectXlsx: (projectId: number) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
+  uploadProjectXlsx: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/xlsx/upload`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<ProjectDetail>;
+  },
+  previewProjectXlsx: (projectId: number, sheet?: string) => {
+    const q = sheet ? `?sheet=${encodeURIComponent(sheet)}` : "";
+    return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${q}`);
+  },
+  listProjectAssets: (projectId: number, kind = "all") =>
+    http<ProjectAsset[]>(`/api/projects/${projectId}/assets?kind=${kind}`),
+
   listMediaReview: (projectId: number, kind: "images" | "videos") =>
     http<
       {

@@ -3,9 +3,8 @@
 import { useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { ProjectSidebar } from "@/components/sidebar/project-sidebar";
-import { FlowCanvas } from "@/components/canvas/flow-canvas";
 import { Inspector } from "@/components/inspector/inspector";
-import { NodeStudio } from "@/components/studio/node-studio";
+import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { useGlobalEvents } from "@/hooks/use-bus";
 
 export default function HomePage() {
@@ -35,10 +34,12 @@ export default function HomePage() {
           onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
         />
         <main className="relative min-w-0 flex-1 overflow-hidden">
-          <FlowCanvas
+          <StudioWorkspace
             projectId={selectedProjectId}
             selectedNodeKey={selectedNodeKey}
             onSelectNode={onSelectNode}
+            studioOpen={studioOpen}
+            onStudioOpenChange={setStudioOpen}
           />
         </main>
         <Inspector
@@ -47,12 +48,6 @@ export default function HomePage() {
           onOpenNodeStudio={() => setStudioOpen(true)}
         />
       </div>
-      <NodeStudio
-        open={studioOpen && selectedNodeKey != null}
-        onOpenChange={setStudioOpen}
-        projectId={selectedProjectId}
-        nodeKey={selectedNodeKey}
-      />
     </AppShell>
   );
 }

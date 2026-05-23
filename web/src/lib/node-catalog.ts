@@ -70,24 +70,40 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   enrich_1: {
     type: "enrich_1",
-    label: "Доп. Excel 1",
-    description: "xlsx round-trip с ChatGPT.",
+    label: "Дополнение Excel 1",
+    description: "Таблица xlsx и ChatGPT.",
     category: "enrich",
     accent: "38 92% 60%",
     iconKey: "sparkles",
   },
   enrich_2: {
     type: "enrich_2",
-    label: "Доп. Excel 2",
-    description: "xlsx round-trip с ChatGPT.",
+    label: "Дополнение Excel 2",
+    description: "Таблица xlsx и ChatGPT.",
     category: "enrich",
     accent: "38 92% 60%",
     iconKey: "sparkles",
   },
   enrich_3: {
     type: "enrich_3",
-    label: "Доп. Excel 3",
-    description: "xlsx round-trip с ChatGPT.",
+    label: "Дополнение Excel 3",
+    description: "Таблица xlsx и ChatGPT.",
+    category: "enrich",
+    accent: "38 92% 60%",
+    iconKey: "sparkles",
+  },
+  enrich_4: {
+    type: "enrich_4",
+    label: "Дополнение Excel 4",
+    description: "Таблица xlsx и ChatGPT.",
+    category: "enrich",
+    accent: "38 92% 60%",
+    iconKey: "sparkles",
+  },
+  enrich_5: {
+    type: "enrich_5",
+    label: "Дополнение Excel 5",
+    description: "Таблица xlsx и ChatGPT.",
     category: "enrich",
     accent: "38 92% 60%",
     iconKey: "sparkles",
@@ -150,7 +166,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   hitl_hero: {
     type: "hitl_hero",
-    label: "HITL: персонажи",
+    label: "Проверка персонажей",
     description: "Одобрение референсов героев.",
     category: "hitl",
     accent: "0 0% 55%",
@@ -158,7 +174,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   hitl_images: {
     type: "hitl_images",
-    label: "HITL: картинки",
+    label: "Проверка картинок",
     description: "Одобрение всех картинок кадров.",
     category: "hitl",
     accent: "0 0% 55%",
@@ -166,7 +182,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   hitl_videos: {
     type: "hitl_videos",
-    label: "HITL: видео",
+    label: "Проверка видео",
     description: "Одобрение всех клипов.",
     category: "hitl",
     accent: "0 0% 55%",
@@ -174,7 +190,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   hitl_final: {
     type: "hitl_final",
-    label: "HITL: финал",
+    label: "Проверка финала",
     description: "Одобрение финального ролика.",
     category: "hitl",
     accent: "0 0% 55%",
@@ -182,11 +198,21 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
 };
 
+export function formatNodeTypeLabel(type: string): string {
+  const spec = NODE_CATALOG[type];
+  if (spec) return spec.label;
+  return type
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bHitl\b/gi, "Проверка")
+    .replace(/\bGpt\b/gi, "GPT");
+}
+
 export function getNodeSpec(type: string): NodeSpec {
   return (
     NODE_CATALOG[type] ?? {
       type,
-      label: type,
+      label: formatNodeTypeLabel(type),
       description: "",
       category: "planning",
       accent: "0 0% 55%",

@@ -40,9 +40,9 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             <Sparkles className="h-4 w-4" />
           </div>
           <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold tracking-tight">video-pipeline</span>
+            <span className="text-sm font-semibold tracking-tight">Видео студия</span>
             <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              node studio
+              автономный режим
             </span>
           </div>
         </div>

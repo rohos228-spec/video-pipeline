@@ -1,49 +1,60 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Blocks,
   Download,
+  FileSpreadsheet,
   FileText,
   Loader2,
   Play,
+  RefreshCw,
   Save,
   Settings2,
   Sparkles,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
+import { getNodeSpec } from "@/lib/node-catalog";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
+import { defaultPromptSlots, isEnrichNode, type NodePromptSlot } from "@/lib/node-prompts";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+
+type StudioTab = "settings" | "prompts" | "results" | "excel";
 
 export function NodeStudio({
   open,
   onOpenChange,
   projectId,
   nodeKey,
+  initialTab = "settings",
+  promptFocus,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   projectId: number | null;
   nodeKey: string | null;
+  initialTab?: StudioTab;
+  promptFocus?: NodePromptSlot | null;
 }) {
   const nodeType = nodeKey?.startsWith("n_") ? nodeKey.slice(2) : nodeKey ?? "";
   const spec = getNodeSpec(nodeType);
   const stepCode = stepCodeForNodeType(nodeType);
 
-  const [tab, setTab] = useState<"settings" | "prompts" | "results">("settings");
+  const [tab, setTab] = useState<StudioTab>(initialTab);
   const [composed, setComposed] = useState("");
   const [legacyVariant, setLegacyVariant] = useState("default");
   const [blocks, setBlocks] = useState<Record<string, string>>({});
   const [stylePreset, setStylePreset] = useState("cats_pixelart_short");
+  const [xlsxSheet, setXlsxSheet] = useState<string>("");
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const qc = useQueryClient();
   const project = useQuery({
@@ -70,6 +81,22 @@ export function NodeStudio({
     queryFn: () => api.listArtifacts({ project_id: projectId! }),
     enabled: open && projectId != null,
   });
+  const xlsxPreview = useQuery({
+    queryKey: ["xlsx-preview", projectId, xlsxSheet],
+    queryFn: () => api.previewProjectXlsx(projectId!, xlsxSheet || undefined),
+    enabled: open && projectId != null && (tab === "excel" || isEnrichNode(nodeType)),
+  });
+
+  const customSlots = useMemo(() => {
+    const meta = (project.data?.meta || {}) as { custom_prompts?: Record<string, NodePromptSlot[]> };
+    if (nodeKey && meta.custom_prompts?.[nodeKey]) return meta.custom_prompts[nodeKey];
+    return defaultPromptSlots(nodeType);
+  }, [project.data?.meta, nodeKey, nodeType]);
+
+  useEffect(() => {
+    if (!open) return;
+    setTab(initialTab);
+  }, [open, initialTab]);
 
   useEffect(() => {
     if (!open) return;
@@ -82,6 +109,18 @@ export function NodeStudio({
       setLegacyVariant(po[stepCode] as string);
     }
   }, [open, project.data, stepCode]);
+
+  useEffect(() => {
+    if (xlsxPreview.data?.active_sheet && !xlsxSheet) {
+      setXlsxSheet(xlsxPreview.data.active_sheet);
+    }
+  }, [xlsxPreview.data, xlsxSheet]);
+
+  useEffect(() => {
+    if (promptFocus && open) {
+      setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
+    }
+  }, [promptFocus, open]);
 
   const compose = useMutation({
     mutationFn: () =>
@@ -122,6 +161,24 @@ export function NodeStudio({
     onError: (e) => toast.error(String(e)),
   });
 
+  const reloadXlsx = useMutation({
+    mutationFn: () => api.reloadProjectXlsx(projectId!),
+    onSuccess: () => {
+      toast.success("Таблица перечитана из файла");
+      qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
+  const uploadXlsx = useMutation({
+    mutationFn: (file: File) => api.uploadProjectXlsx(projectId!, file),
+    onSuccess: () => {
+      toast.success("Excel загружен");
+      qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
   const blockCategories = catalog.data?.block_categories ?? {};
   const presets = catalog.data?.style_presets ?? [];
 
@@ -141,28 +198,27 @@ export function NodeStudio({
 
   if (!nodeKey) return null;
 
+  const showExcel = isEnrichNode(nodeType) || tab === "excel";
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="!max-w-[min(920px,92vw)] w-full p-0">
+      <SheetContent side="right" className="premium-sheet !max-w-[min(920px,92vw)] w-full border-l border-white/10 p-0">
         <div className="flex h-full flex-col">
-          <SheetHeader className="shrink-0 border-b border-border px-5 py-4">
+          <SheetHeader className="shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
             <div className="flex items-start justify-between gap-4 pr-8">
               <div>
-                <SheetTitle className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-primary" />
+                <SheetTitle className="flex items-center gap-2 text-lg">
+                  <Sparkles className="h-4 w-4 text-amber-400" />
                   {spec.label}
                 </SheetTitle>
                 <SheetDescription>{spec.description}</SheetDescription>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <Badge variant="muted" className="font-mono text-[10px]">
-                    {nodeKey}
-                  </Badge>
-                  <Badge variant="outline" className="text-[10px]">
-                    {spec.category}
+                    {formatNodeKeyLabel(nodeKey)}
                   </Badge>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {stepCode && (
                   <Button
                     size="sm"
@@ -193,11 +249,12 @@ export function NodeStudio({
                 </Button>
               </div>
             </div>
-            <div className="mt-3 flex gap-1">
+            <div className="mt-3 flex flex-wrap gap-1">
               {(
                 [
                   ["settings", "Настройки", Settings2],
                   ["prompts", "Промты GPT", Blocks],
+                  ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
                 ] as const
               ).map(([id, label, Icon]) => (
@@ -214,6 +271,24 @@ export function NodeStudio({
                 </Button>
               ))}
             </div>
+            {tab === "prompts" && (
+              <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
+                {customSlots.map((slot) => (
+                  <Button
+                    key={slot.id}
+                    size="sm"
+                    variant={promptFocus?.id === slot.id ? "default" : "outline"}
+                    className="h-7 text-[10px]"
+                    onClick={() => {
+                      if (slot.kind === "excel") setTab("excel");
+                      else compose.mutate();
+                    }}
+                  >
+                    {slot.title}
+                  </Button>
+                ))}
+              </div>
+            )}
           </SheetHeader>
 
           <ScrollArea className="flex-1">
@@ -231,10 +306,10 @@ export function NodeStudio({
                           type="button"
                           onClick={() => setStylePreset(p.id)}
                           className={cn(
-                            "rounded-lg border px-3 py-2 text-left text-xs transition-colors",
+                            "rounded-xl border px-3 py-2 text-left text-xs transition-colors",
                             stylePreset === p.id
-                              ? "border-primary/50 bg-primary/10"
-                              : "border-border hover:bg-accent/50",
+                              ? "border-amber-400/40 bg-amber-400/10"
+                              : "border-white/10 hover:bg-white/5",
                           )}
                         >
                           <div className="font-medium">{p.label}</div>
@@ -247,12 +322,14 @@ export function NodeStudio({
                   </section>
                   <section>
                     <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Блоки (Lego)
+                      Блоки стиля
                     </h3>
                     <div className="mt-2 flex flex-col gap-3">
                       {Object.entries(blockCategories).map(([cat, names]) => (
                         <div key={cat} className="flex flex-col gap-1">
-                          <label className="text-[10px] uppercase text-muted-foreground">{cat}</label>
+                          <label className="text-[10px] uppercase text-muted-foreground">
+                            {cat.replace(/_/g, " ")}
+                          </label>
                           <select
                             className="h-8 rounded-md border border-input bg-background px-2 text-xs"
                             value={blocks[cat] ?? ""}
@@ -260,10 +337,10 @@ export function NodeStudio({
                               setBlocks((b) => ({ ...b, [cat]: e.target.value }))
                             }
                           >
-                            <option value="">— дефолт —</option>
+                            <option value="">— по умолчанию —</option>
                             {names.map((n) => (
                               <option key={n} value={n}>
-                                {n}
+                                {n.replace(/_/g, " ")}
                               </option>
                             ))}
                           </select>
@@ -279,7 +356,7 @@ export function NodeStudio({
                   {stepCode && stepHasPromptVariants(stepCode) && (
                     <section>
                       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        Legacy-вариант (.md)
+                        Вариант промта
                       </h3>
                       <select
                         className="mt-2 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -288,20 +365,20 @@ export function NodeStudio({
                       >
                         {(variants.data ?? ["default"]).map((v) => (
                           <option key={v} value={v}>
-                            {v}
+                            {v.replace(/_/g, " ")}
                           </option>
                         ))}
                       </select>
                     </section>
                   )}
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button size="sm" onClick={() => compose.mutate()} disabled={compose.isPending}>
                       {compose.isPending ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
                         <Blocks className="h-3.5 w-3.5" />
                       )}
-                      Собрать из блоков
+                      Собрать промт
                     </Button>
                     <Button
                       size="sm"
@@ -324,8 +401,91 @@ export function NodeStudio({
                     onChange={(e) => setComposed(e.target.value)}
                     rows={18}
                     className="font-mono text-[11px] leading-relaxed"
-                    placeholder="Нажми «Собрать из блоков» — здесь финальный промт для ChatGPT"
+                    placeholder="Соберите промт — здесь финальный текст для ChatGPT"
                   />
+                </div>
+              )}
+
+              {tab === "excel" && projectId && (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={api.downloadProjectXlsx(projectId)} download>
+                        <Download className="h-3.5 w-3.5" />
+                        Скачать Excel
+                      </a>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fileRef.current?.click()}
+                      disabled={uploadXlsx.isPending}
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Загрузить
+                    </Button>
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) uploadXlsx.mutate(f);
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => reloadXlsx.mutate()}
+                      disabled={reloadXlsx.isPending}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Перечитать
+                    </Button>
+                  </div>
+                  {(xlsxPreview.data?.sheets?.length ?? 0) > 0 && (
+                    <select
+                      className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-xs"
+                      value={xlsxSheet || xlsxPreview.data?.active_sheet}
+                      onChange={(e) => setXlsxSheet(e.target.value)}
+                    >
+                      {(xlsxPreview.data?.sheets ?? []).map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <div className="overflow-auto rounded-xl border border-white/10">
+                    <table className="w-full min-w-[480px] text-left text-[10px]">
+                      <thead>
+                        <tr className="border-b border-white/10 bg-white/5">
+                          {(xlsxPreview.data?.headers ?? []).map((h, i) => (
+                            <th key={i} className="px-2 py-1.5 font-medium">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
+                          <tr key={ri} className="border-b border-white/5">
+                            {row.map((cell, ci) => (
+                              <td key={ci} className="max-w-[140px] truncate px-2 py-1 text-muted-foreground">
+                                {cell}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!xlsxPreview.data?.rows?.length && (
+                      <p className="p-4 text-xs text-muted-foreground">
+                        Таблица пуста или ещё не создана — запустите шаг обогащения.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -337,9 +497,11 @@ export function NodeStudio({
                     filteredArtifacts.map((a) => (
                       <div
                         key={a.id}
-                        className="rounded-lg border border-border bg-muted/20 p-2"
+                        className="rounded-xl border border-white/10 bg-white/5 p-2"
                       >
-                        <div className="text-[10px] uppercase text-muted-foreground">{a.kind}</div>
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {a.kind.replace(/_/g, " ")}
+                        </div>
                         {a.path.match(/\.(mp4|webm)$/i) ? (
                           <video
                             controls
@@ -374,4 +536,6 @@ export function NodeStudio({
   );
 }
 
-export { NODE_CATALOG };
+function formatNodeKeyLabel(key: string): string {
+  return key.replace(/_/g, " ");
+}
