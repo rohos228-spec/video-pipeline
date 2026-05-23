@@ -1,8 +1,8 @@
-# video-pipeline: локальная студия без Telegram-бота
-# Запуск: powershell -ExecutionPolicy Bypass -File .\start-studio.ps1
+# video-pipeline: local studio without Telegram bot
+# Run: powershell -ExecutionPolicy Bypass -File .\start-studio.ps1
 #
-# Поднимает: воркер + FastAPI (:8765). Telegram не нужен.
-# Chrome нужен только когда реально гоняете шаги ChatGPT/outsee.
+# Starts: worker + FastAPI (:8765). Telegram is not required.
+# Chrome CDP is only needed for ChatGPT/outsee pipeline steps.
 
 [CmdletBinding()]
 param(
@@ -12,38 +12,40 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path "pyproject.toml")) {
-    Write-Host "ERROR: запусти из корня video-pipeline." -ForegroundColor Red
+    Write-Host "ERROR: run from video-pipeline root folder." -ForegroundColor Red
     exit 1
 }
 
 $venvPython = ".\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
-    Write-Host "ERROR: venv не найден. Запусти .\install.ps1" -ForegroundColor Red
+    Write-Host "ERROR: venv not found. Run .\install.ps1 first." -ForegroundColor Red
     exit 1
 }
 
-# Подсказка в .env
 if (Test-Path ".env") {
-    $raw = Get-Content ".env" -Raw
+    $raw = Get-Content ".env" -Raw -Encoding UTF8
     if ($raw -notmatch "TELEGRAM_ENABLED") {
-        Add-Content .env "`nTELEGRAM_ENABLED=false`n"
+        Add-Content -Path ".env" -Value "`nTELEGRAM_ENABLED=false`n" -Encoding UTF8
     }
 }
 
 if (-not $SkipChrome) {
-    Write-Host "==> Chrome CDP (опционально для шагов GPT/outsee)" -ForegroundColor Cyan
+    Write-Host "==> Chrome CDP (optional for GPT/outsee steps)" -ForegroundColor Cyan
     try {
         $r = Invoke-WebRequest -Uri "http://localhost:29229/json/version" -TimeoutSec 2 -UseBasicParsing
-        if ($r.StatusCode -eq 200) { Write-Host "    [ok] Chrome :29229" -ForegroundColor Green }
-    } catch {
-        Write-Host "    [!] Chrome без CDP — шаги с браузером упадут, UI всё равно работает" -ForegroundColor Yellow
+        if ($r.StatusCode -eq 200) {
+            Write-Host "    [ok] Chrome :29229" -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "    [!] Chrome CDP off - browser steps will fail; web UI still works" -ForegroundColor Yellow
     }
 }
 
-Write-Host "==> video-pipeline studio (без Telegram)" -ForegroundColor Cyan
+Write-Host "==> video-pipeline studio (no Telegram)" -ForegroundColor Cyan
 Write-Host "    API: http://127.0.0.1:8765" -ForegroundColor Yellow
 Write-Host "    UI:  cd web; npm run dev  -> http://localhost:3000" -ForegroundColor Yellow
 Write-Host ""
 
-$env:TELEGRAM_ENABLED = "false"
+$env:TELEGRAM_ENABLED = 'false'
 & $venvPython -m app.main
