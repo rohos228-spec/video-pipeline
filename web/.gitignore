@@ -2,6 +2,7 @@
 .next/
 out/
 node_modules/
+*.tsbuildinfo
 
 # Logs
 *.log
