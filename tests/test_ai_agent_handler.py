@@ -114,3 +114,72 @@ def test_dp_integration() -> None:
     routers = app.telegram.bot.dp.sub_routers
     router_names = {r.name for r in routers}
     assert "ai_agent" in router_names
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Регрессионный тест: cleanup _active_sessions ВСЕГДА должен происходить
+# (Phase H применение фикса из параллельного PR #40).
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_session_cleanup_on_send_failure() -> None:
+    """Если bot.edit_message_text И bot.send_message упадут, _active_sessions
+    и _active_tasks всё равно должны быть очищены — иначе owner залочен.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.ai_agent.session import RuntimeSession
+    from app.models import AISessionMode
+    from app.telegram.handlers.ai_agent import (
+        _active_sessions,
+        _active_tasks,
+        _run_session_task,
+    )
+
+    chat_id = 999_999_999
+    runtime = RuntimeSession(
+        db_id=99999,
+        chat_id=chat_id,
+        model="gpt-4o-mini",
+        mode=AISessionMode.qa,
+        initial_query="test",
+    )
+    runtime.finished = True
+    runtime.final_answer = "done"
+
+    # Помещаем в активные сессии — это то что должно очиститься
+    _active_sessions[chat_id] = runtime
+    _active_tasks[chat_id] = asyncio.get_event_loop().create_future()
+    try:
+        # Mock bot — оба метода падают
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=RuntimeError("edit failed"))
+        bot.send_message = AsyncMock(side_effect=RuntimeError("send failed"))
+
+        # Mock run_loop — сразу возвращает session как finished
+        async def fake_run_loop(*args, **kwargs):
+            return runtime
+
+        with patch("app.telegram.handlers.ai_agent.run_loop", side_effect=fake_run_loop):
+            with patch("app.telegram.handlers.ai_agent.AIClient", MagicMock()):
+                # close_session тоже мокаем чтобы DB-операции не падали
+                with patch("app.telegram.handlers.ai_agent.session_scope") as mocked_scope:
+                    async_cm = AsyncMock()
+                    async_cm.__aenter__ = AsyncMock(return_value=AsyncMock())
+                    async_cm.__aexit__ = AsyncMock(return_value=None)
+                    mocked_scope.return_value = async_cm
+
+                    asyncio.run(_run_session_task(runtime, bot, summary_msg_id=42))
+
+        # ❗ КРИТИЧНО: сессия должна быть очищена несмотря на оба сбоя
+        assert chat_id not in _active_sessions, (
+            "_active_sessions[chat_id] не очищен — owner залочен!"
+        )
+        assert chat_id not in _active_tasks, (
+            "_active_tasks[chat_id] не очищен!"
+        )
+    finally:
+        # На всякий случай чистим, если тест провалится
+        _active_sessions.pop(chat_id, None)
+        _active_tasks.pop(chat_id, None)

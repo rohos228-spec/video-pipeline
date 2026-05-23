@@ -48,6 +48,12 @@ from app.models import (
     AIToolCallStatus,
 )
 from app.settings import settings
+from app.telegram.callback_registry import CB
+from app.telegram.keyboards import (
+    kb_hitl_4buttons,
+    kb_session_summary,
+    make_callback,
+)
 
 router = Router(name="ai_agent")
 
@@ -74,46 +80,21 @@ def _is_owner(chat_id: int) -> bool:
 
 
 def _summary_kb(session_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⏹ Отменить сессию",
-                    callback_data=f"ai:cancel:{session_id}",
-                ),
-                InlineKeyboardButton(
-                    text="📊 Status",
-                    callback_data=f"ai:status:{session_id}",
-                ),
-            ]
-        ]
+    """Прогресс активной сессии: ⏹ Отменить + 📊 Status."""
+    return kb_session_summary(
+        cancel_callback=make_callback(CB.AI_CANCEL, session_id),
+        status_callback=make_callback(CB.AI_STATUS, session_id),
+        cancel_text="⏹ Отменить сессию",
     )
 
 
 def _hitl_kb(tool_call_db_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Применить",
-                    callback_data=f"ai:approve:{tool_call_db_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🔁 Перегенерить",
-                    callback_data=f"ai:regen:{tool_call_db_id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="✏️ Уточнить",
-                    callback_data=f"ai:clarify:{tool_call_db_id}",
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отменить",
-                    callback_data=f"ai:reject:{tool_call_db_id}",
-                ),
-            ],
-        ]
+    """4-кнопочная HITL-карточка (AGENTS.md §10 инвариант)."""
+    return kb_hitl_4buttons(
+        approve_cb=make_callback(CB.AI_APPROVE, tool_call_db_id),
+        regen_cb=make_callback(CB.AI_REGEN, tool_call_db_id),
+        clarify_cb=make_callback(CB.AI_CLARIFY, tool_call_db_id),
+        reject_cb=make_callback(CB.AI_REJECT, tool_call_db_id),
     )
 
 
@@ -482,6 +463,14 @@ async def _run_session_task(
         logger.exception("ai_agent: session #{} failed: {}", runtime.db_id, e)
         runtime.final_answer = f"❌ Ошибка: {e}"
         runtime.finished = True
+    finally:
+        # КРИТИЧНО: cleanup ВСЕГДА выполняется, даже если последующая отправка
+        # сообщения или закрытие БД упадёт. Без этого после редкого сбоя
+        # _active_sessions[chat_id] остаётся занятым → owner залочен и не может
+        # стартовать новую /ai сессию до перезапуска бота.
+        # (Применён фикс из PR #40, спасибо параллельному cursor-агенту.)
+        _active_sessions.pop(runtime.chat_id, None)
+        _active_tasks.pop(runtime.chat_id, None)
 
     # Финальное сообщение
     final_text = (
@@ -496,9 +485,18 @@ async def _run_session_task(
             parse_mode="HTML",
         )
     except Exception:  # noqa: BLE001
-        await bot.send_message(
-            runtime.chat_id, final_text[:4000], parse_mode="HTML"
-        )
+        # Inner try: если fallback send_message тоже упадёт (Telegram flood,
+        # network), просто залогируем — не пробрасываем выше, чтобы DB-close
+        # ниже выполнился.
+        try:
+            await bot.send_message(
+                runtime.chat_id, final_text[:4000], parse_mode="HTML"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "ai_agent: session #{} — не удалось доставить финальное сообщение",
+                runtime.db_id,
+            )
 
     # Закрыть в БД
     final_status = (
@@ -508,20 +506,24 @@ async def _run_session_task(
         if runtime.finished
         else AISessionStatus.failed
     )
-    async with session_scope() as db:
-        db_sess = await db.get(AISession, runtime.db_id)
-        if db_sess:
-            db_sess.step_count = runtime.step_count
-            db_sess.cost_rub = runtime.cost_rub or runtime.estimate_cost()
-            await close_session(
-                db, db_sess,
-                status=final_status,
-                final_answer=runtime.final_answer,
-            )
-
-    # Очистка
-    _active_sessions.pop(runtime.chat_id, None)
-    _active_tasks.pop(runtime.chat_id, None)
+    try:
+        async with session_scope() as db:
+            db_sess = await db.get(AISession, runtime.db_id)
+            if db_sess:
+                db_sess.step_count = runtime.step_count
+                db_sess.cost_rub = runtime.cost_rub or runtime.estimate_cost()
+                await close_session(
+                    db, db_sess,
+                    status=final_status,
+                    final_answer=runtime.final_answer,
+                )
+    except Exception:  # noqa: BLE001
+        # DB может упасть (SQLite lock, диск, ...) — не блокируем выход
+        # из task. Cleanup уже сделан в finally выше.
+        logger.exception(
+            "ai_agent: session #{} — ошибка записи финального статуса в БД",
+            runtime.db_id,
+        )
 
 
 async def _ask_owner_for_hitl(
@@ -586,7 +588,7 @@ async def _ask_owner_for_hitl(
 # ────────────────────────────────────────────────────────────────────────────
 
 
-@router.callback_query(F.data.startswith("ai:approve:"))
+@router.callback_query(F.data.startswith(CB.AI_APPROVE.value + ":"))
 async def cb_approve(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
@@ -606,13 +608,13 @@ async def cb_approve(callback: CallbackQuery) -> None:
             )
     await callback.message.edit_reply_markup(
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="✅ применено", callback_data="ai:noop")]]
+            inline_keyboard=[[InlineKeyboardButton(text="✅ применено", callback_data=CB.AI_NOOP.value)]]
         )
     )
     await callback.answer("✅")
 
 
-@router.callback_query(F.data.startswith("ai:reject:"))
+@router.callback_query(F.data.startswith(CB.AI_REJECT.value + ":"))
 async def cb_reject(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
@@ -632,13 +634,13 @@ async def cb_reject(callback: CallbackQuery) -> None:
             )
     await callback.message.edit_reply_markup(
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="❌ отклонено", callback_data="ai:noop")]]
+            inline_keyboard=[[InlineKeyboardButton(text="❌ отклонено", callback_data=CB.AI_NOOP.value)]]
         )
     )
     await callback.answer("❌")
 
 
-@router.callback_query(F.data.startswith("ai:regen:"))
+@router.callback_query(F.data.startswith(CB.AI_REGEN.value + ":"))
 async def cb_regen(callback: CallbackQuery) -> None:
     """🔁 = попросить LLM попробовать другой подход."""
     if not callback.from_user or not _is_owner(callback.from_user.id):
@@ -663,13 +665,13 @@ async def cb_regen(callback: CallbackQuery) -> None:
             )
     await callback.message.edit_reply_markup(
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔁 regen", callback_data="ai:noop")]]
+            inline_keyboard=[[InlineKeyboardButton(text="🔁 regen", callback_data=CB.AI_NOOP.value)]]
         )
     )
     await callback.answer("🔁")
 
 
-@router.callback_query(F.data.startswith("ai:clarify:"))
+@router.callback_query(F.data.startswith(CB.AI_CLARIFY.value + ":"))
 async def cb_clarify(callback: CallbackQuery) -> None:
     """✏️ — owner отправляет текстовое уточнение, оно идёт в LLM."""
     if not callback.from_user or not _is_owner(callback.from_user.id):
@@ -688,7 +690,7 @@ async def cb_clarify(callback: CallbackQuery) -> None:
     await callback.answer("✏️ жду текст")
 
 
-@router.callback_query(F.data.startswith("ai:cancel:"))
+@router.callback_query(F.data.startswith(CB.AI_CANCEL.value + ":"))
 async def cb_cancel_session(callback: CallbackQuery) -> None:
     if not callback.from_user or not _is_owner(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
@@ -705,7 +707,7 @@ async def cb_cancel_session(callback: CallbackQuery) -> None:
     await callback.answer("⏹ Отменяется…")
 
 
-@router.callback_query(F.data.startswith("ai:status:"))
+@router.callback_query(F.data.startswith(CB.AI_STATUS.value + ":"))
 async def cb_status(callback: CallbackQuery) -> None:
     chat_id = callback.message.chat.id
     runtime = _active_sessions.get(chat_id)
@@ -720,7 +722,7 @@ async def cb_status(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == "ai:noop")
+@router.callback_query(F.data == CB.AI_NOOP.value)
 async def cb_noop(callback: CallbackQuery) -> None:
     await callback.answer()
 
