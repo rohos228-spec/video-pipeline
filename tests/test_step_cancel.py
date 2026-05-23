@@ -91,3 +91,33 @@ def test_clear_all() -> None:
     assert is_stop_requested(1) is False
     assert is_stop_requested(2) is False
     assert is_stop_requested(3) is False
+
+
+def test_consume_stop_after_natural_step_completion_prevents_orphan_flag() -> None:
+    """Регрессия: если юзер нажал ⏹, но шаг завершился штатно (последняя
+    итерация цикла завершилась до проверки raise_if_cancelled), флаг
+    остаётся в _stop_pids («orphan flag»). Воркер должен вызывать
+    consume_stop(pid) после штатного возврата из advance_project, чтобы
+    дренировать этот остаток.
+
+    Тест имитирует сценарий: шаг завершился без StepCancelledError, но
+    флаг был выставлен — consume_stop снимает его, следующий шаг не
+    пострадает.
+    """
+    pid = 99
+
+    # Флаг выставлен (Stop-запрос пришёл в «мёртвой зоне» — между последней
+    # итерацией и выходом из шага).
+    request_stop(pid)
+    assert is_stop_requested(pid) is True
+
+    # Воркер вызывает consume_stop после штатного завершения шага.
+    consumed = consume_stop(pid)
+
+    assert consumed is True, "consume_stop должен вернуть True (флаг был)"
+    assert is_stop_requested(pid) is False, (
+        "флаг должен быть снят — следующий шаг не получит паразитный StepCancelledError"
+    )
+
+    # Второй вызов — идемпотентен, флаг уже снят.
+    assert consume_stop(pid) is False

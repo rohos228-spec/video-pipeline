@@ -222,6 +222,16 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
         if fr.status in (
             FrameStatus.image_generated,
             FrameStatus.image_approved,
+            # animation_prompt_ready: кадр прошёл через шаг 8 (промты
+            # анимации), но ещё не видео-сгенерирован. _wipe_anim_pr
+            # (который бежит перед нами в reversed-каскаде) уже снял
+            # animation_prompt, но статус не трогал — исправляем здесь.
+            # video_generated/video_approved/done: _wipe_videos (который
+            # тоже бежит перед нами в reversed-каскаде) уже перевёл их
+            # в animation_prompt_ready, поэтому они попадут сюда уже с
+            # этим статусом, а не с исходным — перечисляем оба варианта
+            # для ясности, но фактически важен именно animation_prompt_ready.
+            FrameStatus.animation_prompt_ready,
             FrameStatus.video_generated,
             FrameStatus.video_approved,
             FrameStatus.failed,
