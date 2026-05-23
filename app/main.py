@@ -465,6 +465,7 @@ async def main() -> None:
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None
     if settings.web_enabled:
+        from app.services.run_sync import background_sync_loop
         from app.web import create_app
 
         web_app = create_app()
@@ -480,7 +481,9 @@ async def main() -> None:
         )
         server = uvicorn.Server(config)
         web_task = asyncio.create_task(server.serve())
+        sync_task = asyncio.create_task(background_sync_loop())
         tasks.append(web_task)
+        tasks.append(sync_task)
         logger.info(
             "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}})",
             settings.web_host,
