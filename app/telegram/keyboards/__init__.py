@@ -33,6 +33,11 @@ from app.telegram.keyboards.project_menu import (
     kb_project_menu,
     kb_reset_step_confirm,
 )
+from app.telegram.keyboards.wizard import (
+    kb_wizard_choice,
+    kb_wizard_confirm,
+    kb_wizard_start,
+)
 
 __all__ = [
     # common
@@ -53,4 +58,8 @@ __all__ = [
     "kb_hitl_image",
     "kb_hitl_video",
     "parse_hitl_callback",
+    # wizard
+    "kb_wizard_choice",
+    "kb_wizard_confirm",
+    "kb_wizard_start",
 ]

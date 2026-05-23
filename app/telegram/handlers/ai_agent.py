@@ -500,6 +500,11 @@ async def _run_session_task(
         # (Применён фикс из PR #40, спасибо параллельному cursor-агенту.)
         _active_sessions.pop(runtime.chat_id, None)
         _active_tasks.pop(runtime.chat_id, None)
+        # Дополнительно (PR #41): если сессия закончилась ПОСЛЕ того, как owner
+        # нажал ✏️ Clarify но не прислал текст, _clarification_waits остаётся
+        # со stale-записью → любой следующий обычный текст owner'а будет
+        # перехвачен фильтром _is_awaiting_clarification и съеден. Чистим.
+        _clarification_waits.pop(runtime.chat_id, None)
 
     # Финальное сообщение
     final_text = (

@@ -150,7 +150,7 @@ def test_session_cleanup_on_send_failure() -> None:
 
     # Помещаем в активные сессии — это то что должно очиститься
     _active_sessions[chat_id] = runtime
-    _active_tasks[chat_id] = asyncio.get_event_loop().create_future()
+    _active_tasks[chat_id] = MagicMock()  # placeholder, не реальный task
     try:
         # Mock bot — оба метода падают
         bot = MagicMock()
@@ -183,3 +183,68 @@ def test_session_cleanup_on_send_failure() -> None:
         # На всякий случай чистим, если тест провалится
         _active_sessions.pop(chat_id, None)
         _active_tasks.pop(chat_id, None)
+
+
+def test_clarification_waits_cleared_on_session_end() -> None:
+    """PR #41: после завершения сессии _clarification_waits[chat_id] очищается.
+
+    Иначе если owner нажал ✏️ Clarify но не прислал текст, и сессия упала по
+    таймауту — stale-entry останется и съест любой следующий текст owner'а.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.ai_agent.session import RuntimeSession
+    from app.models import AISessionMode
+    from app.telegram.handlers.ai_agent import (
+        _active_sessions,
+        _active_tasks,
+        _clarification_waits,
+        _run_session_task,
+    )
+
+    chat_id = 999_999_111
+    runtime = RuntimeSession(
+        db_id=88_888,
+        chat_id=chat_id,
+        model="gpt-4o-mini",
+        mode=AISessionMode.qa,
+        initial_query="test",
+    )
+    runtime.finished = True
+    runtime.final_answer = "done"
+
+    _active_sessions[chat_id] = runtime
+    _active_tasks[chat_id] = MagicMock()  # placeholder, не реальный task
+    # Эмулируем что owner нажал ✏️ — _clarification_waits заполнен
+    _clarification_waits[chat_id] = 12345
+
+    try:
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.send_message = AsyncMock()
+
+        async def fake_run_loop(*args, **kwargs):
+            return runtime
+
+        with patch("app.telegram.handlers.ai_agent.run_loop", side_effect=fake_run_loop):
+            with patch("app.telegram.handlers.ai_agent.AIClient", MagicMock()):
+                with patch("app.telegram.handlers.ai_agent.session_scope") as mocked_scope:
+                    cm = AsyncMock()
+                    cm.__aenter__ = AsyncMock(return_value=AsyncMock())
+                    cm.__aexit__ = AsyncMock(return_value=None)
+                    mocked_scope.return_value = cm
+
+                    asyncio.run(_run_session_task(runtime, bot, summary_msg_id=100))
+
+        # Главная проверка PR #41: _clarification_waits ОЧИЩЕН
+        assert chat_id not in _clarification_waits, (
+            "_clarification_waits[chat_id] не очищен — будущий текст owner'а съестся!"
+        )
+        # И остальное тоже почищено
+        assert chat_id not in _active_sessions
+        assert chat_id not in _active_tasks
+    finally:
+        _active_sessions.pop(chat_id, None)
+        _active_tasks.pop(chat_id, None)
+        _clarification_waits.pop(chat_id, None)
