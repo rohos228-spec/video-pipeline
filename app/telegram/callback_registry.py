@@ -117,6 +117,14 @@ class CB(str, Enum):
     TEST_NEW = "test:new"
     TEST_NOOP = "test:noop"
 
+    # ───── HITL картинок/видео (app/services/hitl.py) ─────────────
+    # Используется в bot.py для HITL-карточек кадров (image/video).
+    # Формат callback: 'hitl:{hitl_id}:approve|regen|edit|original|reject'.
+    HITL = "hitl"  # + ":{hitl_id}:{action}"
+
+    # ───── Глобальный no-op (для disabled-плашек-кнопок) ──────────
+    NOOP = "noop"
+
     # ───── /debug команды (Phase G) — пока без inline-кнопок ──────
     # (handlers/debug.py — только text commands, callback'ов нет)
 
