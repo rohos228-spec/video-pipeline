@@ -489,6 +489,12 @@ async def _run_session_task(
         # сессию до перезапуска бота.
         _active_sessions.pop(runtime.chat_id, None)
         _active_tasks.pop(runtime.chat_id, None)
+        # Убираем stale-запись из _clarification_waits: если сессия завершилась
+        # (отмена, таймаут, ошибка) пока мы ждали текст от owner'а после ✏️,
+        # эта запись никогда не чистится. Без этого следующий обычный текст
+        # owner'а (например, ввод темы нового проекта) молча перехватится
+        # фильтром _is_awaiting_clarification и будет потерян.
+        _clarification_waits.pop(runtime.chat_id, None)
 
     # Финальное сообщение
     final_text = (

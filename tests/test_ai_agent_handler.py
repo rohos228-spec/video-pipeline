@@ -175,3 +175,58 @@ async def test_session_cleanup_on_send_failure() -> None:
     assert chat_id not in handler._active_tasks, (
         "_active_tasks не очищен"
     )
+
+
+@pytest.mark.asyncio
+async def test_clarification_waits_cleared_on_session_end() -> None:
+    """Регрессия: _clarification_waits очищается при завершении сессии.
+
+    Без этого: owner нажал ✏️ (Уточнить) на HITL-карточке → сессия
+    завершилась по таймауту/отмене → _clarification_waits[chat_id] остаётся.
+    Следующее обычное текстовое сообщение owner'а (например, ввод темы нового
+    проекта) перехватывается фильтром _is_awaiting_clarification и теряется:
+    handler отвечает «Сессия уже не ждёт уточнения.» вместо того чтобы
+    передать сообщение в on_text_message бота.
+    """
+    from app.ai_agent.session import RuntimeSession
+    from app.models import AISessionMode
+    from app.telegram.handlers import ai_agent as handler
+
+    chat_id = 999_999_002
+
+    runtime = RuntimeSession(
+        db_id=0,
+        chat_id=chat_id,
+        model="gpt-4o-mini",
+        mode=AISessionMode.hitl_edit,
+        initial_query="test",
+    )
+    runtime.finished = True
+    runtime.final_answer = "done"
+
+    # Имитируем состояние после нажатия ✏️: сессия активна, clarification ждёт
+    handler._active_sessions[chat_id] = runtime
+    handler._active_tasks[chat_id] = asyncio.current_task()
+    handler._clarification_waits[chat_id] = 42  # stale tool_call_db_id
+
+    failing_bot = MagicMock()
+    failing_bot.edit_message_text = AsyncMock(return_value=MagicMock())
+    failing_bot.send_message = AsyncMock(return_value=MagicMock())
+
+    async def noop_run_loop(*a, **kw):
+        return runtime
+
+    with (
+        patch("app.telegram.handlers.ai_agent.run_loop", noop_run_loop),
+        patch("app.telegram.handlers.ai_agent.AIClient"),
+        patch("app.telegram.handlers.ai_agent.get_config", return_value=MagicMock(is_configured=True)),
+        patch("app.telegram.handlers.ai_agent.session_scope"),
+    ):
+        await handler._run_session_task(runtime, failing_bot, summary_msg_id=1)
+
+    # КРИТИЧНО: stale запись должна быть убрана, иначе следующий обычный
+    # текст owner'а будет перехвачен и потерян.
+    assert chat_id not in handler._clarification_waits, (
+        "_clarification_waits не очищен — следующее текстовое сообщение owner'а "
+        "будет молча перехвачено и потеряно фильтром _is_awaiting_clarification"
+    )
