@@ -1,12 +1,14 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Info, FileText, Hash, Folder } from "lucide-react";
+import { Info, FileText, Hash, Folder, ExternalLink } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
+import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
   projectId,
@@ -73,40 +75,70 @@ export function Inspector({
                 </div>
               )}
               {frames.data && frames.data.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      Кадры ({frames.data.length})
-                    </span>
-                  </div>
-                  <div className="mt-2 flex flex-col gap-1">
-                    {frames.data.slice(0, 10).map((f) => (
-                      <div
-                        key={f.id}
-                        className="flex items-start gap-2 rounded-md border border-border px-2 py-1.5"
-                      >
-                        <span className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                          #{f.number}
-                        </span>
-                        <span className="line-clamp-2 text-[11px] leading-snug">
-                          {f.voiceover_text}
-                        </span>
-                      </div>
-                    ))}
-                    {frames.data.length > 10 && (
-                      <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                        +{frames.data.length - 10} ещё…
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <FramesPreview projectId={projectId} count={frames.data.length} preview={frames.data.slice(0, 5)} />
               )}
             </div>
           )}
         </div>
       </ScrollArea>
     </aside>
+  );
+}
+
+function FramesPreview({
+  projectId,
+  count,
+  preview,
+}: {
+  projectId: number;
+  count: number;
+  preview: { id: number; number: number; voiceover_text: string }[];
+}) {
+  const ui = useUi();
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Кадры ({count})
+          </span>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 gap-1 px-1.5 text-[10px]"
+          onClick={() => ui.openFrames(projectId)}
+        >
+          <ExternalLink className="h-3 w-3" />
+          Открыть
+        </Button>
+      </div>
+      <div className="mt-2 flex flex-col gap-1">
+        {preview.map((f) => (
+          <div
+            key={f.id}
+            className="flex items-start gap-2 rounded-md border border-border px-2 py-1.5"
+          >
+            <span className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+              #{f.number}
+            </span>
+            <span className="line-clamp-2 text-[11px] leading-snug">
+              {f.voiceover_text}
+            </span>
+          </div>
+        ))}
+        {count > preview.length && (
+          <button
+            type="button"
+            onClick={() => ui.openFrames(projectId)}
+            className="px-2 py-1 text-left text-[10px] text-primary hover:underline"
+          >
+            +{count - preview.length} ещё — открыть все
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
