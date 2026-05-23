@@ -148,12 +148,12 @@ class AIClient:
         headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
         timeout = aiohttp.ClientTimeout(total=15.0)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with aiohttp.ClientSession(timeout=timeout) as sess:  # noqa: SIM117
                 async with sess.get(url, headers=headers) as resp:
                     if resp.status != 200:
                         return None
                     data = await resp.json()
                     bal = data.get("balance")
                     return float(bal) if bal is not None else None
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except (TimeoutError, aiohttp.ClientError, ValueError):
             return None

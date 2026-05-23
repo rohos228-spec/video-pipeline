@@ -134,10 +134,7 @@ def check_path(
     """
     repo_root = repo_root.resolve()
     p = Path(path)
-    if not p.is_absolute():
-        p = (repo_root / p).resolve()
-    else:
-        p = p.resolve()
+    p = (repo_root / p).resolve() if not p.is_absolute() else p.resolve()
 
     # 1. Внутри репо
     try:
