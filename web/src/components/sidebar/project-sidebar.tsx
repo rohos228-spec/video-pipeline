@@ -130,11 +130,18 @@ function ProjectRow({
   onDelete: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
-        "group flex flex-col items-stretch gap-1.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors",
+        "group flex cursor-pointer flex-col items-stretch gap-1.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected
           ? "border-primary/30 bg-primary/5 text-foreground"
           : "hover:border-border hover:bg-accent/50"
@@ -160,7 +167,7 @@ function ProjectRow({
         <StatusPill status={project.status} />
         <span className="text-muted-foreground">{formatRelativeTime(project.updated_at)}</span>
       </div>
-    </button>
+    </div>
   );
 }
 
