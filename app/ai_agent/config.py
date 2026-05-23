@@ -1,6 +1,12 @@
 """Конфигурация AI-агента: модели, лимиты, URL.
 
 Читает из env-переменных (см. `.env.example`).
+
+ВАЖНО: проект использует Pydantic BaseSettings в app.settings, который
+загружает .env В СВОЙ объект settings, но НЕ патчит os.environ. Поэтому
+нам нужно загрузить .env самостоятельно через python-dotenv (он уже
+есть как зависимость pydantic-settings). Делаем это один раз при импорте
+модуля — load_dotenv с override=False (не перетираем shell-export).
 """
 
 from __future__ import annotations
@@ -8,6 +14,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+# Загружаем .env в os.environ — иначе get_config() не видит наши флаги
+# при запуске не через pydantic (например `python -c "..."` или прямой
+# import из тестов).
+try:
+    from dotenv import load_dotenv
+
+    _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+    if _ENV_PATH.exists():
+        load_dotenv(_ENV_PATH, override=False)
+except ImportError:
+    # python-dotenv не установлен — env должны быть в shell.
+    pass
 
 
 def _env_int(name: str, default: int) -> int:
