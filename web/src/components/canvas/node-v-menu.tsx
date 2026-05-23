@@ -9,6 +9,7 @@ import {
   Plus,
   Trash2,
   Unlink,
+  X,
 } from "lucide-react";
 import type { NodePromptSlot } from "@/lib/node-prompts";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ export function NodeVMenu({
   onDetachNode,
   onToggleDisable,
   onDeleteNode,
+  onClose,
   hasAssets,
 }: {
   open: boolean;
@@ -41,6 +43,7 @@ export function NodeVMenu({
   onDetachNode: () => void;
   onToggleDisable: () => void;
   onDeleteNode: () => void;
+  onClose: () => void;
   hasAssets: boolean;
 }) {
   if (!open) return null;
@@ -52,7 +55,20 @@ export function NodeVMenu({
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Схема работы GPT
           </span>
-          <span className="text-[9px] text-muted-foreground">{slots.length} промтов</span>
+          <div className="flex items-center gap-1">
+            <span className="text-[9px] text-muted-foreground">{slots.length} промтов</span>
+            <button
+              type="button"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              title="Закрыть меню"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
         <div className="mb-3 overflow-x-auto pb-1">

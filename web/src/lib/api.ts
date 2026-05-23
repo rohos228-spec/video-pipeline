@@ -196,6 +196,22 @@ export const api = {
     ),
   pauseProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
+  resumeProject: (projectId: number) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/resume`, { method: "POST" }),
+  stopProject: (projectId: number) =>
+    http<ProjectDetail>(`/api/projects/${projectId}/stop`, { method: "POST" }),
+  startMassLanes: (
+    projectId: number,
+    body: { count?: number; topics?: string[] },
+  ) =>
+    http<{ created: { id: number; topic: string; slug: string }[]; count: number }>(
+      `/api/projects/${projectId}/mass-lanes/start`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  wizardCatalog: () =>
+    http<{
+      questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
+    }>(`/api/generation-options/wizard`),
   resetProjectStep: (projectId: number, stepCode: string) =>
     http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/reset`, {
       method: "POST",

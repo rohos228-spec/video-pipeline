@@ -112,3 +112,15 @@ export function humanizeSlug(value: string): string {
 export function formatNodeKeyLabel(key: string): string {
   return humanizeSlug(key);
 }
+
+const STYLE_PRESET_RU: Record<string, string> = {
+  cats_pixelart_short: "Коты пиксель-арт (shorts)",
+  humans_documentary: "Документальный (люди)",
+};
+
+export function formatStylePresetLabel(preset: { id: string; label?: string }): string {
+  if (preset.label && !/^[A-Za-z][A-Za-z0-9 _-]+$/.test(preset.label.trim())) {
+    return preset.label;
+  }
+  return STYLE_PRESET_RU[preset.id] ?? humanizeSlug(preset.id);
+}

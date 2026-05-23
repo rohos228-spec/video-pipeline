@@ -21,6 +21,7 @@ from app.services.event_bus import get_bus
 from app.web.routers import (
     artifacts as artifacts_router,
     frames as frames_router,
+    generation_options as generation_options_router,
     hitl as hitl_router,
     project_ops as project_ops_router,
     projects as projects_router,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router.router, prefix=API_PREFIX)
     app.include_router(projects_router.router, prefix=API_PREFIX)
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
+    app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)

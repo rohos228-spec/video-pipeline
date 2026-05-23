@@ -10,17 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
+import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
 
 export function ProjectSidebar({
   selectedProjectId,
@@ -77,7 +69,7 @@ export function ProjectSidebar({
         >
           <PanelLeft className="h-4 w-4" />
         </Button>
-        <NewProjectDialog
+        <NewProjectWizard
           trigger={
             <Button size="icon" variant="ghost" className="mt-2 h-8 w-8" title="Новый проект">
               <Plus className="h-4 w-4" />
@@ -114,7 +106,7 @@ export function ProjectSidebar({
           >
             <PanelLeftClose className="h-4 w-4" />
           </Button>
-          <NewProjectDialog
+          <NewProjectWizard
             trigger={
               <Button size="icon" variant="ghost" className="h-7 w-7">
                 <Plus className="h-4 w-4" />
@@ -226,83 +218,6 @@ function StatusPill({ status }: { status: ProjectStatus }) {
     <Badge variant={variant} className="h-4 px-1.5 text-[9px]">
       {formatProjectStatus(status)}
     </Badge>
-  );
-}
-
-function NewProjectDialog({
-  trigger,
-  onCreated,
-}: {
-  trigger: React.ReactNode;
-  onCreated: (p: ProjectSummary) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [topic, setTopic] = useState("");
-  const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const qc = useQueryClient();
-  const create = useMutation({
-    mutationFn: () => api.createProject({ topic, hero_mode: heroMode }),
-    onSuccess: (p) => {
-      qc.invalidateQueries({ queryKey: ["projects"] });
-      onCreated(p);
-      setOpen(false);
-      setTopic("");
-      toast.success(`Проект «${p.topic}» создан`);
-    },
-    onError: (e) => toast.error(`Не получилось: ${String(e)}`),
-  });
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Новый проект</DialogTitle>
-          <DialogDescription>
-            Короткий вертикальный ролик 60–75 сек. Дальше пайплайн пройдёт по нодам автоматически.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Тема ролика</label>
-            <Input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="Например: 5 фактов о рачках в стиле киберпанк"
-              autoFocus
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Главный герой</label>
-            <div className="flex gap-1">
-              {(["auto", "hero", "no_hero"] as const).map((mode) => (
-                <Button
-                  key={mode}
-                  type="button"
-                  variant={heroMode === mode ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setHeroMode(mode)}
-                  className="flex-1 text-xs"
-                >
-                  {mode === "auto" ? "Авто" : mode === "hero" ? "Есть герой" : "Без героя"}
-                </Button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>
-            Отмена
-          </Button>
-          <Button
-            onClick={() => create.mutate()}
-            disabled={!topic.trim() || create.isPending}
-          >
-            {create.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Создать
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

@@ -46,6 +46,13 @@ export function StudioWorkspace({
     enabled: projectId != null,
   });
 
+  const hitlList = useQuery({
+    queryKey: ["hitl", projectId],
+    queryFn: () => api.listProjectHitl(projectId!),
+    enabled: projectId != null,
+    refetchInterval: 4000,
+  });
+
   useEffect(() => {
     if (!projectId) return;
     api.ensureProjectRun(projectId).catch(() => {
@@ -81,6 +88,8 @@ export function StudioWorkspace({
   const canvasActions = useMemo(
     () => ({
       projectId,
+      autoMode: project.data?.auto_mode ?? false,
+      hitlList: hitlList.data ?? [],
       disabledNodes,
       vMenuNodeKey,
       setVMenuNodeKey,
@@ -155,9 +164,9 @@ export function StudioWorkspace({
         );
         toast.success("Связи ноды откреплены");
       },
-      onOpenAssets: (kind: AssetTrayKind) => {
+      onOpenAssets: (kind: AssetTrayKind, nodeType: string) => {
         if (!projectId) return;
-        setAssetTray({ kind, nodeType: kind });
+        setAssetTray({ kind, nodeType });
       },
       onNodeBodyClick: (nodeKey: string, nodeType: string) => {
         onSelectNode(nodeKey);
@@ -190,6 +199,8 @@ export function StudioWorkspace({
     }),
     [
       projectId,
+      project.data?.auto_mode,
+      hitlList.data,
       disabledNodes,
       vMenuNodeKey,
       getPromptSlots,
@@ -214,6 +225,13 @@ export function StudioWorkspace({
               setPromptFocus(null);
               setStudioTab("settings");
               onStudioOpenChange(true);
+            }
+          }}
+          onNodeActivate={(nodeKey, nodeType) => {
+            onSelectNode(nodeKey);
+            const kind = assetTrayKindForNodeType(nodeType);
+            if (kind && projectId) {
+              setAssetTray({ kind, nodeType });
             }
           }}
           disabledNodes={disabledNodes}

@@ -1,12 +1,15 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { HITLDTO } from "@/lib/types";
 import type { NodePromptSlot } from "@/lib/node-prompts";
 
 export type AssetTrayKind = "hero" | "items" | "images" | "videos" | "project";
 
 export interface CanvasActions {
   projectId: number | null;
+  autoMode: boolean;
+  hitlList: HITLDTO[];
   disabledNodes: Set<string>;
   vMenuNodeKey: string | null;
   setVMenuNodeKey: (key: string | null) => void;

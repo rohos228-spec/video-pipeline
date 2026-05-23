@@ -61,7 +61,7 @@ const SheetContent = React.forwardRef<
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none">
+        <DialogPrimitive.Close className="absolute right-4 top-4 z-[60] rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none">
           <X className="h-4 w-4" />
           <span className="sr-only">Закрыть</span>
         </DialogPrimitive.Close>

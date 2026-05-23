@@ -19,8 +19,8 @@ import {
   Handle,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useQuery } from "@tanstack/react-query";
-import { Loader2, Play, Save, Trash2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Copy, Loader2, Play, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -38,6 +38,15 @@ import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 const nodeTypes = {
   pipeline: PipelineNode,
@@ -47,11 +56,13 @@ export function FlowCanvas({
   projectId,
   selectedNodeKey,
   onSelectNode,
+  onNodeActivate,
   disabledNodes = new Set<string>(),
 }: {
   projectId: number | null;
   selectedNodeKey: string | null;
   onSelectNode: (key: string | null) => void;
+  onNodeActivate?: (nodeKey: string, nodeType: string) => void;
   disabledNodes?: Set<string>;
 }) {
   // 1) Дефолтный Workflow с бэкенда.
@@ -356,12 +367,22 @@ export function FlowCanvas({
         nodesDraggable
         nodesConnectable
         edgesReconnectable
+        nodeDragThreshold={6}
+        selectNodesOnDrag={false}
         onConnect={onConnect}
+        connectionLineStyle={{ strokeDasharray: "6 4", stroke: "hsl(var(--primary))" }}
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
+        onNodeClick={(_, node) => {
+          const d = node.data as PipelineNodeData;
+          onSelectNode(d.nodeKey);
+          onNodeActivate?.(d.nodeKey, d.type);
+        }}
         onSelectionChange={(sel) => {
           const first = sel.nodes[0];
-          onSelectNode(first ? (first.data as PipelineNodeData).nodeKey : null);
+          if (first) {
+            onSelectNode((first.data as PipelineNodeData).nodeKey);
+          }
         }}
         defaultEdgeOptions={{ animated: true }}
       >
@@ -396,6 +417,33 @@ export function FlowCanvas({
         onAddNode={addNode}
         onDelete={deleteSelectedNode}
         canDelete={!!selectedNodeKey}
+        onDuplicateBelow={() => {
+          if (nodes.length === 0) return;
+          const offsetY = 480;
+          const stamp = Date.now();
+          const idMap = new Map<string, string>();
+          const clones = nodes.map((n) => {
+            const newId = `${n.id}_lane_${stamp}`;
+            idMap.set(n.id, newId);
+            const d = n.data as PipelineNodeData;
+            return {
+              ...n,
+              id: newId,
+              position: { x: n.position.x, y: n.position.y + offsetY },
+              data: { ...d, nodeKey: newId },
+              selected: false,
+            };
+          });
+          const cloneEdges = edges.map((e) => ({
+            ...e,
+            id: `${e.id}_lane_${stamp}`,
+            source: idMap.get(e.source) ?? e.source,
+            target: idMap.get(e.target) ?? e.target,
+          }));
+          setNodes((prev) => [...prev, ...clones]);
+          setEdges((prev) => [...prev, ...cloneEdges]);
+          toast.success("Граф продублирован вниз — сохраните при необходимости");
+        }}
       />
       <RunOverlay
         projectId={projectId}
@@ -415,12 +463,14 @@ function WorkflowToolbar({
   onAddNode,
   onDelete,
   canDelete,
+  onDuplicateBelow,
 }: {
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
   onDelete: () => void;
   canDelete: boolean;
+  onDuplicateBelow: () => void;
 }) {
   const addable = Object.keys(NODE_CATALOG).filter((t) => !t.startsWith("hitl_"));
   return (
@@ -446,6 +496,15 @@ function WorkflowToolbar({
         <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           Сохранить граф
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1 text-xs"
+          onClick={onDuplicateBelow}
+          title="Дублировать весь граф ниже (массовые потоки)"
+        >
+          <Copy className="h-3.5 w-3.5" />
         </Button>
         <Button
           size="sm"
@@ -491,6 +550,9 @@ function RunOverlay({
 }) {
   const [busy, setBusy] = useState(false);
   const [pausing, setPausing] = useState(false);
+  const [massOpen, setMassOpen] = useState(false);
+  const [massCount, setMassCount] = useState("3");
+  const qc = useQueryClient();
   if (!workflow) return null;
 
   const nodeType = nodeTypeFromKey(selectedNodeKey);
@@ -506,6 +568,48 @@ function RunOverlay({
       toast.error(String(e));
     } finally {
       setPausing(false);
+    }
+  };
+
+  const handleResume = async () => {
+    setPausing(true);
+    try {
+      await api.resumeProject(projectId);
+      toast.success("Проект продолжен");
+      onRunCreated();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setPausing(false);
+    }
+  };
+
+  const handleStopProject = async () => {
+    setBusy(true);
+    try {
+      await api.stopProject(projectId);
+      toast.success("Стоп: шаг откатан, auto_mode выключен");
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      onRunCreated();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMassStart = async () => {
+    const count = Math.max(1, Math.min(20, parseInt(massCount, 10) || 1));
+    setBusy(true);
+    try {
+      const r = await api.startMassLanes(projectId, { count });
+      toast.success(`Создано ${r.count} массовых потоков (auto_mode)`);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      setMassOpen(false);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -563,13 +667,23 @@ function RunOverlay({
   };
 
   return (
-    <div className="pointer-events-none absolute right-4 top-4 z-10 flex items-center gap-2">
+    <>
+    <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,520px)]">
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">
           {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
         </span>
       </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => setMassOpen(true)}
+        disabled={busy}
+        className="pointer-events-auto text-xs"
+      >
+        Массовая
+      </Button>
       <Button
         size="sm"
         variant="outline"
@@ -580,6 +694,25 @@ function RunOverlay({
         {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Пауза
       </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleResume}
+        disabled={pausing}
+        className="pointer-events-auto text-xs"
+      >
+        Продолжить
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleStopProject}
+        disabled={busy}
+        className="pointer-events-auto gap-1 text-xs text-destructive"
+        title="Как «Стоп» в Telegram: откат шага + выкл. auto_mode"
+      >
+        Стоп шаг
+      </Button>
       {run && (
         <Button
           size="sm"
@@ -588,7 +721,7 @@ function RunOverlay({
           disabled={busy}
           className="pointer-events-auto gap-1 text-xs text-destructive"
         >
-          Стоп
+          Отмена run
         </Button>
       )}
       <Button
@@ -610,6 +743,36 @@ function RunOverlay({
         {run ? "Перезапустить" : "Создать Run"}
       </Button>
     </div>
+    <Dialog open={massOpen} onOpenChange={setMassOpen}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Массовая генерация</DialogTitle>
+          <DialogDescription>
+            Создаёт копии проекта с auto_mode (GPT-проверка), как массовый батч в боте.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <label className="text-xs text-muted-foreground">Число потоков (1–20)</label>
+          <Input
+            value={massCount}
+            onChange={(e) => setMassCount(e.target.value)}
+            type="number"
+            min={1}
+            max={20}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setMassOpen(false)}>
+            Отмена
+          </Button>
+          <Button onClick={handleMassStart} disabled={busy}>
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Запустить
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 

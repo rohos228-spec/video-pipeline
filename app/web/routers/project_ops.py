@@ -8,11 +8,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services.event_bus import publish_project_event
+from app.services.project_control import pause_project as pause_project_svc
+from app.services.project_control import resume_project as resume_project_svc
+from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
+from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.services.xlsx_sync import reload_from_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -33,12 +38,106 @@ async def pause_project(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
-    p.status = ProjectStatus.paused
-    p.updated_at = datetime.utcnow()
+    await pause_project_svc(session, p)
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"paused": True})
     return p
+
+
+@router.post("/{project_id}/resume", response_model=ProjectDetail)
+async def resume_project(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> Project:
+    p = _project_or_404(await session.get(Project, project_id))
+    await resume_project_svc(session, p)
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(project_id, event_type="project_updated", payload={"resumed": True})
+    return p
+
+
+@router.post("/{project_id}/stop", response_model=ProjectDetail)
+async def stop_project(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> Project:
+    p = _project_or_404(await session.get(Project, project_id))
+    info = await stop_project_running(session, p)
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"stopped": True, "message": info["message"]},
+    )
+    return p
+
+
+@router.post("/{project_id}/mass-lanes/start")
+async def start_mass_lanes(
+    project_id: int,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Массовая генерация: N проектов-копий с auto_mode (как массовый батч в TG)."""
+    from app.web.routers.projects import _slugify
+
+    template = _project_or_404(await session.get(Project, project_id))
+    topics: list[str] = [str(t).strip() for t in (payload.get("topics") or []) if str(t).strip()]
+    count = int(payload.get("count") or len(topics) or 1)
+    if not topics:
+        base = template.topic or "ролик"
+        topics = [f"{base} — поток {i + 1}" for i in range(count)]
+    copy_fields = (
+        "hero_mode",
+        "image_generator",
+        "aspect_ratio",
+        "image_resolution",
+        "image_relax",
+        "video_generator",
+        "video_resolution",
+        "video_relax",
+        "hero_count",
+        "hero_descriptions",
+        "hero_variations",
+        "hero_variation_modifiers",
+        "item_descriptions",
+        "item_variations",
+        "enrich_slots_count",
+        "prompt_overrides",
+        "gpt_text_overrides",
+    )
+    meta_template = dict(template.meta or {})
+    wf_id = await _get_default_workflow_id()
+    created: list[dict] = []
+    for i, topic in enumerate(topics):
+        slug_base = _slugify(topic)
+        slug = slug_base
+        suffix = 2
+        while (await session.execute(select(Project).where(Project.slug == slug))).scalar_one_or_none():
+            slug = f"{slug_base}-{suffix}"
+            suffix += 1
+        kwargs = {f: getattr(template, f) for f in copy_fields}
+        p = Project(
+            slug=slug,
+            topic=topic,
+            status=ProjectStatus.new,
+            auto_mode=True,
+            meta={
+                **meta_template,
+                "graph_executor": True,
+                "mass_lane": i + 1,
+                "mass_parent_id": project_id,
+            },
+            **kwargs,
+        )
+        session.add(p)
+        await session.flush()
+        if wf_id:
+            await ensure_run_for_project(p.id, wf_id)
+        created.append({"id": p.id, "topic": p.topic, "slug": p.slug})
+    await session.commit()
+    return {"created": created, "count": len(created)}
 
 
 @router.post("/{project_id}/steps/{step_code}/reset", response_model=ProjectDetail)

@@ -28,6 +28,13 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
+import { promptPathsForNode } from "@/lib/prompt-catalog";
+import {
+  getPromptStyle,
+  setPromptStyleInMeta,
+  slotSupportsStyles,
+} from "@/lib/prompt-styles";
+import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
 
@@ -57,8 +64,7 @@ export function NodeStudio({
   const [tab, setTab] = useState<StudioTab>(initialTab);
   const [composed, setComposed] = useState("");
   const [legacyVariant, setLegacyVariant] = useState("default");
-  const [blocks, setBlocks] = useState<Record<string, string>>({});
-  const [stylePreset, setStylePreset] = useState("cats_pixelart_short");
+  const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -108,14 +114,15 @@ export function NodeStudio({
   useEffect(() => {
     if (!open) return;
     const po = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
-    if (typeof po.style_profile === "string") setStylePreset(po.style_profile);
-    if (po.blocks && typeof po.blocks === "object") {
-      setBlocks(po.blocks as Record<string, string>);
-    }
     if (stepCode && typeof po[stepCode] === "string") {
       setLegacyVariant(po[stepCode] as string);
     }
   }, [open, project.data, stepCode]);
+
+  useEffect(() => {
+    if (promptFocus?.id) setActiveSlotId(promptFocus.id);
+    else if (customSlots[0]?.id) setActiveSlotId(customSlots[0].id);
+  }, [promptFocus, customSlots, open]);
 
   useEffect(() => {
     if (xlsxPreview.data?.active_sheet && !xlsxSheet) {
@@ -129,13 +136,27 @@ export function NodeStudio({
     }
   }, [promptFocus, open]);
 
+  const activeSlot = customSlots.find((s) => s.id === activeSlotId) ?? customSlots[0] ?? null;
+  const promptPaths = promptPathsForNode(nodeType);
+  const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
+  const slotStyle = activeSlot
+    ? getPromptStyle(metaRecord, nodeKey ?? "", activeSlot.id)
+    : {};
+
+  const persistMetaStyles = async (nextConfig: typeof slotStyle) => {
+    if (!projectId || !nodeKey || !activeSlot) return;
+    const meta = setPromptStyleInMeta(metaRecord, nodeKey, activeSlot.id, nextConfig);
+    await api.patchProject(projectId, { meta });
+    await qc.invalidateQueries({ queryKey: ["project", projectId] });
+  };
+
   const compose = useMutation({
     mutationFn: () =>
       api.composePrompt({
         node_type: nodeType,
         project_id: projectId ?? undefined,
-        style_preset: stylePreset,
-        blocks: Object.keys(blocks).length ? blocks : undefined,
+        style_preset: slotStyle.style_preset,
+        blocks: slotStyle.blocks && Object.keys(slotStyle.blocks).length ? slotStyle.blocks : undefined,
       }),
     onSuccess: (r) => {
       setComposed(r.text);
@@ -156,8 +177,8 @@ export function NodeStudio({
   const saveConfig = useMutation({
     mutationFn: () =>
       api.patchProjectPromptConfig(projectId!, {
-        style_profile: stylePreset,
-        blocks,
+        style_profile: slotStyle.style_preset,
+        blocks: slotStyle.blocks ?? {},
         use_blocks_v2: true,
         legacy: stepCode ? { [stepCode]: legacyVariant } : {},
       }),
@@ -223,6 +244,21 @@ export function NodeStudio({
                   <Badge variant="muted" className="text-[10px]">
                     {formatNodeKeyLabel(nodeKey)}
                   </Badge>
+                  {promptPaths.legacyDir && (
+                    <Badge variant="muted" className="text-[9px] font-mono">
+                      prompts/{promptPaths.legacyDir}
+                    </Badge>
+                  )}
+                  {promptPaths.stepsV2Dir && (
+                    <Badge variant="muted" className="text-[9px] font-mono">
+                      prompts/steps/{promptPaths.stepsV2Dir}
+                    </Badge>
+                  )}
+                  {promptPaths.checkDir && (
+                    <Badge variant="muted" className="text-[9px] font-mono">
+                      prompts/check/{promptPaths.checkDir}
+                    </Badge>
+                  )}
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -285,11 +321,11 @@ export function NodeStudio({
                   <Button
                     key={slot.id}
                     size="sm"
-                    variant={promptFocus?.id === slot.id ? "default" : "outline"}
+                    variant={activeSlotId === slot.id ? "default" : "outline"}
                     className="h-7 text-[10px]"
                     onClick={() => {
+                      setActiveSlotId(slot.id);
                       if (slot.kind === "excel") setTab("excel");
-                      else compose.mutate();
                     }}
                   >
                     {slot.title}
@@ -302,65 +338,28 @@ export function NodeStudio({
           <ScrollArea className="flex-1">
             <div className="p-5">
               {tab === "settings" && (
-                <div className="flex flex-col gap-4">
-                  <section>
-                    <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Профиль ролика
-                    </h3>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      {presets.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => setStylePreset(p.id)}
-                          className={cn(
-                            "rounded-xl border px-3 py-2 text-left text-xs transition-colors",
-                            stylePreset === p.id
-                              ? "border-amber-400/40 bg-amber-400/10"
-                              : "border-white/10 hover:bg-white/5",
-                          )}
-                        >
-                          <div className="font-medium">{p.label}</div>
-                          {p.description && (
-                            <div className="mt-0.5 text-muted-foreground">{p.description}</div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                  <section>
-                    <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Блоки стиля
-                    </h3>
-                    <div className="mt-2 flex flex-col gap-3">
-                      {Object.entries(blockCategories).map(([cat, names]) => (
-                        <div key={cat} className="flex flex-col gap-1">
-                          <label className="text-[10px] uppercase text-muted-foreground">
-                            {humanizeSlug(cat)}
-                          </label>
-                          <select
-                            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                            value={blocks[cat] ?? ""}
-                            onChange={(e) =>
-                              setBlocks((b) => ({ ...b, [cat]: e.target.value }))
-                            }
-                          >
-                            <option value="">— по умолчанию —</option>
-                            {names.map((n) => (
-                              <option key={n} value={n}>
-                                {humanizeSlug(n)}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
+                <div className="flex flex-col gap-4 text-sm text-muted-foreground">
+                  <p>
+                    Стили задаются отдельно для каждого промта на вкладке «Промты GPT». Папки шаблонов
+                    привязаны к шагу пайплайна (см. бейджи сверху).
+                  </p>
+                  {nodeDisabled && (
+                    <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
+                  )}
                 </div>
               )}
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
+                  {activeSlot && slotSupportsStyles(activeSlot) && (
+                    <PromptStylePanel
+                      slot={activeSlot}
+                      config={slotStyle}
+                      blockCategories={blockCategories}
+                      catalogPresets={presets}
+                      onChange={(next) => void persistMetaStyles(next)}
+                    />
+                  )}
                   {stepCode && stepHasPromptVariants(stepCode) && (
                     <section>
                       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
