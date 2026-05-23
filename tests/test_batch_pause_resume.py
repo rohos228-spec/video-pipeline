@@ -22,7 +22,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, BatchProject, BatchStatus, Project, ProjectStatus
-from app.services.batches import pause_all_running_batches, resume_all_paused_batches
+from app.services.batches import (
+    pause_all_running_batches,
+    pause_batch_queue,
+    resume_all_paused_batches,
+    resume_batch_queue,
+    start_batch_queue,
+)
 
 
 @pytest_asyncio.fixture
@@ -144,4 +150,140 @@ async def test_pause_does_not_affect_new_status_projects_with_auto_mode_false(se
 
     assert not (p.meta or {}).get("_batch_paused"), (
         "Pre-stopped new project must not get _batch_paused"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for bugs NOT covered by the initial PR
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_per_batch_pause_then_global_resume_re_enables_subs(session):
+    """Bug #1: per-batch pause must stamp _batch_paused so that the global
+    resume (resume_all_paused_batches) can restore auto_mode.
+
+    Without the fix, pause_batch_queue sets auto_mode=False but no flag, so
+    resume_all_paused_batches skips every sub-project and the batch silently
+    stays stuck even though its status flips to 'running'.
+    """
+    b = await _mk_batch(session, status=BatchStatus.running)
+    p = await _mk_sub(session, b, status=ProjectStatus.hero_ready, auto_mode=True)
+
+    # User presses the per-batch Pause button
+    await pause_batch_queue(session, b.id)
+    await session.refresh(p)
+    assert not p.auto_mode, "per-batch pause must disable auto_mode"
+    assert (p.meta or {}).get("_batch_paused"), (
+        "pause_batch_queue must stamp _batch_paused so global resume can find it"
+    )
+
+    # User presses the global Resume button
+    await resume_all_paused_batches(session)
+    await session.refresh(p)
+    assert p.auto_mode, (
+        "global resume must re-enable a project paused by per-batch pause"
+    )
+    assert not (p.meta or {}).get("_batch_paused"), "_batch_paused flag must be cleared"
+
+
+@pytest.mark.asyncio
+async def test_stale_batch_paused_flag_does_not_override_user_stop(session):
+    """Bug #2: resume_batch_queue must clear the _batch_paused flag it finds,
+    otherwise a subsequent manual user-stop leaves a stale flag that causes
+    the next global resume to silently re-enable the stopped project.
+
+    Trigger sequence:
+      global pause  →  per-batch resume  →  user manual stop  →  global resume
+    """
+    b = await _mk_batch(session, status=BatchStatus.running)
+    p = await _mk_sub(session, b, status=ProjectStatus.hero_ready, auto_mode=True)
+
+    # Step 1: global pause stamps _batch_paused=True
+    await pause_all_running_batches(session)
+    await session.refresh(p)
+    assert (p.meta or {}).get("_batch_paused"), "precondition: flag stamped"
+
+    # Step 2: per-batch resume re-enables auto_mode but must ALSO clear the flag
+    await session.refresh(b)
+    await resume_batch_queue(session, b.id)
+    await session.refresh(p)
+    assert p.auto_mode, "per-batch resume must re-enable auto_mode"
+    assert not (p.meta or {}).get("_batch_paused"), (
+        "resume_batch_queue must clear _batch_paused to prevent stale-flag bug"
+    )
+
+    # Step 3: user manually stops the project (simulate on_project_stop_running)
+    p.auto_mode = False
+    await session.flush()
+
+    # Step 4: another global pause + global resume cycle
+    await pause_all_running_batches(session)
+    await resume_all_paused_batches(session)
+    await session.refresh(p)
+
+    assert not p.auto_mode, (
+        "User-stopped project MUST remain stopped after global pause/resume — "
+        "stale _batch_paused flag must not re-enable it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_per_batch_pause_resume_preserves_user_stopped_project(session):
+    """per-batch pause → per-batch resume must not re-enable a user-stopped
+    sub-project (auto_mode=False without _batch_paused flag)."""
+    b = await _mk_batch(session, status=BatchStatus.running)
+    # User-stopped project (no _batch_paused flag)
+    p_stopped = await _mk_sub(
+        session, b, status=ProjectStatus.plan_ready, auto_mode=False
+    )
+    # Normally-running project
+    p_running = await _mk_sub(
+        session, b, status=ProjectStatus.hero_ready, auto_mode=True
+    )
+
+    await pause_batch_queue(session, b.id)
+    await session.refresh(p_stopped)
+    await session.refresh(p_running)
+
+    assert not p_stopped.auto_mode
+    assert not (p_stopped.meta or {}).get("_batch_paused"), (
+        "user-stopped project must not receive _batch_paused"
+    )
+    assert not p_running.auto_mode
+    assert (p_running.meta or {}).get("_batch_paused"), (
+        "normally-running project must receive _batch_paused"
+    )
+
+    await resume_batch_queue(session, b.id)
+    await session.refresh(p_stopped)
+    await session.refresh(p_running)
+
+    assert not p_stopped.auto_mode, (
+        "User-stopped project MUST remain auto_mode=False after per-batch resume"
+    )
+    assert p_running.auto_mode, (
+        "Batch-paused project MUST be re-enabled after per-batch resume"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_batch_queue_clears_stale_batch_paused_flags(session):
+    """start_batch_queue must clear any stale _batch_paused flags so that a
+    subsequent global resume cannot incorrectly re-enable a project that the
+    queue start intentionally set to auto_mode=False."""
+    b = await _mk_batch(session, status=BatchStatus.running)
+    # Plant a stale _batch_paused flag (as if a previous global pause left it)
+    p = await _mk_sub(
+        session, b,
+        status=ProjectStatus.new,
+        auto_mode=True,
+        meta={"_batch_paused": True},
+    )
+
+    await start_batch_queue(session, b.id)
+    await session.refresh(p)
+
+    # Flag must be gone regardless of whether auto_mode ended up True or False
+    assert not (p.meta or {}).get("_batch_paused"), (
+        "start_batch_queue must clear stale _batch_paused flags"
     )
