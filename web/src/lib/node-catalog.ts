@@ -1,0 +1,196 @@
+/**
+ * Канонический список типов нод пайплайна и их метаданные (label, icon-key,
+ * категория, цвет акцента). Используется и в палитре, и в кастом-нодах.
+ */
+
+import type { NodeType } from "./types";
+
+export type NodeCategory =
+  | "planning"
+  | "objects"
+  | "enrich"
+  | "media"
+  | "audio"
+  | "assembly"
+  | "publish"
+  | "hitl";
+
+export interface NodeSpec {
+  type: NodeType;
+  label: string;
+  description: string;
+  category: NodeCategory;
+  accent: string; // hsl tuple для левого бордера
+  iconKey:
+    | "plan" | "script" | "split" | "user-round" | "package"
+    | "wand" | "image" | "film" | "audio-waveform"
+    | "scissors" | "send" | "check-square" | "sparkles";
+}
+
+export const NODE_CATALOG: Record<string, NodeSpec> = {
+  plan: {
+    type: "plan",
+    label: "Общий план",
+    description: "Концепт ролика: тема, аудитория, цепляющий хук.",
+    category: "planning",
+    accent: "263 75% 65%",
+    iconKey: "plan",
+  },
+  script: {
+    type: "script",
+    label: "Сценарий",
+    description: "Закадровый текст 1000–1300 знаков, кадровая разбивка.",
+    category: "planning",
+    accent: "263 75% 65%",
+    iconKey: "script",
+  },
+  split: {
+    type: "split",
+    label: "Разбивка",
+    description: "Раскадровка на 15–30 кадров по 2–4 сек.",
+    category: "planning",
+    accent: "263 75% 65%",
+    iconKey: "split",
+  },
+  hero: {
+    type: "hero",
+    label: "Персонажи",
+    description: "Reference-картинки героев (Nano Banana 2).",
+    category: "objects",
+    accent: "199 89% 60%",
+    iconKey: "user-round",
+  },
+  items: {
+    type: "items",
+    label: "Предметы",
+    description: "Reference-картинки повторяющихся предметов.",
+    category: "objects",
+    accent: "199 89% 60%",
+    iconKey: "package",
+  },
+  enrich_1: {
+    type: "enrich_1",
+    label: "Доп. Excel 1",
+    description: "xlsx round-trip с ChatGPT.",
+    category: "enrich",
+    accent: "38 92% 60%",
+    iconKey: "sparkles",
+  },
+  enrich_2: {
+    type: "enrich_2",
+    label: "Доп. Excel 2",
+    description: "xlsx round-trip с ChatGPT.",
+    category: "enrich",
+    accent: "38 92% 60%",
+    iconKey: "sparkles",
+  },
+  enrich_3: {
+    type: "enrich_3",
+    label: "Доп. Excel 3",
+    description: "xlsx round-trip с ChatGPT.",
+    category: "enrich",
+    accent: "38 92% 60%",
+    iconKey: "sparkles",
+  },
+  image_prompts: {
+    type: "image_prompts",
+    label: "Промты картинок",
+    description: "Генерация image-prompt'ов для каждого кадра.",
+    category: "media",
+    accent: "142 60% 50%",
+    iconKey: "wand",
+  },
+  images: {
+    type: "images",
+    label: "Картинки",
+    description: "Генерация изображений на outsee.io.",
+    category: "media",
+    accent: "142 60% 50%",
+    iconKey: "image",
+  },
+  animation_prompts: {
+    type: "animation_prompts",
+    label: "Промты анимации",
+    description: "Генерация animation-prompt'ов (Veo 3.1).",
+    category: "media",
+    accent: "142 60% 50%",
+    iconKey: "wand",
+  },
+  videos: {
+    type: "videos",
+    label: "Видео",
+    description: "Генерация 8-сек клипов из картинок.",
+    category: "media",
+    accent: "142 60% 50%",
+    iconKey: "film",
+  },
+  audio: {
+    type: "audio",
+    label: "Озвучка",
+    description: "ElevenLabs TTS + Whisper-субтитры.",
+    category: "audio",
+    accent: "330 75% 65%",
+    iconKey: "audio-waveform",
+  },
+  assemble: {
+    type: "assemble",
+    label: "Сборка",
+    description: "FFmpeg: видео + аудио + субтитры → mp4.",
+    category: "assembly",
+    accent: "12 80% 60%",
+    iconKey: "scissors",
+  },
+  publish: {
+    type: "publish",
+    label: "Публикация",
+    description: "TikTok / YT Shorts / IG Reels / VK / Likee.",
+    category: "publish",
+    accent: "47 95% 60%",
+    iconKey: "send",
+  },
+  hitl_hero: {
+    type: "hitl_hero",
+    label: "HITL: персонажи",
+    description: "Одобрение референсов героев.",
+    category: "hitl",
+    accent: "0 0% 55%",
+    iconKey: "check-square",
+  },
+  hitl_images: {
+    type: "hitl_images",
+    label: "HITL: картинки",
+    description: "Одобрение всех картинок кадров.",
+    category: "hitl",
+    accent: "0 0% 55%",
+    iconKey: "check-square",
+  },
+  hitl_videos: {
+    type: "hitl_videos",
+    label: "HITL: видео",
+    description: "Одобрение всех клипов.",
+    category: "hitl",
+    accent: "0 0% 55%",
+    iconKey: "check-square",
+  },
+  hitl_final: {
+    type: "hitl_final",
+    label: "HITL: финал",
+    description: "Одобрение финального ролика.",
+    category: "hitl",
+    accent: "0 0% 55%",
+    iconKey: "check-square",
+  },
+};
+
+export function getNodeSpec(type: string): NodeSpec {
+  return (
+    NODE_CATALOG[type] ?? {
+      type,
+      label: type,
+      description: "",
+      category: "planning",
+      accent: "0 0% 55%",
+      iconKey: "plan",
+    }
+  );
+}

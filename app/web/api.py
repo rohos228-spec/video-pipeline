@@ -34,7 +34,21 @@ API_PREFIX = "/api"
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Лёгкая инициализация: дефолтный системный Workflow в БД, если ещё нет."""
+    """Идемпотентная инициализация:
+    1) create_all таблиц (в т.ч. новых: workflows, workflow_runs, node_runs);
+    2) seed дефолтного Workflow.
+
+    Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
+    этот lifespan единственный гарантирует наличие новых таблиц.
+    """
+    try:
+        from app.db import engine
+        from app.models import Base
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:  # noqa: BLE001
+        logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
         await seed_default_workflow()
     except Exception:  # noqa: BLE001
