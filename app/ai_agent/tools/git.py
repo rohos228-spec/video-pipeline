@@ -42,7 +42,7 @@ async def _run_git(
 # ──────────────────────────── git_status ────────────────────────────────────
 
 
-async def _run_git_status(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_git_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     code, out, err = await _run_git(["status", "-sb"], ctx)
     if code != 0:
         return {"ok": False, "error": err.strip() or "git status failed"}
@@ -71,7 +71,7 @@ TOOL_GIT_STATUS = ToolSpec(
 # ──────────────────────────── git_diff ──────────────────────────────────────
 
 
-async def _run_git_diff(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_git_diff(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     staged = bool(args.get("staged", False))
     path = str(args.get("path", "") or "").strip()
     stat_only = bool(args.get("stat_only", False))
@@ -135,7 +135,7 @@ TOOL_GIT_DIFF = ToolSpec(
 # ──────────────────────────── git_log ───────────────────────────────────────
 
 
-async def _run_git_log(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_git_log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     n = int(args.get("n", 10) or 10)
     n = max(1, min(n, 50))
     path = str(args.get("path", "") or "").strip()
@@ -182,7 +182,7 @@ TOOL_GIT_LOG = ToolSpec(
 # ──────────────────────────── git_branch (HITL) ──────────────────────────────
 
 
-async def _run_git_branch(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_git_branch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Создать новую ветку и переключиться на неё (с HITL-апрувом)."""
     name = str(args.get("name", "")).strip()
     if not name:
@@ -243,7 +243,7 @@ TOOL_GIT_BRANCH = ToolSpec(
 # ──────────────────────────── git_commit (HITL) ──────────────────────────────
 
 
-async def _run_git_commit(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_git_commit(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Закоммитить изменения. Никаких push'ей — это делает owner вручную."""
     message = str(args.get("message", "")).strip()
     if not message:

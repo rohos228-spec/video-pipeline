@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 
-async def _run(args: dict, ctx: Any) -> dict:
+async def _run(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     """Просто эхо обратно. loop в loop.py знает: это terminal."""
     return {
         "ok": True,

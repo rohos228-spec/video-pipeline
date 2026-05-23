@@ -44,8 +44,22 @@ jobs:
         run: ruff format --check . || echo "::warning::ruff format check failed"
         continue-on-error: true
 
-      - name: Mypy (warn-mode, не блокирует)
-        run: mypy app || echo "::warning::mypy failures, non-blocking for now (фаза B.B)"
+      - name: Mypy (strict для новых модулей, blocking)
+        run: |
+          # Strict для моих новых модулей (ai_agent, keyboards, callback_registry,
+          # handlers/ai_agent.py, handlers/debug.py, scripts/).
+          mypy app/ai_agent/ app/telegram/keyboards/ \
+               app/telegram/callback_registry.py \
+               app/telegram/handlers/ai_agent.py \
+               app/telegram/handlers/debug.py \
+               scripts/
+
+      - name: Mypy (warn-mode для legacy bot.py / models.py / bots/ / orchestrator/)
+        run: |
+          mypy app/main.py app/models.py app/bots/ app/orchestrator/ \
+               app/telegram/bot.py app/telegram/menu.py \
+               app/telegram/mass_menu.py app/telegram/wizard.py \
+               || echo "::warning::mypy failures in legacy code (миграция отдельным PR'ом)"
         continue-on-error: true
 
       - name: Pytest

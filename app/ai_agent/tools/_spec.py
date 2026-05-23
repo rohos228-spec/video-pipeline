@@ -18,7 +18,7 @@ class ToolContext:
     tool_timeout_sec: int = 120
     # Опционально: callable для проверки cancel (например, /ai cancel)
     cancel_check: Callable[[], bool] | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass
@@ -27,7 +27,7 @@ class ToolSpec:
 
     name: str
     spec: dict[str, Any]  # OpenAI tools JSON
-    run: Callable[[dict, ToolContext], Awaitable[Any]]
+    run: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
     is_hitl: bool = False
     is_terminal: bool = False  # final_answer — терминатор loop'а
     description_short: str = ""

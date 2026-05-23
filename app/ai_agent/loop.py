@@ -51,7 +51,7 @@ async def run_loop(
     hitl_callback: HITLCallback | None = None,
     progress_callback: ProgressCallback | None = None,
     on_step: Callable[[RuntimeSession, AIChatResponse], Awaitable[None]] | None = None,
-    on_tool_call: Callable[[str, dict, str, RuntimeSession], Awaitable[None]] | None = None,
+    on_tool_call: Callable[[str, dict[str, Any], str, RuntimeSession], Awaitable[None]] | None = None,
 ) -> RuntimeSession:
     """Главный ReAct loop. Возвращает завершённую RuntimeSession.
 
@@ -150,7 +150,10 @@ async def run_loop(
 
         # Выполняем каждый tool по очереди
         for tc in resp.tool_calls:
-            if session.cancelled:
+            # cancel может прилететь из внешней task между шагами loop'а.
+            # mypy --strict думает что unreachable (false positive из-за
+            # session.is_done() в начале while), поэтому проверяем явно.
+            if getattr(session, "cancelled", False):
                 break
             tool_call_id = tc.get("id", "")
             fn = tc.get("function", {})
@@ -164,7 +167,7 @@ async def run_loop(
             tool: ToolSpec | None = ALL_TOOLS.get(tool_name)
 
             if tool is None:
-                tool_result = {
+                tool_result: dict[str, Any] | str = {
                     "ok": False,
                     "error": f"unknown tool: {tool_name}",
                 }
@@ -185,7 +188,6 @@ async def run_loop(
                     logger.exception("ai_agent.loop: on_tool_call failed")
 
             # HITL для опасных tools
-            tool_result: dict | str
             if tool.is_hitl:
                 if hitl_callback is None:
                     tool_result = {
@@ -239,9 +241,12 @@ async def run_loop(
             if tool.is_terminal and isinstance(tool_result, dict) and tool_result.get(
                 "ok"
             ):
+                # mypy: tool_result.get(...) возвращает object для dict[str, Any].
+                # Явный приводим к str (LLM возвращает строку или None).
+                answer_raw = tool_result.get("answer") if isinstance(tool_result, dict) else None
                 session.final_answer = (
-                    tool_result.get("answer")
-                    or session.final_answer
+                    str(answer_raw) if answer_raw
+                    else session.final_answer
                     or "(пустой ответ)"
                 )
                 session.finished = True
@@ -273,7 +278,7 @@ async def run_loop(
 
 
 async def _execute_tool(
-    tool: ToolSpec, args: dict, config: AIAgentConfig
+    tool: ToolSpec, args: dict[str, Any], config: AIAgentConfig
 ) -> Any:
     """Запустить tool с safety-обёрткой и таймаутом."""
     ctx = ToolContext(

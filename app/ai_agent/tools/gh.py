@@ -46,7 +46,7 @@ async def _run_gh(
 # ──────────────────────────── gh_pr_list ────────────────────────────────────
 
 
-async def _run_gh_pr_list(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_gh_pr_list(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     state = str(args.get("state", "open") or "open").lower()
     if state not in {"open", "closed", "merged", "all"}:
         return {"ok": False, "error": "state must be open|closed|merged|all"}
@@ -54,13 +54,13 @@ async def _run_gh_pr_list(args: dict, ctx: ToolContext) -> dict[str, Any]:
     limit = max(1, min(limit, 50))
 
     code, out, err = await _run_gh(
-        ["pr", "list", "--state", state, "--limit", str(limit)],
+        ["pr", "list[Any]", "--state", state, "--limit", str(limit)],
         ctx,
     )
     if code != 0:
-        return {"ok": False, "error": err.strip() or "gh pr list failed"}
+        return {"ok": False, "error": err.strip() or "gh pr list[Any] failed"}
 
-    prs: list[dict] = []
+    prs: list[dict[str, Any]] = []
     for line in out.strip().split("\n"):
         if not line:
             continue
@@ -82,7 +82,7 @@ TOOL_GH_PR_LIST = ToolSpec(
         "function": {
             "name": "gh_pr_list",
             "description": (
-                "Список PR'ов через `gh pr list`. Возвращает number/title/branch/state."
+                "Список PR'ов через `gh pr list[Any]`. Возвращает number/title/branch/state."
             ),
             "parameters": {
                 "type": "object",
@@ -102,14 +102,14 @@ TOOL_GH_PR_LIST = ToolSpec(
     },
     run=_run_gh_pr_list,
     is_hitl=False,
-    description_short="gh pr list",
+    description_short="gh pr list[Any]",
 )
 
 
 # ──────────────────────────── gh_pr_view ────────────────────────────────────
 
 
-async def _run_gh_pr_view(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_gh_pr_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     number = str(args.get("number", "")).strip()
     if not number:
         return {"ok": False, "error": "number is required"}
@@ -165,7 +165,7 @@ TOOL_GH_PR_VIEW = ToolSpec(
 # ──────────────────────────── gh_pr_create (HITL) ────────────────────────────
 
 
-async def _run_gh_pr_create(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_gh_pr_create(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Открыть PR через gh CLI. Требует HITL."""
     title = str(args.get("title", "")).strip()
     body = str(args.get("body", "")).strip()

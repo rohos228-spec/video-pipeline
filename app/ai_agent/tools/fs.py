@@ -31,7 +31,7 @@ _MAX_LINE_LENGTH = 500  # обрезаем сверхдлинные строки
 # ──────────────────────────── read_file ─────────────────────────────────────
 
 
-async def _run_read_file(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_read_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     if not path:
         return {"ok": False, "error": "path is required"}
@@ -127,7 +127,7 @@ TOOL_READ_FILE = ToolSpec(
 # ──────────────────────────── list_dir ──────────────────────────────────────
 
 
-async def _run_list_dir(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_list_dir(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     path = str(args.get("path", ".")).strip() or "."
     recursive = bool(args.get("recursive", False))
     max_entries = min(int(args.get("max_entries", 50) or 50), _MAX_LIST_ENTRIES)
@@ -146,7 +146,7 @@ async def _run_list_dir(args: dict, ctx: ToolContext) -> dict[str, Any]:
     try:
         paths = sorted(p.rglob("*")) if recursive else sorted(p.iterdir())
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"list error: {e}"}
+        return {"ok": False, "error": f"list[Any] error: {e}"}
 
     truncated = False
     for child in paths:
@@ -212,7 +212,7 @@ TOOL_LIST_DIR = ToolSpec(
 # ──────────────────────────── search_code (rg) ──────────────────────────────
 
 
-async def _run_search_code(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     pattern = str(args.get("pattern", "")).strip()
     if not pattern:
         return {"ok": False, "error": "pattern is required"}
@@ -303,12 +303,12 @@ async def _python_grep(
 
     files: list[Path] = []
     if glob:
-        files = list(ctx.repo_root.glob(glob))
+        files = list[Any](ctx.repo_root.glob(glob))
     else:
         for ext in ("*.py", "*.md", "*.yml", "*.yaml", "*.toml"):
             files.extend(ctx.repo_root.rglob(ext))
 
-    matches: list[dict] = []
+    matches: list[dict[str, Any]] = []
     truncated = False
     for f in files:
         if len(matches) >= max_matches:
@@ -389,7 +389,7 @@ TOOL_SEARCH_CODE = ToolSpec(
 # ──────────────────────────── edit_file (HITL) ───────────────────────────────
 
 
-async def _run_edit_file(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """StrReplace-style правка. ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL-АПРУВА.
 
     Loop.py гарантирует что эта функция не вызовется без owner ✅.
@@ -506,7 +506,7 @@ TOOL_EDIT_FILE = ToolSpec(
 # ──────────────────────────── write_file (HITL) ──────────────────────────────
 
 
-async def _run_write_file(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_write_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Создать новый файл или полностью переписать существующий.
 
     ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL.

@@ -51,7 +51,7 @@ def _trim(text: str) -> str:
 # ──────────────────────────── run_ruff ──────────────────────────────────────
 
 
-async def _run_ruff(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_ruff(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     paths = args.get("paths") or ["."]
     if isinstance(paths, str):
         paths = [paths]
@@ -105,7 +105,7 @@ TOOL_RUN_RUFF = ToolSpec(
 # ──────────────────────────── run_pytest ────────────────────────────────────
 
 
-async def _run_pytest(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_pytest(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     pattern = str(args.get("pattern", "") or "").strip()
     paths = args.get("paths") or ["tests/"]
     if isinstance(paths, str):
@@ -163,7 +163,7 @@ TOOL_RUN_PYTEST = ToolSpec(
 # ──────────────────────────── run_mypy ──────────────────────────────────────
 
 
-async def _run_mypy(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_mypy(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     paths = args.get("paths") or ["app"]
     if isinstance(paths, str):
         paths = [paths]

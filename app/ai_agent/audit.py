@@ -72,7 +72,7 @@ async def append_message(
     *,
     role: AIMessageRole,
     content: str | None = None,
-    tool_calls: list[dict] | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
     tool_call_id: str | None = None,
     tool_name: str | None = None,
     tokens_in: int = 0,
@@ -104,7 +104,7 @@ async def record_tool_call(
     *,
     openai_call_id: str,
     tool_name: str,
-    args: dict,
+    args: dict[str, Any],
 ) -> AIToolCall:
     """Зафиксировать запрос на tool-call (статус pending)."""
     call = AIToolCall(
@@ -172,7 +172,7 @@ async def close_session(
     )
 
 
-def serialize_session_for_dump(session: AISession) -> dict:
+def serialize_session_for_dump(session: AISession) -> dict[str, Any]:
     """Полный JSON-дамп сессии (для /debug ai и scripts.ai_dump)."""
     return {
         "id": session.id,

@@ -58,7 +58,7 @@ class AIClient:
         *,
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | dict | None = "auto",
+        tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
         max_tokens: int = 4096,
         timeout_sec: float = 60.0,

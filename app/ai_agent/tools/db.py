@@ -37,7 +37,7 @@ def _resolve_db_path(repo_root: Path) -> Path:
 # ──────────────────────────── describe_db ───────────────────────────────────
 
 
-async def _run_describe_db(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_describe_db(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     db_path = _resolve_db_path(ctx.repo_root)
     if not db_path.exists():
         return {
@@ -54,7 +54,7 @@ async def _run_describe_db(args: dict, ctx: ToolContext) -> dict[str, Any]:
                 "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
                 "ORDER BY name"
             ).fetchall()
-            tables: list[dict] = []
+            tables: list[dict[str, Any]] = []
             for tr in tables_rows:
                 tname = tr["name"]
                 cols = conn.execute(f"PRAGMA table_info('{tname}')").fetchall()
@@ -108,7 +108,7 @@ TOOL_DESCRIBE_DB = ToolSpec(
 # ──────────────────────────── db_query (SELECT only) ────────────────────────
 
 
-async def _run_db_query(args: dict, ctx: ToolContext) -> dict[str, Any]:
+async def _run_db_query(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     sql = str(args.get("sql", "")).strip()
     if not sql:
         return {"ok": False, "error": "sql is required"}

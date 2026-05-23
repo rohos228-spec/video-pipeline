@@ -42,7 +42,7 @@ class RuntimeSession:
     initial_query: str
 
     # OpenAI-формат истории (передаётся в каждый chat.completions).
-    history: list[dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list[Any])
 
     # Счётчики
     step_count: int = 0
