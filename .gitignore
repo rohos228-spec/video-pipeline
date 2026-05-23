@@ -35,6 +35,6 @@ browser_profile/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs (только корневая папка; не web/src/components/logs)
 *.log
-logs/
+/logs/
