@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Loader2, Search, FolderOpen, PanelLeftClose, PanelLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -48,6 +48,13 @@ export function ProjectSidebar({
     },
     onError: (e) => toast.error(`Не получилось удалить: ${String(e)}`),
   });
+
+  useEffect(() => {
+    if (selectedProjectId != null) return;
+    const list = projects.data;
+    if (!list?.length) return;
+    onSelect(list[0].id);
+  }, [projects.data, selectedProjectId, onSelect]);
 
   const filtered = (projects.data ?? []).filter((p) =>
     !filter.trim()

@@ -1,12 +1,35 @@
-# Как запустить бот у себя (Windows, без Docker)
+# Как запустить video-pipeline (Windows, без Docker)
 
-Вся система работает на твоём ПК как обычный Python-процесс.
-Telegram-бот оживает, когда ты запускаешь `python -m app.main`.
-Закрыл консоль — бот не отвечает.
+## Веб-студия без Telegram (рекомендуется)
+
+Два окна PowerShell из корня `video-pipeline`:
+
+```powershell
+# Окно 1 — бэкенд (воркер + API :8765)
+.\start-studio.ps1
+
+# Окно 2 — UI
+cd web
+npm install
+npm run dev
+```
+
+Браузер: **http://localhost:3000**. При первом запуске создаётся один пилотный проект,
+`auto_mode` включён — HITL и шаги только в веб-UI. Chrome CDP (`:29229`) нужен,
+когда реально гоняете шаги ChatGPT/outsee.
+
+В `.env`: `TELEGRAM_ENABLED=false`, `TELEGRAM_BOT_TOKEN` пустой.
 
 ---
 
-## Быстрый старт (один скрипт)
+## С Telegram-ботом (опционально)
+
+Telegram-бот оживает при `TELEGRAM_ENABLED=true` и валидном токене.
+Закрыл консоль — процесс останавливается.
+
+---
+
+## Быстрый старт установки (один скрипт)
 
 Открой PowerShell **на новом ПК** и выполни **одну команду**:
 

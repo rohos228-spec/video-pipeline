@@ -210,7 +210,16 @@ if (-not $hasToken) {
             }
             Write-OK "TELEGRAM_BOT_TOKEN записан"
         } else {
-            Write-Warn "TELEGRAM_BOT_TOKEN пуст. Открой .env и впиши токен перед запуском бота."
+            if ($envLines -notmatch "TELEGRAM_ENABLED") {
+                $envLines += "TELEGRAM_ENABLED=false"
+            } else {
+                for ($i = 0; $i -lt $envLines.Count; $i++) {
+                    if ($envLines[$i] -match "^TELEGRAM_ENABLED=") {
+                        $envLines[$i] = "TELEGRAM_ENABLED=false"
+                    }
+                }
+            }
+            Write-Warn "TELEGRAM_BOT_TOKEN пуст — web-only (.\start-studio.ps1)."
         }
     }
 } else {
@@ -242,13 +251,17 @@ Write-Host "===================================" -ForegroundColor Green
 Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Дальше:" -ForegroundColor Cyan
-Write-Host "  1. Если не вписал TELEGRAM_BOT_TOKEN - открой .env и впиши его."
-Write-Host "  2. Запусти бота:" -ForegroundColor Cyan
-Write-Host "       .\start.ps1" -ForegroundColor White
-Write-Host "     Скрипт стартует Chrome (с remote-debugging-port=29229) и запустит бота."
-Write-Host "     При первом запуске залогинься в открывшемся Chrome:"
-Write-Host "       - https://chatgpt.com/"
-Write-Host "       - https://outsee.io/"
-Write-Host "  3. В Telegram отправь боту /start, потом /new <тема>."
+Write-Host "Дальше (веб-студия без Telegram — по умолчанию):" -ForegroundColor Cyan
+Write-Host "  1. Окно 1 — бэкенд:" -ForegroundColor Cyan
+Write-Host "       .\start-studio.ps1" -ForegroundColor White
+Write-Host "     (или ./start-studio.sh на Linux/macOS)"
+Write-Host "  2. Окно 2 — UI:" -ForegroundColor Cyan
+Write-Host "       cd web" -ForegroundColor White
+Write-Host "       npm install" -ForegroundColor White
+Write-Host "       npm run dev" -ForegroundColor White
+Write-Host "     Браузер: http://localhost:3000"
+Write-Host "  3. Chrome CDP :29229 — только для шагов ChatGPT/outsee (см. HOW_TO_RUN.md)."
+Write-Host ""
+Write-Host "С Telegram-ботом:" -ForegroundColor DarkGray
+Write-Host "  TELEGRAM_ENABLED=true + токен в .env, затем .\start.ps1"
 Write-Host ""

@@ -29,6 +29,7 @@ import type {
   WorkflowRunDetail,
 } from "@/lib/types";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
+import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -299,6 +300,7 @@ export function FlowCanvas({
         projectId={projectId}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
+        selectedNodeKey={selectedNodeKey}
         onRunCreated={() => run.refetch()}
       />
       <HitlBanner projectId={projectId} />
@@ -377,15 +379,22 @@ function RunOverlay({
   projectId,
   workflow,
   run,
+  selectedNodeKey,
   onRunCreated,
 }: {
   projectId: number;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
+  selectedNodeKey: string | null;
   onRunCreated: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   if (!workflow) return null;
+
+  const nodeType = selectedNodeKey?.startsWith("n_")
+    ? selectedNodeKey.slice(2)
+    : selectedNodeKey ?? "";
+  const stepCode = stepCodeForNodeType(nodeType) ?? "plan";
 
   const handleStart = async () => {
     setBusy(true);
@@ -393,10 +402,10 @@ function RunOverlay({
       const created = await api.startRunFromWorkflow(workflow.id, {
         project_id: projectId,
       });
-      await api.runProjectStep(projectId, "plan");
+      await api.runProjectStep(projectId, stepCode);
       onRunCreated();
-      toast.success(`Run #${created.id} · шаг «План» запущен`, {
-        description: "Воркер подхватит planning — HITL в веб-UI",
+      toast.success(`Run #${created.id} · шаг «${stepCode}» запущен`, {
+        description: "Воркер подхватит шаг — HITL в веб-UI",
       });
     } catch (e) {
       toast.error(`Не получилось запустить: ${String(e)}`);

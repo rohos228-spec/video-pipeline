@@ -1,6 +1,6 @@
 # video-pipeline
 
-Автоматический конвейер генерации коротких роликов (60–75 сек, 9:16) с оркестрацией, Telegram-ботом для HITL-подтверждений и уведомлений, и интеграциями с outsee.io (Nano Banana 2 + Veo 3.1 Fast Relax), ChatGPT web, 11Labs, Whisper, FFmpeg и MoreLogin.
+Автоматический конвейер генерации коротких роликов (60–75 сек, 9:16) с оркестрацией, **веб-студией** (HITL и запуск шагов) и опциональным Telegram-ботом. Интеграции: outsee.io (Nano Banana 2 + Veo 3.1 Fast Relax), ChatGPT web, 11Labs, Whisper, FFmpeg и MoreLogin.
 
 ## Стек
 
@@ -39,14 +39,17 @@ prompts/              # мастер-промты (PLAN_SHORTS, SCRIPT_SHORTS, I
 data/                 # videos/<slug>/{characters, scenes, videos, audio, subs, final}
 ```
 
-## Быстрый старт
+## Быстрый старт (веб-студия, без Telegram)
 
 ```bash
-pip install -e .
-playwright install chromium   # если нужно свой Chromium (опционально)
-cp .env.example .env          # заполнить TELEGRAM_BOT_TOKEN, chat_id уже заполнен
-python -m app.main            # Telegram-бот + воркер в одном процессе
+pip install -e ".[dev]"
+cp .env.example .env          # TELEGRAM_ENABLED=false по умолчанию
+./start-studio.sh             # воркер + API :8765
+# второй терминал:
+cd web && npm install && npm run dev   # UI http://localhost:3000
 ```
+
+С Telegram: задайте `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ENABLED=true`, `python -m app.main` или `.\start.ps1`.
 
 Подробная инструкция — см. [HOW_TO_RUN.md](HOW_TO_RUN.md).
 

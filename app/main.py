@@ -452,6 +452,10 @@ async def main() -> None:
     await _recompute_all_projects()
     await sync_prompts_from_files()
 
+    from app.services.default_project import ensure_default_project
+
+    await ensure_default_project()
+
     from app.telegram.noop_bot import get_worker_bot
 
     real_bot = None

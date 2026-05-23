@@ -7,6 +7,7 @@ import {
   Download,
   FileText,
   Loader2,
+  Play,
   Save,
   Settings2,
   Sparkles,
@@ -14,6 +15,7 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
+import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/input";
@@ -21,19 +23,6 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-
-const NODE_TO_STEP: Record<string, string> = {
-  plan: "plan",
-  script: "script",
-  split: "split",
-  hero: "hero",
-  items: "items",
-  enrich_1: "enrich_1",
-  enrich_2: "enrich_2",
-  enrich_3: "enrich_3",
-  image_prompts: "img_pr",
-  animation_prompts: "anim_pr",
-};
 
 export function NodeStudio({
   open,
@@ -48,7 +37,7 @@ export function NodeStudio({
 }) {
   const nodeType = nodeKey?.startsWith("n_") ? nodeKey.slice(2) : nodeKey ?? "";
   const spec = getNodeSpec(nodeType);
-  const stepCode = NODE_TO_STEP[nodeType];
+  const stepCode = stepCodeForNodeType(nodeType);
 
   const [tab, setTab] = useState<"settings" | "prompts" | "results">("settings");
   const [composed, setComposed] = useState("");
@@ -102,6 +91,15 @@ export function NodeStudio({
     onSuccess: (r) => {
       setComposed(r.text);
       toast.success("Промт собран");
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
+  const runStep = useMutation({
+    mutationFn: () => api.runProjectStep(projectId!, stepCode!),
+    onSuccess: () => {
+      toast.success(`Шаг «${spec.label}» запущен`);
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (e) => toast.error(String(e)),
   });
@@ -161,10 +159,36 @@ export function NodeStudio({
                   </Badge>
                 </div>
               </div>
-              <Button size="sm" onClick={() => saveConfig.mutate()} disabled={!projectId || saveConfig.isPending}>
-                {saveConfig.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                Сохранить
-              </Button>
+              <div className="flex gap-2">
+                {stepCode && (
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={() => runStep.mutate()}
+                    disabled={!projectId || runStep.isPending}
+                  >
+                    {runStep.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    Запустить шаг
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => saveConfig.mutate()}
+                  disabled={!projectId || saveConfig.isPending}
+                >
+                  {saveConfig.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" />
+                  )}
+                  Сохранить
+                </Button>
+              </div>
             </div>
             <div className="mt-3 flex gap-1">
               {(

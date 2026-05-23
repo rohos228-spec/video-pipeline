@@ -587,7 +587,7 @@ async def maybe_auto_advance(
     Вызывается ИЗ worker-loop'а ПОСЛЕ обхода running-статусов. Только
     для проектов с `auto_mode=True` в *_ready состоянии.
     """
-    if not getattr(project, "auto_mode", False):
+    if not getattr(project, "auto_mode", False) and not settings.hitl_auto_approve:
         return False
     status = project.status
     if status not in TRANSITIONS:
@@ -595,6 +595,24 @@ async def maybe_auto_advance(
 
     transition = TRANSITIONS[status]
     hitl = await get_latest_hitl(session, project.id, transition.kind)
+
+    if hitl is not None and hitl.decision is HITLDecision.regenerate:
+        await _apply_regen(
+            session,
+            project,
+            hitl,
+            transition,
+            ReviewResult(
+                decision=HITLDecision.regenerate,
+                confidence=1.0,
+                fix_hints=list((hitl.payload or {}).get("fix_hints") or []),
+            ),
+            bot=bot,
+        )
+        return True
+
+    if hitl is not None and hitl.decision is HITLDecision.rejected:
+        return False
 
     # Если HITL уже approved юзером руками — просто двигаемся вперёд.
     if hitl is not None and hitl.decision is HITLDecision.approved:

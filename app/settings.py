@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_chat_id: int = Field(279887118, alias="TELEGRAM_OWNER_CHAT_ID")
     # false / 0 — не поднимать бота даже если токен задан
-    telegram_enabled: bool = Field(True, alias="TELEGRAM_ENABLED")
+    telegram_enabled: bool = Field(False, alias="TELEGRAM_ENABLED")
     # Опциональный HTTP/SOCKS5 прокси для Telegram-API.
     # Примеры: http://user:pass@host:port, socks5://user:pass@host:port
     telegram_proxy_url: str | None = Field(None, alias="TELEGRAM_PROXY_URL")

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import HITLDecision, HITLRequest
 from app.services.event_bus import publish_hitl_event
+from app.services.hitl_apply import apply_hitl_side_effects
 from app.web.deps import get_session
 from app.web.schemas import HITLDecisionRequest, HITLDTO
 
@@ -82,6 +83,7 @@ async def submit_decision(
         payload_dict = dict(req.payload or {})
         payload_dict["edited_prompt"] = payload.edited_prompt
         req.payload = payload_dict
+    await apply_hitl_side_effects(session, req, new_decision)
     await session.commit()
     await session.refresh(req)
 

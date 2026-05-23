@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 
-from aiogram import Bot
 from loguru import logger
 from sqlalchemy import select
 
@@ -34,7 +33,7 @@ ACTIVE_STATUSES = [
 ]
 
 
-async def _loop_once(bot: Bot) -> None:
+async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
     async with session_scope() as s:
         projects = (
             await s.execute(select(Project).where(Project.status.in_(ACTIVE_STATUSES)))
@@ -59,7 +58,13 @@ async def main() -> None:
         await conn.run_sync(Base.metadata.create_all)
     await sync_prompts_from_files()
 
-    bot = Bot(settings.telegram_bot_token)
+    from app.telegram.noop_bot import get_worker_bot
+
+    bot = get_worker_bot(None)
+    if settings.telegram_active:
+        from aiogram import Bot
+
+        bot = Bot(settings.telegram_bot_token)
     try:
         while True:
             try:
@@ -68,7 +73,8 @@ async def main() -> None:
                 logger.exception("worker loop iteration failed")
             await asyncio.sleep(5)
     finally:
-        await bot.session.close()
+        if hasattr(bot, "session"):
+            await bot.session.close()
 
 
 if __name__ == "__main__":

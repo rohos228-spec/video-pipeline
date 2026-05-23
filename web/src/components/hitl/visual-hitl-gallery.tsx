@@ -80,7 +80,7 @@ export function VisualHitlGallery({
   if (items.length === 0) {
     return (
       <p className="py-6 text-center text-sm text-muted-foreground">
-        Нет кадров с превью. Одобри через Telegram или дождись генерации.
+        Нет кадров с превью. Дождись генерации или открой панель HITL.
       </p>
     );
   }

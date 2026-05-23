@@ -369,7 +369,7 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
 
   return (
     <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-      Превью недоступно — открой Telegram-бот или папку проекта.
+      Превью недоступно — открой папку проекта или дождись артефакта.
     </div>
   );
 }

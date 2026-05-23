@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
+from app.services.default_project import default_auto_mode_for_new_project
 from app.services.event_bus import publish_project_event
 from app.services.project_steps import list_step_codes, start_step
+from app.storage import ProjectSheet
 from app.web.deps import get_session
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
@@ -82,14 +84,26 @@ async def create_project(
     ).scalar_one_or_none() is not None:
         slug = f"{base_slug}-{suffix}"
         suffix += 1
+    auto_mode = payload.auto_mode
+    if not payload.auto_mode and default_auto_mode_for_new_project():
+        auto_mode = True
     p = Project(
         slug=slug,
         topic=payload.topic.strip(),
         hero_mode=payload.hero_mode,
         status=ProjectStatus.new,
-        auto_mode=payload.auto_mode,
+        auto_mode=auto_mode,
     )
     session.add(p)
+    await session.flush()
+    sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+    sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+    sheet.write_general(
+        topic=p.topic,
+        slug=p.slug,
+        hero_mode=p.hero_mode,
+        status=p.status.value,
+    )
     await session.commit()
     await session.refresh(p)
     await publish_project_event(p.id, event_type="project_created", payload={
