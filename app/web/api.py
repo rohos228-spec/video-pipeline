@@ -81,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(hitl_router.router, prefix=API_PREFIX)
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
+    app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
 
     # ── WebSocket: live-стрим событий выбранного канала ──
     @app.websocket("/ws/{channel:path}")

@@ -31,12 +31,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
   return (
     <div
       className={cn(
-        "group relative w-[244px] overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-all",
-        "hover:border-primary/40 hover:shadow-md",
+        "group relative w-[244px] overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-all duration-150",
+        "hover:-translate-y-0.5 hover:border-primary/60 hover:shadow-lg hover:shadow-primary/10",
         running && "glow-running border-primary/50",
         d.status === "done" && "border-success/40",
         d.status === "failed" && "border-destructive/50",
-        d.status === "waiting_hitl" && "border-warning/50",
+        d.status === "waiting_hitl" && "border-warning/50 pulse-soft",
         ringClass,
       )}
       style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}

@@ -29,6 +29,7 @@ import type {
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
+import { HitlBanner } from "@/components/hitl/hitl-banner";
 
 const nodeTypes = {
   pipeline: PipelineNode,
@@ -204,6 +205,7 @@ export function FlowCanvas({
         run={run.data ?? null}
         onRunCreated={() => run.refetch()}
       />
+      <HitlBanner projectId={projectId} />
     </>
   );
 }

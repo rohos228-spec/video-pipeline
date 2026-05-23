@@ -1,20 +1,45 @@
-"""REST: /api/artifacts — список + бинарная отдача."""
+"""REST: /api/artifacts — список + бинарная отдача.
+
+Также /api/files (вне /artifacts) — служит для отдачи media по абсолютному
+пути из HITL.payload (photo_path/video_path), полезно когда в БД ещё нет
+Artifact. Безопасно: разрешает только пути под `settings.data_dir`.
+"""
 
 from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact
+from app.settings import settings
 from app.web.deps import get_session
 from app.web.schemas import ArtifactDTO
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+files_router = APIRouter(tags=["files"])
+
+
+@files_router.get("/files")
+async def serve_data_file(path: str = Query(..., description="Абсолютный путь под data_dir")) -> FileResponse:
+    """Отдаёт файл из data_dir (или его подкаталогов). Безопасный whitelist
+    предотвращает path traversal — допускаем только пути, чей resolve
+    начинается с data_dir.resolve().
+    """
+    candidate = Path(path).resolve()
+    base = Path(settings.data_dir).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="path outside data_dir") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    mime, _ = mimetypes.guess_type(str(candidate))
+    return FileResponse(candidate, media_type=mime or "application/octet-stream")
 
 
 @router.get("", response_model=list[ArtifactDTO])
