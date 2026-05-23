@@ -30,6 +30,7 @@ def test_debug_router_attached_to_dp() -> None:
 def test_debug_subcommands_exist() -> None:
     """Все подкоманды объявлены в handler-словаре."""
     import inspect
+
     from app.telegram.handlers import debug
 
     source = inspect.getsource(debug.cmd_debug)
@@ -49,6 +50,7 @@ def test_project_dump_cli_importable() -> None:
 def test_project_dump_list_runs_on_empty_db() -> None:
     """Если БД пустая — должен возвращать пустой список без ошибок."""
     import asyncio
+
     from scripts.project_dump import _list_projects
 
     rows = asyncio.run(_list_projects(limit=10))
@@ -58,6 +60,7 @@ def test_project_dump_list_runs_on_empty_db() -> None:
 def test_project_dump_404() -> None:
     """Запрос несуществующего проекта возвращает error."""
     import asyncio
+
     from scripts.project_dump import _dump_project
 
     result = asyncio.run(_dump_project(project_id=999999))

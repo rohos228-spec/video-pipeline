@@ -27,10 +27,8 @@ import argparse
 import ast
 import json
 import sys
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TG_DIR = REPO_ROOT / "app" / "telegram"
@@ -232,14 +230,8 @@ def audit(target_dir: Path = TG_DIR) -> AuditReport:
 
     # 1. Long callbacks (> 64 байт)
     for b in report.buttons:
-        # Грубая оценка длины: считаем без плейсхолдеров (худший случай — N!).
-        # Длина шаблона + средняя длина значения 8 символов.
-        approx_len = sum(
-            8 if c == "{" else 1
-            for c in b.callback_template
-            if not (c == "}" or "{" not in b.callback_template[: b.callback_template.find(c)] + c)
-        )
-        # Простой подход: считаем длину строки как есть, плюс +6 байт за каждый {var}
+        # Считаем длину строки как есть, плюс заменяем каждый {var} на
+        # худший случай (8 символов) — это валидная оценка верхней границы.
         clean = b.callback_template
         # Заменим {var} на '{aaaaaaaa}' (8 символов запас)
         import re
@@ -308,11 +300,11 @@ def audit(target_dir: Path = TG_DIR) -> AuditReport:
 
 
 def print_human(report: AuditReport) -> None:
-    print(f"=== Audit Buttons Report ===")
+    print("=== Audit Buttons Report ===")
     print(f"Buttons total : {len(report.buttons)}")
     print(f"Handlers total: {len(report.handlers)}")
     print()
-    print(f"CRITICAL ISSUES:")
+    print("CRITICAL ISSUES:")
     print(f"  Long callbacks (> {TG_CALLBACK_LIMIT} bytes): {len(report.long_callbacks)}")
     for b in report.long_callbacks[:20]:
         print(f"    {b.file}:{b.line}  text={b.text!r}  callback={b.callback_template!r}")
@@ -328,7 +320,7 @@ def print_human(report: AuditReport) -> None:
         print(f"    ... and {len(report.duplicate_callbacks) - 10} more")
 
     print()
-    print(f"WARNINGS:")
+    print("WARNINGS:")
     print(f"  Dead buttons (callback без handler'а): {len(report.dead_buttons)}")
     for b in report.dead_buttons[:15]:
         print(f"    {b.file}:{b.line}  callback={b.callback_template!r}  text={b.text!r}")

@@ -44,7 +44,6 @@ from aiogram.types import (
 
 from app.models import Project, ProjectStatus
 from app.services.mass_pause import is_active as mass_pause_active
-from app.services.project_state import is_running_status
 
 # Тексты кнопок постоянной reply-клавиатуры (видна всегда внизу TG над полем
 # ввода). Эти строки используются в bot.py для распознавания нажатий.

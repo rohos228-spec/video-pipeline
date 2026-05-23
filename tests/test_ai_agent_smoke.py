@@ -26,7 +26,6 @@ def test_ai_agent_imports() -> None:
 def test_db_models_import() -> None:
     """AISession / AIMessage / AIToolCall есть в app.models."""
     from app.models import (
-        AIMessage,
         AIMessageRole,
         AISession,
         AISessionMode,

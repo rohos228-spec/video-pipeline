@@ -22,14 +22,13 @@ import asyncio
 import sys
 from pathlib import Path
 
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
 from app.models import (
     Artifact,
     ArtifactKind,
-    HITLDecision,
     HITLKind,
     HITLRequest,
     Project,

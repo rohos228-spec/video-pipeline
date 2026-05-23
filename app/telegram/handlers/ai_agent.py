@@ -39,7 +39,6 @@ from app.ai_agent.audit import (
 from app.ai_agent.client import AIClient
 from app.ai_agent.loop import create_runtime_session, run_loop
 from app.ai_agent.session import RuntimeSession
-from app.ai_agent.tools import ALL_TOOLS
 from app.db import session_scope
 from app.models import (
     AIMessageRole,
@@ -529,7 +528,6 @@ async def _ask_owner_for_hitl(
     bot: Any, chat_id: int, session_id: int, tool_name: str, args: dict
 ) -> dict:
     """Создать AIToolCall(pending), послать карточку, ждать callback owner'а."""
-    from sqlalchemy import select
 
     # Создать запись в БД
     async with session_scope() as db:
@@ -570,7 +568,7 @@ async def _ask_owner_for_hitl(
         result = await asyncio.wait_for(
             future, timeout=cfg.hitl_timeout_sec
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await bot.send_message(
             chat_id,
             f"⏱ Таймаут HITL ({cfg.hitl_timeout_sec // 60} мин). "

@@ -8,8 +8,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from app.ai_agent.tools import ALL_TOOLS, get_openai_tools_schema, get_tool
 from app.ai_agent.tools._spec import ToolContext
 

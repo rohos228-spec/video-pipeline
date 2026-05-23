@@ -354,7 +354,7 @@ async def _next_status_after_hero_approve(
         all_ids: list[str] = []
         for c in (cfg.get("characters") or []):
             if isinstance(c, dict):
-                cid = str((c.get("id") or "")).strip()
+                cid = str(c.get("id") or "").strip()
                 if cid:
                     all_ids.append(cid)
         approved_rows = (

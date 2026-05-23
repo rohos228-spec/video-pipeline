@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 def test_ai_router_importable() -> None:
     """Handler модуль импортируется без падений."""

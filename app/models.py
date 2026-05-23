@@ -522,12 +522,12 @@ class AISession(Base):
     # Telegram message id «сводки», который мы редактируем по ходу сессии
     summary_message_id: Mapped[int | None] = mapped_column(default=None)
 
-    messages: Mapped[list["AIMessage"]] = relationship(
+    messages: Mapped[list[AIMessage]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="AIMessage.id",
     )
-    tool_calls: Mapped[list["AIToolCall"]] = relationship(
+    tool_calls: Mapped[list[AIToolCall]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="AIToolCall.id",

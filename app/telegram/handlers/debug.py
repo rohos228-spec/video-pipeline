@@ -19,29 +19,21 @@ from __future__ import annotations
 
 import asyncio
 import html
-import json
 import os
 import shutil
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 import aiohttp
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
-from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db import session_scope
 from app.models import (
-    AIMessage,
     AISession,
-    AIToolCall,
-    Artifact,
-    Frame,
-    HITLRequest,
     Project,
 )
 from app.settings import settings

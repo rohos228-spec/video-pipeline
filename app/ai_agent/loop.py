@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -286,7 +285,7 @@ async def _execute_tool(
             tool.run(args, ctx), timeout=config.tool_timeout_sec + 10
         )
         return result
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"ok": False, "error": f"tool {tool.name} timeout"}
     except Exception as e:  # noqa: BLE001
         logger.exception("ai_agent.tool {} failed: {}", tool.name, e)

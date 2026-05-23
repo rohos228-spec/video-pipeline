@@ -389,7 +389,7 @@ TOOL_SEARCH_CODE = ToolSpec(
 # ──────────────────────────── edit_file (HITL) ───────────────────────────────
 
 
-async def _run_edit_file(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+async def _run_edit_file(args: dict, ctx: ToolContext) -> dict[str, Any]:
     """StrReplace-style правка. ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL-АПРУВА.
 
     Loop.py гарантирует что эта функция не вызовется без owner ✅.
@@ -506,7 +506,7 @@ TOOL_EDIT_FILE = ToolSpec(
 # ──────────────────────────── write_file (HITL) ──────────────────────────────
 
 
-async def _run_write_file(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+async def _run_write_file(args: dict, ctx: ToolContext) -> dict[str, Any]:
     """Создать новый файл или полностью переписать существующий.
 
     ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL.

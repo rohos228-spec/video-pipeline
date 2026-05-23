@@ -16,9 +16,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from aiogram import Bot
 from aiogram.types import (
@@ -38,11 +38,11 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS,
     IMAGE_RESOLUTIONS_BY_ID,
-    OptionChoice,
     VIDEO_GENERATORS,
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS,
     VIDEO_RESOLUTIONS_BY_ID,
+    OptionChoice,
 )
 from app.models import Project
 

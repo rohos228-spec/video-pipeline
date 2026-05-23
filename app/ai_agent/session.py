@@ -17,7 +17,6 @@ from typing import Any
 
 from app.models import AISessionMode
 
-
 # Грубые цены за 1M токенов (₽) для aitunnel.ru — используются для оценки
 # стоимости в session_summary, если cost_rub не приходит в usage.
 # Реальная стоимость возвращается aitunnel'ом, эти числа — fallback.

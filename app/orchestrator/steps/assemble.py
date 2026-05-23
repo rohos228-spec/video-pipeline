@@ -24,7 +24,6 @@ from app.models import (
 )
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
 from app.services.hitl import send_hitl_video
-from app.settings import settings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:

@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any
 
 
 def _safe_read(p: Path, max_lines: int = 1000) -> str:

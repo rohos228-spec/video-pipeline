@@ -182,7 +182,7 @@ TOOL_GIT_LOG = ToolSpec(
 # ──────────────────────────── git_branch (HITL) ──────────────────────────────
 
 
-async def _run_git_branch(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+async def _run_git_branch(args: dict, ctx: ToolContext) -> dict[str, Any]:
     """Создать новую ветку и переключиться на неё (с HITL-апрувом)."""
     name = str(args.get("name", "")).strip()
     if not name:
@@ -243,7 +243,7 @@ TOOL_GIT_BRANCH = ToolSpec(
 # ──────────────────────────── git_commit (HITL) ──────────────────────────────
 
 
-async def _run_git_commit(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+async def _run_git_commit(args: dict, ctx: ToolContext) -> dict[str, Any]:
     """Закоммитить изменения. Никаких push'ей — это делает owner вручную."""
     message = str(args.get("message", "")).strip()
     if not message:

@@ -17,7 +17,6 @@ hero_ready (предметы опциональны), юзер правит оп
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 from aiogram import Bot
 from loguru import logger
@@ -39,7 +38,6 @@ from app.generation_options import (
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.prompt_library import get_project_prompt
-from app.settings import settings
 
 # Aspect ratio и Relax для предметов — как у hero (16:9 + Relax), потому
 # что предметы тоже идут как реф-листы.

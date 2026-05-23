@@ -165,7 +165,7 @@ TOOL_GH_PR_VIEW = ToolSpec(
 # ──────────────────────────── gh_pr_create (HITL) ────────────────────────────
 
 
-async def _run_gh_pr_create(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+async def _run_gh_pr_create(args: dict, ctx: ToolContext) -> dict[str, Any]:
     """Открыть PR через gh CLI. Требует HITL."""
     title = str(args.get("title", "")).strip()
     body = str(args.get("body", "")).strip()

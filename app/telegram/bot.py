@@ -1135,12 +1135,9 @@ async def on_mass_delete_keep(cb: CallbackQuery) -> None:
     await _show_mass_list(cb)
 
 
-@dp.callback_query(F.data == "mass:noop")
-async def on_mass_noop(cb: CallbackQuery) -> None:
-    await cb.answer("Заглушка — функция появится в PR #2")
-
-
 # --------- управление очередью (PR #2) ---------
+# (дубликат on_mass_noop здесь удалён в фазе B.2 — он перекрывался
+#  тем что на ~1074. Aiogram использовал первый, второй был dead code.)
 
 async def _refresh_mass_main(cb: CallbackQuery, bid: int) -> None:
     """Перерисовать главное меню массового после изменения очереди."""
