@@ -212,6 +212,14 @@ export function FlowCanvas({
         sourceHandle: e.sourceHandle ?? "out",
         targetHandle: e.targetHandle ?? "in",
       }));
+      const check = await api.validateWorkflow({ nodes: wfNodes, edges: wfEdges });
+      if (!check.valid) {
+        toast.error(`Граф не сохранён: ${check.errors.join("; ")}`);
+        return;
+      }
+      if (check.warnings.length) {
+        toast.message(check.warnings[0]);
+      }
       await api.saveWorkflow(workflow.data.id, {
         nodes: wfNodes,
         edges: wfEdges,

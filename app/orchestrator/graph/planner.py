@@ -278,6 +278,32 @@ class WorkflowGraph:
             out[nid] = NodeRunStatus.pending
         return out
 
+    def is_step_reachable(self, project: Project, step_code: str) -> bool:
+        """Можно ли запустить step_code с текущего статуса проекта по графу."""
+        from app.orchestrator.node_registry import spec_for_step_code
+
+        spec = spec_for_step_code(step_code)
+        if spec is None:
+            return True
+        target_type = spec.node_type
+        skipped = self.skipped_keys(project)
+        target_keys = [k for k in self.keys_of_type(target_type) if k not in skipped]
+        if not target_keys:
+            return False
+        done = self._work_types_done(project)
+        status = project.status
+        if status in RUNNING_TO_NODE_TYPE and RUNNING_TO_NODE_TYPE[status] == target_type:
+            return True
+        if status in READY_TO_NODE_TYPE and READY_TO_NODE_TYPE[status] == target_type:
+            return True
+        for key in target_keys:
+            preds = self._effective_predecessors(key, skipped)
+            if not preds:
+                return target_type == "plan" or project.status is ProjectStatus.new
+            if all(self.node_type(p) in done for p in preds):
+                return True
+        return False
+
     @staticmethod
     def _linear_next_running(
         project: Project, ready_status: ProjectStatus

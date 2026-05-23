@@ -77,6 +77,11 @@ export const api = {
   getWorkflow: (id: number) => http<WorkflowDetail>(`/api/workflows/${id}`),
   saveWorkflow: (id: number, body: { name?: string; description?: string; nodes: WorkflowNode[]; edges: WorkflowEdge[] }) =>
     http<WorkflowDetail>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  validateWorkflow: (body: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }) =>
+    http<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/workflows/validate`, {
+      method: "POST",
+      body: JSON.stringify({ nodes: body.nodes, edges: body.edges }),
+    }),
   createWorkflow: (body: { name?: string; description?: string; nodes: WorkflowNode[]; edges: WorkflowEdge[] }) =>
     http<WorkflowDetail>(`/api/workflows`, { method: "POST", body: JSON.stringify(body) }),
   duplicateWorkflow: (id: number) =>

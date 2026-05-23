@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
+import { ProjectSettingsPanel } from "@/components/inspector/project-settings";
 import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
@@ -74,6 +75,7 @@ export function Inspector({
               <Row label="Hero mode">{project.data.hero_mode}</Row>
               <Row label="Создан">{formatRelativeTime(project.data.created_at)}</Row>
               <Row label="Обновлён">{formatRelativeTime(project.data.updated_at)}</Row>
+              <ProjectSettingsPanel project={project.data} />
               {project.data.general_plan && (
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">

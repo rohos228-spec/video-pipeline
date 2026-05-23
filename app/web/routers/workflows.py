@@ -13,7 +13,7 @@ from app.web.schemas import (
     WorkflowSaveRequest,
     WorkflowSummary,
 )
-from app.services.workflow_run_sync import sync_runs_from_workflow
+from app.orchestrator.graph.validate import validate_workflow_graph
 from app.orchestrator.default_graph import default_graph as _default_graph
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -33,16 +33,29 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
     return wf
 
 
+@router.post("/validate")
+async def validate_workflow(payload: WorkflowSaveRequest) -> dict:
+    """Проверить граф без сохранения (циклы, битые связи)."""
+    nodes = [n.model_dump() for n in payload.nodes]
+    edges = [e.model_dump() for e in payload.edges]
+    return validate_workflow_graph(nodes, edges)
+
+
 @router.post("", response_model=WorkflowDetail, status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     payload: WorkflowSaveRequest,
     session: AsyncSession = Depends(get_session),
 ) -> Workflow:
+    nodes_raw = [n.model_dump() for n in payload.nodes]
+    edges_raw = [e.model_dump() for e in payload.edges]
+    check = validate_workflow_graph(nodes_raw, edges_raw)
+    if not check["valid"]:
+        raise HTTPException(status_code=400, detail={"graph": check["errors"]})
     wf = Workflow(
         name=payload.name or "Untitled",
         description=payload.description,
-        nodes=[n.model_dump() for n in payload.nodes],
-        edges=[e.model_dump() for e in payload.edges],
+        nodes=nodes_raw,
+        edges=edges_raw,
         is_default=False,
         version=1,
     )
@@ -65,8 +78,13 @@ async def update_workflow(
         wf.name = payload.name
     if payload.description is not None:
         wf.description = payload.description
-    wf.nodes = [n.model_dump() for n in payload.nodes]
-    wf.edges = [e.model_dump() for e in payload.edges]
+    nodes_raw = [n.model_dump() for n in payload.nodes]
+    edges_raw = [e.model_dump() for e in payload.edges]
+    check = validate_workflow_graph(nodes_raw, edges_raw)
+    if not check["valid"]:
+        raise HTTPException(status_code=400, detail={"graph": check["errors"]})
+    wf.nodes = nodes_raw
+    wf.edges = edges_raw
     wf.version = (wf.version or 1) + 1
     await sync_runs_from_workflow(session, wf)
     await session.commit()
