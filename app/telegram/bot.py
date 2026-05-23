@@ -107,6 +107,15 @@ except Exception as _ai_router_err:  # noqa: BLE001
     from loguru import logger as _logger
     _logger.warning("AI-агент не подключён: {}", _ai_router_err)
 
+# ──── /debug команды (Phase G) — observability ─────────────────────────────
+try:
+    from app.telegram.handlers.debug import router as _debug_router
+
+    dp.include_router(_debug_router)
+except Exception as _debug_router_err:  # noqa: BLE001
+    from loguru import logger as _logger
+    _logger.warning("/debug не подключён: {}", _debug_router_err)
+
 # Ожидание текстового ответа (тема нового проекта). user_id → True.
 _pending_topic_input: dict[int, bool] = {}
 
