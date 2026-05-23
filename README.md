@@ -2,6 +2,30 @@
 
 Автоматический конвейер генерации коротких роликов (60–75 сек, 9:16) с оркестрацией, Telegram-ботом для HITL-подтверждений и уведомлений, и интеграциями с outsee.io (Nano Banana 2 + Veo 3.1 Fast Relax), ChatGPT web, 11Labs, Whisper, FFmpeg и MoreLogin.
 
+## 🆕 Telegram-команды (на 2026-05-23)
+
+- `/new <тема>` — создать новый проект.
+- `/menu` — главное меню с inline-кнопками.
+- **`/ai <запрос>`** — встроенный AI-агент (Cursor/Devin-стиль внутри
+  бота): читает код, ищет, правит файлы (с HITL-апрувом), запускает
+  тесты, открывает PR'ы. Через aitunnel.ru + `gpt-4o-mini`. Подробнее:
+  [`AGENTS.md` §16](AGENTS.md).
+- **`/debug`** — диагностика: `status`, `project <id>`, `selftest`,
+  `api`, `locks`, `logs`, `ai`.
+
+## 📋 Документация
+
+- **[AGENTS.md](AGENTS.md)** — правила для ИИ-агентов в репо
+  (Devin, Cursor BG, Codex, наш встроенный `/ai`).
+- [HANDOVER.md](HANDOVER.md) — живой контекст текущей разработки.
+- [HOW_TO_RUN.md](HOW_TO_RUN.md) — запуск на машине пользователя.
+- [docs/E4_MIGRATION_GUIDE.md](docs/E4_MIGRATION_GUIDE.md) — миграция
+  handler'ов из `bot.py`.
+- [docs/CALLBACK_INVENTORY.md](docs/CALLBACK_INVENTORY.md) — автоматический
+  реестр всех callback_data в боте.
+- [docs/TRIAGE_2026-05-23.md](docs/TRIAGE_2026-05-23.md) — отчёт по
+  OPEN PR'ам.
+
 ## Стек
 
 - Python 3.11 (pure Python, без Docker)

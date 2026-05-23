@@ -82,6 +82,10 @@ jobs:
       - name: Audit Telegram buttons (fail only on callback_data > 64 bytes)
         run: python scripts/audit_buttons.py --fail
 
+      - name: Callback inventory (warn-mode — fail только при <UNKNOWN> prefixes)
+        run: python -m scripts.cb_inventory --fail-on-unknown > /dev/null
+        continue-on-error: false
+
       - name: Smoke — orchestrator_api поднимается + /health 200
         run: |
           # Запускаем FastAPI в фоне, ждём 3 сек, дёргаем /health.
