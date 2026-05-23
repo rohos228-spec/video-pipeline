@@ -94,7 +94,7 @@ export interface ProjectDetail extends ProjectSummary {
   item_descriptions: string[];
   item_variations: number[];
   enrich_slots_count: number;
-  prompt_overrides: Record<string, string>;
+  prompt_overrides: Record<string, unknown>;
   gpt_text_overrides: Record<string, string>;
   meta: Record<string, unknown>;
 }

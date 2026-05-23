@@ -63,8 +63,11 @@ async def get_style(preset_id: str) -> dict[str, Any]:
 
 @router.get("/variants/{step_code}")
 async def get_step_variants(step_code: str) -> list[str]:
+    """Legacy .md варианты. Шаги без GPT-промта (img, video, audio…) → []."""
     try:
         return list_variants(step_code)
+    except ValueError:
+        return []
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

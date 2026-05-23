@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
-import { stepCodeForNodeType } from "@/lib/node-step-map";
+import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/input";
@@ -59,8 +59,11 @@ export function NodeStudio({
   const variants = useQuery({
     queryKey: ["prompt-variants", stepCode],
     queryFn: () =>
-      fetch(`/api/prompt-studio/variants/${stepCode}`).then((r) => r.json() as Promise<string[]>),
-    enabled: open && !!stepCode,
+      fetch(`/api/prompt-studio/variants/${stepCode}`).then((r) => {
+        if (!r.ok) return [] as string[];
+        return r.json() as Promise<string[]>;
+      }),
+    enabled: open && stepHasPromptVariants(stepCode),
   });
   const artifacts = useQuery({
     queryKey: ["artifacts", projectId, nodeType],
@@ -273,7 +276,7 @@ export function NodeStudio({
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
-                  {stepCode && (
+                  {stepCode && stepHasPromptVariants(stepCode) && (
                     <section>
                       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         Legacy-вариант (.md)

@@ -20,7 +20,27 @@ export const NODE_TO_STEP: Record<string, string> = {
   publish: "publish",
 };
 
+/** Шаги с папкой prompts/* (legacy .md варианты в Node Studio). */
+export const STEPS_WITH_PROMPT_VARIANTS = new Set([
+  "plan",
+  "script",
+  "split",
+  "hero",
+  "items",
+  "enrich_1",
+  "enrich_2",
+  "enrich_3",
+  "enrich_4",
+  "enrich_5",
+  "img_pr",
+  "anim_pr",
+]);
+
 export function stepCodeForNodeType(nodeType: string): string | undefined {
   if (nodeType.startsWith("hitl_")) return undefined;
   return NODE_TO_STEP[nodeType];
+}
+
+export function stepHasPromptVariants(stepCode: string | undefined): boolean {
+  return !!stepCode && STEPS_WITH_PROMPT_VARIANTS.has(stepCode);
 }

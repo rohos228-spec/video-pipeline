@@ -51,7 +51,8 @@ class ProjectDetail(ProjectSummary):
     item_descriptions: list[str] = Field(default_factory=list)
     item_variations: list[int] = Field(default_factory=list)
     enrich_slots_count: int = 3
-    prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    # JSON: legacy step→variant strings + blocks/vars/style_profile/use_blocks_v2
+    prompt_overrides: dict[str, Any] = Field(default_factory=dict)
     gpt_text_overrides: dict[str, str] = Field(default_factory=dict)
     meta: dict[str, Any] = Field(default_factory=dict)
 
