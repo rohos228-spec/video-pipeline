@@ -177,3 +177,145 @@ TOOL_GIT_LOG = ToolSpec(
     is_hitl=False,
     description_short="git log --oneline",
 )
+
+
+# ──────────────────────────── git_branch (HITL) ──────────────────────────────
+
+
+async def _run_git_branch(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+    """Создать новую ветку и переключиться на неё (с HITL-апрувом)."""
+    name = str(args.get("name", "")).strip()
+    if not name:
+        return {"ok": False, "error": "name is required"}
+
+    # Validate naming: не пускаем legacy/, main, vetka-final напрямую
+    forbidden_prefixes = ("main", "vetka-final", "legacy/")
+    if any(name == p or name.startswith(p) for p in forbidden_prefixes):
+        return {
+            "ok": False,
+            "error": f"имя ветки '{name}' запрещено (см. AGENTS.md naming)",
+        }
+
+    base = str(args.get("base", "") or "").strip()
+    cmd = ["checkout", "-b", name]
+    if base:
+        cmd.append(base)
+    code, out, err = await _run_git(cmd, ctx)
+    if code != 0:
+        return {"ok": False, "error": err.strip() or "git checkout -b failed"}
+    return {"ok": True, "branch": name, "output": out + err}
+
+
+TOOL_GIT_BRANCH = ToolSpec(
+    name="git_branch",
+    spec={
+        "type": "function",
+        "function": {
+            "name": "git_branch",
+            "description": (
+                "Создать и переключиться на новую ветку (`git checkout -b`). "
+                "Запрещены имена: main, vetka-final, legacy/*. "
+                "Используй префиксы: feat/, fix/, chore/, agent/ai-*. "
+                "Требует HITL-апрува."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Имя новой ветки (например, fix/telegram-buttons-back).",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "От какой ветки/коммита создать (по умолчанию current HEAD).",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    run=_run_git_branch,
+    is_hitl=True,
+    description_short="Создать ветку (HITL)",
+)
+
+
+# ──────────────────────────── git_commit (HITL) ──────────────────────────────
+
+
+async def _run_git_commit(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+    """Закоммитить изменения. Никаких push'ей — это делает owner вручную."""
+    message = str(args.get("message", "")).strip()
+    if not message:
+        return {"ok": False, "error": "message is required"}
+    if len(message) > 2000:
+        return {"ok": False, "error": "commit message too long (max 2000 chars)"}
+
+    paths = args.get("paths") or []
+    if isinstance(paths, str):
+        paths = [paths]
+
+    # Сначала git add
+    if paths:
+        add_cmd = ["add", "--", *[str(p) for p in paths]]
+    else:
+        add_cmd = ["add", "-A"]
+    code, out, err = await _run_git(add_cmd, ctx)
+    if code != 0:
+        return {"ok": False, "error": f"git add failed: {err.strip()}"}
+
+    # Проверка что есть что коммитить
+    code_check, out_check, _ = await _run_git(["diff", "--cached", "--name-only"], ctx)
+    if code_check == 0 and not out_check.strip():
+        return {"ok": False, "error": "ничего не закоммичено (нет staged changes)"}
+
+    # Сам commit
+    code, out, err = await _run_git(["commit", "-m", message], ctx)
+    if code != 0:
+        return {"ok": False, "error": err.strip() or "git commit failed"}
+
+    # SHA нового коммита
+    code, sha, _ = await _run_git(["rev-parse", "--short", "HEAD"], ctx)
+    sha = sha.strip()
+
+    return {
+        "ok": True,
+        "sha": sha,
+        "message": message,
+        "output": redact_secrets(out),
+    }
+
+
+TOOL_GIT_COMMIT = ToolSpec(
+    name="git_commit",
+    spec={
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": (
+                "Сделать коммит. По умолчанию `git add -A` всё. "
+                "Стиль message: '<type>(<scope>): <описание>'. "
+                "Pushed НЕ делается — owner пушит вручную. "
+                "Требует HITL-апрува."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message (см. AGENTS.md §15 стиль).",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Опционально: только эти пути (по умолчанию все changes).",
+                    },
+                },
+                "required": ["message"],
+            },
+        },
+    },
+    run=_run_git_commit,
+    is_hitl=True,
+    description_short="git commit (HITL)",
+)

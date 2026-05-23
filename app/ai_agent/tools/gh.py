@@ -160,3 +160,74 @@ TOOL_GH_PR_VIEW = ToolSpec(
     is_hitl=False,
     description_short="gh pr view",
 )
+
+
+# ──────────────────────────── gh_pr_create (HITL) ────────────────────────────
+
+
+async def _run_gh_pr_create(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+    """Открыть PR через gh CLI. Требует HITL."""
+    title = str(args.get("title", "")).strip()
+    body = str(args.get("body", "")).strip()
+    base = str(args.get("base", "") or "").strip()
+    draft = bool(args.get("draft", True))
+
+    if not title:
+        return {"ok": False, "error": "title is required"}
+
+    cmd = ["pr", "create", "--title", title]
+    if body:
+        cmd.extend(["--body", body])
+    if base:
+        cmd.extend(["--base", base])
+    if draft:
+        cmd.append("--draft")
+
+    code, out, err = await _run_gh(cmd, ctx)
+    if code != 0:
+        return {"ok": False, "error": err.strip() or "gh pr create failed"}
+
+    # gh печатает URL новосозданного PR
+    url = (out or "").strip().splitlines()[-1] if out else ""
+    return {"ok": True, "url": url, "title": title, "draft": draft}
+
+
+TOOL_GH_PR_CREATE = ToolSpec(
+    name="gh_pr_create",
+    spec={
+        "type": "function",
+        "function": {
+            "name": "gh_pr_create",
+            "description": (
+                "Открыть PR из текущей ветки. По умолчанию draft. "
+                "Body должен следовать .github/PULL_REQUEST_TEMPLATE.md. "
+                "Требует HITL-апрува."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Заголовок PR в формате '<type>(<scope>): <описание>'.",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Описание PR (markdown).",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "Base branch (по умолчанию — default репо).",
+                    },
+                    "draft": {
+                        "type": "boolean",
+                        "description": "Открыть как draft (по умолчанию true).",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    run=_run_gh_pr_create,
+    is_hitl=True,
+    description_short="gh pr create (HITL)",
+)

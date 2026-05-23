@@ -384,3 +384,202 @@ TOOL_SEARCH_CODE = ToolSpec(
     is_hitl=False,
     description_short="Поиск по коду (rg)",
 )
+
+
+# ──────────────────────────── edit_file (HITL) ───────────────────────────────
+
+
+async def _run_edit_file(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+    """StrReplace-style правка. ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL-АПРУВА.
+
+    Loop.py гарантирует что эта функция не вызовется без owner ✅.
+    """
+    from app.ai_agent.safety import scan_for_secrets
+
+    path = str(args.get("path", "")).strip()
+    old_string = args.get("old_string", "")
+    new_string = args.get("new_string", "")
+
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    if not isinstance(old_string, str) or not isinstance(new_string, str):
+        return {"ok": False, "error": "old_string and new_string must be strings"}
+    if not old_string:
+        return {"ok": False, "error": "old_string не может быть пустым"}
+
+    # Secret-scan на new_string — не даём LLM записать ключ хардкодом
+    secrets_in_new = scan_for_secrets(new_string)
+    if secrets_in_new:
+        return {
+            "ok": False,
+            "error": (
+                f"secret-scan: в new_string найдены секреты ({len(secrets_in_new)} "
+                f"паттернов: {[n for n, _ in secrets_in_new[:3]]}). "
+                "Не пиши ключи в код, используй env-переменные."
+            ),
+        }
+
+    try:
+        p = check_path(path, "write", repo_root=ctx.repo_root)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"safety: {e}"}
+
+    if not p.exists():
+        return {"ok": False, "error": f"file not found: {path}"}
+
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"read error: {e}"}
+
+    count = text.count(old_string)
+    if count == 0:
+        return {
+            "ok": False,
+            "error": f"old_string not found in {path}",
+            "hint": "Прочитай файл сначала read_file и скопируй точную подстроку.",
+        }
+    if count > 1:
+        return {
+            "ok": False,
+            "error": (
+                f"old_string найден {count} раз в {path}. Должен быть уникальным. "
+                "Расширь old_string контекстом (3-5 строк до и после)."
+            ),
+        }
+
+    new_text = text.replace(old_string, new_string, 1)
+    try:
+        p.write_text(new_text, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"write error: {e}"}
+
+    return {
+        "ok": True,
+        "path": path,
+        "bytes_before": len(text),
+        "bytes_after": len(new_text),
+        "lines_before": text.count("\n") + 1,
+        "lines_after": new_text.count("\n") + 1,
+    }
+
+
+TOOL_EDIT_FILE = ToolSpec(
+    name="edit_file",
+    spec={
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Заменить уникальную подстроку в файле (StrReplace). "
+                "old_string должен быть уникальным в файле — расширяй контекстом "
+                "(3-5 строк до и после) для уникальности. "
+                "ВНИМАНИЕ: эта правка требует подтверждения owner'а через HITL. "
+                "Бот покажет diff пользователю с кнопками ✅/🔁/✏️/❌."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Относительный путь к файлу.",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Точная подстрока для замены (уникальная в файле).",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "На что заменить. Может быть пустой строкой.",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    run=_run_edit_file,
+    is_hitl=True,
+    description_short="StrReplace в файле (HITL)",
+)
+
+
+# ──────────────────────────── write_file (HITL) ──────────────────────────────
+
+
+async def _run_write_file(args: dict, ctx: "ToolContext") -> dict[str, Any]:
+    """Создать новый файл или полностью переписать существующий.
+
+    ВЫПОЛНЯЕТСЯ ТОЛЬКО ПОСЛЕ HITL.
+    """
+    from app.ai_agent.safety import scan_for_secrets
+
+    path = str(args.get("path", "")).strip()
+    content = args.get("content", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    if not isinstance(content, str):
+        return {"ok": False, "error": "content must be string"}
+
+    secrets = scan_for_secrets(content)
+    if secrets:
+        return {
+            "ok": False,
+            "error": (
+                f"secret-scan: в content найдены секреты ({[n for n, _ in secrets[:3]]}). "
+                "Не пиши ключи в код."
+            ),
+        }
+
+    try:
+        p = check_path(path, "write", repo_root=ctx.repo_root)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"safety: {e}"}
+
+    # Создаём родительские директории если нужно
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        existed = p.exists()
+        p.write_text(content, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"write error: {e}"}
+
+    return {
+        "ok": True,
+        "path": path,
+        "existed_before": existed,
+        "bytes_written": len(content.encode("utf-8")),
+        "lines": content.count("\n") + 1,
+    }
+
+
+TOOL_WRITE_FILE = ToolSpec(
+    name="write_file",
+    spec={
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Создать новый файл или ПОЛНОСТЬЮ переписать существующий. "
+                "Для частичных правок используй edit_file. "
+                "ВНИМАНИЕ: требует HITL-апрува owner'а."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Относительный путь к новому/перезаписываемому файлу.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Полное содержимое файла.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    run=_run_write_file,
+    is_hitl=True,
+    description_short="Создать/переписать файл (HITL)",
+)
