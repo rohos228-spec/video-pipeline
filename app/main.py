@@ -245,7 +245,7 @@ async def _run_worker_loop(bot) -> None:
     from app.db import session_scope
     from app.models import Project, ProjectStatus
     from app.orchestrator.pipeline import advance_project
-    from app.services.step_cancel import StepCancelledError
+    from app.services.step_cancel import StepCancelledError, consume_stop
 
     MAX_FAIL = 3
     # (project_id, status.value) -> кол-во подряд неудач на этом шаге
@@ -303,6 +303,14 @@ async def _run_worker_loop(bot) -> None:
                     prev_status_value = p.status.value
                     try:
                         await advance_project(s, p, bot)
+                        # Если юзер нажал ⏹ именно в тот момент, когда
+                        # последний кадр шага успевал завершиться до
+                        # следующей проверки raise_if_cancelled, флаг
+                        # остаётся в _stop_pids и убьёт СЛЕДУЮЩИЙ запуск
+                        # того же шага. Сбрасываем его здесь, пока шаг
+                        # завершился штатно (consume_stop — no-op, если
+                        # флаг уже снят внутри шага).
+                        consume_stop(p.id)
                         # успех на этом шаге — сбрасываем счётчик
                         fail_counts.pop(key, None)
                         # если статус изменился — коммитим прямо сейчас

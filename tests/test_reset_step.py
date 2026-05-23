@@ -351,3 +351,87 @@ async def test_reset_video_resets_frame_status(session, tmp_path: Path):
     # downstream audio тоже должен быть очищен (его нет, проверим что не
     # упало)
     assert "video" in summary
+
+
+@pytest.mark.asyncio
+async def test_reset_img_with_animation_prompt_ready_frames(
+    session, tmp_path: Path
+):
+    """Регрессия: сброс шага «img» при кадрах в статусе
+    animation_prompt_ready (с animation_prompt — шаг 8 пройден, шаг 9 ещё
+    нет) должен сбросить статус в image_prompt_ready.
+
+    До фикса _wipe_images не имел animation_prompt_ready в списке статусов
+    и оставлял такие кадры в некорректном состоянии (статус
+    animation_prompt_ready, но ни картинки, ни animation_prompt).
+    """
+    p = await _mkproject(session)
+    img_p = tmp_path / "img1.png"
+    img_p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="p1",
+        animation_prompt="a1",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    await _mkart(
+        session, p, ArtifactKind.scene_image,
+        path=str(img_p), frame_id=fr.id,
+    )
+    p.status = ProjectStatus.images_ready
+    await session.flush()
+
+    await reset_step(session, p, "img")
+
+    await session.refresh(fr)
+    # После сброса: статус должен быть image_prompt_ready (image_prompt есть),
+    # animation_prompt — очищен (downstream _wipe_anim_pr), картинка удалена.
+    assert fr.status is FrameStatus.image_prompt_ready, (
+        f"ожидался image_prompt_ready, получен {fr.status}"
+    )
+    assert fr.animation_prompt is None
+    assert not img_p.exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_img_with_video_generated_frames(
+    session, tmp_path: Path
+):
+    """Регрессия: сброс шага «img» при кадрах в статусе video_generated
+    должен корректно сбросить статус в image_prompt_ready.
+
+    В reversed-каскаде _wipe_videos запускается ДО _wipe_images и переводит
+    video_generated → animation_prompt_ready. После этого _wipe_images должен
+    поймать animation_prompt_ready и перевести в image_prompt_ready.
+    """
+    p = await _mkproject(session)
+    img_p = tmp_path / "img2.png"
+    img_p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    vid_p = tmp_path / "vid2.mp4"
+    vid_p.write_bytes(b"x")
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="p1",
+        animation_prompt="a1",
+        status=FrameStatus.video_generated,
+    )
+    await _mkart(
+        session, p, ArtifactKind.scene_image,
+        path=str(img_p), frame_id=fr.id,
+    )
+    await _mkart(
+        session, p, ArtifactKind.scene_video,
+        path=str(vid_p), frame_id=fr.id,
+    )
+    p.status = ProjectStatus.videos_ready
+    await session.flush()
+
+    await reset_step(session, p, "img")
+
+    await session.refresh(fr)
+    # После сброса: статус image_prompt_ready, animation_prompt и картинка удалены.
+    assert fr.status is FrameStatus.image_prompt_ready, (
+        f"ожидался image_prompt_ready, получен {fr.status}"
+    )
+    assert fr.animation_prompt is None
+    assert not img_p.exists()
