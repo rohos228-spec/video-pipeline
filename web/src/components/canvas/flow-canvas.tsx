@@ -163,7 +163,9 @@ export function FlowCanvas({
         onNodesChange={onNodesChange}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.18, maxZoom: 1.0 }}
+        fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
+        minZoom={0.15}
+        maxZoom={1.5}
         proOptions={{ hideAttribution: true }}
         nodesDraggable
         nodesConnectable={false}

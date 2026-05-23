@@ -1,7 +1,9 @@
-"""Дефолтный шаблон Workflow, который соответствует текущему ProjectStatus-флоу
-(plan → script → split → hero/items → enrich×3 → image_prompts → ...).
+"""Дефолтный шаблон Workflow.
 
 Сидится один раз на старте сервера. Юзер может его клонировать и редактировать.
+
+Если меняешь раскладку нод (`_default_graph`) — обяззательно бампь
+`LAYOUT_VERSION`, иначе уже посеянный workflow не обновится.
 """
 
 from __future__ import annotations
@@ -11,12 +13,17 @@ from sqlalchemy import select
 from app.db import session_scope
 from app.models import Workflow
 
+# Bump при изменении раскладки → существующий default-workflow обновится.
+LAYOUT_VERSION = 2
+
 
 def _default_graph() -> tuple[list[dict], list[dict]]:
     """Возвращает (nodes, edges) дефолтного линейного пайплайна.
 
     Координаты в @xyflow/react: (x растёт вправо, y растёт вниз).
-    Шаги расположены в две колонки, чтобы влезть в canvas.
+    Раскладка: горизонтальная, слева направо. HITL-гейты слегка
+    приподняты (выше по Y), чтобы визуально отличались от обычных нод
+    основной цепочки. Canvas прокручивается, fitView подгонит зум.
     """
     steps = [
         ("plan", "1. План", "Общий план ролика"),
@@ -37,15 +44,19 @@ def _default_graph() -> tuple[list[dict], list[dict]]:
         ("audio", "10. Аудио", "ElevenLabs TTS + Whisper"),
         ("assemble", "11. Сборка", "FFmpeg финальный mp4"),
         ("hitl_final", "HITL: финал", "Одобрение финала"),
-        ("publish", "12. Публикация", "TikTok / YT Shorts / IG / VK / Likee"),
+        ("publish", "12. Публикация", "Публикация на 5 площадок"),
     ]
+    # Геометрия: ширина ноды ≈ 244, желаемый шаг = 290, чтобы edges не сливались.
+    STEP_X = 290
+    BASE_X = 80
+    MAIN_Y = 200       # основная горизонтальная линия
+    HITL_Y_OFFSET = -120  # HITL чуть выше — образует «волну» подтверждений
+
     nodes: list[dict] = []
     edges: list[dict] = []
     for idx, (typ, label, descr) in enumerate(steps):
-        col = idx % 2
-        row = idx // 2
-        x = 80 + col * 320
-        y = 60 + row * 140
+        x = BASE_X + idx * STEP_X
+        y = MAIN_Y + (HITL_Y_OFFSET if typ.startswith("hitl_") else 0)
         nodes.append({
             "id": f"n_{typ}",
             "type": typ,
@@ -66,24 +77,41 @@ def _default_graph() -> tuple[list[dict], list[dict]]:
 
 
 async def seed_default_workflow() -> None:
-    """Если в БД нет ни одного `is_default=True` Workflow — создаём."""
+    """Создаёт или обновляет системный default Workflow.
+
+    Если уже есть запись с `is_default=True` — обновляем nodes/edges
+    при условии, что её `meta.layout_version` устарела (иначе пользовательские
+    правки не затрём, но визуально-важные миграции прокатятся).
+    """
+    nodes, edges = _default_graph()
     async with session_scope() as session:
         existing = (
             await session.execute(
                 select(Workflow).where(Workflow.is_default == True)  # noqa: E712
             )
         ).scalar_one_or_none()
-        if existing is not None:
+
+        if existing is None:
+            wf = Workflow(
+                name="Стандартный shorts-пайплайн",
+                description=(
+                    "Полный 60–75 сек ролик: план → сценарий → разбивка → "
+                    "герои/предметы → enrich → image_prompts → images → "
+                    "анимация → видео → аудио → сборка → публикация."
+                ),
+                nodes=nodes,
+                edges=edges,
+                is_default=True,
+                version=1,
+                meta={"layout_version": LAYOUT_VERSION},
+            )
+            session.add(wf)
             return
-        nodes, edges = _default_graph()
-        wf = Workflow(
-            name="Стандартный shorts-пайплайн",
-            description="Полный 60–75 сек ролик: план → сценарий → разбивка → "
-                        "герои/предметы → enrich → image_prompts → images → "
-                        "анимация → видео → аудио → сборка → публикация.",
-            nodes=nodes,
-            edges=edges,
-            is_default=True,
-            version=1,
-        )
-        session.add(wf)
+
+        meta = dict(existing.meta or {})
+        if meta.get("layout_version") != LAYOUT_VERSION:
+            existing.nodes = nodes
+            existing.edges = edges
+            meta["layout_version"] = LAYOUT_VERSION
+            existing.meta = meta
+            existing.version = (existing.version or 1) + 1
