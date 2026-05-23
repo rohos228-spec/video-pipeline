@@ -27,6 +27,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
 
@@ -38,6 +39,7 @@ export function NodeStudio({
   initialTab = "settings",
   promptFocus,
   nodeDisabled = false,
+  promptSlots: promptSlotsProp,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -46,6 +48,7 @@ export function NodeStudio({
   initialTab?: StudioTab;
   promptFocus?: NodePromptSlot | null;
   nodeDisabled?: boolean;
+  promptSlots?: NodePromptSlot[];
 }) {
   const nodeType = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(nodeType);
@@ -91,10 +94,11 @@ export function NodeStudio({
   });
 
   const customSlots = useMemo(() => {
+    if (promptSlotsProp?.length) return promptSlotsProp;
     const meta = (project.data?.meta || {}) as { custom_prompts?: Record<string, NodePromptSlot[]> };
     if (nodeKey && meta.custom_prompts?.[nodeKey]) return meta.custom_prompts[nodeKey];
     return defaultPromptSlots(nodeType);
-  }, [project.data?.meta, nodeKey, nodeType]);
+  }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
   useEffect(() => {
     if (!open) return;
@@ -216,7 +220,7 @@ export function NodeStudio({
                 </SheetTitle>
                 <SheetDescription>{spec.description}</SheetDescription>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Badge variant="muted" className="font-mono text-[10px]">
+                  <Badge variant="muted" className="text-[10px]">
                     {formatNodeKeyLabel(nodeKey)}
                   </Badge>
                 </div>
@@ -332,7 +336,7 @@ export function NodeStudio({
                       {Object.entries(blockCategories).map(([cat, names]) => (
                         <div key={cat} className="flex flex-col gap-1">
                           <label className="text-[10px] uppercase text-muted-foreground">
-                            {cat.replace(/_/g, " ")}
+                            {humanizeSlug(cat)}
                           </label>
                           <select
                             className="h-8 rounded-md border border-input bg-background px-2 text-xs"
@@ -344,7 +348,7 @@ export function NodeStudio({
                             <option value="">— по умолчанию —</option>
                             {names.map((n) => (
                               <option key={n} value={n}>
-                                {n.replace(/_/g, " ")}
+                                {humanizeSlug(n)}
                               </option>
                             ))}
                           </select>
@@ -369,7 +373,7 @@ export function NodeStudio({
                       >
                         {(variants.data ?? ["default"]).map((v) => (
                           <option key={v} value={v}>
-                            {v.replace(/_/g, " ")}
+                            {humanizeSlug(v)}
                           </option>
                         ))}
                       </select>
@@ -504,7 +508,7 @@ export function NodeStudio({
                         className="rounded-xl border border-white/10 bg-white/5 p-2"
                       >
                         <div className="text-[10px] uppercase text-muted-foreground">
-                          {a.kind.replace(/_/g, " ")}
+                          {humanizeSlug(a.kind)}
                         </div>
                         {a.path.match(/\.(mp4|webm)$/i) ? (
                           <video
@@ -538,8 +542,4 @@ export function NodeStudio({
       </SheetContent>
     </Sheet>
   );
-}
-
-function formatNodeKeyLabel(key: string): string {
-  return key.replace(/_/g, " ");
 }

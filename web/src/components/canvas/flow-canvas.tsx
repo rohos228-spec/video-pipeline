@@ -32,6 +32,7 @@ import type {
 } from "@/lib/types";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
+import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
@@ -173,26 +174,6 @@ export function FlowCanvas({
     [setEdges],
   );
 
-  useEffect(() => {
-    const onDetach = (ev: Event) => {
-      const key = (ev as CustomEvent<{ nodeKey: string }>).detail?.nodeKey;
-      if (!key) return;
-      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
-    };
-    const onDelete = (ev: Event) => {
-      const key = (ev as CustomEvent<{ nodeKey: string }>).detail?.nodeKey;
-      if (!key) return;
-      setNodes((prev) => prev.filter((n) => n.id !== key));
-      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
-    };
-    window.addEventListener("canvas-detach-node", onDetach);
-    window.addEventListener("canvas-delete-node", onDelete);
-    return () => {
-      window.removeEventListener("canvas-detach-node", onDetach);
-      window.removeEventListener("canvas-delete-node", onDelete);
-    };
-  }, [setNodes, setEdges]);
-
   const [saving, setSaving] = useState(false);
 
   const persistWorkflow = useCallback(async () => {
@@ -226,12 +207,54 @@ export function FlowCanvas({
       });
       toast.success("Граф сохранён");
       await workflow.refetch();
+      if (projectId) {
+        await api.ensureProjectRun(projectId).catch(() => undefined);
+      }
     } catch (e) {
       toast.error(`Не сохранилось: ${String(e)}`);
     } finally {
       setSaving(false);
     }
-  }, [workflow, nodes, edges]);
+  }, [workflow, nodes, edges, projectId]);
+
+  useEffect(() => {
+    const onDetach = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ nodeKey: string; autoSave?: boolean }>).detail;
+      const key = detail?.nodeKey;
+      if (!key) return;
+      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
+      if (detail?.autoSave) {
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+        }, 50);
+      }
+    };
+    const onDelete = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ nodeKey: string; autoSave?: boolean }>).detail;
+      const key = detail?.nodeKey;
+      if (!key) return;
+      setNodes((prev) => prev.filter((n) => n.id !== key));
+      setEdges((prev) => prev.filter((e) => e.source !== key && e.target !== key));
+      if (detail?.autoSave) {
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+        }, 50);
+      } else {
+        toast.success("Нода удалена — сохраните граф");
+      }
+    };
+    const onSaveRequest = () => {
+      void persistWorkflow();
+    };
+    window.addEventListener("canvas-detach-node", onDetach);
+    window.addEventListener("canvas-delete-node", onDelete);
+    window.addEventListener("canvas-save-workflow", onSaveRequest);
+    return () => {
+      window.removeEventListener("canvas-detach-node", onDetach);
+      window.removeEventListener("canvas-delete-node", onDelete);
+      window.removeEventListener("canvas-save-workflow", onSaveRequest);
+    };
+  }, [setNodes, setEdges, persistWorkflow]);
 
   const addNode = useCallback(
     (type: string) => {
@@ -508,7 +531,7 @@ function RunOverlay({
     setBusy(true);
     try {
       await api.resetProjectStep(projectId, stepCode);
-      toast.success(`Шаг «${stepCode}» сброшен`);
+      toast.success(`Шаг «${formatStepCode(stepCode)}» сброшен`);
       onRunCreated();
     } catch (e) {
       toast.error(String(e));
@@ -529,7 +552,7 @@ function RunOverlay({
       });
       await api.runProjectStep(projectId, stepCode);
       onRunCreated();
-      toast.success(`Run #${created.id} · шаг «${stepCode}» запущен`, {
+      toast.success(`Run #${created.id} · шаг «${formatStepCode(stepCode)}» запущен`, {
         description: "Воркер подхватит шаг — HITL в веб-UI",
       });
     } catch (e) {
@@ -543,8 +566,8 @@ function RunOverlay({
     <div className="pointer-events-none absolute right-4 top-4 z-10 flex items-center gap-2">
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
-        <span className="font-mono font-medium">
-          {run ? `#${run.id} · ${run.status}` : "не запущен"}
+        <span className="font-medium">
+          {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
         </span>
       </div>
       <Button

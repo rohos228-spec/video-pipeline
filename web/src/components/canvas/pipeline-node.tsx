@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   CheckCircle2,
@@ -8,28 +9,16 @@ import {
   AlertCircle,
   Hourglass,
   MinusCircle,
-  Play,
-  Unlink,
-  Trash2,
-  Download,
-  Eye,
-  Plus,
-  Ban,
 } from "lucide-react";
 import type { NodeRunStatus } from "@/lib/types";
 import { getNodeSpec, formatNodeTypeLabel } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
 import { cn } from "@/lib/utils";
-import { useCanvasActionsOptional } from "./canvas-actions-context";
-import { defaultPromptSlots, isEnrichNode } from "@/lib/node-prompts";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  assetTrayKindForNodeType,
+  useCanvasActionsOptional,
+} from "./canvas-actions-context";
+import { NodeVMenu } from "./node-v-menu";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -51,23 +40,26 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const statusConfig = STATUS_CONFIG[d.status];
   const StatusIcon = statusConfig.icon;
   const running = d.status === "running";
-  const slots = defaultPromptSlots(d.type);
 
-  const assetKind =
-    d.type === "hero" || d.type === "hitl_hero"
-      ? "hero"
-      : d.type === "items"
-        ? "items"
-        : d.type === "images" || d.type === "hitl_images"
-          ? "images"
-          : d.type === "videos" || d.type === "hitl_videos"
-            ? "videos"
-            : null;
+  const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
+  const assetKind = assetTrayKindForNodeType(d.type);
+  const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
+
+  useEffect(() => {
+    if (!vMenuOpen) return;
+    const close = (ev: MouseEvent) => {
+      const t = ev.target as HTMLElement;
+      if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
+      actions?.setVMenuNodeKey(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [vMenuOpen, actions]);
 
   return (
     <div
       className={cn(
-        "group relative w-[260px] overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-card/95 via-card/90 to-card/70 shadow-lg shadow-black/40 backdrop-blur-md transition-all duration-200",
+        "group relative w-[260px] overflow-visible rounded-2xl border border-white/10 bg-gradient-to-br from-card/95 via-card/90 to-card/70 shadow-lg shadow-black/40 backdrop-blur-md transition-all duration-200 premium-node-glow",
         "hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/10",
         running && "glow-running border-primary/50",
         d.status === "done" && "border-emerald-500/30",
@@ -77,8 +69,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
         disabled && "opacity-45 grayscale",
       )}
       style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
+      onClick={() => actions?.onNodeBodyClick(d.nodeKey, d.type)}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,hsl(45_90%_60%/0.08),transparent_55%)]" />
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl bg-[radial-gradient(ellipse_at_top_right,hsl(45_90%_60%/0.08),transparent_55%)]" />
 
       <Handle
         type="target"
@@ -94,83 +87,62 @@ export function PipelineNode({ data, selected }: NodeProps) {
       />
 
       {actions && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-background/80 text-[11px] font-bold text-muted-foreground shadow-sm backdrop-blur hover:border-primary/50 hover:text-primary"
-              onClick={(e) => e.stopPropagation()}
-              title="Меню ноды"
-            >
-              V
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-64" onClick={(e) => e.stopPropagation()}>
-            <DropdownMenuLabel>Схема работы</DropdownMenuLabel>
-            {slots.map((slot, i) => (
-              <DropdownMenuItem key={slot.id} onClick={() => actions.onOpenPrompt(d.nodeKey, d.type, slot)}>
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 text-[10px] font-bold text-primary">
-                  {i + 1}
-                </span>
-                <span className="flex flex-col">
-                  <span>{slot.title}</span>
-                  {slot.description && (
-                    <span className="text-[10px] text-muted-foreground">{slot.description}</span>
-                  )}
-                </span>
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuItem onClick={() => actions.onAddPrompt(d.nodeKey, d.type)}>
-              <Plus className="h-3.5 w-3.5" />
-              Добавить промт
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => actions.onRunNode(d.nodeKey, d.type)}>
-              <Play className="h-3.5 w-3.5" />
-              Запустить шаг
-            </DropdownMenuItem>
-            {isEnrichNode(d.type) && (
-              <DropdownMenuItem
-                onClick={() =>
-                  actions.onOpenPrompt(d.nodeKey, d.type, {
-                    id: "excel",
-                    title: "Excel",
-                    kind: "excel",
-                  })
-                }
-              >
-                <Eye className="h-3.5 w-3.5" />
-                Просмотр Excel
-              </DropdownMenuItem>
+        <>
+          <button
+            type="button"
+            className={cn(
+              "node-v-trigger absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border shadow-sm backdrop-blur transition-colors",
+              vMenuOpen
+                ? "border-primary/60 bg-primary/20 text-primary"
+                : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
             )}
-            <DropdownMenuItem onClick={() => actions.onDownloadPrompts(d.nodeKey, d.type)}>
-              <Download className="h-3.5 w-3.5" />
-              Скачать промты
-            </DropdownMenuItem>
-            {assetKind && (
-              <DropdownMenuItem onClick={() => actions.onOpenAssets(assetKind, d.type)}>
-                <Eye className="h-3.5 w-3.5" />
-                Файлы и превью
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => actions.onDetachNode(d.nodeKey)}>
-              <Unlink className="h-3.5 w-3.5" />
-              Открепить связи
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => actions.onToggleDisable(d.nodeKey, !disabled)}>
-              <Ban className="h-3.5 w-3.5" />
-              {disabled ? "Включить ноду" : "Отключить ноду"}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onClick={() => actions.onDeleteNode(d.nodeKey)}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Удалить ноду
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
+            }}
+            title="Меню ноды"
+          >
+            <span className="text-[11px] font-bold">V</span>
+          </button>
+
+          <NodeVMenu
+            open={!!vMenuOpen}
+            slots={slots}
+            disabled={disabled}
+            hasAssets={assetKind != null}
+            onSelectPrompt={(slot) => {
+              actions.setVMenuNodeKey(null);
+              actions.onOpenPrompt(d.nodeKey, d.type, slot);
+            }}
+            onAddPrompt={() => actions.onAddPrompt(d.nodeKey, d.type)}
+            onViewAllPrompts={() => {
+              actions.setVMenuNodeKey(null);
+              actions.onViewAllPrompts(d.nodeKey, d.type);
+            }}
+            onDownloadPrompts={() => actions.onDownloadPrompts(d.nodeKey, d.type)}
+            onRunNode={() => {
+              actions.setVMenuNodeKey(null);
+              actions.onRunNode(d.nodeKey, d.type);
+            }}
+            onOpenAssets={
+              assetKind
+                ? () => {
+                    actions.setVMenuNodeKey(null);
+                    actions.onOpenAssets(assetKind, d.type);
+                  }
+                : undefined
+            }
+            onDetachNode={() => {
+              actions.setVMenuNodeKey(null);
+              actions.onDetachNode(d.nodeKey);
+            }}
+            onToggleDisable={() => actions.onToggleDisable(d.nodeKey, !disabled)}
+            onDeleteNode={() => {
+              actions.setVMenuNodeKey(null);
+              actions.onDeleteNode(d.nodeKey);
+            }}
+          />
+        </>
       )}
 
       <div className="relative flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
@@ -214,7 +186,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
       )}
       {d.status === "running" && d.progress > 0 && (
         <div
-          className="absolute bottom-0 left-0 h-0.5 bg-gradient-to-r from-primary via-amber-400/80 to-primary transition-all"
+          className="absolute bottom-0 left-0 h-0.5 rounded-b-2xl bg-gradient-to-r from-primary via-amber-400/80 to-primary transition-all"
           style={{ width: `${d.progress}%` }}
         />
       )}

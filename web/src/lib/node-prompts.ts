@@ -56,11 +56,11 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
     { id: "blocks", title: "Блоки стиля", kind: "blocks", stepCode: "img_pr" },
   ],
-  images: [{ id: "outsee", title: "Outsee генерация", kind: "gpt", description: "Браузер outsee.io" }],
+  images: [{ id: "outsee", title: "Генератор изображений", kind: "gpt", description: "Браузер outsee.io" }],
   animation_prompts: [
     { id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" },
   ],
-  videos: [{ id: "outsee", title: "Outsee видео", kind: "gpt", description: "Veo 3.1" }],
+  videos: [{ id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" }],
   audio: [{ id: "tts", title: "ElevenLabs TTS", kind: "gpt" }],
   assemble: [{ id: "ffmpeg", title: "Сборка FFmpeg", kind: "gpt" }],
   publish: [{ id: "social", title: "Публикация", kind: "gpt" }],

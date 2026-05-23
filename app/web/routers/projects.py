@@ -14,6 +14,7 @@ from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.event_bus import publish_project_event
 from app.services.project_steps import list_step_codes, start_step
+from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.web.deps import get_session
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
@@ -111,7 +112,28 @@ async def create_project(
         "slug": p.slug,
         "topic": p.topic,
     })
+    wf_id = await _get_default_workflow_id()
+    if wf_id is not None:
+        try:
+            await ensure_run_for_project(p.id, wf_id)
+        except Exception:
+            pass
     return p
+
+
+@router.post("/{project_id}/ensure-run")
+async def ensure_project_run(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, int]:
+    """Гарантирует WorkflowRun для проекта (связь с графом в БД)."""
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    wf_id = await _get_default_workflow_id()
+    if wf_id is None:
+        raise HTTPException(status_code=404, detail="default workflow not found")
+    run_id = await ensure_run_for_project(project_id, wf_id)
+    return {"run_id": run_id}
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

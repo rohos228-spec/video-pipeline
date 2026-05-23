@@ -218,6 +218,9 @@ export const api = {
     const q = sheet ? `?sheet=${encodeURIComponent(sheet)}` : "";
     return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${q}`);
   },
+  ensureProjectRun: (projectId: number) =>
+    http<{ run_id: number }>(`/api/projects/${projectId}/ensure-run`, { method: "POST" }),
+
   listProjectAssets: (projectId: number, kind = "all") =>
     http<ProjectAsset[]>(`/api/projects/${projectId}/assets?kind=${kind}`),
 

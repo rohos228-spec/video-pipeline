@@ -20,6 +20,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import { formatProjectStatus } from "@/lib/format-labels";
 
 export function ProjectSidebar({
   selectedProjectId,
@@ -223,7 +224,7 @@ function StatusPill({ status }: { status: ProjectStatus }) {
   const variant = statusVariant(status);
   return (
     <Badge variant={variant} className="h-4 px-1.5 text-[9px]">
-      {statusLabel(status)}
+      {formatProjectStatus(status)}
     </Badge>
   );
 }
@@ -311,37 +312,4 @@ function statusVariant(s: ProjectStatus): "default" | "success" | "warning" | "d
   if (s === "published" || s === "assembled") return "success";
   if (s.endsWith("_ready") || s === "audio_ready" || s === "videos_ready") return "info";
   return "default";
-}
-
-function statusLabel(s: ProjectStatus): string {
-  const ru: Partial<Record<ProjectStatus, string>> = {
-    new: "новый",
-    planning: "план",
-    plan_ready: "план готов",
-    scripting: "сценарий",
-    script_ready: "сценарий готов",
-    splitting: "разбивка",
-    frames_ready: "кадры готовы",
-    generating_hero: "герои",
-    hero_ready: "герои готовы",
-    generating_items: "предметы",
-    items_ready: "предметы готовы",
-    generating_image_prompts: "img промты",
-    image_prompts_ready: "img промты готовы",
-    generating_images: "картинки",
-    images_ready: "картинки готовы",
-    generating_animation_prompts: "anim промты",
-    animation_prompts_ready: "anim промты готовы",
-    generating_videos: "видео",
-    videos_ready: "видео готово",
-    generating_audio: "аудио",
-    audio_ready: "аудио готово",
-    assembling: "сборка",
-    assembled: "собрано",
-    publishing: "публикация",
-    published: "опубликовано",
-    paused: "пауза",
-    failed: "ошибка",
-  };
-  return ru[s] ?? s;
 }

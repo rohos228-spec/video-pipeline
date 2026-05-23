@@ -8,7 +8,11 @@ export type AssetTrayKind = "hero" | "items" | "images" | "videos" | "project";
 export interface CanvasActions {
   projectId: number | null;
   disabledNodes: Set<string>;
+  vMenuNodeKey: string | null;
+  setVMenuNodeKey: (key: string | null) => void;
+  getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
+  onViewAllPrompts: (nodeKey: string, nodeType: string) => void;
   onAddPrompt: (nodeKey: string, nodeType: string) => void;
   onRunNode: (nodeKey: string, nodeType: string) => void;
   onToggleDisable: (nodeKey: string, disabled: boolean) => void;
@@ -16,6 +20,7 @@ export interface CanvasActions {
   onDetachNode: (nodeKey: string) => void;
   onOpenAssets: (kind: AssetTrayKind, nodeType: string) => void;
   onDownloadPrompts: (nodeKey: string, nodeType: string) => void;
+  onNodeBodyClick: (nodeKey: string, nodeType: string) => void;
 }
 
 const Ctx = createContext<CanvasActions | null>(null);
@@ -40,4 +45,22 @@ export function useCanvasActions(): CanvasActions {
 
 export function useCanvasActionsOptional(): CanvasActions | null {
   return useContext(Ctx);
+}
+
+/** Тип ассетов для нижней панели по типу ноды. */
+export function assetTrayKindForNodeType(nodeType: string): AssetTrayKind | null {
+  if (nodeType === "hero" || nodeType === "hitl_hero") return "hero";
+  if (nodeType === "items") return "items";
+  if (nodeType === "images" || nodeType === "hitl_images") return "images";
+  if (nodeType === "videos" || nodeType === "hitl_videos") return "videos";
+  if (
+    nodeType === "plan" ||
+    nodeType === "script" ||
+    nodeType === "split" ||
+    nodeType === "publish" ||
+    nodeType === "assemble"
+  ) {
+    return "project";
+  }
+  return null;
 }

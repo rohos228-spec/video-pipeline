@@ -8,6 +8,7 @@ import {
   Check,
   Edit3,
   Loader2,
+  Save,
   Trash2,
   X,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import { toast } from "sonner";
 import { api, type ProjectAsset } from "@/lib/api";
 import type { AssetTrayKind } from "@/components/canvas/canvas-actions-context";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 const KIND_LABELS: Record<AssetTrayKind, string> = {
@@ -42,6 +44,8 @@ export function AssetTray({
   onClose: () => void;
 }) {
   const [index, setIndex] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState("");
   const qc = useQueryClient();
 
   const assetsQ = useQuery({
@@ -67,6 +71,7 @@ export function AssetTray({
         path: r.file_path,
         preview_url: r.preview_url,
         label: `Кадр ${r.number}`,
+        frame_id: r.frame_id,
         voiceover: r.voiceover_text,
         description: r.image_prompt || r.animation_prompt,
       }));
@@ -75,12 +80,44 @@ export function AssetTray({
     return fromApi.filter((a) => kind === "project" || a.kind === kind);
   }, [assetsQ.data, mediaReview.data, kind]);
 
-  useEffect(() => {
-    setIndex(0);
-  }, [kind, projectId]);
-
   const current = items[index];
   const previewSrc = current?.preview_url || null;
+
+  useEffect(() => {
+    setIndex(0);
+    setEditing(false);
+  }, [kind, projectId]);
+
+  useEffect(() => {
+    const text =
+      (current as { voiceover?: string })?.voiceover ||
+      (current as { description?: string })?.description ||
+      current?.label ||
+      "";
+    setEditText(text);
+    setEditing(false);
+  }, [current, index]);
+
+  const saveEdit = useMutation({
+    mutationFn: async () => {
+      const raw = (current as { frame_id?: number; id?: string }).frame_id ?? current?.id;
+      const frameId = typeof raw === "number" ? raw : Number(raw);
+      if (!Number.isFinite(frameId)) {
+        throw new Error("Редактирование доступно для кадров с привязкой к БД");
+      }
+      if (kind === "images" || kind === "videos") {
+        return api.patchFrame(projectId, frameId, { image_prompt: editText });
+      }
+      return api.patchFrame(projectId, frameId, { voiceover_text: editText });
+    },
+    onSuccess: () => {
+      toast.success("Сохранено");
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["project-assets", projectId, kind] });
+      qc.invalidateQueries({ queryKey: ["media-review", projectId, kind] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
 
   const hitlApprove = useMutation({
     mutationFn: async () => {
@@ -215,11 +252,48 @@ export function AssetTray({
                 </div>
               )}
             </div>
+            <div className="mb-3 flex-1">
+              {editing ? (
+                <Textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  rows={5}
+                  className="text-[11px]"
+                  placeholder="Закадровый текст или описание"
+                />
+              ) : (
+                <p className="line-clamp-4 text-[11px] leading-relaxed text-muted-foreground">
+                  {editText || "Нет описания"}
+                </p>
+              )}
+            </div>
             <div className="flex flex-wrap gap-1.5">
-              <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={onClose}>
-                <Edit3 className="h-3 w-3" />
-                Редактировать
-              </Button>
+              {editing ? (
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="h-8 gap-1 text-xs"
+                  disabled={saveEdit.isPending}
+                  onClick={() => saveEdit.mutate()}
+                >
+                  {saveEdit.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Save className="h-3 w-3" />
+                  )}
+                  Сохранить
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1 text-xs"
+                  onClick={() => setEditing(true)}
+                >
+                  <Edit3 className="h-3 w-3" />
+                  Редактировать
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="default"

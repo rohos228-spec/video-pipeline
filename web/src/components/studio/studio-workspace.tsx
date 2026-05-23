@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FlowCanvas } from "@/components/canvas/flow-canvas";
 import {
+  assetTrayKindForNodeType,
   CanvasActionsProvider,
   type AssetTrayKind,
 } from "@/components/canvas/canvas-actions-context";
@@ -14,6 +15,7 @@ import { api } from "@/lib/api";
 import { defaultPromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
+import { nodeTypeFromKey } from "@/lib/node-key";
 
 export function StudioWorkspace({
   projectId,
@@ -35,6 +37,7 @@ export function StudioWorkspace({
   const [studioTab, setStudioTab] = useState<"settings" | "prompts" | "results" | "excel">(
     "settings",
   );
+  const [vMenuNodeKey, setVMenuNodeKey] = useState<string | null>(null);
   const qc = useQueryClient();
 
   const project = useQuery({
@@ -43,10 +46,27 @@ export function StudioWorkspace({
     enabled: projectId != null,
   });
 
+  useEffect(() => {
+    if (!projectId) return;
+    api.ensureProjectRun(projectId).catch(() => {
+      /* бэкенд может быть недоступен при первом рендере */
+    });
+  }, [projectId]);
+
   const disabledNodes = useMemo(() => {
     const meta = (project.data?.meta || {}) as { disabled_nodes?: string[] };
     return new Set(meta.disabled_nodes ?? []);
   }, [project.data?.meta]);
+
+  const getPromptSlots = useCallback(
+    (nodeKey: string, nodeType: string): NodePromptSlot[] => {
+      const meta = (project.data?.meta || {}) as {
+        custom_prompts?: Record<string, NodePromptSlot[]>;
+      };
+      return meta.custom_prompts?.[nodeKey] ?? defaultPromptSlots(nodeType);
+    },
+    [project.data?.meta],
+  );
 
   const persistMeta = useCallback(
     async (patch: Record<string, unknown>) => {
@@ -62,10 +82,19 @@ export function StudioWorkspace({
     () => ({
       projectId,
       disabledNodes,
+      vMenuNodeKey,
+      setVMenuNodeKey,
+      getPromptSlots,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
         onSelectNode(nodeKey);
         setPromptFocus(slot);
         setStudioTab(slot.kind === "excel" ? "excel" : "prompts");
+        onStudioOpenChange(true);
+      },
+      onViewAllPrompts: (nodeKey: string, _nodeType: string) => {
+        onSelectNode(nodeKey);
+        setPromptFocus(null);
+        setStudioTab("prompts");
         onStudioOpenChange(true);
       },
       onAddPrompt: async (nodeKey: string, nodeType: string) => {
@@ -113,33 +142,45 @@ export function StudioWorkspace({
       },
       onDeleteNode: (nodeKey: string) => {
         window.dispatchEvent(
-          new CustomEvent("canvas-delete-node", { detail: { nodeKey } }),
+          new CustomEvent("canvas-delete-node", { detail: { nodeKey, autoSave: true } }),
         );
         if (selectedNodeKey === nodeKey) {
           onSelectNode(null);
           onStudioOpenChange(false);
         }
-        toast.success("Нода удалена — сохраните граф");
       },
       onDetachNode: (nodeKey: string) => {
-        window.dispatchEvent(new CustomEvent("canvas-detach-node", { detail: { nodeKey } }));
+        window.dispatchEvent(
+          new CustomEvent("canvas-detach-node", { detail: { nodeKey, autoSave: true } }),
+        );
         toast.success("Связи ноды откреплены");
       },
       onOpenAssets: (kind: AssetTrayKind) => {
         if (!projectId) return;
         setAssetTray({ kind, nodeType: kind });
       },
+      onNodeBodyClick: (nodeKey: string, nodeType: string) => {
+        onSelectNode(nodeKey);
+        const kind = assetTrayKindForNodeType(nodeType);
+        if (kind && projectId) {
+          setAssetTray({ kind, nodeType });
+        }
+      },
       onDownloadPrompts: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;
         try {
+          const slots = getPromptSlots(nodeKey, nodeType);
           const r = await api.composePrompt({
             node_type: nodeType,
             project_id: projectId,
           });
-          const blob = new Blob([r.text], { type: "text/plain;charset=utf-8" });
+          const header = slots.map((s, i) => `${i + 1}. ${s.title} (${s.kind})`).join("\n");
+          const blob = new Blob([`${header}\n\n---\n\n${r.text}`], {
+            type: "text/plain;charset=utf-8",
+          });
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
-          a.download = `${nodeType}-prompts.txt`;
+          a.download = `${getNodeSpec(nodeType).label}-промты.txt`;
           a.click();
           toast.success("Промты скачаны");
         } catch (e) {
@@ -150,6 +191,8 @@ export function StudioWorkspace({
     [
       projectId,
       disabledNodes,
+      vMenuNodeKey,
+      getPromptSlots,
       project.data?.meta,
       persistMeta,
       onSelectNode,
@@ -191,6 +234,11 @@ export function StudioWorkspace({
         initialTab={studioTab}
         promptFocus={promptFocus}
         nodeDisabled={selectedNodeKey != null && disabledNodes.has(selectedNodeKey)}
+        promptSlots={
+          selectedNodeKey
+            ? getPromptSlots(selectedNodeKey, nodeTypeFromKey(selectedNodeKey))
+            : []
+        }
       />
     </CanvasActionsProvider>
   );

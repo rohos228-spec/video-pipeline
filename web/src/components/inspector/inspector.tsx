@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatNodeCategory, formatNodeKeyLabel, formatHeroMode, formatProjectStatus, humanizeSlug } from "@/lib/format-labels";
 import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -70,9 +71,9 @@ export function Inspector({
                 #{project.data.id} · <span className="font-mono text-xs">{project.data.slug}</span>
               </Row>
               <Row icon={<Folder className="h-3.5 w-3.5" />} label="Статус">
-                <Badge variant="default">{project.data.status}</Badge>
+                <Badge variant="default">{formatProjectStatus(project.data.status)}</Badge>
               </Row>
-              <Row label="Hero mode">{project.data.hero_mode}</Row>
+              <Row label="Главный герой">{formatHeroMode(project.data.hero_mode)}</Row>
               <Row label="Создан">{formatRelativeTime(project.data.created_at)}</Row>
               <Row label="Обновлён">{formatRelativeTime(project.data.updated_at)}</Row>
               <ProjectSettingsPanel project={project.data} />
@@ -165,9 +166,9 @@ function NodeInspector({ nodeKey }: { nodeKey: string }) {
         <div className="mt-1 text-base font-semibold">{spec.label}</div>
         <div className="mt-1 text-[12px] text-muted-foreground">{spec.description}</div>
       </div>
-      <Row label="Тип"><code className="font-mono text-[11px]">{spec.type}</code></Row>
-      <Row label="Категория">{spec.category}</Row>
-      <Row label="Ключ"><code className="font-mono text-[11px]">{nodeKey}</code></Row>
+      <Row label="Тип">{humanizeSlug(spec.type)}</Row>
+      <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
+      <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
     </div>
   );
 }

@@ -1,0 +1,180 @@
+"use client";
+
+import {
+  ArrowRight,
+  Ban,
+  Download,
+  Eye,
+  Play,
+  Plus,
+  Trash2,
+  Unlink,
+} from "lucide-react";
+import type { NodePromptSlot } from "@/lib/node-prompts";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+
+export function NodeVMenu({
+  open,
+  slots,
+  disabled,
+  onSelectPrompt,
+  onAddPrompt,
+  onViewAllPrompts,
+  onDownloadPrompts,
+  onRunNode,
+  onOpenAssets,
+  onDetachNode,
+  onToggleDisable,
+  onDeleteNode,
+  hasAssets,
+}: {
+  open: boolean;
+  slots: NodePromptSlot[];
+  disabled: boolean;
+  onSelectPrompt: (slot: NodePromptSlot) => void;
+  onAddPrompt: () => void;
+  onViewAllPrompts: () => void;
+  onDownloadPrompts: () => void;
+  onRunNode: () => void;
+  onOpenAssets?: () => void;
+  onDetachNode: () => void;
+  onToggleDisable: () => void;
+  onDeleteNode: () => void;
+  hasAssets: boolean;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="node-v-menu absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
+            Схема работы GPT
+          </span>
+          <span className="text-[9px] text-muted-foreground">{slots.length} промтов</span>
+        </div>
+
+        <div className="mb-3 overflow-x-auto pb-1">
+          <div className="flex min-w-min items-center gap-1">
+            {slots.map((slot, i) => (
+              <div key={slot.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectPrompt(slot);
+                  }}
+                  className={cn(
+                    "flex w-[88px] shrink-0 flex-col items-center rounded-xl border px-2 py-2 text-center transition-all",
+                    "border-white/10 bg-white/[0.04] hover:border-amber-400/40 hover:bg-amber-400/10",
+                  )}
+                  title={slot.description || slot.title}
+                >
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                    {i + 1}
+                  </span>
+                  <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
+                    {slot.title}
+                  </span>
+                  <span className="mt-0.5 text-[8px] text-muted-foreground">
+                    {slotKindLabel(slot.kind)}
+                  </span>
+                </button>
+                {i < slots.length - 1 && (
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0 text-amber-500/40" aria-hidden />
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddPrompt();
+              }}
+              className="flex h-[72px] w-[52px] shrink-0 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+              title="Добавить промт"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="mt-1 text-[8px]">ещё</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-1 border-t border-white/8 pt-2">
+          <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />
+          <MenuAction icon={Download} label="Скачать промты" onClick={onDownloadPrompts} />
+          <MenuAction icon={Play} label="Запустить шаг" onClick={onRunNode} />
+          {hasAssets && onOpenAssets && (
+            <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
+          )}
+          {slots.some((s) => s.kind === "excel") && (
+            <MenuAction
+              icon={Eye}
+              label="Просмотр Excel"
+              onClick={() => {
+                const excel = slots.find((s) => s.kind === "excel");
+                if (excel) onSelectPrompt(excel);
+              }}
+            />
+          )}
+          <MenuAction icon={Unlink} label="Открепить связи" onClick={onDetachNode} />
+          <MenuAction
+            icon={Ban}
+            label={disabled ? "Включить ноду" : "Отключить ноду"}
+            onClick={onToggleDisable}
+          />
+          <MenuAction
+            icon={Trash2}
+            label="Удалить ноду"
+            onClick={onDeleteNode}
+            destructive
+          />
+        </div>
+      </div>
+      <div
+        className="absolute -top-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-white/12 bg-[hsl(240_8%_9%)]"
+        aria-hidden
+      />
+    </div>
+  );
+}
+
+function MenuAction({
+  icon: Icon,
+  label,
+  onClick,
+  destructive,
+}: {
+  icon: typeof Eye;
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={cn(
+        "h-8 justify-start gap-1.5 px-2 text-[10px] font-normal",
+        destructive && "text-destructive hover:text-destructive",
+      )}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      <Icon className="h-3 w-3 shrink-0" />
+      {label}
+    </Button>
+  );
+}
+
+function slotKindLabel(kind: NodePromptSlot["kind"]): string {
+  if (kind === "gpt") return "GPT";
+  if (kind === "text") return "текст";
+  if (kind === "excel") return "Excel";
+  if (kind === "blocks") return "блоки";
+  return kind;
+}
