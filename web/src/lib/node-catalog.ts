@@ -28,6 +28,14 @@ export interface NodeSpec {
 }
 
 export const NODE_CATALOG: Record<string, NodeSpec> = {
+  topic: {
+    type: "topic",
+    label: "Тема ролика",
+    description: "Тема, с которой начинается ролик (как в боте перед планом).",
+    category: "planning",
+    accent: "263 75% 65%",
+    iconKey: "plan",
+  },
   plan: {
     type: "plan",
     label: "Общий план",

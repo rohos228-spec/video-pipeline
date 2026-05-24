@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame
+from app.models import Frame, FrameStatus
 from app.web.deps import get_session
 from app.web.schemas import FrameDTO, UpdateFrameRequest
 
@@ -48,6 +48,11 @@ async def patch_frame(
     if f is None or f.project_id != project_id:
         raise HTTPException(status_code=404, detail="frame not found")
     data = payload.model_dump(exclude_unset=True)
+    if "status" in data and data["status"] is not None:
+        try:
+            data["status"] = FrameStatus(data["status"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"invalid frame status: {data['status']}") from e
     for k, v in data.items():
         setattr(f, k, v)
     await session.commit()

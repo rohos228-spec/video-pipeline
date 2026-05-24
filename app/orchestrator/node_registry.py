@@ -10,6 +10,8 @@ HITL_NODE_TYPES: frozenset[str] = frozenset(
     {"hitl_hero", "hitl_images", "hitl_videos", "hitl_final", "hitl_gate"}
 )
 
+CONFIG_NODE_TYPES: frozenset[str] = frozenset({"topic"})
+
 
 @dataclass(frozen=True)
 class WorkNodeSpec:
@@ -122,6 +124,10 @@ def is_work_node_type(node_type: str) -> bool:
 
 def is_hitl_node_type(node_type: str) -> bool:
     return node_type.startswith("hitl_")
+
+
+def is_config_node_type(node_type: str) -> bool:
+    return node_type in CONFIG_NODE_TYPES
 
 
 def spec_for_type(node_type: str) -> WorkNodeSpec | None:

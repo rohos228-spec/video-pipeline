@@ -79,6 +79,7 @@ STATUS_TO_NODE: dict[ProjectStatus, tuple[str, NodeRunStatus]] = {
 
 # Линейный порядок типов нод (для определения «всё до этой = done»).
 NODE_TYPE_ORDER: list[str] = [
+    "topic",
     "plan",
     "script",
     "split",

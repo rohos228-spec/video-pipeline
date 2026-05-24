@@ -896,3 +896,106 @@ async def serial_tick_batches(session: AsyncSession) -> int:
         )
     _ = settings  # keep import alive
     return started
+
+
+MASS_LANE_BUSY_STATUSES = [
+    ProjectStatus.planning,
+    ProjectStatus.scripting,
+    ProjectStatus.splitting,
+    ProjectStatus.generating_hero,
+    ProjectStatus.generating_items,
+    ProjectStatus.enriching_1,
+    ProjectStatus.enriching_2,
+    ProjectStatus.enriching_3,
+    ProjectStatus.enriching_4,
+    ProjectStatus.enriching_5,
+    ProjectStatus.generating_image_prompts,
+    ProjectStatus.generating_images,
+    ProjectStatus.generating_animation_prompts,
+    ProjectStatus.generating_videos,
+    ProjectStatus.generating_audio,
+    ProjectStatus.assembling,
+    ProjectStatus.publishing,
+]
+
+
+def _mass_parent_id(project: Project) -> int | None:
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    raw = meta.get("mass_parent_id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _mass_lanes_for_parent(
+    session: AsyncSession, parent_id: int
+) -> list[Project]:
+    rows = (await session.execute(select(Project))).scalars().all()
+    out: list[Project] = []
+    for p in rows:
+        if _mass_parent_id(p) == parent_id:
+            out.append(p)
+    return out
+
+
+async def serial_busy_in_mass_parent(
+    session: AsyncSession, parent_id: int
+) -> int | None:
+    for p in await _mass_lanes_for_parent(session, parent_id):
+        if p.status in MASS_LANE_BUSY_STATUSES:
+            return p.id
+    return None
+
+
+async def serial_next_mass_lane(
+    session: AsyncSession, parent_id: int
+) -> Project | None:
+    candidates = [
+        p
+        for p in await _mass_lanes_for_parent(session, parent_id)
+        if p.status is ProjectStatus.new and p.auto_mode
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda p: (p.meta or {}).get("mass_lane_position") or 999)
+
+
+async def serial_tick_mass_lanes(session: AsyncSession) -> int:
+    """Сериализатор веб-массовых потоков (meta.mass_parent_id)."""
+    started = 0
+    waiting = (
+        await session.execute(
+            select(Project).where(Project.status == ProjectStatus.new)
+        )
+    ).scalars().all()
+    parent_ids: set[int] = set()
+    for p in waiting:
+        pid = _mass_parent_id(p)
+        if pid is not None:
+            parent_ids.add(pid)
+
+    for parent_id in parent_ids:
+        if await serial_busy_in_mass_parent(session, parent_id) is not None:
+            continue
+        next_p = await serial_next_mass_lane(session, parent_id)
+        if next_p is None:
+            continue
+        busy_again = await serial_busy_in_mass_parent(session, parent_id)
+        if busy_again is not None:
+            continue
+        await session.refresh(next_p)
+        if next_p.status is not ProjectStatus.new:
+            continue
+        next_p.status = ProjectStatus.planning
+        await session.flush()
+        started += 1
+        logger.info(
+            "auto_advance: mass parent #{} started lane sub #{} (pos {})",
+            parent_id,
+            next_p.id,
+            (next_p.meta or {}).get("mass_lane_position"),
+        )
+    return started

@@ -213,10 +213,20 @@ export const api = {
     projectId: number,
     body: { count?: number; topics?: string[] },
   ) =>
-    http<{ created: { id: number; topic: string; slug: string }[]; count: number }>(
+    http<{ created: { id: number; topic: string; slug: string }[]; count: number; started_id?: number | null }>(
       `/api/projects/${projectId}/mass-lanes/start`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  parseMassTopicsXlsx: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/mass-lanes/parse-topics`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ topics: string[]; count: number }>;
+  },
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];

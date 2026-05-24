@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 2
+LAYOUT_VERSION = 3
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
     """Возвращает (nodes, edges) дефолтного линейного пайплайна."""
     steps = [
+        ("topic", "0. Тема", "Тема ролика"),
         ("plan", "1. План", "Общий план ролика"),
         ("script", "2. Сценарий", "Сценарий → закадровые тексты"),
         ("split", "3. Разбивка", "Разбивка на кадры"),

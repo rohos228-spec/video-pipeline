@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -556,7 +556,7 @@ function EmptyState() {
       </div>
       <h2 className="text-lg font-semibold tracking-tight">Выбери проект слева</h2>
       <p className="text-sm text-muted-foreground">
-        Каждый проект — это граф из 19 нод: от плана и сценария до сборки и публикации.
+        Каждый проект — это граф из 20 нод: от темы и плана до сборки и публикации.
         Кликни «+» в сайдбаре, чтобы создать новый ролик.
       </p>
     </div>
@@ -580,6 +580,9 @@ function RunOverlay({
   const [pausing, setPausing] = useState(false);
   const [massOpen, setMassOpen] = useState(false);
   const [massCount, setMassCount] = useState("3");
+  const [massTopics, setMassTopics] = useState<string[]>([]);
+  const [massTopicsFile, setMassTopicsFile] = useState<string | null>(null);
+  const massFileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   if (!workflow) return null;
 
@@ -632,10 +635,33 @@ function RunOverlay({
     const count = Math.max(1, Math.min(20, parseInt(massCount, 10) || 1));
     setBusy(true);
     try {
-      const r = await api.startMassLanes(projectId, { count });
-      toast.success(`Создано ${r.count} массовых потоков (auto_mode)`);
+      const body =
+        massTopics.length > 0
+          ? { topics: massTopics }
+          : { count };
+      const r = await api.startMassLanes(projectId, body);
+      toast.success(
+        `Создано ${r.count} потоков${r.started_id ? `, запущен #${r.started_id}` : ""}`,
+      );
       qc.invalidateQueries({ queryKey: ["projects"] });
       setMassOpen(false);
+      setMassTopics([]);
+      setMassTopicsFile(null);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMassXlsx = async (file: File) => {
+    setBusy(true);
+    try {
+      const r = await api.parseMassTopicsXlsx(projectId, file);
+      setMassTopics(r.topics);
+      setMassTopicsFile(file.name);
+      setMassCount(String(r.count));
+      toast.success(`Загружено ${r.count} тем из Excel`);
     } catch (e) {
       toast.error(String(e));
     } finally {
@@ -780,18 +806,51 @@ function RunOverlay({
         <DialogHeader>
           <DialogTitle>Массовая генерация</DialogTitle>
           <DialogDescription>
-            Создаёт копии проекта с auto_mode (GPT-проверка), как массовый батч в боте.
+            Создаёт копии проекта с auto_mode по одному потоку. Темы можно задать
+            числом или загрузить Excel (лист «Темы», колонка «Название ролика»).
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-2">
-          <label className="text-xs text-muted-foreground">Число потоков (1–20)</label>
-          <Input
-            value={massCount}
-            onChange={(e) => setMassCount(e.target.value)}
-            type="number"
-            min={1}
-            max={20}
-          />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Число потоков (1–20)</label>
+            <Input
+              value={massCount}
+              onChange={(e) => setMassCount(e.target.value)}
+              type="number"
+              min={1}
+              max={20}
+              disabled={massTopics.length > 0}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Или topics.xlsx</label>
+            <input
+              ref={massFileRef}
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleMassXlsx(f);
+                e.target.value = "";
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => massFileRef.current?.click()}
+            >
+              {massTopicsFile ? massTopicsFile : "Загрузить Excel с темами"}
+            </Button>
+            {massTopics.length > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                {massTopics.length} тем: {massTopics.slice(0, 3).join(", ")}
+                {massTopics.length > 3 ? "…" : ""}
+              </p>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setMassOpen(false)}>

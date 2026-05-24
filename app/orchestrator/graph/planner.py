@@ -16,6 +16,7 @@ from app.orchestrator.node_registry import (
     NODE_TYPE_TO_RUNNING,
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
+    is_config_node_type,
     is_hitl_node_type,
     is_work_node_type,
     spec_for_type,
@@ -83,7 +84,7 @@ class WorkflowGraph:
                 stack.extend(self._in.get(cur, []))
                 continue
             typ = self.node_type(cur)
-            if is_hitl_node_type(typ):
+            if is_hitl_node_type(typ) or is_config_node_type(typ):
                 stack.extend(self._in.get(cur, []))
                 continue
             result.add(cur)
@@ -119,6 +120,8 @@ class WorkflowGraph:
             preds = self._effective_predecessors(node_key, skipped)
             done = self._work_types_done(project)
             return all(self.node_type(p) in done for p in preds)
+        if is_config_node_type(typ):
+            return bool((project.topic or "").strip())
         if not is_work_node_type(typ):
             return True
         done = self._work_types_done(project)
@@ -154,6 +157,9 @@ class WorkflowGraph:
             visited.add(key)
             typ = self.node_type(key)
             if is_hitl_node_type(typ):
+                queue.extend(self._out.get(key, []))
+                continue
+            if is_config_node_type(typ):
                 queue.extend(self._out.get(key, []))
                 continue
             if not is_work_node_type(typ):
@@ -204,6 +210,9 @@ class WorkflowGraph:
             visited.add(key)
             ntyp = self.node_type(key)
             if is_hitl_node_type(ntyp):
+                queue.extend(self._out.get(key, []))
+                continue
+            if is_config_node_type(ntyp):
                 queue.extend(self._out.get(key, []))
                 continue
             if not is_work_node_type(ntyp):
@@ -266,6 +275,10 @@ class WorkflowGraph:
                         out[nid] = NodeRunStatus.done
                 else:
                     out[nid] = NodeRunStatus.pending
+                continue
+            if is_config_node_type(typ):
+                topic_ok = bool((project.topic or "").strip())
+                out[nid] = NodeRunStatus.done if topic_ok else NodeRunStatus.pending
                 continue
             if is_work_node_type(typ):
                 if typ == active_type:

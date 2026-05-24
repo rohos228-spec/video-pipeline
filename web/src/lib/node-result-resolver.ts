@@ -31,7 +31,8 @@ export type NodeResultViewMode =
   | "xlsx_split_row"
   | "frame_prompts"
   | "frame_images"
-  | "frame_videos";
+  | "frame_videos"
+  | "topic_edit";
 
 export interface NodeResultSnapshot {
   hasResult: boolean;
@@ -146,6 +147,25 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
   const arts = filterArtifacts(ctx.artifacts, nodeType);
 
   switch (nodeType) {
+    case "topic": {
+      const text = project?.topic?.trim() ?? "";
+      return {
+        hasResult: Boolean(text),
+        itemCount: 1,
+        summary: text ? "Тема ролика задана" : "Укажите тему ролика",
+        items: [
+          {
+            id: "topic",
+            label: "Тема ролика",
+            kind: "text",
+            content: text,
+          },
+        ],
+        replaceMode: "text",
+        viewMode: "topic_edit",
+      };
+    }
+
     case "plan":
     case "hitl_gate": {
       if (projectHasXlsx(ctx.assets)) {

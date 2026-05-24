@@ -91,6 +91,7 @@ class UpdateFrameRequest(BaseModel):
     image_prompt: str | None = None
     animation_prompt: str | None = None
     duration_seconds: float | None = None
+    status: str | None = None
 
 
 # ── Workflow ──

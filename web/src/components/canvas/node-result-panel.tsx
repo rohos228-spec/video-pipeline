@@ -20,6 +20,7 @@ const WIDE_MODES = new Set([
   "frame_prompts",
   "frame_images",
   "frame_videos",
+  "topic_edit",
 ]);
 
 export function NodeResultPanel({

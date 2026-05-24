@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { MediaFrameGallery } from "@/components/hitl/media-frame-gallery";
 import {
   pickGeneralPlanSheet,
   ROW_VOICEOVER_V8,
@@ -47,6 +48,8 @@ export function NodeResultViewBody({
       );
     case "frame_videos":
       return <FrameVideosView items={snapshot.items} />;
+    case "topic_edit":
+      return <TopicEditView projectId={projectId} snapshot={snapshot} />;
     default:
       return <DefaultResultView projectId={projectId} snapshot={snapshot} />;
   }
@@ -277,6 +280,10 @@ function FrameImagesView({
   items: NodeResultItem[];
   onHeroReplaced?: () => void;
 }) {
+  if (nodeType === "images") {
+    return <SceneImagesGalleryView projectId={projectId} />;
+  }
+
   const [index, setIndex] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
@@ -467,6 +474,76 @@ function FrameVideosView({ items }: { items: NodeResultItem[] }) {
           <p className="py-12 text-sm text-muted-foreground">Видео ещё не сгенерировано</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function SceneImagesGalleryView({ projectId }: { projectId: number }) {
+  const media = useQuery({
+    queryKey: ["media-review", projectId, "images"],
+    queryFn: () => api.listMediaReview(projectId, "images"),
+  });
+
+  if (media.isLoading) return <LoadingBlock />;
+
+  const items = (media.data ?? []).filter((f) => f.preview_url);
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto">
+      <MediaFrameGallery
+        projectId={projectId}
+        kind="images"
+        items={items}
+        showApproveButtons={false}
+      />
+    </div>
+  );
+}
+
+function TopicEditView({
+  projectId,
+  snapshot,
+}: {
+  projectId: number;
+  snapshot: NodeResultSnapshot;
+}) {
+  const qc = useQueryClient();
+  const [topic, setTopic] = useState(snapshot.items[0]?.content ?? "");
+
+  useEffect(() => {
+    setTopic(snapshot.items[0]?.content ?? "");
+  }, [snapshot.items, projectId]);
+
+  const save = useMutation({
+    mutationFn: () => api.patchProject(projectId, { topic: topic.trim() }),
+    onSuccess: () => {
+      toast.success("Тема ролика сохранена");
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Тема задаёт направление всего ролика — как в боте перед шагом «Общий план».
+        Для массовой генерации используйте Excel с колонкой «Название ролика».
+      </p>
+      <Textarea
+        value={topic}
+        onChange={(e) => setTopic(e.target.value)}
+        rows={5}
+        placeholder="Например: Почему кошки всегда приземляются на лапы"
+        className="text-sm"
+      />
+      <Button
+        size="sm"
+        disabled={!topic.trim() || save.isPending}
+        onClick={() => save.mutate()}
+      >
+        {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        Сохранить тему
+      </Button>
     </div>
   );
 }

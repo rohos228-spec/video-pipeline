@@ -81,6 +81,37 @@ async def stop_project(
     }
 
 
+@router.post("/{project_id}/mass-lanes/parse-topics")
+async def parse_mass_topics_xlsx(
+    project_id: int,
+    file: UploadFile = File(...),
+) -> dict:
+    """Парсит topics.xlsx (лист «Темы», колонка B) для массовой генерации."""
+    _ = project_id
+    import tempfile
+
+    from app.storage import batch_sheet
+
+    suffix = Path(file.filename or "topics.xlsx").suffix or ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        content = await file.read()
+        tmp_path.write_bytes(content)
+        rows = batch_sheet.read_topics(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    topics: list[str] = []
+    cards: list[dict] = []
+    for row in rows:
+        title = (row.get("title") or row.get("topic") or "").strip()
+        if title:
+            topics.append(title)
+            cards.append(row)
+    return {"topics": topics, "cards": cards, "count": len(topics)}
+
+
 @router.post("/{project_id}/mass-lanes/start")
 async def start_mass_lanes(
     project_id: int,
@@ -88,6 +119,7 @@ async def start_mass_lanes(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Массовая генерация: N проектов-копий с auto_mode (как массовый батч в TG)."""
+    from app.services.project_steps import start_step
     from app.web.routers.projects import _slugify
 
     template = _project_or_404(await session.get(Project, project_id))
@@ -117,7 +149,7 @@ async def start_mass_lanes(
     )
     meta_template = dict(template.meta or {})
     wf_id = await _get_default_workflow_id()
-    created: list[dict] = []
+    created_projects: list[Project] = []
     for i, topic in enumerate(topics):
         slug_base = _slugify(topic)
         slug = slug_base
@@ -135,17 +167,53 @@ async def start_mass_lanes(
                 **meta_template,
                 "graph_executor": True,
                 "mass_lane": i + 1,
+                "mass_lane_position": i + 1,
                 "mass_parent_id": project_id,
             },
             **kwargs,
         )
         session.add(p)
         await session.flush()
+
+        p.data_dir.mkdir(parents=True, exist_ok=True)
+        for sub in (
+            "characters",
+            "items",
+            "scenes",
+            "videos",
+            "audio",
+            "subs",
+            "final",
+        ):
+            (p.data_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        try:
+            sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
+            sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+            sheet.write_general(
+                topic=p.topic,
+                slug=p.slug,
+                hero_mode=p.hero_mode,
+                status=p.status.value,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
         if wf_id:
             await ensure_run_for_project(p.id, wf_id)
-        created.append({"id": p.id, "topic": p.topic, "slug": p.slug})
+        created_projects.append(p)
+
+    parent_meta = dict(template.meta or {})
+    parent_meta["mass_queue_active"] = True
+    parent_meta["mass_lanes_count"] = len(created_projects)
+    template.meta = parent_meta
+
+    if created_projects:
+        await start_step(session, created_projects[0], "plan")
+
     await session.commit()
-    return {"created": created, "count": len(created)}
+    created = [{"id": p.id, "topic": p.topic, "slug": p.slug} for p in created_projects]
+    return {"created": created, "count": len(created), "started_id": created[0]["id"] if created else None}
 
 
 @router.post("/{project_id}/steps/{step_code}/reset", response_model=ProjectDetail)

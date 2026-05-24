@@ -406,6 +406,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         TRANSITIONS,
                         maybe_auto_advance,
                         serial_tick_batches,
+                        serial_tick_mass_lanes,
                     )
 
                     ready_statuses = list(TRANSITIONS.keys())
@@ -453,6 +454,12 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 await s.commit()
                         except Exception:  # noqa: BLE001
                             logger.exception("serial_tick_batches failed")
+                        try:
+                            mass_started = await serial_tick_mass_lanes(s)
+                            if mass_started:
+                                await s.commit()
+                        except Exception:  # noqa: BLE001
+                            logger.exception("serial_tick_mass_lanes failed")
                 except Exception:  # noqa: BLE001
                     logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001
