@@ -11,6 +11,7 @@ import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { ProjectSettingsPanel } from "@/components/inspector/project-settings";
+import { TopicEditor } from "@/components/inspector/topic-editor";
 import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
@@ -39,7 +40,11 @@ export function Inspector({
       <div className="flex h-10 items-center gap-2 border-b border-border px-4">
         <Info className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {selectedNodeKey ? "Нода" : "Инспектор"}
+          {selectedNodeKey
+            ? nodeTypeFromKey(selectedNodeKey) === "topic"
+              ? "Тема ролика"
+              : "Нода"
+            : "Инспектор"}
         </span>
       </div>
       <ScrollArea className="flex-1">
@@ -51,8 +56,8 @@ export function Inspector({
           )}
           {selectedNodeKey && (
             <div className="flex flex-col gap-3">
-              <NodeInspector nodeKey={selectedNodeKey} />
-              {onOpenNodeStudio && (
+              <NodeInspector nodeKey={selectedNodeKey} projectId={projectId} />
+              {onOpenNodeStudio && nodeTypeFromKey(selectedNodeKey) !== "topic" && (
                 <Button size="sm" variant="default" className="w-full" onClick={onOpenNodeStudio}>
                   Открыть студию ноды (GPT)
                 </Button>
@@ -155,8 +160,13 @@ function FramesPreview({
   );
 }
 
-function NodeInspector({ nodeKey }: { nodeKey: string }) {
-  // nodeKey формата "n_plan" / "n_script" → восстанавливаем тип.
+function NodeInspector({
+  nodeKey,
+  projectId,
+}: {
+  nodeKey: string;
+  projectId: number | null;
+}) {
   const type = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(type);
   return (
@@ -166,9 +176,15 @@ function NodeInspector({ nodeKey }: { nodeKey: string }) {
         <div className="mt-1 text-base font-semibold">{spec.label}</div>
         <div className="mt-1 text-[12px] text-muted-foreground">{spec.description}</div>
       </div>
-      <Row label="Тип">{humanizeSlug(spec.type)}</Row>
-      <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
-      <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
+      {type === "topic" && projectId != null ? (
+        <TopicEditor projectId={projectId} />
+      ) : (
+        <>
+          <Row label="Тип">{humanizeSlug(spec.type)}</Row>
+          <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
+          <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
+        </>
+      )}
     </div>
   );
 }

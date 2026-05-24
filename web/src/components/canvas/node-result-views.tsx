@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { MediaFrameGallery } from "@/components/hitl/media-frame-gallery";
+import { TopicEditor } from "@/components/inspector/topic-editor";
 import {
   pickGeneralPlanSheet,
   ROW_VOICEOVER_V8,
@@ -613,43 +614,15 @@ function TopicEditView({
   projectId: number;
   snapshot: NodeResultSnapshot;
 }) {
-  const qc = useQueryClient();
-  const [topic, setTopic] = useState(snapshot.items[0]?.content ?? "");
-
-  useEffect(() => {
-    setTopic(snapshot.items[0]?.content ?? "");
-  }, [snapshot.items, projectId]);
-
-  const save = useMutation({
-    mutationFn: () => api.patchProject(projectId, { topic: topic.trim() }),
-    onSuccess: () => {
-      toast.success("Тема ролика сохранена");
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-    },
-    onError: (e) => toast.error(String(e)),
-  });
-
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <p className="text-sm text-muted-foreground">
-        Тема задаёт направление всего ролика — как в боте перед шагом «Общий план».
+      <TopicEditor
+        projectId={projectId}
+        initialTopic={snapshot.items[0]?.content ?? ""}
+      />
+      <p className="text-xs text-muted-foreground">
         Для массовой генерации используйте Excel с колонкой «Название ролика».
       </p>
-      <Textarea
-        value={topic}
-        onChange={(e) => setTopic(e.target.value)}
-        rows={5}
-        placeholder="Например: Почему кошки всегда приземляются на лапы"
-        className="text-sm"
-      />
-      <Button
-        size="sm"
-        disabled={!topic.trim() || save.isPending}
-        onClick={() => save.mutate()}
-      >
-        {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-        Сохранить тему
-      </Button>
     </div>
   );
 }

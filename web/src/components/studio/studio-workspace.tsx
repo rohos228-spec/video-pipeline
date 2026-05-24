@@ -446,6 +446,10 @@ export function StudioWorkspace({
           }}
           onNodeActivate={(nodeKey, nodeType) => {
             if (Date.now() < suppressStudioOpenUntil.current) return;
+            if (nodeType === "topic") {
+              onSelectNode(nodeKey);
+              return;
+            }
             if (isHitlNodeType(nodeType)) {
               canvasActions.onOpenHitlReview(nodeKey, nodeType);
               return;
