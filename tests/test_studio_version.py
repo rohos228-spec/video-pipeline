@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.web.studio_version import read_studio_version, _version_file
+from app.web.studio_version import read_studio_version
 
 
 def test_read_studio_version_from_file(tmp_path: Path, monkeypatch) -> None:
