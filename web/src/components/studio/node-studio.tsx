@@ -5,14 +5,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Blocks,
   Download,
   FileSpreadsheet,
   FileText,
   Loader2,
   Play,
   RefreshCw,
-  Save,
   Settings2,
   Sparkles,
   Upload,
@@ -22,25 +20,27 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
-import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
-import { defaultPromptSlots, isEnrichNode, type NodePromptSlot } from "@/lib/node-prompts";
+import { stepCodeForNodeType } from "@/lib/node-step-map";
+import {
+  defaultPromptSlots,
+  isEnrichNode,
+  pipelinePromptSlots,
+  type NodePromptSlot,
+} from "@/lib/node-prompts";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 import { promptPathsForNode } from "@/lib/prompt-catalog";
-import {
-  getPromptStyle,
-  setPromptStyleInMeta,
-  slotSupportsStyles,
-} from "@/lib/prompt-styles";
-import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
+import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
+
+function slotStepCode(slot: NodePromptSlot | null, nodeStepCode: string | undefined): string | undefined {
+  return slot?.stepCode ?? nodeStepCode;
+}
 
 export function NodeStudio({
   open,
@@ -66,8 +66,6 @@ export function NodeStudio({
   const stepCode = stepCodeForNodeType(nodeType);
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
-  const [composed, setComposed] = useState("");
-  const [legacyVariant, setLegacyVariant] = useState("default");
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -86,20 +84,6 @@ export function NodeStudio({
     project.data?.status,
     project.data?.generation_active,
   );
-  const catalog = useQuery({
-    queryKey: ["prompt-studio-catalog"],
-    queryFn: api.promptStudioCatalog,
-    enabled: open,
-  });
-  const variants = useQuery({
-    queryKey: ["prompt-variants", stepCode],
-    queryFn: () =>
-      fetch(`/api/prompt-studio/variants/${stepCode}`).then((r) => {
-        if (!r.ok) return [] as string[];
-        return r.json() as Promise<string[]>;
-      }),
-    enabled: open && stepHasPromptVariants(stepCode),
-  });
   const artifacts = useQuery({
     queryKey: ["artifacts", projectId, nodeType],
     queryFn: () => api.listArtifacts({ project_id: projectId! }),
@@ -114,12 +98,14 @@ export function NodeStudio({
     enabled: open && projectId != null && (tab === "excel" || isEnrichNode(nodeType)),
   });
 
-  const customSlots = useMemo(() => {
+  const allSlots = useMemo(() => {
     if (promptSlotsProp?.length) return promptSlotsProp;
     const meta = (project.data?.meta || {}) as { custom_prompts?: Record<string, NodePromptSlot[]> };
     if (nodeKey && meta.custom_prompts?.[nodeKey]) return meta.custom_prompts[nodeKey];
     return defaultPromptSlots(nodeType);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
+
+  const pipelineSlots = useMemo(() => pipelinePromptSlots(allSlots), [allSlots]);
 
   useEffect(() => {
     if (!open) return;
@@ -127,17 +113,9 @@ export function NodeStudio({
   }, [open, initialTab]);
 
   useEffect(() => {
-    if (!open) return;
-    const po = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
-    if (stepCode && typeof po[stepCode] === "string") {
-      setLegacyVariant(po[stepCode] as string);
-    }
-  }, [open, project.data, stepCode]);
-
-  useEffect(() => {
     if (promptFocus?.id) setActiveSlotId(promptFocus.id);
-    else if (customSlots[0]?.id) setActiveSlotId(customSlots[0].id);
-  }, [promptFocus, customSlots, open]);
+    else if (pipelineSlots[0]?.id) setActiveSlotId(pipelineSlots[0].id);
+  }, [promptFocus, pipelineSlots, open]);
 
   useEffect(() => {
     if (xlsxPreview.data?.active_sheet && !xlsxSheet) {
@@ -151,31 +129,30 @@ export function NodeStudio({
     }
   }, [promptFocus, open]);
 
-  const activeSlot = customSlots.find((s) => s.id === activeSlotId) ?? customSlots[0] ?? null;
+  const activeSlot =
+    allSlots.find((s) => s.id === activeSlotId) ??
+    (promptFocus?.kind === "text" ? promptFocus : null) ??
+    pipelineSlots[0] ??
+    null;
+
+  const activeStepCode = slotStepCode(activeSlot, stepCode);
   const promptPaths = promptPathsForNode(nodeType);
-  const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
-  const slotStyle = activeSlot
-    ? getPromptStyle(metaRecord, nodeKey ?? "", activeSlot.id)
-    : {};
+  const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
+  const activeVariant =
+    activeStepCode && typeof promptOverrides[activeStepCode] === "string"
+      ? (promptOverrides[activeStepCode] as string)
+      : "default";
 
-  const persistMetaStyles = async (nextConfig: typeof slotStyle) => {
-    if (!projectId || !nodeKey || !activeSlot) return;
-    const meta = setPromptStyleInMeta(metaRecord, nodeKey, activeSlot.id, nextConfig);
-    await api.patchProject(projectId, { meta });
-    await qc.invalidateQueries({ queryKey: ["project", projectId] });
-  };
-
-  const compose = useMutation({
-    mutationFn: () =>
-      api.composePrompt({
-        node_type: nodeType,
-        project_id: projectId ?? undefined,
-        style_preset: slotStyle.style_preset,
-        blocks: slotStyle.blocks && Object.keys(slotStyle.blocks).length ? slotStyle.blocks : undefined,
-      }),
-    onSuccess: (r) => {
-      setComposed(r.text);
-      toast.success("Промт собран");
+  const activateVariant = useMutation({
+    mutationFn: (variant: string) => {
+      if (!projectId || !activeStepCode) return Promise.reject(new Error("no step"));
+      return api.patchProjectPromptConfig(projectId, {
+        legacy: { [activeStepCode]: variant },
+      });
+    },
+    onSuccess: () => {
+      toast.success("Активный промт обновлён");
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (e) => toast.error(String(e)),
   });
@@ -184,21 +161,6 @@ export function NodeStudio({
     mutationFn: () => api.runProjectStep(projectId!, stepCode!),
     onSuccess: () => {
       toast.success(`Шаг «${spec.label}» запущен`);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-    },
-    onError: (e) => toast.error(String(e)),
-  });
-
-  const saveConfig = useMutation({
-    mutationFn: () =>
-      api.patchProjectPromptConfig(projectId!, {
-        style_profile: slotStyle.style_preset,
-        blocks: slotStyle.blocks ?? {},
-        use_blocks_v2: true,
-        legacy: stepCode ? { [stepCode]: legacyVariant } : {},
-      }),
-    onSuccess: () => {
-      toast.success("Настройки ноды сохранены");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (e) => toast.error(String(e)),
@@ -222,9 +184,6 @@ export function NodeStudio({
     onError: (e) => toast.error(String(e)),
   });
 
-  const blockCategories = catalog.data?.block_categories ?? {};
-  const presets = catalog.data?.style_presets ?? [];
-
   const filteredArtifacts = useMemo(() => {
     const list = artifacts.data ?? [];
     if (nodeType.includes("image") || nodeType === "images") {
@@ -240,14 +199,18 @@ export function NodeStudio({
   }, [artifacts.data, nodeType]);
 
   const showExcel = isEnrichNode(nodeType) || tab === "excel";
+  const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
+  const showFilesPanel =
+    activeSlot &&
+    activeSlot.kind !== "text" &&
+    activeSlot.kind !== "excel" &&
+    activeStepCode;
+
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   if (!nodeKey || !mounted || !open) return null;
 
-  // Universal close handler — используется из крестика, backdrop и Esc.
-  // Принудительно вызывает onOpenChange(false). Родитель (studio-workspace)
-  // в closeStudio() также снимет выделение ноды и поднимет suppress-таймер.
   const closeNow = (e: SyntheticEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -277,10 +240,6 @@ export function NodeStudio({
       >
         <div className="flex h-full flex-col">
           <header className="relative shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
-            {/* Крестик закрытия: native <button> вместо shadcn Button, чтобы
-                исключить сюрпризы от Radix Slot / cva-вариантов. Перехватываем
-                все варианты pointer/mouse-событий + onClickCapture, чтобы клик
-                гарантированно дошёл до onClick и не потерялся. */}
             <button
               type="button"
               aria-label="Закрыть студию"
@@ -307,16 +266,6 @@ export function NodeStudio({
                   {promptPaths.legacyDir && (
                     <Badge variant="muted" className="text-[9px] font-mono">
                       prompts/{promptPaths.legacyDir}
-                    </Badge>
-                  )}
-                  {promptPaths.stepsV2Dir && (
-                    <Badge variant="muted" className="text-[9px] font-mono">
-                      prompts/steps/{promptPaths.stepsV2Dir}
-                    </Badge>
-                  )}
-                  {promptPaths.checkDir && (
-                    <Badge variant="muted" className="text-[9px] font-mono">
-                      prompts/check/{promptPaths.checkDir}
                     </Badge>
                   )}
                 </div>
@@ -346,26 +295,13 @@ export function NodeStudio({
                     Запустить шаг
                   </Button>
                 )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => saveConfig.mutate()}
-                  disabled={!projectId || saveConfig.isPending}
-                >
-                  {saveConfig.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" />
-                  )}
-                  Сохранить
-                </Button>
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-1">
               {(
                 [
                   ["settings", "Настройки", Settings2],
-                  ["prompts", "Промты GPT", Blocks],
+                  ["prompts", "Промты GPT", FileText],
                   ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
                 ] as const
@@ -383,9 +319,9 @@ export function NodeStudio({
                 </Button>
               ))}
             </div>
-            {tab === "prompts" && (
+            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
-                {customSlots.map((slot) => (
+                {pipelineSlots.map((slot) => (
                   <Button
                     key={slot.id}
                     size="sm"
@@ -408,8 +344,9 @@ export function NodeStudio({
               {tab === "settings" && (
                 <div className="flex flex-col gap-4 text-sm text-muted-foreground">
                   <p>
-                    Стили задаются отдельно для каждого промта на вкладке «Промты GPT». Папки шаблонов
-                    привязаны к шагу пайплайна (см. бейджи сверху).
+                    Мастер-промты выбираются через «Файлы промтов» на вкладке «Промты GPT».
+                    Сопроводительный текст для ChatGPT редактируется отдельно — кнопка «Текстовый
+                    вариант» в меню V.
                   </p>
                   {nodeDisabled && (
                     <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
@@ -419,71 +356,25 @@ export function NodeStudio({
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
-                  {activeSlot && slotSupportsStyles(activeSlot) && (
-                    <PromptStylePanel
-                      slot={activeSlot}
-                      config={slotStyle}
-                      blockCategories={blockCategories}
-                      catalogPresets={presets}
-                      onChange={(next) => void persistMetaStyles(next)}
-                    />
-                  )}
-                  {stepCode && stepHasPromptVariants(stepCode) && (
-                    <section>
-                      <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        Вариант промта
-                      </h3>
-                      <select
-                        className="mt-2 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                        value={legacyVariant}
-                        onChange={(e) => setLegacyVariant(e.target.value)}
-                      >
-                        {(variants.data ?? ["default"]).map((v) => (
-                          <option key={v} value={v}>
-                            {humanizeSlug(v)}
-                          </option>
-                        ))}
-                      </select>
-                    </section>
-                  )}
-                  {stepCode && (
+                  {showGptTextPanel ? (
+                    <GptTextPanel projectId={projectId} stepCode={activeStepCode} />
+                  ) : showFilesPanel ? (
                     <PromptFilesPanel
-                      stepCode={stepCode}
-                      folderHint={promptPaths.legacyDir ?? stepCode}
+                      stepCode={activeStepCode}
+                      folderHint={
+                        activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                          ? activeSlot.stepCode
+                          : (promptPaths.legacyDir ?? activeStepCode)
+                      }
+                      activeVariant={activeVariant}
+                      onActivateVariant={(variant) => activateVariant.mutate(variant)}
+                      activating={activateVariant.isPending}
                     />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Для этой ноды нет редактируемых промтов на этом шаге.
+                    </p>
                   )}
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" onClick={() => compose.mutate()} disabled={compose.isPending}>
-                      {compose.isPending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Blocks className="h-3.5 w-3.5" />
-                      )}
-                      Собрать промт
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        const blob = new Blob([composed], { type: "text/plain" });
-                        const a = document.createElement("a");
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `${nodeType}-prompt.txt`;
-                        a.click();
-                      }}
-                      disabled={!composed}
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Скачать
-                    </Button>
-                  </div>
-                  <Textarea
-                    value={composed}
-                    onChange={(e) => setComposed(e.target.value)}
-                    rows={18}
-                    className="font-mono text-[11px] leading-relaxed"
-                    placeholder="Соберите промт — здесь финальный текст для ChatGPT"
-                  />
                 </div>
               )}
 

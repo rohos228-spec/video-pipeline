@@ -5,6 +5,7 @@ import {
   Ban,
   Download,
   Eye,
+  MessageSquareText,
   Play,
   Plus,
   Trash2,
@@ -12,15 +13,24 @@ import {
   X,
 } from "lucide-react";
 import type { NodePromptSlot } from "@/lib/node-prompts";
+import {
+  gptTextSlotForNode,
+  isCustomPromptSlot,
+  pipelinePromptSlots,
+} from "@/lib/node-prompts";
+import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 export function NodeVMenu({
   open,
+  nodeType,
   slots,
   disabled,
   onSelectPrompt,
+  onOpenGptText,
   onAddPrompt,
+  onRemovePrompt,
   onViewAllPrompts,
   onDownloadPrompts,
   onRunNode,
@@ -32,10 +42,13 @@ export function NodeVMenu({
   hasAssets,
 }: {
   open: boolean;
+  nodeType: string;
   slots: NodePromptSlot[];
   disabled: boolean;
   onSelectPrompt: (slot: NodePromptSlot) => void;
+  onOpenGptText: () => void;
   onAddPrompt: () => void;
+  onRemovePrompt: (slot: NodePromptSlot) => void;
   onViewAllPrompts: () => void;
   onDownloadPrompts: () => void;
   onRunNode: () => void;
@@ -48,15 +61,19 @@ export function NodeVMenu({
 }) {
   if (!open) return null;
 
+  const pipeline = pipelinePromptSlots(slots);
+  const gptTextSlot = gptTextSlotForNode(nodeType);
+  const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
+
   return (
     <div className="node-v-menu absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
-            Схема работы GPT
+            Мастер-промты
           </span>
           <div className="flex items-center gap-1">
-            <span className="text-[9px] text-muted-foreground">{slots.length} промтов</span>
+            <span className="text-[9px] text-muted-foreground">{pipeline.length} шт.</span>
             <button
               type="button"
               className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground"
@@ -73,51 +90,95 @@ export function NodeVMenu({
           </div>
         </div>
 
-        <div className="mb-3 overflow-x-auto pb-1">
-          <div className="flex min-w-min items-center gap-1">
-            {slots.map((slot, i) => (
-              <div key={slot.id} className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectPrompt(slot);
-                  }}
-                  className={cn(
-                    "flex w-[88px] shrink-0 flex-col items-center rounded-xl border px-2 py-2 text-center transition-all",
-                    "border-white/10 bg-white/[0.04] hover:border-amber-400/40 hover:bg-amber-400/10",
+        {pipeline.length > 0 ? (
+          <div className="mb-3 overflow-x-auto pb-1">
+            <div className="flex min-w-min items-center gap-1">
+              {pipeline.map((slot, i) => (
+                <div key={slot.id} className="relative flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectPrompt(slot);
+                    }}
+                    className={cn(
+                      "flex w-[88px] shrink-0 flex-col items-center rounded-xl border px-2 py-2 text-center transition-all",
+                      "border-white/10 bg-white/[0.04] hover:border-amber-400/40 hover:bg-amber-400/10",
+                    )}
+                    title={slot.description || slot.title}
+                  >
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                      {i + 1}
+                    </span>
+                    <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
+                      {slot.title}
+                    </span>
+                    <span className="mt-0.5 text-[8px] text-muted-foreground">
+                      {slotKindLabel(slot.kind)}
+                    </span>
+                  </button>
+                  {isCustomPromptSlot(slot) && (
+                    <button
+                      type="button"
+                      className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full border border-white/20 bg-destructive/90 text-white shadow"
+                      title="Удалить промт"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemovePrompt(slot);
+                      }}
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
                   )}
-                  title={slot.description || slot.title}
-                >
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
-                    {i + 1}
-                  </span>
-                  <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
-                    {slot.title}
-                  </span>
-                  <span className="mt-0.5 text-[8px] text-muted-foreground">
-                    {slotKindLabel(slot.kind)}
-                  </span>
-                </button>
-                {i < slots.length - 1 && (
-                  <ArrowRight className="h-3.5 w-3.5 shrink-0 text-amber-500/40" aria-hidden />
-                )}
-              </div>
-            ))}
+                  {i < pipeline.length - 1 && (
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0 text-amber-500/40" aria-hidden />
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAddPrompt();
+                }}
+                className="flex h-[72px] w-[52px] shrink-0 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                title="Добавить промт"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="mt-1 text-[8px]">ещё</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="mb-3 text-[10px] text-muted-foreground">
+            Для этой ноды нет файловых мастер-промтов.
+          </p>
+        )}
+
+        {showGptText && (
+          <div className="mb-3 border-t border-white/8 pt-3">
+            <span className="mb-1.5 block text-[9px] font-semibold uppercase tracking-widest text-violet-300/90">
+              Текст для GPT
+            </span>
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onAddPrompt();
+                onOpenGptText();
               }}
-              className="flex h-[72px] w-[52px] shrink-0 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-              title="Добавить промт"
+              className="flex w-full items-start gap-2 rounded-xl border border-violet-400/25 bg-violet-500/10 px-3 py-2.5 text-left transition hover:border-violet-400/50 hover:bg-violet-500/15"
             >
-              <Plus className="h-4 w-4" />
-              <span className="mt-1 text-[8px]">ещё</span>
+              <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
+              <span className="min-w-0">
+                <span className="block text-[11px] font-medium">Текстовый вариант</span>
+                <span className="mt-0.5 block text-[9px] leading-snug text-muted-foreground">
+                  Сопроводительное сообщение в диалог ChatGPT — редактируется отдельно от файлов
+                  промтов
+                </span>
+              </span>
             </button>
           </div>
-        </div>
+        )}
 
         <div className="grid grid-cols-2 gap-1 border-t border-white/8 pt-2">
           <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />
@@ -126,12 +187,12 @@ export function NodeVMenu({
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
           )}
-          {slots.some((s) => s.kind === "excel") && (
+          {pipeline.some((s) => s.kind === "excel") && (
             <MenuAction
               icon={Eye}
               label="Просмотр Excel"
               onClick={() => {
-                const excel = slots.find((s) => s.kind === "excel");
+                const excel = pipeline.find((s) => s.kind === "excel");
                 if (excel) onSelectPrompt(excel);
               }}
             />
@@ -190,8 +251,8 @@ function MenuAction({
 }
 
 function slotKindLabel(kind: NodePromptSlot["kind"]): string {
-  if (kind === "gpt") return "GPT";
-  if (kind === "text") return "текст";
+  if (kind === "gpt") return "файл";
+  if (kind === "text") return "текст GPT";
   if (kind === "excel") return "Excel";
   if (kind === "blocks") return "блоки";
   return kind;

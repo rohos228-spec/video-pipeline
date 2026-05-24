@@ -18,8 +18,10 @@ export interface CanvasActions {
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
   getNodeResult: (nodeType: string) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
+  onOpenGptText: (nodeKey: string, nodeType: string) => void;
   onViewAllPrompts: (nodeKey: string, nodeType: string) => void;
   onAddPrompt: (nodeKey: string, nodeType: string) => void;
+  onRemovePrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
   onRunNode: (nodeKey: string, nodeType: string) => void;
   onToggleDisable: (nodeKey: string, disabled: boolean) => void;
   onDeleteNode: (nodeKey: string) => void;

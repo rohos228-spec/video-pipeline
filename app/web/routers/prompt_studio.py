@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project
+from app.models import Frame, Project
 from app.services.prompt_composer import (
     compose_for_node_type,
     compose_step,
@@ -20,7 +20,9 @@ from app.services.prompt_composer import (
     NODE_TYPE_TO_STEP,
 )
 from app.services.prompt_library import list_prompts as list_variants
+from app.services import gpt_text_builder as gtb
 from app.web.deps import get_session
+from sqlalchemy import select
 
 router = APIRouter(prefix="/prompt-studio", tags=["prompt-studio"])
 
@@ -41,6 +43,101 @@ class PromptOverridesPatch(BaseModel):
     use_blocks_v2: bool | None = None
     # legacy string overrides сохраняем
     legacy: dict[str, str] = Field(default_factory=dict)
+
+
+class GptTextPatch(BaseModel):
+    text: str = ""
+
+
+async def _gpt_text_context(session: AsyncSession, project: Project, step_code: str) -> dict:
+    ctx: dict = {}
+    if step_code == "img_pr":
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number.asc())
+            )
+        ).scalars().all()
+        if frames:
+            ctx["voiceover_line"] = "-".join(
+                (fr.voiceover_text or "").strip() for fr in frames
+            )
+            ctx["n_frames"] = len(frames)
+    return ctx
+
+
+@router.get("/projects/{project_id}/gpt-text/{step_code}")
+async def get_project_gpt_text(
+    project_id: int,
+    step_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    supported = gtb.is_supported(step_code)
+    ctx = await _gpt_text_context(session, project, step_code)
+    try:
+        text = gtb.get_effective_text(project, step_code, **ctx) if supported else ""
+    except ValueError:
+        text = ""
+        supported = False
+    return {
+        "step_code": step_code,
+        "text": text,
+        "supported": supported,
+        "is_override": gtb.has_override(project, step_code),
+        "human_name": gtb.step_human_name(step_code),
+    }
+
+
+@router.put("/projects/{project_id}/gpt-text/{step_code}")
+async def save_project_gpt_text(
+    project_id: int,
+    step_code: str,
+    payload: GptTextPatch,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if not gtb.is_supported(step_code):
+        raise HTTPException(status_code=400, detail=f"step {step_code} has no gpt text")
+    try:
+        await gtb.set_override(session, project, step_code, payload.text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    ctx = await _gpt_text_context(session, project, step_code)
+    return {
+        "step_code": step_code,
+        "text": gtb.get_effective_text(project, step_code, **ctx),
+        "supported": True,
+        "is_override": gtb.has_override(project, step_code),
+    }
+
+
+@router.delete("/projects/{project_id}/gpt-text/{step_code}")
+async def reset_project_gpt_text(
+    project_id: int,
+    step_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    await gtb.clear_override(session, project, step_code)
+    await session.commit()
+    ctx = await _gpt_text_context(session, project, step_code)
+    supported = gtb.is_supported(step_code)
+    text = gtb.get_effective_text(project, step_code, **ctx) if supported else ""
+    return {
+        "step_code": step_code,
+        "text": text,
+        "supported": supported,
+        "is_override": False,
+    }
 
 
 @router.get("/catalog")

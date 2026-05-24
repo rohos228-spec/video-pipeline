@@ -13,7 +13,7 @@ import { AiNodeDialog } from "@/components/canvas/ai-node-dialog";
 import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
-import { defaultPromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
+import { defaultPromptSlots, gptTextSlotForNode, type NodePromptSlot } from "@/lib/node-prompts";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -215,6 +215,14 @@ export function StudioWorkspace({
         setStudioTab(slot.kind === "excel" ? "excel" : "prompts");
         onStudioOpenChange(true);
       },
+      onOpenGptText: (nodeKey: string, nodeType: string) => {
+        const slot = gptTextSlotForNode(nodeType);
+        if (!slot) return;
+        onSelectNode(nodeKey);
+        setPromptFocus(slot);
+        setStudioTab("prompts");
+        onStudioOpenChange(true);
+      },
       onViewAllPrompts: (nodeKey: string, _nodeType: string) => {
         onSelectNode(nodeKey);
         setPromptFocus(null);
@@ -233,10 +241,23 @@ export function StudioWorkspace({
           title: `Промт ${n}`,
           kind: "gpt",
           stepCode: stepCodeForNodeType(nodeType),
+          custom: true,
         });
         custom[nodeKey] = list;
         await persistMeta({ custom_prompts: custom });
         toast.success("Промт добавлен в схему ноды");
+      },
+      onRemovePrompt: async (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
+        const meta = (project.data?.meta || {}) as {
+          custom_prompts?: Record<string, NodePromptSlot[]>;
+        };
+        const custom = { ...(meta.custom_prompts || {}) };
+        const list = (custom[nodeKey] || defaultPromptSlots(nodeType)).filter(
+          (s) => s.id !== slot.id,
+        );
+        custom[nodeKey] = list;
+        await persistMeta({ custom_prompts: custom });
+        toast.success("Промт удалён");
       },
       onRunNode: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;

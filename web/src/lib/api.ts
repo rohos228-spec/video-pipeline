@@ -196,6 +196,24 @@ export const api = {
       `/api/prompt-studio/projects/${projectId}/prompt-config`,
       { method: "PATCH", body: JSON.stringify(body) }
     ),
+  getProjectGptText: (projectId: number, stepCode: string) =>
+    http<{
+      step_code: string;
+      text: string;
+      supported: boolean;
+      is_override: boolean;
+      human_name?: string;
+    }>(`/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}`),
+  saveProjectGptText: (projectId: number, stepCode: string, text: string) =>
+    http<{ step_code: string; text: string; supported: boolean; is_override: boolean }>(
+      `/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}`,
+      { method: "PUT", body: JSON.stringify({ text }) }
+    ),
+  resetProjectGptText: (projectId: number, stepCode: string) =>
+    http<{ step_code: string; text: string; supported: boolean; is_override: boolean }>(
+      `/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}`,
+      { method: "DELETE" }
+    ),
   pauseProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resumeProject: (projectId: number) =>

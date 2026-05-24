@@ -44,9 +44,15 @@ function formatModified(mtime: number): string {
 export function PromptFilesPanel({
   stepCode,
   folderHint,
+  activeVariant,
+  onActivateVariant,
+  activating = false,
 }: {
   stepCode: string;
   folderHint?: string;
+  activeVariant?: string;
+  onActivateVariant?: (variant: string) => void;
+  activating?: boolean;
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -146,6 +152,9 @@ export function PromptFilesPanel({
           </h3>
           <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/70">
             {folderLabel} • {fileList.length} файл(ов)
+            {activeVariant ? (
+              <span className="ml-1 text-emerald-400/80">• активен: {activeVariant}</span>
+            ) : null}
             {files.isFetching && (
               <span className="ml-1 inline-flex items-center gap-1 text-primary/70">
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
@@ -209,7 +218,9 @@ export function PromptFilesPanel({
                   "flex w-full items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[10px] transition-colors",
                   selectedName === f.name
                     ? "bg-primary/20 text-foreground"
-                    : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+                    : activeVariant === f.name
+                      ? "bg-emerald-500/15 text-emerald-100"
+                      : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
                 )}
                 title={`${f.filename} • ${formatBytes(f.size)} • ${formatModified(f.modified)}`}
               >
@@ -219,6 +230,11 @@ export function PromptFilesPanel({
                     {f.is_default && (
                       <span className="ml-1 rounded bg-amber-500/20 px-1 py-px text-[8px] uppercase text-amber-300">
                         def
+                      </span>
+                    )}
+                    {activeVariant === f.name && (
+                      <span className="ml-1 rounded bg-emerald-500/20 px-1 py-px text-[8px] uppercase text-emerald-300">
+                        ✓
                       </span>
                     )}
                   </span>
@@ -255,6 +271,25 @@ export function PromptFilesPanel({
               )}
               Сохранить
             </Button>
+            {onActivateVariant && selectedName ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 border-emerald-400/30 px-2 text-[10px] text-emerald-100"
+                onClick={() => onActivateVariant(selectedName)}
+                disabled={activating || activeVariant === selectedName}
+                title={
+                  activeVariant === selectedName
+                    ? "Этот файл уже активен для шага"
+                    : "Использовать этот .md как мастер-промт"
+                }
+              >
+                {activating ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : null}
+                {activeVariant === selectedName ? "Активен" : "Сделать активным"}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"

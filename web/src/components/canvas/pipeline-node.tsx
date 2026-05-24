@@ -24,6 +24,7 @@ import { NodeVMenu } from "./node-v-menu";
 import { NodeGenerationBadge } from "./node-generation-badge";
 import { NodeResultBadge } from "./node-result-badge";
 import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
+import { isHitlNodeType } from "@/lib/gpt-text-steps";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -103,7 +104,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
         <HandleWithDetach side="in" nodeKey={d.nodeKey} />
         <Handle type="source" position={Position.Right} id="out" className="!h-4 !w-4 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary" style={{ right: -8 }} />
 
-        {actions && (
+        {actions && !isHitlNodeType(d.type) && (
           <>
             <button
               type="button"
@@ -149,6 +150,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
 
             <NodeVMenu
               open={!!vMenuOpen}
+              nodeType={d.type}
               slots={slots}
               disabled={disabled}
               hasAssets={assetKind != null}
@@ -157,7 +159,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 actions.setVMenuNodeKey(null);
                 actions.onOpenPrompt(d.nodeKey, d.type, slot);
               }}
+              onOpenGptText={() => {
+                actions.setVMenuNodeKey(null);
+                actions.onOpenGptText(d.nodeKey, d.type);
+              }}
               onAddPrompt={() => actions.onAddPrompt(d.nodeKey, d.type)}
+              onRemovePrompt={(slot) => actions.onRemovePrompt(d.nodeKey, d.type, slot)}
               onViewAllPrompts={() => {
                 actions.setVMenuNodeKey(null);
                 actions.onViewAllPrompts(d.nodeKey, d.type);
