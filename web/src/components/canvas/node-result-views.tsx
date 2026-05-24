@@ -122,6 +122,10 @@ function XlsxUploadBar({ projectId }: { projectId: number }) {
 }
 
 function GeneralPlanSheetView({ projectId }: { projectId: number }) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
   const meta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
     queryFn: () => api.previewProjectXlsx(projectId, { maxRows: 1 }),
@@ -142,12 +146,20 @@ function GeneralPlanSheetView({ projectId }: { projectId: number }) {
   if (meta.isLoading || grid.isLoading) return <LoadingBlock />;
 
   if (!sheet || !grid.data?.rows?.length) {
+    const planText = project.data?.general_plan?.trim();
     return (
       <div className="flex flex-col gap-3">
         <XlsxUploadBar projectId={projectId} />
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          Лист «Общий план» пока пуст или Excel ещё не создан.
-        </p>
+        {planText ? (
+          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+            <p className="mb-2 text-xs text-muted-foreground">Текст плана (из БД)</p>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{planText}</p>
+          </div>
+        ) : (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Лист «Общий план» пока пуст или Excel ещё не создан.
+          </p>
+        )}
       </div>
     );
   }

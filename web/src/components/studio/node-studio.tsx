@@ -37,6 +37,10 @@ import {
   preferredPromptFileName,
   withSlotVariant,
 } from "@/lib/prompt-slot-storage";
+import {
+  nodeUsesRawXlsxGrid,
+  pickDefaultSheetForNode,
+} from "@/lib/xlsx-sheets";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
@@ -94,14 +98,6 @@ export function NodeStudio({
     queryFn: () => api.listArtifacts({ project_id: projectId! }),
     enabled: open && projectId != null,
   });
-  const xlsxPreview = useQuery({
-    queryKey: ["xlsx-preview", projectId, xlsxSheet],
-    queryFn: () =>
-      api.previewProjectXlsx(projectId!, {
-        sheet: xlsxSheet || undefined,
-      }),
-    enabled: open && projectId != null && (tab === "excel" || isEnrichNode(nodeType)),
-  });
 
   const allSlots = useMemo(() => {
     if (promptSlotsProp?.length) return promptSlotsProp;
@@ -109,6 +105,32 @@ export function NodeStudio({
     if (nodeKey && meta.custom_prompts?.[nodeKey]) return meta.custom_prompts[nodeKey];
     return defaultPromptSlots(nodeType);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
+
+  const showExcel =
+    allSlots.some((s) => s.kind === "excel") || isEnrichNode(nodeType) || tab === "excel";
+  const rawGrid = nodeUsesRawXlsxGrid(nodeType);
+
+  const xlsxSheetsMeta = useQuery({
+    queryKey: ["xlsx-sheets", projectId],
+    queryFn: () => api.previewProjectXlsx(projectId!, { maxRows: 1 }),
+    enabled: open && projectId != null && showExcel,
+  });
+
+  const xlsxPreview = useQuery({
+    queryKey: ["xlsx-preview", projectId, xlsxSheet, rawGrid],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId!, {
+        sheet: xlsxSheet || undefined,
+        raw: rawGrid,
+        maxRows: rawGrid ? 200 : 40,
+        maxCols: rawGrid ? 30 : 80,
+      }),
+    enabled:
+      open &&
+      projectId != null &&
+      (tab === "excel" || isEnrichNode(nodeType)) &&
+      Boolean(xlsxSheet || xlsxSheetsMeta.data?.sheets?.length),
+  });
 
   const pipelineSlots = useMemo(() => pipelinePromptSlots(allSlots), [allSlots]);
 
@@ -123,10 +145,18 @@ export function NodeStudio({
   }, [promptFocus, pipelineSlots, open]);
 
   useEffect(() => {
-    if (xlsxPreview.data?.active_sheet && !xlsxSheet) {
-      setXlsxSheet(xlsxPreview.data.active_sheet);
-    }
-  }, [xlsxPreview.data, xlsxSheet]);
+    if (!open || tab !== "excel") return;
+    const sheets = xlsxSheetsMeta.data?.sheets ?? [];
+    if (!sheets.length) return;
+    setXlsxSheet((prev) => {
+      if (prev && sheets.includes(prev)) return prev;
+      return pickDefaultSheetForNode(nodeType, sheets);
+    });
+  }, [open, tab, nodeType, xlsxSheetsMeta.data?.sheets]);
+
+  useEffect(() => {
+    if (!open) setXlsxSheet("");
+  }, [open, nodeKey]);
 
   useEffect(() => {
     if (promptFocus && open) {
@@ -182,6 +212,8 @@ export function NodeStudio({
     onSuccess: () => {
       toast.success("Таблица перечитана из файла");
       qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
     },
     onError: (e) => toast.error(String(e)),
   });
@@ -191,6 +223,8 @@ export function NodeStudio({
     onSuccess: () => {
       toast.success("Excel загружен");
       qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
     },
     onError: (e) => toast.error(String(e)),
   });
@@ -209,8 +243,6 @@ export function NodeStudio({
     return list.slice(0, 12);
   }, [artifacts.data, nodeType]);
 
-  const showExcel =
-    allSlots.some((s) => s.kind === "excel") || isEnrichNode(nodeType) || tab === "excel";
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
   const showFilesPanel =
     activeSlot &&
@@ -441,48 +473,84 @@ export function NodeStudio({
                       Перечитать
                     </Button>
                   </div>
-                  {(xlsxPreview.data?.sheets?.length ?? 0) > 0 && (
+                  {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
                     <select
                       className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-xs"
-                      value={xlsxSheet || xlsxPreview.data?.active_sheet}
+                      value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
                       onChange={(e) => setXlsxSheet(e.target.value)}
                     >
-                      {(xlsxPreview.data?.sheets ?? []).map((s) => (
+                      {(xlsxSheetsMeta.data?.sheets ?? []).map((s) => (
                         <option key={s} value={s}>
                           {s}
                         </option>
                       ))}
                     </select>
                   )}
-                  <div className="overflow-auto rounded-xl border border-white/10">
-                    <table className="w-full min-w-[480px] text-left text-[10px]">
-                      <thead>
-                        <tr className="border-b border-white/10 bg-white/5">
-                          {(xlsxPreview.data?.headers ?? []).map((h, i) => (
-                            <th key={i} className="px-2 py-1.5 font-medium">
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
-                          <tr key={ri} className="border-b border-white/5">
-                            {row.map((cell, ci) => (
-                              <td key={ci} className="max-w-[140px] truncate px-2 py-1 text-muted-foreground">
-                                {cell}
-                              </td>
+                  {(xlsxSheetsMeta.isLoading || xlsxPreview.isLoading) && (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                  {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
+                    <div className="overflow-auto rounded-xl border border-white/10">
+                      {rawGrid ? (
+                        <table className="min-w-max border-collapse text-left text-xs">
+                          <tbody>
+                            {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
+                              <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
+                                <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
+                                  {ri + 1}
+                                </td>
+                                {row.map((cell, ci) => (
+                                  <td
+                                    key={ci}
+                                    className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
+                                  >
+                                    {cell || "\u00a0"}
+                                  </td>
+                                ))}
+                              </tr>
                             ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {!xlsxPreview.data?.rows?.length && (
-                      <p className="p-4 text-xs text-muted-foreground">
-                        Таблица пуста или ещё не создана — запустите шаг обогащения.
-                      </p>
-                    )}
-                  </div>
+                          </tbody>
+                        </table>
+                      ) : (
+                        <table className="w-full min-w-[480px] text-left text-[10px]">
+                          <thead>
+                            <tr className="border-b border-white/10 bg-white/5">
+                              {(xlsxPreview.data?.headers ?? []).map((h, i) => (
+                                <th key={i} className="px-2 py-1.5 font-medium">
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
+                              <tr key={ri} className="border-b border-white/5">
+                                {row.map((cell, ci) => (
+                                  <td key={ci} className="max-w-[140px] truncate px-2 py-1 text-muted-foreground">
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      {!xlsxPreview.data?.rows?.length && (
+                        <p className="p-4 text-xs text-muted-foreground">
+                          {nodeType === "plan"
+                            ? "Лист «Общий план» пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx."
+                            : "Таблица пуста или ещё не создана."}
+                          {nodeType === "plan" && project.data?.general_plan?.trim() ? (
+                            <span className="mt-2 block whitespace-pre-wrap text-foreground/90">
+                              Текст плана в БД: {project.data.general_plan}
+                            </span>
+                          ) : null}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

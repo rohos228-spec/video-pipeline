@@ -140,9 +140,13 @@ export function PipelineNode({ data, selected }: NodeProps) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
+                const willOpen = !vMenuOpen;
+                actions.setVMenuNodeKey(willOpen ? d.nodeKey : null);
+                if (willOpen) {
+                  actions.onOpenNodeExcel(d.nodeKey, d.type);
+                }
               }}
-              title="Меню ноды"
+              title="Меню ноды и Excel"
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
