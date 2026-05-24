@@ -41,9 +41,48 @@ function Test-BackendReady([int]$TimeoutSec = 45) {
     return $false
 }
 
+function Get-StudioVersionLabel {
+    $vf = Join-Path $Root "web\STUDIO_VERSION"
+    if (-not (Test-Path $vf)) { return "?" }
+    $lines = Get-Content $vf -ErrorAction SilentlyContinue
+    if (-not $lines -or $lines.Count -lt 1) { return "?" }
+    $build = $lines[0].Trim()
+    $sha = "dev"
+    if ($lines.Count -gt 1 -and $lines[1].Trim()) {
+        $raw = $lines[1].Trim()
+        $sha = if ($raw.Length -gt 7) { $raw.Substring(0, 7) } else { $raw }
+    }
+    if ($sha -eq "dev") { return "v$build" }
+    return "v$build · $sha"
+}
+
+function Test-WebBuildStale {
+    $out = Join-Path $Root "web\out\index.html"
+    if (-not (Test-Path $out)) { return $true }
+    $outTime = (Get-Item $out).LastWriteTimeUtc
+    $verFile = Join-Path $Root "web\STUDIO_VERSION"
+    if ((Test-Path $verFile) -and (Get-Item $verFile).LastWriteTimeUtc -gt $outTime) {
+        return $true
+    }
+    $srcRoot = Join-Path $Root "web\src"
+    if (Test-Path $srcRoot) {
+        $newestSrc = Get-ChildItem $srcRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($newestSrc -and $newestSrc.LastWriteTimeUtc -gt $outTime) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Ensure-WebBuilt {
-    if (Test-Path (Join-Path $Root "web\out\index.html")) { return $true }
-    Write-Log "web/out missing - building UI (npm install + build)..." "DarkOrange"
+    if (-not (Test-WebBuildStale)) { return $true }
+    if (Test-Path (Join-Path $Root "web\out\index.html")) {
+        Write-Log "Web UI stale (sources newer than web/out) - rebuilding..." "DarkOrange"
+    } else {
+        Write-Log "web/out missing - building UI (npm install + build)..." "DarkOrange"
+    }
     $npm = Get-NpmCmd
     if (-not $npm) {
         Write-Log "npm not found. Run button 1 Full install or install Node.js" "DarkRed"
@@ -147,9 +186,17 @@ function Update-StatusLabel {
     if (-not $script:StatusLbl) { return }
     $installed = Test-Installed
     $branch = Get-GitBranch
+    $uiVer = Get-StudioVersionLabel
     $webBuilt = Test-Path (Join-Path $Root "web\out\index.html")
+    $webStale = Test-WebBuildStale
     $status = if ($installed) { "Installed" } else { "Need install" }
-    $web = if ($webBuilt) { "UI built" } else { "UI not built" }
+    if ($webBuilt -and $webStale) {
+        $web = "UI stale - rebuild"
+    } elseif ($webBuilt) {
+        $web = "UI $uiVer"
+    } else {
+        $web = "UI not built"
+    }
     $script:StatusLbl.Text = "Status: $status | Git: $branch | $web"
     $script:StatusLbl.ForeColor = if ($installed) {
         [System.Drawing.Color]::DarkGreen
@@ -159,13 +206,13 @@ function Update-StatusLabel {
 }
 
 function Do-FullUpdate {
-    $branch = Get-GitBranch
-    if ($branch -eq "?") {
-        Write-Log "Git not found - skip pull" "DarkOrange"
-    } else {
-        Invoke-Cmd "git pull origin $branch" {
-            git -C $Root pull origin $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        }
+    Invoke-Cmd "git fetch origin" {
+        git -C $Root fetch origin 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+    }
+    Invoke-Cmd "git pull origin devin/windows-installer" {
+        git -C $Root checkout devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
+        git -C $Root pull origin devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
     }
     $py = Get-VenvPython
     if (-not $py) {

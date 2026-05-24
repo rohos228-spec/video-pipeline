@@ -2,20 +2,23 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-Write-Host "==> git pull" -ForegroundColor Cyan
+Write-Host "==> git pull (devin/windows-installer)" -ForegroundColor Cyan
 git fetch origin
+git checkout devin/windows-installer
 git pull origin devin/windows-installer
 
 Write-Host "==> pip" -ForegroundColor Cyan
-& ".\.venv\Scripts\python.exe" -m pip install -e .
+& ".\.venv\Scripts\python.exe" -m pip install -e ".[dev]"
 
-Write-Host "==> web npm" -ForegroundColor Cyan
+Write-Host "==> web npm install + build" -ForegroundColor Cyan
 Push-Location web
 if (Get-Command pnpm -ErrorAction SilentlyContinue) {
   pnpm install
+  pnpm run build
 } else {
   npm install
+  npm run build
 }
 Pop-Location
 
-Write-Host "Готово. Окно 1: .\start.ps1 | Окно 2: cd web; npm run dev" -ForegroundColor Green
+Write-Host "Готово. Перезапустите Studio: Stop -> Start Studio. URL: http://127.0.0.1:8765" -ForegroundColor Green
