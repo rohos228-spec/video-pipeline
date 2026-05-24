@@ -45,7 +45,7 @@ export function resolveHitlBadgeState(opts: {
   const kind = hitlKindForNodeType(opts.nodeType);
   if (!kind) return null;
 
-  if (opts.aiControl || opts.autoMode) return "auto_gpt";
+  if (opts.aiControl) return "auto_gpt";
 
   const hitl = opts.hitlList
     .filter((h) => h.kind === kind)

@@ -33,6 +33,7 @@ import type {
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
+import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
@@ -218,6 +219,21 @@ export function FlowCanvas({
         nodes: wfNodes,
         edges: wfEdges,
       });
+      if (projectId) {
+        const project = await api.getProject(projectId).catch(() => null);
+        if (project) {
+          const meta = { ...((project.meta || {}) as Record<string, unknown>) };
+          const topics = Array.isArray(meta.mass_excel_topics)
+            ? (meta.mass_excel_topics as string[])
+            : [];
+          const bindings = buildExcelLaneBindings(nodes, edges, topics);
+          if (bindings.length) {
+            await api.patchProject(projectId, {
+              meta: { ...meta, excel_lane_bindings: bindings },
+            });
+          }
+        }
+      }
       toast.success("Граф сохранён");
       await workflow.refetch();
       if (projectId) {
@@ -711,6 +727,25 @@ function RunOverlay({
   const [massTopicsFile, setMassTopicsFile] = useState<string | null>(null);
   const massFileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
+
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+    enabled: massOpen,
+  });
+
+  useEffect(() => {
+    if (!massOpen || massTopics.length > 0) return;
+    const meta = (project.data?.meta || {}) as Record<string, unknown>;
+    const fromExcel = meta.mass_excel_topics;
+    if (Array.isArray(fromExcel) && fromExcel.length > 0) {
+      const topics = fromExcel.map(String).filter(Boolean);
+      setMassTopics(topics);
+      setMassCount(String(topics.length));
+      setMassTopicsFile(String(meta.mass_excel_file || "topics.xlsx"));
+    }
+  }, [massOpen, massTopics.length, project.data?.meta]);
+
   if (!workflow) return null;
 
   const nodeType = nodeTypeFromKey(selectedNodeKey);
@@ -933,8 +968,8 @@ function RunOverlay({
         <DialogHeader>
           <DialogTitle>Массовая генерация</DialogTitle>
           <DialogDescription>
-            Создаёт копии проекта с auto_mode по одному потоку. Темы можно задать
-            числом или загрузить Excel (лист «Темы», колонка «Название ролика»).
+            Создаёт копии проекта с auto_mode по одному потоку. Темы из Excel-ноды на
+            канвасе подхватываются автоматически (лист «Темы», колонка «Название ролика»).
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">

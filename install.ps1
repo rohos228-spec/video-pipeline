@@ -265,3 +265,6 @@ Write-Host ""
 Write-Host "С Telegram-ботом:" -ForegroundColor DarkGray
 Write-Host "  TELEGRAM_ENABLED=true + токен в .env, затем .\start.ps1"
 Write-Host ""
+Write-Host "GUI-лаунчер (15 кнопок, без ручного ввода в PS):" -ForegroundColor Cyan
+Write-Host "  powershell -ExecutionPolicy Bypass -File .\installer\VideoPipelineLauncher.ps1" -ForegroundColor White
+Write-Host ""

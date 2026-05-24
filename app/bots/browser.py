@@ -47,6 +47,7 @@ class BrowserSession:
         self._pw = None
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
+        self.force_new_window: bool = False
 
     async def start(self) -> None:
         self._pw = await async_playwright().start()
@@ -140,6 +141,8 @@ class BrowserSession:
 
     async def _open_page_once(self, url: str, *, reuse: bool = True) -> Page:
         assert self.context is not None
+        if self.force_new_window:
+            reuse = False
         if reuse:
             target = None
             for p in self.context.pages:

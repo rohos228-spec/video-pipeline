@@ -40,6 +40,7 @@ export function ExcelFeedPanel({
           detail: { topics: r.topics, nodeKey },
         }),
       );
+      window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
       toast.success(`Excel: ${r.count} тем — проведите связи к нодам «План»`);
     },
     onError: (e) => toast.error(String(e)),

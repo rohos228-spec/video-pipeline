@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useMemo, useState } from "react";
-import { useNodes, useReactFlow, type Edge } from "@xyflow/react";
+import { useInternalNode, ViewportPortal, type Edge } from "@xyflow/react";
 import { Sparkles } from "lucide-react";
 import { useCanvasActionsOptional } from "./canvas-actions-context";
 import { readControlMode } from "@/lib/control-mode";
@@ -11,76 +11,86 @@ import { defaultPromptSlots } from "@/lib/node-prompts";
 
 type EdgeHit = {
   edgeId: string;
-  x: number;
-  y: number;
   sourceKey: string;
   targetKey: string;
   targetType: string;
 };
 
+function EdgeAiMarker({
+  edge,
+  onSelect,
+}: {
+  edge: Edge;
+  onSelect: (hit: EdgeHit) => void;
+}) {
+  const source = useInternalNode(edge.source);
+  const target = useInternalNode(edge.target);
+  if (!source?.internals?.positionAbsolute || !target?.internals?.positionAbsolute) {
+    return null;
+  }
+  const tgtType = (target.data as PipelineNodeData)?.type;
+  if (tgtType === "excel_feed") return null;
+
+  const sw = source.measured?.width ?? 260;
+  const sh = source.measured?.height ?? 80;
+  const th = target.measured?.height ?? 80;
+
+  const sx = source.internals.positionAbsolute.x + sw;
+  const sy = source.internals.positionAbsolute.y + sh / 2;
+  const tx = target.internals.positionAbsolute.x;
+  const ty = target.internals.positionAbsolute.y + th / 2;
+
+  const x = (sx + tx) / 2;
+  const y = (sy + ty) / 2;
+
+  return (
+    <button
+      type="button"
+      title="ИИ-контроль между нодами"
+      className="nodrag nopan pointer-events-auto absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-red-500/50 bg-gradient-to-br from-red-600/80 to-violet-600/70 text-white shadow-lg shadow-red-500/20 transition hover:scale-110"
+      style={{ left: x, top: y, zIndex: 1000 }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect({
+          edgeId: edge.id,
+          sourceKey: (source.data as PipelineNodeData)?.nodeKey ?? source.id,
+          targetKey: (target.data as PipelineNodeData)?.nodeKey ?? target.id,
+          targetType: tgtType,
+        });
+      }}
+    >
+      <Sparkles className="h-3.5 w-3.5" />
+    </button>
+  );
+}
+
 export function EdgeAiControls({ edges }: { edges: Edge[] }) {
   const actions = useCanvasActionsOptional();
-  const nodes = useNodes();
-  const { getNode } = useReactFlow();
   const [active, setActive] = useState<EdgeHit | null>(null);
 
   const aiControl = readControlMode(
     (actions?.project?.meta || {}) as Record<string, unknown>,
   );
 
-  const markers = useMemo((): EdgeHit[] => {
-    if (!aiControl) return [];
-    const out: EdgeHit[] = [];
-    for (const e of edges) {
-      const src = getNode(e.source);
-      const tgt = getNode(e.target);
-      if (!src || !tgt) continue;
-      const tgtType = (tgt.data as PipelineNodeData)?.type;
-      if (tgtType === "excel_feed") continue;
-      const w = (src.measured?.width ?? 260) / 2;
-      const tw = (tgt.measured?.width ?? 260) / 2;
-      const sx = src.position.x + w;
-      const sy = src.position.y + (src.measured?.height ?? 80) / 2;
-      const tx = tgt.position.x - tw;
-      const ty = tgt.position.y + (tgt.measured?.height ?? 80) / 2;
-      out.push({
-        edgeId: e.id,
-        x: (sx + tx) / 2,
-        y: (sy + ty) / 2,
-        sourceKey: (src.data as PipelineNodeData)?.nodeKey ?? src.id,
-        targetKey: (tgt.data as PipelineNodeData)?.nodeKey ?? tgt.id,
-        targetType: tgtType,
-      });
-    }
-    return out;
-  }, [aiControl, edges, getNode, nodes]);
+  const visibleEdges = useMemo(
+    () => edges.filter((e) => e.source && e.target),
+    [edges],
+  );
 
   if (!aiControl || !actions?.projectId) return null;
 
-  const firstSlot = active
-    ? defaultPromptSlots(active.targetType)[0]
-    : null;
+  const firstSlot = active ? defaultPromptSlots(active.targetType)[0] : null;
 
   return (
     <Fragment>
-      <div className="pointer-events-none absolute inset-0 z-[5]">
-        {markers.map((m) => (
-          <button
-            key={m.edgeId}
-            type="button"
-            title="ИИ-контроль между нодами"
-            className="pointer-events-auto absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-red-500/50 bg-gradient-to-br from-red-600/80 to-violet-600/70 text-white shadow-lg shadow-red-500/20 transition hover:scale-110"
-            style={{ left: m.x, top: m.y }}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              setActive(m);
-            }}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-          </button>
-        ))}
-      </div>
+      <ViewportPortal>
+        <div className="pointer-events-none absolute inset-0">
+          {visibleEdges.map((e) => (
+            <EdgeAiMarker key={e.id} edge={e} onSelect={setActive} />
+          ))}
+        </div>
+      </ViewportPortal>
       {active && firstSlot && (
         <AiControlEdgeDialog
           open

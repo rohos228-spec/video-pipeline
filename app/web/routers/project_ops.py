@@ -123,7 +123,23 @@ async def start_mass_lanes(
     from app.web.routers.projects import _slugify
 
     template = _project_or_404(await session.get(Project, project_id))
+    meta_template = dict(template.meta or {})
     topics: list[str] = [str(t).strip() for t in (payload.get("topics") or []) if str(t).strip()]
+    if not topics:
+        meta_topics = meta_template.get("mass_excel_topics")
+        if isinstance(meta_topics, list):
+            topics = [str(t).strip() for t in meta_topics if str(t).strip()]
+    if not topics:
+        bindings = meta_template.get("excel_lane_bindings")
+        if isinstance(bindings, list):
+            ordered = sorted(
+                [b for b in bindings if isinstance(b, dict)],
+                key=lambda b: int(b.get("topic_index") or 0),
+            )
+            for b in ordered:
+                t = str(b.get("topic") or "").strip()
+                if t:
+                    topics.append(t)
     count = int(payload.get("count") or len(topics) or 1)
     if not topics:
         base = template.topic or "ролик"
@@ -147,7 +163,7 @@ async def start_mass_lanes(
         "prompt_overrides",
         "gpt_text_overrides",
     )
-    meta_template = dict(template.meta or {})
+    ai_control = bool(meta_template.get("ai_control"))
     wf_id = await _get_default_workflow_id()
     created_projects: list[Project] = []
     for i, topic in enumerate(topics):
@@ -162,10 +178,11 @@ async def start_mass_lanes(
             slug=slug,
             topic=topic,
             status=ProjectStatus.new,
-            auto_mode=True,
+            auto_mode=True if ai_control else template.auto_mode,
             meta={
                 **meta_template,
                 "graph_executor": True,
+                "ai_control": ai_control,
                 "mass_lane": i + 1,
                 "mass_lane_position": i + 1,
                 "mass_parent_id": project_id,

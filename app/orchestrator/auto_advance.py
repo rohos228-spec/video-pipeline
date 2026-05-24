@@ -615,6 +615,11 @@ async def maybe_auto_advance(
     transition = TRANSITIONS[status]
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
+    meta = getattr(project, "meta", None) or {}
+    if not meta.get("ai_control"):
+        if hitl is None or hitl.decision is HITLDecision.pending:
+            return False
+
     if hitl is not None and hitl.decision is HITLDecision.regenerate:
         await _apply_regen(
             session,
@@ -725,6 +730,9 @@ async def _run_text_review(
     product_name = (product.get("name") or "").strip() or None
 
     async with browser_session() as bs:
+        meta = getattr(project, "meta", None) or {}
+        if meta.get("ai_new_window_per_check"):
+            bs.force_new_window = True
         gpt = ChatGPTBot(bs)
         if kind is HITLKind.approve_plan:
             return await auto_review.review_plan(
