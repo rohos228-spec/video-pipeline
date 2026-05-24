@@ -1,17 +1,22 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { GitBranch, Loader2 } from "lucide-react";
+import { GitBranch, Loader2, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  readControlMode,
+  type ControlMode,
+} from "@/lib/control-mode";
 
 export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
   const meta = (project.meta || {}) as Record<string, unknown>;
   const graphOn = Boolean(meta.graph_executor);
   const autoOn = project.auto_mode;
+  const controlMode = readControlMode(meta);
 
   const patch = useMutation({
     mutationFn: (body: Partial<ProjectDetail> & { meta?: Record<string, unknown> }) =>
@@ -27,9 +32,26 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
     patch.mutate({ meta: { ...meta, [key]: value } });
   };
 
+  const setControlMode = (mode: ControlMode) => {
+    const ai = mode === "ai";
+    patch.mutate({
+      auto_mode: ai,
+      meta: {
+        ...meta,
+        ai_control: ai,
+        graph_executor: meta.graph_executor ?? true,
+      },
+    });
+  };
+
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
       <SectionHeader />
+      <ControlModeSwitch
+        mode={controlMode}
+        disabled={patch.isPending}
+        onChange={setControlMode}
+      />
       <ToggleRow
         label="Граф-исполнитель"
         hint="Переходы по связям канваса, пропуск отключённых нод"
@@ -50,6 +72,63 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
           Сохранение…
         </span>
       )}
+    </div>
+  );
+}
+
+function ControlModeSwitch({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: ControlMode;
+  disabled?: boolean;
+  onChange: (m: ControlMode) => void;
+}) {
+  const ai = mode === "ai";
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border/60 px-2.5 py-2">
+      <span className="text-xs font-medium">Контроль пайплайна</span>
+      <span className="text-[10px] text-muted-foreground">
+        Слева — ручные проверки в UI. Справа — ИИ-контроль и GPT-автоодобрение (как в
+        массовой генерации).
+      </span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onChange(ai ? "manual" : "ai")}
+        className={cn(
+          "relative flex h-10 w-full items-center rounded-full border p-1 transition",
+          ai ? "border-red-500/40 bg-red-950/30" : "border-emerald-500/40 bg-emerald-950/20",
+        )}
+      >
+        <span
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1 text-[10px] font-semibold uppercase tracking-wide",
+            !ai ? "text-emerald-400" : "text-muted-foreground",
+          )}
+        >
+          <UserRound className="h-3 w-3" />
+          Ручной
+        </span>
+        <span
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1 text-[10px] font-semibold uppercase tracking-wide",
+            ai ? "text-red-400" : "text-muted-foreground",
+          )}
+        >
+          <Sparkles className="h-3 w-3" />
+          ИИ
+        </span>
+        <span
+          className={cn(
+            "absolute top-1 h-8 w-[calc(50%-4px)] rounded-full shadow-md transition-all",
+            ai
+              ? "left-[calc(50%+2px)] bg-gradient-to-br from-red-600 to-red-500"
+              : "left-1 bg-gradient-to-br from-emerald-600 to-emerald-500",
+          )}
+        />
+      </button>
     </div>
   );
 }

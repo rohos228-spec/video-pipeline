@@ -28,6 +28,14 @@ export interface NodeSpec {
 }
 
 export const NODE_CATALOG: Record<string, NodeSpec> = {
+  excel_feed: {
+    type: "excel_feed",
+    label: "Excel — темы",
+    description: "Загрузка topics.xlsx и связи к нодам «План» для массовой генерации.",
+    category: "planning",
+    accent: "142 70% 45%",
+    iconKey: "plan",
+  },
   topic: {
     type: "topic",
     label: "Тема ролика",

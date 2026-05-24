@@ -39,12 +39,13 @@ export function resolveHitlBadgeState(opts: {
   nodeType: string;
   nodeStatus: string;
   autoMode: boolean;
+  aiControl?: boolean;
   hitlList: HITLDTO[];
 }): HitlBadgeState | null {
   const kind = hitlKindForNodeType(opts.nodeType);
   if (!kind) return null;
 
-  if (opts.autoMode) return "auto_gpt";
+  if (opts.aiControl || opts.autoMode) return "auto_gpt";
 
   const hitl = opts.hitlList
     .filter((h) => h.kind === kind)

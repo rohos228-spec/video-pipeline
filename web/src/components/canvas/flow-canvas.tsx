@@ -20,7 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
+import { Copy, FileSpreadsheet, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -38,6 +38,7 @@ import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
+import { EdgeAiControls } from "@/components/canvas/edge-ai-controls";
 import {
   Dialog,
   DialogContent,
@@ -462,39 +463,101 @@ export function FlowCanvas({
           nodeBorderRadius={4}
           maskColor="hsl(var(--background) / 0.7)"
         />
+        <EdgeAiControls edges={edges} />
       </ReactFlow>
       <WorkflowToolbar
+        workflowId={workflow.data?.id}
         onSave={persistWorkflow}
         saving={saving}
         onAddNode={addNode}
         onDelete={deleteSelectedNode}
         canDelete={!!selectedNodeKey}
+        onAddExcelFeed={() => {
+          const stamp = Date.now();
+          const id = `excel_feed_${stamp}`;
+          const minX = nodes.reduce((m, n) => Math.min(m, n.position.x), 0);
+          const minY = nodes.reduce((m, n) => Math.min(m, n.position.y), 0);
+          setNodes((prev) => [
+            ...prev,
+            {
+              id,
+              type: "pipeline",
+              position: { x: minX - 320, y: minY },
+              data: {
+                nodeKey: id,
+                type: "excel_feed",
+                status: "pending",
+                progress: 0,
+                progressText: null,
+                error: null,
+                attempts: 0,
+              },
+              sourcePosition: Position.Right,
+              targetPosition: Position.Left,
+            } as Node<PipelineNodeData>,
+          ]);
+          toast.success("Нода Excel добавлена слева — загрузите topics.xlsx");
+        }}
         onDuplicateBelow={() => {
           if (nodes.length === 0) return;
           const offsetY = 480;
           const stamp = Date.now();
           const idMap = new Map<string, string>();
-          const clones = nodes.map((n) => {
-            const newId = `${n.id}_lane_${stamp}`;
-            idMap.set(n.id, newId);
-            const d = n.data as PipelineNodeData;
-            return {
-              ...n,
-              id: newId,
-              position: { x: n.position.x, y: n.position.y + offsetY },
-              data: { ...d, nodeKey: newId },
-              selected: false,
-            };
-          });
-          const cloneEdges = edges.map((e) => ({
-            ...e,
-            id: `${e.id}_lane_${stamp}`,
-            source: idMap.get(e.source) ?? e.source,
-            target: idMap.get(e.target) ?? e.target,
-          }));
+          const clones = nodes
+            .filter((n) => (n.data as PipelineNodeData).type !== "excel_feed")
+            .map((n) => {
+              const newId = `${n.id}_lane_${stamp}`;
+              idMap.set(n.id, newId);
+              const d = n.data as PipelineNodeData;
+              return {
+                ...n,
+                id: newId,
+                position: { x: n.position.x, y: n.position.y + offsetY },
+                data: { ...d, nodeKey: newId },
+                selected: false,
+              };
+            });
+          const cloneEdges = edges
+            .filter(
+              (e) =>
+                idMap.has(e.source) &&
+                idMap.has(e.target) &&
+                (nodes.find((n) => n.id === e.source)?.data as PipelineNodeData)?.type !==
+                  "excel_feed",
+            )
+            .map((e) => ({
+              ...e,
+              id: `${e.id}_lane_${stamp}`,
+              source: idMap.get(e.source) ?? e.source,
+              target: idMap.get(e.target) ?? e.target,
+            }));
+          const excelNode = nodes.find(
+            (n) => (n.data as PipelineNodeData).type === "excel_feed",
+          );
+          const excelEdges: Edge[] = [];
+          if (excelNode) {
+            for (const p of clones) {
+              const dt = (p.data as PipelineNodeData).type;
+              if (dt === "plan" || dt === "topic") {
+                excelEdges.push({
+                  id: `excel_${stamp}_${p.id}`,
+                  source: excelNode.id,
+                  target: p.id,
+                  type: "smoothstep",
+                  animated: true,
+                  style: { stroke: "hsl(142 70% 45%)", strokeWidth: 2 },
+                  className: "excel-lane-edge",
+                });
+              }
+            }
+          }
           setNodes((prev) => [...prev, ...clones]);
-          setEdges((prev) => [...prev, ...cloneEdges]);
-          toast.success("Граф продублирован вниз — сохраните при необходимости");
+          setEdges((prev) => [...prev, ...cloneEdges, ...excelEdges]);
+          toast.success(
+            excelEdges.length
+              ? `Граф продублирован (${excelEdges.length} связей от Excel)`
+              : "Граф продублирован вниз — сохраните при необходимости",
+          );
         }}
       />
       <RunOverlay
@@ -510,21 +573,40 @@ export function FlowCanvas({
 }
 
 function WorkflowToolbar({
+  workflowId,
   onSave,
   saving,
   onAddNode,
   onDelete,
   canDelete,
   onDuplicateBelow,
+  onAddExcelFeed,
 }: {
+  workflowId?: number;
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
   onDelete: () => void;
   canDelete: boolean;
   onDuplicateBelow: () => void;
+  onAddExcelFeed: () => void;
 }) {
-  const addable = Object.keys(NODE_CATALOG).filter((t) => !t.startsWith("hitl_"));
+  const addable = Object.keys(NODE_CATALOG).filter(
+    (t) => !t.startsWith("hitl_") && t !== "excel_feed",
+  );
+  const qc = useQueryClient();
+
+  const duplicateWf = async () => {
+    if (!workflowId) return;
+    try {
+      await api.duplicateWorkflow(workflowId);
+      await qc.invalidateQueries({ queryKey: ["workflows"] });
+      toast.success("Workflow скопирован на сервере");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
@@ -558,6 +640,27 @@ function WorkflowToolbar({
         >
           <Copy className="h-3.5 w-3.5" />
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1 text-xs"
+          onClick={onAddExcelFeed}
+          title="Источник Excel для массовой генерации"
+        >
+          <FileSpreadsheet className="h-3.5 w-3.5" />
+        </Button>
+        {workflowId != null && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 gap-1 text-xs"
+            onClick={() => void duplicateWf()}
+            title="Сохранить копию workflow на сервере"
+          >
+            <Copy className="h-3.5 w-3.5 opacity-60" />
+            WF
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"

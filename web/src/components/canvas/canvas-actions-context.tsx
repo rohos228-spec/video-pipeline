@@ -11,6 +11,7 @@ export interface CanvasActions {
   projectId: number | null;
   project: ProjectDetail | null;
   autoMode: boolean;
+  aiControl: boolean;
   hitlList: HITLDTO[];
   disabledNodes: Set<string>;
   vMenuNodeKey: string | null;
@@ -30,6 +31,7 @@ export interface CanvasActions {
   onDownloadPrompts: (nodeKey: string, nodeType: string) => void;
   onNodeBodyClick: (nodeKey: string, nodeType: string) => void;
   onOpenHitlReview: (nodeKey: string, nodeType: string) => void;
+  onOpenHitlById: (hitlId: number) => void;
   onOpenNodeResult: (nodeKey: string, nodeType: string) => void;
 }
 

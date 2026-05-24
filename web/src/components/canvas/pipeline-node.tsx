@@ -21,9 +21,11 @@ import {
 } from "./canvas-actions-context";
 import { NodeVMenu } from "./node-v-menu";
 import { NodeGenerationBadge } from "./node-generation-badge";
+import { NodeHitlBadge, hitlKindForNodeType, resolveHitlBadgeState } from "./node-hitl-badge";
 import { NodeResultBadge } from "./node-result-badge";
 import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
+import { ExcelFeedPanel } from "./excel-feed-panel";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -50,6 +52,19 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
   const resultSnapshot = actions?.getNodeResult(d.type);
+  const hitlKind = hitlKindForNodeType(d.type);
+  const hitlState =
+    actions && hitlKind
+      ? resolveHitlBadgeState({
+          nodeType: d.type,
+          nodeStatus: d.status,
+          autoMode: actions.autoMode,
+          aiControl: actions.aiControl,
+          hitlList: actions.hitlList,
+        })
+      : null;
+  const showHitlBadge = hitlState != null;
+  const isExcelFeed = d.type === "excel_feed";
 
   useEffect(() => {
     if (!vMenuOpen) return;
@@ -77,11 +92,18 @@ export function PipelineNode({ data, selected }: NodeProps) {
         )}
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
       >
-        {actions && (
-          <NodeGenerationBadge
-            nodeType={d.type}
-            status={d.status}
+        {actions && showHitlBadge && hitlState && (
+          <NodeHitlBadge
+            state={hitlState}
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.onOpenHitlReview(d.nodeKey, d.type);
+            }}
           />
+        )}
+
+        {actions && !showHitlBadge && (
+          <NodeGenerationBadge nodeType={d.type} status={d.status} />
         )}
 
         {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
@@ -102,10 +124,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
             клик по которой удаляет все рёбра, прикреплённые к этой
             стороне ноды (in/out). На сами кружки drag/connect ведёт
             себя как обычно (xyflow). */}
-        <HandleWithDetach side="in" nodeKey={d.nodeKey} />
+        {!isExcelFeed && <HandleWithDetach side="in" nodeKey={d.nodeKey} />}
         <Handle type="source" position={Position.Right} id="out" className="!h-4 !w-4 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary" style={{ right: -8 }} />
 
-        {actions && !isHitlNodeType(d.type) && (
+        {actions && !isHitlNodeType(d.type) && !isExcelFeed && (
           <>
             <button
               type="button"
@@ -200,6 +222,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
             )}
           </div>
         </div>
+
+        {isExcelFeed && actions?.projectId && (
+          <ExcelFeedPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+        )}
 
         {d.progressText && d.status === "running" && (
           <div className="border-t border-border/50 bg-black/20 px-3 py-1 font-mono text-[10px] text-muted-foreground">

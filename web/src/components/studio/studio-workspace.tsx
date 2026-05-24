@@ -18,8 +18,10 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { shouldShowStopBar } from "@/lib/project-running";
+import { readControlMode } from "@/lib/control-mode";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
+import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { NodeResultPanel } from "@/components/canvas/node-result-panel";
 import {
   resolveNodeResult,
@@ -58,6 +60,17 @@ export function StudioWorkspace({
   );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
+
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const d = (ev as CustomEvent<{ hitlId: number }>).detail;
+      if (d?.hitlId == null) return;
+      setHitlModalId(d.hitlId);
+      setHitlModalOpen(true);
+    };
+    window.addEventListener("canvas-open-hitl-modal", onOpen);
+    return () => window.removeEventListener("canvas-open-hitl-modal", onOpen);
+  }, []);
 
   // Слушаем событие "открыть AI-диалог для ноды" (диспатчится из
   // pipeline-node.tsx, когда юзер кликает на фиолетовый кружок справа
@@ -203,6 +216,7 @@ export function StudioWorkspace({
       projectId,
       project: project.data ?? null,
       autoMode: project.data?.auto_mode ?? false,
+      aiControl: readControlMode((project.data?.meta || {}) as Record<string, unknown>) === "ai",
       hitlList: hitlList.data ?? [],
       disabledNodes,
       vMenuNodeKey,
@@ -353,6 +367,10 @@ export function StudioWorkspace({
           setAssetTray({ kind: trayKind, nodeType });
         }
       },
+      onOpenHitlById: (hitlId: number) => {
+        setHitlModalId(hitlId);
+        setHitlModalOpen(true);
+      },
       onOpenNodeResult: (nodeKey: string, nodeType: string) => {
         setResultPanel({ nodeKey, nodeType });
       },
@@ -417,13 +435,22 @@ export function StudioWorkspace({
           onSelectNode={(key) => {
             onSelectNode(key);
           }}
-          onNodeActivate={(nodeKey) => {
-            // Клик в тело ноды открывает Node Studio с вкладкой
-            // «Настройки». Suppress-таймер (1.5 сек после закрытия
-            // студии) пропускает остаточные синтетические клики /
-            // select-events от React Flow, иначе студия моргает —
-            // закрылась → тут же открылась.
+          onNodeActivate={(nodeKey, nodeType) => {
             if (Date.now() < suppressStudioOpenUntil.current) return;
+            if (isHitlNodeType(nodeType)) {
+              canvasActions.onOpenHitlReview(nodeKey, nodeType);
+              return;
+            }
+            const kind = hitlKindForNodeType(nodeType);
+            if (kind) {
+              const pending = (hitlList.data ?? []).find(
+                (h) => h.kind === kind && h.decision === "pending",
+              );
+              if (pending) {
+                canvasActions.onOpenHitlReview(nodeKey, nodeType);
+                return;
+              }
+            }
             onSelectNode(nodeKey);
             setPromptFocus(null);
             setStudioTab("settings");
