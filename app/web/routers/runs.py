@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.event_bus import publish_node_event
 from app.services.project_control import stop_project_running
+from app.services.run_sync import sync_run_for_project
 from app.web.deps import get_session
 from app.web.routers.projects import _slugify
 from app.web.schemas import (
@@ -169,5 +170,7 @@ async def cancel_run(
     run.status = WorkflowRunStatus.cancelled
     run.finished_at = datetime.utcnow()
     await session.commit()
+    if run.project_id is not None:
+        await sync_run_for_project(run.project_id)
     await publish_node_event(run.id, event_type="run_cancelled")
     return run

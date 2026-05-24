@@ -12,6 +12,7 @@ import {
   useNodesState,
   useEdgesState,
   type NodeChange,
+  type EdgeChange,
   type Connection,
   applyNodeChanges,
   addEdge,
@@ -107,9 +108,19 @@ export function FlowCanvas({
     return workflowToReactFlowEdges(workflow.data);
   }, [workflow.data]);
 
-  const [nodes, setNodes] = useNodesState<Node<PipelineNodeData>>([]);
-  const [edges, setEdges] = useEdgesState<Edge>([]);
+  const [nodes, setNodes, onNodesChangeInternal] = useNodesState<Node<PipelineNodeData>>([]);
+  const [edges, setEdges, onEdgesChangeInternal] = useEdgesState<Edge>([]);
   const [graphVersion, setGraphVersion] = useState<string>("");
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const saveTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
 
   useEffect(() => {
     if (!workflow.data) return;
@@ -168,7 +179,27 @@ export function FlowCanvas({
   const onNodesChange = useCallback(
     (changes: NodeChange[]) =>
       setNodes((ns) => applyNodeChanges(changes, ns) as Node<PipelineNodeData>[]),
-    [setNodes]
+    [setNodes],
+  );
+
+  const scheduleSaveWorkflow = useCallback(() => {
+    if (saveTimerRef.current != null) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+    }, 400);
+  }, []);
+
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      onEdgesChangeInternal(changes);
+      if (changes.some((c) => c.type === "remove" || c.type === "add")) {
+        scheduleSaveWorkflow();
+      }
+    },
+    [onEdgesChangeInternal, scheduleSaveWorkflow],
   );
 
   const onConnect = useCallback(
@@ -183,9 +214,10 @@ export function FlowCanvas({
           eds,
         ),
       );
-      toast.message("Связь добавлена");
+      toast.message("Связь добавлена — сохраняю…");
+      scheduleSaveWorkflow();
     },
-    [setEdges],
+    [setEdges, scheduleSaveWorkflow],
   );
 
   const [saving, setSaving] = useState(false);
@@ -194,13 +226,15 @@ export function FlowCanvas({
     if (!workflow.data) return;
     setSaving(true);
     try {
-      const wfNodes: WorkflowNode[] = nodes.map((n) => ({
+      const currentNodes = nodesRef.current;
+      const currentEdges = edgesRef.current;
+      const wfNodes: WorkflowNode[] = currentNodes.map((n) => ({
         id: n.id,
         type: (n.data as PipelineNodeData).type,
         position: n.position,
         data: { label: getNodeSpec((n.data as PipelineNodeData).type).label },
       }));
-      const wfEdges: WorkflowEdge[] = edges.map((e) => ({
+      const wfEdges: WorkflowEdge[] = currentEdges.map((e) => ({
         id: e.id,
         source: e.source,
         target: e.target,
@@ -226,7 +260,7 @@ export function FlowCanvas({
           const topics = Array.isArray(meta.mass_excel_topics)
             ? (meta.mass_excel_topics as string[])
             : [];
-          const bindings = buildExcelLaneBindings(nodes, edges, topics);
+          const bindings = buildExcelLaneBindings(currentNodes, currentEdges, topics);
           if (bindings.length) {
             await api.patchProject(projectId, {
               meta: { ...meta, excel_lane_bindings: bindings },
@@ -244,7 +278,29 @@ export function FlowCanvas({
     } finally {
       setSaving(false);
     }
-  }, [workflow, nodes, edges, projectId]);
+  }, [workflow, projectId]);
+
+  useEffect(() => {
+    const clearRunning = () => {
+      setNodes((prev) =>
+        prev.map((n) => {
+          const d = n.data as PipelineNodeData;
+          if (d.status !== "running") return n;
+          return {
+            ...n,
+            data: {
+              ...d,
+              status: "pending" as PipelineNodeData["status"],
+              progress: 0,
+              progressText: null,
+            },
+          };
+        }),
+      );
+    };
+    window.addEventListener("canvas-stop-clear-running", clearRunning);
+    return () => window.removeEventListener("canvas-stop-clear-running", clearRunning);
+  }, [setNodes]);
 
   useEffect(() => {
     const onDetach = (ev: Event) => {
@@ -404,6 +460,7 @@ export function FlowCanvas({
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
@@ -783,9 +840,10 @@ function RunOverlay({
     setBusy(true);
     try {
       const r = await api.stopProject(projectId);
+      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success(r.message || "⏹ Шаг остановлен");
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      await qc.refetchQueries({ queryKey: ["project", projectId] });
+      await qc.refetchQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["runs"] });
       onRunCreated();
     } catch (e) {
@@ -839,7 +897,10 @@ function RunOverlay({
     try {
       await api.stopProject(projectId);
       await api.cancelRun(run.id);
+      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success("Run остановлен (task.cancel)");
+      await qc.refetchQueries({ queryKey: ["project", projectId] });
+      await qc.refetchQueries({ queryKey: ["project-run", projectId] });
       onRunCreated();
     } catch (e) {
       toast.error(String(e));

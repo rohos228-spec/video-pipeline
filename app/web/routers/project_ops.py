@@ -17,7 +17,7 @@ from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
 from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
-from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
+from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.services.xlsx_sync import reload_from_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -67,6 +67,7 @@ async def stop_project(
     if not info["ok"]:
         raise HTTPException(status_code=400, detail=info["message"])
     await session.commit()
+    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,

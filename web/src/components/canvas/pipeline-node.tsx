@@ -73,8 +73,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
       if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
       actions?.setVMenuNodeKey(null);
     };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("click", close, true);
+    return () => document.removeEventListener("click", close, true);
   }, [vMenuOpen, actions]);
 
   return (
@@ -132,15 +132,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
             <button
               type="button"
               className={cn(
-                "node-v-trigger nodrag absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border shadow-sm backdrop-blur transition-colors",
+                "node-v-trigger nodrag nopan nowheel absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-md border shadow-sm backdrop-blur transition-colors",
                 vMenuOpen
                   ? "border-primary/60 bg-primary/20 text-primary"
                   : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
               )}
+              onPointerDown={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
-              onClickCapture={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                e.preventDefault();
                 actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
               }}
               title="Меню ноды"

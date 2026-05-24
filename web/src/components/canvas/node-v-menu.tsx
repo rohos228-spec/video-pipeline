@@ -71,7 +71,7 @@ export function NodeVMenu({
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
   return (
-    <div className="node-v-menu absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
+    <div className="node-v-menu nodrag nopan nowheel absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
         {excelSlot && (
           <NodeVMenuExcelBlock
