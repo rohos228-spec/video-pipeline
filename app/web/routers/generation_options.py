@@ -43,5 +43,5 @@ async def wizard_catalog() -> dict:
         "image_resolutions": _choices_to_dict(IMAGE_RESOLUTIONS),
         "video_generators": _choices_to_dict(VIDEO_GENERATORS),
         "video_resolutions": _choices_to_dict(VIDEO_RESOLUTIONS),
-        "boolean": _choices_to_dict(BOOLEAN_CHOICES),
+        "boolean": _choices_to_dict(wiz.BOOLEAN_CHOICES),
     }
