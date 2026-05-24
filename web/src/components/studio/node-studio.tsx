@@ -37,6 +37,8 @@ import {
   slotSupportsStyles,
 } from "@/lib/prompt-styles";
 import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
+import { isProjectRunningStatus } from "@/lib/project-running";
+import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
 
@@ -75,7 +77,10 @@ export function NodeStudio({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId!),
     enabled: open && projectId != null,
+    refetchInterval: (q) =>
+      open && isProjectRunningStatus(q.state.data?.status) ? 1500 : false,
   });
+  const generationRunning = isProjectRunningStatus(project.data?.status);
   const catalog = useQuery({
     queryKey: ["prompt-studio-catalog"],
     queryFn: api.promptStudioCatalog,
@@ -308,14 +313,29 @@ export function NodeStudio({
                   )}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
+                {generationRunning && projectId != null && (
+                  <StopGenerationBar
+                    projectId={projectId}
+                    visible
+                    className="!relative !bottom-auto !left-auto !z-auto !w-full !translate-x-0 sm:min-w-[280px]"
+                  />
+                )}
                 {stepCode && (
                   <Button
                     size="sm"
                     variant="default"
                     onClick={() => runStep.mutate()}
-                    disabled={!projectId || runStep.isPending || nodeDisabled}
-                    title={nodeDisabled ? "Нода отключена в графе" : undefined}
+                    disabled={
+                      !projectId || runStep.isPending || nodeDisabled || generationRunning
+                    }
+                    title={
+                      generationRunning
+                        ? "Шаг уже выполняется — нажмите ⏹ Остановить"
+                        : nodeDisabled
+                          ? "Нода отключена в графе"
+                          : undefined
+                    }
                   >
                     {runStep.isPending ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />

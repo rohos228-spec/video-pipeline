@@ -9,12 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.services.project_state import is_running_status
 from app.services.step_cancel import request_stop
+from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
 
 async def stop_project_running(session: AsyncSession, project: Project) -> dict[str, str]:
     """⏹ Остановить текущий running-шаг — та же логика, что on_project_stop_running в боте."""
     request_stop(project.id)
+    xlsx_stopped = clear_xlsx_flow_locks(project.id)
     msg = "флаг остановки установлен"
     if is_running_status(project.status):
         cur = project.status
@@ -32,6 +34,10 @@ async def stop_project_running(session: AsyncSession, project: Project) -> dict[
         project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
         msg = f"остановлен шаг «{step_title}» → {rollback_to.value}, auto_mode выключен"
+    elif xlsx_stopped:
+        msg = f"остановлен xlsx-flow ({', '.join(xlsx_stopped)}), auto_mode выключен"
+        project.auto_mode = False
+        project.updated_at = datetime.utcnow()
     elif project.status is not ProjectStatus.paused:
         project.auto_mode = False
         project.updated_at = datetime.utcnow()

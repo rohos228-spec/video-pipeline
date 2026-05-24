@@ -17,6 +17,8 @@ import { defaultPromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
+import { isProjectRunningStatus } from "@/lib/project-running";
+import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 
 export function StudioWorkspace({
   projectId,
@@ -77,7 +79,11 @@ export function StudioWorkspace({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId!),
     enabled: projectId != null,
+    refetchInterval: (q) =>
+      isProjectRunningStatus(q.state.data?.status) ? 1500 : false,
   });
+
+  const generationRunning = isProjectRunningStatus(project.data?.status);
 
   const hitlList = useQuery({
     queryKey: ["hitl", projectId],
@@ -310,6 +316,17 @@ export function StudioWorkspace({
           projectId={projectId}
           nodeType={aiCtx.nodeType}
           nodeLabel={getNodeSpec(aiCtx.nodeType).label}
+        />
+      )}
+      {projectId != null && (
+        <StopGenerationBar
+          projectId={projectId}
+          visible={generationRunning}
+          hint={
+            generationRunning
+              ? "Прерывает цикл outsee/GPT и откатывает шаг — как ⏹ в меню проекта Telegram"
+              : undefined
+          }
         />
       )}
     </CanvasActionsProvider>

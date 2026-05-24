@@ -14,7 +14,7 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.prompt_library import get_project_prompt
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
 
 
@@ -66,6 +66,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         e,
                     )
         except StepCancelledError as e:
+            consume_stop(project.id)
             logger.info("[#{}] make_animation_prompts: {} — выхожу из цикла",
                         project.id, e)
             try:

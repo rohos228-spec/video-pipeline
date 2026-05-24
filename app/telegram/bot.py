@@ -54,6 +54,11 @@ from app.models import (
 from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
 from app.services import reset_step as reset_step_svc
+from app.services.xlsx_flow_locks import (
+    clear_xlsx_flow_locks,
+    is_xlsx_flow_active,
+    xlsx_flow_active_set,
+)
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
@@ -182,8 +187,8 @@ _last_project_by_user: dict[int, int] = {}
 # нажатием не запустил параллельные прогоны одного и того же шага
 # (ChatGPT в одном чате не справляется с 2-3 параллельными upload'ами,
 # в итоге все три кладут в project.xlsx «пустышки»). Ключ —
-# (project_id, step_code), где step_code ∈ {'plan', 'script', 'split', 'img_pr'}.
-_xlsx_flow_active: set[tuple[int, str]] = set()
+# (project_id, step_code) — см. app.services.xlsx_flow_locks
+_xlsx_flow_active = xlsx_flow_active_set()
 
 # Ожидание загрузки отредактированного xlsx обратно в проект.
 # Когда юзер скачивает xlsx кнопкой «📥 Скачать xlsx», запоминаем
@@ -2805,7 +2810,7 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                         show_alert=True,
                     )
                     return
-            if (pid, "plan") in _xlsx_flow_active:
+            if is_xlsx_flow_active(pid, "plan"):
                 await cb.answer(
                     "⏳ Уже идёт обработка «Плана» по этому проекту, подожди.",
                     show_alert=True,
@@ -2843,7 +2848,7 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                         show_alert=True,
                     )
                     return
-            if (pid, "script") in _xlsx_flow_active:
+            if is_xlsx_flow_active(pid, "script"):
                 await cb.answer(
                     "⏳ Уже идёт обработка «Закадрового текста», подожди.",
                     show_alert=True,
@@ -2881,7 +2886,7 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                         show_alert=True,
                     )
                     return
-            if (pid, "split") in _xlsx_flow_active:
+            if is_xlsx_flow_active(pid, "split"):
                 await cb.answer(
                     "⏳ Уже идёт обработка «Разбивки», подожди.",
                     show_alert=True,
@@ -2919,7 +2924,7 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                         show_alert=True,
                     )
                     return
-            if (pid, "img_pr") in _xlsx_flow_active:
+            if is_xlsx_flow_active(pid, "img_pr"):
                 await cb.answer(
                     "⏳ Уже идёт обработка «Промтов картинок», подожди.",
                     show_alert=True,
@@ -3845,12 +3850,7 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     request_stop(pid)
 
     # Снимаем xlsx-flow локи для этого проекта.
-    xlsx_stopped: list[str] = []
-    for code in ("plan", "script", "split", "img_pr"):
-        key = (pid, code)
-        if key in _xlsx_flow_active:
-            _xlsx_flow_active.discard(key)
-            xlsx_stopped.append(code)
+    xlsx_stopped = clear_xlsx_flow_locks(pid)
 
     async with session_scope() as s:
         project = (
