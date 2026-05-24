@@ -1,11 +1,18 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.project_root import find_project_root, resolve_project_path
+
+_ROOT = find_project_root()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ROOT / ".env"),
+        extra="ignore",
+    )
 
     # Telegram (опционально — пустой токен = web-only, без бота)
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
@@ -53,6 +60,12 @@ class Settings(BaseSettings):
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
 
+    @model_validator(mode="after")
+    def _resolve_paths_from_repo_root(self) -> "Settings":
+        object.__setattr__(self, "sqlite_path", resolve_project_path(self.sqlite_path))
+        object.__setattr__(self, "data_dir", resolve_project_path(self.data_dir))
+        return self
+
     @property
     def telegram_active(self) -> bool:
         """Нужен ли живой Telegram-бот (поллинг + уведомления)."""
@@ -62,12 +75,7 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        # SQLite path → sqlite+aiosqlite:///absolute_or_relative/path
         p = self.sqlite_path
-        if not p.is_absolute():
-            # относительный путь — относительно CWD
-            p = Path.cwd() / p
-        # Для Windows путь начинается с буквы диска: sqlite+aiosqlite:///C:/Users/...
         as_posix = p.as_posix()
         return f"sqlite+aiosqlite:///{as_posix}"
 

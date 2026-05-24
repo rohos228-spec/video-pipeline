@@ -68,7 +68,7 @@ $commands = @(
         Invoke-Cmd "Установка" { & powershell -ExecutionPolicy Bypass -File (Join-Path $Root "install.ps1") -NonInteractive }
     }},
     @{ Label = "2. Запустить Studio"; Tip = "API :8765 без Telegram"; Action = {
-        Invoke-Cmd "Studio" { Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "start-studio.ps1") -WorkingDirectory $Root }
+        Invoke-Cmd "Studio" { Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1") -WorkingDirectory $Root }
     }},
     @{ Label = "3. Запустить с Telegram"; Tip = "Полный бот + API"; Action = {
         Invoke-Cmd "Main" { Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "start.ps1") -WorkingDirectory $Root }

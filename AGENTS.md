@@ -15,7 +15,7 @@
 | Tests | `python3 -m pytest tests/ -v` |
 | Type check | `mypy app/ --ignore-missing-imports` |
 | Seed pilot project | `python3 -m app.seed_pilot` |
-| Run application | `python3 -m app.main` |
+| Run application | `python3 -m app.main` from repo root, or `.\run-backend.ps1` (Windows) |
 
 ### Key caveats
 
@@ -23,7 +23,7 @@
 - **SQLite DB** is at `data/state.db` (auto-created on first run). Delete it to reset state: `rm -f data/state.db`.
 - **No `python` alias** — use `python3` on Linux. The system has Python 3.12 which satisfies the `>=3.11,<3.13` constraint.
 - **PATH**: Dev tools (`ruff`, `mypy`, `pytest`, `playwright`) install to `~/.local/bin` — ensure it's on `PATH`.
-- **`.env` file** must exist; copy from `.env.example`. See `app/settings.py` for all config fields.
+- **Paths** resolve from repo root (`pyproject.toml`), not shell CWD — safe to run `python -m app.main` even after `cd web`. Prefer `.\run-backend.ps1` on Windows.
 - The app connects to Chrome via CDP on `localhost:29229` for browser automation (ChatGPT, outsee.io). This is only needed for the actual pipeline execution, not for running tests or linting.
 - **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
 - Tests use in-memory SQLite and don't require external services or a `.env` file.

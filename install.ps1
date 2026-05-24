@@ -253,8 +253,8 @@ Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Дальше (веб-студия без Telegram — по умолчанию):" -ForegroundColor Cyan
 Write-Host "  1. Окно 1 — бэкенд:" -ForegroundColor Cyan
-Write-Host "       .\start-studio.ps1" -ForegroundColor White
-Write-Host "     (или ./start-studio.sh на Linux/macOS)"
+Write-Host "       .\run-backend.ps1" -ForegroundColor White
+Write-Host "     (или .\start-studio.ps1 — то же самое с проверкой Chrome)"
 Write-Host "  2. Окно 2 — UI:" -ForegroundColor Cyan
 Write-Host "       cd web" -ForegroundColor White
 Write-Host "       npm install" -ForegroundColor White
