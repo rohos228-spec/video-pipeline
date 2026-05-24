@@ -55,6 +55,7 @@ class ProjectDetail(ProjectSummary):
     prompt_overrides: dict[str, Any] = Field(default_factory=dict)
     gpt_text_overrides: dict[str, str] = Field(default_factory=dict)
     meta: dict[str, Any] = Field(default_factory=dict)
+    generation_active: bool = False
 
 
 class CreateProjectRequest(BaseModel):

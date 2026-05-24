@@ -27,3 +27,11 @@ export function isProjectRunningStatus(
   if (!status) return false;
   return RUNNING_PROJECT_STATUSES.has(status as ProjectStatus);
 }
+
+/** Показывать ⏹ пока running-статус ИЛИ воркер ещё держит asyncio-task. */
+export function shouldShowStopBar(
+  status: ProjectStatus | string | undefined | null,
+  generationActive?: boolean,
+): boolean {
+  return isProjectRunningStatus(status) || Boolean(generationActive);
+}

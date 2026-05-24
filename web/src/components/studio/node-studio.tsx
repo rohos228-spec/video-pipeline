@@ -38,7 +38,7 @@ import {
 } from "@/lib/prompt-styles";
 import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
-import { isProjectRunningStatus } from "@/lib/project-running";
+import { shouldShowStopBar } from "@/lib/project-running";
 import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
@@ -79,9 +79,14 @@ export function NodeStudio({
     queryFn: () => api.getProject(projectId!),
     enabled: open && projectId != null,
     refetchInterval: (q) =>
-      open && isProjectRunningStatus(q.state.data?.status) ? 1500 : false,
+      open && shouldShowStopBar(q.state.data?.status, q.state.data?.generation_active)
+        ? 1500
+        : false,
   });
-  const generationRunning = isProjectRunningStatus(project.data?.status);
+  const generationRunning = shouldShowStopBar(
+    project.data?.status,
+    project.data?.generation_active,
+  );
   const catalog = useQuery({
     queryKey: ["prompt-studio-catalog"],
     queryFn: api.promptStudioCatalog,

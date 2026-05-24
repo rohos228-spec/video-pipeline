@@ -36,9 +36,27 @@ def unregister_advance_task(project_id: int) -> None:
     _advance_tasks.pop(project_id, None)
 
 
+def is_advance_active(project_id: int) -> bool:
+    """True, если воркер прямо сейчас выполняет advance_project для проекта."""
+    task = _advance_tasks.get(project_id)
+    return task is not None and not task.done()
+
+
+def is_generation_active(project_id: int) -> bool:
+    """True, если для проекта идёт advance или xlsx-flow (task ещё жива)."""
+    from app.services.xlsx_flow_locks import (
+        XLSX_FLOW_STEP_CODES,
+        is_xlsx_flow_active,
+    )
+
+    if is_advance_active(project_id):
+        return True
+    return any(is_xlsx_flow_active(project_id, code) for code in XLSX_FLOW_STEP_CODES)
+
+
 def cancel_advance_task(project_id: int) -> bool:
     """Отменяет asyncio-task advance_project для проекта."""
-    task = _advance_tasks.pop(project_id, None)
+    task = _advance_tasks.get(project_id)
     if task is not None and not task.done():
         task.cancel()
         return True
@@ -52,22 +70,36 @@ def clear_stop(project_id: int) -> None:
         logger.debug("step_cancel.clear_stop: #{} флаг снят", project_id)
 
 
-def request_stop(project_id: int) -> None:
+def request_stop(project_id: int) -> tuple[bool, list[str]]:
     """Помечает проект как «нужно остановить» и **сразу** отменяет task.
 
     Повторное нажатие ⏹ снова шлёт cancel (на случай зависшего await).
+    Возвращает (advance_cancelled, xlsx_step_codes).
     """
     from app.services.xlsx_flow_locks import cancel_xlsx_flow_tasks
 
     _stop_pids.add(project_id)
     cancelled_adv = cancel_advance_task(project_id)
     cancelled_xlsx = cancel_xlsx_flow_tasks(project_id)
-    logger.info(
-        "step_cancel.request_stop: #{} (advance_cancel={}, xlsx_cancel={})",
-        project_id,
-        cancelled_adv,
-        cancelled_xlsx,
-    )
+    if cancelled_adv or cancelled_xlsx:
+        logger.info(
+            "step_cancel.request_stop: #{} (advance_cancel={}, xlsx_cancel={})",
+            project_id,
+            cancelled_adv,
+            cancelled_xlsx,
+        )
+    elif is_generation_active(project_id):
+        logger.warning(
+            "step_cancel.request_stop: #{} флаг установлен, но task не найден "
+            "(перезапустите `python -m app.main` после обновления?)",
+            project_id,
+        )
+    else:
+        logger.info(
+            "step_cancel.request_stop: #{} флаг установлен (активных task нет)",
+            project_id,
+        )
+    return cancelled_adv, cancelled_xlsx
 
 
 def is_stop_requested(project_id: int) -> bool:

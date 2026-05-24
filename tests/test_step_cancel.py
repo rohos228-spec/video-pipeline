@@ -20,6 +20,7 @@ from app.services.step_cancel import (
     clear_all,
     clear_stop,
     consume_stop,
+    is_advance_active,
     is_stop_requested,
     raise_if_cancelled,
     register_advance_task,
@@ -139,6 +140,25 @@ async def test_await_with_cancel_interrupted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_is_advance_active_while_task_running() -> None:
+    gate = asyncio.Event()
+
+    async def blocked() -> None:
+        gate.set()
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(blocked())
+    register_advance_task(12, task)
+    await gate.wait()
+    assert is_advance_active(12) is True
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    unregister_advance_task(12)
+    assert is_advance_active(12) is False
+
+
+@pytest.mark.asyncio
 async def test_request_stop_cancels_advance_task() -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -154,7 +174,9 @@ async def test_request_stop_cancels_advance_task() -> None:
     task = asyncio.create_task(long_advance())
     register_advance_task(99, task)
     await started.wait()
-    request_stop(99)
+    adv, xlsx = request_stop(99)
+    assert adv is True
+    assert xlsx == []
     with pytest.raises(asyncio.CancelledError):
         await task
     assert cancelled.is_set()

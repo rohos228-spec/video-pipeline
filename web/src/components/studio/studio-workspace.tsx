@@ -17,7 +17,7 @@ import { defaultPromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
-import { isProjectRunningStatus } from "@/lib/project-running";
+import { shouldShowStopBar } from "@/lib/project-running";
 import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
@@ -84,10 +84,13 @@ export function StudioWorkspace({
     queryFn: () => api.getProject(projectId!),
     enabled: projectId != null,
     refetchInterval: (q) =>
-      isProjectRunningStatus(q.state.data?.status) ? 1500 : false,
+      shouldShowStopBar(q.state.data?.status, q.state.data?.generation_active) ? 1500 : false,
   });
 
-  const generationRunning = isProjectRunningStatus(project.data?.status);
+  const generationRunning = shouldShowStopBar(
+    project.data?.status,
+    project.data?.generation_active,
+  );
 
   const hitlList = useQuery({
     queryKey: ["hitl", projectId],

@@ -452,7 +452,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001
             logger.exception("worker loop iteration failed")
-        await asyncio.sleep(60)
+        await asyncio.sleep(5)
 
 
 async def main() -> None:

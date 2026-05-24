@@ -9,14 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.services.project_state import is_running_status
 from app.services.step_cancel import request_stop
-from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
 
-async def stop_project_running(session: AsyncSession, project: Project) -> dict[str, str]:
+async def stop_project_running(session: AsyncSession, project: Project) -> dict[str, str | bool | list[str]]:
     """⏹ Остановить текущий running-шаг — та же логика, что on_project_stop_running в боте."""
-    request_stop(project.id)
-    xlsx_stopped = clear_xlsx_flow_locks(project.id)
+    from app.services.step_cancel import is_generation_active
+
+    advance_cancelled, xlsx_stopped = request_stop(project.id)
     msg = "флаг остановки установлен"
     if is_running_status(project.status):
         cur = project.status
@@ -43,7 +43,13 @@ async def stop_project_running(session: AsyncSession, project: Project) -> dict[
         project.updated_at = datetime.utcnow()
         msg = "auto_mode выключен"
     await session.flush()
-    return {"message": msg}
+    still_active = is_generation_active(project.id)
+    return {
+        "message": msg,
+        "advance_cancelled": advance_cancelled,
+        "generation_still_active": still_active,
+        "xlsx_stopped": xlsx_stopped,
+    }
 
 
 async def pause_project(session: AsyncSession, project: Project) -> None:

@@ -647,8 +647,9 @@ function RunOverlay({
     if (!run) return;
     setBusy(true);
     try {
+      await api.stopProject(projectId);
       await api.cancelRun(run.id);
-      toast.success("Run отменён");
+      toast.success("Run остановлен (task.cancel)");
       onRunCreated();
     } catch (e) {
       toast.error(String(e));

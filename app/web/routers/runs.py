@@ -18,6 +18,7 @@ from app.models import (
     WorkflowRunStatus,
 )
 from app.services.event_bus import publish_node_event
+from app.services.project_control import stop_project_running
 from app.web.deps import get_session
 from app.web.routers.projects import _slugify
 from app.web.schemas import (
@@ -161,6 +162,10 @@ async def cancel_run(
     ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
+    if run.project_id is not None:
+        project = await session.get(Project, run.project_id)
+        if project is not None:
+            await stop_project_running(session, project)
     run.status = WorkflowRunStatus.cancelled
     run.finished_at = datetime.utcnow()
     await session.commit()

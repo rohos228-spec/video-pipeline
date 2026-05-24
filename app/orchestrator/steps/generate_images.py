@@ -414,6 +414,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             except Exception:  # noqa: BLE001
                 logger.warning("[#{}] не смог refresh project после ⏹", project.id)
             return
+        except asyncio.CancelledError:
+            logger.info("[#{}] generate_images: hard-cancel (⏹)", project.id)
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
     project.status = ProjectStatus.images_ready
     await session.flush()

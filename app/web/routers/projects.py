@@ -17,6 +17,7 @@ from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.web.deps import get_session
+from app.web.project_dto import project_to_detail
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -62,11 +63,11 @@ async def steps_catalog() -> list[dict[str, str]]:
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(
     project_id: int, session: AsyncSession = Depends(get_session)
-) -> Project:
+) -> ProjectDetail:
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
-    return p
+    return project_to_detail(p)
 
 
 @router.post("", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)

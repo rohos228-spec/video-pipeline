@@ -97,6 +97,8 @@ export interface ProjectDetail extends ProjectSummary {
   prompt_overrides: Record<string, unknown>;
   gpt_text_overrides: Record<string, string>;
   meta: Record<string, unknown>;
+  /** Воркер держит asyncio-task (даже если status уже откатили). */
+  generation_active?: boolean;
 }
 
 export interface NodeRunDTO {

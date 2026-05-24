@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from aiogram import Bot
@@ -21,18 +22,29 @@ class AdvanceJobResult:
 
 
 async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
-    """Один такт advance_project в своей сессии (для asyncio.create_task)."""
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if project is None:
-            logger.warning("advance_project_job: проект #{} не найден", project_id)
-            return AdvanceJobResult(project_id, "", None)
-        prev = project.status.value
-        await advance_project(session, project, bot)
-        new = project.status.value
-        if new != prev:
-            logger.debug(
-                "advance_project_job: #{} {} -> {}", project_id, prev, new
-            )
-            return AdvanceJobResult(project_id, prev, new)
-        return AdvanceJobResult(project_id, prev, None)
+    """Один такт advance_project в своей сессии (for asyncio.create_task)."""
+    try:
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                logger.warning("advance_project_job: проект #{} не найден", project_id)
+                return AdvanceJobResult(project_id, "", None)
+            prev = project.status.value
+            await advance_project(session, project, bot)
+            new = project.status.value
+            if new != prev:
+                logger.debug(
+                    "advance_project_job: #{} {} -> {}", project_id, prev, new
+                )
+                return AdvanceJobResult(project_id, prev, new)
+            return AdvanceJobResult(project_id, prev, None)
+    except asyncio.CancelledError:
+        logger.info("advance_project_job: #{} hard-cancelled (⏹)", project_id)
+        try:
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    await session.refresh(project)
+        except Exception:  # noqa: BLE001
+            logger.warning("advance_project_job: refresh #{} after cancel failed", project_id)
+        raise

@@ -35,14 +35,13 @@ def cancel_xlsx_flow_tasks(project_id: int) -> list[str]:
     stopped: list[str] = []
     for code in XLSX_FLOW_STEP_CODES:
         key = (project_id, code)
-        if key in _xlsx_flow_active:
-            _xlsx_flow_active.discard(key)
-            stopped.append(code)
-        task = _xlsx_flow_tasks.pop(key, None)
+        task = _xlsx_flow_tasks.get(key)
         if task is not None and not task.done():
             task.cancel()
-            if code not in stopped:
-                stopped.append(code)
+            stopped.append(code)
+        elif key in _xlsx_flow_active:
+            _xlsx_flow_active.discard(key)
+            stopped.append(code)
     return stopped
 
 

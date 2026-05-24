@@ -199,7 +199,13 @@ export const api = {
   resumeProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/resume`, { method: "POST" }),
   stopProject: (projectId: number) =>
-    http<{ project: ProjectDetail; message: string }>(`/api/projects/${projectId}/stop`, {
+    http<{
+      project: ProjectDetail;
+      message: string;
+      advance_cancelled: boolean;
+      generation_still_active: boolean;
+      xlsx_stopped: string[];
+    }>(`/api/projects/${projectId}/stop`, {
       method: "POST",
     }),
   startMassLanes: (

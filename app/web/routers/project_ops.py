@@ -22,6 +22,7 @@ from app.services.xlsx_sync import reload_from_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.web.deps import get_session
+from app.web.project_dto import project_to_detail
 from app.web.schemas import ProjectDetail
 
 router = APIRouter(prefix="/projects", tags=["project-ops"])
@@ -70,7 +71,13 @@ async def stop_project(
         event_type="project_updated",
         payload={"stopped": True, "message": info["message"]},
     )
-    return {"project": ProjectDetail.model_validate(p), "message": info["message"]}
+    return {
+        "project": project_to_detail(p),
+        "message": info["message"],
+        "advance_cancelled": info["advance_cancelled"],
+        "generation_still_active": info["generation_still_active"],
+        "xlsx_stopped": info["xlsx_stopped"],
+    }
 
 
 @router.post("/{project_id}/mass-lanes/start")
