@@ -146,7 +146,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 cancelled = True
                 break
-            reply = await gpt.ask_fresh(full_prompt, timeout=900)
+            reply = await gpt.ask_fresh(
+                full_prompt, timeout=900, project_id=project.id
+            )
             last_reply = (reply or "").strip()
             blocks = _parse_dash_prompts(last_reply)
             # Отфильтруем заведомо короткий мусор.

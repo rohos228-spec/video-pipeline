@@ -17,6 +17,7 @@ from app.services.step_cancel import (
     abort_if_cancelled,
     await_with_cancel,
     clear_all,
+    clear_stop,
     consume_stop,
     is_stop_requested,
     raise_if_cancelled,
@@ -100,6 +101,12 @@ def test_clear_all() -> None:
 
 def test_abort_if_cancelled_no_pid() -> None:
     abort_if_cancelled(None)
+
+
+def test_clear_stop_without_raise() -> None:
+    request_stop(33)
+    clear_stop(33)
+    assert is_stop_requested(33) is False
 
 
 def test_abort_if_cancelled_raises_without_consume() -> None:

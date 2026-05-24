@@ -1,5 +1,6 @@
 "use client";
 
+import type { MouseEvent } from "react";
 import { Check, Circle, HelpCircle, Loader2, Sparkles, X } from "lucide-react";
 import type { HITLDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -58,30 +59,45 @@ export function resolveHitlBadgeState(opts: {
   return "manual_idle";
 }
 
-export function NodeHitlBadge({ state }: { state: HitlBadgeState }) {
+export function NodeHitlBadge({
+  state,
+  onClick,
+}: {
+  state: HitlBadgeState;
+  onClick?: (e: MouseEvent) => void;
+}) {
   const cfg = BADGE[state];
   const Icon = cfg.icon;
+  const clickable = Boolean(onClick);
   return (
     <>
-      {/* Пунктирная линия от ноды до бэйджа сверху — визуально показывает,
-          что этот кружок относится к этой ноде (как просил юзер). */}
       <div
         className={cn(
           "pointer-events-none absolute -top-5 left-1/2 z-10 h-5 w-px -translate-x-1/2 border-l-2 border-dashed",
           cfg.connectorClass,
         )}
       />
-      <div
+      <button
+        type="button"
+        onClick={onClick}
+        onMouseDown={(e) => e.stopPropagation()}
+        disabled={!clickable}
         className={cn(
-          "absolute -top-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md",
+          "nodrag nopan absolute -top-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition",
           cfg.className,
+          clickable && "cursor-pointer hover:scale-110 hover:brightness-110",
+          !clickable && "cursor-default",
         )}
-        title={cfg.title}
+        title={
+          clickable
+            ? `${cfg.title} — открыть проверку (как в Telegram)`
+            : cfg.title
+        }
       >
         <Icon
           className={cn("h-4 w-4", state === "regenerating" && "animate-spin")}
         />
-      </div>
+      </button>
     </>
   );
 }

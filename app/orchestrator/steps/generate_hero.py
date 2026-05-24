@@ -417,7 +417,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "новый сокращённый промт, без пояснений.\n\n"
                         "Прошлый промт:\n\n" + last_reply
                     )
-                reply = await gpt.ask_fresh(ask, timeout=600)
+                reply = await gpt.ask_fresh(ask, timeout=600, project_id=project.id)
                 last_reply = reply or ""
                 logger.info(
                     "[#{}] hero ChatGPT attempt {}: {} симв",
@@ -888,7 +888,7 @@ async def _generate_one_excel_character(
                         "ТОЛЬКО новый текст промта.\n\n"
                         "Прошлый промт:\n\n" + last_reply
                     )
-                reply = await gpt.ask_fresh(ask, timeout=600)
+                reply = await gpt.ask_fresh(ask, timeout=600, project_id=project.id)
                 last_reply = reply or ""
                 logger.info(
                     "[#{}] excel_hero {} GPT attempt {}: {} симв",

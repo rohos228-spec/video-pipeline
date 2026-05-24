@@ -68,13 +68,18 @@ _MIN_REWRITE_LEN = 30
 
 
 async def _ask_gpt_to_rewrite(
-    gpt: ChatGPTBot, original_prompt: str
+    gpt: ChatGPTBot,
+    original_prompt: str,
+    *,
+    project_id: int | None = None,
 ) -> str | None:
     """Запрашивает у ChatGPT переписанный промт без триггеров модерации.
     Возвращает stripped-текст, либо None если rewrite не получился."""
     full_request = f"{_GPT_REWRITE_META}\n\n{original_prompt}"
     try:
-        reply = await gpt.ask_fresh(full_request, timeout=600)
+        reply = await gpt.ask_fresh(
+            full_request, timeout=600, project_id=project_id
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "outsee_retry: GPT-rewrite не получился ({}: {}) — "
@@ -146,7 +151,11 @@ async def generate_image_with_retries(
             break
         if gpt is None:
             break
-        rewritten = await _ask_gpt_to_rewrite(gpt, current_prompt)
+        rewritten = await _ask_gpt_to_rewrite(
+            gpt,
+            current_prompt,
+            project_id=pid if isinstance(pid, int) else None,
+        )
         if not rewritten:
             break  # rewrite не получился — выходим с последней ошибкой
         current_prompt = rewritten
@@ -206,7 +215,9 @@ async def generate_video_with_retries(
             break
         if gpt is None:
             break
-        rewritten = await _ask_gpt_to_rewrite(gpt, current_prompt)
+        rewritten = await _ask_gpt_to_rewrite(
+            gpt, current_prompt, project_id=project_id
+        )
         if not rewritten:
             break
         current_prompt = rewritten

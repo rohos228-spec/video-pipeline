@@ -83,7 +83,15 @@ export function PipelineNode({ data, selected }: NodeProps) {
         )}
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
       >
-        {hitlBadge && <NodeHitlBadge state={hitlBadge} />}
+        {hitlBadge && (
+          <NodeHitlBadge
+            state={hitlBadge}
+            onClick={(e) => {
+              e.stopPropagation();
+              actions?.onOpenHitlReview?.(d.nodeKey, d.type);
+            }}
+          />
+        )}
 
         <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl bg-[radial-gradient(ellipse_at_top_right,hsl(45_90%_60%/0.08),transparent_55%)]" />
 
@@ -92,7 +100,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             стороне ноды (in/out). На сами кружки drag/connect ведёт
             себя как обычно (xyflow). */}
         <HandleWithDetach side="in" nodeKey={d.nodeKey} />
-        <HandleWithDetach side="out" nodeKey={d.nodeKey} />
+        <Handle type="source" position={Position.Right} id="out" className="!h-4 !w-4 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary" style={{ right: -8 }} />
 
         {actions && (
           <>
@@ -179,7 +187,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
           </>
         )}
 
-        <div className="relative flex items-start gap-2.5 px-3.5 pb-2.5 pt-3 nodrag nopan">
+        <div className="relative flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
           <NodeCardIcon accent={spec.accent}>
             <Icon className="h-4 w-4" />
           </NodeCardIcon>

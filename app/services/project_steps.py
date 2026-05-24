@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
 from app.services.disabled_nodes import is_step_disabled
+from app.services.step_cancel import clear_stop
 from app.telegram.menu import step_by_code
 
 
@@ -49,6 +50,7 @@ async def start_step(
                 f"шаг «{step_code.replace('_', ' ')}» недостижим по текущему графу — "
                 "проверьте связи и завершённые предшественники"
             )
+    clear_stop(project.id)
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

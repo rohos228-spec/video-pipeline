@@ -110,8 +110,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     prompt_file.write_text(master.strip(), encoding="utf-8")
 
     # 3. Round-trip до 3 раз.
+    from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+
     last_err: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
+        raise_if_cancelled(project.id)
         logger.info(
             "[#{}] enrich_xlsx slot={} attempt {}/{}",
             project.id,
@@ -125,7 +128,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 await gpt.new_conversation()
                 # Шлём prompt-файл + xlsx как вложения, сопр. текст — в чат.
                 reply = await gpt.ask_with_files(
-                    accompanying.strip(), [prompt_file, xlsx_path], timeout=1200
+                    accompanying.strip(),
+                    [prompt_file, xlsx_path],
+                    timeout=1200,
+                    project_id=project.id,
                 )
                 logger.info(
                     "[#{}] enrich_xlsx: получен ответ len={} (try={})",

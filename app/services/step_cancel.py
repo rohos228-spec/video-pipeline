@@ -28,6 +28,13 @@ class StepCancelledError(Exception):
 _stop_pids: set[int] = set()
 
 
+def clear_stop(project_id: int) -> None:
+    """Снимает флаг stop без исключения (новый явный запуск шага)."""
+    if project_id in _stop_pids:
+        _stop_pids.discard(project_id)
+        logger.debug("step_cancel.clear_stop: #{} флаг снят", project_id)
+
+
 def request_stop(project_id: int) -> None:
     """Помечает проект как «нужно остановить».
 

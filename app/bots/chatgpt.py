@@ -340,13 +340,17 @@ class ChatGPTBot:
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: dump_send_button_candidates упал: {}", e)
 
-    async def _wait_until_done(self, *, timeout: float = 300) -> None:
+    async def _wait_until_done(
+        self, *, timeout: float = 300, project_id: int | None = None
+    ) -> None:
         """Ждём, пока пропадёт кнопка "Stop generating"."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
         page = await self._page_ready()
         deadline = asyncio.get_event_loop().time() + timeout
-        # Сначала даём UI подгрузить кнопку stop (появится почти сразу)
-        await asyncio.sleep(0.8)
+        await sleep_cancellable(0.8, project_id)
         while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
             still_generating = False
             for sel in STOP_BUTTON_SELECTORS:
                 try:
@@ -356,10 +360,9 @@ class ChatGPTBot:
                 except Exception:  # noqa: BLE001
                     continue
             if not still_generating:
-                # ещё 1.5 сек на docontextualise
-                await asyncio.sleep(1.5)
+                await sleep_cancellable(1.5, project_id)
                 return
-            await asyncio.sleep(0.5)
+            await sleep_cancellable(0.5, project_id)
         raise TimeoutError("ChatGPT: таймаут ожидания ответа")
 
     async def _read_last_reply(self) -> str:
@@ -397,7 +400,9 @@ class ChatGPTBot:
         )
         return (text or "").strip()
 
-    async def ask(self, prompt: str, *, timeout: float = 300) -> str:
+    async def ask(
+        self, prompt: str, *, timeout: float = 300, project_id: int | None = None
+    ) -> str:
         """Отправить один промт в текущий чат и вернуть финальный ответ.
 
         После того как кнопка «Stop generating» пропала, ждём пока текст
@@ -406,8 +411,12 @@ class ChatGPTBot:
         несколько десятков секунд после исчезновения кнопки stop — раньше
         мы хватали обрезанную версию.
         """
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
         await self._send_prompt(prompt)
-        await self._wait_until_done(timeout=timeout)
+        abort_if_cancelled(project_id)
+        await self._wait_until_done(timeout=timeout, project_id=project_id)
 
         # Ждём стабилизации текста: не меняется 6 сек подряд, не дольше 120с total
         page = await self._page_ready()
@@ -415,7 +424,8 @@ class ChatGPTBot:
         stable_for = 0.0
         deadline = asyncio.get_event_loop().time() + 120.0
         while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(1.0)
+            abort_if_cancelled(project_id)
+            await sleep_cancellable(1.0, project_id)
             text = await self._read_last_reply()
             # Если кнопка «Stop generating» снова появилась — модель всё ещё
             # генерирует, ждём дальше.
@@ -443,10 +453,16 @@ class ChatGPTBot:
         logger.info("ChatGPT reply len={}", len(reply))
         return reply
 
-    async def ask_fresh(self, prompt: str, *, timeout: float = 300) -> str:
+    async def ask_fresh(
+        self, prompt: str, *, timeout: float = 300, project_id: int | None = None
+    ) -> str:
         """Новый чат + один промт + ответ."""
+        from app.services.step_cancel import abort_if_cancelled
+
+        abort_if_cancelled(project_id)
         await self.new_conversation()
-        return await self.ask(prompt, timeout=timeout)
+        abort_if_cancelled(project_id)
+        return await self.ask(prompt, timeout=timeout, project_id=project_id)
 
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
@@ -810,14 +826,18 @@ class ChatGPTBot:
         file_paths: list[Path],
         *,
         timeout: float = 900,
+        project_id: int | None = None,
     ) -> str:
         """Аналогично `ask_with_file`, но прикрепляет НЕСКОЛЬКО файлов
         к одному сообщению, потом шлёт промт и возвращает текст ответа.
         """
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
         await self._attach_files(file_paths)
-        # Сам текстовый промт + Send — переиспользуем существующий путь.
+        abort_if_cancelled(project_id)
         await self._send_prompt(prompt)
-        await self._wait_until_done(timeout=timeout)
+        await self._wait_until_done(timeout=timeout, project_id=project_id)
 
         # Ждём стабилизации текста (как в обычном ask), но не строго — Code
         # Interpreter иногда генерирует файл и сразу отдаёт короткий текст.
@@ -826,7 +846,8 @@ class ChatGPTBot:
         stable_for = 0.0
         deadline = asyncio.get_event_loop().time() + 120.0
         while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(1.0)
+            abort_if_cancelled(project_id)
+            await sleep_cancellable(1.0, project_id)
             text = await self._read_last_reply()
             still_generating = False
             for sel in STOP_BUTTON_SELECTORS:

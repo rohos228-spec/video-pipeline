@@ -107,7 +107,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
-        reply = await gpt.ask_fresh(full_prompt, timeout=300)
+        reply = await gpt.ask_fresh(full_prompt, timeout=300, project_id=project.id)
 
     if not reply or len(reply.strip()) < 10:
         raise RuntimeError(f"ChatGPT вернул пустую разбивку: {reply!r}")

@@ -101,12 +101,14 @@ export function HitlBanner({ projectId }: { projectId: number }) {
   );
 }
 
-function HitlModal({
+export function HitlModal({
   hitlId,
+  projectId,
   open,
   onOpenChange,
 }: {
   hitlId: number | null;
+  projectId?: number | null;
   open: boolean;
   onOpenChange: (o: boolean) => void;
 }) {
@@ -114,10 +116,12 @@ function HitlModal({
   const [editedPrompt, setEditedPrompt] = useState("");
   const [editMode, setEditMode] = useState(false);
 
-  // Загружаем все HITL и берём текущий — proще чем делать отдельный endpoint.
   const all = useQuery({
-    queryKey: ["hitl", "pending"],
-    queryFn: api.listPendingHitl,
+    queryKey: ["hitl", projectId ?? "pending"],
+    queryFn: () =>
+      projectId != null
+        ? api.listProjectHitl(projectId)
+        : api.listPendingHitl(),
     enabled: open && hitlId != null,
   });
   const current = (all.data ?? []).find((r) => r.id === hitlId) ?? null;

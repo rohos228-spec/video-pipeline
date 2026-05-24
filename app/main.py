@@ -274,6 +274,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         ProjectStatus.publishing,
     ]
     from app.services.mass_pause import is_active as _mass_pause_active
+    from app.services.step_cancel import consume_stop, is_stop_requested
     from app.telegram.bot import notify_step_done
 
     _last_mass_pause_log = False
@@ -297,6 +298,13 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
                 for p in projects:
+                    if is_stop_requested(p.id):
+                        consume_stop(p.id)
+                        logger.info(
+                            "worker: пропуск #{} — запрошена остановка",
+                            p.id,
+                        )
+                        continue
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
                     try:

@@ -1974,6 +1974,9 @@ async def on_step_run_cb(cb: CallbackQuery) -> None:
         # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты — юзер
         # может запустить любой шаг в любой момент. Если данных не хватает,
         # воркер сам упадёт и откатит статус, но решение принимает юзер.
+        from app.services.step_cancel import clear_stop
+
+        clear_stop(project.id)
         project.status = step.running_status
         slug = project.slug
         topic = project.topic
@@ -2981,6 +2984,9 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
                 # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты —
                 # юзер может запустить любой шаг в любой момент, независимо
                 # от того, пройдены ли предыдущие.
+                from app.services.step_cancel import clear_stop
+
+                clear_stop(project.id)
                 project.status = sub_step.running_status
                 slug = project.slug
                 topic = project.topic
@@ -3038,7 +3044,10 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты —
             # пользователь может запустить любой шаг в любой момент. Если
             # данных не хватает — воркер упадёт, статус откатится.
-            project.status = step.running_status
+            from app.services.step_cancel import clear_stop
+
+        clear_stop(project.id)
+        project.status = step.running_status
             slug = project.slug
             topic = project.topic
         await cb.answer(f"Запускаю: {step.title}")

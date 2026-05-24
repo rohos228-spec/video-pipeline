@@ -48,6 +48,9 @@ from app.orchestrator.steps import (
 async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> None:
     """Один такт стейт-машины. Запускает шаг, если статус — «running»; иначе
     ничего не делает (ждём, пока пользователь нажмёт кнопку в боте)."""
+    from app.services.step_cancel import abort_if_cancelled
+
+    abort_if_cancelled(project.id)
     status = project.status
     logger.debug("advance #{} status={}", project.id, status.value)
 

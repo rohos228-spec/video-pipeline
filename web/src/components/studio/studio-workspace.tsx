@@ -19,6 +19,8 @@ import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { isProjectRunningStatus } from "@/lib/project-running";
 import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
+import { HitlModal } from "@/components/hitl/hitl-banner";
+import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
 
 export function StudioWorkspace({
   projectId,
@@ -45,6 +47,8 @@ export function StudioWorkspace({
   const [aiCtx, setAiCtx] = useState<{ nodeKey: string; nodeType: string } | null>(
     null,
   );
+  const [hitlModalId, setHitlModalId] = useState<number | null>(null);
+  const [hitlModalOpen, setHitlModalOpen] = useState(false);
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
@@ -214,6 +218,35 @@ export function StudioWorkspace({
           setAssetTray({ kind, nodeType });
         }
       },
+      onOpenHitlReview: (_nodeKey: string, nodeType: string) => {
+        const kind = hitlKindForNodeType(nodeType);
+        if (!kind) return;
+        const rows = (hitlList.data ?? [])
+          .filter((h) => h.kind === kind)
+          .sort((a, b) => b.id - a.id);
+        const pending = rows.find((h) => h.decision === "pending");
+        if (pending) {
+          setHitlModalId(pending.id);
+          setHitlModalOpen(true);
+          return;
+        }
+        const latest = rows[0];
+        if (latest) {
+          setHitlModalId(latest.id);
+          setHitlModalOpen(true);
+          if (latest.decision !== "pending") {
+            toast.message("Карточка уже обработана — можно посмотреть решение");
+          }
+          return;
+        }
+        toast.info(
+          "Ручная проверка: сначала завершите шаг — затем одобрите результат, как в Telegram",
+        );
+        const trayKind = assetTrayKindForNodeType(nodeType);
+        if (trayKind && projectId) {
+          setAssetTray({ kind: trayKind, nodeType });
+        }
+      },
       onDownloadPrompts: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;
         try {
@@ -320,6 +353,17 @@ export function StudioWorkspace({
           projectId={projectId}
           nodeType={aiCtx.nodeType}
           nodeLabel={getNodeSpec(aiCtx.nodeType).label}
+        />
+      )}
+      {projectId != null && (
+        <HitlModal
+          hitlId={hitlModalId}
+          projectId={projectId}
+          open={hitlModalOpen}
+          onOpenChange={(o) => {
+            setHitlModalOpen(o);
+            if (!o) setHitlModalId(null);
+          }}
         />
       )}
       {projectId != null && (

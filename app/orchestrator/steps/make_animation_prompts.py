@@ -47,7 +47,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     + f"Закадровый текст: {fr.voiceover_text}\n"
                     + f"Изобразительный промт (контекст кадра):\n{fr.image_prompt or '—'}\n"
                 )
-                reply = await gpt.ask_fresh(ask, timeout=240)
+                reply = await gpt.ask_fresh(ask, timeout=240, project_id=project.id)
                 if not reply or len(reply) < 30:
                     raise RuntimeError(f"пустой animation_prompt на кадре {fr.number}")
                 fr.animation_prompt = reply

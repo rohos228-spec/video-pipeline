@@ -24,6 +24,7 @@ export interface CanvasActions {
   onOpenAssets: (kind: AssetTrayKind, nodeType: string) => void;
   onDownloadPrompts: (nodeKey: string, nodeType: string) => void;
   onNodeBodyClick: (nodeKey: string, nodeType: string) => void;
+  onOpenHitlReview: (nodeKey: string, nodeType: string) => void;
 }
 
 const Ctx = createContext<CanvasActions | null>(null);
