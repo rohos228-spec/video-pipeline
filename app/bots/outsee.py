@@ -201,6 +201,7 @@ async def _is_aspect_selected(page: Any, sel: str) -> bool | None:
 async def _select_aspect_ratio(
     page: Any, ratio: str, *, where: str = "image",
     dumps: list[Path] | None = None,
+    project_id: int | None = None,
 ) -> bool:
     """Выбирает aspect ratio в outsee.io. Поддерживает 2 типа UI:
 
@@ -213,9 +214,11 @@ async def _select_aspect_ratio(
     Если кнопка не найдена — дампит страницу в outsee_dumps/ и (если
     передан dumps-список) добавляет туда пути файлов; вызывающий код
     может потом отправить их в TG."""
+    from app.services.step_cancel import sleep_cancellable
+
     # 1) Сначала пробуем NEW UI: dropdown «Соотношение N:M».
     opener_sel = await _first_visible(
-        page, ASPECT_DROPDOWN_OPENER_SELECTORS, timeout_ms=2_000
+        page, ASPECT_DROPDOWN_OPENER_SELECTORS, timeout_ms=2_000, project_id=project_id
     )
     if opener_sel:
         try:
@@ -240,9 +243,9 @@ async def _select_aspect_ratio(
                 "outsee.{}: aspect dropdown открыт (был '{}', хочу '{}')",
                 where, cur_text.strip().replace("\n", " ")[:60], ratio,
             )
-            await asyncio.sleep(0.3)
+            await sleep_cancellable(0.3, project_id)
             opt_sel = await _first_visible(
-                page, _aspect_option_selectors(ratio), timeout_ms=4_000
+                page, _aspect_option_selectors(ratio), timeout_ms=4_000, project_id=project_id
             )
             if opt_sel:
                 try:
@@ -251,7 +254,7 @@ async def _select_aspect_ratio(
                         "outsee.{}: aspect {} — выбран в dropdown ({})",
                         where, ratio, opt_sel,
                     )
-                    await asyncio.sleep(0.3)
+                    await sleep_cancellable(0.3, project_id)
                     return True
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -276,7 +279,7 @@ async def _select_aspect_ratio(
             )
 
     # 2) Fallback: ищем прямую кнопку/радио с текстом ratio (старый UI).
-    sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=4_000)
+    sel = await _first_visible(page, _aspect_selectors(ratio), timeout_ms=4_000, project_id=project_id)
     if not sel:
         logger.warning(
             "outsee.{}: aspect {} — ни dropdown «Соотношение», ни "
@@ -306,7 +309,7 @@ async def _select_aspect_ratio(
         )
         return False
 
-    await asyncio.sleep(0.3)
+    await sleep_cancellable(0.3, project_id)
     ok = await _is_aspect_selected(page, sel)
     if ok is True:
         logger.info(
@@ -316,7 +319,7 @@ async def _select_aspect_ratio(
         return True
     try:
         sel2 = await _first_visible(
-            page, _aspect_selectors(ratio), timeout_ms=2_000
+            page, _aspect_selectors(ratio), timeout_ms=2_000, project_id=project_id
         )
         if sel2 and sel2 != sel:
             await page.locator(sel2).first.click(timeout=2_000)
@@ -396,6 +399,7 @@ async def _read_limit_toggle_on(page: Any, sel: str) -> bool | None:
 async def _toggle_relax(
     page: Any, *, want_on: bool, where: str = "image",
     dumps: list[Path] | None = None,
+    project_id: int | None = None,
 ) -> None:
     """Best-effort: ставит тогл Relax в нужное состояние.
 
@@ -410,7 +414,7 @@ async def _toggle_relax(
     """
     # 1) Сначала пробуем NEW UI: «Безлимит».
     limit_sel = await _first_visible(
-        page, LIMIT_TOGGLE_SELECTORS, timeout_ms=1_500
+        page, LIMIT_TOGGLE_SELECTORS, timeout_ms=1_500, project_id=project_id
     )
     if limit_sel:
         try:
@@ -442,7 +446,7 @@ async def _toggle_relax(
             )
 
     # 2) Fallback: старые «Relax»-селекторы.
-    sel = await _first_visible(page, RELAX_SELECTORS, timeout_ms=2_000)
+    sel = await _first_visible(page, RELAX_SELECTORS, timeout_ms=2_000, project_id=project_id)
     if not sel:
         if want_on:
             logger.warning(
@@ -828,14 +832,17 @@ def _is_candidate_image_response(resp: Any) -> bool:
 
 
 async def _first_visible(
-    page: Page, selectors: list[str], *, timeout_ms: int = 15_000
+    page: Page, selectors: list[str], *, timeout_ms: int = 15_000, project_id: int | None = None
 ) -> str | None:
     """Возвращает CSS-селектор с уже вставленным `:nth-match(sel, N)`, который
     гарантированно попадает в первый ВИДИМЫЙ элемент. Страницы outsee часто
     рендерят 2–3 копии одного textarea (desktop + mobile + sidebar), и
     locator(sel).first может ткнуть в скрытую."""
+    from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
     deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
     while asyncio.get_event_loop().time() < deadline:
+        abort_if_cancelled(project_id)
         for sel in selectors:
             try:
                 base = page.locator(sel)
@@ -855,7 +862,7 @@ async def _first_visible(
                         continue
             except Exception:  # noqa: BLE001
                 continue
-        await asyncio.sleep(0.3)
+        await sleep_cancellable(0.3, project_id)
     return None
 
 
@@ -878,6 +885,7 @@ class OutseeBot:
         relax: bool = False,
         prompt_id_prefix: str | None = None,
         reference_image: Path | list[Path] | None = None,
+        project_id: int | None = None,
     ) -> GenerationResult:
         """Генерирует картинку на outsee.io.
 
@@ -902,6 +910,9 @@ class OutseeBot:
         import time as _time
         import uuid as _uuid
 
+        from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+        abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
         # Сюда копятся пути к dump-файлам страницы (html/png), создаваемые
         # хелперами при ненайденных кнопках. В конце этот список идёт в
@@ -925,18 +936,23 @@ class OutseeBot:
         # ошибки на той же странице будет видеть остатки прошлой попытки
         # и сразу падать с тем же диагнозом.
         try:
-            await page.goto(page_url, wait_until="domcontentloaded")
+            await await_with_cancel(
+                page.goto(page_url, wait_until="domcontentloaded"), project_id
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "outsee.generate_image: page.goto({}) упал: {} — продолжаю "
                 "без явного reload", page_url, e,
             )
-        await page.wait_for_load_state("domcontentloaded")
+        await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
         # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
         try:
-            await page.wait_for_load_state("networkidle", timeout=15_000)
+            await await_with_cancel(
+                page.wait_for_load_state("networkidle", timeout=15_000), project_id
+            )
         except Exception:
             pass
+        abort_if_cancelled(project_id)
         logger.info("outsee.generate_image: страница готова, гидрация ok")
 
         # Снимок «до» — все большие картинки и URL-ы, которые уже на странице.
@@ -1025,7 +1041,7 @@ class OutseeBot:
             if not already_in_progress:
                 # 1) вбить промт
                 input_sel = await _first_visible(
-                    page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+                    page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000, project_id=project_id
                 )
                 if not input_sel:
                     h, p = await _dump_page(page, "prompt_input_notfound")
@@ -1039,25 +1055,31 @@ class OutseeBot:
                     )
                 logger.info("outsee.generate_image: textarea найдена ({})", input_sel)
                 try:
-                    await page.locator(input_sel).first.scroll_into_view_if_needed(
-                        timeout=5_000
+                    await await_with_cancel(
+                        page.locator(input_sel).first.scroll_into_view_if_needed(
+                            timeout=5_000
+                        ),
+                        project_id,
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                await page.locator(input_sel).first.click()
-                await page.locator(input_sel).first.fill(prompt)
+                await await_with_cancel(page.locator(input_sel).first.click(), project_id)
+                await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
                 logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
+                abort_if_cancelled(project_id)
 
                 # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
                 if aspect_ratio:
                     await _select_aspect_ratio(
                         page, aspect_ratio, where="generate_image", dumps=dumps,
+                        project_id=project_id,
                     )
 
                 # 2.5) выбрать разрешение 2K / 4K (best-effort)
                 if resolution:
                     res_sel = await _first_visible(
-                        page, _resolution_selectors(resolution), timeout_ms=3_000
+                        page, _resolution_selectors(resolution), timeout_ms=3_000,
+                        project_id=project_id,
                     )
                     if res_sel:
                         try:
@@ -1074,7 +1096,9 @@ class OutseeBot:
                 # 2.7) Relax (если попросили)
                 await _toggle_relax(
                     page, want_on=relax, where="generate_image", dumps=dumps,
+                    project_id=project_id,
                 )
+                abort_if_cancelled(project_id)
 
                 # 2.9) Reference-картинка (для hero-вариаций 2..N).
                 # На странице outsee.io image обычно есть СКРЫТЫй input[type=file]
@@ -1113,7 +1137,9 @@ class OutseeBot:
                                     dumps.append(x)
 
                 # 3) кнопка generate
-                gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
+                gen_sel = await _first_visible(
+                    page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
+                )
                 if not gen_sel:
                     h, p = await _dump_page(page, "generate_button_notfound")
                     for x in (h, p):
@@ -1125,7 +1151,10 @@ class OutseeBot:
                         dumps=dumps,
                     )
                 logger.info("outsee.generate_image: кнопка Generate найдена ({})", gen_sel)
-                await self._wait_button_enabled(page, gen_sel, timeout_s=600)
+                await self._wait_button_enabled(
+                    page, gen_sel, timeout_s=600, project_id=project_id
+                )
+                abort_if_cancelled(project_id)
 
                 # Re-baseline ПОСЛЕ всех настроек (aspect dropdown, разрешение,
                 # Relax, референс) — клики по dropdown вызывают ререндер
@@ -1174,7 +1203,7 @@ class OutseeBot:
 
                 click_ts = _time.monotonic()
                 net_events.clear()
-                await page.locator(gen_sel).first.click()
+                await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
                 logger.info(
                     "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
                     gen_id[:8],
@@ -1198,6 +1227,7 @@ class OutseeBot:
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
                     prompt_id_prefix=prompt_id_prefix,
+                    project_id=project_id,
                 )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
@@ -1388,14 +1418,17 @@ class OutseeBot:
         return GenerationResult(file_path=out_path, raw_url=img_url, gen_id=gen_id)
 
     async def _wait_button_enabled(
-        self, page: Page, selector: str, *, timeout_s: float = 180
+        self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
     ) -> None:
         """Ждёт пока кнопка станет активной (не disabled). На outsee Generate
         заблокирован, если идёт предыдущая генерация или пуст промт."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
         deadline = asyncio.get_event_loop().time() + timeout_s
         last_log = 0.0
         start = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
             try:
                 loc = page.locator(selector).first
                 disabled = await loc.get_attribute("disabled")
@@ -1416,7 +1449,7 @@ class OutseeBot:
                     "outsee: жду пока Generate станет активной... ({:.0f} сек)",
                     now - start,
                 )
-            await asyncio.sleep(1.0)
+            await sleep_cancellable(1.0, project_id)
         raise PWTimeoutError(
             "outsee image: кнопка Generate остаётся disabled — "
             "предыдущая генерация зависла?"
@@ -1863,6 +1896,7 @@ class OutseeBot:
         gen_id: str,
         pre_rejected_text: str | None = None,
         prompt_id_prefix: str | None = None,
+        project_id: int | None = None,
     ) -> str:
         """Жёсткое ожидание свежей картинки.
 
@@ -1914,7 +1948,10 @@ class OutseeBot:
         # другой URL.
         rejected_candidates: set[str] = set()
 
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
         while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
             now = asyncio.get_event_loop().time()
             elapsed = now - start
 
@@ -2109,7 +2146,7 @@ class OutseeBot:
                     fallback_candidate = None
                     fallback_source = None
                     # Подождём ещё пока придёт НОВАЯ картинка.
-                    await asyncio.sleep(2.0)
+                    await sleep_cancellable(2.0, project_id)
                     continue
             # 2.5) Детект плашки «Контент отклонён» (модерация).
             # Outsee показывает её прямо на странице — ждать дальше
@@ -2148,7 +2185,7 @@ class OutseeBot:
                         len(baseline_big_imgs),
                     )
 
-            await asyncio.sleep(1.0)
+            await sleep_cancellable(1.0, project_id)
 
         # timeout — все кандидаты были отвергнуты ID-верификацией
         # (или вообще не появились). Падаем с диагностикой.
@@ -2386,7 +2423,7 @@ class OutseeBot:
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,
     ) -> GenerationResult:
-        from app.services.step_cancel import abort_if_cancelled
+        from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
         abort_if_cancelled(project_id)
         if prompt_id_prefix:
@@ -2401,15 +2438,19 @@ class OutseeBot:
         # генерации — иначе на ретрае останутся форма + start_frame +
         # возможная плашка ошибки от прошлой попытки.
         try:
-            await page.goto(page_url, wait_until="domcontentloaded")
+            await await_with_cancel(
+                page.goto(page_url, wait_until="domcontentloaded"), project_id
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "outsee.generate_video: page.goto({}) упал: {} — продолжаю "
                 "без явного reload", page_url, e,
             )
-        await page.wait_for_load_state("domcontentloaded")
+        await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
         try:
-            await page.wait_for_load_state("networkidle", timeout=15_000)
+            await await_with_cancel(
+                page.wait_for_load_state("networkidle", timeout=15_000), project_id
+            )
         except Exception:
             pass
         abort_if_cancelled(project_id)
@@ -2443,29 +2484,30 @@ class OutseeBot:
         if not already_in_progress:
             # 1) ввод промта
             input_sel = await _first_visible(
-                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000
+                page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000, project_id=project_id
             )
             if not input_sel:
                 raise RuntimeError("outsee video: не найден ввод промта")
             try:
-                await page.locator(input_sel).first.scroll_into_view_if_needed(
-                    timeout=5_000
+                await await_with_cancel(
+                    page.locator(input_sel).first.scroll_into_view_if_needed(timeout=5_000),
+                    project_id,
                 )
             except Exception:  # noqa: BLE001
                 pass
-            await page.locator(input_sel).first.click()
-            await page.locator(input_sel).first.fill(prompt)
+            await await_with_cancel(page.locator(input_sel).first.click(), project_id)
+            await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
 
             # 2) аспект (с верификацией состояния)
             if aspect_ratio:
                 await _select_aspect_ratio(
-                    page, aspect_ratio, where="generate_video"
+                    page, aspect_ratio, where="generate_video", project_id=project_id
                 )
 
             # 2.5) разрешение 720p / 1080p (best-effort)
             if resolution:
                 res_sel = await _first_visible(
-                    page, _resolution_selectors(resolution), timeout_ms=3_000
+                    page, _resolution_selectors(resolution), timeout_ms=3_000, project_id=project_id
                 )
                 if res_sel:
                     try:
@@ -2477,22 +2519,29 @@ class OutseeBot:
                         pass
 
             # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
-            await _toggle_relax(page, want_on=relax, where="generate_video")
+            await _toggle_relax(page, want_on=relax, where="generate_video", project_id=project_id)
             abort_if_cancelled(project_id)
 
             # 3) загрузка стартового кадра (если передан)
             if start_frame is not None:
-                file_sel = await _first_visible(page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000)
+                file_sel = await _first_visible(
+                    page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000, project_id=project_id
+                )
                 if not file_sel:
                     raise RuntimeError("outsee video: не найден input[type=file] для стартового кадра")
-                await page.locator(file_sel).first.set_input_files(str(start_frame))
+                await await_with_cancel(
+                    page.locator(file_sel).first.set_input_files(str(start_frame)),
+                    project_id,
+                )
 
             # 4) generate
             abort_if_cancelled(project_id)
-            gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
+            gen_sel = await _first_visible(
+                page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
+            )
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
-            await page.locator(gen_sel).first.click()
+            await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
 
         # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
         # ищем `<video>` в карточке с нашим [ID: ...], только если не
@@ -2631,7 +2680,7 @@ class OutseeBot:
         deadline = asyncio.get_event_loop().time() + timeout
         log_every = 15.0  # сек, логи прогресса
         next_log = asyncio.get_event_loop().time() + log_every
-        from app.services.step_cancel import abort_if_cancelled
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
@@ -2672,7 +2721,7 @@ class OutseeBot:
                     prompt_id_prefix,
                 )
                 next_log = now + log_every
-            await asyncio.sleep(1.5)
+            await sleep_cancellable(1.5, project_id)
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
 

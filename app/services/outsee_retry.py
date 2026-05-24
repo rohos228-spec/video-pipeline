@@ -52,7 +52,8 @@ from app.bots.outsee import (
     OutseeBot,
     OutseeImageError,
 )
-from app.services.step_cancel import abort_if_cancelled
+from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+from app.services.step_cancel import StepCancelledError
 
 # Meta-промт для GPT-rewrite. Точная формулировка от пользователя.
 _GPT_REWRITE_META = (
@@ -118,11 +119,15 @@ async def generate_image_with_retries(
         rounds.append(("rewritten", ""))  # placeholder, заполним если дойдём
 
     for round_idx, (round_label, _) in enumerate(rounds):
+        pid = kwargs.get("project_id")
         for attempt in range(1, max_attempts_per_prompt + 1):
+            abort_if_cancelled(pid if isinstance(pid, int) else None)
             try:
                 return await outsee.generate_image(
                     current_prompt, out_path, **kwargs
                 )
+            except StepCancelledError:
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
@@ -132,7 +137,7 @@ async def generate_image_with_retries(
                     e.reason,
                 )
                 if attempt < max_attempts_per_prompt:
-                    await asyncio.sleep(2.0)
+                    await sleep_cancellable(2.0, pid if isinstance(pid, int) else None)
 
         # Все попытки в этом раунде провалились. Если ещё есть раунд
         # «rewritten» — попробуем переписать промт через GPT.
@@ -183,6 +188,8 @@ async def generate_video_with_retries(
                 return await outsee.generate_video(
                     current_prompt, out_path, project_id=project_id, **kwargs
                 )
+            except StepCancelledError:
+                raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
@@ -192,7 +199,7 @@ async def generate_video_with_retries(
                     e.reason,
                 )
                 if attempt < max_attempts_per_prompt:
-                    await asyncio.sleep(2.0)
+                    await sleep_cancellable(2.0, project_id)
 
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:

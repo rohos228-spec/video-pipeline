@@ -52,7 +52,7 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled, sleep_cancellable
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -380,8 +380,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             while True:
                 # 0) юзер нажал «⏹ Остановить» — кооперативно выходим.
-                # Проверка между кадрами: текущий кадр (если уже в генерации)
-                # доработается, но новый цикл не начнётся. Браузер не трогаем.
+                # Проверка между кадрами и внутри outsee (~300 мс): текущая
+                # операция прерывается сразу, новый кадр не начнётся.
                 raise_if_cancelled(project.id)
 
                 # 1) подхватить HITL-решения, требующие перегенерации
@@ -400,8 +400,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     break
 
                 # 4) иначе ждём пока пользователь нажмёт кнопку в TG
-                await asyncio.sleep(3)
+                await sleep_cancellable(3.0, project.id)
         except StepCancelledError as e:
+            consume_stop(project.id)
             # ⏹ Остановить — статус уже откачен обработчиком кнопки в
             # другой сессии. Обновляем наш ORM-объект, чтобы worker'овый
             # commit() не перезаписал откат старым running-статусом.
@@ -621,6 +622,7 @@ async def _generate_and_send(
                     relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
+                    project_id=project.id,
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -638,6 +640,7 @@ async def _generate_and_send(
                 relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,
+                project_id=project.id,
             )
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр

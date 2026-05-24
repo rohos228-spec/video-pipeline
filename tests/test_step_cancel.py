@@ -8,15 +8,20 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.services.step_cancel import (
     StepCancelledError,
+    abort_if_cancelled,
+    await_with_cancel,
     clear_all,
     consume_stop,
     is_stop_requested,
     raise_if_cancelled,
     request_stop,
+    sleep_cancellable,
 )
 
 
@@ -91,3 +96,33 @@ def test_clear_all() -> None:
     assert is_stop_requested(1) is False
     assert is_stop_requested(2) is False
     assert is_stop_requested(3) is False
+
+
+def test_abort_if_cancelled_no_pid() -> None:
+    abort_if_cancelled(None)
+
+
+def test_abort_if_cancelled_raises_without_consume() -> None:
+    request_stop(55)
+    with pytest.raises(StepCancelledError):
+        abort_if_cancelled(55)
+    assert is_stop_requested(55) is True
+
+
+@pytest.mark.asyncio
+async def test_sleep_cancellable_interrupted() -> None:
+    request_stop(77)
+    with pytest.raises(StepCancelledError):
+        await sleep_cancellable(5.0, 77, poll_s=0.05)
+
+
+@pytest.mark.asyncio
+async def test_await_with_cancel_interrupted() -> None:
+    request_stop(88)
+
+    async def slow() -> str:
+        await asyncio.sleep(10)
+        return "done"
+
+    with pytest.raises(StepCancelledError):
+        await await_with_cancel(slow(), 88, poll_s=0.05)

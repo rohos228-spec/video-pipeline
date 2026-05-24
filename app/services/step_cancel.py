@@ -1,25 +1,19 @@
 """Кооперативная отмена шагов.
 
-Юзер жмёт «⏹ Остановить текущий шаг» в TG → бот вызывает `request_stop(pid)`,
-чтобы пометить проект как «нужно остановить». Длинные циклы внутри шагов
-(generate_images, split, generate_videos, generate_audio, assemble и т.п.)
-между итерациями проверяют `is_stop_requested(pid)` и, если флаг стоит,
-выходят из цикла через `raise StepCancelledError(...)` или `break`.
-
-Это даёт «остановку между кадрами/итерациями»: текущая операция (например
-картинка уже генерится в outsee) досработает до конца, а следующая итерация
-не начнётся.
-
-Старая логика `on_project_stop_running` меняла только статус в БД — но
-running-task этого не видел, поэтому шаг продолжал гнаться до конца цикла
-(сотни кадров). Этот модуль чинит именно эту проблему.
-
-Браузер / Playwright / Chrome — **не трогаем**. Это исключительно про
-прерывание Python-цикла шага.
+Юзер жмёт «⏹ Остановить» → `request_stop(pid)`. Циклы шагов и все
+ожидания outsee (`_first_visible`, `_wait_video_url`, page.goto) проверяют
+флаг каждые ~200–300 мс и сразу бросают `StepCancelledError` — текущая
+итерация не дожидается таймаута Playwright.
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
+from typing import TypeVar
+
 from loguru import logger
+
+T = TypeVar("T")
 
 
 class StepCancelledError(Exception):
@@ -71,6 +65,47 @@ def abort_if_cancelled(project_id: int | None) -> None:
         raise StepCancelledError(
             f"проект #{project_id}: остановка по запросу пользователя"
         )
+
+
+async def await_with_cancel(
+    coro: Awaitable[T],
+    project_id: int | None,
+    *,
+    poll_s: float = 0.2,
+) -> T:
+    """Ждёт coroutine, но прерывает её при ⏹ (отмена asyncio-task)."""
+    if project_id is None:
+        return await coro
+    task = asyncio.create_task(coro)
+    try:
+        while not task.done():
+            abort_if_cancelled(project_id)
+            await asyncio.sleep(poll_s)
+        return task.result()
+    except StepCancelledError:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        raise
+
+
+async def sleep_cancellable(
+    seconds: float,
+    project_id: int | None,
+    *,
+    poll_s: float = 0.2,
+) -> None:
+    """sleep, прерываемый по флагу stop."""
+    if project_id is None:
+        await asyncio.sleep(seconds)
+        return
+    deadline = asyncio.get_event_loop().time() + seconds
+    while asyncio.get_event_loop().time() < deadline:
+        abort_if_cancelled(project_id)
+        remaining = deadline - asyncio.get_event_loop().time()
+        await asyncio.sleep(min(poll_s, max(remaining, 0)))
 
 
 def raise_if_cancelled(project_id: int) -> None:
