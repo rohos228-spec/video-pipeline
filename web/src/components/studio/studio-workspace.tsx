@@ -9,7 +9,7 @@ import {
   CanvasActionsProvider,
   type AssetTrayKind,
 } from "@/components/canvas/canvas-actions-context";
-import { AiNodeButton, AiNodeDialog } from "@/components/canvas/ai-node-dialog";
+import { AiNodeDialog } from "@/components/canvas/ai-node-dialog";
 import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
@@ -40,13 +40,38 @@ export function StudioWorkspace({
   );
   const [vMenuNodeKey, setVMenuNodeKey] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiCtx, setAiCtx] = useState<{ nodeKey: string; nodeType: string } | null>(
+    null,
+  );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
+  // Слушаем событие "открыть AI-диалог для ноды" (диспатчится из
+  // pipeline-node.tsx, когда юзер кликает на фиолетовый кружок справа
+  // от выделенной ноды).
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const d = (ev as CustomEvent<{ nodeKey: string; nodeType: string }>).detail;
+      if (!d?.nodeKey || !d?.nodeType) return;
+      onSelectNode(d.nodeKey);
+      setAiCtx({ nodeKey: d.nodeKey, nodeType: d.nodeType });
+      setAiOpen(true);
+    };
+    window.addEventListener("canvas-open-ai-node", onOpen);
+    return () => window.removeEventListener("canvas-open-ai-node", onOpen);
+  }, [onSelectNode]);
+
+  // Пользователь явно закрыл студию (крестик / backdrop / Esc).
+  // 1) Гасим студию.
+  // 2) Снимаем выделение ноды — иначе по очередному ре-рендеру / селект-эвенту
+  //    React Flow студия может тут же открыться обратно.
+  // 3) Подкручиваем suppress-таймер до 1.5 сек, чтобы пережить любые
+  //    последующие синтетические клики/select-events.
   const closeStudio = useCallback(() => {
-    suppressStudioOpenUntil.current = Date.now() + 700;
+    suppressStudioOpenUntil.current = Date.now() + 1500;
     onStudioOpenChange(false);
-  }, [onStudioOpenChange]);
+    onSelectNode(null);
+  }, [onStudioOpenChange, onSelectNode]);
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -221,6 +246,19 @@ export function StudioWorkspace({
     ],
   );
 
+  // Esc — единое место закрытия студии с клавиатуры.
+  useEffect(() => {
+    if (!studioOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeStudio();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [studioOpen, closeStudio]);
+
   return (
     <CanvasActionsProvider value={canvasActions}>
       <div className="relative h-full w-full">
@@ -228,19 +266,15 @@ export function StudioWorkspace({
           projectId={projectId}
           selectedNodeKey={selectedNodeKey}
           onSelectNode={(key) => {
+            // Просто запоминаем выделенную ноду — Inspector справа покажет её
+            // данные. Студия НЕ открывается по клику в ноду — для этого есть
+            // кружок "Открыть студию" в V-меню или иконка AI справа от ноды.
             onSelectNode(key);
-            if (key && Date.now() >= suppressStudioOpenUntil.current) {
-              setPromptFocus(null);
-              setStudioTab("settings");
-              onStudioOpenChange(true);
-            }
           }}
-          onNodeActivate={(nodeKey, nodeType) => {
-            onSelectNode(nodeKey);
-            const kind = assetTrayKindForNodeType(nodeType);
-            if (kind && projectId) {
-              setAssetTray({ kind, nodeType });
-            }
+          onNodeActivate={() => {
+            // Клик в ноду больше НЕ открывает ни студию, ни asset tray.
+            // Открытие происходит явно: V-меню → «Открыть студию» / иконка AI
+            // справа от ноды / статус-кружок сверху ноды.
           }}
           disabledNodes={disabledNodes}
         />
@@ -269,23 +303,14 @@ export function StudioWorkspace({
             : []
         }
       />
-      {projectId && selectedNodeKey && (
-        <>
-          <AiNodeButton
-            className="fixed bottom-6 z-[45] right-[calc(21rem+1.5rem)] max-xl:right-6"
-            onClick={(e) => {
-              e.stopPropagation();
-              setAiOpen(true);
-            }}
-          />
-          <AiNodeDialog
-            open={aiOpen}
-            onOpenChange={setAiOpen}
-            projectId={projectId}
-            nodeType={nodeTypeFromKey(selectedNodeKey)}
-            nodeLabel={getNodeSpec(nodeTypeFromKey(selectedNodeKey)).label}
-          />
-        </>
+      {projectId && aiCtx && (
+        <AiNodeDialog
+          open={aiOpen}
+          onOpenChange={setAiOpen}
+          projectId={projectId}
+          nodeType={aiCtx.nodeType}
+          nodeLabel={getNodeSpec(aiCtx.nodeType).label}
+        />
       )}
     </CanvasActionsProvider>
   );

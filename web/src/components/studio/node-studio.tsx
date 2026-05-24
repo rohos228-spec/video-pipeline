@@ -1,5 +1,6 @@
 "use client";
 
+import type { SyntheticEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -231,21 +232,30 @@ export function NodeStudio({
 
   if (!nodeKey || !mounted || !open) return null;
 
+  // Universal close handler — используется из крестика, backdrop и Esc.
+  // Принудительно вызывает onOpenChange(false). Родитель (studio-workspace)
+  // в closeStudio() также снимет выделение ноды и поднимет suppress-таймер.
+  const closeNow = (e: SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onOpenChange(false);
+  };
+
   return createPortal(
     <>
       <button
         type="button"
         aria-label="Закрыть студию"
         className="fixed inset-0 z-[90] bg-black/45 backdrop-blur-[2px]"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
         }}
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onOpenChange(false);
-        }}
+        onClick={closeNow}
       />
       <aside
         className="premium-sheet fixed right-0 top-0 z-[100] flex h-full w-[min(920px,92vw)] flex-col border-l border-white/10 shadow-2xl"
@@ -254,24 +264,22 @@ export function NodeStudio({
       >
         <div className="flex h-full flex-col">
           <header className="relative shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
-            <Button
+            {/* Крестик закрытия: native <button> вместо shadcn Button, чтобы
+                исключить сюрпризы от Radix Slot / cva-вариантов. Перехватываем
+                все варианты pointer/mouse-событий + onClickCapture, чтобы клик
+                гарантированно дошёл до onClick и не потерялся. */}
+            <button
               type="button"
-              variant="ghost"
-              size="icon"
-              className="absolute right-3 top-3 z-[200] h-9 w-9 shrink-0 bg-background/80 hover:bg-accent"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onOpenChange(false);
-              }}
-              title="Закрыть"
+              aria-label="Закрыть студию"
+              title="Закрыть (Esc)"
+              className="absolute right-3 top-3 z-[210] inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-md bg-background/90 text-foreground/90 ring-1 ring-white/10 transition hover:bg-destructive hover:text-destructive-foreground"
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClickCapture={closeNow}
+              onClick={closeNow}
             >
               <X className="h-5 w-5" />
-            </Button>
+            </button>
             <div className="flex items-start justify-between gap-4 pr-12">
               <div>
                 <h2 className="flex items-center gap-2 text-lg font-semibold">

@@ -240,6 +240,32 @@ export function FlowCanvas({
         }, 50);
       }
     };
+    // Отсоединить только одну сторону ноды (in/out) — через крестик
+    // на hover'е соединительного кружка.
+    const onDetachHandle = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        nodeKey: string;
+        side: "in" | "out";
+        autoSave?: boolean;
+      }>).detail;
+      const key = detail?.nodeKey;
+      const side = detail?.side;
+      if (!key || (side !== "in" && side !== "out")) return;
+      setEdges((prev) =>
+        prev.filter((e) =>
+          side === "in" ? e.target !== key : e.source !== key,
+        ),
+      );
+      if (detail?.autoSave) {
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+        }, 50);
+      } else {
+        toast.success(
+          side === "in" ? "Входящие связи сняты" : "Исходящие связи сняты",
+        );
+      }
+    };
     const onDelete = (ev: Event) => {
       const detail = (ev as CustomEvent<{ nodeKey: string; autoSave?: boolean }>).detail;
       const key = detail?.nodeKey;
@@ -258,10 +284,12 @@ export function FlowCanvas({
       void persistWorkflow();
     };
     window.addEventListener("canvas-detach-node", onDetach);
+    window.addEventListener("canvas-detach-handle", onDetachHandle);
     window.addEventListener("canvas-delete-node", onDelete);
     window.addEventListener("canvas-save-workflow", onSaveRequest);
     return () => {
       window.removeEventListener("canvas-detach-node", onDetach);
+      window.removeEventListener("canvas-detach-handle", onDetachHandle);
       window.removeEventListener("canvas-delete-node", onDelete);
       window.removeEventListener("canvas-save-workflow", onSaveRequest);
     };

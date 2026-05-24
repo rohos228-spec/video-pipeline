@@ -9,6 +9,8 @@ import {
   AlertCircle,
   Hourglass,
   MinusCircle,
+  Sparkles,
+  X,
 } from "lucide-react";
 import type { NodeRunStatus } from "@/lib/types";
 import { getNodeSpec, formatNodeTypeLabel } from "@/lib/node-catalog";
@@ -80,35 +82,29 @@ export function PipelineNode({ data, selected }: NodeProps) {
           disabled && "opacity-45 grayscale",
         )}
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
-        onMouseDown={(e) => e.stopPropagation()}
       >
         {hitlBadge && <NodeHitlBadge state={hitlBadge} />}
 
         <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl bg-[radial-gradient(ellipse_at_top_right,hsl(45_90%_60%/0.08),transparent_55%)]" />
 
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          className="!h-4 !w-4 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary"
-        />
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="out"
-          className="!h-4 !w-4 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary"
-        />
+        {/* Соединительные кружки. При hover-е появляется крестик-кнопка,
+            клик по которой удаляет все рёбра, прикреплённые к этой
+            стороне ноды (in/out). На сами кружки drag/connect ведёт
+            себя как обычно (xyflow). */}
+        <HandleWithDetach side="in" nodeKey={d.nodeKey} />
+        <HandleWithDetach side="out" nodeKey={d.nodeKey} />
 
         {actions && (
           <>
             <button
               type="button"
               className={cn(
-                "node-v-trigger absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border shadow-sm backdrop-blur transition-colors",
+                "node-v-trigger nodrag absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border shadow-sm backdrop-blur transition-colors",
                 vMenuOpen
                   ? "border-primary/60 bg-primary/20 text-primary"
                   : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
               )}
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
@@ -117,6 +113,30 @@ export function PipelineNode({ data, selected }: NodeProps) {
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
+
+            {/* AI-кружок СПРАВА от ноды (видим только когда нода
+                выделена). Кликом по нему открывается ИИ-диалог
+                (AiNodeDialog) — управляется через
+                window event 'canvas-open-ai-node'. */}
+            {selected && (
+              <button
+                type="button"
+                title="ИИ-помощник для этой ноды"
+                aria-label="ИИ-помощник"
+                className="nodrag absolute -right-12 top-1/2 z-20 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-violet-400/60 bg-gradient-to-br from-violet-500/70 to-amber-500/40 text-white shadow-lg shadow-violet-500/30 transition hover:scale-110 hover:border-violet-300"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.dispatchEvent(
+                    new CustomEvent("canvas-open-ai-node", {
+                      detail: { nodeKey: d.nodeKey, nodeType: d.type },
+                    }),
+                  );
+                }}
+              >
+                <Sparkles className="h-4 w-4" />
+              </button>
+            )}
 
             <NodeVMenu
               open={!!vMenuOpen}
@@ -206,6 +226,66 @@ export function PipelineNode({ data, selected }: NodeProps) {
         )}
       </div>
     </>
+  );
+}
+
+/** Соединительный кружок ноды с возможностью отсоединения по hover-X.
+ *
+ *  - side="in"  → target handle слева (Position.Left, id="in").
+ *  - side="out" → source handle справа (Position.Right, id="out").
+ *
+ *  Внешний кружок-handle получает hover-обёртку (group/conn). При hover
+ *  показывается красный крестик; клик по нему диспетчит
+ *  `canvas-detach-handle` — FlowCanvas удалит все рёбра, прикреплённые
+ *  к этой стороне ноды.
+ */
+function HandleWithDetach({
+  side,
+  nodeKey,
+}: {
+  side: "in" | "out";
+  nodeKey: string;
+}) {
+  const isIn = side === "in";
+  return (
+    <div
+      className={cn(
+        "group/conn pointer-events-none absolute top-1/2 z-10 -translate-y-1/2",
+        isIn ? "-left-3" : "-right-3",
+      )}
+      style={{ width: 22, height: 22 }}
+    >
+      <Handle
+        type={isIn ? "target" : "source"}
+        position={isIn ? Position.Left : Position.Right}
+        id={isIn ? "in" : "out"}
+        className="!pointer-events-auto !left-1/2 !top-1/2 !h-4 !w-4 !-translate-x-1/2 !-translate-y-1/2 !cursor-crosshair !rounded-full !border-2 !border-amber-400/50 !bg-background hover:!scale-125 hover:!border-primary"
+      />
+      <button
+        type="button"
+        title="Отсоединить эту сторону ноды"
+        aria-label="Отсоединить"
+        className={cn(
+          "nodrag pointer-events-auto absolute z-20 flex h-4 w-4 items-center justify-center rounded-full border border-destructive/60 bg-destructive text-destructive-foreground opacity-0 shadow ring-1 ring-background transition group-hover/conn:opacity-100",
+          isIn ? "-top-2 -left-2" : "-top-2 -right-2",
+        )}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          window.dispatchEvent(
+            new CustomEvent("canvas-detach-handle", {
+              detail: { nodeKey, side, autoSave: true },
+            }),
+          );
+        }}
+      >
+        <X className="h-2.5 w-2.5" />
+      </button>
+    </div>
   );
 }
 
