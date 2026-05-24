@@ -16,13 +16,16 @@ from app.services.step_cancel import (
     StepCancelledError,
     abort_if_cancelled,
     await_with_cancel,
+    cancel_advance_task,
     clear_all,
     clear_stop,
     consume_stop,
     is_stop_requested,
     raise_if_cancelled,
+    register_advance_task,
     request_stop,
     sleep_cancellable,
+    unregister_advance_task,
 )
 
 
@@ -133,3 +136,27 @@ async def test_await_with_cancel_interrupted() -> None:
 
     with pytest.raises(StepCancelledError):
         await await_with_cancel(slow(), 88, poll_s=0.05)
+
+
+@pytest.mark.asyncio
+async def test_request_stop_cancels_advance_task() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def long_advance() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    task = asyncio.create_task(long_advance())
+    register_advance_task(99, task)
+    await started.wait()
+    request_stop(99)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
+    assert cancel_advance_task(99) is False
+    unregister_advance_task(99)

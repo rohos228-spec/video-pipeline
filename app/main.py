@@ -242,8 +242,12 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
 
     from app.db import session_scope
     from app.models import Project, ProjectStatus
-    from app.orchestrator.pipeline import advance_project
-    from app.services.step_cancel import StepCancelledError
+    from app.services.advance_runner import advance_project_job
+    from app.services.step_cancel import (
+        StepCancelledError,
+        register_advance_task,
+        unregister_advance_task,
+    )
 
     MAX_FAIL = 3
     # (project_id, status.value) -> кол-во подряд неудач на этом шаге
@@ -307,32 +311,32 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         continue
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
+                    project_id = p.id
+                    task = asyncio.create_task(
+                        advance_project_job(project_id, bot)
+                    )
+                    register_advance_task(project_id, task)
                     try:
-                        await advance_project(s, p, bot)
+                        result = await task
                         # успех на этом шаге — сбрасываем счётчик
                         fail_counts.pop(key, None)
-                        # если статус изменился — коммитим прямо сейчас
-                        # и шлём уведомление в TG (notify_step_done читает из
-                        # отдельной сессии, поэтому commit обязателен).
-                        if p.status.value != prev_status_value:
-                            new_status = p.status.value
-                            project_id = p.id
-                            await s.commit()
+                        if result.new_status is not None:
                             try:
                                 await notify_step_done(
-                                    bot, project_id, prev_status_value, new_status
+                                    bot,
+                                    project_id,
+                                    result.prev_status,
+                                    result.new_status,
                                 )
                             except Exception:  # noqa: BLE001
                                 logger.exception(
                                     "notify_step_done({}) failed", project_id
                                 )
-                    except StepCancelledError:
-                        # ⏹ Остановить — это НЕ ошибка, юзер сам остановил.
-                        # Не накручиваем fail_counts, не шлём «ошибка на шаге»,
-                        # не пишем traceback. Шаг сам уже откатил статус.
+                    except (StepCancelledError, asyncio.CancelledError):
+                        # ⏹ Остановить — task.cancel() или кооперативный выход.
                         logger.info(
                             "[#{}] advance_project cancelled by user (⏹)",
-                            p.id,
+                            project_id,
                         )
                         fail_counts.pop(key, None)
                     except Exception as e:  # noqa: BLE001
@@ -386,6 +390,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             logger.warning(
                                 "не удалось отправить уведомление об ошибке в Telegram"
                             )
+                    finally:
+                        unregister_advance_task(project_id)
 
                 # --- auto_mode ---
                 # 1) auto-advance: для auto_mode проектов в *_ready

@@ -15,7 +15,14 @@ from sqlalchemy import select
 
 from app.db import engine, session_scope
 from app.models import Base, Project, ProjectStatus
-from app.orchestrator.pipeline import advance_project
+from app.services.advance_runner import advance_project_job
+from app.services.step_cancel import (
+    StepCancelledError,
+    consume_stop,
+    is_stop_requested,
+    register_advance_task,
+    unregister_advance_task,
+)
 from app.prompts_loader import sync_prompts_from_files
 from app.settings import settings
 
@@ -46,8 +53,16 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
             await s.execute(select(Project).where(Project.status.in_(ACTIVE_STATUSES)))
         ).scalars().all()
         for p in projects:
+            if is_stop_requested(p.id):
+                consume_stop(p.id)
+                continue
+            project_id = p.id
+            task = asyncio.create_task(advance_project_job(project_id, bot))
+            register_advance_task(project_id, task)
             try:
-                await advance_project(s, p, bot)
+                await task
+            except (StepCancelledError, asyncio.CancelledError):
+                logger.info("[#{}] advance_project cancelled by user (⏹)", project_id)
             except Exception as e:  # noqa: BLE001
                 logger.exception("advance_project failed for #{}", p.id)
                 # оповещаем владельца в Telegram, чтобы он видел, что бот
@@ -57,6 +72,8 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
                     await bot.send_message(settings.telegram_owner_chat_id, msg[:3800])
                 except Exception:  # noqa: BLE001
                     logger.warning("не удалось отправить уведомление об ошибке в Telegram")
+            finally:
+                unregister_advance_task(project_id)
 
 
 async def main() -> None:

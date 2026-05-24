@@ -1,9 +1,8 @@
-"""Кооперативная отмена шагов.
+"""Отмена шагов: флаг + немедленный `asyncio.Task.cancel()`.
 
-Юзер жмёт «⏹ Остановить» → `request_stop(pid)`. Циклы шагов и все
-ожидания outsee (`_first_visible`, `_wait_video_url`, page.goto) проверяют
-флаг каждые ~200–300 мс и сразу бросают `StepCancelledError` — текущая
-итерация не дожидается таймаута Playwright.
+Юзер жмёт «⏹ Остановить» → `request_stop(pid)`:
+  1. ставит флаг (кооперативный выход из циклов);
+  2. отменяет asyncio-task воркера (`advance_project_job`) и xlsx-flow.
 """
 from __future__ import annotations
 
@@ -26,6 +25,24 @@ class StepCancelledError(Exception):
 
 
 _stop_pids: set[int] = set()
+_advance_tasks: dict[int, asyncio.Task] = {}
+
+
+def register_advance_task(project_id: int, task: asyncio.Task) -> None:
+    _advance_tasks[project_id] = task
+
+
+def unregister_advance_task(project_id: int) -> None:
+    _advance_tasks.pop(project_id, None)
+
+
+def cancel_advance_task(project_id: int) -> bool:
+    """Отменяет asyncio-task advance_project для проекта."""
+    task = _advance_tasks.pop(project_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+        return True
+    return False
 
 
 def clear_stop(project_id: int) -> None:
@@ -36,16 +53,21 @@ def clear_stop(project_id: int) -> None:
 
 
 def request_stop(project_id: int) -> None:
-    """Помечает проект как «нужно остановить».
+    """Помечает проект как «нужно остановить» и **сразу** отменяет task.
 
-    Идемпотентно: повторные вызовы — no-op. Флаг будет снят на следующей
-    итерации цикла шага через `consume_stop`.
+    Повторное нажатие ⏹ снова шлёт cancel (на случай зависшего await).
     """
-    if project_id in _stop_pids:
-        logger.debug("step_cancel.request_stop: #{} уже помечен", project_id)
-        return
+    from app.services.xlsx_flow_locks import cancel_xlsx_flow_tasks
+
     _stop_pids.add(project_id)
-    logger.info("step_cancel.request_stop: #{} помечен для остановки", project_id)
+    cancelled_adv = cancel_advance_task(project_id)
+    cancelled_xlsx = cancel_xlsx_flow_tasks(project_id)
+    logger.info(
+        "step_cancel.request_stop: #{} (advance_cancel={}, xlsx_cancel={})",
+        project_id,
+        cancelled_adv,
+        cancelled_xlsx,
+    )
 
 
 def is_stop_requested(project_id: int) -> bool:
@@ -132,3 +154,4 @@ def raise_if_cancelled(project_id: int) -> None:
 def clear_all() -> None:
     """Сбрасывает все флаги. Используется при перезапуске воркера/тестов."""
     _stop_pids.clear()
+    _advance_tasks.clear()

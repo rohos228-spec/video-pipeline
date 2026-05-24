@@ -306,13 +306,24 @@ async def _run_xlsx_with_lock(
     Лок защищает от тройного нажатия одной кнопки, когда пользователь видит
     что «ничего не происходит» и тыкает повторно — в результате 2-3 параллельных
     upload'а в один чат ChatGPT и испорченный project.xlsx.
+
+    Текущая asyncio-task регистрируется для ⏹ (немедленный task.cancel()).
     """
+    from app.services.xlsx_flow_locks import (
+        register_xlsx_flow_task,
+        unregister_xlsx_flow_task,
+    )
+
     key = (project_id, step)
     _xlsx_flow_active.add(key)
+    task = asyncio.current_task()
+    if task is not None:
+        register_xlsx_flow_task(project_id, step, task)
     try:
         await coro
     finally:
         _xlsx_flow_active.discard(key)
+        unregister_xlsx_flow_task(project_id, step)
 
 
 def _clear_pending_state(user_id: int) -> None:
@@ -3046,8 +3057,8 @@ async def on_prompt_picker_cb(cb: CallbackQuery) -> None:
             # данных не хватает — воркер упадёт, статус откатится.
             from app.services.step_cancel import clear_stop
 
-        clear_stop(project.id)
-        project.status = step.running_status
+            clear_stop(project.id)
+            project.status = step.running_status
             slug = project.slug
             topic = project.topic
         await cb.answer(f"Запускаю: {step.title}")
@@ -3851,11 +3862,9 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
     from app.services.step_cancel import request_stop
     from app.telegram.menu import step_by_running_status
 
-    # Помечаем проект как «нужно остановить» — длинные циклы шагов
-    # (generate_images / split / generate_videos / generate_audio / assemble)
-    # увидят флаг на следующей итерации и выйдут через StepCancelledError.
-    # Раньше ⏹ только менял статус в БД, но running-task этого не видел и
-    # продолжал гнать цикл до конца (сотни кадров).
+    # Помечаем проект и **сразу** отменяем asyncio-task воркера / xlsx-flow
+    # (как 🛑 Стоп в test-prompt). Кооперативные проверки в циклах — запасной
+    # путь, если task ещё не зарегистрирован.
     request_stop(pid)
 
     # Снимаем xlsx-flow локи для этого проекта.
