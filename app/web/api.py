@@ -149,6 +149,12 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get(f"{API_PREFIX}/studio-version")
+    async def studio_version() -> dict[str, str | int]:
+        from app.web.studio_version import read_studio_version
+
+        return read_studio_version()
+
     # ── Статика Next.js (export → ./web/out) ──
     _mount_frontend(app)
 

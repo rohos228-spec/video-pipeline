@@ -27,3 +27,10 @@
 - The app connects to Chrome via CDP on `localhost:29229` for browser automation (ChatGPT, outsee.io). This is only needed for the actual pipeline execution, not for running tests or linting.
 - **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
 - Tests use in-memory SQLite and don't require external services or a `.env` file.
+
+### Studio UI version badge
+
+- Build counter lives in `web/STUDIO_VERSION` (line 1 = number, line 2 = git short sha).
+- **Before every commit that touches web UI**, run: `python3 scripts/bump_studio_version.py` and commit the updated `web/STUDIO_VERSION`.
+- After bump, rebuild static UI: `cd web && npm run build` (FastAPI serves `web/out/`).
+- Bottom-left badge shows baked version; if it differs from `/api/studio-version`, the UI bundle is stale — rebuild required.

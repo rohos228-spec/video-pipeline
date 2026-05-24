@@ -137,12 +137,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   ? "border-primary/60 bg-primary/20 text-primary"
                   : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
               )}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.stopPropagation();
+                e.preventDefault();
+                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
+              }}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
               }}
               title="Меню ноды"
             >

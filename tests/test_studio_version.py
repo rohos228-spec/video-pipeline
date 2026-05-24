@@ -1,0 +1,13 @@
+from pathlib import Path
+
+from app.web.studio_version import read_studio_version, _version_file
+
+
+def test_read_studio_version_from_file(tmp_path: Path, monkeypatch) -> None:
+    vf = tmp_path / "STUDIO_VERSION"
+    vf.write_text("42\nabc1234\n", encoding="utf-8")
+    monkeypatch.setattr("app.web.studio_version._version_file", lambda: vf)
+    data = read_studio_version()
+    assert data["build"] == 42
+    assert data["sha"] == "abc1234"
+    assert data["label"] == "v42 · abc1234"
