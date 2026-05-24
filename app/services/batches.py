@@ -982,10 +982,15 @@ async def pause_all_running_batches(
             p.status = step.requires
             out["rolled_back"] += 1
         # 2) Снимаем auto_mode у всех new и *_ready (после rollback это
-        #    и есть бывшие running-подпроекты тоже).
+        #    и есть бывшие running-подпроекты тоже). Помечаем в meta
+        #    флагом _batch_paused=True, чтобы resume_all_paused_batches
+        #    мог отличить «паузу батча» от «юзер вручную нажал ⏹».
         if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
             if p.auto_mode:
                 p.auto_mode = False
+                meta = dict(p.meta or {})
+                meta["_batch_paused"] = True
+                p.meta = meta
                 out["auto_mode_off"] += 1
 
     await session.flush()
@@ -1023,9 +1028,18 @@ async def resume_all_paused_batches(
         ProjectStatus.paused,
     }
     for p in subs_q.scalars().all():
+        # Восстанавливаем auto_mode только тем подпроектам, которые были
+        # выключены именно batch-паузой (_batch_paused=True в meta).
+        # Подпроекты, где юзер вручную нажал «⏹ Остановить» (auto_mode=False
+        # без _batch_paused), НЕ трогаем — иначе resume батча молча
+        # отменяет явный стоп юзера.
         if p.status not in terminal and not p.auto_mode:
-            p.auto_mode = True
-            out["auto_mode_on"] += 1
+            if (p.meta or {}).get("_batch_paused"):
+                p.auto_mode = True
+                meta = dict(p.meta or {})
+                meta.pop("_batch_paused", None)
+                p.meta = meta
+                out["auto_mode_on"] += 1
 
     await session.flush()
     logger.info(
