@@ -15,18 +15,21 @@ import {
 import type { NodePromptSlot } from "@/lib/node-prompts";
 import {
   gptTextSlotForNode,
+  excelPromptSlot,
   isCustomPromptSlot,
   pipelinePromptSlots,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { NodeVMenuExcelBlock } from "./node-v-menu-excel";
 
 export function NodeVMenu({
   open,
   nodeType,
   slots,
   disabled,
+  projectId,
   onSelectPrompt,
   onOpenGptText,
   onAddPrompt,
@@ -58,16 +61,28 @@ export function NodeVMenu({
   onDeleteNode: () => void;
   onClose: () => void;
   hasAssets: boolean;
+  projectId?: number | null;
 }) {
   if (!open) return null;
 
   const pipeline = pipelinePromptSlots(slots);
+  const excelSlot = excelPromptSlot(slots);
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
   return (
     <div className="node-v-menu absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
+        {excelSlot && (
+          <NodeVMenuExcelBlock
+            open={open}
+            projectId={projectId ?? null}
+            nodeType={nodeType}
+            excelSlot={excelSlot}
+            onOpenExcel={() => onSelectPrompt(excelSlot)}
+          />
+        )}
+
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Мастер-промты
@@ -187,14 +202,11 @@ export function NodeVMenu({
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
           )}
-          {pipeline.some((s) => s.kind === "excel") && (
+          {excelSlot && (
             <MenuAction
               icon={Eye}
               label="Просмотр Excel"
-              onClick={() => {
-                const excel = pipeline.find((s) => s.kind === "excel");
-                if (excel) onSelectPrompt(excel);
-              }}
+              onClick={() => onSelectPrompt(excelSlot)}
             />
           )}
           <MenuAction icon={Unlink} label="Открепить связи" onClick={onDetachNode} />

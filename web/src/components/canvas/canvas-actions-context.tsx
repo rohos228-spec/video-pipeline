@@ -19,8 +19,6 @@ export interface CanvasActions {
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
   getNodeResult: (nodeType: string) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
-  /** Открыть студию ноды на вкладке Excel (меню V на plan/script/split). */
-  onOpenNodeExcel: (nodeKey: string, nodeType: string) => void;
   onOpenGptText: (nodeKey: string, nodeType: string) => void;
   onViewAllPrompts: (nodeKey: string, nodeType: string) => void;
   onAddPrompt: (nodeKey: string, nodeType: string) => void;

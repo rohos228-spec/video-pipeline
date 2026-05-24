@@ -138,15 +138,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
               )}
               onMouseDown={(e) => e.stopPropagation()}
+              onClickCapture={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                const willOpen = !vMenuOpen;
-                actions.setVMenuNodeKey(willOpen ? d.nodeKey : null);
-                if (willOpen) {
-                  actions.onOpenNodeExcel(d.nodeKey, d.type);
-                }
+                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
               }}
-              title="Меню ноды и Excel"
+              title="Меню ноды"
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
@@ -156,6 +153,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               nodeType={d.type}
               slots={slots}
               disabled={disabled}
+              projectId={actions.projectId}
               hasAssets={assetKind != null}
               onClose={() => actions.setVMenuNodeKey(null)}
               onSelectPrompt={(slot) => {

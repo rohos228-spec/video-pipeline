@@ -229,15 +229,6 @@ export function StudioWorkspace({
         setStudioTab(slot.kind === "excel" ? "excel" : "prompts");
         onStudioOpenChange(true);
       },
-      onOpenNodeExcel: (nodeKey: string, nodeType: string) => {
-        const slots = getPromptSlots(nodeKey, nodeType);
-        const excel = slots.find((s) => s.kind === "excel");
-        if (!excel) return;
-        onSelectNode(nodeKey);
-        setPromptFocus(excel);
-        setStudioTab("excel");
-        onStudioOpenChange(true);
-      },
       onOpenGptText: (nodeKey: string, nodeType: string) => {
         const slot = gptTextSlotForNode(nodeType);
         if (!slot) return;
