@@ -130,6 +130,22 @@ async def test_sleep_cancellable_interrupted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_await_with_cancel_drains_on_parent_cancel() -> None:
+    async def slow() -> str:
+        await asyncio.sleep(10)
+        return "done"
+
+    async def caller() -> None:
+        await await_with_cancel(slow(), 88, poll_s=0.05)
+
+    t = asyncio.create_task(caller())
+    await asyncio.sleep(0.05)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+
+
+@pytest.mark.asyncio
 async def test_await_with_cancel_interrupted() -> None:
     request_stop(88)
 

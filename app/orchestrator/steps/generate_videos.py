@@ -153,6 +153,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 pass
             raise
 
+    raise_if_cancelled(project.id)
+    await session.refresh(project)
+    if project.status is not ProjectStatus.generating_videos:
+        logger.info(
+            "[#{}] generate_videos: статус уже {} — не ставлю videos_ready (⏹?)",
+            project.id,
+            project.status.value,
+        )
+        return
+
     project.status = ProjectStatus.videos_ready
     await session.flush()
 

@@ -2392,7 +2392,7 @@ class OutseeBot:
                 "(input[type=file] count={}, взят last)",
                 where, image_path.name, count,
             )
-            await asyncio.sleep(1.0)
+            await sleep_cancellable(1.0, project_id)
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -2511,13 +2511,58 @@ class OutseeBot:
         page_url = _video_page_url(model_slug)
         logger.info("outsee.generate_video: open url={}", page_url)
         page = await self.session.open_page(page_url, reuse=True)
-        # ВАЖНО: всегда reload, чтобы сбросить состояние от предыдущей
-        # генерации — иначе на ретрае останутся форма + start_frame +
-        # возможная плашка ошибки от прошлой попытки.
+        from app.services.step_cancel import register_active_page, unregister_active_page
+
+        if project_id is not None:
+            register_active_page(project_id, page)
+        try:
+            return await self._generate_video_on_page(
+                page,
+                prompt=prompt,
+                out_path=out_path,
+                start_frame=start_frame,
+                aspect_ratio=aspect_ratio,
+                timeout=timeout,
+                model_slug=model_slug,
+                resolution=resolution,
+                relax=relax,
+                prompt_id_prefix=prompt_id_prefix,
+                project_id=project_id,
+                page_url=page_url,
+            )
+        finally:
+            if project_id is not None:
+                unregister_active_page(project_id)
+
+    async def _generate_video_on_page(
+        self,
+        page: Any,
+        *,
+        prompt: str,
+        out_path: Path,
+        start_frame: Path | None,
+        aspect_ratio: str,
+        timeout: float,
+        model_slug: str | None,
+        resolution: str | None,
+        relax: bool,
+        prompt_id_prefix: str | None,
+        project_id: int | None,
+        page_url: str,
+    ) -> GenerationResult:
+        from app.services.step_cancel import (
+            StepCancelledError,
+            abort_if_cancelled,
+            await_with_cancel,
+        )
+
+        abort_if_cancelled(project_id)
         try:
             await await_with_cancel(
                 page.goto(page_url, wait_until="domcontentloaded"), project_id
             )
+        except StepCancelledError:
+            raise
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "outsee.generate_video: page.goto({}) упал: {} — продолжаю "
@@ -2528,11 +2573,13 @@ class OutseeBot:
             await await_with_cancel(
                 page.wait_for_load_state("networkidle", timeout=15_000), project_id
             )
+        except StepCancelledError:
+            raise
         except Exception:
             pass
         abort_if_cancelled(project_id)
 
-        # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
+        # 0) АНТИ-ДУБЛИКАТ
         # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
         # попытка retry'я кликнула Generate, упала по таймауту, а outsee
         # продолжил рендерить видео) — НЕ кликаем Generate повторно.
@@ -2599,17 +2646,23 @@ class OutseeBot:
             await _toggle_relax(page, want_on=relax, where="generate_video", project_id=project_id)
             abort_if_cancelled(project_id)
 
-            # 3) загрузка стартового кадра (если передан)
+            # 3) загрузка стартового кадра (скрытый input — как у картинок)
             if start_frame is not None:
-                file_sel = await _first_visible(
-                    page, FILE_UPLOAD_SELECTORS, timeout_ms=10_000, project_id=project_id
+                if not start_frame.exists():
+                    raise RuntimeError(
+                        f"outsee video: start_frame не найден на диске: {start_frame}"
+                    )
+                attached = await self._attach_ref_image_robust(
+                    page,
+                    start_frame,
+                    where="generate_video[start_frame]",
+                    project_id=project_id,
                 )
-                if not file_sel:
-                    raise RuntimeError("outsee video: не найден input[type=file] для стартового кадра")
-                await await_with_cancel(
-                    page.locator(file_sel).first.set_input_files(str(start_frame)),
-                    project_id,
-                )
+                if not attached:
+                    raise RuntimeError(
+                        "outsee video: не удалось загрузить стартовый кадр "
+                        "(input[type=file] не найден на странице outsee video)"
+                    )
 
             # 4) generate
             abort_if_cancelled(project_id)
@@ -2631,7 +2684,7 @@ class OutseeBot:
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        await _download_via_context(page, video_url, out_path)
+        await _download_via_context(page, video_url, out_path, project_id=project_id)
         logger.info("outsee video saved → {}", out_path)
         return GenerationResult(file_path=out_path, raw_url=video_url)
 

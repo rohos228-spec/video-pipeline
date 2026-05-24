@@ -89,6 +89,14 @@ async def _close_active_page(page: Any) -> None:
         await page.close()
 
 
+def _consume_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.debug("step_cancel: close page task: {}", exc)
+
+
 def _interrupt_browser_for_project(project_id: int) -> None:
     page = _active_pages.get(project_id)
     if page is None:
@@ -97,7 +105,8 @@ def _interrupt_browser_for_project(project_id: int) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(_close_active_page(page))
+    close_task = loop.create_task(_close_active_page(page))
+    close_task.add_done_callback(_consume_task_result)
 
 
 def cancel_advance_task(project_id: int) -> bool:
@@ -167,6 +176,18 @@ def abort_if_cancelled(project_id: int | None) -> None:
         )
 
 
+async def _drain_task(task: asyncio.Task) -> None:
+    """Дождаться task и проглотить CancelledError/Playwright — без «never retrieved»."""
+    if not task.done():
+        task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+def _stop_cancel_message(project_id: int) -> str:
+    return f"проект #{project_id}: остановка по запросу пользователя"
+
+
 async def await_with_cancel(
     coro: Awaitable[T],
     project_id: int | None,
@@ -176,16 +197,31 @@ async def await_with_cancel(
     if project_id is None:
         return await coro
     task = asyncio.create_task(coro)
+    user_stop = False
     try:
         while not task.done():
-            abort_if_cancelled(project_id)
+            if is_stop_requested(project_id):
+                user_stop = True
+                break
             await asyncio.sleep(poll_s)
-        return task.result()
-    except StepCancelledError:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+    except asyncio.CancelledError:
+        await _drain_task(task)
         raise
+
+    if user_stop:
+        await _drain_task(task)
+        raise StepCancelledError(_stop_cancel_message(project_id))
+
+    if task.cancelled():
+        await _drain_task(task)
+        raise asyncio.CancelledError()
+
+    exc = task.exception()
+    if exc is not None:
+        if is_stop_requested(project_id):
+            raise StepCancelledError(_stop_cancel_message(project_id)) from exc
+        raise exc
+    return task.result()
 
 
 async def sleep_cancellable(
