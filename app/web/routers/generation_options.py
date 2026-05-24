@@ -6,7 +6,6 @@ from fastapi import APIRouter
 
 from app.generation_options import (
     ASPECT_RATIOS,
-    BOOLEAN_CHOICES,
     IMAGE_GENERATORS,
     IMAGE_RESOLUTIONS,
     VIDEO_GENERATORS,
