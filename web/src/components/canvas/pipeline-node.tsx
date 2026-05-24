@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   CheckCircle2,
@@ -20,7 +20,6 @@ import {
 } from "./canvas-actions-context";
 import { NodeVMenu } from "./node-v-menu";
 import { NodeHitlBadge, resolveHitlBadgeState } from "./node-hitl-badge";
-import { AiNodeButton, AiNodeDialog } from "./ai-node-dialog";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -46,7 +45,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
-  const [aiOpen, setAiOpen] = useState(false);
 
   const hitlBadge =
     actions &&
@@ -119,13 +117,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
-
-            <AiNodeButton
-              onClick={(e) => {
-                e.stopPropagation();
-                setAiOpen(true);
-              }}
-            />
 
             <NodeVMenu
               open={!!vMenuOpen}
@@ -214,16 +205,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
           />
         )}
       </div>
-
-      {actions && (
-        <AiNodeDialog
-          open={aiOpen}
-          onOpenChange={setAiOpen}
-          projectId={actions.projectId}
-          nodeType={d.type}
-          nodeLabel={spec.label}
-        />
-      )}
     </>
   );
 }

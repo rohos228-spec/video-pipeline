@@ -57,10 +57,10 @@ async def resume_project(
     return p
 
 
-@router.post("/{project_id}/stop", response_model=ProjectDetail)
+@router.post("/{project_id}/stop")
 async def stop_project(
     project_id: int, session: AsyncSession = Depends(get_session)
-) -> Project:
+) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     info = await stop_project_running(session, p)
     await session.commit()
@@ -70,7 +70,7 @@ async def stop_project(
         event_type="project_updated",
         payload={"stopped": True, "message": info["message"]},
     )
-    return p
+    return {"project": ProjectDetail.model_validate(p), "message": info["message"]}
 
 
 @router.post("/{project_id}/mass-lanes/start")

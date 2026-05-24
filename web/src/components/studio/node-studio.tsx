@@ -14,6 +14,7 @@ import {
   Settings2,
   Sparkles,
   Upload,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -230,10 +231,24 @@ export function NodeStudio({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="premium-sheet !max-w-[min(920px,92vw)] w-full border-l border-white/10 p-0">
+      <SheetContent
+        side="right"
+        hideClose
+        className="premium-sheet !max-w-[min(920px,92vw)] w-full border-l border-white/10 p-0"
+      >
         <div className="flex h-full flex-col">
-          <SheetHeader className="shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
-            <div className="flex items-start justify-between gap-4 pr-8">
+          <SheetHeader className="relative shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-3 top-3 z-[200] h-8 w-8"
+              onClick={() => onOpenChange(false)}
+              title="Закрыть"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            <div className="flex items-start justify-between gap-4 pr-10">
               <div>
                 <SheetTitle className="flex items-center gap-2 text-lg">
                   <Sparkles className="h-4 w-4 text-amber-400" />

@@ -6,6 +6,7 @@ import { Loader2, Sparkles, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -90,17 +91,22 @@ export function AiNodeDialog({
 
 export function AiNodeButton({
   onClick,
+  className,
 }: {
   onClick: (e: React.MouseEvent) => void;
+  className?: string;
 }) {
   return (
     <button
       type="button"
-      className="absolute -right-3 top-1/2 z-20 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-violet-400/50 bg-gradient-to-br from-violet-500/30 to-amber-500/20 text-violet-200 shadow-lg hover:scale-110 hover:border-violet-300"
+      className={cn(
+        "flex h-12 w-12 items-center justify-center rounded-full border border-violet-400/50 bg-gradient-to-br from-violet-500/40 to-amber-500/25 text-violet-100 shadow-xl shadow-black/50 hover:scale-110 hover:border-violet-300",
+        className,
+      )}
       onClick={onClick}
-      title="ИИ-помощник"
+      title="ИИ-помощник для выбранной ноды"
     >
-      <Sparkles className="h-3.5 w-3.5" />
+      <Sparkles className="h-5 w-5" />
     </button>
   );
 }

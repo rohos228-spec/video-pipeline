@@ -7,42 +7,35 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
-from app.orchestrator.node_registry import LINEAR_NODE_TYPES, RUNNING_TO_NODE_TYPE, WORK_NODES
 from app.services.project_state import is_running_status
 from app.services.step_cancel import request_stop
-
-
-def _rollback_for_running(status: ProjectStatus) -> ProjectStatus:
-    node_type = RUNNING_TO_NODE_TYPE.get(status)
-    if not node_type or node_type not in LINEAR_NODE_TYPES:
-        return ProjectStatus.new
-    idx = LINEAR_NODE_TYPES.index(node_type)
-    if idx <= 0:
-        return ProjectStatus.new
-    prev_type = LINEAR_NODE_TYPES[idx - 1]
-    return WORK_NODES[prev_type].ready_status
+from app.telegram.menu import step_by_running_status
 
 
 async def stop_project_running(session: AsyncSession, project: Project) -> dict[str, str]:
-    """⏹ Остановить текущий running-шаг."""
+    """⏹ Остановить текущий running-шаг — та же логика, что on_project_stop_running в боте."""
     request_stop(project.id)
-    msg = "нет активного шага"
+    msg = "флаг остановки установлен"
     if is_running_status(project.status):
         cur = project.status
-        rollback_to = _rollback_for_running(cur)
+        step = step_by_running_status(cur)
+        rollback_to = (
+            step.requires
+            if step is not None and step.requires is not None
+            else ProjectStatus.new
+        )
         project.status = rollback_to
         project.auto_mode = False
         meta = dict(project.meta or {})
         meta.pop("enrich_auto_chain_to", None)
         project.meta = meta
         project.updated_at = datetime.utcnow()
-        node_type = RUNNING_TO_NODE_TYPE.get(cur, "")
-        label = WORK_NODES[node_type].node_type if node_type in WORK_NODES else cur.value
-        msg = f"остановлен шаг «{label}» → {rollback_to.value}"
+        step_title = step.title if step is not None else cur.value
+        msg = f"остановлен шаг «{step_title}» → {rollback_to.value}, auto_mode выключен"
     elif project.status is not ProjectStatus.paused:
         project.auto_mode = False
         project.updated_at = datetime.utcnow()
-        msg = "флаг остановки установлен, auto_mode выключен"
+        msg = "auto_mode выключен"
     await session.flush()
     return {"message": msg}
 

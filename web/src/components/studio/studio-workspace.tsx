@@ -9,6 +9,7 @@ import {
   CanvasActionsProvider,
   type AssetTrayKind,
 } from "@/components/canvas/canvas-actions-context";
+import { AiNodeButton, AiNodeDialog } from "@/components/canvas/ai-node-dialog";
 import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
@@ -38,6 +39,7 @@ export function StudioWorkspace({
     "settings",
   );
   const [vMenuNodeKey, setVMenuNodeKey] = useState<string | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
   const qc = useQueryClient();
 
   const project = useQuery({
@@ -258,6 +260,24 @@ export function StudioWorkspace({
             : []
         }
       />
+      {projectId && selectedNodeKey && (
+        <>
+          <AiNodeButton
+            className="fixed bottom-6 z-[45] right-[calc(21rem+1.5rem)] max-xl:right-6"
+            onClick={(e) => {
+              e.stopPropagation();
+              setAiOpen(true);
+            }}
+          />
+          <AiNodeDialog
+            open={aiOpen}
+            onOpenChange={setAiOpen}
+            projectId={projectId}
+            nodeType={nodeTypeFromKey(selectedNodeKey)}
+            nodeLabel={getNodeSpec(nodeTypeFromKey(selectedNodeKey)).label}
+          />
+        </>
+      )}
     </CanvasActionsProvider>
   );
 }

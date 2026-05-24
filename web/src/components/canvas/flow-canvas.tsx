@@ -20,7 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Loader2, Play, Save, Trash2 } from "lucide-react";
+import { Copy, Loader2, Play, Save, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -587,9 +587,11 @@ function RunOverlay({
   const handleStopProject = async () => {
     setBusy(true);
     try {
-      await api.stopProject(projectId);
-      toast.success("Стоп: шаг откатан, auto_mode выключен");
+      const r = await api.stopProject(projectId);
+      toast.success(r.message || "⏹ Шаг остановлен");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
       onRunCreated();
     } catch (e) {
       toast.error(String(e));
@@ -705,13 +707,14 @@ function RunOverlay({
       </Button>
       <Button
         size="sm"
-        variant="outline"
+        variant="destructive"
         onClick={handleStopProject}
         disabled={busy}
-        className="pointer-events-auto gap-1 text-xs text-destructive"
-        title="Как «Стоп» в Telegram: откат шага + выкл. auto_mode"
+        className="pointer-events-auto gap-1.5 text-xs font-semibold"
+        title="Как ⏹ в Telegram: откат running-шага + выкл. auto_mode"
       >
-        Стоп шаг
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
+        ⏹ Стоп
       </Button>
       {run && (
         <Button

@@ -60,8 +60,10 @@ export function NodeVMenu({
             <button
               type="button"
               className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                e.preventDefault();
                 onClose();
               }}
               title="Закрыть меню"
