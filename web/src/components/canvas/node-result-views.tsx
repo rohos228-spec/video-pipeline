@@ -63,6 +63,64 @@ function LoadingBlock() {
   );
 }
 
+function isSplitRowLabel(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return true;
+  return (
+    t === "закадровый текст" ||
+    t === "закадровый" ||
+    t === "voiceover" ||
+    (t.includes("закадров") && t.length < 48)
+  );
+}
+
+function XlsxUploadBar({ projectId }: { projectId: number }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadProjectXlsx(projectId, file),
+    onSuccess: () => {
+      toast.success("Excel загружен");
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-split-row", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      <Button size="sm" variant="outline" asChild>
+        <a href={api.downloadProjectXlsx(projectId)} download>
+          <Download className="h-3.5 w-3.5" />
+          Скачать Excel
+        </a>
+      </Button>
+      <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
+        {upload.isPending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Upload className="h-3.5 w-3.5" />
+        )}
+        Загрузить
+      </Button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) upload.mutate(f);
+          e.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
 function GeneralPlanSheetView({ projectId }: { projectId: number }) {
   const meta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
@@ -85,14 +143,19 @@ function GeneralPlanSheetView({ projectId }: { projectId: number }) {
 
   if (!sheet || !grid.data?.rows?.length) {
     return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        Лист «Общий план» пока пуст или Excel ещё не создан.
-      </p>
+      <div className="flex flex-col gap-3">
+        <XlsxUploadBar projectId={projectId} />
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          Лист «Общий план» пока пуст или Excel ещё не создан.
+        </p>
+      </div>
     );
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <XlsxUploadBar projectId={projectId} />
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
       <table className="min-w-max border-collapse text-left text-xs">
         <tbody>
           {grid.data.rows.map((row, ri) => (
@@ -111,7 +174,8 @@ function GeneralPlanSheetView({ projectId }: { projectId: number }) {
             </tr>
           ))}
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   );
 }
@@ -127,6 +191,7 @@ function VoiceoverWideView({
   const textItem = snapshot.items.find((i) => i.kind === "text");
   const fileItem = snapshot.items.find((i) => i.downloadUrl);
   const [text, setText] = useState(textItem?.content ?? "");
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const fileText = useQuery({
     queryKey: ["voiceover-file", fileItem?.downloadUrl],
@@ -168,8 +233,30 @@ function VoiceoverWideView({
         )}
         <Button size="sm" disabled={save.isPending} onClick={() => save.mutate(text)}>
           {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Replace className="h-3.5 w-3.5" />}
-          Заменить текст
+          Сохранить текст
         </Button>
+        <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+          <Upload className="h-3.5 w-3.5" />
+          Загрузить файл
+        </Button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".txt,text/plain"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+              const body = String(reader.result ?? "");
+              setText(body);
+              save.mutate(body);
+            };
+            reader.readAsText(f, "utf-8");
+            e.target.value = "";
+          }}
+        />
       </div>
       <Textarea
         value={text}
@@ -195,37 +282,44 @@ function SplitRowView({ projectId }: { projectId: number }) {
   if (row.isLoading) return <LoadingBlock />;
 
   const cells = row.data?.cells ?? [];
-  const filled = cells.filter((c) => c.trim());
+  const frameCells = cells
+    .map((cell, colIndex) => ({ cell, colIndex }))
+    .filter(({ cell }) => cell.trim() && !isSplitRowLabel(cell));
 
-  if (!filled.length) {
+  if (!frameCells.length) {
     return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        Строка {ROW_VOICEOVER_V8} листа «{SHEET_PLAN_V8}» пока пуста — сначала выполните разбивку.
-      </p>
+      <div className="flex flex-col gap-3">
+        <XlsxUploadBar projectId={projectId} />
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          Строка {ROW_VOICEOVER_V8} листа «{SHEET_PLAN_V8}» пока пуста — сначала выполните разбивку.
+        </p>
+      </div>
     );
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden rounded-lg border border-white/10 bg-black/20 p-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <XlsxUploadBar projectId={projectId} />
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden rounded-lg border border-white/10 bg-black/20 p-3">
       <p className="mb-2 text-[11px] text-muted-foreground">
         Лист «{SHEET_PLAN_V8}», строка {ROW_VOICEOVER_V8} — прокрутите вправо для всех кадров
       </p>
       <div className="flex min-w-max gap-2">
-        {cells.map((cell, i) => {
-          if (!cell.trim()) return null;
-          const frameNum = cells.slice(0, i + 1).filter((c) => c.trim()).length;
-          return (
-            <div
-              key={i}
-              className="flex w-[220px] shrink-0 flex-col rounded-lg border border-white/10 bg-black/30 p-2"
-            >
-              <span className="mb-1 text-[10px] font-medium text-primary">Кадр {frameNum}</span>
-              <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">
-                {cell.trim()}
-              </p>
-            </div>
-          );
-        })}
+        {frameCells.map(({ cell, colIndex }, frameIdx) => (
+          <div
+            key={colIndex}
+            className="flex w-[220px] shrink-0 flex-col rounded-lg border border-white/10 bg-black/30 p-2"
+          >
+            <span className="mb-1 text-[10px] font-medium text-primary">
+              Кадр {frameIdx + 1}
+              <span className="ml-1 font-normal text-muted-foreground">· кол. {colIndex + 1}</span>
+            </span>
+            <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">
+              {cell.trim()}
+            </p>
+          </div>
+        ))}
+      </div>
       </div>
     </div>
   );

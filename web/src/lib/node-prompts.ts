@@ -16,9 +16,18 @@ export interface NodePromptSlot {
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
-  plan: [{ id: "main", title: "Промт плана", kind: "gpt", stepCode: "plan" }],
-  script: [{ id: "main", title: "Промт сценария", kind: "gpt", stepCode: "script" }],
-  split: [{ id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" }],
+  plan: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
+    { id: "main", title: "Промт плана", kind: "gpt", stepCode: "plan" },
+  ],
+  script: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "script" },
+    { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "script" },
+  ],
+  split: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "split" },
+    { id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" },
+  ],
   hero: [
     { id: "main", title: "Промт персонажа", kind: "gpt", stepCode: "hero" },
     { id: "style", title: "Стиль персонажа", kind: "gpt", stepCode: "hero_style" },
@@ -44,7 +53,10 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_5" },
     { id: "main", title: "Промт дополнения 5", kind: "gpt", stepCode: "enrich_5" },
   ],
-  image_prompts: [{ id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" }],
+  image_prompts: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
+    { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
+  ],
   images: [{ id: "outsee", title: "Генератор изображений", kind: "gpt", description: "Браузер outsee.io" }],
   animation_prompts: [{ id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" }],
   videos: [{ id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" }],

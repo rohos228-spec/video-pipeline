@@ -246,7 +246,12 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
         ...artifactItems(arts.filter((a) => a.kind.includes("hero"))),
       ];
       if (items.length) {
-        return ready(items, `${items.length} reference персонажей`, "assets", "frame_images");
+        const descriptions = project?.hero_descriptions ?? [];
+        const enriched = items.map((item, i) => ({
+          ...item,
+          content: item.content?.trim() || descriptions[i] || descriptions[0] || item.label,
+        }));
+        return ready(enriched, `${items.length} reference персонажей`, "assets", "frame_images");
       }
       if ((project?.hero_descriptions?.length ?? 0) > 0) {
         return ready(

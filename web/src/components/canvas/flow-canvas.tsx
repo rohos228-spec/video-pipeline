@@ -20,7 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Loader2, Play, Save, Square, Trash2 } from "lucide-react";
+import { Copy, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -422,6 +422,29 @@ export function FlowCanvas({
           variant={BackgroundVariant.Dots}
         />
         <Controls position="bottom-right" showInteractive={false} />
+        {selectedNodeKey && (
+          <button
+            type="button"
+            title="ИИ-помощник для выделенной ноды"
+            aria-label="ИИ-помощник"
+            className="absolute bottom-[4.5rem] right-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-violet-400/60 bg-gradient-to-br from-violet-500/80 to-amber-500/50 text-white shadow-lg shadow-violet-500/25 transition hover:scale-105 hover:border-violet-300"
+            onClick={() => {
+              const node = nodes.find((n) => n.id === selectedNodeKey);
+              const nodeType = nodeTypeFromKey(selectedNodeKey);
+              if (!node) return;
+              window.dispatchEvent(
+                new CustomEvent("canvas-open-ai-node", {
+                  detail: {
+                    nodeKey: selectedNodeKey,
+                    nodeType: (node.data as PipelineNodeData).type || nodeType,
+                  },
+                }),
+              );
+            }}
+          >
+            <Sparkles className="h-4 w-4" />
+          </button>
+        )}
         <MiniMap
           pannable
           zoomable

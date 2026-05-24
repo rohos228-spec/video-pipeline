@@ -245,6 +245,19 @@ export function StudioWorkspace({
         });
         custom[nodeKey] = list;
         await persistMeta({ custom_prompts: custom });
+        const step = stepCodeForNodeType(nodeType);
+        const slotId = `custom_${n}`;
+        if (step) {
+          try {
+            await api.savePromptFile(
+              step,
+              slotId,
+              `# ${list[list.length - 1]?.title ?? slotId}\n\n`,
+            );
+          } catch {
+            /* файл может уже существовать */
+          }
+        }
         toast.success("Промт добавлен в схему ноды");
       },
       onRemovePrompt: async (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {

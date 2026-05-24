@@ -44,12 +44,18 @@ function formatModified(mtime: number): string {
 export function PromptFilesPanel({
   stepCode,
   folderHint,
+  slotId,
+  preferredFile,
   activeVariant,
   onActivateVariant,
   activating = false,
 }: {
   stepCode: string;
   folderHint?: string;
+  /** Уникальный id слота — изолирует кэш редактора между промтами одного шага. */
+  slotId?: string;
+  /** Предпочитаемый .md (имя без расширения) для этого слота. */
+  preferredFile?: string;
   activeVariant?: string;
   onActivateVariant?: (variant: string) => void;
   activating?: boolean;
@@ -60,8 +66,10 @@ export function PromptFilesPanel({
   const [draft, setDraft] = useState<string>("");
   const [dirty, setDirty] = useState(false);
 
+  const cacheKey = slotId ? `${stepCode}::${slotId}` : stepCode;
+
   const files = useQuery({
-    queryKey: ["prompt-files", stepCode],
+    queryKey: ["prompt-files", cacheKey],
     queryFn: () => api.listPromptFiles(stepCode),
     enabled: Boolean(stepCode),
     refetchInterval: POLL_INTERVAL_MS,
@@ -74,13 +82,17 @@ export function PromptFilesPanel({
       if (selectedName !== null) setSelectedName(null);
       return;
     }
+    if (preferredFile && list.some((f) => f.name === preferredFile)) {
+      if (selectedName !== preferredFile) setSelectedName(preferredFile);
+      return;
+    }
     if (!selectedName || !list.some((f) => f.name === selectedName)) {
       setSelectedName(list[0].name);
     }
-  }, [files.data, selectedName]);
+  }, [files.data, selectedName, preferredFile]);
 
   const content = useQuery({
-    queryKey: ["prompt-file", stepCode, selectedName],
+    queryKey: ["prompt-file", cacheKey, selectedName],
     queryFn: () => api.getPromptFile(stepCode, selectedName!),
     enabled: Boolean(stepCode) && Boolean(selectedName),
     // Файл может меняться извне (юзер правит .md в редакторе) —
@@ -98,15 +110,15 @@ export function PromptFilesPanel({
   // При смене выбранного файла сбрасываем грязный флаг.
   useEffect(() => {
     setDirty(false);
-  }, [selectedName]);
+  }, [selectedName, slotId, stepCode]);
 
   const save = useMutation({
     mutationFn: () => api.savePromptFile(stepCode, selectedName!, draft),
     onSuccess: () => {
       toast.success(`Сохранено: ${selectedName}.md`);
       setDirty(false);
-      qc.invalidateQueries({ queryKey: ["prompt-files", stepCode] });
-      qc.invalidateQueries({ queryKey: ["prompt-file", stepCode, selectedName] });
+      qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, selectedName] });
       // Сбрасываем legacy-варианты в Node Studio (на случай если файл новый).
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
@@ -118,7 +130,7 @@ export function PromptFilesPanel({
     onSuccess: (_, name) => {
       toast.success(`Удалён: ${name}.md`);
       if (selectedName === name) setSelectedName(null);
-      qc.invalidateQueries({ queryKey: ["prompt-files", stepCode] });
+      qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
     onError: (e) => toast.error(String(e)),
@@ -129,7 +141,7 @@ export function PromptFilesPanel({
     onSuccess: (info) => {
       toast.success(`Загружен: ${info.filename}`);
       setSelectedName(info.name);
-      qc.invalidateQueries({ queryKey: ["prompt-files", stepCode] });
+      qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
     onError: (e) => toast.error(String(e)),

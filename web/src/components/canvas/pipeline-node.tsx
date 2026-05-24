@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Hourglass,
   MinusCircle,
-  Sparkles,
   X,
 } from "lucide-react";
 import type { NodeRunStatus } from "@/lib/types";
@@ -88,6 +87,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
         {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
           <NodeResultBadge
             snapshot={resultSnapshot}
+            nodeType={d.type}
+            projectId={actions.projectId}
             onClick={(e) => {
               e.stopPropagation();
               actions.onOpenNodeResult(d.nodeKey, d.type);
@@ -123,30 +124,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
-
-            {/* AI-кружок СПРАВА от ноды (видим только когда нода
-                выделена). Кликом по нему открывается ИИ-диалог
-                (AiNodeDialog) — управляется через
-                window event 'canvas-open-ai-node'. */}
-            {selected && (
-              <button
-                type="button"
-                title="ИИ-помощник для этой ноды"
-                aria-label="ИИ-помощник"
-                className="nodrag absolute -right-12 top-1/2 z-20 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-violet-400/60 bg-gradient-to-br from-violet-500/70 to-amber-500/40 text-white shadow-lg shadow-violet-500/30 transition hover:scale-110 hover:border-violet-300"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  window.dispatchEvent(
-                    new CustomEvent("canvas-open-ai-node", {
-                      detail: { nodeKey: d.nodeKey, nodeType: d.type },
-                    }),
-                  );
-                }}
-              >
-                <Sparkles className="h-4 w-4" />
-              </button>
-            )}
 
             <NodeVMenu
               open={!!vMenuOpen}

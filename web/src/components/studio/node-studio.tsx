@@ -32,6 +32,11 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 import { promptPathsForNode } from "@/lib/prompt-catalog";
+import {
+  activeVariantForSlot,
+  preferredPromptFileName,
+  withSlotVariant,
+} from "@/lib/prompt-slot-storage";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
@@ -137,15 +142,21 @@ export function NodeStudio({
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
   const promptPaths = promptPathsForNode(nodeType);
+  const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
   const activeVariant =
-    activeStepCode && typeof promptOverrides[activeStepCode] === "string"
-      ? (promptOverrides[activeStepCode] as string)
+    activeSlot && nodeKey
+      ? activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, activeStepCode)
       : "default";
+  const preferredFile = preferredPromptFileName(activeSlot);
 
   const activateVariant = useMutation({
-    mutationFn: (variant: string) => {
-      if (!projectId || !activeStepCode) return Promise.reject(new Error("no step"));
+    mutationFn: async (variant: string) => {
+      if (!projectId || !activeStepCode || !nodeKey || !activeSlot) {
+        return Promise.reject(new Error("no step"));
+      }
+      const meta = withSlotVariant(metaRecord, nodeKey, activeSlot.id, variant);
+      await api.patchProject(projectId, { meta });
       return api.patchProjectPromptConfig(projectId, {
         legacy: { [activeStepCode]: variant },
       });
@@ -198,7 +209,8 @@ export function NodeStudio({
     return list.slice(0, 12);
   }, [artifacts.data, nodeType]);
 
-  const showExcel = isEnrichNode(nodeType) || tab === "excel";
+  const showExcel =
+    allSlots.some((s) => s.kind === "excel") || isEnrichNode(nodeType) || tab === "excel";
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
   const showFilesPanel =
     activeSlot &&
@@ -356,11 +368,24 @@ export function NodeStudio({
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
+                  {activeSlot && !showGptTextPanel && showFilesPanel && (
+                    <p className="text-xs text-muted-foreground">
+                      Редактируется:{" "}
+                      <span className="font-medium text-foreground">{activeSlot.title}</span>
+                    </p>
+                  )}
                   {showGptTextPanel ? (
-                    <GptTextPanel projectId={projectId} stepCode={activeStepCode} />
+                    <GptTextPanel
+                      key={`gpt-${activeSlot?.id}-${activeStepCode}`}
+                      projectId={projectId}
+                      stepCode={activeStepCode}
+                    />
                   ) : showFilesPanel ? (
                     <PromptFilesPanel
+                      key={`files-${nodeKey}-${activeSlot?.id}-${activeStepCode}`}
                       stepCode={activeStepCode}
+                      slotId={activeSlot?.id}
+                      preferredFile={preferredFile}
                       folderHint={
                         activeSlot?.stepCode && activeSlot.stepCode !== stepCode
                           ? activeSlot.stepCode
