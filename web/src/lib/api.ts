@@ -256,7 +256,58 @@ export const api = {
         preview_url: string | null;
       }[]
     >(`/api/projects/${projectId}/media-review?kind=${kind}`),
+
+  // ── Prompt files (prompts/<step>/*.md на диске) ────────────────────
+  listPromptFiles: (stepCode: string) =>
+    http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}`),
+  getPromptFile: (stepCode: string, name: string) =>
+    http<PromptFileContent>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/content`,
+    ),
+  downloadPromptFileUrl: (stepCode: string, name: string) =>
+    `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/download`,
+  savePromptFile: (stepCode: string, name: string, content: string) =>
+    http<PromptFileContent>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify({ content }) },
+    ),
+  deletePromptFile: (stepCode: string, name: string) =>
+    http<{ removed: boolean }>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  uploadPromptFile: async (
+    stepCode: string,
+    file: File,
+    name?: string,
+  ): Promise<PromptFileInfo> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const q = name ? `?name=${encodeURIComponent(name)}` : "";
+    const res = await fetch(`/api/prompt-files/${stepCode}/upload${q}`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<PromptFileInfo>;
+  },
 };
+
+export interface PromptFileInfo {
+  name: string;
+  filename: string;
+  size: number;
+  modified: number;
+  is_default: boolean;
+}
+
+export interface PromptFileContent {
+  name: string;
+  filename: string;
+  content: string;
+  size: number;
+  modified: number;
+}
 
 /**
  * WebSocket подписка на канал. Возвращает функцию отписки.

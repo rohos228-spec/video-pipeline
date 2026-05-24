@@ -37,6 +37,7 @@ import {
   slotSupportsStyles,
 } from "@/lib/prompt-styles";
 import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
+import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { isProjectRunningStatus } from "@/lib/project-running";
 import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 
@@ -444,6 +445,12 @@ export function NodeStudio({
                         ))}
                       </select>
                     </section>
+                  )}
+                  {stepCode && (
+                    <PromptFilesPanel
+                      stepCode={stepCode}
+                      folderHint={promptPaths.legacyDir ?? stepCode}
+                    />
                   )}
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" onClick={() => compose.mutate()} disabled={compose.isPending}>

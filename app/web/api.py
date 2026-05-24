@@ -25,6 +25,7 @@ from app.web.routers import (
     hitl as hitl_router,
     project_ops as project_ops_router,
     projects as projects_router,
+    prompt_files as prompt_files_router,
     prompt_studio as prompt_studio_router,
     prompts as prompts_router,
     runs as runs_router,
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
+    app.include_router(prompt_files_router.router, prefix=API_PREFIX)
     app.include_router(hitl_router.router, prefix=API_PREFIX)
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
