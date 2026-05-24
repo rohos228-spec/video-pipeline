@@ -467,6 +467,36 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         await asyncio.sleep(5)
 
 
+async def _await_background_tasks(tasks: list[asyncio.Task]) -> None:
+    """Держит процесс живым, пока работают фоновые задачи.
+
+    Web-only (без Telegram): worker + uvicorn + sync — бесконечные петли.
+    `gather` ждёт все сразу и не отменяет их, если одна «тихо» завершилась
+    (что случалось с uvicorn при FIRST_COMPLETED → UI сразу падал).
+
+    С Telegram: когда поллинг завершился — гасим остальное (старое поведение).
+    """
+    if not tasks:
+        return
+    if settings.web_enabled and not settings.telegram_active:
+        await asyncio.gather(*tasks)
+        return
+    # FIRST_COMPLETED, а не FIRST_EXCEPTION: воркер ловит исключения внутри
+    # петли; FIRST_EXCEPTION ждал бы вечно, если поллинг завершится штатно.
+    done, pending = await asyncio.wait(
+        tasks, return_when=asyncio.FIRST_COMPLETED
+    )
+    for t in pending:
+        t.cancel()
+    for t in pending:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await t
+    for t in done:
+        exc = t.exception()
+        if exc is not None:
+            raise exc
+
+
 async def main() -> None:
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
@@ -544,21 +574,7 @@ async def main() -> None:
         )
 
     try:
-        # FIRST_COMPLETED, а не FIRST_EXCEPTION: воркер-петля ловит все исключения
-        # внутри себя и никогда «не падает», так что FIRST_EXCEPTION ждал бы
-        # вечно, если поллинг завершится штатно (Ctrl+C, graceful disconnect).
-        done, pending = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_COMPLETED
-        )
-        for t in pending:
-            t.cancel()
-        for t in pending:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await t
-        for t in done:
-            exc = t.exception()
-            if exc is not None:
-                raise exc
+        await _await_background_tasks(tasks)
     finally:
         if real_bot is not None:
             await real_bot.session.close()

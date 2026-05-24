@@ -11,6 +11,63 @@ if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
 }
 Set-Location $Root
 
+function Refresh-Path {
+    $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if ($machine -or $user) {
+        $env:Path = "$machine;$user"
+    }
+}
+
+Refresh-Path
+
+function Get-NpmCmd {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npm) { return $npm.Source }
+    $guess = Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"
+    if (Test-Path $guess) { return $guess }
+    return $null
+}
+
+function Test-BackendReady([int]$TimeoutSec = 45) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
+            if ($r.StatusCode -eq 200) { return $true }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+function Ensure-WebBuilt {
+    if (Test-Path (Join-Path $Root "web\out\index.html")) { return $true }
+    Write-Log "web/out missing - building UI (npm install + build)..." "DarkOrange"
+    $npm = Get-NpmCmd
+    if (-not $npm) {
+        Write-Log "npm not found. Run button 1 Full install or install Node.js" "DarkRed"
+        return $false
+    }
+    return Invoke-Cmd "Build Web UI" {
+        Push-Location (Join-Path $Root "web")
+        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+        Pop-Location
+        if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+            throw "web/out/index.html still missing after build"
+        }
+    }
+}
+
+function Start-BackendWindow {
+    Start-Process powershell -ArgumentList @(
+        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
+    ) -WorkingDirectory $Root
+}
+
 $script:LogBox = $null
 $script:StatusLbl = $null
 
@@ -119,9 +176,13 @@ function Do-FullUpdate {
         & $py -m pip install -e ".[dev]" 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
     }
     Invoke-Cmd "npm install + build" {
+        $npm = Get-NpmCmd
+        if (-not $npm) { throw "npm not found - run button 1 Full install" }
         Push-Location (Join-Path $Root "web")
-        npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
         Pop-Location
     }
     Update-StatusLabel
@@ -135,21 +196,17 @@ function Do-QuickStart {
         )
         if (-not $ok) { return }
     }
-    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Invoke-Cmd "Build UI" {
-            Push-Location (Join-Path $Root "web")
-            npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            Pop-Location
-        }
-    }
+    if (-not (Ensure-WebBuilt)) { return }
     Update-StatusLabel
-    Start-Process powershell -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
-    ) -WorkingDirectory $Root
-    Start-Sleep -Seconds 2
-    Start-Process "http://127.0.0.1:8765"
-    Write-Log "Studio started. Keep this menu open." "DarkGreen"
+    Start-BackendWindow
+    Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
+    if (Test-BackendReady) {
+        Start-Process "http://127.0.0.1:8765"
+        Write-Log "Studio ready. Keep the backend PowerShell window open." "DarkGreen"
+    } else {
+        Write-Log "Backend did not respond in 45s. Check the backend window for errors." "DarkRed"
+        Write-Log "Tip: run check-web.cmd or button 15 after backend is up." "DarkOrange"
+    }
 }
 
 function Do-Install {
@@ -161,14 +218,15 @@ function Do-Install {
 
 function Do-StartStudio {
     if (-not (Get-VenvPython)) { throw "Run install first (button 1)" }
-    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-Log "web/out missing - run button 6 Build Web UI first" "DarkOrange"
-        throw "UI not built. Click 6. Build Web UI, then try again."
+    if (-not (Ensure-WebBuilt)) { throw "Web UI build failed" }
+    Start-BackendWindow
+    Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
+    if (Test-BackendReady) {
+        Write-Log "Studio ready at http://127.0.0.1:8765 (backend window must stay open)" "DarkGreen"
+        Start-Process "http://127.0.0.1:8765"
+    } else {
+        Write-Log "Backend did not respond in 45s - see errors in the backend PowerShell window" "DarkRed"
     }
-    Start-Process powershell -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
-    ) -WorkingDirectory $Root
-    Write-Log "Studio started in new window" "DarkGreen"
 }
 
 function Do-StartTelegram {
@@ -186,10 +244,16 @@ function Do-Stop {
 }
 
 function Do-BuildWeb {
-    Push-Location (Join-Path $Root "web")
-    npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-    npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-    Pop-Location
+    $npm = Get-NpmCmd
+    if (-not $npm) { throw "npm not found - run button 1 Full install" }
+    Invoke-Cmd "Build Web UI" {
+        Push-Location (Join-Path $Root "web")
+        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+        Pop-Location
+    }
     Update-StatusLabel
 }
 
@@ -244,6 +308,10 @@ function Do-ChromeHint {
 }
 
 function Do-OpenBrowser {
+    if (-not (Test-BackendReady -TimeoutSec 3)) {
+        Write-Log "Backend not running - click 2 Start Studio first" "DarkOrange"
+        return
+    }
     Start-Process "http://127.0.0.1:8765"
 }
 
@@ -293,7 +361,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "First time: * Quick start. Updates: 5 Update all, then 4 Stop, 2 Start."
+$hintLbl.Text = "First time: * Quick start. URL: http://127.0.0.1:8765 (not :3000). Keep backend window open."
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray
