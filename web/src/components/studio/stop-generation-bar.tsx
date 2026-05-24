@@ -78,34 +78,12 @@ export function StopGenerationBar({
 
   if (!visible && !stopping) return null;
 
-  return (
-    <motionlessBar
-      busy={busy}
-      className={className}
-      hint={hint}
-      onStop={() => {
-        if (busy || stopping) return;
-        setBusy(true);
-        setStopping(true);
-      }}
-      stopping={stopping}
-    />
-  );
-}
+  const handleStop = () => {
+    if (busy || stopping) return;
+    setBusy(true);
+    setStopping(true);
+  };
 
-function motionlessBar({
-  busy,
-  className,
-  hint,
-  onStop,
-  stopping,
-}: {
-  busy: boolean;
-  className?: string;
-  hint?: string;
-  onStop: () => void;
-  stopping: boolean;
-}) {
   return (
     <div
       className={cn(
@@ -116,7 +94,7 @@ function motionlessBar({
       <button
         type="button"
         disabled={busy}
-        onClick={onStop}
+        onClick={handleStop}
         title="Прервать asyncio-task воркера (как ⏹ в Telegram)"
         className={cn(
           "flex w-full items-center justify-center gap-3 rounded-2xl border-2 border-red-400/90",
