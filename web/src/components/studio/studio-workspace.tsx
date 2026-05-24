@@ -20,6 +20,11 @@ import { nodeTypeFromKey } from "@/lib/node-key";
 import { shouldShowStopBar } from "@/lib/project-running";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
+import { NodeResultPanel } from "@/components/canvas/node-result-panel";
+import {
+  resolveNodeResult,
+  type NodeResultContext,
+} from "@/lib/node-result-resolver";
 
 export function StudioWorkspace({
   projectId,
@@ -48,6 +53,9 @@ export function StudioWorkspace({
   );
   const [hitlModalId, setHitlModalId] = useState<number | null>(null);
   const [hitlModalOpen, setHitlModalOpen] = useState(false);
+  const [resultPanel, setResultPanel] = useState<{ nodeKey: string; nodeType: string } | null>(
+    null,
+  );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
@@ -93,6 +101,68 @@ export function StudioWorkspace({
     refetchInterval: 4000,
   });
 
+  const artifacts = useQuery({
+    queryKey: ["artifacts", projectId],
+    queryFn: () => api.listArtifacts({ project_id: projectId! }),
+    enabled: projectId != null,
+    refetchInterval: 8000,
+  });
+
+  const projectAssets = useQuery({
+    queryKey: ["project-assets", projectId, "all"],
+    queryFn: () => api.listProjectAssets(projectId!, "all"),
+    enabled: projectId != null,
+    refetchInterval: 8000,
+  });
+
+  const frames = useQuery({
+    queryKey: ["frames", projectId],
+    queryFn: () => api.listFrames(projectId!),
+    enabled: projectId != null,
+    refetchInterval: 8000,
+  });
+
+  const mediaImages = useQuery({
+    queryKey: ["media-review", projectId, "images"],
+    queryFn: () => api.listMediaReview(projectId!, "images"),
+    enabled: projectId != null,
+    refetchInterval: 8000,
+  });
+
+  const mediaVideos = useQuery({
+    queryKey: ["media-review", projectId, "videos"],
+    queryFn: () => api.listMediaReview(projectId!, "videos"),
+    enabled: projectId != null,
+    refetchInterval: 8000,
+  });
+
+  const resultContext = useMemo((): NodeResultContext => {
+    const assets = projectAssets.data ?? [];
+    const mapMedia = (rows: NonNullable<typeof mediaImages.data>, kind: "images" | "videos") =>
+      rows.map((r) => ({
+        source: "frame" as const,
+        id: String(r.frame_id),
+        kind,
+        path: r.file_path,
+        preview_url: r.preview_url,
+        label: `Кадр ${r.number}`,
+        frame_id: r.frame_id,
+      }));
+    return {
+      project: project.data ?? null,
+      artifacts: artifacts.data ?? [],
+      assets,
+      frames: frames.data ?? [],
+      mediaImages: mapMedia(mediaImages.data ?? [], "images"),
+      mediaVideos: mapMedia(mediaVideos.data ?? [], "videos"),
+    };
+  }, [project.data, artifacts.data, projectAssets.data, frames.data, mediaImages.data, mediaVideos.data]);
+
+  const getNodeResult = useCallback(
+    (nodeType: string) => resolveNodeResult(nodeType, resultContext),
+    [resultContext],
+  );
+
   useEffect(() => {
     if (!projectId) return;
     api.ensureProjectRun(projectId).catch(() => {
@@ -128,12 +198,14 @@ export function StudioWorkspace({
   const canvasActions = useMemo(
     () => ({
       projectId,
+      project: project.data ?? null,
       autoMode: project.data?.auto_mode ?? false,
       hitlList: hitlList.data ?? [],
       disabledNodes,
       vMenuNodeKey,
       setVMenuNodeKey,
       getPromptSlots,
+      getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
         onSelectNode(nodeKey);
         setPromptFocus(slot);
@@ -244,6 +316,9 @@ export function StudioWorkspace({
           setAssetTray({ kind: trayKind, nodeType });
         }
       },
+      onOpenNodeResult: (nodeKey: string, nodeType: string) => {
+        setResultPanel({ nodeKey, nodeType });
+      },
       onDownloadPrompts: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;
         try {
@@ -268,7 +343,8 @@ export function StudioWorkspace({
     }),
     [
       projectId,
-      project.data?.auto_mode,
+      project.data,
+      getNodeResult,
       hitlList.data,
       disabledNodes,
       vMenuNodeKey,
@@ -360,6 +436,24 @@ export function StudioWorkspace({
           onOpenChange={(o) => {
             setHitlModalOpen(o);
             if (!o) setHitlModalId(null);
+          }}
+        />
+      )}
+      {projectId != null && resultPanel && (
+        <NodeResultPanel
+          open
+          onOpenChange={(o) => {
+            if (!o) setResultPanel(null);
+          }}
+          projectId={projectId}
+          nodeType={resultPanel.nodeType}
+          snapshot={getNodeResult(resultPanel.nodeType)}
+          onOpenAssets={(kind) => setAssetTray({ kind, nodeType: resultPanel.nodeType })}
+          onOpenStudio={() => {
+            onSelectNode(resultPanel.nodeKey);
+            setPromptFocus(null);
+            setStudioTab("results");
+            onStudioOpenChange(true);
           }}
         />
       )}

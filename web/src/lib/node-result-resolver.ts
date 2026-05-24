@@ -1,0 +1,356 @@
+import { api, type ProjectAsset } from "@/lib/api";
+import type { ArtifactDTO, FrameDTO, ProjectDetail } from "@/lib/types";
+import { isEnrichNode } from "@/lib/node-prompts";
+
+export type NodeResultItemKind = "text" | "image" | "video" | "file" | "xlsx" | "frames";
+
+export interface NodeResultItem {
+  id: string;
+  label: string;
+  kind: NodeResultItemKind;
+  previewUrl?: string | null;
+  downloadUrl?: string | null;
+  content?: string | null;
+}
+
+export type NodeResultReplaceMode = "text" | "xlsx" | "assets" | "studio" | "none";
+
+export interface NodeResultSnapshot {
+  hasResult: boolean;
+  itemCount: number;
+  summary: string;
+  items: NodeResultItem[];
+  replaceMode: NodeResultReplaceMode;
+  /** Поле проекта для текстовой замены (plan / script). */
+  textField?: "general_plan" | "script_text";
+}
+
+export interface NodeResultContext {
+  project: ProjectDetail | null | undefined;
+  artifacts: ArtifactDTO[];
+  assets: ProjectAsset[];
+  frames: FrameDTO[];
+  mediaImages: ProjectAsset[];
+  mediaVideos: ProjectAsset[];
+}
+
+function filterArtifacts(list: ArtifactDTO[], nodeType: string): ArtifactDTO[] {
+  if (nodeType.includes("image") || nodeType === "images" || nodeType === "hitl_images") {
+    return list.filter((a) => a.kind.includes("image") || a.kind.includes("scene"));
+  }
+  if (nodeType.includes("video") || nodeType === "videos" || nodeType === "hitl_videos") {
+    return list.filter((a) => a.kind.includes("video"));
+  }
+  if (nodeType === "hero" || nodeType === "items" || nodeType === "hitl_hero") {
+    return list.filter((a) => a.kind.includes("hero") || a.kind.includes("item"));
+  }
+  if (nodeType === "audio") {
+    return list.filter((a) => a.kind.includes("audio") || a.kind.includes("subtitle"));
+  }
+  if (nodeType === "assemble" || nodeType === "hitl_final") {
+    return list.filter((a) => a.kind.includes("final"));
+  }
+  return list;
+}
+
+function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
+  return arts.map((a) => {
+    const path = a.path || "";
+    const isVideo = /\.(mp4|webm)$/i.test(path) || a.kind.includes("video");
+    return {
+      id: a.uuid,
+      label: a.kind,
+      kind: isVideo ? "video" : path.match(/\.(png|jpe?g|webp|gif)$/i) ? "image" : "file",
+      previewUrl: api.artifactFileUrl(a.uuid),
+      downloadUrl: api.artifactFileUrl(a.uuid),
+    };
+  });
+}
+
+function assetItems(assets: ProjectAsset[]): NodeResultItem[] {
+  return assets.map((a) => {
+    const path = a.path || "";
+    const isVideo = a.kind === "videos" || /\.(mp4|webm)$/i.test(path);
+    return {
+      id: String(a.id),
+      label: a.label || a.kind || a.id,
+      kind: a.kind === "xlsx" ? "xlsx" : isVideo ? "video" : a.preview_url ? "image" : "file",
+      previewUrl: a.preview_url,
+      downloadUrl: a.preview_url || undefined,
+    };
+  });
+}
+
+function xlsxAsset(assets: ProjectAsset[]): ProjectAsset | undefined {
+  return assets.find((a) => a.id === "project.xlsx" || a.kind === "xlsx");
+}
+
+function textAsset(assets: ProjectAsset[], name: string): ProjectAsset | undefined {
+  return assets.find((a) => a.id === name || a.label === name);
+}
+
+export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): NodeResultSnapshot {
+  const empty = (summary: string, replaceMode: NodeResultReplaceMode = "none"): NodeResultSnapshot => ({
+    hasResult: false,
+    itemCount: 0,
+    summary,
+    items: [],
+    replaceMode,
+  });
+
+  const ready = (
+    items: NodeResultItem[],
+    summary: string,
+    replaceMode: NodeResultReplaceMode,
+    textField?: NodeResultSnapshot["textField"],
+  ): NodeResultSnapshot => ({
+    hasResult: items.length > 0,
+    itemCount: items.length,
+    summary,
+    items,
+    replaceMode,
+    textField,
+  });
+
+  const project = ctx.project;
+  const arts = filterArtifacts(ctx.artifacts, nodeType);
+
+  switch (nodeType) {
+    case "plan":
+    case "hitl_gate": {
+      const text = project?.general_plan?.trim();
+      if (text) {
+        return ready(
+          [{ id: "general_plan", label: "Общий план", kind: "text", content: text }],
+          "Текст плана готов",
+          "text",
+          "general_plan",
+        );
+      }
+      const file = textAsset(ctx.assets, "general_plan.txt");
+      if (file?.preview_url) {
+        return ready(
+          [{ id: file.id, label: "general_plan.txt", kind: "file", downloadUrl: file.preview_url }],
+          "Файл плана на диске",
+          "text",
+          "general_plan",
+        );
+      }
+      return empty("План ещё не сгенерирован", "text");
+    }
+
+    case "script": {
+      const text = project?.script_text?.trim();
+      if (text) {
+        return ready(
+          [{ id: "script_text", label: "Сценарий", kind: "text", content: text }],
+          "Сценарий готов",
+          "text",
+          "script_text",
+        );
+      }
+      const file = textAsset(ctx.assets, "script.txt");
+      if (file?.preview_url) {
+        return ready(
+          [{ id: file.id, label: "script.txt", kind: "file", downloadUrl: file.preview_url }],
+          "Файл сценария на диске",
+          "text",
+          "script_text",
+        );
+      }
+      return empty("Сценарий ещё не готов", "text");
+    }
+
+    case "split": {
+      const frames = ctx.frames;
+      if (frames.length > 0) {
+        return ready(
+          [
+            {
+              id: "frames",
+              label: `${frames.length} кадров`,
+              kind: "frames",
+              content: frames
+                .slice(0, 5)
+                .map((f) => `#${f.number}: ${f.voiceover_text.slice(0, 80)}`)
+                .join("\n"),
+            },
+          ],
+          `${frames.length} кадров в раскадровке`,
+          "studio",
+        );
+      }
+      return empty("Раскадровка ещё не создана", "studio");
+    }
+
+    case "hero":
+    case "hitl_hero": {
+      const heroAssets = ctx.assets.filter((a) => a.kind.includes("hero") || a.path?.includes("hero"));
+      const items = [
+        ...assetItems(heroAssets),
+        ...artifactItems(arts.filter((a) => a.kind.includes("hero"))),
+      ];
+      if (items.length) return ready(items, `${items.length} reference персонажей`, "assets");
+      if ((project?.hero_descriptions?.length ?? 0) > 0) {
+        return ready(
+          project!.hero_descriptions.map((d, i) => ({
+            id: `hero_desc_${i}`,
+            label: `Персонаж ${i + 1}`,
+            kind: "text" as const,
+            content: d,
+          })),
+          "Описания персонажей без картинок",
+          "assets",
+        );
+      }
+      return empty("Персонажи ещё не сгенерированы", "assets");
+    }
+
+    case "items": {
+      const itemAssets = ctx.assets.filter((a) => a.kind.includes("item") || a.path?.includes("item"));
+      const items = [
+        ...assetItems(itemAssets),
+        ...artifactItems(arts.filter((a) => a.kind.includes("item"))),
+      ];
+      if (items.length) return ready(items, `${items.length} reference предметов`, "assets");
+      if ((project?.item_descriptions?.length ?? 0) > 0) {
+        return ready(
+          project!.item_descriptions.map((d, i) => ({
+            id: `item_desc_${i}`,
+            label: `Предмет ${i + 1}`,
+            kind: "text" as const,
+            content: d,
+          })),
+          "Описания предметов без картинок",
+          "assets",
+        );
+      }
+      return empty("Предметы ещё не сгенерированы", "assets");
+    }
+
+    case "enrich_1":
+    case "enrich_2":
+    case "enrich_3":
+    case "enrich_4":
+    case "enrich_5":
+    case "enrich": {
+      const xlsx = xlsxAsset(ctx.assets);
+      if (xlsx) {
+        return ready(
+          [
+            {
+              id: xlsx.id,
+              label: "project.xlsx",
+              kind: "xlsx",
+              downloadUrl: api.downloadProjectXlsx(project!.id),
+            },
+          ],
+          "Таблица Excel загружена",
+          "xlsx",
+        );
+      }
+      return empty("Таблица Excel ещё не создана", "xlsx");
+    }
+
+    case "image_prompts": {
+      const withPrompt = ctx.frames.filter((f) => f.image_prompt?.trim());
+      if (withPrompt.length) {
+        return ready(
+          withPrompt.slice(0, 12).map((f) => ({
+            id: `frame_${f.id}`,
+            label: `Кадр ${f.number}`,
+            kind: "text" as const,
+            content: f.image_prompt,
+          })),
+          `Промты картинок: ${withPrompt.length} кадров`,
+          "studio",
+        );
+      }
+      return empty("Промты картинок ещё не готовы", "studio");
+    }
+
+    case "images":
+    case "hitl_images": {
+      const fromMedia = assetItems(ctx.mediaImages);
+      const fromArts = artifactItems(arts);
+      const items = fromMedia.length ? fromMedia : fromArts;
+      if (items.length) return ready(items, `${items.length} картинок`, "assets");
+      return empty("Картинки ещё не сгенерированы", "assets");
+    }
+
+    case "animation_prompts": {
+      const withPrompt = ctx.frames.filter((f) => f.animation_prompt?.trim());
+      if (withPrompt.length) {
+        return ready(
+          withPrompt.slice(0, 12).map((f) => ({
+            id: `frame_${f.id}`,
+            label: `Кадр ${f.number}`,
+            kind: "text" as const,
+            content: f.animation_prompt,
+          })),
+          `Промты анимации: ${withPrompt.length} кадров`,
+          "studio",
+        );
+      }
+      return empty("Промты анимации ещё не готовы", "studio");
+    }
+
+    case "videos":
+    case "hitl_videos": {
+      const fromMedia = assetItems(ctx.mediaVideos);
+      const fromArts = artifactItems(arts);
+      const items = fromMedia.length ? fromMedia : fromArts;
+      if (items.length) return ready(items, `${items.length} видео`, "assets");
+      return empty("Видео ещё не сгенерированы", "assets");
+    }
+
+    case "audio": {
+      const audioAssets = ctx.assets.filter((a) => a.kind.includes("audio") || a.path?.includes("audio"));
+      const items = [...assetItems(audioAssets), ...artifactItems(arts)];
+      if (items.length) return ready(items, `${items.length} аудио-файлов`, "assets");
+      return empty("Аудио ещё не сгенерировано", "assets");
+    }
+
+    case "assemble":
+    case "hitl_final": {
+      const finalArts = artifactItems(arts);
+      const finalAssets = ctx.assets.filter((a) => a.kind.includes("final"));
+      const items = [...assetItems(finalAssets), ...finalArts];
+      if (items.length) return ready(items, "Финальный ролик готов", "assets");
+      if (project?.status === "assembled") {
+        return {
+          hasResult: true,
+          itemCount: 0,
+          summary: "Сборка завершена",
+          items: [],
+          replaceMode: "assets",
+        };
+      }
+      return empty("Финальный ролик ещё не собран", "assets");
+    }
+
+    case "publish": {
+      if (project?.status === "published") {
+        return {
+          hasResult: true,
+          itemCount: 0,
+          summary: "Опубликовано",
+          items: [],
+          replaceMode: "none",
+        };
+      }
+      const final = ctx.assets.filter((a) => a.kind.includes("final"));
+      if (final.length) return ready(assetItems(final), "Готово к публикации", "assets");
+      return empty("Публикация ещё не выполнена", "none");
+    }
+
+    default: {
+      if (isEnrichNode(nodeType)) {
+        return resolveNodeResult("enrich_1", ctx);
+      }
+      const generic = artifactItems(filterArtifacts(ctx.artifacts, nodeType)).slice(0, 8);
+      if (generic.length) return ready(generic, `${generic.length} артефактов`, "studio");
+      return empty("Результата пока нет", "none");
+    }
+  }
+}

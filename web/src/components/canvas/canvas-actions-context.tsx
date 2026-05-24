@@ -1,19 +1,22 @@
 "use client";
 
 import { createContext, useContext } from "react";
-import type { HITLDTO } from "@/lib/types";
+import type { HITLDTO, ProjectDetail } from "@/lib/types";
 import type { NodePromptSlot } from "@/lib/node-prompts";
+import type { NodeResultSnapshot } from "@/lib/node-result-resolver";
 
 export type AssetTrayKind = "hero" | "items" | "images" | "videos" | "project";
 
 export interface CanvasActions {
   projectId: number | null;
+  project: ProjectDetail | null;
   autoMode: boolean;
   hitlList: HITLDTO[];
   disabledNodes: Set<string>;
   vMenuNodeKey: string | null;
   setVMenuNodeKey: (key: string | null) => void;
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
+  getNodeResult: (nodeType: string) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
   onViewAllPrompts: (nodeKey: string, nodeType: string) => void;
   onAddPrompt: (nodeKey: string, nodeType: string) => void;
@@ -25,6 +28,7 @@ export interface CanvasActions {
   onDownloadPrompts: (nodeKey: string, nodeType: string) => void;
   onNodeBodyClick: (nodeKey: string, nodeType: string) => void;
   onOpenHitlReview: (nodeKey: string, nodeType: string) => void;
+  onOpenNodeResult: (nodeKey: string, nodeType: string) => void;
 }
 
 const Ctx = createContext<CanvasActions | null>(null);

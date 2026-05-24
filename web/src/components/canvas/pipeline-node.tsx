@@ -21,7 +21,8 @@ import {
   useCanvasActionsOptional,
 } from "./canvas-actions-context";
 import { NodeVMenu } from "./node-v-menu";
-import { NodeHitlBadge, resolveHitlBadgeState } from "./node-hitl-badge";
+import { NodeGenerationBadge } from "./node-generation-badge";
+import { NodeResultBadge } from "./node-result-badge";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -47,15 +48,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
-
-  const hitlBadge =
-    actions &&
-    resolveHitlBadgeState({
-      nodeType: d.type,
-      nodeStatus: d.status,
-      autoMode: actions.autoMode,
-      hitlList: actions.hitlList,
-    });
+  const resultSnapshot = actions?.getNodeResult(d.type);
 
   useEffect(() => {
     if (!vMenuOpen) return;
@@ -83,12 +76,31 @@ export function PipelineNode({ data, selected }: NodeProps) {
         )}
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
       >
-        {hitlBadge && (
-          <NodeHitlBadge
-            state={hitlBadge}
+        {actions && (
+          <NodeGenerationBadge
+            nodeType={d.type}
+            status={d.status}
+            progress={d.progress}
+            progressText={d.progressText}
+            error={d.error}
+            attempts={d.attempts}
+            projectStatus={actions.project?.status}
+            generationActive={actions.project?.generation_active}
+            autoMode={actions.autoMode}
+            hitlList={actions.hitlList}
+            onOpenHitl={(e) => {
+              e.stopPropagation();
+              actions.onOpenHitlReview(d.nodeKey, d.type);
+            }}
+          />
+        )}
+
+        {actions && resultSnapshot && (
+          <NodeResultBadge
+            snapshot={resultSnapshot}
             onClick={(e) => {
               e.stopPropagation();
-              actions?.onOpenHitlReview?.(d.nodeKey, d.type);
+              actions.onOpenNodeResult(d.nodeKey, d.type);
             }}
           />
         )}
