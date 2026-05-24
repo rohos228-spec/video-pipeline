@@ -15,6 +15,8 @@ from app.web.schemas import (
 )
 from app.orchestrator.graph.validate import validate_workflow_graph
 from app.orchestrator.default_graph import default_graph as _default_graph
+from app.services.workflow_run_sync import sync_runs_from_workflow
+from app.web.settings_default import apply_default_graph
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -30,6 +32,9 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
     wf = await session.get(Workflow, workflow_id)
     if wf is None:
         raise HTTPException(status_code=404, detail="workflow not found")
+    if wf.is_default and await apply_default_graph(session, wf):
+        await session.commit()
+        await session.refresh(wf)
     return wf
 
 
@@ -131,6 +136,8 @@ async def duplicate_workflow(
 @router.post("/default/reset", response_model=WorkflowDetail)
 async def reset_default(session: AsyncSession = Depends(get_session)) -> Workflow:
     """Сбросить дефолтный workflow к фабричному графу (полезно после правок)."""
+    from app.orchestrator.default_graph import LAYOUT_VERSION
+
     wf = (
         await session.execute(select(Workflow).where(Workflow.is_default == True))  # noqa: E712
     ).scalar_one_or_none()
@@ -143,12 +150,16 @@ async def reset_default(session: AsyncSession = Depends(get_session)) -> Workflo
             edges=edges,
             is_default=True,
             version=1,
+            meta={"layout_version": LAYOUT_VERSION},
         )
         session.add(wf)
     else:
         wf.nodes = nodes
         wf.edges = edges
         wf.version = (wf.version or 1) + 1
+        meta = dict(wf.meta or {})
+        meta["layout_version"] = LAYOUT_VERSION
+        wf.meta = meta
     await sync_runs_from_workflow(session, wf)
     await session.commit()
     await session.refresh(wf)

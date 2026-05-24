@@ -2,11 +2,52 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
 from app.models import Workflow
 from app.orchestrator.default_graph import LAYOUT_VERSION, default_graph as _default_graph
+
+
+def default_workflow_needs_refresh(wf: Workflow) -> bool:
+    """True если дефолтный граф устарел или в нём нет обязательных нод."""
+    meta = dict(wf.meta or {})
+    if meta.get("layout_version") != LAYOUT_VERSION:
+        return True
+    types = {str(n.get("type") or "") for n in (wf.nodes or [])}
+    return "topic" not in types
+
+
+async def apply_default_graph(session: AsyncSession, wf: Workflow) -> bool:
+    """Подменить nodes/edges дефолтного workflow на фабричный граф.
+
+    Возвращает True если были изменения.
+    """
+    if not default_workflow_needs_refresh(wf):
+        return False
+
+    from app.services.workflow_run_sync import sync_runs_from_workflow
+
+    nodes, edges = _default_graph()
+    wf.nodes = nodes
+    wf.edges = edges
+    meta = dict(wf.meta or {})
+    meta["layout_version"] = LAYOUT_VERSION
+    wf.meta = meta
+    wf.version = (wf.version or 1) + 1
+    wf.updated_at = datetime.utcnow()
+    await sync_runs_from_workflow(session, wf)
+    logger.info(
+        "default workflow #{} refreshed to layout_version={} ({} nodes)",
+        wf.id,
+        LAYOUT_VERSION,
+        len(nodes),
+    )
+    return True
 
 
 async def seed_default_workflow() -> None:
@@ -23,7 +64,7 @@ async def seed_default_workflow() -> None:
             wf = Workflow(
                 name="Стандартный shorts-pipeline",
                 description=(
-                    "Полный 60–75 сек ролик: план → сценарий → разбивка → "
+                    "Полный 60–75 сек ролик: тема → план → сценарий → разбивка → "
                     "герои/предметы → enrich → image_prompts → images → "
                     "анимация → видео → аудио → сборка → публикация."
                 ),
@@ -36,10 +77,4 @@ async def seed_default_workflow() -> None:
             session.add(wf)
             return
 
-        meta = dict(existing.meta or {})
-        if meta.get("layout_version") != LAYOUT_VERSION:
-            existing.nodes = nodes
-            existing.edges = edges
-            meta["layout_version"] = LAYOUT_VERSION
-            existing.meta = meta
-            existing.version = (existing.version or 1) + 1
+        await apply_default_graph(session, existing)

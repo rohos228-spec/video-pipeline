@@ -78,6 +78,7 @@ export function FlowCanvas({
     queryKey: ["workflow", defaultWorkflow?.id],
     queryFn: () => api.getWorkflow(defaultWorkflow!.id),
     enabled: !!defaultWorkflow,
+    staleTime: 0,
   });
 
   // 2) Run для выбранного проекта (если есть).
@@ -110,7 +111,7 @@ export function FlowCanvas({
 
   useEffect(() => {
     if (!workflow.data) return;
-    const ver = `${workflow.data.id}:${workflow.data.updated_at}`;
+    const ver = `${workflow.data.id}:${workflow.data.updated_at}:${workflow.data.version}:${workflow.data.nodes?.[0]?.type ?? ""}`;
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
     setNodes(baseNodes as Node<PipelineNodeData>[]);
