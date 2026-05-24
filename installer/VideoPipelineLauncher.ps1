@@ -182,6 +182,14 @@ function Get-GitBranch {
     return "?"
 }
 
+function Get-GitHead {
+    try {
+        $h = git -C $Root rev-parse --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0) { return $h.Trim() }
+    } catch { }
+    return "?"
+}
+
 function Update-StatusLabel {
     if (-not $script:StatusLbl) { return }
     $installed = Test-Installed
@@ -206,23 +214,41 @@ function Update-StatusLabel {
 }
 
 function Do-FullUpdate {
-    Invoke-Cmd "git fetch origin" {
+    $beforeHead = Get-GitHead
+    Write-Log "Update from $beforeHead on branch $(Get-GitBranch)" "Gray"
+    if (-not (Invoke-Cmd "git fetch origin" {
         git -C $Root fetch origin 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+    })) {
+        Write-Log "Update aborted: git fetch failed" "DarkRed"
+        return
     }
-    Invoke-Cmd "git pull origin devin/windows-installer" {
+    if (-not (Invoke-Cmd "git pull origin devin/windows-installer" {
         git -C $Root checkout devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
+        if ($LASTEXITCODE -ne 0) { throw "git checkout failed (local changes? commit or stash first)" }
         git -C $Root pull origin devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+        if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
+    })) {
+        Write-Log "Update aborted: git pull failed" "DarkRed"
+        return
+    }
+    $afterHead = Get-GitHead
+    if ($beforeHead -eq $afterHead) {
+        Write-Log "Git already up to date ($afterHead)" "Gray"
+    } else {
+        Write-Log "Git updated: $beforeHead -> $afterHead" "DarkGreen"
     }
     $py = Get-VenvPython
     if (-not $py) {
         Write-Log "No venv - run button 1 first" "DarkOrange"
         return
     }
-    Invoke-Cmd "pip install -e .[dev]" {
+    if (-not (Invoke-Cmd "pip install -e .[dev]" {
         & $py -m pip install -e ".[dev]" 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+    })) {
+        Write-Log "Update aborted: pip install failed" "DarkRed"
+        return
     }
-    Invoke-Cmd "npm install + build" {
+    if (-not (Invoke-Cmd "npm install + build" {
         $npm = Get-NpmCmd
         if (-not $npm) { throw "npm not found - run button 1 Full install" }
         Push-Location (Join-Path $Root "web")
@@ -231,9 +257,18 @@ function Do-FullUpdate {
         & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
         Pop-Location
+        if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+            throw "web/out/index.html missing after build"
+        }
+    })) {
+        Write-Log "Update aborted: npm build failed" "DarkRed"
+        return
     }
     Update-StatusLabel
-    Write-Log "Done. Restart: 4 Stop, then 2 Start Studio" "DarkGreen"
+    $uiVer = Get-StudioVersionLabel
+    Write-Log "UI built: $uiVer" "DarkGreen"
+    Write-Log "Next: 4 Stop -> 2 Start Studio -> open http://127.0.0.1:8765 (Ctrl+F5)" "DarkGreen"
+    Write-Log "Check API: http://127.0.0.1:8765/api/studio-version" "Gray"
 }
 
 function Do-QuickStart {

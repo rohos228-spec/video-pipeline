@@ -185,20 +185,28 @@ def _mount_frontend(app: FastAPI) -> None:
         name="next-static",
     )
 
+    def _html_response(path: Path) -> FileResponse:
+        response = FileResponse(path)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
     @app.get("/")
     async def root_index() -> FileResponse:
-        return FileResponse(out_dir / "index.html")
+        return _html_response(out_dir / "index.html")
 
     @app.get("/{full_path:path}")
     async def catch_all(full_path: str) -> FileResponse:
         # Next static export — все маршруты как .html-файлы.
         candidate = out_dir / full_path
         if candidate.is_file():
+            if candidate.suffix.lower() in {".html", ".htm"}:
+                return _html_response(candidate)
             return FileResponse(candidate)
         html_variant = out_dir / f"{full_path}.html"
         if html_variant.is_file():
-            return FileResponse(html_variant)
-        return FileResponse(out_dir / "index.html")  # SPA fallback
+            return _html_response(html_variant)
+        return _html_response(out_dir / "index.html")  # SPA fallback
 
 
 def _mount_frontend_missing_help(app: FastAPI, out_dir: Path) -> None:
