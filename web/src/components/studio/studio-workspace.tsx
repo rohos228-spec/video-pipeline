@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FlowCanvas } from "@/components/canvas/flow-canvas";
@@ -40,7 +40,13 @@ export function StudioWorkspace({
   );
   const [vMenuNodeKey, setVMenuNodeKey] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
+
+  const closeStudio = useCallback(() => {
+    suppressStudioOpenUntil.current = Date.now() + 700;
+    onStudioOpenChange(false);
+  }, [onStudioOpenChange]);
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -223,7 +229,7 @@ export function StudioWorkspace({
           selectedNodeKey={selectedNodeKey}
           onSelectNode={(key) => {
             onSelectNode(key);
-            if (key) {
+            if (key && Date.now() >= suppressStudioOpenUntil.current) {
               setPromptFocus(null);
               setStudioTab("settings");
               onStudioOpenChange(true);
@@ -247,8 +253,11 @@ export function StudioWorkspace({
         )}
       </div>
       <NodeStudio
-        open={studioOpen && selectedNodeKey != null}
-        onOpenChange={onStudioOpenChange}
+        open={studioOpen}
+        onOpenChange={(open) => {
+          if (!open) closeStudio();
+          else onStudioOpenChange(true);
+        }}
         projectId={projectId}
         nodeKey={selectedNodeKey}
         initialTab={studioTab}

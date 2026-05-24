@@ -17,7 +17,6 @@ export default function HomePage() {
 
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);
-    if (key) setStudioOpen(true);
   };
 
   return (

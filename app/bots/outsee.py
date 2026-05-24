@@ -2384,7 +2384,11 @@ class OutseeBot:
         resolution: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
+        project_id: int | None = None,
     ) -> GenerationResult:
+        from app.services.step_cancel import abort_if_cancelled
+
+        abort_if_cancelled(project_id)
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{(prompt or '').lstrip()}"
             logger.info(
@@ -2408,6 +2412,7 @@ class OutseeBot:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
             pass
+        abort_if_cancelled(project_id)
 
         # 0) АНТИ-ДУБЛИКАТ (зеркало логики из generate_image): если на
         # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
@@ -2473,6 +2478,7 @@ class OutseeBot:
 
             # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
             await _toggle_relax(page, want_on=relax, where="generate_video")
+            abort_if_cancelled(project_id)
 
             # 3) загрузка стартового кадра (если передан)
             if start_frame is not None:
@@ -2482,6 +2488,7 @@ class OutseeBot:
                 await page.locator(file_sel).first.set_input_files(str(start_frame))
 
             # 4) generate
+            abort_if_cancelled(project_id)
             gen_sel = await _first_visible(page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000)
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
@@ -2491,7 +2498,10 @@ class OutseeBot:
         # ищем `<video>` в карточке с нашим [ID: ...], только если не
         # нашли — фолбэк на «любой видео-URL в DOM».
         video_url = await self._wait_video_url(
-            page, timeout=timeout, prompt_id_prefix=prompt_id_prefix,
+            page,
+            timeout=timeout,
+            prompt_id_prefix=prompt_id_prefix,
+            project_id=project_id,
         )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2605,6 +2615,7 @@ class OutseeBot:
         *,
         timeout: float,
         prompt_id_prefix: str | None = None,
+        project_id: int | None = None,
     ) -> str:
         """Ждёт появление видео-результата в DOM.
 
@@ -2620,7 +2631,10 @@ class OutseeBot:
         deadline = asyncio.get_event_loop().time() + timeout
         log_every = 15.0  # сек, логи прогресса
         next_log = asyncio.get_event_loop().time() + log_every
+        from app.services.step_cancel import abort_if_cancelled
+
         while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
             # Приоритет 0: видео в карточке с нашим [ID: ...].
             if prompt_id_prefix:
                 try:

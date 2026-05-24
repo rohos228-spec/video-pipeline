@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Blocks,
@@ -24,7 +25,6 @@ import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map"
 import { defaultPromptSlots, isEnrichNode, type NodePromptSlot } from "@/lib/node-prompts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -225,36 +225,60 @@ export function NodeStudio({
     return list.slice(0, 12);
   }, [artifacts.data, nodeType]);
 
-  if (!nodeKey) return null;
-
   const showExcel = isEnrichNode(nodeType) || tab === "excel";
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        hideClose
-        className="premium-sheet !max-w-[min(920px,92vw)] w-full border-l border-white/10 p-0"
+  if (!nodeKey || !mounted || !open) return null;
+
+  return createPortal(
+    <>
+      <button
+        type="button"
+        aria-label="Закрыть студию"
+        className="fixed inset-0 z-[90] bg-black/45 backdrop-blur-[2px]"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenChange(false);
+        }}
+      />
+      <aside
+        className="premium-sheet fixed right-0 top-0 z-[100] flex h-full w-[min(920px,92vw)] flex-col border-l border-white/10 shadow-2xl"
+        role="dialog"
+        aria-modal="true"
       >
         <div className="flex h-full flex-col">
-          <SheetHeader className="relative shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
+          <header className="relative shrink-0 border-b border-white/10 bg-gradient-to-r from-amber-500/5 via-transparent to-violet-500/5 px-5 py-4">
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="absolute right-3 top-3 z-[200] h-8 w-8"
-              onClick={() => onOpenChange(false)}
+              className="absolute right-3 top-3 z-[200] h-9 w-9 shrink-0 bg-background/80 hover:bg-accent"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenChange(false);
+              }}
               title="Закрыть"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </Button>
-            <div className="flex items-start justify-between gap-4 pr-10">
+            <div className="flex items-start justify-between gap-4 pr-12">
               <div>
-                <SheetTitle className="flex items-center gap-2 text-lg">
+                <h2 className="flex items-center gap-2 text-lg font-semibold">
                   <Sparkles className="h-4 w-4 text-amber-400" />
                   {spec.label}
-                </SheetTitle>
-                <SheetDescription>{spec.description}</SheetDescription>
+                </h2>
+                <p className="text-xs text-muted-foreground">{spec.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <Badge variant="muted" className="text-[10px]">
                     {formatNodeKeyLabel(nodeKey)}
@@ -348,7 +372,7 @@ export function NodeStudio({
                 ))}
               </div>
             )}
-          </SheetHeader>
+          </header>
 
           <ScrollArea className="flex-1">
             <div className="p-5">
@@ -553,7 +577,8 @@ export function NodeStudio({
             </div>
           </ScrollArea>
         </div>
-      </SheetContent>
-    </Sheet>
+      </aside>
+    </>,
+    document.body,
   );
 }

@@ -52,6 +52,7 @@ from app.bots.outsee import (
     OutseeBot,
     OutseeImageError,
 )
+from app.services.step_cancel import abort_if_cancelled
 
 # Meta-промт для GPT-rewrite. Точная формулировка от пользователя.
 _GPT_REWRITE_META = (
@@ -159,6 +160,7 @@ async def generate_video_with_retries(
     out_path: Path,
     max_attempts_per_prompt: int = 3,
     gpt_rewrite: bool = True,
+    project_id: int | None = None,
     **kwargs: Any,
 ) -> GenerationResult:
     """Аналог `generate_image_with_retries` для видео-генерации.
@@ -176,9 +178,10 @@ async def generate_video_with_retries(
 
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
+            abort_if_cancelled(project_id)
             try:
                 return await outsee.generate_video(
-                    current_prompt, out_path, **kwargs
+                    current_prompt, out_path, project_id=project_id, **kwargs
                 )
             except OutseeImageError as e:
                 last_err = e

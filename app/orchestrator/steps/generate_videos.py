@@ -33,7 +33,7 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_text
 from app.services.outsee_retry import generate_video_with_retries
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -114,6 +114,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     out_path=file_path,
                     max_attempts_per_prompt=3,
                     gpt_rewrite=True,
+                    project_id=project.id,
                     start_frame=start_frame_path,
                     aspect_ratio=aspect_slug,
                     timeout=1200,
@@ -135,6 +136,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 await session.flush()
                 logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
         except StepCancelledError as e:
+            consume_stop(project.id)
             logger.info("[#{}] generate_videos: {} — выхожу из цикла",
                         project.id, e)
             try:

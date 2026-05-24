@@ -65,6 +65,14 @@ def consume_stop(project_id: int) -> bool:
     return False
 
 
+def abort_if_cancelled(project_id: int | None) -> None:
+    """Проверка без снятия флага — для длинных операций внутри одной итерации."""
+    if project_id is not None and is_stop_requested(project_id):
+        raise StepCancelledError(
+            f"проект #{project_id}: остановка по запросу пользователя"
+        )
+
+
 def raise_if_cancelled(project_id: int) -> None:
     """Если для проекта запрошена остановка — снимает флаг и кидает
     `StepCancelledError`. Используется внутри циклов шагов:
