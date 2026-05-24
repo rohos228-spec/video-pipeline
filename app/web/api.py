@@ -165,7 +165,11 @@ def _mount_frontend(app: FastAPI) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     out_dir = repo_root / "web" / "out"
     if not out_dir.is_dir():
-        logger.info("web frontend bundle not found ({}), dev mode (use localhost:3000)", out_dir)
+        logger.warning(
+            "web frontend bundle not found ({}). Run: cd web && npm run build",
+            out_dir,
+        )
+        _mount_frontend_missing_help(app, out_dir)
         return
 
     # Mount всю папку (включая _next/*).
@@ -189,3 +193,36 @@ def _mount_frontend(app: FastAPI) -> None:
         if html_variant.is_file():
             return FileResponse(html_variant)
         return FileResponse(out_dir / "index.html")  # SPA fallback
+
+
+def _mount_frontend_missing_help(app: FastAPI, out_dir: Path) -> None:
+    """Показываем понятную страницу, если web/out ещё не собран."""
+    from fastapi.responses import HTMLResponse
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>Video Pipeline</title>
+<style>
+body{{font-family:Segoe UI,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;line-height:1.5}}
+code{{background:#f0f0f0;padding:2px 6px;border-radius:4px}}
+ol{{padding-left:1.2rem}}
+</style></head><body>
+<h1>API работает, UI не собран</h1>
+<p>Бэкенд запущен, но папки <code>{out_dir}</code> нет.</p>
+<h2>Windows (из корня video-pipeline)</h2>
+<ol>
+<li>Меню: <strong>6. Build Web UI</strong> или <strong>* Quick start</strong></li>
+<li>Или в PowerShell:<br>
+<code>cd web; npm install; npm run build; cd ..</code></li>
+<li>Запустите Studio: <strong>2. Start Studio</strong></li>
+<li>Откройте <a href="http://127.0.0.1:8765">http://127.0.0.1:8765</a></li>
+</ol>
+<p>API health: <a href="/api/health">/api/health</a></p>
+</body></html>"""
+
+    @app.get("/")
+    async def frontend_missing_root() -> HTMLResponse:
+        return HTMLResponse(html)
+
+    @app.get("/{full_path:path}")
+    async def frontend_missing_catch(full_path: str) -> HTMLResponse:
+        return HTMLResponse(html)

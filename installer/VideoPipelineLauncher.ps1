@@ -161,6 +161,10 @@ function Do-Install {
 
 function Do-StartStudio {
     if (-not (Get-VenvPython)) { throw "Run install first (button 1)" }
+    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+        Write-Log "web/out missing - run button 6 Build Web UI first" "DarkOrange"
+        throw "UI not built. Click 6. Build Web UI, then try again."
+    }
     Start-Process powershell -ArgumentList @(
         "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
     ) -WorkingDirectory $Root
