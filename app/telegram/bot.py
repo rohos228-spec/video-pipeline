@@ -5396,7 +5396,7 @@ async def on_text_message(msg: Message) -> None:
             f"✏ Критика принята, запускаю следующую итерацию #{test_critique_tid}…"
         )
         await _kick_test_iteration(
-            user_id, test_critique_tid, critique=critique
+            msg.bot, user_id, test_critique_tid, critique=critique
         )
         return
 
