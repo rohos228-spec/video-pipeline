@@ -139,6 +139,28 @@ async def test_await_with_cancel_interrupted() -> None:
         await await_with_cancel(slow(), 88, poll_s=0.05)
 
 
+def test_stop_flag_visible_across_fresh_import() -> None:
+    """Симуляция другого процесса: stop-файл виден без in-memory флага."""
+    from app.services import step_cancel as sc1
+
+    sc1.request_stop(501)
+    assert sc1.is_stop_requested(501) is True
+
+    sc1._stop_pids.clear()
+    sc1._advance_tasks.clear()
+    assert 501 not in sc1._stop_pids
+
+    from importlib import reload
+
+    import app.services.step_cancel as sc_mod
+
+    sc2 = reload(sc_mod)
+    assert sc2.is_stop_requested(501) is True
+    sc2.consume_stop(501)
+    assert sc2.is_stop_requested(501) is False
+    sc1.clear_all()
+
+
 @pytest.mark.asyncio
 async def test_is_advance_active_while_task_running() -> None:
     gate = asyncio.Event()

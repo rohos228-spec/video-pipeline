@@ -48,71 +48,78 @@ from app.orchestrator.steps import (
 async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> None:
     """Один такт стейт-машины. Запускает шаг, если статус — «running»; иначе
     ничего не делает (ждём, пока пользователь нажмёт кнопку в боте)."""
-    from app.services.step_cancel import abort_if_cancelled
+    import asyncio
 
-    abort_if_cancelled(project.id)
-    status = project.status
-    logger.debug("advance #{} status={}", project.id, status.value)
+    from app.services.step_cancel import (
+        abort_if_cancelled,
+        register_advance_task,
+        unregister_advance_task,
+    )
 
-    if status is ProjectStatus.planning:
-        await make_plan.run(session, project, bot)
-        return
+    task = asyncio.current_task()
+    if task is not None:
+        register_advance_task(project.id, task)
+    try:
+        abort_if_cancelled(project.id)
+        status = project.status
+        logger.debug("advance #{} status={}", project.id, status.value)
 
-    if status is ProjectStatus.scripting:
-        await make_script.run(session, project, bot)
-        return
+        if status is ProjectStatus.planning:
+            await make_plan.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.splitting:
-        await split_frames.run(session, project)
-        return
+        if status is ProjectStatus.scripting:
+            await make_script.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_hero:
-        await generate_hero.run(session, project, bot)
-        return
+        if status is ProjectStatus.splitting:
+            await split_frames.run(session, project)
+            return
 
-    if status is ProjectStatus.generating_items:
-        await generate_items.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_hero:
+            await generate_hero.run(session, project, bot)
+            return
 
-    # 3 (по умолчанию, до 5) слотов «Доп работа с EXCEL» — все через
-    # один generic step, который сам читает slot_idx из running-статуса.
-    if status in (
-        ProjectStatus.enriching_1,
-        ProjectStatus.enriching_2,
-        ProjectStatus.enriching_3,
-        ProjectStatus.enriching_4,
-        ProjectStatus.enriching_5,
-    ):
-        await enrich_xlsx.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_items:
+            await generate_items.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_image_prompts:
-        await generate_image_prompts.run(session, project, bot)
-        return
+        if status in (
+            ProjectStatus.enriching_1,
+            ProjectStatus.enriching_2,
+            ProjectStatus.enriching_3,
+            ProjectStatus.enriching_4,
+            ProjectStatus.enriching_5,
+        ):
+            await enrich_xlsx.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_images:
-        await generate_images.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_image_prompts:
+            await generate_image_prompts.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_animation_prompts:
-        await make_animation_prompts.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_images:
+            await generate_images.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_videos:
-        await generate_videos.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_animation_prompts:
+            await make_animation_prompts.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.generating_audio:
-        await generate_audio.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_videos:
+            await generate_videos.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.assembling:
-        await assemble.run(session, project, bot)
-        return
+        if status is ProjectStatus.generating_audio:
+            await generate_audio.run(session, project, bot)
+            return
 
-    if status is ProjectStatus.publishing:
-        await publish.run(session, project, bot)
-        return
+        if status is ProjectStatus.assembling:
+            await assemble.run(session, project, bot)
+            return
 
-    # Все «ready»-статусы и new/paused/failed/published — воркер их игнорит.
-    return
+        if status is ProjectStatus.publishing:
+            await publish.run(session, project, bot)
+            return
+    finally:
+        unregister_advance_task(project.id)

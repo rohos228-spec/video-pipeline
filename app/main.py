@@ -490,8 +490,15 @@ async def main() -> None:
         )
 
     worker_bot = get_worker_bot(real_bot)
-    worker_task = asyncio.create_task(_run_worker_loop(worker_bot))
-    tasks: list[asyncio.Task] = [worker_task]
+    from app.services.pipeline_worker import ensure_pipeline_worker_started
+
+    ensure_pipeline_worker_started(worker_bot)
+    tasks: list[asyncio.Task] = []
+    from app.services.pipeline_worker import get_pipeline_worker_task
+
+    worker_task = get_pipeline_worker_task()
+    if worker_task is not None:
+        tasks.append(worker_task)
     if polling_task is not None:
         tasks.insert(0, polling_task)
     logger.info("background worker started")

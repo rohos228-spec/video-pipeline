@@ -216,6 +216,10 @@ async def _select_aspect_ratio(
     может потом отправить их в TG."""
     from app.services.step_cancel import sleep_cancellable
 
+    from app.services.step_cancel import abort_if_cancelled
+
+    abort_if_cancelled(project_id)
+
     # 1) Сначала пробуем NEW UI: dropdown «Соотношение N:M».
     opener_sel = await _first_visible(
         page, ASPECT_DROPDOWN_OPENER_SELECTORS, timeout_ms=2_000, project_id=project_id

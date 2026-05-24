@@ -57,6 +57,13 @@ async def _lifespan(app: FastAPI):
         await seed_default_workflow()
     except Exception:  # noqa: BLE001
         logger.exception("seed_default_workflow failed (non-fatal)")
+
+    from app.services.pipeline_worker import ensure_pipeline_worker_started
+    from app.telegram.noop_bot import get_worker_bot
+
+    ensure_pipeline_worker_started(get_worker_bot(None))
+    logger.info("web lifespan: pipeline worker ensured (same process as API)")
+
     yield
 
 
