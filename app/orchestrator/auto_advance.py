@@ -707,6 +707,7 @@ async def _run_text_review(
     # Локальный импорт чтобы избежать циклов / тяжёлой инициализации.
     from app.bots.browser import browser_session
     from app.bots.chatgpt import ChatGPTBot
+    from app.services import auto_review
 
     # Папка snapshot'а массового — если проект в батче.
     snap = None
