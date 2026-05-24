@@ -272,15 +272,19 @@ export function StudioWorkspace({
           projectId={projectId}
           selectedNodeKey={selectedNodeKey}
           onSelectNode={(key) => {
-            // Просто запоминаем выделенную ноду — Inspector справа покажет её
-            // данные. Студия НЕ открывается по клику в ноду — для этого есть
-            // кружок "Открыть студию" в V-меню или иконка AI справа от ноды.
             onSelectNode(key);
           }}
-          onNodeActivate={() => {
-            // Клик в ноду больше НЕ открывает ни студию, ни asset tray.
-            // Открытие происходит явно: V-меню → «Открыть студию» / иконка AI
-            // справа от ноды / статус-кружок сверху ноды.
+          onNodeActivate={(nodeKey) => {
+            // Клик в тело ноды открывает Node Studio с вкладкой
+            // «Настройки». Suppress-таймер (1.5 сек после закрытия
+            // студии) пропускает остаточные синтетические клики /
+            // select-events от React Flow, иначе студия моргает —
+            // закрылась → тут же открылась.
+            if (Date.now() < suppressStudioOpenUntil.current) return;
+            onSelectNode(nodeKey);
+            setPromptFocus(null);
+            setStudioTab("settings");
+            onStudioOpenChange(true);
           }}
           disabledNodes={disabledNodes}
         />
