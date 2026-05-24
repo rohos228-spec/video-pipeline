@@ -90,7 +90,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"enrich_xlsx: project.xlsx не найден по пути {xlsx_path}"
         )
 
-    # 2. Собираем промт: мастер-промт → файл, сопр. сообщение → текст в чате.
+    # 2. Мастер-промт → файл; сопр. сообщение → текст в чате.
     try:
         master = get_project_prompt(project, step_code)
     except FileNotFoundError:
@@ -102,10 +102,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     accompanying = _get_accompanying_text(project, step_code)
 
-    # Мастер-промт пишем во временный файл и прикрепляем к чату.
-    # В само сообщение идёт только «сопр. сообщение».
-    tmp_dir = xlsx_path.parent / "tmp_gpt"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    from app.services import chatgpt_xlsx as cx
+
+    tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = tmp_dir / f"prompt_{step_code}.md"
     prompt_file.write_text(master.strip(), encoding="utf-8")
 
@@ -125,9 +124,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             async with browser_session() as bs:
                 gpt = ChatGPTBot(bs)
-                await gpt.new_conversation()
                 # Шлём prompt-файл + xlsx как вложения, сопр. текст — в чат.
-                reply = await gpt.ask_with_files(
+                reply = await cx.ask_with_prompt_files(
+                    gpt,
                     accompanying.strip(),
                     [prompt_file, xlsx_path],
                     timeout=1200,
