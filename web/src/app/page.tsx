@@ -5,7 +5,6 @@ import { AppShell } from "@/components/shell/app-shell";
 import { ProjectSidebar } from "@/components/sidebar/project-sidebar";
 import { Inspector } from "@/components/inspector/inspector";
 import { StudioWorkspace } from "@/components/studio/studio-workspace";
-import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 import { useGlobalEvents } from "@/hooks/use-bus";
 
 export default function HomePage() {
@@ -34,7 +33,6 @@ export default function HomePage() {
           onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
         />
         <main className="relative min-w-0 flex-1 overflow-hidden">
-          <StudioVersionBadge />
           <StudioWorkspace
             projectId={selectedProjectId}
             selectedNodeKey={selectedNodeKey}

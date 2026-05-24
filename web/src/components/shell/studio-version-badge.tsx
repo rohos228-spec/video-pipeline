@@ -25,12 +25,12 @@ export function StudioVersionBadge() {
   const stale = server != null && server.label !== CLIENT_STUDIO_VERSION;
 
   return (
-    <div
+    <span
       className={cn(
-        "pointer-events-none absolute bottom-2 left-2 z-[120] rounded-md border px-2 py-0.5 font-mono text-[10px] shadow-sm backdrop-blur",
+        "inline-flex items-center rounded border px-1.5 py-px font-mono text-[10px] leading-none tracking-normal normal-case",
         stale
           ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
-          : "border-border/60 bg-background/85 text-muted-foreground",
+          : "border-border/60 bg-muted/40 text-muted-foreground",
       )}
       title={
         stale
@@ -45,6 +45,6 @@ export function StudioVersionBadge() {
       ) : (
         CLIENT_STUDIO_VERSION
       )}
-    </div>
+    </span>
   );
 }

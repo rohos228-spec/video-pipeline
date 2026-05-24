@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pause, Play, Trash2 } from "lucide-react";
+import { Pause, Play, Trash2, Copy, Check } from "lucide-react";
 import { subscribeWS } from "@/lib/api";
 import type { BusEvent } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -124,6 +124,30 @@ const levelClass: Record<LogLevel, string> = {
   debug: "text-muted-foreground",
 };
 
+function formatTime(ts: Date): string {
+  return ts.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function linesToPlainText(lines: LogLine[]): string {
+  return lines
+    .map((line) => `${formatTime(line.ts)} ${line.level.toUpperCase()} ${line.text}`)
+    .join("\n");
+}
+
+async function copyText(text: string): Promise<boolean> {
+  if (!text.trim()) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function LogPanel({
   open,
   onOpenChange,
@@ -134,6 +158,7 @@ export function LogPanel({
   const [lines, setLines] = useState<LogLine[]>([]);
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
   const pendingRef = useRef<LogLine[]>([]);
@@ -190,9 +215,23 @@ export function LogPanel({
     }
   };
 
+  const handleCopy = async () => {
+    const selected = window.getSelection()?.toString().trim();
+    const text = selected || linesToPlainText(lines);
+    const ok = await copyText(text);
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="bottom" className="flex flex-col gap-0 p-0">
+      <SheetContent
+        side="bottom"
+        className="flex flex-col gap-0 p-0"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <SheetHeader className="shrink-0 px-5 py-3">
           <div className="flex items-center justify-between gap-4 pr-8">
             <div>
@@ -235,6 +274,25 @@ export function LogPanel({
                 variant="ghost"
                 size="sm"
                 className="gap-1.5 text-xs"
+                disabled={lines.length === 0}
+                onClick={() => void handleCopy()}
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5" />
+                    Скопировано
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    Копировать
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-xs"
                 onClick={handleClear}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -246,23 +304,19 @@ export function LogPanel({
 
         <div
           ref={scrollRef}
-          className="min-h-0 flex-1 overflow-auto border-t border-border bg-background/50 px-4 py-2 font-mono text-[11px] leading-relaxed"
+          className="min-h-0 flex-1 cursor-text select-text overflow-auto border-t border-border bg-background/50 px-4 py-2 font-mono text-[11px] leading-relaxed"
         >
           {lines.length === 0 ? (
-            <p className="py-8 text-center text-muted-foreground">
+            <p className="select-text py-8 text-center text-muted-foreground">
               Событий пока нет. Создай проект или запусти Run.
             </p>
           ) : (
             lines.map((line) => (
-              <div key={line.id} className="flex gap-2 py-0.5">
+              <div key={line.id} className="flex select-text gap-2 py-0.5">
                 <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {line.ts.toLocaleTimeString("ru-RU", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  })}
+                  {formatTime(line.ts)}
                 </span>
-                <span className={cn("shrink-0 uppercase w-14", levelClass[line.level])}>
+                <span className={cn("w-14 shrink-0 uppercase", levelClass[line.level])}>
                   {line.level}
                 </span>
                 <span className="break-all text-foreground/90">{line.text}</span>

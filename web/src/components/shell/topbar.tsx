@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { PromptEditor } from "@/components/prompts/prompt-editor";
 import { FramesGrid } from "@/components/frames/frames-grid";
+import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 
 interface UiState {
   framesProjectId: number | null;
@@ -39,11 +40,14 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
             <Sparkles className="h-4 w-4" />
           </div>
-          <div className="flex flex-col leading-tight">
+          <div className="flex flex-col gap-0.5 leading-tight">
             <span className="text-sm font-semibold tracking-tight">Видео студия</span>
-            <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              автономный режим
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                автономный режим
+              </span>
+              <StudioVersionBadge />
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
