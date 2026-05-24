@@ -853,6 +853,13 @@ async def start_batch_queue(
     for p in subs:
         if p.status not in terminal:
             p.auto_mode = auto_default
+            # Чистим стейл-флаг _batch_paused: start — явный override,
+            # старый флаг больше не актуален и может обмануть
+            # resume_all_paused_batches если auto_mode=False по умолчанию.
+            if (p.meta or {}).get("_batch_paused"):
+                meta = dict(p.meta or {})
+                meta.pop("_batch_paused", None)
+                p.meta = meta
     await session.flush()
     logger.info(
         "batch #{} ({}): очередь запущена, auto_mode default={}, субы: {}",
@@ -875,11 +882,17 @@ async def pause_batch_queue(
         return None
     batch.status = BatchStatus.paused
     # Снимаем auto_mode у подпроектов в *_ready состоянии и new,
-    # чтобы auto_advance их не двигал.
+    # чтобы auto_advance их не двигал. Помечаем флагом _batch_paused=True
+    # (только те, у кого auto_mode был True) — чтобы resume_all_paused_batches
+    # и resume_batch_queue могли отличить «пауза батча» от «юзер вручную ⏹».
     subs = await get_batch_subprojects(session, batch_id)
     for p in subs:
         if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
-            p.auto_mode = False
+            if p.auto_mode:
+                p.auto_mode = False
+                meta = dict(p.meta or {})
+                meta["_batch_paused"] = True
+                p.meta = meta
     await session.flush()
     logger.info("batch #{} ({}): пауза", batch.id, batch.slug)
     return batch
@@ -898,8 +911,17 @@ async def resume_batch_queue(
     subs = await get_batch_subprojects(session, batch_id)
     terminal = {ProjectStatus.published, ProjectStatus.failed, ProjectStatus.paused}
     for p in subs:
-        if p.status not in terminal:
-            p.auto_mode = True
+        if p.status not in terminal and not p.auto_mode:
+            # Восстанавливаем auto_mode только тем подпроектам, которые были
+            # выключены именно batch-паузой (_batch_paused=True в meta).
+            # Подпроекты, где юзер вручную нажал «⏹ Остановить» (auto_mode=False
+            # без _batch_paused), НЕ трогаем. Флаг всегда чистим чтобы не
+            # оставлять стейл, который мог бы обмануть resume_all_paused_batches.
+            if (p.meta or {}).get("_batch_paused"):
+                p.auto_mode = True
+                meta = dict(p.meta or {})
+                meta.pop("_batch_paused", None)
+                p.meta = meta
     await session.flush()
     logger.info("batch #{} ({}): возобновлено", batch.id, batch.slug)
     return batch
@@ -982,10 +1004,15 @@ async def pause_all_running_batches(
             p.status = step.requires
             out["rolled_back"] += 1
         # 2) Снимаем auto_mode у всех new и *_ready (после rollback это
-        #    и есть бывшие running-подпроекты тоже).
+        #    и есть бывшие running-подпроекты тоже). Помечаем в meta
+        #    флагом _batch_paused=True, чтобы resume_all_paused_batches
+        #    мог отличить «паузу батча» от «юзер вручную нажал ⏹».
         if p.status is ProjectStatus.new or p.status.value.endswith("_ready"):
             if p.auto_mode:
                 p.auto_mode = False
+                meta = dict(p.meta or {})
+                meta["_batch_paused"] = True
+                p.meta = meta
                 out["auto_mode_off"] += 1
 
     await session.flush()
@@ -1023,9 +1050,18 @@ async def resume_all_paused_batches(
         ProjectStatus.paused,
     }
     for p in subs_q.scalars().all():
+        # Восстанавливаем auto_mode только тем подпроектам, которые были
+        # выключены именно batch-паузой (_batch_paused=True в meta).
+        # Подпроекты, где юзер вручную нажал «⏹ Остановить» (auto_mode=False
+        # без _batch_paused), НЕ трогаем — иначе resume батча молча
+        # отменяет явный стоп юзера.
         if p.status not in terminal and not p.auto_mode:
-            p.auto_mode = True
-            out["auto_mode_on"] += 1
+            if (p.meta or {}).get("_batch_paused"):
+                p.auto_mode = True
+                meta = dict(p.meta or {})
+                meta.pop("_batch_paused", None)
+                p.meta = meta
+                out["auto_mode_on"] += 1
 
     await session.flush()
     logger.info(
@@ -1033,3 +1069,68 @@ async def resume_all_paused_batches(
         out["batches"], out["auto_mode_on"],
     )
     return out
+
+
+async def migrate_legacy_batch_paused_flags(
+    session: AsyncSession,
+) -> int:
+    """One-time migration for databases that were paused with code that
+    predates the ``_batch_paused`` meta-flag mechanism.
+
+    Before the flag was introduced, ``pause_batch_queue`` and
+    ``pause_all_running_batches`` set ``auto_mode=False`` on sub-projects
+    **without** stamping ``_batch_paused=True``.  The new resume functions
+    require the flag to distinguish «user manually stopped» from «batch
+    paused» — so any pre-existing paused batch would silently stay stuck
+    after an upgrade: batch status flips to ``running`` but no sub-project
+    gets re-enabled.
+
+    This migration stamps ``_batch_paused=True`` on every sub-project that:
+      * belongs to a currently-paused batch, AND
+      * is in ``new`` or ``*_ready`` state, AND
+      * has ``auto_mode=False``, AND
+      * does **not** already carry ``_batch_paused`` (idempotent).
+
+    Trade-off: sub-projects that the user manually stopped *before* the
+    batch was paused are indistinguishable from batch-paused ones in the
+    legacy state — they will be re-enabled on the next resume.  This is
+    acceptable as a one-time migration cost; it mirrors the old behaviour
+    and is preferable to leaving the batch permanently stuck.
+
+    Returns the number of sub-projects stamped.
+    """
+    from sqlalchemy import select as _sel
+
+    paused_batch_ids_q = await session.execute(
+        _sel(BatchProject).where(BatchProject.status == BatchStatus.paused)
+    )
+    paused_batch_ids = {b.id for b in paused_batch_ids_q.scalars().all()}
+    if not paused_batch_ids:
+        return 0
+
+    subs_q = await session.execute(
+        _sel(Project).where(
+            Project.batch_id.in_(paused_batch_ids),
+            Project.auto_mode == False,  # noqa: E712
+        )
+    )
+    count = 0
+    for p in subs_q.scalars().all():
+        if p.status is not ProjectStatus.new and not p.status.value.endswith("_ready"):
+            continue
+        meta = p.meta or {}
+        if meta.get("_batch_paused"):
+            continue  # already stamped, nothing to do
+        new_meta = dict(meta)
+        new_meta["_batch_paused"] = True
+        p.meta = new_meta
+        count += 1
+
+    if count:
+        await session.flush()
+        logger.info(
+            "migrate_legacy_batch_paused_flags: stamped {} sub(s) across "
+            "{} paused batch(es)",
+            count, len(paused_batch_ids),
+        )
+    return count
