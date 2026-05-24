@@ -15,7 +15,7 @@
 | Tests | `python3 -m pytest tests/ -v` |
 | Type check | `mypy app/ --ignore-missing-imports` |
 | Seed pilot project | `python3 -m app.seed_pilot` |
-| Run application | `python3 -m app.main` from repo root, or `.\run-backend.ps1` (Windows) |
+| Run application | `VideoPipelineStudio.cmd` (Windows GUI) or `python3 -m app.main` from repo root |
 
 ### Key caveats
 
