@@ -202,7 +202,6 @@ export const api = {
     http<{
       project: ProjectDetail;
       message: string;
-      advance_cancelled: boolean;
       generation_still_active: boolean;
       xlsx_stopped: string[];
     }>(`/api/projects/${projectId}/stop`, {

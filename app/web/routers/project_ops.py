@@ -64,6 +64,8 @@ async def stop_project(
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     info = await stop_project_running(session, p)
+    if not info["ok"]:
+        raise HTTPException(status_code=400, detail=info["message"])
     await session.commit()
     await session.refresh(p)
     await publish_project_event(
@@ -74,7 +76,6 @@ async def stop_project(
     return {
         "project": project_to_detail(p),
         "message": info["message"],
-        "advance_cancelled": info["advance_cancelled"],
         "generation_still_active": info["generation_still_active"],
         "xlsx_stopped": info["xlsx_stopped"],
     }

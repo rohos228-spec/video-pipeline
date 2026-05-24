@@ -18,7 +18,6 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { shouldShowStopBar } from "@/lib/project-running";
-import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
 
@@ -86,11 +85,6 @@ export function StudioWorkspace({
     refetchInterval: (q) =>
       shouldShowStopBar(q.state.data?.status, q.state.data?.generation_active) ? 1500 : false,
   });
-
-  const generationRunning = shouldShowStopBar(
-    project.data?.status,
-    project.data?.generation_active,
-  );
 
   const hitlList = useQuery({
     queryKey: ["hitl", projectId],
@@ -367,17 +361,6 @@ export function StudioWorkspace({
             setHitlModalOpen(o);
             if (!o) setHitlModalId(null);
           }}
-        />
-      )}
-      {projectId != null && (
-        <StopGenerationBar
-          projectId={projectId}
-          visible={generationRunning}
-          hint={
-            generationRunning
-              ? "Прерывает цикл outsee/GPT и откатывает шаг — как ⏹ в меню проекта Telegram"
-              : undefined
-          }
         />
       )}
     </CanvasActionsProvider>

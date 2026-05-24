@@ -743,7 +743,7 @@ function RunOverlay({
         title="Как ⏹ в Telegram: откат running-шага + выкл. auto_mode"
       >
         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
-        ⏹ Стоп
+        ⏹ Остановить текущий шаг
       </Button>
       {run && (
         <Button

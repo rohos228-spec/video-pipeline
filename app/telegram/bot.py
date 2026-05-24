@@ -3858,17 +3858,7 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
-    from app.services.project_state import is_running_status
-    from app.services.step_cancel import request_stop
-    from app.telegram.menu import step_by_running_status
-
-    # Помечаем проект и **сразу** отменяем asyncio-task воркера / xlsx-flow
-    # (как 🛑 Стоп в test-prompt). Кооперативные проверки в циклах — запасной
-    # путь, если task ещё не зарегистрирован.
-    request_stop(pid)
-
-    # Снимаем xlsx-flow локи для этого проекта.
-    xlsx_stopped = clear_xlsx_flow_locks(pid)
+    from app.services.project_control import stop_project_running
 
     async with session_scope() as s:
         project = (
@@ -3878,57 +3868,30 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
             await cb.answer("Проект не найден", show_alert=True)
             return
         slug = project.slug
+        info = await stop_project_running(s, project)
+        if not info["ok"]:
+            await cb.answer(str(info["message"]), show_alert=True)
+            return
+        await s.commit()
 
-        if is_running_status(project.status):
-            cur_running = project.status
-            step = step_by_running_status(cur_running)
-            rollback_to = (
-                step.requires if (step is not None and step.requires is not None)
-                else ProjectStatus.new
-            )
-            project.status = rollback_to
-            # Юзер нажал «⏹ Остановить» — НЕ хочет, чтобы воркер
-            # тут же снова запустил этот же шаг через auto_advance.
-            # Отрубаем auto_mode (для подпроекта батча это значит,
-            # что serial_tick_batches его не подхватит, пока юзер не
-            # переключит вручную).
-            project.auto_mode = False
-            meta = dict(project.meta or {})
-            chain_to = meta.pop("enrich_auto_chain_to", None)
-            if chain_to is not None:
-                project.meta = meta
-                logger.info(
-                    "[#{}] STOP: cleared enrich_auto_chain_to=#{}",
-                    pid, chain_to,
-                )
-            step_title = step.title if step is not None else cur_running.value
-            logger.info(
-                "[#{}] STOP: rolled back {} -> {}, auto_mode=False "
-                "(user-requested via ⏹)",
-                pid, cur_running.value, rollback_to.value,
-            )
+        if info["stopped_kind"] == "running":
             status_msg = (
-                f"⏹ <b>Остановил шаг</b> «{step_title}»\n"
+                f"⏹ <b>Остановил шаг</b> «{info['step_title']}»\n"
                 f"Проект #{pid} «{_project_display_topic(project)}» "
                 f"(slug: <code>{slug}</code>)\n"
-                f"Статус: <code>{cur_running.value}</code> → "
-                f"<code>{rollback_to.value}</code>.\n"
+                f"Статус: <code>{info['rollback_from']}</code> → "
+                f"<code>{info['rollback_to']}</code>.\n"
                 f"auto_mode выключен — воркер не будет автоматически "
                 f"перезапускать шаг."
             )
-        elif xlsx_stopped:
+        else:
+            xlsx_stopped = info["xlsx_stopped"]
             status_msg = (
                 f"⏹ <b>Остановлено</b>: xlsx-flow ({', '.join(xlsx_stopped)})\n"
                 f"Проект #{pid} «{_project_display_topic(project)}» "
                 f"(slug: <code>{slug}</code>)\n"
                 "Лок снят — можно запустить шаг заново."
             )
-        else:
-            await cb.answer(
-                f"Нет активных шагов (статус: {project.status.value}).",
-                show_alert=True,
-            )
-            return
 
     await cb.answer("Остановлено")
     await cb.message.answer(status_msg, parse_mode="HTML")

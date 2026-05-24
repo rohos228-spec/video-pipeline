@@ -39,7 +39,6 @@ import {
 import { PromptStylePanel } from "@/components/studio/prompt-style-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
-import { StopGenerationBar } from "@/components/studio/stop-generation-bar";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
 
@@ -320,13 +319,6 @@ export function NodeStudio({
                 </div>
               </div>
               <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
-                {generationRunning && projectId != null && (
-                  <StopGenerationBar
-                    projectId={projectId}
-                    visible
-                    className="!relative !bottom-auto !left-auto !z-auto !w-full !translate-x-0 sm:min-w-[280px]"
-                  />
-                )}
                 {stepCode && (
                   <Button
                     size="sm"
