@@ -24,9 +24,11 @@ from app.services.step_cancel import (
     is_stop_requested,
     raise_if_cancelled,
     register_advance_task,
+    register_active_page,
     request_stop,
     sleep_cancellable,
     unregister_advance_task,
+    unregister_active_page,
 )
 
 
@@ -204,3 +206,18 @@ async def test_request_stop_cancels_advance_task() -> None:
     assert cancelled.is_set()
     assert cancel_advance_task(99) is False
     unregister_advance_task(99)
+
+
+@pytest.mark.asyncio
+async def test_cancel_advance_closes_registered_page() -> None:
+    closed = asyncio.Event()
+
+    class _FakePage:
+        async def close(self) -> None:
+            closed.set()
+
+    register_active_page(77, _FakePage())
+    cancel_advance_task(77)
+    await asyncio.sleep(0.05)
+    assert closed.is_set()
+    unregister_active_page(77)

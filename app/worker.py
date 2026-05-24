@@ -18,7 +18,6 @@ from app.models import Base, Project, ProjectStatus
 from app.services.advance_runner import advance_project_job
 from app.services.step_cancel import (
     StepCancelledError,
-    consume_stop,
     is_stop_requested,
     register_advance_task,
     unregister_advance_task,
@@ -54,7 +53,12 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
         ).scalars().all()
         for p in projects:
             if is_stop_requested(p.id):
-                consume_stop(p.id)
+                from app.services.project_control import stop_project_running
+
+                info = await stop_project_running(s, p)
+                if info["ok"]:
+                    await s.commit()
+                    logger.info("[#{}] worker: ⏹ {}", p.id, info["message"])
                 continue
             project_id = p.id
             task = asyncio.create_task(advance_project_job(project_id, bot))

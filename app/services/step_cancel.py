@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from loguru import logger
 
@@ -25,6 +25,9 @@ class StepCancelledError(Exception):
 
 _stop_pids: set[int] = set()
 _advance_tasks: dict[int, asyncio.Task] = {}
+# Активная Playwright-страница outsee/GPT — закрываем при ⏹, чтобы
+# прервать зависшие page.goto / expect_download / wait_for.
+_active_pages: dict[int, Any] = {}
 
 
 def _stop_flag_dir() -> Path:
@@ -73,7 +76,32 @@ def is_generation_active(project_id: int) -> bool:
     return _stop_flag_path(project_id).exists()
 
 
+def register_active_page(project_id: int, page: Any) -> None:
+    _active_pages[project_id] = page
+
+
+def unregister_active_page(project_id: int) -> None:
+    _active_pages.pop(project_id, None)
+
+
+async def _close_active_page(page: Any) -> None:
+    with contextlib.suppress(Exception):
+        await page.close()
+
+
+def _interrupt_browser_for_project(project_id: int) -> None:
+    page = _active_pages.get(project_id)
+    if page is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_close_active_page(page))
+
+
 def cancel_advance_task(project_id: int) -> bool:
+    _interrupt_browser_for_project(project_id)
     task = _advance_tasks.get(project_id)
     if task is not None and not task.done():
         task.cancel()
@@ -186,6 +214,7 @@ def raise_if_cancelled(project_id: int) -> None:
 def clear_all() -> None:
     _stop_pids.clear()
     _advance_tasks.clear()
+    _active_pages.clear()
     stop_dir = Path(settings.data_dir) / ".stop"
     if stop_dir.is_dir():
         for f in stop_dir.glob("project_*.stop"):

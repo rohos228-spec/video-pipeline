@@ -52,7 +52,12 @@ from app.models import (
 )
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled, sleep_cancellable
+from app.services.step_cancel import (
+    StepCancelledError,
+    consume_stop,
+    raise_if_cancelled,
+    sleep_cancellable,
+)
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -422,6 +427,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 pass
             raise
 
+    raise_if_cancelled(project.id)
+    await session.refresh(project)
+    if project.status is not ProjectStatus.generating_images:
+        logger.info(
+            "[#{}] generate_images: статус уже {} — не ставлю images_ready (⏹?)",
+            project.id,
+            project.status.value,
+        )
+        return
+
     project.status = ProjectStatus.images_ready
     await session.flush()
     logger.info("[#{}] generate_images complete", project.id)
@@ -528,6 +543,7 @@ async def _generate_and_send(
     out_dir: Path,
 ) -> None:
     """Один прогон outsee → сохранение артефакта → HITL-карточка."""
+    raise_if_cancelled(project.id)
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
@@ -606,7 +622,9 @@ async def _generate_and_send(
     try:
         if use_regen_button:
             try:
-                result = await outsee.regenerate_image(file_path, gen_id=gen_id)
+                result = await outsee.regenerate_image(
+                    file_path, gen_id=gen_id, project_id=project.id
+                )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая
                 # «структурная» ошибка regenerate) — падаем на полноценный
@@ -649,6 +667,8 @@ async def _generate_and_send(
                 reference_image=refs if refs else None,
                 project_id=project.id,
             )
+    except StepCancelledError:
+        raise
     except OutseeImageError as e:
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом

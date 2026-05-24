@@ -918,10 +918,6 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
-        # Сюда копятся пути к dump-файлам страницы (html/png), создаваемые
-        # хелперами при ненайденных кнопках. В конце этот список идёт в
-        # GenerationResult.dumps — оркестратор отправит файлы в TG.
-        dumps: list[Path] = []
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
             logger.info(
@@ -934,11 +930,55 @@ class OutseeBot:
             gen_id[:8], page_url,
         )
         page = await self.session.open_page(page_url, reuse=True)
-        # ВАЖНО: всегда «прокидываем» goto, чтобы сбросить состояние от
-        # предыдущей генерации (заполненный textarea, прикреплённый
-        # референс, плашка «Контент отклонён»). Без этого ретрай после
-        # ошибки на той же странице будет видеть остатки прошлой попытки
-        # и сразу падать с тем же диагнозом.
+        from app.services.step_cancel import register_active_page, unregister_active_page
+
+        if project_id is not None:
+            register_active_page(project_id, page)
+        try:
+            return await self._generate_image_on_page(
+                page,
+                prompt=prompt,
+                out_path=out_path,
+                aspect_ratio=aspect_ratio,
+                timeout=timeout,
+                gen_id=gen_id,
+                model_slug=model_slug,
+                resolution=resolution,
+                relax=relax,
+                prompt_id_prefix=prompt_id_prefix,
+                reference_image=reference_image,
+                project_id=project_id,
+                page_url=page_url,
+            )
+        finally:
+            if project_id is not None:
+                unregister_active_page(project_id)
+
+    async def _generate_image_on_page(
+        self,
+        page: Any,
+        *,
+        prompt: str,
+        out_path: Path,
+        aspect_ratio: str,
+        timeout: float,
+        gen_id: str,
+        model_slug: str | None,
+        resolution: str | None,
+        relax: bool,
+        prompt_id_prefix: str | None,
+        reference_image: Path | list[Path] | None,
+        project_id: int | None,
+        page_url: str,
+    ) -> GenerationResult:
+        """Тело generate_image — отдельно, чтобы register_active_page в finally."""
+        import time as _time
+        import uuid as _uuid
+
+        from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+        abort_if_cancelled(project_id)
+        dumps: list[Path] = []
         try:
             await await_with_cancel(
                 page.goto(page_url, wait_until="domcontentloaded"), project_id
@@ -949,7 +989,6 @@ class OutseeBot:
                 "без явного reload", page_url, e,
             )
         await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
-        # Next.js-страница outsee гидратится дольше 3 сек — даём ей доразложиться.
         try:
             await await_with_cancel(
                 page.wait_for_load_state("networkidle", timeout=15_000), project_id
@@ -1087,7 +1126,9 @@ class OutseeBot:
                     )
                     if res_sel:
                         try:
-                            await page.locator(res_sel).first.click()
+                            await await_with_cancel(
+                                page.locator(res_sel).first.click(), project_id
+                            )
                             logger.info(
                                 "outsee.generate_image: {} выбран ({})",
                                 resolution, res_sel,
@@ -1131,6 +1172,7 @@ class OutseeBot:
                         attached = await self._attach_ref_image_robust(
                             page, ref_path,
                             where=f"generate_image[ref{ref_idx}]",
+                            project_id=project_id,
                         )
                         if not attached:
                             h, p = await _dump_page(
@@ -1268,9 +1310,12 @@ class OutseeBot:
                     page,
                     prompt_id_prefix=prompt_id_prefix,
                     out_path=out_path,
+                    project_id=project_id,
                 )
             else:
-                await _download_via_context(page, img_url, out_path)
+                await _download_via_context(
+                    page, img_url, out_path, project_id=project_id
+                )
         except OutseeImageError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("img_url", img_url)
@@ -1312,106 +1357,130 @@ class OutseeBot:
         *,
         timeout: float = 600,
         gen_id: str | None = None,
+        project_id: int | None = None,
     ) -> GenerationResult:
         """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
         без перезаполнения промта. Сайт использует тот же промт и настройки."""
         import time as _time
         import uuid as _uuid
 
+        from app.services.step_cancel import (
+            abort_if_cancelled,
+            await_with_cancel,
+            register_active_page,
+            unregister_active_page,
+        )
+
+        abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
         page = await self.session.open_page(settings.outsee_image_url, reuse=True)
-        await page.wait_for_load_state("domcontentloaded")
+        if project_id is not None:
+            register_active_page(project_id, page)
         try:
-            await page.wait_for_load_state("networkidle", timeout=15_000)
-        except Exception:
-            pass
-
-        baseline_result_img = _strip_url_query(await self._result_img_src(page))
-        baseline_big_imgs = {
-            _strip_url_query(u) for u in await self._all_big_imgs(page)
-        }
-        baseline_dom_srcs = {
-            _strip_url_query(u) for u in await self._all_img_srcs(page)
-        }
-
-        # На regenerate тоже ведём список реальных сетевых image-ответов
-        # ПОСЛЕ клика «Повторить» — это позволяет _wait_image_url_strict
-        # отфильтровать старые картинки, которые могут объвиться в DOM
-        # при ререндере карточки «Результат».
-        click_ts = _time.monotonic()
-        net_events: list[tuple[float, str]] = []
-
-        def _on_response(resp: Any) -> None:
-            try:
-                if not _is_candidate_image_response(resp):
-                    return
-                net_events.append((_time.monotonic() - click_ts, resp.url))
-            except Exception:  # noqa: BLE001
-                pass
-
-        page.on("response", _on_response)
-
-        try:
-            retry_sel = await _first_visible(
-                page,
-                [
-                    "button:has-text('Повторить')",
-                    "button:has-text('Retry')",
-                    "button:has-text('Regenerate')",
-                ],
-                timeout_ms=15_000,
+            await await_with_cancel(
+                page.wait_for_load_state("domcontentloaded"), project_id
             )
-            if not retry_sel:
-                raise OutseeImageError(
-                    "outsee image: не найдена кнопка «Повторить» — на странице "
-                    "нет предыдущего результата",
-                    context={"gen_id": gen_id},
-                )
             try:
-                await page.locator(retry_sel).first.scroll_into_view_if_needed(
-                    timeout=5_000
+                await await_with_cancel(
+                    page.wait_for_load_state("networkidle", timeout=15_000),
+                    project_id,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
-            # Снимок rejection-плашки ДО клика «Повторить» — см. коммент
-            # в generate_image() про false-positive детект остатков.
-            pre_rejected_text = await self._content_rejected_text(page)
+            abort_if_cancelled(project_id)
+
+            baseline_result_img = _strip_url_query(await self._result_img_src(page))
+            baseline_big_imgs = {
+                _strip_url_query(u) for u in await self._all_big_imgs(page)
+            }
+            baseline_dom_srcs = {
+                _strip_url_query(u) for u in await self._all_img_srcs(page)
+            }
+
             click_ts = _time.monotonic()
-            net_events.clear()
-            await page.locator(retry_sel).first.click()
-            logger.info(
-                "outsee.regenerate_image: «Повторить» кликнут, жду картинку (gen_id={})",
-                gen_id[:8],
-            )
+            net_events: list[tuple[float, str]] = []
 
-            img_url = await self._wait_image_url_strict(
-                page,
-                timeout=timeout,
-                baseline_result_img=baseline_result_img,
-                baseline_big_imgs=baseline_big_imgs,
-                baseline_all_srcs=baseline_dom_srcs,
-                net_events=net_events,
-                gen_id=gen_id,
-                pre_rejected_text=pre_rejected_text,
-            )
-        finally:
+            def _on_response(resp: Any) -> None:
+                try:
+                    if not _is_candidate_image_response(resp):
+                        return
+                    net_events.append((_time.monotonic() - click_ts, resp.url))
+                except Exception:  # noqa: BLE001
+                    pass
+
+            page.on("response", _on_response)
+
             try:
-                page.remove_listener("response", _on_response)
-            except Exception:  # noqa: BLE001
-                pass
+                retry_sel = await _first_visible(
+                    page,
+                    [
+                        "button:has-text('Повторить')",
+                        "button:has-text('Retry')",
+                        "button:has-text('Regenerate')",
+                    ],
+                    timeout_ms=15_000,
+                    project_id=project_id,
+                )
+                if not retry_sel:
+                    raise OutseeImageError(
+                        "outsee image: не найдена кнопка «Повторить» — на странице "
+                        "нет предыдущего результата",
+                        context={"gen_id": gen_id},
+                    )
+                try:
+                    await await_with_cancel(
+                        page.locator(retry_sel).first.scroll_into_view_if_needed(
+                            timeout=5_000
+                        ),
+                        project_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                pre_rejected_text = await self._content_rejected_text(page)
+                click_ts = _time.monotonic()
+                net_events.clear()
+                await await_with_cancel(
+                    page.locator(retry_sel).first.click(), project_id
+                )
+                logger.info(
+                    "outsee.regenerate_image: «Повторить» кликнут, жду картинку (gen_id={})",
+                    gen_id[:8],
+                )
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            await _download_via_context(page, img_url, out_path)
-        except Exception as e:  # noqa: BLE001
-            raise OutseeImageError(
-                "outsee image: скачивание результата (regenerate) упало",
-                context={
-                    "gen_id": gen_id,
-                    "img_url": img_url,
-                    "err": f"{type(e).__name__}: {e}",
-                },
-            ) from e
+                img_url = await self._wait_image_url_strict(
+                    page,
+                    timeout=timeout,
+                    baseline_result_img=baseline_result_img,
+                    baseline_big_imgs=baseline_big_imgs,
+                    baseline_all_srcs=baseline_dom_srcs,
+                    net_events=net_events,
+                    gen_id=gen_id,
+                    pre_rejected_text=pre_rejected_text,
+                    project_id=project_id,
+                )
+            finally:
+                try:
+                    page.remove_listener("response", _on_response)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                await _download_via_context(
+                    page, img_url, out_path, project_id=project_id
+                )
+            except Exception as e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee image: скачивание результата (regenerate) упало",
+                    context={
+                        "gen_id": gen_id,
+                        "img_url": img_url,
+                        "err": f"{type(e).__name__}: {e}",
+                    },
+                ) from e
+        finally:
+            if project_id is not None:
+                unregister_active_page(project_id)
 
         # Валидация скачанного файла — см. комментарий в `generate_image`.
         _validate_downloaded_image(out_path, gen_id=gen_id, img_url=img_url)
@@ -2220,6 +2289,7 @@ class OutseeBot:
         image_path: Path,
         *,
         where: str,
+        project_id: int | None = None,
     ) -> bool:
         """Робастная загрузка референсной картинки в input[type=file]
         на странице outsee.io.
@@ -2246,7 +2316,10 @@ class OutseeBot:
         нашлся в DOM или set_input_files упал. Свои dump'ы НЕ снимает —
         это решает вызывающий (у него список `dumps`).
         """
-        # 0) очистка всех input[type=file] (на случай переиспользования
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
+        # 0) очистка всех input[type=file]
         # страницы — старый референс мог остаться от предыдущей генерации).
         try:
             base_clear = page.locator("input[type='file']")
@@ -2273,7 +2346,7 @@ class OutseeBot:
         # 1) видимый input[type=file] (короткий таймаут — в outsee он почти
         # всегда скрыт, ожидать видимость долго нет смысла).
         file_sel = await _first_visible(
-            page, FILE_UPLOAD_SELECTORS, timeout_ms=2_000
+            page, FILE_UPLOAD_SELECTORS, timeout_ms=2_000, project_id=project_id
         )
         if file_sel:
             try:
@@ -2284,7 +2357,7 @@ class OutseeBot:
                     "outsee.{}: reference {} загружен в видимый input ({})",
                     where, image_path.name, file_sel,
                 )
-                await asyncio.sleep(1.0)
+                await sleep_cancellable(1.0, project_id)
                 return True
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -2735,6 +2808,7 @@ async def _download_via_card_click(
     prompt_id_prefix: str,
     out_path: Path,
     timeout_s: float = 120.0,
+    project_id: int | None = None,
 ) -> None:
     """Кликает зелёную «↓ Скачать» на карточке результата с нашим
     `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
@@ -2755,12 +2829,18 @@ async def _download_via_card_click(
          появляются только на hover);
       4) `expect_download` + click → сохраняем файл по пути out_path.
     """
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    abort_if_cancelled(project_id)
     deadline_ms = int(timeout_s * 1000)
 
     # 1) Якорь — элемент с нашим уникальным [ID: ...] токеном.
     id_el = page.get_by_text(prompt_id_prefix, exact=False).first
     try:
-        await id_el.wait_for(state="visible", timeout=deadline_ms)
+        await await_with_cancel(
+            id_el.wait_for(state="visible", timeout=deadline_ms),
+            project_id,
+        )
     except PWTimeoutError as e:
         raise OutseeImageError(
             "outsee image: не нашёл карточку с нашим ID за время ожидания "
@@ -2804,9 +2884,9 @@ async def _download_via_card_click(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
-            await download_btn.click(timeout=10_000)
+            await await_with_cancel(download_btn.click(timeout=10_000), project_id)
         download = await dl_info.value
-        await download.save_as(str(out_path))
+        await await_with_cancel(download.save_as(str(out_path)), project_id)
     except PWTimeoutError as e:
         raise OutseeImageError(
             "outsee image: клик по кнопке «Скачать» не вызвал download "
@@ -2839,19 +2919,23 @@ async def _download_via_context(
     *,
     timeout_ms: int = 120_000,
     attempts: int = 3,
+    project_id: int | None = None,
 ) -> None:
     """Скачивает файл по URL, используя тот же контекст (cookies/auth) страницы.
     CDN outsee/hailuoai иногда медленный — поднимаем таймаут до 120 сек и
     делаем до 3 попыток."""
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel, sleep_cancellable
+
     ctx = page.context
     api = ctx.request
     last: Exception | None = None
     for i in range(1, attempts + 1):
+        abort_if_cancelled(project_id)
         try:
-            resp = await api.get(url, timeout=timeout_ms)
+            resp = await await_with_cancel(api.get(url, timeout=timeout_ms), project_id)
             if resp.status >= 400:
                 raise RuntimeError(f"download {url} failed: HTTP {resp.status}")
-            body = await resp.body()
+            body = await await_with_cancel(resp.body(), project_id)
             out_path.write_bytes(body)
             return
         except Exception as e:  # noqa: BLE001
@@ -2862,7 +2946,7 @@ async def _download_via_context(
                 attempts,
                 type(e).__name__,
             )
-            await asyncio.sleep(1.5 * i)
+            await sleep_cancellable(1.5 * i, project_id)
     assert last is not None
     raise last
 
