@@ -18,7 +18,7 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { shouldShowStopBar } from "@/lib/project-running";
-import { readControlMode } from "@/lib/control-mode";
+import { isAiControlMode } from "@/lib/control-mode";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
@@ -216,7 +216,7 @@ export function StudioWorkspace({
       projectId,
       project: project.data ?? null,
       autoMode: project.data?.auto_mode ?? false,
-      aiControl: readControlMode((project.data?.meta || {}) as Record<string, unknown>) === "ai",
+      aiControl: isAiControlMode((project.data?.meta || {}) as Record<string, unknown>),
       hitlList: hitlList.data ?? [],
       disabledNodes,
       vMenuNodeKey,

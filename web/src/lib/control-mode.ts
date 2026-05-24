@@ -18,6 +18,10 @@ export function readControlMode(meta: Record<string, unknown> | undefined): Cont
   return "manual";
 }
 
+export function isAiControlMode(meta: Record<string, unknown> | undefined): boolean {
+  return readControlMode(meta) === "ai";
+}
+
 export function readAutoReviewKinds(meta: Record<string, unknown> | undefined): string[] {
   const raw = meta?.auto_review_kinds;
   return Array.isArray(raw) ? raw.map(String) : [];

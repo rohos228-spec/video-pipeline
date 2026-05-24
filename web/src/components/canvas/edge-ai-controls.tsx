@@ -4,10 +4,10 @@ import { Fragment, useMemo, useState } from "react";
 import { useInternalNode, ViewportPortal, type Edge } from "@xyflow/react";
 import { Sparkles } from "lucide-react";
 import { useCanvasActionsOptional } from "./canvas-actions-context";
-import { readControlMode } from "@/lib/control-mode";
 import type { PipelineNodeData } from "./pipeline-node";
 import { AiControlEdgeDialog } from "./ai-control-edge-dialog";
 import { defaultPromptSlots } from "@/lib/node-prompts";
+import { autoReviewKindForNodeType } from "@/lib/control-mode";
 
 type EdgeHit = {
   edgeId: string;
@@ -30,6 +30,7 @@ function EdgeAiMarker({
   }
   const tgtType = (target.data as PipelineNodeData)?.type;
   if (tgtType === "excel_feed") return null;
+  if (!autoReviewKindForNodeType(tgtType)) return null;
 
   const sw = source.measured?.width ?? 260;
   const sh = source.measured?.height ?? 80;
@@ -69,16 +70,13 @@ export function EdgeAiControls({ edges }: { edges: Edge[] }) {
   const actions = useCanvasActionsOptional();
   const [active, setActive] = useState<EdgeHit | null>(null);
 
-  const aiControl = readControlMode(
-    (actions?.project?.meta || {}) as Record<string, unknown>,
-  );
-
   const visibleEdges = useMemo(
     () => edges.filter((e) => e.source && e.target),
     [edges],
   );
 
-  if (!aiControl || !actions?.projectId) return null;
+  // Только режим «ИИ проверка» (meta.ai_control). «manual» — строка, не falsy!
+  if (!actions?.aiControl || !actions?.projectId) return null;
 
   const firstSlot = active ? defaultPromptSlots(active.targetType)[0] : null;
 
