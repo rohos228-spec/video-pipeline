@@ -23,6 +23,7 @@ import {
 import { NodeVMenu } from "./node-v-menu";
 import { NodeGenerationBadge } from "./node-generation-badge";
 import { NodeResultBadge } from "./node-result-badge";
+import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -80,22 +81,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
           <NodeGenerationBadge
             nodeType={d.type}
             status={d.status}
-            progress={d.progress}
-            progressText={d.progressText}
-            error={d.error}
-            attempts={d.attempts}
-            projectStatus={actions.project?.status}
-            generationActive={actions.project?.generation_active}
-            autoMode={actions.autoMode}
-            hitlList={actions.hitlList}
-            onOpenHitl={(e) => {
-              e.stopPropagation();
-              actions.onOpenHitlReview(d.nodeKey, d.type);
-            }}
           />
         )}
 
-        {actions && resultSnapshot && (
+        {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
           <NodeResultBadge
             snapshot={resultSnapshot}
             onClick={(e) => {

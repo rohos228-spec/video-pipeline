@@ -1,6 +1,12 @@
 import { api, type ProjectAsset } from "@/lib/api";
 import type { ArtifactDTO, FrameDTO, ProjectDetail } from "@/lib/types";
 import { isEnrichNode } from "@/lib/node-prompts";
+import {
+  pickGeneralPlanSheet,
+  projectHasXlsx,
+  ROW_VOICEOVER_V8,
+  SHEET_PLAN_V8,
+} from "@/lib/xlsx-sheets";
 
 export type NodeResultItemKind = "text" | "image" | "video" | "file" | "xlsx" | "frames";
 
@@ -11,9 +17,21 @@ export interface NodeResultItem {
   previewUrl?: string | null;
   downloadUrl?: string | null;
   content?: string | null;
+  /** Путь на диске — для замены hero-файла. */
+  filePath?: string | null;
+  frameNumber?: number;
 }
 
 export type NodeResultReplaceMode = "text" | "xlsx" | "assets" | "studio" | "none";
+
+export type NodeResultViewMode =
+  | "default"
+  | "xlsx_general_plan"
+  | "voiceover_wide"
+  | "xlsx_split_row"
+  | "frame_prompts"
+  | "frame_images"
+  | "frame_videos";
 
 export interface NodeResultSnapshot {
   hasResult: boolean;
@@ -21,6 +39,7 @@ export interface NodeResultSnapshot {
   summary: string;
   items: NodeResultItem[];
   replaceMode: NodeResultReplaceMode;
+  viewMode: NodeResultViewMode;
   /** Поле проекта для текстовой замены (plan / script). */
   textField?: "general_plan" | "script_text";
 }
@@ -71,12 +90,16 @@ function assetItems(assets: ProjectAsset[]): NodeResultItem[] {
   return assets.map((a) => {
     const path = a.path || "";
     const isVideo = a.kind === "videos" || /\.(mp4|webm)$/i.test(path);
+    const voiceover = (a as { voiceover?: string }).voiceover;
     return {
       id: String(a.id),
       label: a.label || a.kind || a.id,
       kind: a.kind === "xlsx" ? "xlsx" : isVideo ? "video" : a.preview_url ? "image" : "file",
       previewUrl: a.preview_url,
       downloadUrl: a.preview_url || undefined,
+      content: voiceover ?? undefined,
+      filePath: path || null,
+      frameNumber: a.frame_id ?? undefined,
     };
   });
 }
@@ -90,18 +113,24 @@ function textAsset(assets: ProjectAsset[], name: string): ProjectAsset | undefin
 }
 
 export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): NodeResultSnapshot {
-  const empty = (summary: string, replaceMode: NodeResultReplaceMode = "none"): NodeResultSnapshot => ({
+  const empty = (
+    summary: string,
+    replaceMode: NodeResultReplaceMode = "none",
+    viewMode: NodeResultViewMode = "default",
+  ): NodeResultSnapshot => ({
     hasResult: false,
     itemCount: 0,
     summary,
     items: [],
     replaceMode,
+    viewMode,
   });
 
   const ready = (
     items: NodeResultItem[],
     summary: string,
     replaceMode: NodeResultReplaceMode,
+    viewMode: NodeResultViewMode = "default",
     textField?: NodeResultSnapshot["textField"],
   ): NodeResultSnapshot => ({
     hasResult: items.length > 0,
@@ -109,6 +138,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
     summary,
     items,
     replaceMode,
+    viewMode,
     textField,
   });
 
@@ -118,69 +148,74 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
   switch (nodeType) {
     case "plan":
     case "hitl_gate": {
+      if (projectHasXlsx(ctx.assets)) {
+        return {
+          hasResult: true,
+          itemCount: 1,
+          summary: "Лист «Общий план» в Excel",
+          items: [{ id: "xlsx_general", label: "Общий план", kind: "xlsx" }],
+          replaceMode: "xlsx",
+          viewMode: "xlsx_general_plan",
+        };
+      }
       const text = project?.general_plan?.trim();
       if (text) {
         return ready(
           [{ id: "general_plan", label: "Общий план", kind: "text", content: text }],
           "Текст плана готов",
           "text",
+          "xlsx_general_plan",
           "general_plan",
         );
       }
-      const file = textAsset(ctx.assets, "general_plan.txt");
-      if (file?.preview_url) {
-        return ready(
-          [{ id: file.id, label: "general_plan.txt", kind: "file", downloadUrl: file.preview_url }],
-          "Файл плана на диске",
-          "text",
-          "general_plan",
-        );
-      }
-      return empty("План ещё не сгенерирован", "text");
+      return empty("План ещё не сгенерирован", "text", "xlsx_general_plan");
     }
 
     case "script": {
       const text = project?.script_text?.trim();
       if (text) {
         return ready(
-          [{ id: "script_text", label: "Сценарий", kind: "text", content: text }],
+          [{ id: "script_text", label: "Закадровый текст", kind: "text", content: text }],
           "Сценарий готов",
           "text",
+          "voiceover_wide",
           "script_text",
         );
       }
-      const file = textAsset(ctx.assets, "script.txt");
-      if (file?.preview_url) {
-        return ready(
-          [{ id: file.id, label: "script.txt", kind: "file", downloadUrl: file.preview_url }],
-          "Файл сценария на диске",
-          "text",
-          "script_text",
-        );
+      const voiceFile = textAsset(ctx.assets, "voiceover.txt");
+      if (voiceFile) {
+        return {
+          hasResult: true,
+          itemCount: 1,
+          summary: "voiceover.txt",
+          items: [
+            {
+              id: voiceFile.id,
+              label: "voiceover.txt",
+              kind: "file",
+              downloadUrl: voiceFile.preview_url,
+            },
+          ],
+          replaceMode: "text",
+          viewMode: "voiceover_wide",
+          textField: "script_text",
+        };
       }
-      return empty("Сценарий ещё не готов", "text");
+      return empty("Сценарий ещё не готов", "text", "voiceover_wide");
     }
 
     case "split": {
-      const frames = ctx.frames;
-      if (frames.length > 0) {
-        return ready(
-          [
-            {
-              id: "frames",
-              label: `${frames.length} кадров`,
-              kind: "frames",
-              content: frames
-                .slice(0, 5)
-                .map((f) => `#${f.number}: ${f.voiceover_text.slice(0, 80)}`)
-                .join("\n"),
-            },
-          ],
-          `${frames.length} кадров в раскадровке`,
-          "studio",
-        );
+      if (projectHasXlsx(ctx.assets) || ctx.frames.length > 0) {
+        return {
+          hasResult: true,
+          itemCount: ctx.frames.length || 1,
+          summary: "Разбивка по ячейкам (лист «план», строка 49)",
+          items: [{ id: "split_row", label: "Разбивка", kind: "frames" }],
+          replaceMode: "studio",
+          viewMode: "xlsx_split_row",
+        };
       }
-      return empty("Раскадровка ещё не создана", "studio");
+      return empty("Раскадровка ещё не создана", "studio", "xlsx_split_row");
     }
 
     case "hero":
@@ -190,7 +225,9 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
         ...assetItems(heroAssets),
         ...artifactItems(arts.filter((a) => a.kind.includes("hero"))),
       ];
-      if (items.length) return ready(items, `${items.length} reference персонажей`, "assets");
+      if (items.length) {
+        return ready(items, `${items.length} reference персонажей`, "assets", "frame_images");
+      }
       if ((project?.hero_descriptions?.length ?? 0) > 0) {
         return ready(
           project!.hero_descriptions.map((d, i) => ({
@@ -256,26 +293,38 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       const withPrompt = ctx.frames.filter((f) => f.image_prompt?.trim());
       if (withPrompt.length) {
         return ready(
-          withPrompt.slice(0, 12).map((f) => ({
+          withPrompt.map((f) => ({
             id: `frame_${f.id}`,
             label: `Кадр ${f.number}`,
             kind: "text" as const,
             content: f.image_prompt,
+            frameNumber: f.number,
           })),
           `Промты картинок: ${withPrompt.length} кадров`,
           "studio",
+          "frame_prompts",
         );
       }
-      return empty("Промты картинок ещё не готовы", "studio");
+      return empty("Промты картинок ещё не готовы", "studio", "frame_prompts");
     }
 
     case "images":
     case "hitl_images": {
-      const fromMedia = assetItems(ctx.mediaImages);
+      const frameById = new Map(ctx.frames.map((f) => [f.id, f]));
+      const fromMedia = ctx.mediaImages.map((a) => {
+        const fr = a.frame_id != null ? frameById.get(a.frame_id) : undefined;
+        const base = assetItems([a])[0];
+        return {
+          ...base,
+          content: (a as { voiceover?: string }).voiceover || fr?.voiceover_text || base.content,
+        };
+      });
       const fromArts = artifactItems(arts);
-      const items = fromMedia.length ? fromMedia : fromArts;
-      if (items.length) return ready(items, `${items.length} картинок`, "assets");
-      return empty("Картинки ещё не сгенерированы", "assets");
+      const items = (fromMedia.length ? fromMedia : fromArts).filter((i) => i.previewUrl);
+      if (items.length) {
+        return ready(items, `${items.length} картинок`, "assets", "frame_images");
+      }
+      return empty("Картинки ещё не сгенерированы", "assets", "frame_images");
     }
 
     case "animation_prompts": {
@@ -297,11 +346,13 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
 
     case "videos":
     case "hitl_videos": {
-      const fromMedia = assetItems(ctx.mediaVideos);
+      const fromMedia = assetItems(ctx.mediaVideos).filter((i) => i.previewUrl);
       const fromArts = artifactItems(arts);
       const items = fromMedia.length ? fromMedia : fromArts;
-      if (items.length) return ready(items, `${items.length} видео`, "assets");
-      return empty("Видео ещё не сгенерированы", "assets");
+      if (items.length) {
+        return ready(items, `${items.length} видео`, "assets", "frame_videos");
+      }
+      return empty("Видео ещё не сгенерированы", "assets", "frame_videos");
     }
 
     case "audio": {
@@ -324,6 +375,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
           summary: "Сборка завершена",
           items: [],
           replaceMode: "assets",
+          viewMode: "default",
         };
       }
       return empty("Финальный ролик ещё не собран", "assets");
@@ -337,6 +389,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
           summary: "Опубликовано",
           items: [],
           replaceMode: "none",
+          viewMode: "default",
         };
       }
       const final = ctx.assets.filter((a) => a.kind.includes("final"));

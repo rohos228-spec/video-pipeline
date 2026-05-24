@@ -48,6 +48,8 @@ export interface XlsxPreview {
   active_sheet: string;
   headers: string[];
   rows: string[][];
+  row?: number;
+  cells?: string[];
 }
 
 export interface ProjectAsset {
@@ -237,15 +239,36 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json() as Promise<ProjectDetail>;
   },
-  previewProjectXlsx: (projectId: number, sheet?: string) => {
-    const q = sheet ? `?sheet=${encodeURIComponent(sheet)}` : "";
-    return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${q}`);
+  previewProjectXlsx: (
+    projectId: number,
+    opts?: { sheet?: string; maxRows?: number; maxCols?: number; row?: number; raw?: boolean },
+  ) => {
+    const q = new URLSearchParams();
+    if (opts?.sheet) q.set("sheet", opts.sheet);
+    if (opts?.maxRows != null) q.set("max_rows", String(opts.maxRows));
+    if (opts?.maxCols != null) q.set("max_cols", String(opts.maxCols));
+    if (opts?.row != null) q.set("row", String(opts.row));
+    if (opts?.raw) q.set("raw", "true");
+    const qs = q.toString();
+    return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${qs ? `?${qs}` : ""}`);
   },
   ensureProjectRun: (projectId: number) =>
     http<{ run_id: number }>(`/api/projects/${projectId}/ensure-run`, { method: "POST" }),
 
   listProjectAssets: (projectId: number, kind = "all") =>
     http<ProjectAsset[]>(`/api/projects/${projectId}/assets?kind=${kind}`),
+
+  replaceHeroImage: async (projectId: number, file: File, replacePath?: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const q = replacePath ? `?replace_path=${encodeURIComponent(replacePath)}` : "";
+    const res = await fetch(`/api/projects/${projectId}/assets/hero/replace${q}`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ path: string; preview_url: string; id: string }>;
+  },
 
   listMediaReview: (projectId: number, kind: "images" | "videos") =>
     http<

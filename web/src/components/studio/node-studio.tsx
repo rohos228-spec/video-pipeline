@@ -107,7 +107,10 @@ export function NodeStudio({
   });
   const xlsxPreview = useQuery({
     queryKey: ["xlsx-preview", projectId, xlsxSheet],
-    queryFn: () => api.previewProjectXlsx(projectId!, xlsxSheet || undefined),
+    queryFn: () =>
+      api.previewProjectXlsx(projectId!, {
+        sheet: xlsxSheet || undefined,
+      }),
     enabled: open && projectId != null && (tab === "excel" || isEnrichNode(nodeType)),
   });
 

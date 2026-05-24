@@ -139,15 +139,18 @@ export function StudioWorkspace({
   const resultContext = useMemo((): NodeResultContext => {
     const assets = projectAssets.data ?? [];
     const mapMedia = (rows: NonNullable<typeof mediaImages.data>, kind: "images" | "videos") =>
-      rows.map((r) => ({
-        source: "frame" as const,
-        id: String(r.frame_id),
-        kind,
-        path: r.file_path,
-        preview_url: r.preview_url,
-        label: `Кадр ${r.number}`,
-        frame_id: r.frame_id,
-      }));
+      rows
+        .filter((r) => r.preview_url)
+        .map((r) => ({
+          source: "frame" as const,
+          id: String(r.frame_id),
+          kind,
+          path: r.file_path,
+          preview_url: r.preview_url,
+          label: `Кадр ${r.number}`,
+          frame_id: r.frame_id,
+          voiceover: r.voiceover_text,
+        }));
     return {
       project: project.data ?? null,
       artifacts: artifacts.data ?? [],
@@ -448,13 +451,6 @@ export function StudioWorkspace({
           projectId={projectId}
           nodeType={resultPanel.nodeType}
           snapshot={getNodeResult(resultPanel.nodeType)}
-          onOpenAssets={(kind) => setAssetTray({ kind, nodeType: resultPanel.nodeType })}
-          onOpenStudio={() => {
-            onSelectNode(resultPanel.nodeKey);
-            setPromptFocus(null);
-            setStudioTab("results");
-            onStudioOpenChange(true);
-          }}
         />
       )}
     </CanvasActionsProvider>

@@ -228,28 +228,61 @@ async def upload_xlsx(
 async def preview_xlsx(
     project_id: int,
     sheet: str | None = Query(None),
-    max_rows: int = Query(40, ge=1, le=200),
+    max_rows: int = Query(40, ge=1, le=500),
+    max_cols: int = Query(80, ge=1, le=200),
+    row: int | None = Query(None, ge=1, le=500),
+    raw: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
-        return {"path": str(xlsx), "sheets": [], "active_sheet": "", "headers": [], "rows": []}
+        return {
+            "path": str(xlsx),
+            "sheets": [],
+            "active_sheet": "",
+            "headers": [],
+            "rows": [],
+            "cells": [],
+        }
     from openpyxl import load_workbook
 
     wb = load_workbook(xlsx, read_only=True, data_only=True)
     sheets = wb.sheetnames
     active = sheet if sheet in sheets else (sheets[0] if sheets else "")
+
+    if row is not None and active:
+        ws = wb[active]
+        cells: list[str] = []
+        for col in range(1, min(ws.max_column, max_cols) + 1):
+            v = ws.cell(row=row, column=col).value
+            cells.append("" if v is None else str(v))
+        wb.close()
+        return {
+            "path": str(xlsx),
+            "sheets": sheets,
+            "active_sheet": active,
+            "row": row,
+            "cells": cells,
+        }
+
     headers: list[str] = []
     rows: list[list[str]] = []
     if active:
         ws = wb[active]
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            cells = ["" if c is None else str(c) for c in row]
-            if i == 0:
+        limit_cols = min(ws.max_column or 1, max_cols)
+        for i, row_vals in enumerate(ws.iter_rows(values_only=True)):
+            cells = [
+                "" if c is None else str(c)
+                for c in (list(row_vals) + [""] * limit_cols)[:limit_cols]
+            ]
+            if raw:
+                rows.append(cells)
+            elif i == 0:
                 headers = cells
                 continue
-            rows.append(cells)
+            else:
+                rows.append(cells)
             if len(rows) >= max_rows:
                 break
     wb.close()
@@ -257,7 +290,7 @@ async def preview_xlsx(
         "path": str(xlsx),
         "sheets": sheets,
         "active_sheet": active,
-        "headers": headers,
+        "headers": headers if not raw else [],
         "rows": rows,
     }
 
@@ -365,6 +398,57 @@ async def list_project_assets(
                         }
                     )
     return out
+
+
+@router.post("/{project_id}/assets/hero/replace")
+async def replace_hero_image(
+    project_id: int,
+    file: UploadFile = File(...),
+    replace_path: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Заменить reference-картинку персонажа (файл в data/.../characters/)."""
+    p = _project_or_404(await session.get(Project, project_id))
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="empty filename")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(status_code=400, detail="need image file (.png, .jpg, .webp)")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty file")
+
+    chars_dir = p.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+
+    dest: Path
+    if replace_path:
+        candidate = Path(replace_path)
+        if not candidate.is_absolute():
+            candidate = Path(settings.data_dir) / replace_path
+        try:
+            candidate.resolve().relative_to(p.data_dir.resolve())
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="replace_path outside project") from e
+        dest = candidate
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        stem = Path(file.filename).stem or "hero"
+        dest = chars_dir / f"{stem}{ext}"
+
+    dest.write_bytes(content)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"hero_replaced": str(dest.name)},
+    )
+    rel = _rel_path(str(dest))
+    return {
+        "path": str(dest),
+        "preview_url": f"/api/files?path={dest}",
+        "id": rel,
+    }
 
 
 def _rel_path(path: str | None) -> str:
