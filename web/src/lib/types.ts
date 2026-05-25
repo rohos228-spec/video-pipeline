@@ -26,6 +26,18 @@ export type NodeType =
   | "hitl_gate" | "hitl_hero" | "hitl_images" | "hitl_videos" | "hitl_final"
   | string; // допускаем кастомные типы
 
+/** Один персонаж с листа «Персонажи» в project.xlsx. */
+export interface ExcelHeroCharacter {
+  id: string;
+  name: string;
+  look: string;
+  clothes: string;
+  char: string;
+  rules: string;
+  ref_ids: string[];
+  prompt_name: string | null;
+}
+
 export type NodeRunStatus =
   | "pending" | "running" | "waiting_hitl"
   | "done" | "failed" | "skipped";

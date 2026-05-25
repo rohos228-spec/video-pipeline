@@ -6,6 +6,7 @@
 
 import type {
   ArtifactDTO,
+  ExcelHeroCharacter,
   FrameDTO,
   HITLDTO,
   ProjectDetail,
@@ -110,6 +111,19 @@ export const api = {
     http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run`, {
       method: "POST",
     }),
+
+  // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────
+  getExcelHero: (projectId: number) =>
+    http<{ loaded: boolean; characters: ExcelHeroCharacter[] }>(
+      `/api/projects/${projectId}/excel-hero`
+    ),
+  loadExcelHero: (projectId: number) =>
+    http<{ loaded: boolean; count: number; characters: ExcelHeroCharacter[] }>(
+      `/api/projects/${projectId}/excel-hero/load`,
+      { method: "POST" }
+    ),
+  clearExcelHero: (projectId: number) =>
+    http<void>(`/api/projects/${projectId}/excel-hero`, { method: "DELETE" }),
 
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>

@@ -258,6 +258,82 @@ async def reset_project_step(
     return p
 
 
+@router.get("/{project_id}/excel-hero")
+async def get_excel_hero(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Текущее состояние excel-hero в project.meta (если есть)."""
+    p = _project_or_404(await session.get(Project, project_id))
+    meta = dict(p.meta or {})
+    cfg = meta.get("excel_hero") or {}
+    chars = cfg.get("characters") if isinstance(cfg, dict) else None
+    return {"loaded": bool(chars), "characters": chars or []}
+
+
+@router.post("/{project_id}/excel-hero/load")
+async def load_excel_hero(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Перечитать лист «Персонажи» из project.xlsx → project.meta['excel_hero'].
+
+    После этого шаг hero пойдёт по excel-ветке (`_run_excel`), беря данные
+    из meta, без необходимости заполнять hero_descriptions/hero_count.
+    """
+    from app.services.excel_characters import parse_persons_sheet
+
+    p = _project_or_404(await session.get(Project, project_id))
+    xlsx = p.data_dir / "project.xlsx"
+    if not xlsx.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"project.xlsx не найден по пути {xlsx}",
+        )
+    try:
+        chars = parse_persons_sheet(xlsx)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"не удалось распарсить лист «Персонажи»: {e}",
+        ) from e
+    if not chars:
+        raise HTTPException(
+            status_code=400,
+            detail="на листе «Персонажи» нет ни одного заполненного персонажа",
+        )
+    meta = dict(p.meta or {})
+    meta["excel_hero"] = {"characters": [c.to_dict() for c in chars]}
+    p.meta = meta
+    p.updated_at = datetime.utcnow()
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"excel_hero": len(chars)},
+    )
+    return {
+        "loaded": True,
+        "count": len(chars),
+        "characters": [c.to_dict() for c in chars],
+    }
+
+
+@router.delete("/{project_id}/excel-hero", status_code=204)
+async def clear_excel_hero(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> None:
+    """Убрать excel_hero — hero пойдёт по обычной ветке (hero_descriptions)."""
+    p = _project_or_404(await session.get(Project, project_id))
+    meta = dict(p.meta or {})
+    if "excel_hero" in meta:
+        del meta["excel_hero"]
+        p.meta = meta
+        p.updated_at = datetime.utcnow()
+        await session.commit()
+        await publish_project_event(
+            project_id, event_type="project_updated", payload={"excel_hero": 0}
+        )
+
+
 @router.get("/{project_id}/xlsx")
 async def download_xlsx(
     project_id: int, session: AsyncSession = Depends(get_session)
