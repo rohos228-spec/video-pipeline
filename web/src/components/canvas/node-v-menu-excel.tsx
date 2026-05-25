@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { NodePromptSlot } from "@/lib/node-prompts";
-import { pickDefaultSheetForNode } from "@/lib/xlsx-sheets";
+import { pickDefaultSheetForNode, xlsxRowsWithContent } from "@/lib/xlsx-sheets";
 import { cn } from "@/lib/utils";
 
 export function NodeVMenuExcelBlock({
@@ -20,6 +20,12 @@ export function NodeVMenuExcelBlock({
   excelSlot: NodePromptSlot;
   onOpenExcel: () => void;
 }) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId!),
+    enabled: open && projectId != null,
+  });
+
   const sheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
     queryFn: () => api.previewProjectXlsx(projectId!, { maxRows: 1 }),
@@ -36,13 +42,21 @@ export function NodeVMenuExcelBlock({
       api.previewProjectXlsx(projectId!, {
         sheet,
         raw: true,
-        maxRows: 5,
-        maxCols: 5,
+        maxRows: 8,
+        maxCols: 6,
       }),
     enabled: open && projectId != null && hasFile && Boolean(sheet),
   });
 
-  const rows = preview.data?.rows ?? [];
+  const contentRows = xlsxRowsWithContent(preview.data?.rows ?? []);
+  const rows =
+    contentRows.length > 0
+      ? contentRows
+      : hasFile
+        ? (preview.data?.rows ?? []).slice(0, 5)
+        : [];
+  const planText =
+    nodeType === "plan" ? project.data?.general_plan?.trim() : undefined;
   const loading = sheetsMeta.isLoading || (hasFile && preview.isLoading);
 
   return (
@@ -63,7 +77,7 @@ export function NodeVMenuExcelBlock({
           <div className="text-[11px] font-semibold text-emerald-100">{excelSlot.title}</div>
           <div className="text-[9px] text-muted-foreground">
             project.xlsx
-            {sheet ? ` · лист «${sheet}»` : hasFile ? "" : " · файл ещё не создан"}
+            {sheet ? ` · лист «${sheet}»` : hasFile ? "" : " · создаётся при открытии…"}
           </div>
         </div>
       </div>
@@ -78,9 +92,9 @@ export function NodeVMenuExcelBlock({
         <div className="overflow-hidden rounded-lg border border-white/10 bg-black/25">
           <table className="w-full border-collapse text-[8px]">
             <tbody>
-              {rows.slice(0, 4).map((row, ri) => (
+              {rows.slice(0, 5).map((row, ri) => (
                 <tr key={ri} className="border-b border-white/5 last:border-0">
-                  {row.slice(0, 4).map((cell, ci) => (
+                  {row.slice(0, 5).map((cell, ci) => (
                     <td key={ci} className="max-w-[72px] truncate px-1.5 py-1 text-muted-foreground">
                       {cell || "—"}
                     </td>
@@ -92,11 +106,20 @@ export function NodeVMenuExcelBlock({
         </div>
       )}
 
-      {!loading && !rows.length && (
+      {!loading && rows.length === 0 && planText && (
+        <div className="max-h-24 overflow-hidden rounded-lg border border-white/10 bg-black/25 p-2">
+          <p className="mb-1 text-[8px] uppercase tracking-wide text-muted-foreground">Текст плана</p>
+          <p className="line-clamp-4 whitespace-pre-wrap text-[9px] leading-snug text-foreground/85">
+            {planText}
+          </p>
+        </div>
+      )}
+
+      {!loading && rows.length === 0 && !planText && (
         <p className="py-2 text-[9px] leading-snug text-muted-foreground">
           {hasFile
-            ? "Лист пуст или ещё не заполнен — нажмите, чтобы открыть таблицу"
-            : "Нажмите, чтобы открыть Excel после первого шага или загрузки файла"}
+            ? "Шаблон Excel загружен — запустите шаг «План» или загрузите файл"
+            : "Excel появится после первого шага или загрузки project.xlsx"}
         </p>
       )}
 

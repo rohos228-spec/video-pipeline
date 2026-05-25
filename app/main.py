@@ -308,6 +308,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         info = await stop_project_running(s, p)
                         if info["ok"]:
                             await s.commit()
+                            from app.services.run_sync import sync_run_for_project
+
+                            await sync_run_for_project(p.id)
                             logger.info(
                                 "worker: ⏹ #{} — {}",
                                 p.id,

@@ -35,6 +35,7 @@ import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
+import { isProjectRunningStatus } from "@/lib/project-running";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
@@ -85,6 +86,13 @@ export function FlowCanvas({
   });
 
   // 2) Run для выбранного проекта (если есть).
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId!),
+    enabled: projectId != null,
+    refetchInterval: 4000,
+  });
+
   const run = useQuery({
     queryKey: ["project-run", projectId],
     queryFn: async () => {
@@ -134,25 +142,34 @@ export function FlowCanvas({
   // Статусы run — отдельно, без сброса позиций нод.
   useEffect(() => {
     if (!run.data || nodes.length === 0) return;
+    const projectRunning = isProjectRunningStatus(project.data?.status);
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) return n;
+        let status = nr.status as PipelineNodeData["status"];
+        let progress = nr.progress ?? 0;
+        let progressText = nr.progress_text ?? null;
+        if (status === "running" && !projectRunning) {
+          status = "pending";
+          progress = 0;
+          progressText = null;
+        }
         return {
           ...n,
           data: {
             ...n.data,
-            status: nr.status as PipelineNodeData["status"],
-            progress: nr.progress ?? 0,
-            progressText: nr.progress_text ?? null,
+            status,
+            progress,
+            progressText,
             error: nr.error ?? null,
             attempts: nr.attempts ?? 0,
           },
         };
       }),
     );
-  }, [run.data, setNodes, nodes.length]);
+  }, [run.data, project.data?.status, setNodes, nodes.length]);
 
   // WS: обновления статуса нод (event-driven, без ожидания polling).
   useRunEvents(run.data?.id ?? null, (evt) => {
@@ -161,17 +178,24 @@ export function FlowCanvas({
       evt !== null &&
       (evt as { type?: string }).type === "node_status_changed"
     ) {
-      const e = evt as { node_type: string; to: string };
+      const e = evt as { node_key?: string; node_type: string; to: string };
       setNodes((prev) =>
         prev.map((n) => {
-          if (n.data.type === e.node_type) {
-            return {
-              ...n,
-              data: { ...n.data, status: e.to as PipelineNodeData["status"] },
-            };
-          }
-          return n;
-        })
+          const matches =
+            (e.node_key && n.id === e.node_key) ||
+            (!e.node_key && n.data.type === e.node_type);
+          if (!matches) return n;
+          const to = e.to as PipelineNodeData["status"];
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              status: to,
+              progress: to === "running" ? n.data.progress : 0,
+              progressText: to === "running" ? n.data.progressText : null,
+            },
+          };
+        }),
       );
     }
   });
@@ -842,6 +866,8 @@ function RunOverlay({
       const r = await api.stopProject(projectId);
       window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success(r.message || "⏹ Шаг остановлен");
+      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
       await qc.refetchQueries({ queryKey: ["project", projectId] });
       await qc.refetchQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["runs"] });
@@ -899,6 +925,8 @@ function RunOverlay({
       await api.cancelRun(run.id);
       window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success("Run остановлен (task.cancel)");
+      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
       await qc.refetchQueries({ queryKey: ["project", projectId] });
       await qc.refetchQueries({ queryKey: ["project-run", projectId] });
       onRunCreated();

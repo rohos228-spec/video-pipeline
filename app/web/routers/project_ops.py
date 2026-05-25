@@ -41,6 +41,7 @@ async def pause_project(
     p = _project_or_404(await session.get(Project, project_id))
     await pause_project_svc(session, p)
     await session.commit()
+    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"paused": True})
     return p
@@ -322,6 +323,9 @@ async def preview_xlsx(
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
+    if not xlsx.exists():
+        sheet = ProjectSheet(file_path=xlsx)
+        sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         return {
             "path": str(xlsx),

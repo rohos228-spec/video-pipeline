@@ -149,6 +149,7 @@ from app.orchestrator.node_registry import (
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
 )
+from app.services.project_state import is_running_status
 from app.services.disabled_nodes import disabled_node_types
 
 
@@ -228,14 +229,25 @@ async def sync_run_for_project(project_id: int) -> None:
                     continue
                 target = derived.get(nr.node_type)
             if target is None:
-                continue
+                if (
+                    nr.status == NodeRunStatus.running
+                    and not is_running_status(project.status)
+                ):
+                    target = NodeRunStatus.pending
+                else:
+                    continue
             if nr.status != target:
                 old = nr.status
                 nr.status = target
+                if target != NodeRunStatus.running:
+                    nr.progress = 0
+                    nr.progress_text = None
                 if target == NodeRunStatus.running and nr.started_at is None:
                     nr.started_at = now
                 if target == NodeRunStatus.done and nr.finished_at is None:
                     nr.finished_at = now
+                if old == NodeRunStatus.running and target == NodeRunStatus.pending:
+                    nr.finished_at = None
                 # Публикуем только при реальном переходе.
                 await publish_node_event(
                     run.id,

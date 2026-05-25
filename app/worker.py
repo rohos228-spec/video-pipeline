@@ -58,6 +58,9 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
                 info = await stop_project_running(s, p)
                 if info["ok"]:
                     await s.commit()
+                    from app.services.run_sync import sync_run_for_project
+
+                    await sync_run_for_project(p.id)
                     logger.info("[#{}] worker: ⏹ {}", p.id, info["message"])
                 continue
             project_id = p.id
