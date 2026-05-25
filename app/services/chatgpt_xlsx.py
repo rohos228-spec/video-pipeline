@@ -66,7 +66,7 @@ def write_plan_prompt_file(
         "auto": "",
     }.get(project.hero_mode, "")
     extra = f"\n\nДополнительное указание: {hero_hint}" if hero_hint else ""
-    prompt_file = tmp_dir / f"prompt_plan_{ts or _timestamp()}.md"
+    prompt_file = tmp_dir / f"prompt_plan_{ts or _timestamp()}.txt"
     prompt_file.write_text(
         f"Тема ролика: {actual_topic}\n\n{master}{extra}",
         encoding="utf-8",
@@ -120,7 +120,7 @@ def write_img_pr_prompt_file(
         "img_pr",
         "# img_pr\n\nМастер-промт для шага «Промты картинок» ещё не настроен.",
     )
-    prompt_file = tmp_dir / f"prompt_img_pr_{ts or _timestamp()}.md"
+    prompt_file = tmp_dir / f"prompt_img_pr_{ts or _timestamp()}.txt"
     prompt_file.write_text(master, encoding="utf-8")
     return prompt_file
 
