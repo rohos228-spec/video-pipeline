@@ -1311,6 +1311,7 @@ class OutseeBot:
                     prompt_id_prefix=prompt_id_prefix,
                     out_path=out_path,
                     project_id=project_id,
+                    img_url=img_url,
                 )
             else:
                 await _download_via_context(
@@ -2855,6 +2856,151 @@ class OutseeBot:
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
 
+async def _find_card_by_clicking_images(
+    page: Page,
+    *,
+    prompt_id_prefix: str,
+    limit: int = 10,
+    project_id: int | None = None,
+):
+    """Стратегия C из `_download_via_card_click`: outsee может прятать
+    наш `[ID: …]` в `<textarea value="...">` или в правой панели «Промпт»,
+    которая рендерится ТОЛЬКО по клику на картинку. Поэтому
+    `get_by_text` его не находит.
+
+    Алгоритм: берём первые N (по умолчанию 10) больших `<img>` в DOM
+    (новые в outsee всегда добавляются сверху галереи), для каждой:
+      1) скроллим в видимую часть и кликаем (открывает панель промта);
+      2) ждём 600 мс что DOM обновился;
+      3) собираем `body.innerText` + значения всех `<textarea>`/`<input>`
+         и проверяем содержит ли любой из них токены ID
+         (полный prompt_id_prefix, inner без [ID:…], 8-hex-tail);
+      4) если матч — это НАША карточка. Возвращаем её ancestor
+         (тот же ancestor с кнопкой download, что используется в A/B).
+    """
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    tokens: list[str] = [prompt_id_prefix]
+    m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", prompt_id_prefix)
+    if m:
+        inner = m.group(1)
+        if inner not in tokens:
+            tokens.append(inner)
+    m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", prompt_id_prefix)
+    if m2:
+        tail = m2.group(1)
+        if tail and tail not in tokens:
+            tokens.append(tail)
+
+    # Получаем список больших картинок (визуальный bbox >= 200x200).
+    try:
+        srcs: list[str] = await page.evaluate(
+            """() => {
+                const out = [];
+                for (const img of document.querySelectorAll('img')) {
+                    const r = img.getBoundingClientRect();
+                    if (r.width >= 180 && r.height >= 180 && img.src) {
+                        out.push(img.src);
+                    }
+                }
+                return out;
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not srcs:
+        return None
+
+    logger.info(
+        "_find_card_by_clicking_images: пробую перебрать {} больших картинок",
+        min(len(srcs), limit),
+    )
+
+    for idx, src in enumerate(srcs[:limit]):
+        abort_if_cancelled(project_id)
+        # Используем уникальный фрагмент src (последние ~80 символов
+        # до query) для CSS-селектора.
+        stripped = _strip_url_query(src)
+        path_only = re.sub(r"^https?://[^/]+", "", stripped)
+        if not path_only:
+            continue
+        img_loc = page.locator(f'img[src*="{path_only}"]').first
+
+        # Клик по картинке — открывает панель «Промпт».
+        with contextlib.suppress(Exception):
+            await await_with_cancel(
+                img_loc.scroll_into_view_if_needed(timeout=2_000),
+                project_id,
+            )
+        try:
+            await await_with_cancel(
+                img_loc.click(timeout=3_000),
+                project_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_find_card_by_clicking_images: клик по img #{} упал ({})",
+                idx, type(e).__name__,
+            )
+            continue
+
+        await asyncio.sleep(0.6)
+
+        # Проверяем — появился ли наш токен после клика?
+        try:
+            matched: bool = await page.evaluate(
+                """([toks]) => {
+                    const body = document.body;
+                    let text = (body && (body.innerText || body.textContent)) || '';
+                    for (const el of document.querySelectorAll(
+                        'textarea, input[type=text], input:not([type])'
+                    )) {
+                        const v = el && el.value;
+                        if (v) text += '\\n' + v;
+                    }
+                    for (const tok of toks) {
+                        if (tok && text.includes(tok)) return true;
+                    }
+                    return false;
+                }""",
+                [tokens],
+            )
+        except Exception:  # noqa: BLE001
+            matched = False
+
+        if not matched:
+            # Не наша картинка — закрываем панель Esc'ом и идём дальше.
+            with contextlib.suppress(Exception):
+                await page.keyboard.press("Escape")
+            await asyncio.sleep(0.2)
+            continue
+
+        # Наша! Возвращаем ancestor-карточку с кнопкой download.
+        candidate = img_loc.locator(
+            "xpath=ancestor::*[descendant::button"
+            "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+        )
+        if await candidate.count() > 0:
+            logger.info(
+                "_find_card_by_clicking_images: НАШЛА на картинке #{} "
+                "(стратегия C — клик-верификация)",
+                idx,
+            )
+            # НЕ закрываем панель — пусть hover-target виден.
+            return candidate
+
+        # Токен совпал, но ancestor-card не нашлась — странно, идём дальше.
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+
+    logger.warning(
+        "_find_card_by_clicking_images: перебрал {} картинок, нашей не нашлось",
+        min(len(srcs), limit),
+    )
+    return None
+
+
 async def _download_via_card_click(
     page: Page,
     *,
@@ -2862,6 +3008,7 @@ async def _download_via_card_click(
     out_path: Path,
     timeout_s: float = 120.0,
     project_id: int | None = None,
+    img_url: str | None = None,
 ) -> None:
     """Кликает зелёную «↓ Скачать» на карточке результата с нашим
     `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
@@ -2873,45 +3020,108 @@ async def _download_via_card_click(
     `input_*.png` — ссылку на наш же референс). Реальный финальный
     PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
 
-    Логика:
-      1) находим элемент с текстом `prompt_id_prefix` (он встроен в
-         промт первой строкой и outsee показывает его в карточке);
-      2) поднимаемся к ближайшему ancestor'у, в поддереве которого
-         есть `button > svg.lucide-download` — это и есть «карточка»;
-      3) скроллим её в видимую часть, наводим мышь (action-кнопки
-         появляются только на hover);
-      4) `expect_download` + click → сохраняем файл по пути out_path.
+    Стратегии поиска карточки (в порядке убывания надёжности):
+      A. `img_url` (если передан) — находим `<img src*="…/filename">`
+         в DOM и идём ancestor-axis-ом до карточки с кнопкой download.
+         Это самый надёжный путь: URL уже верифицирован
+         `_wait_image_url_strict` через net_events.
+      B. `prompt_id_prefix` через `get_by_text` — работает только
+         когда outsee показывает наш `[ID: …]` в видимом тексте
+         (не в `<textarea>.value`, который `get_by_text` не видит).
+      C. Перебор последних 10 «больших» картинок на странице — для
+         каждой кликаем, ждём правую панель «Промпт» (outsee
+         показывает там полный текст промта именно по клику),
+         читаем `innerText` + `<textarea>.value` и ищем 8-hex-tail
+         нашего ID. Если матч — это наша карточка.
+
+    Дальше: scroll → hover → expect_download + click.
     """
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     abort_if_cancelled(project_id)
     deadline_ms = int(timeout_s * 1000)
 
-    # 1) Якорь — элемент с нашим уникальным [ID: ...] токеном.
-    id_el = page.get_by_text(prompt_id_prefix, exact=False).first
-    try:
-        await await_with_cancel(
-            id_el.wait_for(state="visible", timeout=deadline_ms),
-            project_id,
+    card = None  # type: ignore[var-annotated]
+
+    # --- Стратегия A: img_url (самая строгая, URL уже верифицирован).
+    if img_url:
+        url_path = _strip_url_query(img_url)
+        # отрезаем scheme+host, оставляем path — он точно уникален
+        # внутри outsee.io ('/outseehistory/generated/…/image_*.jpg').
+        path_only = re.sub(r"^https?://[^/]+", "", url_path)
+        if path_only:
+            try:
+                img_locator = page.locator(
+                    f'img[src*="{path_only}"]'
+                ).first
+                await await_with_cancel(
+                    img_locator.wait_for(
+                        state="attached", timeout=10_000,
+                    ),
+                    project_id,
+                )
+                candidate = img_locator.locator(
+                    "xpath=ancestor::*[descendant::button"
+                    "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+                )
+                if await candidate.count() > 0:
+                    card = candidate
+                    logger.info(
+                        "_download_via_card_click: карточка найдена "
+                        "через img[src*=...{}] (стратегия A)",
+                        path_only[-60:],
+                    )
+            except (PWTimeoutError, Exception) as e:  # noqa: BLE001
+                logger.warning(
+                    "_download_via_card_click: стратегия A (img_url) не "
+                    "сработала ({}), пробую B",
+                    type(e).__name__,
+                )
+
+    # --- Стратегия B: текстовый поиск по [ID: …] (старая логика).
+    if card is None:
+        id_el = page.get_by_text(prompt_id_prefix, exact=False).first
+        try:
+            await await_with_cancel(
+                id_el.wait_for(state="visible", timeout=10_000),
+                project_id,
+            )
+            candidate = id_el.locator(
+                "xpath=ancestor::*[descendant::button"
+                "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+            )
+            if await candidate.count() > 0:
+                card = candidate
+                logger.info(
+                    "_download_via_card_click: карточка найдена "
+                    "через get_by_text(prompt_id) (стратегия B)"
+                )
+        except PWTimeoutError:
+            logger.warning(
+                "_download_via_card_click: стратегия B (get_by_text) "
+                "не сработала за 10s, перехожу к C"
+            )
+
+    # --- Стратегия C: перебор последних 10 больших картинок, клик и
+    # проверка прокинутой панели «Промпт» на наш ID-токен.
+    if card is None:
+        card = await _find_card_by_clicking_images(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=10,
+            project_id=project_id,
         )
-    except PWTimeoutError as e:
+
+    if card is None:
         raise OutseeImageError(
             "outsee image: не нашёл карточку с нашим ID за время ожидания "
             "(скачивание по клику невозможно)",
             context={
                 "prompt_id_prefix": prompt_id_prefix,
+                "img_url": img_url,
                 "timeout_s": timeout_s,
             },
-        ) from e
-
-    # 2) Карточка = ближайший ancestor, у которого в поддереве есть
-    #    наша зелёная кнопка-стрелка (svg.lucide-download внутри button).
-    #    `ancestor::*[…][1]` в XPath — это самый близкий ancestor, потому
-    #    что XPath обходит ancestor-axis от child к корню.
-    card = id_el.locator(
-        "xpath=ancestor::*[descendant::button"
-        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
-    )
+        )
 
     # Не критично — карточка может быть и так в видимой области.
     with contextlib.suppress(Exception):
