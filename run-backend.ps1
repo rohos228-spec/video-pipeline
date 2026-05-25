@@ -26,14 +26,21 @@ if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
     Write-Host ""
 }
 
-$env:TELEGRAM_ENABLED = "false"
 Write-Host "TELEGRAM_ENABLED=false (web-only Studio mode)" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host ">>> DO NOT CLOSE THIS WINDOW while Studio is open <<<" -ForegroundColor Yellow
+Write-Host "    When you see 'Uvicorn running on http://127.0.0.1:8765' — open browser." -ForegroundColor Yellow
 Write-Host ""
 
 & $py -m app.main
-if ($LASTEXITCODE -ne 0) {
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
     Write-Host ""
-    Write-Host "Backend exited with code $LASTEXITCODE" -ForegroundColor Red
+    Write-Host "Backend exited with code $exitCode" -ForegroundColor Red
+    Write-Host "Copy ALL text above (especially Traceback/ERROR) and send for help." -ForegroundColor Red
+} else {
+    Write-Host ""
+    Write-Host "Backend stopped normally." -ForegroundColor Gray
 }
 Write-Host ""
 Write-Host "Press Enter to close this window..." -ForegroundColor Gray
