@@ -17,14 +17,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         return
     logger.info("[#{}] split_frames (xlsx-flow) starting", project.id)
 
-    existing = (
-        await session.execute(select(Frame).where(Frame.project_id == project.id))
-    ).scalars().all()
-    if existing:
-        logger.info("[#{}] frames уже есть ({}), пропуск", project.id, len(existing))
-        project.status = ProjectStatus.frames_ready
-        return
-
     result = await xsr.run_split_xlsx(project)
     await xsr.sync_after_split(session, project, result.project_xlsx)
 
