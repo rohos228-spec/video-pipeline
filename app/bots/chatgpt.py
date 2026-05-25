@@ -26,7 +26,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "paperclip-batch-v74"
+CHATGPT_ATTACH_LOGIC_ID = "drag-drop-primary-v75"
 
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
@@ -688,10 +688,18 @@ class ChatGPTBot:
     async def _attach_files(self, file_paths: list[Path]) -> None:
         """Загружает один или несколько файлов в текущий черновик сообщения.
 
-        Стратегия (как ручной аплоад в Chrome):
-          1. Главный путь — скрепка + set_input_files по одному файлу.
-          2. Fallback — drag-drop / batch set_input_files.
-          3. Жёсткая проверка: имена файлов видны в композере, иначе RuntimeError.
+        Стратегия (как ручной аплоад мышкой в Chrome):
+          1. Главный путь — drag-and-drop эмуляция. В странице конструируется
+             File-объект, кладётся в DataTransfer, диспатчатся события
+             dragenter/dragover/drop на форму композера. Для ChatGPT это
+             выглядит как настоящее перетаскивание мышью — запускается
+             штатный upload-pipeline, файл реально уходит в backend.
+          2. Fallback — скрепка + set_input_files. Превью появляется быстро,
+             но ChatGPT иногда не принимает контент файла, отправленного
+             таким путём (видно превью, но модель «не видит» вложение).
+             Поэтому это запасной вариант.
+          3. Жёсткая проверка: имена файлов видны в композере и spinner
+             загрузки пропал — иначе RuntimeError.
         """
         if not file_paths:
             raise ValueError("_attach_files: file_paths пустой")
@@ -712,46 +720,66 @@ class ChatGPTBot:
         )
 
         before = await self._count_attachment_previews()
-        paperclip_ok = False
+
+        # --- Шаг 1: drag-and-drop эмуляция (главный путь). ---
+        drag_drop_ok = False
         try:
-            logger.info(
-                "ChatGPT: paperclip batch — [{}]",
-                names,
-            )
-            await self._attach_batch_via_paperclip(file_paths)
+            logger.info("ChatGPT: drag-drop batch — [{}]", names)
+            await self._drag_drop_files(file_paths)
+            await self._wait_attachments_ready(file_paths, timeout=120)
             if await self._files_visible_in_composer(file_paths):
-                paperclip_ok = True
-                logger.info("ChatGPT: paperclip batch — все файлы видны [{}]", names)
+                drag_drop_ok = True
+                logger.info("ChatGPT: drag-drop batch — все файлы видны [{}]", names)
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "ChatGPT: paperclip batch не удался ({}) — fallback по одному файлу",
+                "ChatGPT: drag-drop batch не удался ({}) — fallback по одному файлу",
                 e,
             )
             try:
                 for i, fp in enumerate(file_paths, start=1):
                     logger.info(
-                        "ChatGPT: paperclip single {}/{} — {}", i, len(file_paths), fp.name
+                        "ChatGPT: drag-drop single {}/{} — {}",
+                        i,
+                        len(file_paths),
+                        fp.name,
                     )
-                    await self._attach_one_via_paperclip(fp)
+                    await self._drag_drop_files([fp])
+                    await self._wait_attachments_ready([fp], timeout=120)
                 if await self._files_visible_in_composer(file_paths):
-                    paperclip_ok = True
-                    logger.info("ChatGPT: paperclip single — все файлы видны [{}]", names)
+                    drag_drop_ok = True
+                    logger.info(
+                        "ChatGPT: drag-drop single — все файлы видны [{}]", names
+                    )
             except Exception as e2:  # noqa: BLE001
                 logger.warning(
-                    "ChatGPT: paperclip single не удался ({}) — fallback drag-drop",
+                    "ChatGPT: drag-drop single не удался ({}) — fallback на paperclip",
                     e2,
                 )
 
-        if not paperclip_ok:
-            for i, fp in enumerate(file_paths, start=1):
-                logger.info("ChatGPT: fallback файл {}/{} — {}", i, len(file_paths), fp.name)
-                await self._attach_one_file(fp)
+        # --- Шаг 2: paperclip + set_input_files (fallback). ---
+        if not drag_drop_ok:
+            try:
+                logger.info("ChatGPT: paperclip batch fallback — [{}]", names)
+                await self._attach_batch_via_paperclip(file_paths)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: paperclip batch fallback упал ({}) — пробую по одному",
+                    e,
+                )
+                for i, fp in enumerate(file_paths, start=1):
+                    logger.info(
+                        "ChatGPT: paperclip single fallback {}/{} — {}",
+                        i,
+                        len(file_paths),
+                        fp.name,
+                    )
+                    await self._attach_one_via_paperclip(fp)
 
         after = await self._count_attachment_previews()
         attached = after - before
         if attached < len(file_paths):
             logger.warning(
-                "ChatGPT: per-file аплоад {}/{} превью — пробую batch fallback",
+                "ChatGPT: аплоад {}/{} превью — пробую batch fallback",
                 attached,
                 len(file_paths),
             )
