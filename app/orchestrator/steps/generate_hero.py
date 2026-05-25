@@ -847,7 +847,8 @@ async def _generate_one_excel_character(
     out_dir = project.data_dir / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{ch.id}.png"
-    prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}]"
+    short_uuid = uuid.uuid4().hex[:8]
+    prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}-{short_uuid}]"
 
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
