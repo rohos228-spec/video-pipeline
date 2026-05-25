@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -265,6 +266,26 @@ class ChatGPTBot:
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
         await self._dismiss_no_auth_modal(page)
 
+    async def _click_send(self) -> None:
+        """Нажать Send без ввода текста в композер (только вложения)."""
+        page = await self._page_ready()
+        await self._dismiss_no_auth_modal(page)
+        await asyncio.sleep(0.5)
+        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=12)
+        if send_sel:
+            logger.info("ChatGPT: Send (только файлы) — кнопка ({})", send_sel)
+            try:
+                await page.locator(send_sel).first.click(timeout=5_000)
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ChatGPT: клик Send упал ({}): {}", send_sel, e)
+        await self._dump_composer_html()
+        await self._dump_send_button_candidates(page)
+        raise RuntimeError(
+            "ChatGPT: не удалось отправить сообщение с вложениями — "
+            "кнопка Send не найдена или неактивна"
+        )
+
     async def _send_prompt(self, text: str) -> None:
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
@@ -467,24 +488,7 @@ class ChatGPTBot:
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
     async def _attach_files(self, file_paths: list[Path]) -> None:
-        """Загружает один или несколько файлов в текущий черновик сообщения.
-
-        Стратегия (на 2026-Q2 ChatGPT):
-          1. **Главный путь — drag-and-drop через синтетический DragEvent**
-             c DataTransfer, содержащим File-объекты. Это работает как
-             ручное перетаскивание файла на форму композера: ChatGPT
-             триггерит свой полный upload-pipeline (POST на /backend-api/files)
-             и реально грузит файл на сервер. set_input_files в новых билдах
-             часто показывает превью, но реальный upload зависает в
-             «бесконечной загрузке».
-          2. **Fallback — классический set_input_files** через скрытый
-             input[type=file]. Используется если drag-drop по какой-то причине
-             не сработал. Здесь же сначала кликаем по скрепке/«+» и пункту
-             «Add photos and files», чтобы материализовать input в DOM.
-          3. **Жёстко ждём превью + завершение upload-spinner**. Если ни один
-             способ не привёл к появлению превью в окне ChatGPT — кидаем
-             RuntimeError с диагностикой и НЕ отправляем промт.
-        """
+        """Загружает файлы по одному — надёжнее для xlsx + промт-файлов."""
         if not file_paths:
             raise ValueError("_attach_files: file_paths пустой")
 
@@ -496,113 +500,84 @@ class ChatGPTBot:
                 raise FileNotFoundError(f"upload: файл не найден {fp}")
 
         names = ", ".join(p.name for p in file_paths)
-        logger.info("ChatGPT: начинаю аплоад файлов [{}]", names)
+        logger.info("ChatGPT: аплоад {} файлов по одному [{}]", len(file_paths), names)
 
-        # 1. Главный путь — drag-and-drop.
+        for i, fp in enumerate(file_paths, start=1):
+            logger.info("ChatGPT: файл {}/{} — {}", i, len(file_paths), fp.name)
+            await self._attach_single_file(fp)
+
+    async def _attach_single_file(self, file_path: Path) -> None:
+        """Один файл: drag-drop, при неудаче — set_input_files."""
+        page = await self._page_ready()
+
         drag_drop_ok = False
         try:
-            await self._drag_drop_files(file_paths)
+            await self._drag_drop_files([file_path])
             preview_sel = await _first_matching(
-                page, FILE_PREVIEW_SELECTORS, timeout=20
+                page, FILE_PREVIEW_SELECTORS, timeout=25
             )
             if preview_sel:
                 logger.info(
-                    "ChatGPT: drag-drop превью появилось ({})", preview_sel
+                    "ChatGPT: drag-drop превью для {} ({})",
+                    file_path.name,
+                    preview_sel,
                 )
                 await self._wait_upload_done(timeout=120)
                 drag_drop_ok = True
             else:
                 logger.warning(
-                    "ChatGPT: drag-drop не дал превью за 20с — "
-                    "перехожу на fallback set_input_files"
+                    "ChatGPT: drag-drop без превью для {} — fallback",
+                    file_path.name,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "ChatGPT: drag-drop упал ({}) — перехожу на fallback "
-                "set_input_files",
+                "ChatGPT: drag-drop для {} упал ({}), fallback",
+                file_path.name,
                 e,
             )
 
         if drag_drop_ok:
             return
 
-        # 2. Fallback — set_input_files через скрытый input[type=file].
-        logger.info("ChatGPT: fallback на set_input_files")
-        # 2a. Пытаемся найти input[type=file] напрямую.
+        logger.info("ChatGPT: set_input_files для {}", file_path.name)
         input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        if input_sel:
-            logger.info("ChatGPT: input[type=file] найден сразу ({})", input_sel)
-
-        # 2b. Если не нашли — кликаем по скрепке + поповер-меню.
         if not input_sel:
             attach_sel = await _first_matching(
                 page, ATTACH_BUTTON_SELECTORS, timeout=10
             )
-            if not attach_sel:
-                await self._dump_composer_html()
-                raise RuntimeError(
-                    "ChatGPT: drag-drop не сработал И не нашёл "
-                    "кнопку-скрепку (ATTACH_BUTTON_SELECTORS). "
-                    "Возможно изменился UI — пришли скрин окна Chrome "
-                    "или строку 'composer outerHTML' из консоли."
-                )
-            logger.info("ChatGPT: кликаю по скрепке ({})", attach_sel)
-            try:
-                await page.locator(attach_sel).first.click(timeout=3_000)
-                await asyncio.sleep(0.6)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "ChatGPT: не смог кликнуть скрепку {}: {}", attach_sel, e
-                )
-
-            menu_sel = await _first_matching(
-                page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
-            )
-            if menu_sel:
-                logger.info("ChatGPT: кликаю по пункту меню '{}'", menu_sel)
+            if attach_sel:
                 try:
-                    await page.locator(menu_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.4)
+                    await page.locator(attach_sel).first.click(timeout=3_000)
+                    await asyncio.sleep(0.6)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "ChatGPT: не смог кликнуть пункт меню {}: {}",
-                        menu_sel,
-                        e,
-                    )
-
-            input_sel = await _first_matching(
-                page, FILE_INPUT_SELECTORS, timeout=10
-            )
+                    logger.warning("ChatGPT: скрепка не кликнулась: {}", e)
+                menu_sel = await _first_matching(
+                    page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
+                )
+                if menu_sel:
+                    try:
+                        await page.locator(menu_sel).first.click(timeout=3_000)
+                        await asyncio.sleep(0.4)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("ChatGPT: меню вложений: {}", e)
+            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
 
         if not input_sel:
             await self._dump_composer_html()
             raise RuntimeError(
-                "ChatGPT: drag-drop не сработал И не нашёл input[type=file] "
-                "даже после клика по скрепке. Возможно изменился UI — "
-                "пришли скрин окна Chrome или строки 'composer outerHTML' "
-                "из консоли."
+                f"ChatGPT: не удалось прикрепить {file_path.name} "
+                "(нет input[type=file])"
             )
 
-        # 2c. set_input_files.
-        loc = page.locator(input_sel).last
-        await loc.set_input_files([str(p) for p in file_paths])
-        logger.info("ChatGPT: set_input_files выполнен через {}", input_sel)
-
-        # 2d. Ждём превью.
-        preview_timeout = 60.0
+        await page.locator(input_sel).last.set_input_files([str(file_path)])
         preview_sel = await _first_matching(
-            page, FILE_PREVIEW_SELECTORS, timeout=preview_timeout
+            page, FILE_PREVIEW_SELECTORS, timeout=60
         )
         if not preview_sel:
             await self._dump_composer_html()
             raise RuntimeError(
-                f"ChatGPT: ни drag-drop, ни set_input_files не сработали — "
-                f"за {int(preview_timeout)} сек не появилось превью файла(ов) "
-                f"[{names}]. Аплоад НЕ удался — промт в ChatGPT не отправляю."
+                f"ChatGPT: {file_path.name} — превью не появилось после set_input_files"
             )
-        logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
-
-        # 2e. Ждём, пока пропадёт upload-spinner.
         await self._wait_upload_done(timeout=120)
 
     async def _drag_drop_files(self, file_paths: list[Path]) -> None:
@@ -774,8 +749,12 @@ class ChatGPTBot:
             await asyncio.sleep(1.0)
         logger.warning(
             "ChatGPT: upload-spinner так и не пропал за {}с — "
-            "продолжаю, но upload может быть незавершён",
+            "аплоад, вероятно, не завершён",
             timeout,
+        )
+        raise RuntimeError(
+            f"ChatGPT: загрузка файла не завершилась за {int(timeout)}с "
+            "(spinner не пропал). Сообщение не отправляю."
         )
 
     async def _dump_composer_html(self, *, max_chars: int = 4000) -> None:
@@ -813,34 +792,37 @@ class ChatGPTBot:
         *,
         timeout: float = 900,
     ) -> str:
-        """В текущем чате прикрепляет файл, шлёт промт, возвращает текст ответа.
-
-        Файл, который GPT может вернуть в ответ, скачивается отдельным методом
-        `download_attachment_from_last_reply` после успешного ask_with_file.
-        """
+        """Прикрепляет файл (+ сопр. текст файлом) и отправляет без ввода в композер."""
         return await self.ask_with_files(prompt, [file_path], timeout=timeout)
 
-    async def ask_with_files(
+    @staticmethod
+    def _write_chat_message_file(prompt: str, file_paths: list[Path]) -> Path:
+        """Сохраняет сопр. текст во временный .txt рядом с вложениями."""
+        parent = file_paths[0].parent if file_paths else Path(".")
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        chat_file = parent / f"chat_message_{ts}.txt"
+        chat_file.write_text(prompt.strip() + "\n", encoding="utf-8")
+        return chat_file
+
+    async def ask_with_files_only(
         self,
-        prompt: str,
         file_paths: list[Path],
         *,
         timeout: float = 900,
         project_id: int | None = None,
     ) -> str:
-        """Аналогично `ask_with_file`, но прикрепляет НЕСКОЛЬКО файлов
-        к одному сообщению, потом шлёт промт и возвращает текст ответа.
-        """
+        """Прикрепляет файлы и жмёт Send — поле ввода не трогаем."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        if not file_paths:
+            raise ValueError("ask_with_files_only: file_paths пустой")
 
         abort_if_cancelled(project_id)
         await self._attach_files(file_paths)
         abort_if_cancelled(project_id)
-        await self._send_prompt(prompt)
+        await self._click_send()
         await self._wait_until_done(timeout=timeout, project_id=project_id)
 
-        # Ждём стабилизации текста (как в обычном ask), но не строго — Code
-        # Interpreter иногда генерирует файл и сразу отдаёт короткий текст.
         page = await self._page_ready()
         last_text = ""
         stable_for = 0.0
@@ -869,8 +851,33 @@ class ChatGPTBot:
                 stable_for = 0.0
                 last_text = text
         reply = await self._read_last_reply()
-        logger.info("ChatGPT (file reply) len={}", len(reply))
+        logger.info("ChatGPT (files-only reply) len={}", len(reply))
         return reply
+
+    async def ask_with_files(
+        self,
+        prompt: str,
+        file_paths: list[Path],
+        *,
+        timeout: float = 900,
+        project_id: int | None = None,
+    ) -> str:
+        """Прикрепляет файлы; сопр. текст — отдельным .txt, композер не заполняем."""
+        all_paths = list(file_paths)
+        stripped = (prompt or "").strip()
+        if stripped:
+            chat_file = self._write_chat_message_file(stripped, file_paths)
+            all_paths.append(chat_file)
+            logger.info(
+                "ChatGPT: сопр. текст → {} ({} байт), композер не трогаем",
+                chat_file.name,
+                chat_file.stat().st_size,
+            )
+        return await self.ask_with_files_only(
+            all_paths,
+            timeout=timeout,
+            project_id=project_id,
+        )
 
     async def _try_download_via_file_card(
         self, page: Page, *, timeout: float = 60,

@@ -2,8 +2,9 @@
 
 Правило отправки:
   - Мастер-промт (выбранный variant с диска) → всегда во временный файл.
-  - Текст в чат → только `gpt_text_builder.get_effective_text()` (override
-    пользователя или дефолтное сопр. сообщение без мастер-промта).
+  - Сопр. сообщение (`gpt_text_builder.get_effective_text`) → тоже файл
+    (chat_message_*.txt), композер ChatGPT не заполняем.
+  - Excel и прочие вложения → файлами; Send без текста в поле ввода.
 """
 
 from __future__ import annotations
@@ -125,6 +126,19 @@ def write_img_pr_prompt_file(
     return prompt_file
 
 
+def write_chat_message_file(
+    tmp_dir: Path,
+    step_code: str,
+    chat_msg: str,
+    *,
+    ts: str | None = None,
+) -> Path:
+    """Сопр. сообщение для ChatGPT — отдельный .txt (не в композер)."""
+    chat_file = tmp_dir / f"chat_message_{step_code}_{ts or _timestamp()}.txt"
+    chat_file.write_text(chat_msg.strip() + "\n", encoding="utf-8")
+    return chat_file
+
+
 def chat_message(project: Project, step_code: str, **ctx) -> str:
     """Текст сообщения в ChatGPT (без мастер-промта)."""
     return gtb.get_effective_text(project, step_code, **ctx).strip()
@@ -137,11 +151,15 @@ async def ask_with_prompt_files(
     *,
     timeout: int = 900,
     project_id: int | None = None,
+    step_code: str = "step",
 ) -> str:
+    """Новый чат: промт + xlsx + сопр. текст — все файлами, без ввода в композер."""
     await gpt.new_conversation()
-    return await gpt.ask_with_files(
-        chat_msg,
-        attachments,
+    tmp_dir = attachments[0].parent if attachments else Path(".")
+    ts = _timestamp()
+    chat_file = write_chat_message_file(tmp_dir, step_code, chat_msg, ts=ts)
+    return await gpt.ask_with_files_only(
+        [*attachments, chat_file],
         timeout=timeout,
         project_id=project_id,
     )
