@@ -41,15 +41,11 @@ async def start_step(
     if is_step_disabled(project, step_code):
         label = step_code.replace("_", " ")
         raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
-    from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
-
-    if graph_executor_enabled(project):
-        graph = await load_graph_for_project(session, project)
-        if not graph.is_step_reachable(project, step_code):
-            raise ValueError(
-                f"шаг «{step_code.replace('_', ' ')}» недостижим по текущему графу — "
-                "проверьте связи и завершённые предшественники"
-            )
+    # Ручной запуск шага из UI (▶) — оператор знает, что делает.
+    # Проверка «есть ли все done-предшественники по графу» здесь отключена
+    # намеренно: граф остаётся как навигация/визуализация, но не блокирует
+    # запуск произвольного шага. is_step_disabled выше всё ещё уважает явно
+    # отключённые ноды.
     clear_stop(project.id)
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
