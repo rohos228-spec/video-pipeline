@@ -29,7 +29,7 @@ function Get-NpmCmd {
     return $null
 }
 
-function Test-BackendReady([int]$TimeoutSec = 45) {
+function Test-BackendReady([int]$TimeoutSec = 90) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
@@ -286,7 +286,7 @@ function Do-QuickStart {
         Start-Process "http://127.0.0.1:8765"
         Write-Log "Studio ready. Keep the backend PowerShell window open." "DarkGreen"
     } else {
-        Write-Log "Backend did not respond in 45s. Check the backend window for errors." "DarkRed"
+        Write-Log "Backend did not respond in 90s. Check the backend window for errors." "DarkRed"
         Write-Log "Tip: run check-web.cmd or button 15 after backend is up." "DarkOrange"
     }
 }
@@ -309,7 +309,7 @@ function Do-StartStudio {
         Write-Log "Studio ready at http://127.0.0.1:8765 (backend window must stay open)" "DarkGreen"
         Start-Process "http://127.0.0.1:8765"
     } else {
-        Write-Log "Backend did not respond in 45s - see errors in the backend PowerShell window" "DarkRed"
+        Write-Log "Backend did not respond in 90s - see errors in the backend PowerShell window" "DarkRed"
     }
 }
 

@@ -59,4 +59,9 @@ Set-Location $DIR_NAME
 Write-Host ""
 Write-Host "==> Запускаю install.ps1" -ForegroundColor Cyan
 Write-Host ""
-& powershell -ExecutionPolicy Bypass -File ".\install.ps1"
+& powershell -ExecutionPolicy Bypass -File ".\install.ps1" -NonInteractive
+Write-Host ""
+Write-Host "==> Готово. Запусти Studio:" -ForegroundColor Green
+Write-Host "    cd $DIR_NAME" -ForegroundColor White
+Write-Host "    Двойной клик VideoPipelineStudio.cmd -> * Quick start" -ForegroundColor White
+Write-Host "    Браузер: http://127.0.0.1:8765" -ForegroundColor Yellow

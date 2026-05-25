@@ -1,20 +1,65 @@
 # Как запустить video-pipeline (Windows, без Docker)
 
-## Веб-студия без Telegram (рекомендуется)
+## Установка на новый ПК (утром, ~15–30 мин)
 
-Два окна PowerShell из корня `video-pipeline`:
+Открой **PowerShell от администратора не нужен** — обычный PowerShell и одну команду:
 
 ```powershell
-# Окно 1 — бэкенд (воркер + API :8765)
-.\start-studio.ps1
+iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
+```
 
-# Окно 2 — UI
+Скрипт сам:
+1. Поставит Git, Python 3.11, FFmpeg, Node.js (если нет).
+2. Склонирует репо в папку `video-pipeline\`.
+3. Создаст `.venv`, поставит Python-зависимости (~1 GB).
+4. Соберёт Web UI (`web/out/`).
+5. Создаст `.env` с `TELEGRAM_ENABLED=false` (web-only Studio).
+
+**После установки:**
+1. Зайди в папку `video-pipeline\`.
+2. Двойной клик **`VideoPipelineStudio.cmd`** → кнопка **`* Quick start`** или **`2 Start Studio`**.
+3. Браузер: **http://127.0.0.1:8765** (Ctrl+F5).
+4. Проверка: двойной клик **`verify-update.cmd`** или  
+   `Invoke-RestMethod http://127.0.0.1:8765/api/studio-version` → `pipeline_ok: True`.
+
+**Chrome для ChatGPT/outsee** (перед первым шагом пайплайна):
+
+```powershell
+& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=29229 `
+  --user-data-dir="$env:USERPROFILE\.vp_browser_data"
+```
+
+Залогинься в ChatGPT и outsee.io в этом окне Chrome. Окно Chrome держи открытым.
+
+**Telegram (опционально):** открой `.env`, впиши `TELEGRAM_BOT_TOKEN`, поставь `TELEGRAM_ENABLED=true`, запусти `.\start.ps1`.
+
+---
+
+## Веб-студия без Telegram (рекомендуется)
+
+**Продакшен (одно окно, UI на :8765):**
+
+```powershell
+# Двойной клик VideoPipelineStudio.cmd -> 2 Start Studio
+# или вручную:
+.\run-backend.ps1
+```
+
+Браузер: **http://127.0.0.1:8765**
+
+**Разработка UI (два окна, hot reload на :3000):**
+
+```powershell
+.\start-studio.ps1
 cd web
 npm install
 npm run dev
 ```
 
-Браузер: **http://localhost:3000**. При первом запуске создаётся один пилотный проект,
+Браузер: **http://localhost:3000**
+
+При первом запуске создаётся один пилотный проект,
 `auto_mode` включён — HITL и шаги только в веб-UI. Chrome CDP (`:29229`) нужен,
 когда реально гоняете шаги ChatGPT/outsee.
 
@@ -39,17 +84,10 @@ iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/de
 
 Что произойдёт:
 1. Поставит Git (через winget) и склонирует репо в папку `video-pipeline\`.
-2. Поставит Python 3.11, FFmpeg.
-3. Создаст venv, поставит все Python-зависимости.
-4. Создаст `.env` из шаблона, спросит токен Telegram-бота.
-5. Скажет дальше: `cd video-pipeline; .\start.ps1`.
-
-`start.ps1` запустит Chrome с remote-debugging-port и поднимет бота. При первом
-запуске залогинься в открывшемся Chrome:
-- https://chatgpt.com/
-- https://outsee.io/
-
-После этого в Telegram пиши боту: `/start`, потом `/new <тема>`.
+2. Поставит Python 3.11, FFmpeg, Node.js.
+3. Создаст venv, поставит все Python-зависимости и соберёт Web UI.
+4. Создаст `.env` с `TELEGRAM_ENABLED=false` (web-only).
+5. Дальше: `VideoPipelineStudio.cmd` → **Quick start** → http://127.0.0.1:8765
 
 **Что нужно от тебя руками** (только это, остальное — скрипт):
 - Токен Telegram-бота от @BotFather (либо у тебя уже есть от `@content1400_bot`).

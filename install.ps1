@@ -27,6 +27,14 @@ function Have-Cmd($name) {
     return [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+function Get-NpmCmd {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npm) { return $npm.Source }
+    $guess = Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"
+    if (Test-Path $guess) { return $guess }
+    return $null
+}
+
 function Refresh-Path {
     $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
     $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
@@ -219,8 +227,10 @@ if (-not $hasToken) {
                     }
                 }
             }
-            Write-Warn "TELEGRAM_BOT_TOKEN пуст — web-only (.\start-studio.ps1)."
+            Write-Warn "TELEGRAM_BOT_TOKEN пуст — web-only Studio."
         }
+    } else {
+        Write-Warn "NonInteractive: TELEGRAM_BOT_TOKEN пуст — web-only Studio."
     }
 } else {
     Write-OK "TELEGRAM_BOT_TOKEN уже задан"
@@ -236,6 +246,22 @@ if (-not $hasProxy -and $TelegramProxyUrl) {
     Write-OK "TELEGRAM_PROXY_URL установлен (SOCKS5)"
 }
 
+# Web-only по умолчанию (Studio без Telegram)
+$hasTelegramEnabled = $false
+for ($i = 0; $i -lt $envLines.Count; $i++) {
+    if ($envLines[$i] -match "^TELEGRAM_ENABLED=") {
+        $hasTelegramEnabled = $true
+        if ($envLines[$i] -match "^TELEGRAM_ENABLED=\s*(true|1)\s*$") {
+            # оставляем как есть
+        } elseif (-not $hasToken) {
+            $envLines[$i] = "TELEGRAM_ENABLED=false"
+        }
+    }
+}
+if (-not $hasTelegramEnabled) {
+    $envLines += "TELEGRAM_ENABLED=false"
+}
+
 Set-Content -Path ".env" -Value $envLines -Encoding UTF8
 
 # ---------- 7. data/ ----------
@@ -244,6 +270,41 @@ Write-Step "Создаю папку data/"
 New-Item -ItemType Directory -Force -Path "data" | Out-Null
 Write-OK "data/ готова"
 
+# ---------- 8. Node.js + Web UI (production build) ----------
+
+Write-Step "Проверяю Node.js (нужен для веб-интерфейса Studio)"
+$npmCmd = Get-NpmCmd
+if (-not $npmCmd) {
+    Write-Warn "Node.js не найден — ставлю LTS через winget"
+    winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --silent
+    Refresh-Path
+    $npmCmd = Get-NpmCmd
+}
+if (-not $npmCmd) {
+    Write-Warn "npm всё ещё не в PATH. Закрой PowerShell, открой новый и выполни:"
+    Write-Warn "  cd web; npm install; npm run build"
+} else {
+    $nodeVer = & node --version 2>$null
+    Write-OK "Node.js: $nodeVer"
+    Write-Step "Собираю Web UI (npm install + build, ~2-5 мин)"
+    Push-Location "web"
+    try {
+        & $npmCmd install 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        & $npmCmd run build 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+        if (-not (Test-Path "out\index.html")) { throw "web/out/index.html missing after build" }
+        Write-OK "Web UI собран (web/out/index.html)"
+    }
+    catch {
+        Write-Warn "Сборка UI не удалась: $($_.Exception.Message)"
+        Write-Warn "Позже: VideoPipelineStudio.cmd -> кнопка 6 Build Web UI"
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 # ---------- Done ----------
 
 Write-Host ""
@@ -251,21 +312,19 @@ Write-Host "===================================" -ForegroundColor Green
 Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Дальше (веб-студия без Telegram — по умолчанию):" -ForegroundColor Cyan
-Write-Host "  1. Окно 1 — бэкенд:" -ForegroundColor Cyan
-Write-Host "       .\run-backend.ps1" -ForegroundColor White
-Write-Host "     (или .\start-studio.ps1 — то же самое с проверкой Chrome)"
-Write-Host "  2. Окно 2 — UI:" -ForegroundColor Cyan
-Write-Host "       cd web" -ForegroundColor White
-Write-Host "       npm install" -ForegroundColor White
-Write-Host "       npm run dev" -ForegroundColor White
-Write-Host "     Браузер: http://localhost:3000"
-Write-Host "  3. Chrome CDP :29229 — только для шагов ChatGPT/outsee (см. HOW_TO_RUN.md)."
+Write-Host "Запуск Studio (рекомендуется):" -ForegroundColor Cyan
+Write-Host "  Двойной клик: VideoPipelineStudio.cmd" -ForegroundColor White
+Write-Host "  Кнопка * Quick start  или  2 Start Studio" -ForegroundColor White
+Write-Host "  Браузер: http://127.0.0.1:8765  (не :3000)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Вручную (если нужно):" -ForegroundColor DarkGray
+Write-Host "  .\run-backend.ps1   — бэкенд + UI на :8765" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "Chrome CDP :29229 — для шагов ChatGPT/outsee (см. HOW_TO_RUN.md)." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "С Telegram-ботом:" -ForegroundColor DarkGray
-Write-Host "  TELEGRAM_ENABLED=true + токен в .env, затем .\start.ps1"
+Write-Host "  TELEGRAM_ENABLED=true + токен в .env, затем .\start.ps1" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "GUI-меню (установка, обновление, запуск):" -ForegroundColor Cyan
-Write-Host "  Двойной клик: VideoPipelineStudio.cmd" -ForegroundColor White
-Write-Host "  или: powershell -ExecutionPolicy Bypass -File .\VideoPipelineStudio.ps1" -ForegroundColor White
+Write-Host "Проверка версии после запуска:" -ForegroundColor DarkGray
+Write-Host "  verify-update.cmd" -ForegroundColor DarkGray
 Write-Host ""
