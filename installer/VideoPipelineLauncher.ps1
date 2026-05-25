@@ -119,12 +119,21 @@ function Start-BackendWindow {
 
 $script:LogBox = $null
 $script:StatusLbl = $null
+$script:LauncherLogFile = Join-Path $Root "data\launcher.log"
 
 function Write-Log([string]$Text, [string]$Color = "Black") {
     if (-not $script:LogBox) { return }
+    $line = "$(Get-Date -Format 'HH:mm:ss')  $Text"
+    try {
+        $logDir = Split-Path -Parent $script:LauncherLogFile
+        if (-not (Test-Path $logDir)) {
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        }
+        Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
+    } catch { }
     $hadSelection = $script:LogBox.SelectionLength -gt 0
     $script:LogBox.SelectionColor = $Color
-    $script:LogBox.AppendText("$(Get-Date -Format 'HH:mm:ss')  $Text`r`n")
+    $script:LogBox.AppendText("$line`r`n")
     if (-not $hadSelection) {
         $script:LogBox.ScrollToCaret()
     }
@@ -137,9 +146,40 @@ function Copy-LauncherLogs {
     } else {
         $script:LogBox.Text
     }
-    if ([string]::IsNullOrWhiteSpace($text)) { return }
-    [System.Windows.Forms.Clipboard]::SetText($text)
-    Write-Log "Logs copied to clipboard" "Gray"
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Log is empty.",
+            "Copy logs",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+        return
+    }
+    try {
+        [System.Windows.Forms.Clipboard]::Clear()
+        [System.Windows.Forms.Clipboard]::SetText($text)
+        [System.Windows.Forms.MessageBox]::Show(
+            "Copied to clipboard.`n`nBackup file:`n$($script:LauncherLogFile)",
+            "Copy logs",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Clipboard failed: $($_.Exception.Message)`n`nOpen log file instead:`n$($script:LauncherLogFile)",
+            "Copy logs",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+    }
+}
+
+function Open-LauncherLogFile {
+    if (-not (Test-Path $script:LauncherLogFile)) {
+        Write-Log "Log file not created yet" "DarkOrange"
+        return
+    }
+    Start-Process notepad $script:LauncherLogFile
 }
 
 function Invoke-Cmd([string]$Label, [scriptblock]$Block) {
@@ -451,8 +491,8 @@ $commands = @(
 )
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Video Pipeline Studio"
-$form.Size = New-Object System.Drawing.Size(740, 680)
+$form.Text = "Video Pipeline Studio $(Get-StudioVersionLabel) git:$(Get-GitHead)"
+$form.Size = New-Object System.Drawing.Size(740, 720)
 $form.StartPosition = "CenterScreen"
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
@@ -495,20 +535,34 @@ $logMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $copyMenuItem = $logMenu.Items.Add("Copy (Ctrl+C)")
 $copyMenuItem.Add_Click({ Copy-LauncherLogs })
 $LogBox.ContextMenuStrip = $logMenu
+$LogBox.Add_KeyDown({
+    param($sender, $e)
+    if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::C) {
+        Copy-LauncherLogs
+        $e.Handled = $true
+    }
+})
 $form.Controls.Add($LogBox)
 $script:LogBox = $LogBox
 
 $copyLogsBtn = New-Object System.Windows.Forms.Button
 $copyLogsBtn.Text = "Copy logs"
-$copyLogsBtn.Size = New-Object System.Drawing.Size(100, 24)
+$copyLogsBtn.Size = New-Object System.Drawing.Size(88, 26)
 $copyLogsBtn.Location = New-Object System.Drawing.Point(16, 392)
 $copyLogsBtn.Add_Click({ Copy-LauncherLogs })
 $form.Controls.Add($copyLogsBtn)
 
+$openLogBtn = New-Object System.Windows.Forms.Button
+$openLogBtn.Text = "Open log file"
+$openLogBtn.Size = New-Object System.Drawing.Size(88, 26)
+$openLogBtn.Location = New-Object System.Drawing.Point(110, 392)
+$openLogBtn.Add_Click({ Open-LauncherLogFile })
+$form.Controls.Add($openLogBtn)
+
 $logHintLbl = New-Object System.Windows.Forms.Label
-$logHintLbl.Text = "Select text in log or click Copy logs (Ctrl+C works too)"
+$logHintLbl.Text = "Ctrl+C / Copy logs / data\launcher.log — backend must stay open on :8765"
 $logHintLbl.AutoSize = $true
-$logHintLbl.Location = New-Object System.Drawing.Point(122, 396)
+$logHintLbl.Location = New-Object System.Drawing.Point(206, 396)
 $logHintLbl.ForeColor = [System.Drawing.Color]::Gray
 $form.Controls.Add($logHintLbl)
 
