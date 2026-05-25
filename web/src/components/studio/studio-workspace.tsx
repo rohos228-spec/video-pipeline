@@ -13,7 +13,7 @@ import { AiNodeDialog } from "@/components/canvas/ai-node-dialog";
 import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
-import { defaultPromptSlots, gptTextSlotForNode, type NodePromptSlot } from "@/lib/node-prompts";
+import { gptTextSlotForNode, resolvePromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -196,7 +196,8 @@ export function StudioWorkspace({
       const meta = (project.data?.meta || {}) as {
         custom_prompts?: Record<string, NodePromptSlot[]>;
       };
-      return meta.custom_prompts?.[nodeKey] ?? defaultPromptSlots(nodeType);
+      const stored = meta.custom_prompts?.[nodeKey];
+      return resolvePromptSlots(nodeType, stored);
     },
     [project.data?.meta],
   );
@@ -248,7 +249,7 @@ export function StudioWorkspace({
           custom_prompts?: Record<string, NodePromptSlot[]>;
         };
         const custom = { ...(meta.custom_prompts || {}) };
-        const list = [...(custom[nodeKey] || defaultPromptSlots(nodeType))];
+        const list = resolvePromptSlots(nodeType, custom[nodeKey]);
         const n = list.filter((s) => s.id.startsWith("custom_")).length + 1;
         list.push({
           id: `custom_${n}`,
@@ -257,7 +258,7 @@ export function StudioWorkspace({
           stepCode: stepCodeForNodeType(nodeType),
           custom: true,
         });
-        custom[nodeKey] = list;
+        custom[nodeKey] = resolvePromptSlots(nodeType, list);
         await persistMeta({ custom_prompts: custom });
         const step = stepCodeForNodeType(nodeType);
         const slotId = `custom_${n}`;
@@ -275,14 +276,18 @@ export function StudioWorkspace({
         toast.success("Промт добавлен в схему ноды");
       },
       onRemovePrompt: async (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
+        if (slot.kind === "excel" || slot.id === "excel") {
+          toast.error("Excel нельзя удалить — он обязателен первым в каждой ноде");
+          return;
+        }
         const meta = (project.data?.meta || {}) as {
           custom_prompts?: Record<string, NodePromptSlot[]>;
         };
         const custom = { ...(meta.custom_prompts || {}) };
-        const list = (custom[nodeKey] || defaultPromptSlots(nodeType)).filter(
+        const list = resolvePromptSlots(nodeType, custom[nodeKey]).filter(
           (s) => s.id !== slot.id,
         );
-        custom[nodeKey] = list;
+        custom[nodeKey] = resolvePromptSlots(nodeType, list);
         await persistMeta({ custom_prompts: custom });
         toast.success("Промт удалён");
       },

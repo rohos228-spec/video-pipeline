@@ -1,6 +1,8 @@
 /** Схема промтов для ноды (меню «V»). */
 
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
+import { NODE_CATALOG } from "./node-catalog";
+import { stepCodeForNodeType } from "./node-step-map";
 
 export type NodePromptKind = "gpt" | "text" | "blocks" | "excel";
 
@@ -13,6 +15,8 @@ export interface NodePromptSlot {
   /** Пользовательский слот (+промт). */
   custom?: boolean;
 }
+
+const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed"]);
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
@@ -29,10 +33,14 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" },
   ],
   hero: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "hero" },
     { id: "main", title: "Промт персонажа", kind: "gpt", stepCode: "hero" },
     { id: "style", title: "Стиль персонажа", kind: "gpt", stepCode: "hero_style" },
   ],
-  items: [{ id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" }],
+  items: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "items" },
+    { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
+  ],
   enrich_1: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_1" },
     { id: "main", title: "Промт дополнения 1", kind: "gpt", stepCode: "enrich_1" },
@@ -57,35 +65,89 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
   ],
-  images: [{ id: "outsee", title: "Генератор изображений", kind: "gpt", description: "Браузер outsee.io" }],
-  animation_prompts: [{ id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" }],
-  videos: [{ id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" }],
-  audio: [{ id: "tts", title: "ElevenLabs TTS", kind: "gpt" }],
-  assemble: [{ id: "ffmpeg", title: "Сборка FFmpeg", kind: "gpt" }],
-  publish: [{ id: "social", title: "Публикация", kind: "gpt" }],
+  images: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" },
+    { id: "outsee", title: "Генератор изображений", kind: "gpt", description: "Браузер outsee.io" },
+  ],
+  animation_prompts: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
+    { id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" },
+  ],
+  videos: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "video" },
+    { id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" },
+  ],
+  audio: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "audio" },
+    { id: "tts", title: "ElevenLabs TTS", kind: "gpt" },
+  ],
+  assemble: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "assemble" },
+    { id: "ffmpeg", title: "Сборка FFmpeg", kind: "gpt" },
+  ],
+  publish: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "publish" },
+    { id: "social", title: "Публикация", kind: "gpt" },
+  ],
 };
 
 export function defaultPromptSlots(nodeType: string): NodePromptSlot[] {
   if (isHitlNodeType(nodeType)) return [];
-  return BASE[nodeType] ?? [{ id: "main", title: "Настройки ноды", kind: "gpt" }];
+  const base = BASE[nodeType];
+  if (base?.length) return base;
+  if (nodeTypeRequiresExcel(nodeType)) {
+    return [excelSlotForNodeType(nodeType), { id: "main", title: "Настройки ноды", kind: "gpt" }];
+  }
+  return [{ id: "main", title: "Настройки ноды", kind: "gpt" }];
 }
 
-/** Промты в горизонтальной схеме меню V (без «текста для GPT»). Excel — первым. */
+/** Во всех рабочих нодах пайплайна Excel обязателен первым. */
+export function nodeTypeRequiresExcel(nodeType: string): boolean {
+  if (!nodeType || isHitlNodeType(nodeType)) return false;
+  if (NO_EXCEL_NODE_TYPES.has(nodeType)) return false;
+  return nodeType in NODE_CATALOG;
+}
+
+export function excelSlotForNodeType(nodeType: string): NodePromptSlot {
+  return {
+    id: "excel",
+    title: "Excel таблица",
+    kind: "excel",
+    stepCode: stepCodeForNodeType(nodeType) ?? nodeType,
+  };
+}
+
+/** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
+export function resolvePromptSlots(
+  nodeType: string,
+  slots?: NodePromptSlot[] | null,
+): NodePromptSlot[] {
+  const raw = slots?.length ? [...slots] : [...defaultPromptSlots(nodeType)];
+  const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel");
+
+  if (!nodeTypeRequiresExcel(nodeType)) {
+    return raw.filter((s) => s.kind !== "text");
+  }
+
+  const excel =
+    raw.find((s) => s.kind === "excel") ??
+    defaultPromptSlots(nodeType).find((s) => s.kind === "excel") ??
+    excelSlotForNodeType(nodeType);
+
+  return [excel, ...rest];
+}
+
+/** Промты в горизонтальной схеме меню V (без «текста для GPT»). */
 export function pipelinePromptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
   return slots.filter((s) => s.kind !== "text");
 }
 
-/** Гарантирует Excel-слот первым (даже если custom_prompts его выкинул). */
+/** @deprecated use resolvePromptSlots */
 export function orderedMenuPromptSlots(
   nodeType: string,
   slots: NodePromptSlot[],
 ): NodePromptSlot[] {
-  const defaults = defaultPromptSlots(nodeType);
-  const defaultExcel = defaults.find((s) => s.kind === "excel");
-  const pipeline = pipelinePromptSlots(slots).filter((s) => s.kind !== "excel");
-  const excel = slots.find((s) => s.kind === "excel") ?? defaultExcel;
-  if (excel) return [excel, ...pipeline];
-  return pipeline;
+  return resolvePromptSlots(nodeType, slots);
 }
 
 export function excelPromptSlot(slots: NodePromptSlot[]): NodePromptSlot | undefined {
@@ -94,6 +156,10 @@ export function excelPromptSlot(slots: NodePromptSlot[]): NodePromptSlot | undef
 
 export function isCustomPromptSlot(slot: NodePromptSlot): boolean {
   return slot.custom === true || slot.id.startsWith("custom_");
+}
+
+export function isExcelPromptSlot(slot: NodePromptSlot): boolean {
+  return slot.kind === "excel" || slot.id === "excel";
 }
 
 export function gptTextSlotForNode(nodeType: string): NodePromptSlot | null {

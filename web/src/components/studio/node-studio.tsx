@@ -24,7 +24,9 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
   isEnrichNode,
+  nodeTypeRequiresExcel,
   pipelinePromptSlots,
+  resolvePromptSlots,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
 import { Button } from "@/components/ui/button";
@@ -100,14 +102,19 @@ export function NodeStudio({
   });
 
   const allSlots = useMemo(() => {
-    if (promptSlotsProp?.length) return promptSlotsProp;
+    if (promptSlotsProp?.length) return resolvePromptSlots(nodeType, promptSlotsProp);
     const meta = (project.data?.meta || {}) as { custom_prompts?: Record<string, NodePromptSlot[]> };
-    if (nodeKey && meta.custom_prompts?.[nodeKey]) return meta.custom_prompts[nodeKey];
-    return defaultPromptSlots(nodeType);
+    if (nodeKey && meta.custom_prompts?.[nodeKey]) {
+      return resolvePromptSlots(nodeType, meta.custom_prompts[nodeKey]);
+    }
+    return resolvePromptSlots(nodeType, null);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
   const showExcel =
-    allSlots.some((s) => s.kind === "excel") || isEnrichNode(nodeType) || tab === "excel";
+    nodeTypeRequiresExcel(nodeType) ||
+    allSlots.some((s) => s.kind === "excel") ||
+    isEnrichNode(nodeType) ||
+    tab === "excel";
   const rawGrid = nodeUsesRawXlsxGrid(nodeType);
 
   const xlsxSheetsMeta = useQuery({

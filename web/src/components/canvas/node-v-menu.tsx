@@ -17,7 +17,8 @@ import type { NodePromptSlot } from "@/lib/node-prompts";
 import {
   gptTextSlotForNode,
   isCustomPromptSlot,
-  orderedMenuPromptSlots,
+  nodeTypeRequiresExcel,
+  resolvePromptSlots,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
@@ -65,8 +66,9 @@ export function NodeVMenu({
 }) {
   if (!open) return null;
 
-  const menuSlots = orderedMenuPromptSlots(nodeType, slots);
+  const menuSlots = resolvePromptSlots(nodeType, slots);
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
+  const showExcelPreview = nodeTypeRequiresExcel(nodeType) && projectId != null;
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
@@ -137,7 +139,7 @@ export function NodeVMenu({
                       {slotKindLabel(slot.kind)}
                     </span>
                   </button>
-                  {isCustomPromptSlot(slot) && (
+                  {isCustomPromptSlot(slot) && slot.kind !== "excel" && (
                     <button
                       type="button"
                       className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full border border-white/20 bg-destructive/90 text-white shadow"
@@ -175,10 +177,10 @@ export function NodeVMenu({
           </p>
         )}
 
-        {excelSlot && projectId != null && (
+        {showExcelPreview && excelSlot && (
           <NodeVMenuExcelPreview
             open={open}
-            projectId={projectId}
+            projectId={projectId!}
             nodeType={nodeType}
             onOpen={() => onSelectPrompt(excelSlot)}
           />
