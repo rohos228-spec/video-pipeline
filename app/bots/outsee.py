@@ -983,7 +983,7 @@ class OutseeBot:
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
             logger.info(
-                "outsee.generate_image: prompt_id_prefix={} [download-v3]",
+                "outsee.generate_image: prompt_id_prefix={} [download-v3: wait→10img]",
                 prompt_id_prefix,
             )
 
@@ -2055,11 +2055,13 @@ class OutseeBot:
                     ftext = failure["text"]
                     in_result = bool(failure.get("in_result"))
                     gen_idle = await self._generate_button_enabled(page)
+                    # Не считаем ошибку «новой» только из-за gen_idle:
+                    # плашка из сайдбара/композера (in_result=False) иначе
+                    # рвёт успешную генерацию и уводит в retry без download-v3.
                     is_new = (
                         in_result
                         or not pre_rejected_text
                         or ftext != pre_rejected_text
-                        or (gen_idle and elapsed >= 3.0)
                     )
                     if is_new:
                         logger.info(
@@ -2209,34 +2211,17 @@ class OutseeBot:
                                 len(clean), chosen[:120],
                             )
 
-            # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его.
-            #
-            # Иерархия доверия (от сильного к слабому):
-            #  A. net_events: URL РЕАЛЬНО пришёл по сети ПОСЛЕ нашего
-            #     клика Generate. Listener чист в момент клика. Outsee
-            #     не подгружает чужие изображения в этот короткий
-            #     промежуток. Это самое сильное доказательство «это
-            #     наша картинка», и его достаточно — клик-верификация
-            #     не нужна.
-            #  B. click-verification: клик по img открывает правую
-            #     панель «Промпт», в видимом тексте которой должен
-            #     появиться наш [ID: ...]. Слабее: outsee может
-            #     рендерить промт через <textarea>.value, который не
-            #     попадает в body.innerText, и счётчик токенов не
-            #     растёт после клика → ложное «чужая». Использовать
-            #     только как fallback, когда net_events недоступны
-            #     или пусты.
+            # 2.7) С prompt_id_prefix НЕ делаем _verify_img_by_clicking в wait:
+            # ID почти всегда уже в композере → ложное «чужая», бот крутится
+            # до таймаута и уходит в retry вместо download-v3 (10 картинок).
+            # Как в TG-боте: после Generate ждём «ген готова» → скачивание C.
+            _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF = 6.0
             if (
                 prompt_id_prefix
                 and fallback_candidate is not None
                 and _strip_url_query(fallback_candidate)
                 not in rejected_candidates
             ):
-                # A. net_events trust path. Если URL пришёл по сети
-                # после Generate-клика — это сильная гарантия, что
-                # это наша картинка. Click-verification (которая
-                # часто врёт из-за textarea.value vs innerText)
-                # пропускаем.
                 if net_events and _url_is_fresh(
                     fallback_candidate, net_events
                 ):
@@ -2248,34 +2233,52 @@ class OutseeBot:
                         fallback_candidate[:140],
                     )
                     return fallback_candidate
-                # B. Fallback — click-verification, когда нет net_events
-                # или URL не подтверждён сетью.
-                ok = await self._verify_img_by_clicking(
-                    page, fallback_candidate, prompt_id_prefix
-                )
-                if ok:
+                gen_idle = await self._generate_button_enabled(page)
+                if gen_idle and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF:
                     logger.info(
-                        "_wait_image_url_strict: verified by click "
-                        "(source={}) за {:.0f} сек: {}",
-                        fallback_source, elapsed,
-                        fallback_candidate[:140],
+                        "_wait_image_url_strict: gen завершена (gen_idle), "
+                        "переход к download-v3 — перебор 10 картинок "
+                        "(source={}, {:.0f} сек, url={})",
+                        fallback_source,
+                        elapsed,
+                        fallback_candidate[:120],
                     )
                     return fallback_candidate
-                else:
-                    logger.warning(
-                        "_wait_image_url_strict: fallback {} НЕ "
-                        "прошёл ID-верификацию (source={}) — это чужая "
-                        "картинка из gallery, ждём дальше",
-                        fallback_candidate[:100], fallback_source,
-                    )
-                    rejected_candidates.add(
-                        _strip_url_query(fallback_candidate)
-                    )
-                    fallback_candidate = None
-                    fallback_source = None
-                    # Подождём ещё пока придёт НОВАЯ картинка.
-                    await sleep_cancellable(2.0, project_id)
-                    continue
+
+            if (
+                prompt_id_prefix
+                and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF
+                and await self._generate_button_enabled(page)
+            ):
+                idle_srcs = await self._completed_new_imgs(
+                    page, baseline_all_srcs
+                )
+                if idle_srcs:
+                    idle_clean = [
+                        u
+                        for u in idle_srcs
+                        if not any(
+                            m in u.lower() for m in _UI_ASSET_MARKERS
+                        )
+                        and not any(
+                            m in u.lower() for m in _INPUT_REF_MARKERS
+                        )
+                    ]
+                    if net_events:
+                        idle_clean = [
+                            u for u in idle_clean
+                            if _url_is_fresh(u, net_events)
+                        ]
+                    elif not net_events:
+                        pass  # доверяем DOM
+                    if idle_clean:
+                        logger.info(
+                            "_wait_image_url_strict: gen_idle, новые img в "
+                            "DOM — handoff download-v3 за {:.0f} сек: {}",
+                            elapsed,
+                            idle_clean[0][:120],
+                        )
+                        return idle_clean[0]
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -2320,6 +2323,21 @@ class OutseeBot:
         if prompt_id_prefix:
             ctx["prompt_id_prefix"] = prompt_id_prefix
             ctx["id_diag"] = await self._diag_id_in_page(page, prompt_id_prefix)
+            # Таймаут wait, но Generate снова активен и в DOM есть картинки —
+            # как в TG-боте: всё равно пробуем download-v3 (10 кликов по ID).
+            if await self._generate_button_enabled(page):
+                handoff_srcs = await self._completed_new_imgs(
+                    page, baseline_all_srcs
+                )
+                if handoff_srcs:
+                    chosen = handoff_srcs[0]
+                    logger.warning(
+                        "_wait_image_url_strict: timeout {:.0f}с, но gen_idle "
+                        "и есть новые img — handoff в download-v3: {}",
+                        timeout,
+                        chosen[:120],
+                    )
+                    return chosen
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
             context=ctx,
