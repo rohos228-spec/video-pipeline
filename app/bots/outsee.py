@@ -2999,6 +2999,102 @@ def _count_tokens_in_text(text: str, tokens: list[str]) -> int:
     return sum(text.count(tok) for tok in tokens if tok)
 
 
+async def _physical_mouse_click(
+    page: Page,
+    locator: Any,
+    *,
+    project_id: int | None = None,
+    label: str = "",
+) -> None:
+    """Реальный клик мышью по центру элемента (CDP → Chrome).
+
+    Outsee открывает панель «Промпт» и кнопку Download только на pointer-
+    событиях; `element.click()` в JS или «сухой» locator иногда не срабатывает.
+    """
+    from app.services.step_cancel import await_with_cancel
+
+    with contextlib.suppress(Exception):
+        await await_with_cancel(
+            locator.scroll_into_view_if_needed(timeout=2_000),
+            project_id,
+        )
+    box = await locator.bounding_box()
+    if not box or box.get("width", 0) < 2 or box.get("height", 0) < 2:
+        await await_with_cancel(locator.click(timeout=3_000), project_id)
+        logger.info(
+            "outsee physical-click: fallback locator.click{}",
+            f" ({label})" if label else "",
+        )
+        return
+    x = box["x"] + box["width"] / 2
+    y = box["y"] + box["height"] / 2
+    await page.mouse.move(x, y)
+    await asyncio.sleep(0.05)
+    await page.mouse.click(x, y)
+    logger.info(
+        "outsee physical-click: mouse ({:.0f},{:.0f}){}",
+        x,
+        y,
+        f" — {label}" if label else "",
+    )
+
+
+async def _gallery_detail_panel_has_id(
+    page: Page,
+    prompt_id_prefix: str,
+) -> bool:
+    """После клика по thumb: наш ID в правой панели (НЕ в composer).
+
+    Нельзя использовать `post_count > pre_count` на всей странице — ID уже
+    в composer, счётчик не растёт. Нельзя `evaluate(el.click())` — не мышь.
+    """
+    tokens = _prompt_id_search_tokens(prompt_id_prefix)
+    try:
+        matched = await page.evaluate(
+            """([tokens, composerSels]) => {
+                const composer = new Set();
+                for (const sel of composerSels) {
+                    try {
+                        for (const el of document.querySelectorAll(sel))
+                            composer.add(el);
+                    } catch (e) {}
+                }
+                function visible(el) {
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 8 && r.height > 8;
+                }
+                const midX = window.innerWidth * 0.42;
+                for (const el of document.querySelectorAll('textarea, input')) {
+                    if (composer.has(el) || !visible(el)) continue;
+                    const v = (el.value || el.innerText || '').trim();
+                    if (!v) continue;
+                    for (const tok of tokens) {
+                        if (tok && v.includes(tok)) return true;
+                    }
+                }
+                for (const el of document.querySelectorAll(
+                    'section, aside, div[role="dialog"]'
+                )) {
+                    if (!visible(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.left < midX || r.width < 80) continue;
+                    const t = (el.innerText || '').trim();
+                    if (t.length < 30 || t.length > 12000) continue;
+                    for (const tok of tokens) {
+                        if (tok && t.includes(tok)) return true;
+                    }
+                }
+                return false;
+            }""",
+            [tokens, PROMPT_INPUT_SELECTORS],
+        )
+        return bool(matched)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _page_text_excluding_composer(
     page: Page,
     composer_selectors: list[str] | None = None,
@@ -3103,32 +3199,25 @@ async def _find_card_by_clicking_images(
         if img_loc is None:
             continue
 
-        pre_text = await _page_text_excluding_composer(page)
-        pre_count = _count_tokens_in_text(pre_text, tokens)
-
-        # Клик по картинке — открывает панель «Промпт».
-        with contextlib.suppress(Exception):
-            await await_with_cancel(
-                img_loc.scroll_into_view_if_needed(timeout=2_000),
-                project_id,
-            )
+        # Физический клик мышью по thumb — открывает панель «Промпт».
         try:
-            await await_with_cancel(
-                img_loc.click(timeout=3_000),
-                project_id,
+            await _physical_mouse_click(
+                page,
+                img_loc,
+                project_id=project_id,
+                label=f"gallery img #{idx}",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "_find_card_by_clicking_images: клик по img #{} упал ({})",
-                idx, type(e).__name__,
+                "_find_card_by_clicking_images: mouse click img #{} упал ({})",
+                idx,
+                type(e).__name__,
             )
             continue
 
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.65)
 
-        post_text = await _page_text_excluding_composer(page)
-        post_count = _count_tokens_in_text(post_text, tokens)
-        matched = post_count > pre_count
+        matched = await _gallery_detail_panel_has_id(page, prompt_id_prefix)
 
         if not matched:
             # Не наша картинка — закрываем панель Esc'ом и идём дальше.
@@ -3145,7 +3234,7 @@ async def _find_card_by_clicking_images(
         if await candidate.count() > 0:
             logger.info(
                 "_find_card_by_clicking_images: НАШЛА на картинке #{} "
-                "(стратегия C — клик-верификация)",
+                "(стратегия C — physical mouse + ID в панели)",
                 idx,
             )
             # НЕ закрываем панель — пусть hover-target виден.
@@ -3305,7 +3394,12 @@ async def _download_via_card_click(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
-            await await_with_cancel(download_btn.click(timeout=10_000), project_id)
+            await _physical_mouse_click(
+                page,
+                download_btn,
+                project_id=project_id,
+                label="download lucide-download",
+            )
         download = await dl_info.value
         await await_with_cancel(download.save_as(str(out_path)), project_id)
     except PWTimeoutError as e:
