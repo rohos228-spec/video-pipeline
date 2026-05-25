@@ -56,6 +56,16 @@ function Get-StudioVersionLabel {
     return "v$build · $sha"
 }
 
+function Test-WebUiBuilt {
+    return Test-Path (Join-Path $Root "web\out\index.html")
+}
+
+function Warn-WebUiMissing {
+    if (Test-WebUiBuilt) { return $true }
+    Write-Log "web/out/index.html missing - run button 5 Update all or 6 Build Web UI" "DarkOrange"
+    return $false
+}
+
 function Test-WebBuildStale {
     $out = Join-Path $Root "web\out\index.html"
     if (-not (Test-Path $out)) { return $true }
@@ -112,9 +122,24 @@ $script:StatusLbl = $null
 
 function Write-Log([string]$Text, [string]$Color = "Black") {
     if (-not $script:LogBox) { return }
+    $hadSelection = $script:LogBox.SelectionLength -gt 0
     $script:LogBox.SelectionColor = $Color
     $script:LogBox.AppendText("$(Get-Date -Format 'HH:mm:ss')  $Text`r`n")
-    $script:LogBox.ScrollToCaret()
+    if (-not $hadSelection) {
+        $script:LogBox.ScrollToCaret()
+    }
+}
+
+function Copy-LauncherLogs {
+    if (-not $script:LogBox) { return }
+    $text = if ($script:LogBox.SelectionLength -gt 0) {
+        $script:LogBox.SelectedText
+    } else {
+        $script:LogBox.Text
+    }
+    if ([string]::IsNullOrWhiteSpace($text)) { return }
+    [System.Windows.Forms.Clipboard]::SetText($text)
+    Write-Log "Logs copied to clipboard" "Gray"
 }
 
 function Invoke-Cmd([string]$Label, [scriptblock]$Block) {
@@ -302,6 +327,10 @@ function Do-Install {
 function Do-StartStudio {
     if (-not (Get-VenvPython)) { throw "Run install first (button 1)" }
     if (-not (Ensure-WebBuilt)) { throw "Web UI build failed" }
+    if (-not (Test-WebUiBuilt)) {
+        Write-Log "Web UI still missing after build attempt" "DarkRed"
+        return
+    }
     Do-Stop
     Start-Sleep -Seconds 1
     Start-BackendWindow
@@ -456,12 +485,32 @@ $hintLbl.MaximumSize = New-Object System.Drawing.Size(700, 0)
 $form.Controls.Add($hintLbl)
 
 $LogBox = New-Object System.Windows.Forms.RichTextBox
-$LogBox.Location = New-Object System.Drawing.Point(16, 400)
-$LogBox.Size = New-Object System.Drawing.Size(700, 230)
+$LogBox.Location = New-Object System.Drawing.Point(16, 418)
+$LogBox.Size = New-Object System.Drawing.Size(700, 212)
 $LogBox.ReadOnly = $true
+$LogBox.ShortcutsEnabled = $true
+$LogBox.HideSelection = $false
 $LogBox.BackColor = [System.Drawing.Color]::FromArgb(248, 248, 252)
+$logMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$copyMenuItem = $logMenu.Items.Add("Copy (Ctrl+C)")
+$copyMenuItem.Add_Click({ Copy-LauncherLogs })
+$LogBox.ContextMenuStrip = $logMenu
 $form.Controls.Add($LogBox)
 $script:LogBox = $LogBox
+
+$copyLogsBtn = New-Object System.Windows.Forms.Button
+$copyLogsBtn.Text = "Copy logs"
+$copyLogsBtn.Size = New-Object System.Drawing.Size(100, 24)
+$copyLogsBtn.Location = New-Object System.Drawing.Point(16, 392)
+$copyLogsBtn.Add_Click({ Copy-LauncherLogs })
+$form.Controls.Add($copyLogsBtn)
+
+$logHintLbl = New-Object System.Windows.Forms.Label
+$logHintLbl.Text = "Select text in log or click Copy logs (Ctrl+C works too)"
+$logHintLbl.AutoSize = $true
+$logHintLbl.Location = New-Object System.Drawing.Point(122, 396)
+$logHintLbl.ForeColor = [System.Drawing.Color]::Gray
+$form.Controls.Add($logHintLbl)
 
 $tip = New-Object System.Windows.Forms.ToolTip
 $y = 98
