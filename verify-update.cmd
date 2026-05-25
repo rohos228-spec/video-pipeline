@@ -45,6 +45,9 @@ echo Open in browser after Start Studio:
 echo   http://127.0.0.1:8765/api/studio-version
 echo   http://127.0.0.1:8765  (Ctrl+F5 hard refresh)
 echo.
+echo backend_ok=false in API means Python was NOT restarted after git pull.
+echo   Fix: Launcher button 4 Stop, then 2 Start Studio (not only Ctrl+F5).
+echo.
 echo If local commit != remote: run Update all or:
 echo   git checkout devin/windows-installer
 echo   git pull origin devin/windows-installer

@@ -32,7 +32,16 @@ def bump() -> str:
             build = 0
     build += 1
     sha = git_short_sha()
-    VERSION_FILE.write_text(f"{build}\n{sha}\n", encoding="utf-8")
+    attach = "paperclip-first-v69"
+    try:
+        text = (ROOT / "app" / "bots" / "chatgpt.py").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.startswith("CHATGPT_ATTACH_LOGIC_ID"):
+                attach = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except Exception:
+        pass
+    VERSION_FILE.write_text(f"{build}\n{sha}\n{attach}\n", encoding="utf-8")
     short = sha[:7] if sha != "unknown" else "dev"
     label = f"v{build} · {short}" if short != "dev" else f"v{build}"
     print(label)

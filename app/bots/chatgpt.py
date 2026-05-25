@@ -24,6 +24,10 @@ from app.bots.browser import BrowserSession
 
 CHATGPT_URL = "https://chatgpt.com/"
 
+# Идентификатор логики attach/send — показывается в /api/studio-version.
+# Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
+CHATGPT_ATTACH_LOGIC_ID = "paperclip-first-v69"
+
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
     "input[type='file'][multiple]",
@@ -534,14 +538,67 @@ class ChatGPTBot:
 
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
+    async def _materialize_file_input(self) -> str:
+        """Скрепка → пункт меню → input[type=file] (как ручной аплоад)."""
+        page = await self._page_ready()
+        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
+        if input_sel:
+            return input_sel
+
+        attach_sel = await _first_matching(page, ATTACH_BUTTON_SELECTORS, timeout=12)
+        if not attach_sel:
+            await self._dump_composer_html()
+            raise RuntimeError(
+                "ChatGPT: не найдена кнопка-скрепка (ATTACH_BUTTON_SELECTORS)"
+            )
+        logger.info("ChatGPT: кликаю скрепку ({})", attach_sel)
+        await page.locator(attach_sel).first.click(timeout=5_000)
+        await asyncio.sleep(0.7)
+
+        menu_sel = await _first_matching(page, ATTACH_MENU_ITEM_SELECTORS, timeout=4)
+        if menu_sel:
+            logger.info("ChatGPT: кликаю пункт меню вложений ({})", menu_sel)
+            await page.locator(menu_sel).first.click(timeout=5_000)
+            await asyncio.sleep(0.5)
+
+        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=12)
+        if not input_sel:
+            await self._dump_composer_html()
+            raise RuntimeError(
+                "ChatGPT: после скрепки не появился input[type=file]"
+            )
+        return input_sel
+
+    async def _attach_one_via_paperclip(self, file_path: Path) -> None:
+        """Прикрепить один файл через скрепку + set_input_files."""
+        page = await self._page_ready()
+        input_sel = await self._materialize_file_input()
+        logger.info(
+            "ChatGPT: paperclip set_input_files {} через {}",
+            file_path.name,
+            input_sel,
+        )
+        await page.locator(input_sel).last.set_input_files([str(file_path)])
+
+        deadline = asyncio.get_event_loop().time() + 90.0
+        while asyncio.get_event_loop().time() < deadline:
+            if file_path.name in await self._composer_attachment_text():
+                await self._wait_upload_done(timeout=120)
+                return
+            await asyncio.sleep(0.5)
+
+        await self._dump_composer_html()
+        raise RuntimeError(
+            f"ChatGPT: файл {file_path.name} не появился в композере за 90с (paperclip)"
+        )
+
     async def _attach_files(self, file_paths: list[Path]) -> None:
         """Загружает один или несколько файлов в текущий черновик сообщения.
 
-        Стратегия (как в рабочем TG-боте, v64+):
-          1. По одному файлу: drag-drop → set_input_files через скрепку.
-          2. Считаем превью вложений до/после — ложный CSS-match не засчитываем.
-          3. Batch fallback если per-file не дал нужное количество.
-          4. Финальная проверка: имена файлов видны в композере.
+        Стратегия (как ручной аплоад в Chrome):
+          1. Главный путь — скрепка + set_input_files по одному файлу.
+          2. Fallback — drag-drop / batch set_input_files.
+          3. Жёсткая проверка: имена файлов видны в композере, иначе RuntimeError.
         """
         if not file_paths:
             raise ValueError("_attach_files: file_paths пустой")
@@ -555,15 +612,33 @@ class ChatGPTBot:
 
         names = ", ".join(p.name for p in file_paths)
         logger.info(
-            "ChatGPT: начинаю аплоад {} файлов по одному [{}]",
+            "ChatGPT: attach_logic={} — аплоад {} файлов [{}]",
+            CHATGPT_ATTACH_LOGIC_ID,
             len(file_paths),
             names,
         )
 
         before = await self._count_attachment_previews()
-        for i, fp in enumerate(file_paths, start=1):
-            logger.info("ChatGPT: файл {}/{} — {}", i, len(file_paths), fp.name)
-            await self._attach_one_file(fp)
+        paperclip_ok = False
+        try:
+            for i, fp in enumerate(file_paths, start=1):
+                logger.info(
+                    "ChatGPT: paperclip {}/{} — {}", i, len(file_paths), fp.name
+                )
+                await self._attach_one_via_paperclip(fp)
+            if await self._files_visible_in_composer(file_paths):
+                paperclip_ok = True
+                logger.info("ChatGPT: paperclip — все файлы видны [{}]", names)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "ChatGPT: paperclip не удался ({}) — fallback drag-drop/set_input_files",
+                e,
+            )
+
+        if not paperclip_ok:
+            for i, fp in enumerate(file_paths, start=1):
+                logger.info("ChatGPT: fallback файл {}/{} — {}", i, len(file_paths), fp.name)
+                await self._attach_one_file(fp)
 
         after = await self._count_attachment_previews()
         attached = after - before

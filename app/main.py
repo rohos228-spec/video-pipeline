@@ -547,6 +547,26 @@ async def main() -> None:
     if polling_task is not None:
         tasks.insert(0, polling_task)
     logger.info("background worker started")
+    try:
+        from app.bots.chatgpt import CHATGPT_ATTACH_LOGIC_ID
+        from app.web.studio_version import read_studio_version
+
+        sv = read_studio_version()
+        logger.info(
+            "Studio UI {} | ChatGPT attach={} | backend_ok={}",
+            sv.get("label"),
+            CHATGPT_ATTACH_LOGIC_ID,
+            sv.get("backend_ok"),
+        )
+        if sv.get("backend_ok") is False:
+            logger.warning(
+                "Backend attach mismatch: running={}, expected={} — "
+                "перезапустите Python (Launcher: 4 Stop → 2 Start Studio)",
+                sv.get("backend_attach"),
+                sv.get("attach_expected"),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("studio version log failed: {}", e)
 
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None

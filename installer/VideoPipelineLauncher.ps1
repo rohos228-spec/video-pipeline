@@ -301,6 +301,8 @@ function Do-Install {
 function Do-StartStudio {
     if (-not (Get-VenvPython)) { throw "Run install first (button 1)" }
     if (-not (Ensure-WebBuilt)) { throw "Web UI build failed" }
+    Do-Stop
+    Start-Sleep -Seconds 1
     Start-BackendWindow
     Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
     if (Test-BackendReady) {
