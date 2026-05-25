@@ -26,6 +26,7 @@ import { NodeResultBadge } from "./node-result-badge";
 import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
+import { HeroConfigPanel } from "./hero-config-panel";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -65,6 +66,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
       : null;
   const showHitlBadge = hitlState != null;
   const isExcelFeed = d.type === "excel_feed";
+  const isHero = d.type === "hero";
 
   useEffect(() => {
     if (!vMenuOpen) return;
@@ -232,6 +234,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
 
         {isExcelFeed && actions?.projectId && (
           <ExcelFeedPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+        )}
+
+        {isHero && actions?.projectId && (
+          <HeroConfigPanel projectId={actions.projectId} />
         )}
 
         {d.progressText && d.status === "running" && (
