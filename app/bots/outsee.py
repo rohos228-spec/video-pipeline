@@ -920,9 +920,10 @@ class OutseeBot:
         gen_id = gen_id or _uuid.uuid4().hex
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
-            logger.info(
-                "outsee.generate_image: prompt_id_prefix={}", prompt_id_prefix
-            )
+        logger.info(
+            "outsee.generate_image: prompt_id_prefix={} [flow=always-fill-v2]",
+            prompt_id_prefix,
+        )
 
         page_url = _image_page_url(model_slug)
         logger.info(
@@ -2008,6 +2009,20 @@ class OutseeBot:
                         )
                     )
                     if fresh_ok:
+                        # Старые карточки gallery с тем же [ID: …] из
+                        # прошлых запусков не должны считаться результатом
+                        # текущего Generate. Требуем URL в net_events
+                        # (пришёл по сети ПОСЛЕ нашего клика Generate).
+                        if net_events and not _url_is_fresh(by_id, net_events):
+                            logger.info(
+                                "_wait_image_url_strict: prompt_id {} "
+                                "найден в gallery, но URL не свежий "
+                                "(нет в net_events) — это старая карточка, "
+                                "жду новую генерацию",
+                                prompt_id_prefix,
+                            )
+                            fresh_ok = False
+                    if fresh_ok:
                         logger.info(
                             "_wait_image_url_strict: matched by prompt_id "
                             "{} за {:.0f} сек: {}",
@@ -3080,50 +3095,21 @@ async def _download_via_card_click(
 
     card = None  # type: ignore[var-annotated]
 
-    # --- Стратегия B: текстовый поиск по [ID: …] в видимом DOM.
-    id_el = page.get_by_text(prompt_id_prefix, exact=False).first
-    try:
-        await await_with_cancel(
-            id_el.wait_for(state="visible", timeout=10_000),
-            project_id,
-        )
-        candidate = id_el.locator(
-            "xpath=ancestor::*[descendant::button"
-            "[descendant::svg[contains(@class,'lucide-download')]]][1]"
-        )
-        if await candidate.count() > 0:
-            card = candidate
-            logger.info(
-                "_download_via_card_click: карточка найдена "
-                "через get_by_text(prompt_id) (стратегия B)"
-            )
-    except PWTimeoutError:
-        logger.warning(
-            "_download_via_card_click: стратегия B (get_by_text) "
-            "не сработала за 10s, перехожу к C"
-        )
-
-    # --- Стратегия C: перебор 10 ближайших картинок + ID по клику.
-    if card is None:
-        card = await _find_card_by_clicking_images(
-            page,
-            prompt_id_prefix=prompt_id_prefix,
-            limit=10,
-            project_id=project_id,
-        )
-
-    # --- Стратегия A: fallback по img_url (без гарантии ID-привязки).
-    if card is None and img_url:
+    # --- Стратегия A: img_url из _wait_image_url_strict (ID уже матчился).
+    if img_url:
         url_path = _strip_url_query(img_url)
         path_only = re.sub(r"^https?://[^/]+", "", url_path)
-        if path_only:
+        basename = Path(path_only).name if path_only else ""
+        for fragment in (path_only, basename):
+            if not fragment:
+                continue
             try:
                 img_locator = page.locator(
-                    f'img[src*="{path_only}"]'
+                    f'img[src*="{fragment}"]'
                 ).first
                 await await_with_cancel(
                     img_locator.wait_for(
-                        state="attached", timeout=10_000,
+                        state="attached", timeout=5_000,
                     ),
                     project_id,
                 )
@@ -3135,15 +3121,66 @@ async def _download_via_card_click(
                     card = candidate
                     logger.info(
                         "_download_via_card_click: карточка найдена "
-                        "через img[src*=...{}] (стратегия A — fallback)",
-                        path_only[-60:],
+                        "через img[src*=...{}] (стратегия A)",
+                        fragment[-60:],
                     )
+                    break
             except (PWTimeoutError, Exception) as e:  # noqa: BLE001
                 logger.warning(
-                    "_download_via_card_click: стратегия A (img_url) "
-                    "не сработала ({})",
-                    type(e).__name__,
+                    "_download_via_card_click: стратегия A fragment "
+                    "'{}' не сработала ({})",
+                    fragment[-40:], type(e).__name__,
                 )
+
+    # --- Стратегия C: перебор 10 ближайших картинок + ID по клику.
+    if card is None:
+        card = await _find_card_by_clicking_images(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=10,
+            project_id=project_id,
+        )
+
+    # --- Стратегия B: текстовый поиск по [ID: …] в видимом DOM.
+    if card is None:
+        id_el = page.get_by_text(prompt_id_prefix, exact=False).first
+        try:
+            await await_with_cancel(
+                id_el.wait_for(state="visible", timeout=5_000),
+                project_id,
+            )
+            candidate = id_el.locator(
+                "xpath=ancestor::*[descendant::button"
+                "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+            )
+            if await candidate.count() > 0:
+                card = candidate
+                logger.info(
+                    "_download_via_card_click: карточка найдена "
+                    "через get_by_text(prompt_id) (стратегия B)"
+                )
+        except PWTimeoutError:
+            logger.warning(
+                "_download_via_card_click: стратегия B (get_by_text) "
+                "не сработала за 5s"
+            )
+
+    if card is None and img_url:
+        # Последний шанс — прямое скачивание по URL (thumb/full).
+        logger.warning(
+            "_download_via_card_click: карточка не найдена, "
+            "fallback _download_via_context для {}",
+            img_url[:120],
+        )
+        await _download_via_context(
+            page, img_url, out_path, project_id=project_id,
+        )
+        logger.info(
+            "_download_via_card_click: сохранил файл {} через URL-fallback "
+            "(prompt_id={})",
+            out_path, prompt_id_prefix,
+        )
+        return
 
     if card is None:
         raise OutseeImageError(
