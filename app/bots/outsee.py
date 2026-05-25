@@ -596,6 +596,68 @@ class OutseeContentRejectedError(OutseeImageError):
     существующий error-handling в caller'ах продолжит работать без правок."""
 
 
+# Маркеры видимых плашек ошибок outsee (см. `_detect_outsee_failure`).
+_OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
+    "контент отклон",
+    "content reject",
+    "не прошёл модер",
+    "содержит запрещ",
+    "forbidden word",
+)
+_OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
+    "ошибка генера",
+    "ошибк",  # «Ошибка», «Произошла ошибка»
+    "не удалось сгенер",
+    "не удалось создать",
+    "generation failed",
+    "failed to generate",
+    "something went wrong",
+    "что-то пошло не так",
+    "попробуйте снова",
+    "повторите попытку",
+    "try again",
+    "unable to generate",
+)
+
+
+def _outsee_failure_kind(text: str) -> str:
+    """`moderation` | `generation` | `unknown` (видимая плашка без точного класса)."""
+    low = text.lower()
+    for m in _OUTSEE_MODERATION_MARKERS:
+        if m in low:
+            return "moderation"
+    for m in _OUTSEE_GENERATION_ERROR_MARKERS:
+        if m in low:
+            return "generation"
+    return "unknown"
+
+
+def _raise_outsee_failure(
+    *,
+    text: str,
+    gen_id: str,
+    elapsed: float,
+    in_result: bool,
+) -> None:
+    kind = _outsee_failure_kind(text)
+    ctx = {
+        "gen_id": gen_id,
+        "failure": text[:200],
+        "elapsed_sec": round(elapsed, 1),
+        "in_result_panel": in_result,
+        "kind": kind,
+    }
+    if kind == "moderation":
+        raise OutseeContentRejectedError(
+            "outsee image: контент отклонён модерацией",
+            context=ctx,
+        )
+    raise OutseeImageError(
+        "outsee image: ошибка генерации на outsee.io",
+        context=ctx,
+    )
+
+
 # Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
 # (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
 _MIN_IMAGE_BYTES = 50_000
@@ -1190,18 +1252,18 @@ class OutseeBot:
             # (В ветке `already_in_progress` мы сюда не заходим —
             # re-baseline не делается, baseline_* уже почищены.)
 
-            # Снимок текста плашки «Контент отклонён» ДО клика Generate.
-            # На свежеоткрытой странице outsee часто рендерит остаток
-            # rejection-плашки от предыдущего запроса (тот же браузерный
-            # контекст / history). Передаём этот текст в детектор, чтобы
-            # он не считал такую плашку «новой» ошибкой.
-            pre_rejected_text = await self._content_rejected_text(page)
+            # Снимок видимой плашки ошибки ДО клика Generate (модерация или
+            # «ошибка генерации»). Outsee часто оставляет остаток от прошлой
+            # попытки в history/result — передаём в wait, чтобы не путать
+            # с НОВОЙ ошибкой, но повтор той же плашки в result-панели после
+            # клика всё равно считаем свежим сбоем.
+            pre_rejected_text = await self._outsee_failure_text(page)
             if pre_rejected_text:
                 logger.info(
-                    "outsee.generate_image: pre-click rejected_text"
-                    " обнаружена ({} симв) — игнорю, считаю её остатком"
-                    " предыдущей попытки",
+                    "outsee.generate_image: pre-click failure_text"
+                    " обнаружена ({} симв, kind={}) — baseline для детектора",
                     len(pre_rejected_text),
+                    _outsee_failure_kind(pre_rejected_text),
                 )
 
             click_ts = _time.monotonic()
@@ -1394,7 +1456,7 @@ class OutseeBot:
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                pre_rejected_text = await self._content_rejected_text(page)
+                pre_rejected_text = await self._outsee_failure_text(page)
                 click_ts = _time.monotonic()
                 net_events.clear()
                 await await_with_cancel(
@@ -1986,7 +2048,38 @@ class OutseeBot:
             now = asyncio.get_event_loop().time()
             elapsed = now - start
 
-            # 0) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
+            # 0) Fail-fast: ошибка генерации / модерация (до ожидания img).
+            if elapsed >= 1.5:
+                failure = await self._detect_outsee_failure(page)
+                if failure:
+                    ftext = failure["text"]
+                    in_result = bool(failure.get("in_result"))
+                    gen_idle = await self._generate_button_enabled(page)
+                    is_new = (
+                        in_result
+                        or not pre_rejected_text
+                        or ftext != pre_rejected_text
+                        or (gen_idle and elapsed >= 3.0)
+                    )
+                    if is_new:
+                        logger.info(
+                            "_wait_image_url_strict: ошибка outsee за "
+                            "{:.0f} сек (in_result={}, gen_idle={}, "
+                            "kind={}): {}",
+                            elapsed,
+                            in_result,
+                            gen_idle,
+                            _outsee_failure_kind(ftext),
+                            ftext[:120],
+                        )
+                        _raise_outsee_failure(
+                            text=ftext,
+                            gen_id=gen_id,
+                            elapsed=elapsed,
+                            in_result=in_result,
+                        )
+
+            # 1) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
             # Outsee рендерит в карточке результата начало промта, и наш
             # `[ID: P1-HERO1-V1-…]` всегда стоит первой строкой. Если в
             # DOM появилась карточка с НАШИМ ID — берём её картинку,
@@ -2183,19 +2276,6 @@ class OutseeBot:
                     # Подождём ещё пока придёт НОВАЯ картинка.
                     await sleep_cancellable(2.0, project_id)
                     continue
-            # 2.5) Детект плашки «Контент отклонён» (модерация).
-            # Outsee показывает её прямо на странице — ждать дальше
-            # бесполезно: токены уже возвращены, генерации не будет.
-            if elapsed >= 3.0:
-                rejected_text = await self._content_rejected_text(page)
-                if rejected_text and rejected_text != pre_rejected_text:
-                    raise OutseeContentRejectedError(
-                        "outsee image: контент отклонён модерацией",
-                        context={
-                            "gen_id": gen_id,
-                            "rejection": rejected_text[:200],
-                        },
-                    )
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -2381,25 +2461,38 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _content_rejected_text(self, page: Page) -> str | None:
-        """Если на странице ВИДИМО показана плашка «Контент отклонён» —
-        возвращает её текст, иначе None.
-
-        Видимость проверяется строго: display!=none, visibility!=hidden,
-        opacity>0, getBoundingClientRect>0, элемент в viewport, и все
-        предки тоже видимы. Без этого outsee даёт false-positive: их
-        React-bundle пререндерит шаблоны ошибок (`отклонённый контент /
-        запрещённые слова`) как невидимые компоненты с ненулевым rect."""
+    async def _generate_button_enabled(self, page: Page) -> bool:
+        """True, если кнопка Generate сейчас активна (генерация не идёт)."""
         try:
-            text = await page.evaluate(
-                """() => {
-                    const triggers = [
-                        'Контент отклон',
-                        'Content reject',
-                        'не прошёл модер',
-                        'содержит запрещ',
-                        'forbidden word',
-                    ];
+            sel = await _first_visible(
+                page,
+                GENERATE_BUTTON_SELECTORS[:4],
+                timeout_ms=800,
+            )
+            if not sel:
+                return False
+            loc = page.locator(sel).first
+            disabled = await loc.get_attribute("disabled")
+            aria = await loc.get_attribute("aria-disabled")
+            return disabled is None and (aria or "").lower() != "true"
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _detect_outsee_failure(self, page: Page) -> dict[str, object] | None:
+        """Видимая плашка ошибки outsee: модерация или сбой генерации.
+
+        Сначала ищет в блоке «Результат генерации» (`in_result=True`),
+        затем по всей странице. Возвращает `{text, in_result}` или None.
+        """
+        mod_js = list(_OUTSEE_MODERATION_MARKERS)
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        try:
+            raw = await page.evaluate(
+                """(markers) => {
+                    const moderation = markers.moderation;
+                    const generation = markers.generation;
+                    const triggers = moderation.concat(generation);
+
                     function isTrulyVisible(el) {
                         const cs = window.getComputedStyle(el);
                         if (cs.display === 'none') return false;
@@ -2420,30 +2513,75 @@ class OutseeBot:
                         }
                         return true;
                     }
-                    const all = Array.from(document.querySelectorAll('*'));
-                    for (const el of all) {
-                        const tag = (el.tagName || '').toLowerCase();
-                        if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
-                        const t = (el.textContent || '').trim();
-                        if (!t || t.length > 1000) continue;
+
+                    function matchText(t) {
                         const low = t.toLowerCase();
-                        let hit = false;
                         for (const tr of triggers) {
-                            if (low.includes(tr.toLowerCase())) {
-                                hit = true; break;
+                            if (low.includes(tr.toLowerCase())) return true;
+                        }
+                        return false;
+                    }
+
+                    function scanRoot(root, inResult) {
+                        if (!root) return null;
+                        const nodes = root.querySelectorAll('*');
+                        for (const el of nodes) {
+                            const tag = (el.tagName || '').toLowerCase();
+                            if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
+                            const t = (el.textContent || '').trim();
+                            if (!t || t.length > 1000) continue;
+                            if (!matchText(t)) continue;
+                            if (!isTrulyVisible(el)) continue;
+                            return { text: t.slice(0, 300), in_result: inResult };
+                        }
+                        return null;
+                    }
+
+                    function findResultRoot() {
+                        const kws = ['Результат генерации', 'Результат', 'Result'];
+                        let best = null;
+                        let bestArea = 0;
+                        for (const el of document.querySelectorAll('section, div, article, main')) {
+                            const t = (el.textContent || '').trim();
+                            if (!t || t.length > 1200) continue;
+                            for (const kw of kws) {
+                                if (!t.includes(kw)) continue;
+                                const r = el.getBoundingClientRect();
+                                const area = r.width * r.height;
+                                if (area > bestArea && r.width >= 120 && r.height >= 60) {
+                                    best = el;
+                                    bestArea = area;
+                                }
                             }
                         }
-                        if (!hit) continue;
-                        if (!isTrulyVisible(el)) continue;
-                        return t.slice(0, 300);
+                        return best;
                     }
-                    return null;
-                }"""
+
+                    const resultRoot = findResultRoot();
+                    if (resultRoot) {
+                        const inPanel = scanRoot(resultRoot, true);
+                        if (inPanel) return inPanel;
+                    }
+                    return scanRoot(document.body, false);
+                }""",
+                {"moderation": mod_js, "generation": gen_js},
             )
-            if isinstance(text, str) and text.strip():
-                return text.strip()
+            if isinstance(raw, dict) and raw.get("text"):
+                text = str(raw["text"]).strip()
+                if text:
+                    return {
+                        "text": text,
+                        "in_result": bool(raw.get("in_result")),
+                    }
         except Exception:  # noqa: BLE001
             pass
+        return None
+
+    async def _outsee_failure_text(self, page: Page) -> str | None:
+        """Текст видимой плашки ошибки (любой kind) или None."""
+        hit = await self._detect_outsee_failure(page)
+        if hit:
+            return str(hit["text"])
         return None
 
     # ----- VIDEO (veo-3-fast Relax) -----
