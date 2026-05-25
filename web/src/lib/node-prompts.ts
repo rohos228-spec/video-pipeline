@@ -70,9 +70,22 @@ export function defaultPromptSlots(nodeType: string): NodePromptSlot[] {
   return BASE[nodeType] ?? [{ id: "main", title: "Настройки ноды", kind: "gpt" }];
 }
 
-/** Промты в горизонтальной схеме меню V (без «текста для GPT» и без Excel — он отдельным блоком). */
+/** Промты в горизонтальной схеме меню V (без «текста для GPT»). Excel — первым. */
 export function pipelinePromptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
-  return slots.filter((s) => s.kind !== "text" && s.kind !== "excel");
+  return slots.filter((s) => s.kind !== "text");
+}
+
+/** Гарантирует Excel-слот первым (даже если custom_prompts его выкинул). */
+export function orderedMenuPromptSlots(
+  nodeType: string,
+  slots: NodePromptSlot[],
+): NodePromptSlot[] {
+  const defaults = defaultPromptSlots(nodeType);
+  const defaultExcel = defaults.find((s) => s.kind === "excel");
+  const pipeline = pipelinePromptSlots(slots).filter((s) => s.kind !== "excel");
+  const excel = slots.find((s) => s.kind === "excel") ?? defaultExcel;
+  if (excel) return [excel, ...pipeline];
+  return pipeline;
 }
 
 export function excelPromptSlot(slots: NodePromptSlot[]): NodePromptSlot | undefined {

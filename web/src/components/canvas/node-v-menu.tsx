@@ -5,6 +5,7 @@ import {
   Ban,
   Download,
   Eye,
+  FileSpreadsheet,
   MessageSquareText,
   Play,
   Plus,
@@ -15,14 +16,13 @@ import {
 import type { NodePromptSlot } from "@/lib/node-prompts";
 import {
   gptTextSlotForNode,
-  excelPromptSlot,
   isCustomPromptSlot,
-  pipelinePromptSlots,
+  orderedMenuPromptSlots,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { NodeVMenuExcelBlock } from "./node-v-menu-excel";
+import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
 
 export function NodeVMenu({
   open,
@@ -65,30 +65,20 @@ export function NodeVMenu({
 }) {
   if (!open) return null;
 
-  const pipeline = pipelinePromptSlots(slots);
-  const excelSlot = excelPromptSlot(slots);
+  const menuSlots = orderedMenuPromptSlots(nodeType, slots);
+  const excelSlot = menuSlots.find((s) => s.kind === "excel");
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
   return (
     <div className="node-v-menu nodrag nopan nowheel absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
-        {excelSlot && (
-          <NodeVMenuExcelBlock
-            open={open}
-            projectId={projectId ?? null}
-            nodeType={nodeType}
-            excelSlot={excelSlot}
-            onOpenExcel={() => onSelectPrompt(excelSlot)}
-          />
-        )}
-
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Мастер-промты
           </span>
           <div className="flex items-center gap-1">
-            <span className="text-[9px] text-muted-foreground">{pipeline.length} шт.</span>
+            <span className="text-[9px] text-muted-foreground">{menuSlots.length} шт.</span>
             <button
               type="button"
               className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground"
@@ -105,10 +95,10 @@ export function NodeVMenu({
           </div>
         </div>
 
-        {pipeline.length > 0 ? (
+        {menuSlots.length > 0 ? (
           <div className="mb-3 overflow-x-auto pb-1">
             <div className="flex min-w-min items-center gap-1">
-              {pipeline.map((slot, i) => (
+              {menuSlots.map((slot, i) => (
                 <div key={slot.id} className="relative flex items-center gap-1">
                   <button
                     type="button"
@@ -118,17 +108,32 @@ export function NodeVMenu({
                     }}
                     className={cn(
                       "flex w-[88px] shrink-0 flex-col items-center rounded-xl border px-2 py-2 text-center transition-all",
-                      "border-white/10 bg-white/[0.04] hover:border-amber-400/40 hover:bg-amber-400/10",
+                      slot.kind === "excel"
+                        ? "border-emerald-500/40 bg-emerald-500/10 hover:border-emerald-400/60 hover:bg-emerald-500/20"
+                        : "border-white/10 bg-white/[0.04] hover:border-amber-400/40 hover:bg-amber-400/10",
                     )}
                     title={slot.description || slot.title}
                   >
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
-                      {i + 1}
-                    </span>
+                    {slot.kind === "excel" ? (
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/25 text-emerald-300">
+                        <FileSpreadsheet className="h-3.5 w-3.5" />
+                      </span>
+                    ) : (
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                        {(excelSlot ? 1 : 0) +
+                          menuSlots.slice(0, i).filter((s) => s.kind !== "excel").length +
+                          1}
+                      </span>
+                    )}
                     <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
-                      {slot.title}
+                      {slot.kind === "excel" ? "Excel" : slot.title}
                     </span>
-                    <span className="mt-0.5 text-[8px] text-muted-foreground">
+                    <span
+                      className={cn(
+                        "mt-0.5 text-[8px]",
+                        slot.kind === "excel" ? "text-emerald-400/90" : "text-muted-foreground",
+                      )}
+                    >
                       {slotKindLabel(slot.kind)}
                     </span>
                   </button>
@@ -145,7 +150,7 @@ export function NodeVMenu({
                       <X className="h-2.5 w-2.5" />
                     </button>
                   )}
-                  {i < pipeline.length - 1 && (
+                  {i < menuSlots.length - 1 && (
                     <ArrowRight className="h-3.5 w-3.5 shrink-0 text-amber-500/40" aria-hidden />
                   )}
                 </div>
@@ -168,6 +173,15 @@ export function NodeVMenu({
           <p className="mb-3 text-[10px] text-muted-foreground">
             Для этой ноды нет файловых мастер-промтов.
           </p>
+        )}
+
+        {excelSlot && projectId != null && (
+          <NodeVMenuExcelPreview
+            open={open}
+            projectId={projectId}
+            nodeType={nodeType}
+            onOpen={() => onSelectPrompt(excelSlot)}
+          />
         )}
 
         {showGptText && (
@@ -204,7 +218,7 @@ export function NodeVMenu({
           )}
           {excelSlot && (
             <MenuAction
-              icon={Eye}
+              icon={FileSpreadsheet}
               label="Просмотр Excel"
               onClick={() => onSelectPrompt(excelSlot)}
             />
@@ -265,7 +279,7 @@ function MenuAction({
 function slotKindLabel(kind: NodePromptSlot["kind"]): string {
   if (kind === "gpt") return "файл";
   if (kind === "text") return "текст GPT";
-  if (kind === "excel") return "Excel";
+  if (kind === "excel") return "project.xlsx";
   if (kind === "blocks") return "блоки";
   return kind;
 }
