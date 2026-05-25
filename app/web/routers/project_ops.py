@@ -419,10 +419,15 @@ async def preview_xlsx(
 
     if row is not None and active:
         ws = wb[active]
-        cells: list[str] = []
-        for col in range(1, min(ws.max_column, max_cols) + 1):
-            v = ws.cell(row=row, column=col).value
-            cells.append("" if v is None else str(v))
+        row_iter = ws.iter_rows(
+            min_row=row, max_row=row, max_col=max_cols, values_only=True
+        )
+        row_vals = next(row_iter, None)
+        cells = (
+            ["" if c is None else str(c) for c in row_vals]
+            if row_vals is not None
+            else []
+        )
         wb.close()
         return {
             "path": str(xlsx),
@@ -436,12 +441,12 @@ async def preview_xlsx(
     rows: list[list[str]] = []
     if active:
         ws = wb[active]
-        limit_cols = min(ws.max_column or 1, max_cols)
         for i, row_vals in enumerate(ws.iter_rows(values_only=True)):
-            cells = [
-                "" if c is None else str(c)
-                for c in (list(row_vals) + [""] * limit_cols)[:limit_cols]
-            ]
+            cells = ["" if c is None else str(c) for c in row_vals]
+            if len(cells) > max_cols:
+                cells = cells[:max_cols]
+            elif len(cells) < max_cols:
+                cells = cells + [""] * (max_cols - len(cells))
             if raw:
                 rows.append(cells)
             elif i == 0:
