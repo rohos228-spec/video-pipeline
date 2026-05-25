@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from aiogram import Bot
@@ -15,9 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
-from app.services import xlsx_gpt_flow as xgf
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
-from app.services.xlsx_versioning import backup_to_old, replace_with
 from app.storage import for_project as _sheet_for_project
 
 
@@ -71,17 +68,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"generate_image_prompts: project.xlsx не найден: {xlsx_path}"
         )
 
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=ts)
-    chat_msg = cx.chat_message(
-        project,
-        "img_pr",
-        prompt_file_name=prompt_file.name,
-        n_frames=len(frames),
-    )
-    downloaded = tmp_dir / f"img_pr_{ts}.xlsx"
-
     cancelled = False
     last_err: Exception | None = None
     for attempt in range(1, 3):
@@ -94,21 +80,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
-            async def _do() -> None:
-                await xgf.telegram_style_ask_and_download(
-                    chat_msg,
-                    [prompt_file, xlsx_path],
-                    downloaded,
-                    project_id=project.id,
-                    validate_xlsx_download=True,
-                )
-                backup_to_old(xlsx_path)
-                replace_with(xlsx_path, downloaded)
+            from app.services import xlsx_step_runners as xsr
 
-            await xgf.run_under_xlsx_lock(project.id, "img_pr", _do)
-            await cx.sync_project_xlsx(
-                session, project, xlsx_path, keep_fields=False
+            await xsr.run_img_pr_xlsx(
+                project, n_frames=len(frames), project_id=project.id
             )
+            await xsr.sync_after_img_pr(session, project, xlsx_path)
             await session.refresh(project)
             frames = (
                 await session.execute(

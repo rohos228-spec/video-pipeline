@@ -1,7 +1,7 @@
-"""Единая GPT/xlsx-сессия — копия Telegram bot _run_*_xlsx.
+"""Единая GPT/xlsx-сессия — используется `xlsx_step_runners` (bot + worker).
 
-Источник правды для web-воркера и orchestrator. Telegram-бот должен
-вызывать те же функции, чтобы логика не расходилась.
+Telegram-бот и orchestrator вызывают `xlsx_step_runners`, который внутри
+зовёт функции отсюда. Не дублируйте GPT-логику в шагах.
 """
 
 from __future__ import annotations

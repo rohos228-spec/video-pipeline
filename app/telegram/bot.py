@@ -5877,58 +5877,15 @@ async def _run_plan_xlsx(
 
     backup: _Path | None = None
     try:
-        from app.services import xlsx_gpt_flow as xgf
+        from app.services import xlsx_step_runners as xsr
 
-        await xgf.telegram_style_ask_and_download(
-            accompanying.strip(),
-            [prompt_file, proj_xlsx],
-            downloaded,
-            validate_xlsx_download=True,
-        )
+        result = await xsr.run_plan_xlsx(project, topic=topic)
+        backup = result.backup_path
         logger.info(
             "plan_xlsx: GPT roundtrip ok (project #{}, prompt={})",
             project_id,
             prompt_name,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("plan_xlsx failed: {}", e)
-        await msg.answer(
-            f"❌ ChatGPT вернул ошибку: {e}\n"
-            f"project.xlsx не подменён, можно попробовать ещё раз."
-        )
-        return
-
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        logger.warning(
-            "plan_xlsx: скачанный файл не валиден ({}): {}",
-            validation_err,
-            downloaded,
-        )
-        await msg.answer(
-            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
-            f"Файл: <code>{downloaded}</code>\n"
-            f"project.xlsx не подменён, можно попробовать ещё раз.",
-            parse_mode="HTML",
-        )
-        return
-
-    # Бэкап старого + подмена.
-    try:
-        backup = backup_to_old(proj_xlsx)
-        replace_with(proj_xlsx, downloaded)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("plan_xlsx replace failed: {}", e)
-        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
-        return
-
-    # Обновляем статус проекта + СИНХРОНИЗИРУЕМ xlsx → БД.
-    # ROOT FIX: без этого `project.general_plan` остаётся NULL, и при
-    # следующем рестарте бота `_recompute_all_projects` откатывает
-    # статус на `new`. Юзер видит «всё откатилось».
-    try:
-        from app.services.xlsx_sync import reload_from_xlsx
-        from app.services.xlsx_v8_import import import_v8_xlsx
 
         async with session_scope() as s:
             project = (
@@ -5937,32 +5894,15 @@ async def _run_plan_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
-                # v8-импортёр (для нового шаблона с листом «Общий план»).
-                # keep_fields=False — свежий xlsx от GPT, перезаписываем.
-                try:
-                    info_v8 = await import_v8_xlsx(
-                        s, project, proj_xlsx, keep_fields=False
-                    )
-                    logger.info(
-                        "plan_xlsx: v8 import → {}", info_v8
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "plan_xlsx: v8 import failed: {}", e
-                    )
-                # Старый v7-формат (на случай миграции).
-                try:
-                    info = await reload_from_xlsx(s, project, proj_xlsx)
-                    logger.info(
-                        "plan_xlsx: v7 reload_from_xlsx → {}", info
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "plan_xlsx: v7 reload_from_xlsx failed: {}", e
-                    )
+                await xsr.sync_after_plan(s, project, proj_xlsx)
                 project.status = ProjectStatus.plan_ready
     except Exception as e:  # noqa: BLE001
-        logger.warning("plan_xlsx status update failed: {}", e)
+        logger.exception("plan_xlsx failed: {}", e)
+        await msg.answer(
+            f"❌ ChatGPT вернул ошибку: {e}\n"
+            f"project.xlsx не подменён, можно попробовать ещё раз."
+        )
+        return
 
     backup_note = (
         f"\nПредыдущая версия: <code>old/{backup.name}</code>"
@@ -6062,14 +6002,12 @@ async def _run_script_xlsx(
     )
 
     reply_text = ""
+    voiceover_text = ""
     try:
-        from app.services import xlsx_gpt_flow as xgf
+        from app.services import xlsx_step_runners as xsr
 
-        reply_text = await xgf.telegram_style_ask_and_download(
-            chat_msg,
-            [prompt_file, proj_xlsx],
-            downloaded,
-        )
+        _result, voiceover_text = await xsr.run_script_xlsx(project)
+        reply_text = _result.reply_text
         logger.info(
             "script_xlsx: GPT reply len={} (project #{}, prompt={})",
             len(reply_text or ""),
@@ -6084,36 +6022,7 @@ async def _run_script_xlsx(
         )
         return
 
-    if not downloaded.exists() or downloaded.stat().st_size < 10:
-        await msg.answer(
-            f"❌ Скачанный txt пустой или повреждён: "
-            f"<code>{downloaded}</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    # Бэкап старого + сохранение нового.
-    backup: _Path | None = None
-    try:
-        if voiceover.exists():
-            old_dir = voiceover.parent / "old"
-            old_dir.mkdir(parents=True, exist_ok=True)
-            backup = old_dir / f"{ts}_voiceover.txt"
-            shutil.copy2(voiceover, backup)
-        shutil.copy2(downloaded, voiceover)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("script_xlsx replace failed: {}", e)
-        await msg.answer(f"❌ Не смог записать voiceover.txt: {e}")
-        return
-
     # Обновляем статус проекта + СОХРАНЯЕМ script_text в БД.
-    # ROOT FIX: без `project.script_text` рекомпьют статуса откатывает
-    # проект на `plan_ready` после рестарта (см. compute_actual_status).
-    voiceover_text = ""
-    try:
-        voiceover_text = voiceover.read_text(encoding="utf-8").strip()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("script_xlsx: не смог прочитать voiceover.txt: {}", e)
     try:
         async with session_scope() as s:
             project = (
@@ -6131,6 +6040,13 @@ async def _run_script_xlsx(
                 project.status = ProjectStatus.script_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("script_xlsx status update failed: {}", e)
+
+    voiceover = proj_xlsx.parent / "voiceover.txt"
+    backup: _Path | None = None
+    old_dir = voiceover.parent / "old"
+    if old_dir.is_dir():
+        backups = sorted(old_dir.glob("*_voiceover.txt"), reverse=True)
+        backup = backups[0] if backups else None
 
     backup_note = (
         f"\nПредыдущая версия: <code>old/{backup.name}</code>"
@@ -6247,14 +6163,10 @@ async def _run_split_xlsx(
 
     backup: _Path | None = None
     try:
-        from app.services import xlsx_gpt_flow as xgf
+        from app.services import xlsx_step_runners as xsr
 
-        await xgf.telegram_style_ask_and_download(
-            chat_msg,
-            [prompt_file, proj_xlsx, voiceover],
-            downloaded,
-            validate_xlsx_download=True,
-        )
+        result = await xsr.run_split_xlsx(project)
+        backup = result.backup_path
         logger.info(
             "split_xlsx: GPT roundtrip ok (project #{}, prompt={})",
             project_id,
@@ -6268,36 +6180,8 @@ async def _run_split_xlsx(
         )
         return
 
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        logger.warning(
-            "split_xlsx: скачанный файл не валиден ({}): {}",
-            validation_err,
-            downloaded,
-        )
-        await msg.answer(
-            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
-            f"Файл: <code>{downloaded}</code>\n"
-            f"project.xlsx не подменён, можно попробовать ещё раз.",
-            parse_mode="HTML",
-        )
-        return
-
-    # Бэкап старого project.xlsx + подмена.
     try:
-        backup = backup_to_old(proj_xlsx)
-        replace_with(proj_xlsx, downloaded)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("split_xlsx replace failed: {}", e)
-        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
-        return
-
-    # Обновляем статус проекта + СИНХРОНИЗИРУЕМ xlsx → БД (создаём Frame'ы).
-    # ROOT FIX: без Frame-строк в БД `compute_actual_status` видит
-    # fr_total=0 и откатывает статус на `script_ready` после рестарта.
-    try:
-        from app.services.xlsx_sync import reload_from_xlsx
-        from app.services.xlsx_v8_import import import_v8_xlsx
+        from app.services import xlsx_step_runners as xsr
 
         async with session_scope() as s:
             project = (
@@ -6306,31 +6190,7 @@ async def _run_split_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
-                # v8-импортёр: тут лежат voiceover-блоки на листе «план»
-                # R49, по которым создаём Frame'ы и обновляем script_text.
-                try:
-                    info_v8 = await import_v8_xlsx(
-                        s, project, proj_xlsx,
-                        keep_fields=False,
-                        update_frames_voiceover=True,
-                    )
-                    logger.info(
-                        "split_xlsx: v8 import → {}", info_v8
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "split_xlsx: v8 import failed: {}", e
-                    )
-                # Старый v7-формат (на случай миграции).
-                try:
-                    info = await reload_from_xlsx(s, project, proj_xlsx)
-                    logger.info(
-                        "split_xlsx: v7 reload_from_xlsx → {}", info
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "split_xlsx: v7 reload_from_xlsx failed: {}", e
-                    )
+                await xsr.sync_after_split(s, project, proj_xlsx)
                 project.status = ProjectStatus.frames_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("split_xlsx status update failed: {}", e)
@@ -6446,14 +6306,10 @@ async def _run_img_pr_xlsx(
 
     backup: _Path | None = None
     try:
-        from app.services import xlsx_gpt_flow as xgf
+        from app.services import xlsx_step_runners as xsr
 
-        await xgf.telegram_style_ask_and_download(
-            accompanying.strip(),
-            [prompt_file, proj_xlsx],
-            downloaded,
-            validate_xlsx_download=True,
-        )
+        result = await xsr.run_img_pr_xlsx(project)
+        backup = result.backup_path
         logger.info(
             "img_pr_xlsx: GPT roundtrip ok (project #{}, prompt={})",
             project_id,
@@ -6467,32 +6323,8 @@ async def _run_img_pr_xlsx(
         )
         return
 
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        logger.warning(
-            "img_pr_xlsx: скачанный файл не валиден ({}): {}",
-            validation_err,
-            downloaded,
-        )
-        await msg.answer(
-            f"❌ ChatGPT прислал невалидный xlsx: {validation_err}\n"
-            f"Файл: <code>{downloaded}</code>\n"
-            f"project.xlsx не подменён, можно попробовать ещё раз.",
-            parse_mode="HTML",
-        )
-        return
-
     try:
-        backup = backup_to_old(proj_xlsx)
-        replace_with(proj_xlsx, downloaded)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("img_pr_xlsx replace failed: {}", e)
-        await msg.answer(f"❌ Не смог подменить project.xlsx: {e}")
-        return
-
-    try:
-        from app.services.xlsx_sync import reload_from_xlsx
-        from app.services.xlsx_v8_import import import_v8_xlsx
+        from app.services import xlsx_step_runners as xsr
 
         async with session_scope() as s:
             project = (
@@ -6501,20 +6333,7 @@ async def _run_img_pr_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
-                try:
-                    info_v8 = await import_v8_xlsx(
-                        s, project, proj_xlsx, keep_fields=False
-                    )
-                    logger.info("img_pr_xlsx: v8 import → {}", info_v8)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("img_pr_xlsx: v8 import failed: {}", e)
-                try:
-                    info = await reload_from_xlsx(s, project, proj_xlsx)
-                    logger.info("img_pr_xlsx: v7 reload_from_xlsx → {}", info)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "img_pr_xlsx: v7 reload_from_xlsx failed: {}", e
-                    )
+                await xsr.sync_after_img_pr(s, project, proj_xlsx)
                 project.status = ProjectStatus.image_prompts_ready
     except Exception as e:  # noqa: BLE001
         logger.warning("img_pr_xlsx status update failed: {}", e)

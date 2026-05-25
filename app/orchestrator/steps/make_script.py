@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-
 from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import HITLKind, Project, ProjectStatus
-from app.services import chatgpt_xlsx as cx
-from app.services import xlsx_gpt_flow as xgf
+from app.services import xlsx_step_runners as xsr
 from app.services.hitl import send_hitl_text
 from app.storage import for_project as _sheet_for_project
 
@@ -21,36 +17,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] make_script (xlsx-flow) starting", project.id)
 
-    proj_xlsx = project.data_dir / "project.xlsx"
-    if not proj_xlsx.exists():
-        sheet = _sheet_for_project(project)
-        proj_xlsx = sheet.ensure_initialized(
-            project_id=project.id, slug=project.slug
-        )
-    if not proj_xlsx.exists():
-        raise RuntimeError(f"make_script: project.xlsx не найден: {proj_xlsx}")
-
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = cx.write_script_prompt_file(project, tmp_dir, ts=ts)
-    chat_msg = cx.chat_message(
-        project, "script", prompt_file_name=prompt_file.name
-    )
-    voiceover_path = proj_xlsx.parent / "voiceover.txt"
-    downloaded = tmp_dir / f"voiceover_{ts}.txt"
-
-    async def _do() -> str:
-        return await xgf.telegram_style_ask_and_download(
-            chat_msg,
-            [prompt_file, proj_xlsx],
-            downloaded,
-            project_id=project.id,
-        )
-
-    await xgf.run_under_xlsx_lock(project.id, "script", _do)
-
-    voiceover_text = downloaded.read_text(encoding="utf-8").strip()
-    cx.save_voiceover_text(project, voiceover_path, voiceover_text)
+    _result, voiceover_text = await xsr.run_script_xlsx(project)
 
     if len(voiceover_text) < 200:
         raise RuntimeError("ChatGPT вернул пустой/слишком короткий сценарий")
