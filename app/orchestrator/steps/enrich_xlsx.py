@@ -105,7 +105,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.services import chatgpt_xlsx as cx
 
     tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = tmp_dir / f"prompt_{step_code}.md"
+    prompt_file = tmp_dir / f"prompt_{step_code}.txt"
     prompt_file.write_text(master.strip(), encoding="utf-8")
 
     # 3. Round-trip до 3 раз.

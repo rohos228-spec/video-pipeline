@@ -26,7 +26,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "paperclip-first-v69"
+CHATGPT_ATTACH_LOGIC_ID = "paperclip-batch-v74"
 
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
@@ -538,12 +538,18 @@ class ChatGPTBot:
 
     # ---------- File upload / download (для xlsx-пайплайна) -------------------
 
-    async def _materialize_file_input(self) -> str:
-        """Скрепка → пункт меню → input[type=file] (как ручной аплоад)."""
+    async def _materialize_file_input(self, *, fresh: bool = False) -> str:
+        """Скрепка → пункт меню → input[type=file] (как ручной аплоад).
+
+        fresh=True — всегда открыть меню заново (нужно для batch/multi-file:
+        иначе второй set_input_files попадает в старый input и «ломает» первый
+        файл — в UI вечная загрузка, хотя имя уже видно).
+        """
         page = await self._page_ready()
-        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        if input_sel:
-            return input_sel
+        if not fresh:
+            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
+            if input_sel:
+                return input_sel
 
         attach_sel = await _first_matching(page, ATTACH_BUTTON_SELECTORS, timeout=12)
         if not attach_sel:
@@ -569,28 +575,115 @@ class ChatGPTBot:
             )
         return input_sel
 
-    async def _attach_one_via_paperclip(self, file_path: Path) -> None:
-        """Прикрепить один файл через скрепку + set_input_files."""
+    async def _fire_file_input_events(self, input_sel: str) -> None:
+        """React ChatGPT иногда не видит файлы без input/change после set_input_files."""
         page = await self._page_ready()
-        input_sel = await self._materialize_file_input()
-        logger.info(
-            "ChatGPT: paperclip set_input_files {} через {}",
-            file_path.name,
-            input_sel,
-        )
-        await page.locator(input_sel).last.set_input_files([str(file_path)])
+        try:
+            await page.locator(input_sel).last.evaluate(
+                """el => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }"""
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: fire input/change на file input: {}", e)
 
-        deadline = asyncio.get_event_loop().time() + 90.0
+    async def _attachments_upload_state(self, expected: int) -> dict[str, int | str | bool]:
+        """Сколько вложений в композере и есть ли у них индикатор загрузки."""
+        page = await self._page_ready()
+        raw = await page.evaluate(
+            """(expected) => {
+                const form = document.querySelector('main form')
+                    || document.querySelector('form[data-type="unified-composer"]')
+                    || document.querySelector('form');
+                if (!form) return {ok: false, count: 0, loading: 0, reason: 'no form'};
+                const removeBtns = form.querySelectorAll(
+                    "button[aria-label*='Remove file'], "
+                    + "button[aria-label*='Удалить файл']"
+                );
+                let count = removeBtns.length;
+                if (count === 0) {
+                    count = form.querySelectorAll(
+                        "[data-testid*='file-preview'], "
+                        + "[data-testid*='attachment'], "
+                        + "[data-testid='composer-file-attachment']"
+                    ).length;
+                }
+                const loaderSels = [
+                    "[data-testid*='attachment'] [role='progressbar']",
+                    "[data-testid*='file-preview'] [role='progressbar']",
+                    "[data-testid*='attachment'] .animate-spin",
+                    "[data-testid*='file-preview'] .animate-spin",
+                    "[data-testid*='uploading']",
+                    "[aria-label*='ploading']",
+                    "[aria-busy='true']",
+                ];
+                let loading = 0;
+                for (const sel of loaderSels) {
+                    for (const el of form.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) loading += 1;
+                    }
+                }
+                return {
+                    ok: count >= expected && loading === 0,
+                    count,
+                    loading,
+                    reason: count < expected ? 'count' : (loading ? 'loading' : 'ready'),
+                };
+            }""",
+            expected,
+        )
+        return dict(raw or {"ok": False, "count": 0, "loading": 0, "reason": "eval"})
+
+    async def _wait_attachments_ready(
+        self, file_paths: list[Path], *, timeout: float = 120
+    ) -> None:
+        """Ждём имена файлов в композере и исчезновение спиннеров на вложениях."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_log = ""
         while asyncio.get_event_loop().time() < deadline:
-            if file_path.name in await self._composer_attachment_text():
-                await self._wait_upload_done(timeout=120)
+            names_ok = await self._files_visible_in_composer(file_paths)
+            state = await self._attachments_upload_state(len(file_paths))
+            reason = state.get("reason", "?")
+            log_key = f"{names_ok}:{reason}:{state.get('count')}:{state.get('loading')}"
+            if log_key != last_log:
+                logger.info(
+                    "ChatGPT: upload state names_ok={} count={}/{} loading={} ({})",
+                    names_ok,
+                    state.get("count"),
+                    len(file_paths),
+                    state.get("loading"),
+                    reason,
+                )
+                last_log = log_key
+            if names_ok and state.get("ok"):
+                await asyncio.sleep(0.8)
                 return
             await asyncio.sleep(0.5)
-
         await self._dump_composer_html()
         raise RuntimeError(
-            f"ChatGPT: файл {file_path.name} не появился в композере за 90с (paperclip)"
+            f"ChatGPT: вложения не готовы за {timeout:.0f}с "
+            f"[{', '.join(p.name for p in file_paths)}]"
         )
+
+    async def _attach_batch_via_paperclip(self, file_paths: list[Path]) -> None:
+        """Один раз скрепка → set_input_files(all) — как ручной multi-select."""
+        page = await self._page_ready()
+        input_sel = await self._materialize_file_input(fresh=True)
+        paths = [str(p) for p in file_paths]
+        logger.info(
+            "ChatGPT: paperclip batch set_input_files {} файлов через {}",
+            len(paths),
+            input_sel,
+        )
+        await page.locator(input_sel).last.set_input_files(paths)
+        await self._fire_file_input_events(input_sel)
+        await self._wait_attachments_ready(file_paths, timeout=120)
+
+    async def _attach_one_via_paperclip(self, file_path: Path) -> None:
+        """Прикрепить один файл через скрепку + set_input_files."""
+        await self._attach_batch_via_paperclip([file_path])
 
     async def _attach_files(self, file_paths: list[Path]) -> None:
         """Загружает один или несколько файлов в текущий черновик сообщения.
@@ -621,19 +714,33 @@ class ChatGPTBot:
         before = await self._count_attachment_previews()
         paperclip_ok = False
         try:
-            for i, fp in enumerate(file_paths, start=1):
-                logger.info(
-                    "ChatGPT: paperclip {}/{} — {}", i, len(file_paths), fp.name
-                )
-                await self._attach_one_via_paperclip(fp)
+            logger.info(
+                "ChatGPT: paperclip batch — [{}]",
+                names,
+            )
+            await self._attach_batch_via_paperclip(file_paths)
             if await self._files_visible_in_composer(file_paths):
                 paperclip_ok = True
-                logger.info("ChatGPT: paperclip — все файлы видны [{}]", names)
+                logger.info("ChatGPT: paperclip batch — все файлы видны [{}]", names)
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "ChatGPT: paperclip не удался ({}) — fallback drag-drop/set_input_files",
+                "ChatGPT: paperclip batch не удался ({}) — fallback по одному файлу",
                 e,
             )
+            try:
+                for i, fp in enumerate(file_paths, start=1):
+                    logger.info(
+                        "ChatGPT: paperclip single {}/{} — {}", i, len(file_paths), fp.name
+                    )
+                    await self._attach_one_via_paperclip(fp)
+                if await self._files_visible_in_composer(file_paths):
+                    paperclip_ok = True
+                    logger.info("ChatGPT: paperclip single — все файлы видны [{}]", names)
+            except Exception as e2:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: paperclip single не удался ({}) — fallback drag-drop",
+                    e2,
+                )
 
         if not paperclip_ok:
             for i, fp in enumerate(file_paths, start=1):
@@ -702,27 +809,7 @@ class ChatGPTBot:
             return
 
         logger.info("ChatGPT: set_input_files для {}", file_path.name)
-        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        if not input_sel:
-            attach_sel = await _first_matching(
-                page, ATTACH_BUTTON_SELECTORS, timeout=10
-            )
-            if attach_sel:
-                try:
-                    await page.locator(attach_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.6)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("ChatGPT: скрепка не кликнулась: {}", e)
-                menu_sel = await _first_matching(
-                    page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
-                )
-                if menu_sel:
-                    try:
-                        await page.locator(menu_sel).first.click(timeout=3_000)
-                        await asyncio.sleep(0.4)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("ChatGPT: меню вложений: {}", e)
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
+        input_sel = await self._materialize_file_input(fresh=True)
 
         if not input_sel:
             await self._dump_composer_html()
@@ -732,6 +819,7 @@ class ChatGPTBot:
             )
 
         await page.locator(input_sel).last.set_input_files([str(file_path)])
+        await self._fire_file_input_events(input_sel)
         preview_sel = await _first_matching(
             page, FILE_PREVIEW_SELECTORS, timeout=60
         )
@@ -766,27 +854,7 @@ class ChatGPTBot:
             return
 
         logger.info("ChatGPT: batch fallback set_input_files [{}]", names)
-        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        if not input_sel:
-            attach_sel = await _first_matching(
-                page, ATTACH_BUTTON_SELECTORS, timeout=10
-            )
-            if attach_sel:
-                try:
-                    await page.locator(attach_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.6)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("ChatGPT: скрепка не кликнулась: {}", e)
-                menu_sel = await _first_matching(
-                    page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
-                )
-                if menu_sel:
-                    try:
-                        await page.locator(menu_sel).first.click(timeout=3_000)
-                        await asyncio.sleep(0.4)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("ChatGPT: меню вложений: {}", e)
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
+        input_sel = await self._materialize_file_input(fresh=True)
 
         if not input_sel:
             raise RuntimeError(
@@ -796,6 +864,7 @@ class ChatGPTBot:
         await page.locator(input_sel).last.set_input_files(
             [str(p) for p in file_paths]
         )
+        await self._fire_file_input_events(input_sel)
         preview_sel = await _first_matching(
             page, FILE_PREVIEW_SELECTORS, timeout=60
         )
@@ -937,21 +1006,18 @@ class ChatGPTBot:
         )
 
     async def _wait_upload_done(self, *, timeout: float = 120) -> None:
-        """Ждёт пока в композере исчезнут все upload-спиннеры.
-
-        Эвристика: ищем элементы, у которых aria-label/role содержит
-        loading/uploading/progress. Если за timeout сек спиннеры не пропали —
-        логируем warning, но НЕ кидаем (превью может остаться, ChatGPT
-        возможно перейдёт к обработке).
-        """
+        """Ждёт пока в композере исчезнут спиннеры загрузки вложений."""
         page = await self._page_ready()
         spinner_sels = [
+            "form [data-testid*='attachment'] [role='progressbar']",
+            "form [data-testid*='file-preview'] [role='progressbar']",
+            "form [data-testid*='attachment'] .animate-spin",
+            "form [data-testid*='file-preview'] .animate-spin",
+            "form [data-testid*='uploading']",
             "form [role='progressbar']",
             "form [aria-busy='true']",
-            "form [aria-label*='oading']",
             "form [aria-label*='ploading']",
             "form [data-testid*='loading']",
-            "form [data-testid*='uploading']",
             "form svg.animate-spin",
             "form .animate-spin",
         ]
