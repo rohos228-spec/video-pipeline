@@ -1,4 +1,4 @@
-# Точка входа — работает из любой подпапки репозитория
+﻿# Точка входа — работает из любой подпапки репозитория
 $Root = $PSScriptRoot
 while ($Root -and -not (Test-Path (Join-Path $Root "pyproject.toml"))) {
     $parent = Split-Path -Parent $Root

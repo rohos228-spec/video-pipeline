@@ -1,4 +1,4 @@
-# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
+﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
 
 Add-Type -AssemblyName System.Windows.Forms

@@ -1,4 +1,4 @@
-# Запуск бэкенда из корня репозитория (безопасно после cd web)
+﻿# Запуск бэкенда из корня репозитория (безопасно после cd web)
 # powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
 
 $ErrorActionPreference = "Stop"

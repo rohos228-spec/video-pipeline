@@ -1,4 +1,4 @@
-# update-web.ps1 — обновление video-pipeline + веб-UI
+﻿# update-web.ps1 — обновление video-pipeline + веб-UI
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 

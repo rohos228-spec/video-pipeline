@@ -1,4 +1,4 @@
-# Докачать git после ошибки Unlink pack (Windows: закрой Studio / Cursor в этой папке).
+﻿# Докачать git после ошибки Unlink pack (Windows: закрой Studio / Cursor в этой папке).
 # powershell -ExecutionPolicy Bypass -File .\fix-git-pull.ps1
 
 $ErrorActionPreference = "Stop"

@@ -1,4 +1,4 @@
-# video-pipeline: local studio without Telegram bot
+﻿# video-pipeline: local studio without Telegram bot
 # Run: powershell -ExecutionPolicy Bypass -File .\start-studio.ps1
 #
 # Starts: worker + FastAPI (:8765). Telegram is not required.

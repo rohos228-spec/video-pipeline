@@ -1,4 +1,4 @@
-# Creates Desktop shortcut to Video Pipeline Studio GUI
+﻿# Creates Desktop shortcut to Video Pipeline Studio GUI
 # Run once: powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1
 
 $ErrorActionPreference = "Stop"
