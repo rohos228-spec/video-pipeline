@@ -102,6 +102,32 @@ async def _ask_gpt_to_rewrite(
     return text
 
 
+def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str | None:
+    """Делает `prompt_id_prefix` уникальным для текущей retry-итерации.
+
+    Без этого ВСЕ попытки повторной генерации одной и той же картинки
+    приходят в outsee с одинаковым ID (`[ID: P11-EXCEL-c01]`) — и
+    анти-дубликат-чек в `_generate_image_on_page` находит ОСТАВШУЮСЯ
+    карточку прошлой провалившейся попытки, решает «генерация уже идёт,
+    не кликаю Generate повторно» и пытается скачать ту же отбракованную
+    модерацией картинку. Из-за этого retry превращался в три «не делай
+    ничего» на одной и той же сломанной карточке.
+
+    Меняем хвост ID на `[… r{round}a{attempt}]` — каждая новая попытка
+    становится отдельной картой outsee со своим ID, и анти-дуп-чек
+    больше не путает её с прошлыми.
+    """
+    if not base:
+        return base
+    if round_idx == 0 and attempt == 1:
+        return base  # первая попытка — оригинальный ID без шума
+    # base = "[ID: P11-EXCEL-c01]" → "[ID: P11-EXCEL-c01 r1a2]"
+    stripped = base.strip()
+    if stripped.endswith("]"):
+        return f"{stripped[:-1]} r{round_idx + 1}a{attempt}]"
+    return f"{stripped} r{round_idx + 1}a{attempt}"
+
+
 async def generate_image_with_retries(
     outsee: OutseeBot,
     gpt: ChatGPTBot | None,
@@ -116,9 +142,13 @@ async def generate_image_with_retries(
     GPT-rewrite. Подробности — в docstring модуля.
 
     Все `kwargs` пробрасываются как есть в `outsee.generate_image`.
+    На каждой попытке `prompt_id_prefix` уникализируется (см.
+    `_uniquify_prompt_id`), чтобы анти-дубликат-чек outsee не
+    путал retry с прошлой проваленной карточкой.
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
+    base_prompt_id = kwargs.get("prompt_id_prefix")
     rounds: list[tuple[str, str]] = [("original", current_prompt)]
     if gpt_rewrite and gpt is not None:
         rounds.append(("rewritten", ""))  # placeholder, заполним если дойдём
@@ -127,18 +157,23 @@ async def generate_image_with_retries(
         pid = kwargs.get("project_id")
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(pid if isinstance(pid, int) else None)
+            attempt_kwargs = dict(kwargs)
+            attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
+                base_prompt_id, round_idx, attempt
+            )
             try:
                 return await outsee.generate_image(
-                    current_prompt, out_path, **kwargs
+                    current_prompt, out_path, **attempt_kwargs
                 )
             except StepCancelledError:
                 raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
-                    "outsee.generate_image [{}] попытка {}/{} "
+                    "outsee.generate_image [{}] попытка {}/{} (id={}) "
                     "провалена: {}",
                     round_label, attempt, max_attempts_per_prompt,
+                    attempt_kwargs.get("prompt_id_prefix") or "—",
                     e.reason,
                 )
                 if attempt < max_attempts_per_prompt:
@@ -186,6 +221,7 @@ async def generate_video_with_retries(
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
+    base_prompt_id = kwargs.get("prompt_id_prefix")
     rounds: list[str] = ["original"]
     if gpt_rewrite and gpt is not None:
         rounds.append("rewritten")
@@ -193,18 +229,24 @@ async def generate_video_with_retries(
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
+            attempt_kwargs = dict(kwargs)
+            attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
+                base_prompt_id, round_idx, attempt
+            )
             try:
                 return await outsee.generate_video(
-                    current_prompt, out_path, project_id=project_id, **kwargs
+                    current_prompt, out_path, project_id=project_id,
+                    **attempt_kwargs,
                 )
             except StepCancelledError:
                 raise
             except OutseeImageError as e:
                 last_err = e
                 logger.warning(
-                    "outsee.generate_video [{}] попытка {}/{} "
+                    "outsee.generate_video [{}] попытка {}/{} (id={}) "
                     "провалена: {}",
                     round_label, attempt, max_attempts_per_prompt,
+                    attempt_kwargs.get("prompt_id_prefix") or "—",
                     e.reason,
                 )
                 if attempt < max_attempts_per_prompt:
