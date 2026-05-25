@@ -46,7 +46,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             [prompt_file, xlsx_path],
             timeout=900,
             project_id=project.id,
-            step_code="plan",
         )
         await cx.download_and_replace_xlsx(
             gpt, xlsx_path, downloaded, timeout=900

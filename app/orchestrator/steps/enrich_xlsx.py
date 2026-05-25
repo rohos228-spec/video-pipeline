@@ -131,7 +131,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     [prompt_file, xlsx_path],
                     timeout=1200,
                     project_id=project.id,
-                    step_code=step_code,
                 )
                 logger.info(
                     "[#{}] enrich_xlsx: получен ответ len={} (try={})",

@@ -49,7 +49,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             [prompt_file, xlsx_path],
             timeout=900,
             project_id=project.id,
-            step_code="script",
         )
         voiceover_text = await cx.download_text_attachment(
             gpt, downloaded, timeout=900

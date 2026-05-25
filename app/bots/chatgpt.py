@@ -265,50 +265,7 @@ class ChatGPTBot:
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
         await self._dismiss_no_auth_modal(page)
 
-    async def _click_send(self) -> None:
-        """Нажать Send без ввода текста в композер (только вложения)."""
-        page = await self._page_ready()
-        await self._dismiss_no_auth_modal(page)
-        await asyncio.sleep(0.5)
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=12)
-        if send_sel:
-            logger.info("ChatGPT: Send (только файлы) — кнопка ({})", send_sel)
-            try:
-                await page.locator(send_sel).first.click(timeout=5_000)
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.warning("ChatGPT: клик Send упал ({}): {}", send_sel, e)
-        await self._dump_composer_html()
-        await self._dump_send_button_candidates(page)
-        raise RuntimeError(
-            "ChatGPT: не удалось отправить сообщение с вложениями — "
-            "кнопка Send не найдена или неактивна"
-        )
-
-    async def _count_attachment_previews(self) -> int:
-        """Сколько превью вложений сейчас в композере."""
-        page = await self._page_ready()
-        count = await page.evaluate(
-            """() => {
-                const form = document.querySelector('main form')
-                    || document.querySelector('form[data-type="unified-composer"]')
-                    || document.querySelector('form');
-                if (!form) return 0;
-                const removeBtns = form.querySelectorAll(
-                    "button[aria-label*='Remove file'], "
-                    + "button[aria-label*='Удалить файл']"
-                );
-                if (removeBtns.length > 0) return removeBtns.length;
-                return form.querySelectorAll(
-                    "[data-testid*='file-preview'], "
-                    + "[data-testid*='attachment'], "
-                    + "[data-testid='composer-file-attachment']"
-                ).length;
-            }"""
-        )
-        return int(count or 0)
-
-    async def _send_prompt(self, text: str, *, clear_first: bool = True) -> None:
+    async def _send_prompt(self, text: str) -> None:
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
         input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
@@ -322,22 +279,15 @@ class ChatGPTBot:
         # через page.keyboard.insertText: он посылает один beforeinput/input
         # событие с полным текстом, и ProseMirror корректно обновляет состояние.
         await locator.focus()
-        # После прикрепления файлов Ctrl+A может снять вложения — не чистим.
-        if clear_first:
-            try:
-                await page.keyboard.press("Control+a")
-                await page.keyboard.press("Delete")
-            except Exception:  # noqa: BLE001
-                pass
+        # Очищаем возможный предыдущий ввод (Ctrl+A → Delete).
+        try:
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+        except Exception:  # noqa: BLE001
+            pass
         await page.keyboard.insert_text(text)
         # Небольшая пауза, чтобы кнопка Send активировалась.
         await asyncio.sleep(0.5)
-        if not clear_first:
-            n_att = await self._count_attachment_previews()
-            logger.info(
-                "ChatGPT: после ввода текста превью вложений={} (clear_first=False)",
-                n_att,
-            )
         logger.info("ChatGPT: текст промта введён ({} символов), ищу Send", len(text))
 
         # Находим кнопку отправки — ждём, пока она активна
@@ -546,118 +496,9 @@ class ChatGPTBot:
                 raise FileNotFoundError(f"upload: файл не найден {fp}")
 
         names = ", ".join(p.name for p in file_paths)
-        logger.info("ChatGPT: начинаю аплоад {} файлов по одному [{}]", len(file_paths), names)
+        logger.info("ChatGPT: начинаю аплоад файлов [{}]", names)
 
-        before = await self._count_attachment_previews()
-        for i, fp in enumerate(file_paths, start=1):
-            logger.info("ChatGPT: файл {}/{} — {}", i, len(file_paths), fp.name)
-            await self._attach_one_file(fp)
-
-        after = await self._count_attachment_previews()
-        attached = after - before
-        if attached < len(file_paths):
-            logger.warning(
-                "ChatGPT: per-file аплоад {}/{} превью — пробую batch fallback",
-                attached,
-                len(file_paths),
-            )
-            await self._attach_files_batch(file_paths)
-            after = await self._count_attachment_previews()
-            attached = after - before
-
-        if attached < len(file_paths):
-            await self._dump_composer_html()
-            raise RuntimeError(
-                f"ChatGPT: прикреплено {attached}/{len(file_paths)} файлов "
-                f"[{names}] — отправку отменяю"
-            )
-        logger.info(
-            "ChatGPT: все {} файлов в композере (превью +{})",
-            len(file_paths),
-            attached,
-        )
-
-    async def _attach_one_file(self, file_path: Path) -> None:
-        """Один файл: drag-drop, при неудаче — set_input_files."""
-        page = await self._page_ready()
-        before = await self._count_attachment_previews()
-
-        drag_drop_ok = False
-        try:
-            await self._drag_drop_files([file_path])
-            preview_sel = await _first_matching(
-                page, FILE_PREVIEW_SELECTORS, timeout=25
-            )
-            if preview_sel:
-                logger.info(
-                    "ChatGPT: drag-drop превью для {} ({})",
-                    file_path.name,
-                    preview_sel,
-                )
-                await self._wait_upload_done(timeout=120)
-                drag_drop_ok = True
-            else:
-                logger.warning(
-                    "ChatGPT: drag-drop без превью для {} — fallback",
-                    file_path.name,
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "ChatGPT: drag-drop для {} упал ({}), fallback",
-                file_path.name,
-                e,
-            )
-
-        after = await self._count_attachment_previews()
-        if drag_drop_ok and after > before:
-            return
-
-        logger.info("ChatGPT: set_input_files для {}", file_path.name)
-        input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
-        if not input_sel:
-            attach_sel = await _first_matching(
-                page, ATTACH_BUTTON_SELECTORS, timeout=10
-            )
-            if attach_sel:
-                try:
-                    await page.locator(attach_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.6)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("ChatGPT: скрепка не кликнулась: {}", e)
-                menu_sel = await _first_matching(
-                    page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
-                )
-                if menu_sel:
-                    try:
-                        await page.locator(menu_sel).first.click(timeout=3_000)
-                        await asyncio.sleep(0.4)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("ChatGPT: меню вложений: {}", e)
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
-
-        if not input_sel:
-            await self._dump_composer_html()
-            raise RuntimeError(
-                f"ChatGPT: не удалось прикрепить {file_path.name} "
-                "(нет input[type=file])"
-            )
-
-        await page.locator(input_sel).last.set_input_files([str(file_path)])
-        preview_sel = await _first_matching(
-            page, FILE_PREVIEW_SELECTORS, timeout=60
-        )
-        if not preview_sel:
-            await self._dump_composer_html()
-            raise RuntimeError(
-                f"ChatGPT: {file_path.name} — превью не появилось после set_input_files"
-            )
-        await self._wait_upload_done(timeout=120)
-
-    async def _attach_files_batch(self, file_paths: list[Path]) -> None:
-        """Batch drag-drop / set_input_files — запасной путь для нескольких файлов."""
-        page = await self._page_ready()
-        names = ", ".join(p.name for p in file_paths)
-
+        # 1. Главный путь — drag-and-drop.
         drag_drop_ok = False
         try:
             await self._drag_drop_files(file_paths)
@@ -666,54 +507,102 @@ class ChatGPTBot:
             )
             if preview_sel:
                 logger.info(
-                    "ChatGPT: batch drag-drop превью ({})", preview_sel
+                    "ChatGPT: drag-drop превью появилось ({})", preview_sel
                 )
                 await self._wait_upload_done(timeout=120)
                 drag_drop_ok = True
+            else:
+                logger.warning(
+                    "ChatGPT: drag-drop не дал превью за 20с — "
+                    "перехожу на fallback set_input_files"
+                )
         except Exception as e:  # noqa: BLE001
-            logger.warning("ChatGPT: batch drag-drop упал ({}), fallback", e)
+            logger.warning(
+                "ChatGPT: drag-drop упал ({}) — перехожу на fallback "
+                "set_input_files",
+                e,
+            )
 
         if drag_drop_ok:
             return
 
-        logger.info("ChatGPT: batch fallback set_input_files [{}]", names)
+        # 2. Fallback — set_input_files через скрытый input[type=file].
+        logger.info("ChatGPT: fallback на set_input_files")
+        # 2a. Пытаемся найти input[type=file] напрямую.
         input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=2)
+        if input_sel:
+            logger.info("ChatGPT: input[type=file] найден сразу ({})", input_sel)
+
+        # 2b. Если не нашли — кликаем по скрепке + поповер-меню.
         if not input_sel:
             attach_sel = await _first_matching(
                 page, ATTACH_BUTTON_SELECTORS, timeout=10
             )
-            if attach_sel:
-                try:
-                    await page.locator(attach_sel).first.click(timeout=3_000)
-                    await asyncio.sleep(0.6)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("ChatGPT: скрепка не кликнулась: {}", e)
-                menu_sel = await _first_matching(
-                    page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
+            if not attach_sel:
+                await self._dump_composer_html()
+                raise RuntimeError(
+                    "ChatGPT: drag-drop не сработал И не нашёл "
+                    "кнопку-скрепку (ATTACH_BUTTON_SELECTORS). "
+                    "Возможно изменился UI — пришли скрин окна Chrome "
+                    "или строку 'composer outerHTML' из консоли."
                 )
-                if menu_sel:
-                    try:
-                        await page.locator(menu_sel).first.click(timeout=3_000)
-                        await asyncio.sleep(0.4)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("ChatGPT: меню вложений: {}", e)
-            input_sel = await _first_matching(page, FILE_INPUT_SELECTORS, timeout=10)
+            logger.info("ChatGPT: кликаю по скрепке ({})", attach_sel)
+            try:
+                await page.locator(attach_sel).first.click(timeout=3_000)
+                await asyncio.sleep(0.6)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: не смог кликнуть скрепку {}: {}", attach_sel, e
+                )
+
+            menu_sel = await _first_matching(
+                page, ATTACH_MENU_ITEM_SELECTORS, timeout=2
+            )
+            if menu_sel:
+                logger.info("ChatGPT: кликаю по пункту меню '{}'", menu_sel)
+                try:
+                    await page.locator(menu_sel).first.click(timeout=3_000)
+                    await asyncio.sleep(0.4)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "ChatGPT: не смог кликнуть пункт меню {}: {}",
+                        menu_sel,
+                        e,
+                    )
+
+            input_sel = await _first_matching(
+                page, FILE_INPUT_SELECTORS, timeout=10
+            )
 
         if not input_sel:
+            await self._dump_composer_html()
             raise RuntimeError(
-                "ChatGPT: batch fallback — нет input[type=file]"
+                "ChatGPT: drag-drop не сработал И не нашёл input[type=file] "
+                "даже после клика по скрепке. Возможно изменился UI — "
+                "пришли скрин окна Chrome или строки 'composer outerHTML' "
+                "из консоли."
             )
 
-        await page.locator(input_sel).last.set_input_files(
-            [str(p) for p in file_paths]
-        )
+        # 2c. set_input_files.
+        loc = page.locator(input_sel).last
+        await loc.set_input_files([str(p) for p in file_paths])
+        logger.info("ChatGPT: set_input_files выполнен через {}", input_sel)
+
+        # 2d. Ждём превью.
+        preview_timeout = 60.0
         preview_sel = await _first_matching(
-            page, FILE_PREVIEW_SELECTORS, timeout=60
+            page, FILE_PREVIEW_SELECTORS, timeout=preview_timeout
         )
         if not preview_sel:
+            await self._dump_composer_html()
             raise RuntimeError(
-                f"ChatGPT: batch set_input_files — нет превью [{names}]"
+                f"ChatGPT: ни drag-drop, ни set_input_files не сработали — "
+                f"за {int(preview_timeout)} сек не появилось превью файла(ов) "
+                f"[{names}]. Аплоад НЕ удался — промт в ChatGPT не отправляю."
             )
+        logger.info("ChatGPT: превью файла(ов) появилось ({})", preview_sel)
+
+        # 2e. Ждём, пока пропадёт upload-spinner.
         await self._wait_upload_done(timeout=120)
 
     async def _drag_drop_files(self, file_paths: list[Path]) -> None:
@@ -939,29 +828,19 @@ class ChatGPTBot:
         timeout: float = 900,
         project_id: int | None = None,
     ) -> str:
-        """Прикрепляет файлы, вводит сопр. текст в композер и отправляет."""
+        """Аналогично `ask_with_file`, но прикрепляет НЕСКОЛЬКО файлов
+        к одному сообщению, потом шлёт промт и возвращает текст ответа.
+        """
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         abort_if_cancelled(project_id)
         await self._attach_files(file_paths)
         abort_if_cancelled(project_id)
-
-        attached = await self._count_attachment_previews()
-        if attached < len(file_paths):
-            raise RuntimeError(
-                f"ChatGPT: перед отправкой только {attached}/{len(file_paths)} "
-                "превью вложений"
-            )
-        logger.info(
-            "ChatGPT: {} вложений в композере, ввожу текст ({} симв.)",
-            attached,
-            len(prompt),
-        )
-
-        await self._send_prompt(prompt, clear_first=False)
-
+        await self._send_prompt(prompt)
         await self._wait_until_done(timeout=timeout, project_id=project_id)
 
+        # Ждём стабилизации текста (как в обычном ask), но не строго — Code
+        # Interpreter иногда генерирует файл и сразу отдаёт короткий текст.
         page = await self._page_ready()
         last_text = ""
         stable_for = 0.0

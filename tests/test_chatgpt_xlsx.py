@@ -1,13 +1,12 @@
-"""Тесты xlsx-flow: промт файлом, сопр. текст в композер (как в боте)."""
+"""Тесты xlsx-flow: промт файлом, текст чата отдельно."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from app.bots.chatgpt import ChatGPTBot
 from app.models import Project
 from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
@@ -86,31 +85,3 @@ def test_default_accompanying_never_includes_master(project: Project) -> None:
         )
     assert master not in default
     assert "prompt.txt" in default
-
-
-@pytest.mark.asyncio
-async def test_ask_with_prompt_files_delegates_to_bot_flow(tmp_path: Path) -> None:
-    prompt_file = tmp_path / "prompt_plan.md"
-    prompt_file.write_text("MASTER", encoding="utf-8")
-    xlsx = tmp_path / "project.xlsx"
-    xlsx.write_bytes(b"xlsx")
-
-    gpt = AsyncMock(spec=ChatGPTBot)
-    gpt.new_conversation = AsyncMock()
-    gpt.ask_with_files = AsyncMock(return_value="ok")
-
-    reply = await cx.ask_with_prompt_files(
-        gpt,
-        "Сопр. сообщение",
-        [prompt_file, xlsx],
-        step_code="plan",
-    )
-
-    assert reply == "ok"
-    gpt.new_conversation.assert_awaited_once()
-    gpt.ask_with_files.assert_awaited_once_with(
-        "Сопр. сообщение",
-        [prompt_file, xlsx],
-        timeout=900,
-        project_id=None,
-    )

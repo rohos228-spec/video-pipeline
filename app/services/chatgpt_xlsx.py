@@ -1,9 +1,9 @@
 """Общие хелперы xlsx-flow для шагов ChatGPT.
 
-Правило отправки (как в Telegram-боте):
+Правило отправки:
   - Мастер-промт (выбранный variant с диска) → всегда во временный файл.
-  - Excel и прочие вложения → файлами в одном сообщении.
-  - Сопр. текст (`gpt_text_builder.get_effective_text`) → в композер ChatGPT.
+  - Текст в чат → только `gpt_text_builder.get_effective_text()` (override
+    пользователя или дефолтное сопр. сообщение без мастер-промта).
 """
 
 from __future__ import annotations
@@ -137,9 +137,7 @@ async def ask_with_prompt_files(
     *,
     timeout: int = 900,
     project_id: int | None = None,
-    step_code: str = "step",
 ) -> str:
-    """Новый чат: вложения (промт + xlsx + …) + сопр. текст в композер."""
     await gpt.new_conversation()
     return await gpt.ask_with_files(
         chat_msg,
