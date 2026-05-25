@@ -197,6 +197,12 @@ def _mount_frontend(app: FastAPI) -> None:
 
     @app.get("/{full_path:path}")
     async def catch_all(full_path: str) -> FileResponse:
+        # /api/* обслуживают FastAPI-роутеры — не отдаём index.html (иначе в браузере
+        # «открывается проект» вместо JSON на /api/studio-version).
+        if full_path == "api" or full_path.startswith("api/"):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="not found")
         # Next static export — все маршруты как .html-файлы.
         candidate = out_dir / full_path
         if candidate.is_file():
