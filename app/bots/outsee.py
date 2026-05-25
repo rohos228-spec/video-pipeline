@@ -920,10 +920,9 @@ class OutseeBot:
         gen_id = gen_id or _uuid.uuid4().hex
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
-        logger.info(
-            "outsee.generate_image: prompt_id_prefix={} [flow=always-fill-v2]",
-            prompt_id_prefix,
-        )
+            logger.info(
+                "outsee.generate_image: prompt_id_prefix={}", prompt_id_prefix
+            )
 
         page_url = _image_page_url(model_slug)
         logger.info(
@@ -1039,7 +1038,7 @@ class OutseeBot:
         try:
             pre_rejected_text: str | None = None
 
-            # 1) вбить промт — всегда, на каждой retry-попытке.
+            # 1) вбить промт — всегда (как в рабочем TG-боте до anti-dup skip).
             input_sel = await _first_visible(
                 page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000, project_id=project_id
             )
@@ -1209,8 +1208,8 @@ class OutseeBot:
             await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
             logger.info(
                 "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
-                gen_id[:8],
-            )
+                    gen_id[:8],
+                )
 
             # 4) строгое ожидание свежей картинки.
             # Передаём prompt_id_prefix — `_wait_image_url_strict` тогда
@@ -2009,20 +2008,6 @@ class OutseeBot:
                         )
                     )
                     if fresh_ok:
-                        # Старые карточки gallery с тем же [ID: …] из
-                        # прошлых запусков не должны считаться результатом
-                        # текущего Generate. Требуем URL в net_events
-                        # (пришёл по сети ПОСЛЕ нашего клика Generate).
-                        if net_events and not _url_is_fresh(by_id, net_events):
-                            logger.info(
-                                "_wait_image_url_strict: prompt_id {} "
-                                "найден в gallery, но URL не свежий "
-                                "(нет в net_events) — это старая карточка, "
-                                "жду новую генерацию",
-                                prompt_id_prefix,
-                            )
-                            fresh_ok = False
-                    if fresh_ok:
                         logger.info(
                             "_wait_image_url_strict: matched by prompt_id "
                             "{} за {:.0f} сек: {}",
@@ -2055,7 +2040,10 @@ class OutseeBot:
                 and current_norm not in baseline_all_srcs
             ):
                 if await self._img_is_loaded(page, current):
-                    if _url_is_fresh(current, net_events):
+                    # Пока net_events пуст — доверяем DOM (новый src вне
+                    # baseline). Иначе Outsee может отдать картинку без
+                    # image/* response ≥50KB в listener.
+                    if (not net_events) or _url_is_fresh(current, net_events):
                         if not prompt_id_prefix:
                             # Без ID-верификации — возвращаем сразу
                             # (старое поведение).
@@ -2084,7 +2072,8 @@ class OutseeBot:
                     if not any(m in u.lower() for m in _UI_ASSET_MARKERS)
                     and not any(m in u.lower() for m in _INPUT_REF_MARKERS)
                 ]
-                clean = [u for u in clean if _url_is_fresh(u, net_events)]
+                if net_events:
+                    clean = [u for u in clean if _url_is_fresh(u, net_events)]
                 # Исключаем уже отвергнутых при ID-верификации (сравнение
                 # по нормализованным URL'ам — см. _strip_url_query).
                 if prompt_id_prefix:
@@ -2562,22 +2551,19 @@ class OutseeBot:
         # дублировать. Поэтому проверка тут даже важнее, чем для картинок.
         already_in_progress = False
         if prompt_id_prefix:
-            gallery_has_id = await _gallery_has_prompt_id(
-                page, prompt_id_prefix
-            )
-            composer_has_current_id = await _composer_contains_token(
-                page, prompt_id_prefix
-            )
-            if gallery_has_id or composer_has_current_id:
+            try:
+                _counts = await self._count_id_tokens_in_page(
+                    page, [prompt_id_prefix]
+                )
+            except Exception:  # noqa: BLE001
+                _counts = {}
+            if _counts.get(prompt_id_prefix, 0) >= 1:
                 already_in_progress = True
                 logger.warning(
-                    "outsee.generate_video: на странице УЖЕ есть "
-                    "карточка/прогресс с {} (gallery={}, composer={}) "
-                    "— НЕ кликаю Generate повторно, жду результат "
+                    "outsee.generate_video: на странице УЖЕ есть карточка "
+                    "с {} — НЕ кликаю Generate повторно, жду результат "
                     "прошлого клика (video рендерится 5-15 мин)",
                     prompt_id_prefix,
-                    gallery_has_id,
-                    composer_has_current_id,
                 )
 
         if not already_in_progress:
@@ -2830,111 +2816,6 @@ class OutseeBot:
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
 
-def _prompt_id_search_tokens(prompt_id_prefix: str) -> list[str]:
-    """Токены для поиска карточки outsee по `[ID: …]`.
-
-    Поддерживает uniquified id из retry-обёртки:
-    `[ID: P11-EXCEL-c01-abc12345 r2a1]`.
-    """
-    tokens: list[str] = [prompt_id_prefix]
-    m = re.search(
-        r"\[ID:\s*([A-Za-z0-9_-]+)(?:\s+r\d+a\d+)?\s*\]",
-        prompt_id_prefix,
-    )
-    if m:
-        inner = m.group(1)
-        if inner not in tokens:
-            tokens.append(inner)
-    m2 = re.search(
-        r"-([0-9a-fA-F]{8})(?:\s+r\d+a\d+)?\]?$",
-        prompt_id_prefix,
-    )
-    if m2:
-        tail = m2.group(1)
-        if tail and tail not in tokens:
-            tokens.append(tail)
-    return tokens
-
-
-def _count_tokens_in_text(text: str, tokens: list[str]) -> int:
-    return sum(text.count(tok) for tok in tokens if tok)
-
-
-async def _page_text_excluding_composer(
-    page: Page,
-    composer_selectors: list[str] | None = None,
-) -> str:
-    """Текст страницы без composer-поля ввода промта.
-
-    Outsee держит наш `[ID: …]` в composer пока идёт/завершилась генерация.
-    Если сканировать все textarea, Strategy C ложно матчит ЛЮБУЮ картинку.
-    """
-    selectors = composer_selectors or PROMPT_INPUT_SELECTORS
-    try:
-        res = await page.evaluate(
-            """(selectors) => {
-                const composer = new Set();
-                for (const sel of selectors) {
-                    try {
-                        for (const el of document.querySelectorAll(sel)) {
-                            composer.add(el);
-                        }
-                    } catch (e) {}
-                }
-                let text = (document.body && (
-                    document.body.innerText || document.body.textContent
-                )) || '';
-                for (const el of document.querySelectorAll(
-                    'textarea, input[type=text], input:not([type])'
-                )) {
-                    if (composer.has(el)) continue;
-                    const v = el && el.value;
-                    if (v) text += '\\n' + v;
-                }
-                return text;
-            }""",
-            selectors,
-        )
-        return res if isinstance(res, str) else ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-async def _composer_contains_token(
-    page: Page,
-    token: str,
-    composer_selectors: list[str] | None = None,
-) -> bool:
-    """True если composer (поле ввода промта) уже содержит `token`."""
-    if not token:
-        return False
-    selectors = composer_selectors or PROMPT_INPUT_SELECTORS
-    try:
-        res = await page.evaluate(
-            """([token, selectors]) => {
-                for (const sel of selectors) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const v = el && el.value;
-                        if (v && v.includes(token)) return true;
-                    }
-                }
-                return false;
-            }""",
-            [token, selectors],
-        )
-        return bool(res)
-    except Exception:  # noqa: BLE001
-        return False
-
-
-async def _gallery_has_prompt_id(page: Page, prompt_id_prefix: str) -> bool:
-    """True если наш ID виден в gallery/панели, но не только в composer."""
-    text = await _page_text_excluding_composer(page)
-    return _count_tokens_in_text(
-        _prompt_id_search_tokens(prompt_id_prefix), text
-    ) > 0
-
-
 async def _find_card_by_clicking_images(
     page: Page,
     *,
@@ -2959,7 +2840,17 @@ async def _find_card_by_clicking_images(
     """
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
-    tokens = _prompt_id_search_tokens(prompt_id_prefix)
+    tokens: list[str] = [prompt_id_prefix]
+    m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", prompt_id_prefix)
+    if m:
+        inner = m.group(1)
+        if inner not in tokens:
+            tokens.append(inner)
+    m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", prompt_id_prefix)
+    if m2:
+        tail = m2.group(1)
+        if tail and tail not in tokens:
+            tokens.append(tail)
 
     # Получаем список больших картинок (визуальный bbox >= 200x200).
     try:
@@ -2996,9 +2887,6 @@ async def _find_card_by_clicking_images(
             continue
         img_loc = page.locator(f'img[src*="{path_only}"]').first
 
-        pre_text = await _page_text_excluding_composer(page)
-        pre_count = _count_tokens_in_text(pre_text, tokens)
-
         # Клик по картинке — открывает панель «Промпт».
         with contextlib.suppress(Exception):
             await await_with_cancel(
@@ -3019,12 +2907,27 @@ async def _find_card_by_clicking_images(
 
         await asyncio.sleep(0.6)
 
-        # Дифференциальная проверка: composer уже содержит наш ID, поэтому
-        # смотрим только на РОСТ вхождений вне composer — это значит что
-        # клик открыл карточку gallery с нашим промтом в правой панели.
-        post_text = await _page_text_excluding_composer(page)
-        post_count = _count_tokens_in_text(post_text, tokens)
-        matched = post_count > pre_count
+        # Проверяем — появился ли наш токен после клика?
+        try:
+            matched: bool = await page.evaluate(
+                """([toks]) => {
+                    const body = document.body;
+                    let text = (body && (body.innerText || body.textContent)) || '';
+                    for (const el of document.querySelectorAll(
+                        'textarea, input[type=text], input:not([type])'
+                    )) {
+                        const v = el && el.value;
+                        if (v) text += '\\n' + v;
+                    }
+                    for (const tok of toks) {
+                        if (tok && text.includes(tok)) return true;
+                    }
+                    return false;
+                }""",
+                [tokens],
+            )
+        except Exception:  # noqa: BLE001
+            matched = False
 
         if not matched:
             # Не наша картинка — закрываем панель Esc'ом и идём дальше.
@@ -3077,14 +2980,19 @@ async def _download_via_card_click(
     `input_*.png` — ссылку на наш же референс). Реальный финальный
     PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
 
-    Стратегии поиска карточки (при наличии `prompt_id_prefix`):
-      B. `get_by_text(prompt_id_prefix)` — быстрый путь, если ID уже
-         виден в DOM без клика.
-      C. Перебор первых 10 «больших» картинок — для каждой кликаем,
-         открываем правую панель «Промпт», ищем РОСТ вхождений нашего
-         `[ID: …]` вне composer-поля. Основная логика бота.
-      A. `img_url` — fallback по URL из `_wait_image_url_strict`.
-         Только если B и C не нашли карточку.
+    Стратегии поиска карточки (в порядке убывания надёжности):
+      A. `img_url` (если передан) — находим `<img src*="…/filename">`
+         в DOM и идём ancestor-axis-ом до карточки с кнопкой download.
+         Это самый надёжный путь: URL уже верифицирован
+         `_wait_image_url_strict` через net_events.
+      B. `prompt_id_prefix` через `get_by_text` — работает только
+         когда outsee показывает наш `[ID: …]` в видимом тексте
+         (не в `<textarea>.value`, который `get_by_text` не видит).
+      C. Перебор последних 10 «больших» картинок на странице — для
+         каждой кликаем, ждём правую панель «Промпт» (outsee
+         показывает там полный текст промта именно по клику),
+         читаем `innerText` + `<textarea>.value` и ищем 8-hex-tail
+         нашего ID. Если матч — это наша карточка.
 
     Дальше: scroll → hover → expect_download + click.
     """
@@ -3095,21 +3003,20 @@ async def _download_via_card_click(
 
     card = None  # type: ignore[var-annotated]
 
-    # --- Стратегия A: img_url из _wait_image_url_strict (ID уже матчился).
+    # --- Стратегия A: img_url (самая строгая, URL уже верифицирован).
     if img_url:
         url_path = _strip_url_query(img_url)
+        # отрезаем scheme+host, оставляем path — он точно уникален
+        # внутри outsee.io ('/outseehistory/generated/…/image_*.jpg').
         path_only = re.sub(r"^https?://[^/]+", "", url_path)
-        basename = Path(path_only).name if path_only else ""
-        for fragment in (path_only, basename):
-            if not fragment:
-                continue
+        if path_only:
             try:
                 img_locator = page.locator(
-                    f'img[src*="{fragment}"]'
+                    f'img[src*="{path_only}"]'
                 ).first
                 await await_with_cancel(
                     img_locator.wait_for(
-                        state="attached", timeout=5_000,
+                        state="attached", timeout=10_000,
                     ),
                     project_id,
                 )
@@ -3122,31 +3029,21 @@ async def _download_via_card_click(
                     logger.info(
                         "_download_via_card_click: карточка найдена "
                         "через img[src*=...{}] (стратегия A)",
-                        fragment[-60:],
+                        path_only[-60:],
                     )
-                    break
             except (PWTimeoutError, Exception) as e:  # noqa: BLE001
                 logger.warning(
-                    "_download_via_card_click: стратегия A fragment "
-                    "'{}' не сработала ({})",
-                    fragment[-40:], type(e).__name__,
+                    "_download_via_card_click: стратегия A (img_url) не "
+                    "сработала ({}), пробую B",
+                    type(e).__name__,
                 )
 
-    # --- Стратегия C: перебор 10 ближайших картинок + ID по клику.
-    if card is None:
-        card = await _find_card_by_clicking_images(
-            page,
-            prompt_id_prefix=prompt_id_prefix,
-            limit=10,
-            project_id=project_id,
-        )
-
-    # --- Стратегия B: текстовый поиск по [ID: …] в видимом DOM.
+    # --- Стратегия B: текстовый поиск по [ID: …] (старая логика).
     if card is None:
         id_el = page.get_by_text(prompt_id_prefix, exact=False).first
         try:
             await await_with_cancel(
-                id_el.wait_for(state="visible", timeout=5_000),
+                id_el.wait_for(state="visible", timeout=10_000),
                 project_id,
             )
             candidate = id_el.locator(
@@ -3162,25 +3059,18 @@ async def _download_via_card_click(
         except PWTimeoutError:
             logger.warning(
                 "_download_via_card_click: стратегия B (get_by_text) "
-                "не сработала за 5s"
+                "не сработала за 10s, перехожу к C"
             )
 
-    if card is None and img_url:
-        # Последний шанс — прямое скачивание по URL (thumb/full).
-        logger.warning(
-            "_download_via_card_click: карточка не найдена, "
-            "fallback _download_via_context для {}",
-            img_url[:120],
+    # --- Стратегия C: перебор последних 10 больших картинок, клик и
+    # проверка прокинутой панели «Промпт» на наш ID-токен.
+    if card is None:
+        card = await _find_card_by_clicking_images(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=10,
+            project_id=project_id,
         )
-        await _download_via_context(
-            page, img_url, out_path, project_id=project_id,
-        )
-        logger.info(
-            "_download_via_card_click: сохранил файл {} через URL-fallback "
-            "(prompt_id={})",
-            out_path, prompt_id_prefix,
-        )
-        return
 
     if card is None:
         raise OutseeImageError(
