@@ -5877,22 +5877,19 @@ async def _run_plan_xlsx(
 
     backup: _Path | None = None
     try:
-        async with browser_session() as bs:
-            gpt = ChatGPTBot(bs)
-            await gpt.new_conversation()
-            # Промт-файл + xlsx — как вложения, сопр. текст — в чат.
-            reply = await gpt.ask_with_files(
-                accompanying.strip(), [prompt_file, proj_xlsx], timeout=900
-            )
-            logger.info(
-                "plan_xlsx: GPT reply len={} (project #{}, prompt={})",
-                len(reply or ""),
-                project_id,
-                prompt_name,
-            )
-            await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=900
-            )
+        from app.services import xlsx_gpt_flow as xgf
+
+        await xgf.telegram_style_ask_and_download(
+            accompanying.strip(),
+            [prompt_file, proj_xlsx],
+            downloaded,
+            validate_xlsx_download=True,
+        )
+        logger.info(
+            "plan_xlsx: GPT roundtrip ok (project #{}, prompt={})",
+            project_id,
+            prompt_name,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("plan_xlsx failed: {}", e)
         await msg.answer(
@@ -6066,23 +6063,19 @@ async def _run_script_xlsx(
 
     reply_text = ""
     try:
-        async with browser_session() as bs:
-            gpt = ChatGPTBot(bs)
-            await gpt.new_conversation()
-            reply_text = await gpt.ask_with_files(
-                chat_msg, [prompt_file, proj_xlsx], timeout=900
-            )
-            logger.info(
-                "script_xlsx: GPT reply len={} (project #{}, prompt={})",
-                len(reply_text or ""),
-                project_id,
-                prompt_name,
-            )
-            # GPT должен вернуть txt файл — всегда скачиваем файл из ответа.
-            logger.info("script_xlsx: скачиваю txt файл из ответа ChatGPT")
-            await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=900
-            )
+        from app.services import xlsx_gpt_flow as xgf
+
+        reply_text = await xgf.telegram_style_ask_and_download(
+            chat_msg,
+            [prompt_file, proj_xlsx],
+            downloaded,
+        )
+        logger.info(
+            "script_xlsx: GPT reply len={} (project #{}, prompt={})",
+            len(reply_text or ""),
+            project_id,
+            prompt_name,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("script_xlsx failed: {}", e)
         await msg.answer(
@@ -6254,23 +6247,19 @@ async def _run_split_xlsx(
 
     backup: _Path | None = None
     try:
-        async with browser_session() as bs:
-            gpt = ChatGPTBot(bs)
-            await gpt.new_conversation()
-            reply = await gpt.ask_with_files(
-                chat_msg,
-                [prompt_file, proj_xlsx, voiceover],
-                timeout=900,
-            )
-            logger.info(
-                "split_xlsx: GPT reply len={} (project #{}, prompt={})",
-                len(reply or ""),
-                project_id,
-                prompt_name,
-            )
-            await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=900
-            )
+        from app.services import xlsx_gpt_flow as xgf
+
+        await xgf.telegram_style_ask_and_download(
+            chat_msg,
+            [prompt_file, proj_xlsx, voiceover],
+            downloaded,
+            validate_xlsx_download=True,
+        )
+        logger.info(
+            "split_xlsx: GPT roundtrip ok (project #{}, prompt={})",
+            project_id,
+            prompt_name,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("split_xlsx failed: {}", e)
         await msg.answer(
@@ -6457,21 +6446,19 @@ async def _run_img_pr_xlsx(
 
     backup: _Path | None = None
     try:
-        async with browser_session() as bs:
-            gpt = ChatGPTBot(bs)
-            await gpt.new_conversation()
-            reply = await gpt.ask_with_files(
-                accompanying.strip(), [prompt_file, proj_xlsx], timeout=900
-            )
-            logger.info(
-                "img_pr_xlsx: GPT reply len={} (project #{}, prompt={})",
-                len(reply or ""),
-                project_id,
-                prompt_name,
-            )
-            await gpt.download_attachment_from_last_reply(
-                downloaded, timeout=900
-            )
+        from app.services import xlsx_gpt_flow as xgf
+
+        await xgf.telegram_style_ask_and_download(
+            accompanying.strip(),
+            [prompt_file, proj_xlsx],
+            downloaded,
+            validate_xlsx_download=True,
+        )
+        logger.info(
+            "img_pr_xlsx: GPT roundtrip ok (project #{}, prompt={})",
+            project_id,
+            prompt_name,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("img_pr_xlsx failed: {}", e)
         await msg.answer(

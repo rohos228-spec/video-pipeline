@@ -1,7 +1,6 @@
 """Шаг 1: тема → общий план (xlsx-flow через ChatGPT web).
 
-Мастер-промт уходит файлом; в чат — только текст из gpt_text_overrides
-или дефолтное сопр. сообщение. Затем HITL-одобрение в Telegram.
+GPT-сессия — та же, что Telegram _run_plan_xlsx (xlsx_gpt_flow).
 """
 
 from __future__ import annotations
@@ -12,11 +11,11 @@ from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.models import HITLKind, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
+from app.services import xlsx_gpt_flow as xgf
 from app.services.hitl import send_hitl_text
+from app.services.xlsx_versioning import backup_to_old, replace_with
 from app.storage import for_project as _sheet_for_project
 
 
@@ -25,10 +24,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] make_plan (xlsx-flow) starting: '{}'", project.id, project.topic)
 
-    sheet = _sheet_for_project(project)
-    xlsx_path = sheet.ensure_initialized(project_id=project.id, slug=project.slug)
-    if not xlsx_path.exists():
-        raise RuntimeError(f"make_plan: project.xlsx не найден: {xlsx_path}")
+    proj_xlsx = project.data_dir / "project.xlsx"
+    if not proj_xlsx.exists():
+        sheet = _sheet_for_project(project)
+        proj_xlsx = sheet.ensure_initialized(
+            project_id=project.id, slug=project.slug
+        )
+    if not proj_xlsx.exists():
+        raise RuntimeError(f"make_plan: project.xlsx не найден: {proj_xlsx}")
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     tmp_dir = cx.tmp_gpt_dir(project)
@@ -38,20 +41,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     downloaded = tmp_dir / f"plan_{ts}.xlsx"
 
-    async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
-        await cx.ask_with_prompt_files(
-            gpt,
+    async def _do() -> None:
+        await xgf.telegram_style_ask_and_download(
             chat_msg,
-            [prompt_file, xlsx_path],
-            timeout=900,
+            [prompt_file, proj_xlsx],
+            downloaded,
             project_id=project.id,
+            validate_xlsx_download=True,
         )
-        await cx.download_and_replace_xlsx(
-            gpt, xlsx_path, downloaded, timeout=900
-        )
+        backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, downloaded)
 
-    await cx.sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
+    await xgf.run_under_xlsx_lock(project.id, "plan", _do)
+
+    await cx.sync_project_xlsx(session, project, proj_xlsx, keep_fields=False)
 
     plan_text = (project.general_plan or "").strip()
     if len(plan_text) < 200:
@@ -63,7 +66,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await session.flush()
 
     try:
-        sheet.write_general(
+        _sheet_for_project(project).write_general(
             topic=project.topic,
             slug=project.slug,
             hero_mode=project.hero_mode,

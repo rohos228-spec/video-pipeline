@@ -138,16 +138,10 @@ async def ask_with_prompt_files(
     timeout: int = 900,
     project_id: int | None = None,
 ) -> str:
-    """Тот же порядок, что в Telegram _run_*_xlsx: новый чат → файлы → текст."""
-    names = [p.name for p in attachments]
-    logger.info(
-        "xlsx-flow: new_conversation, files={}, chat_len={}",
-        names,
-        len((chat_msg or "").strip()),
-    )
+    """Deprecated: используйте xlsx_gpt_flow.telegram_style_* (bot — источник правды)."""
     await gpt.new_conversation()
     return await gpt.ask_with_files(
-        chat_msg,
+        (chat_msg or "").strip(),
         attachments,
         timeout=timeout,
         project_id=project_id,

@@ -25,10 +25,10 @@ from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.models import Project, ProjectStatus
+from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
+from app.services import xlsx_gpt_flow as xgf
 from app.services import xlsx_sync
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
@@ -122,39 +122,37 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             _MAX_RETRIES,
         )
         try:
-            async with browser_session() as bs:
-                gpt = ChatGPTBot(bs)
-                # Шлём prompt-файл + xlsx как вложения, сопр. текст — в чат.
-                reply = await cx.ask_with_prompt_files(
-                    gpt,
+            async def _do() -> str:
+                return await xgf.telegram_style_ask_and_download(
                     accompanying.strip(),
                     [prompt_file, xlsx_path],
-                    timeout=1200,
+                    xlsx_path,
+                    ask_timeout=1200,
+                    download_timeout=600,
                     project_id=project.id,
+                    validate_xlsx_download=True,
                 )
-                logger.info(
-                    "[#{}] enrich_xlsx: получен ответ len={} (try={})",
-                    project.id,
-                    len(reply or ""),
-                    attempt,
+
+            reply = await xgf.run_under_xlsx_lock(
+                project.id, step_code, _do
+            )
+            logger.info(
+                "[#{}] enrich_xlsx: получен ответ len={} (try={})",
+                project.id,
+                len(reply or ""),
+                attempt,
+            )
+            if not xlsx_path.exists() or xlsx_path.stat().st_size < 1024:
+                raise RuntimeError(
+                    f"скачанный xlsx пустой/слишком маленький "
+                    f"({xlsx_path.stat().st_size if xlsx_path.exists() else 0} байт)"
                 )
-                # Скачиваем приложенный xlsx ПОВЕРХ исходного.
-                # download_attachment_from_last_reply бросит исключение,
-                # если ChatGPT не приложил файл.
-                target = await gpt.download_attachment_from_last_reply(
-                    xlsx_path, timeout=600
-                )
-                if not target.exists() or target.stat().st_size < 1024:
-                    raise RuntimeError(
-                        f"скачанный xlsx пустой/слишком маленький "
-                        f"({target.stat().st_size if target.exists() else 0} байт)"
-                    )
-                logger.info(
-                    "[#{}] enrich_xlsx: xlsx обновлён ({} байт)",
-                    project.id,
-                    target.stat().st_size,
-                )
-                break  # успех
+            logger.info(
+                "[#{}] enrich_xlsx: xlsx обновлён ({} байт)",
+                project.id,
+                xlsx_path.stat().st_size,
+            )
+            break  # успех
         except Exception as e:  # noqa: BLE001
             last_err = e
             logger.warning(

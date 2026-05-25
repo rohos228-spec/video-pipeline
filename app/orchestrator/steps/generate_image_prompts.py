@@ -13,11 +13,11 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
+from app.services import xlsx_gpt_flow as xgf
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.xlsx_versioning import backup_to_old, replace_with
 from app.storage import for_project as _sheet_for_project
 
 
@@ -94,18 +94,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
-            async with browser_session() as bs:
-                gpt = ChatGPTBot(bs)
-                await cx.ask_with_prompt_files(
-                    gpt,
+            async def _do() -> None:
+                await xgf.telegram_style_ask_and_download(
                     chat_msg,
                     [prompt_file, xlsx_path],
-                    timeout=900,
+                    downloaded,
                     project_id=project.id,
+                    validate_xlsx_download=True,
                 )
-                await cx.download_and_replace_xlsx(
-                    gpt, xlsx_path, downloaded, timeout=900
-                )
+                backup_to_old(xlsx_path)
+                replace_with(xlsx_path, downloaded)
+
+            await xgf.run_under_xlsx_lock(project.id, "img_pr", _do)
             await cx.sync_project_xlsx(
                 session, project, xlsx_path, keep_fields=False
             )
