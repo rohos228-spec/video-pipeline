@@ -1,4 +1,4 @@
-"""Тесты xlsx-flow: промт файлом, сопр. текст файлом (не в композер)."""
+"""Тесты xlsx-flow: промт файлом, сопр. текст в композер (как в боте)."""
 
 from __future__ import annotations
 
@@ -88,17 +88,8 @@ def test_default_accompanying_never_includes_master(project: Project) -> None:
     assert "prompt.txt" in default
 
 
-def test_write_chat_message_file(project: Project) -> None:
-    tmp_dir = cx.tmp_gpt_dir(project)
-    chat_file = cx.write_chat_message_file(
-        tmp_dir, "plan", "  Сопр. текст  ", ts="20260101_120000"
-    )
-    assert chat_file.name == "chat_message_plan_20260101_120000.txt"
-    assert chat_file.read_text(encoding="utf-8") == "Сопр. текст\n"
-
-
 @pytest.mark.asyncio
-async def test_ask_with_prompt_files_uses_files_only(tmp_path: Path) -> None:
+async def test_ask_with_prompt_files_delegates_to_bot_flow(tmp_path: Path) -> None:
     prompt_file = tmp_path / "prompt_plan.md"
     prompt_file.write_text("MASTER", encoding="utf-8")
     xlsx = tmp_path / "project.xlsx"
@@ -106,7 +97,7 @@ async def test_ask_with_prompt_files_uses_files_only(tmp_path: Path) -> None:
 
     gpt = AsyncMock(spec=ChatGPTBot)
     gpt.new_conversation = AsyncMock()
-    gpt.ask_with_files_only = AsyncMock(return_value="ok")
+    gpt.ask_with_files = AsyncMock(return_value="ok")
 
     reply = await cx.ask_with_prompt_files(
         gpt,
@@ -117,31 +108,9 @@ async def test_ask_with_prompt_files_uses_files_only(tmp_path: Path) -> None:
 
     assert reply == "ok"
     gpt.new_conversation.assert_awaited_once()
-    gpt.ask_with_files_only.assert_awaited_once()
-    sent_paths = gpt.ask_with_files_only.await_args.args[0]
-    assert sent_paths[:2] == [prompt_file, xlsx]
-    chat_file = sent_paths[2]
-    assert chat_file.name.startswith("chat_message_plan_")
-    assert chat_file.read_text(encoding="utf-8") == "Сопр. сообщение\n"
-
-
-@pytest.mark.asyncio
-async def test_ask_with_files_writes_chat_file_not_composer(tmp_path: Path) -> None:
-    attachment = tmp_path / "data.xlsx"
-    attachment.write_bytes(b"xlsx")
-
-    bot = ChatGPTBot.__new__(ChatGPTBot)
-    bot.ask_with_files_only = AsyncMock(return_value="reply")
-
-    reply = await bot.ask_with_files(
-        "Текст для GPT",
-        [attachment],
+    gpt.ask_with_files.assert_awaited_once_with(
+        "Сопр. сообщение",
+        [prompt_file, xlsx],
+        timeout=900,
+        project_id=None,
     )
-
-    assert reply == "reply"
-    bot.ask_with_files_only.assert_awaited_once()
-    paths = bot.ask_with_files_only.await_args.args[0]
-    assert paths[0] == attachment
-    chat_file = paths[1]
-    assert chat_file.name.startswith("chat_message_")
-    assert chat_file.read_text(encoding="utf-8") == "Текст для GPT\n"
