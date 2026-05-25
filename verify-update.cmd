@@ -41,6 +41,15 @@ if exist web\out\index.html (
 )
 
 echo.
+findstr /C:"xlsx_step_runners" app\orchestrator\steps\make_plan.py >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] make_plan.py OLD - sends 30k text, no file attach!
+    echo         Run Update all or git pull devin/windows-installer
+) else (
+    echo make_plan.py: xlsx-flow OK
+)
+
+echo.
 echo Open in browser after Start Studio:
 echo   http://127.0.0.1:8765/api/studio-version
 echo   http://127.0.0.1:8765  (Ctrl+F5 hard refresh)

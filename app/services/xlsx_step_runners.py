@@ -20,6 +20,10 @@ from app.services import xlsx_gpt_flow as xgf
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
 from app.storage import for_project as _sheet_for_project
 
+# Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
+# нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v70"
+
 
 @dataclass
 class XlsxRoundtripResult:

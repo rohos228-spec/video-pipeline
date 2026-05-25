@@ -18,7 +18,12 @@ from app.storage import for_project as _sheet_for_project
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.planning:
         return
-    logger.info("[#{}] make_plan (xlsx-flow) starting: '{}'", project.id, project.topic)
+    logger.info(
+        "[#{}] make_plan (xlsx-flow, {}) starting: '{}'",
+        project.id,
+        xsr.XLSX_STEP_RUNNERS_ID,
+        project.topic,
+    )
 
     await xsr.run_plan_xlsx(project)
     proj_xlsx = project.data_dir / "project.xlsx"

@@ -33,15 +33,23 @@ def bump() -> str:
     build += 1
     sha = git_short_sha()
     attach = "paperclip-first-v69"
+    orchestrator = "xlsx_step_runners-v70"
     try:
         text = (ROOT / "app" / "bots" / "chatgpt.py").read_text(encoding="utf-8")
         for line in text.splitlines():
             if line.startswith("CHATGPT_ATTACH_LOGIC_ID"):
                 attach = line.split("=", 1)[1].strip().strip('"').strip("'")
                 break
+        xsr = (ROOT / "app" / "services" / "xlsx_step_runners.py").read_text(
+            encoding="utf-8"
+        )
+        for line in xsr.splitlines():
+            if line.startswith("XLSX_STEP_RUNNERS_ID"):
+                orchestrator = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
     except Exception:
         pass
-    VERSION_FILE.write_text(f"{build}\n{sha}\n{attach}\n", encoding="utf-8")
+    VERSION_FILE.write_text(f"{build}\n{sha}\n{attach}\n{orchestrator}\n", encoding="utf-8")
     short = sha[:7] if sha != "unknown" else "dev"
     label = f"v{build} · {short}" if short != "dev" else f"v{build}"
     print(label)

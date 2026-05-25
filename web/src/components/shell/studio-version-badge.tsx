@@ -11,6 +11,10 @@ type ServerVersion = {
   attach_expected?: string;
   backend_attach?: string;
   backend_ok?: boolean;
+  orchestrator_expected?: string;
+  backend_orchestrator?: string;
+  orchestrator_ok?: boolean;
+  pipeline_ok?: boolean;
 };
 
 export function StudioVersionBadge() {
@@ -30,7 +34,8 @@ export function StudioVersionBadge() {
   }, []);
 
   const stale = server != null && server.label !== CLIENT_STUDIO_VERSION;
-  const backendStale = server != null && server.backend_ok === false;
+  const backendStale =
+    server != null && (server.pipeline_ok === false || server.backend_ok === false);
 
   return (
     <span
@@ -43,8 +48,8 @@ export function StudioVersionBadge() {
       title={
         stale
           ? `UI устарел: в браузере ${CLIENT_STUDIO_VERSION}, на сервере ${server?.label}. Выполните npm run build в web/ и перезапустите Studio.`
-          : server && server.backend_ok === false
-            ? `Python НЕ перезапущен: UI ${server.label}, backend attach=${server.backend_attach} (нужен ${server.attach_expected}). Launcher: 4 Stop → 2 Start Studio.`
+          : server && server.pipeline_ok === false
+            ? `Python устарел: attach=${server.backend_attach}, orchestrator=${server.backend_orchestrator}. Нужен git pull + pip install + Stop → Start Studio.`
             : `UI: ${CLIENT_STUDIO_VERSION}${server?.backend_attach ? ` | GPT: ${server.backend_attach}` : ""}`
       }
     >
