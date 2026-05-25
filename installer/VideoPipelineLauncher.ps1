@@ -287,6 +287,7 @@ function Do-QuickStart {
         Write-Log "Studio ready. Keep the backend PowerShell window open." "DarkGreen"
     } else {
         Write-Log "Backend did not respond in 90s. Check the backend window for errors." "DarkRed"
+        Write-Log "Tip: run .\run-backend.ps1 manually to see the error" "DarkOrange"
         Write-Log "Tip: run check-web.cmd or button 15 after backend is up." "DarkOrange"
     }
 }
@@ -308,8 +309,10 @@ function Do-StartStudio {
     if (Test-BackendReady) {
         Write-Log "Studio ready at http://127.0.0.1:8765 (backend window must stay open)" "DarkGreen"
         Start-Process "http://127.0.0.1:8765"
-    } else {
+    }     else {
         Write-Log "Backend did not respond in 90s - see errors in the backend PowerShell window" "DarkRed"
+        Write-Log "Tip: run .\run-backend.ps1 manually in this folder to see the error" "DarkOrange"
+        Write-Log "If log says 45s here — git pull (launcher is outdated)" "DarkOrange"
     }
 }
 

@@ -500,6 +500,19 @@ async def _await_background_tasks(tasks: list[asyncio.Task]) -> None:
             raise exc
 
 
+async def _startup_maintenance() -> None:
+    """Тяжёлая инициализация в фоне — не блокирует /api/health."""
+    try:
+        await _backfill_from_disk()
+        await _recompute_all_projects()
+        await sync_prompts_from_files()
+        from app.services.default_project import ensure_default_project
+
+        await ensure_default_project()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("startup maintenance failed: {}", e)
+
+
 async def main() -> None:
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
@@ -507,13 +520,10 @@ async def main() -> None:
         settings.db_url,
     )
     await _init_db()
-    await _backfill_from_disk()
-    await _recompute_all_projects()
-    await sync_prompts_from_files()
 
-    from app.services.default_project import ensure_default_project
-
-    await ensure_default_project()
+    # Backfill/recompute могут занимать 30–60+ сек на большой БД.
+    # Поднимаем HTTP сразу после init_db, чтобы Launcher не ждал таймаут.
+    maintenance_task = asyncio.create_task(_startup_maintenance())
 
     from app.telegram.noop_bot import get_worker_bot
 
@@ -538,7 +548,7 @@ async def main() -> None:
     from app.services.pipeline_worker import ensure_pipeline_worker_started
 
     ensure_pipeline_worker_started(worker_bot)
-    tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task] = [maintenance_task]
     from app.services.pipeline_worker import get_pipeline_worker_task
 
     worker_task = get_pipeline_worker_task()
@@ -591,7 +601,8 @@ async def main() -> None:
         tasks.append(web_task)
         tasks.append(sync_task)
         logger.info(
-            "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}})",
+            "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}}) — "
+            "backfill/recompute в фоне",
             settings.web_host,
             settings.web_port,
         )
