@@ -266,33 +266,20 @@ def render_hero_text(
 
 def build_anim_pr_initial_default(
     project: Project,
-    frames: list,
+    frames: list | None = None,
     *,
     prompt_file_name: str = "prompt_anim_pr.md",
-    frame_catalog: str = "",
-    images_only_note: str = "",
 ) -> str:
-    """Сопроводительное сообщение в ChatGPT (мастер-промт — отдельным файлом)."""
-    if not frame_catalog:
-        vo_lines: list[str] = []
-        for fr in frames:
-            vo = (getattr(fr, "voiceover_text", None) or "").strip()
-            if vo:
-                vo_lines.append(f"Кадр {fr.number}: {vo}")
-        frame_catalog = (
-            "\n".join(vo_lines)
-            if vo_lines
-            else "(закадровый текст по кадрам пока не задан)"
-        )
-    if not images_only_note:
-        images_only_note = (
-            "\n\nДальше — только изображения пачками (до 5), без текста в сообщении."
-        )
+    """Первое сообщение: сопр. текст (мастер-промт — отдельным файлом, без картинок)."""
+    _ = frames
     return (
-        f"Прикреплён файл: {prompt_file_name} — инструкция по промтам анимации "
-        f"(мастер-промт). Следуй ему при ответах.\n\n"
-        f"Кадры (ID и закадровый):\n{frame_catalog}"
-        f"{images_only_note}"
+        f"Прикреплён файл: {prompt_file_name} — мастер-промт для промтов анимации. "
+        f"Следуй ему.\n\n"
+        "Дальше пришлю изображения пачками (до 5 за сообщение). "
+        "К каждой пачке будет «ID изображения» и «Закадровый текст» по кадрам. "
+        "На каждый кадр отвечай в формате:\n"
+        "ID изображения: …\n"
+        "текст анимации: …"
     )
 
 

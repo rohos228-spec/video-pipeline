@@ -1,8 +1,8 @@
 """Шаг 8: промты анимации через ChatGPT web (один диалог, пачки по 5 картинок).
 
 Схема:
-  1) Один раз: файл мастер-промта + сопр. текст (ID и закадровый по всем кадрам).
-  2) В том же чате — только пачки до 5 PNG, без текста в сообщении.
+  1) Один раз: сопр. промт + файл мастер-промта (без картинок).
+  2) Дальше в том же чате: до 5 PNG + к каждому ID и закадровый текст.
   3) Парсим ответ → план R48 + БД; повторяем 2–3.
 """
 
@@ -96,14 +96,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
                 batch = pending[: apg.BATCH_SIZE]
                 paths = [it.image_path for it in batch]
+                batch_msg = apg.build_batch_message(batch)
                 logger.info(
-                    "[#{}] anim_pr: batch {} frames ({}) — только изображения, без текста",
+                    "[#{}] anim_pr: batch {} frames ({}) — фото + ID/закадровый ({} симв.)",
                     project.id,
                     len(batch),
                     [it.frame.number for it in batch],
+                    len(batch_msg),
                 )
                 reply = await gpt.ask_with_files(
-                    "",
+                    batch_msg,
                     paths,
                     timeout=600,
                     project_id=project.id,

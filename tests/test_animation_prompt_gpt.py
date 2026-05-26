@@ -13,7 +13,7 @@ def test_clean_animation_text_strips_label() -> None:
     assert _clean_animation_text(raw) == "Camera dolly in slowly."
 
 
-def test_build_batch_message_is_empty() -> None:
+def test_build_batch_message_has_id_and_voiceover() -> None:
     fr = SimpleNamespace(number=3, voiceover_text="Hello")
     item = FrameImageBatchItem(
         frame=fr,
@@ -21,4 +21,6 @@ def test_build_batch_message_is_empty() -> None:
         image_id="[ID: P9-F3-deadbeef]",
         voiceover="Hello",
     )
-    assert build_batch_message([item]) == ""
+    msg = build_batch_message([item])
+    assert "ID изображения: [ID: P9-F3-deadbeef]" in msg
+    assert "Закадровый текст: Hello" in msg
