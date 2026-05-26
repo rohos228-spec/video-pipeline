@@ -240,15 +240,14 @@ export function StudioWorkspace({
       },
       onViewAllPrompts: (nodeKey: string, nodeType: string) => {
         onSelectNode(nodeKey);
-        const slots = getPromptSlots(nodeKey, nodeType);
-        const focus =
-          nodeType === "images"
-            ? (slots.find((s) => s.id === "frame_prompts") ??
-              slots.find((s) => s.kind !== "excel") ??
-              null)
-            : null;
-        setPromptFocus(focus);
-        setStudioTab("prompts");
+        if (nodeType === "images") {
+          const excel = getPromptSlots(nodeKey, nodeType).find((s) => s.kind === "excel");
+          setPromptFocus(excel ?? null);
+          setStudioTab("excel");
+        } else {
+          setPromptFocus(null);
+          setStudioTab("prompts");
+        }
         onStudioOpenChange(true);
       },
       onAddPrompt: async (nodeKey: string, nodeType: string) => {

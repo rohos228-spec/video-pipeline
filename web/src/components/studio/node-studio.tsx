@@ -156,16 +156,9 @@ export function NodeStudio({
       setActiveSlotId(promptFocus.id);
       return;
     }
-    if (nodeType === "images") {
-      const frame = pipelineSlots.find((s) => s.id === "frame_prompts");
-      if (frame) {
-        setActiveSlotId(frame.id);
-        return;
-      }
-    }
     const firstPrompt = pipelineSlots.find((s) => s.kind !== "excel");
     setActiveSlotId(firstPrompt?.id ?? pipelineSlots[0]?.id ?? null);
-  }, [promptFocus, pipelineSlots, open, nodeType]);
+  }, [promptFocus, pipelineSlots, open]);
 
   useEffect(() => {
     if (!open || tab !== "excel") return;

@@ -65,22 +65,8 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
   ],
-  images: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" },
-    {
-      id: "frame_prompts",
-      title: "Промты кадров",
-      kind: "frame_prompts",
-      description: "image_prompt по кадрам — уходит в outsee",
-    },
-    {
-      id: "master",
-      title: "Мастер-промт",
-      kind: "gpt",
-      stepCode: "img_pr",
-      description: "prompts/05_image_prompts (шаг 6)",
-    },
-  ],
+  /** Outsee: промты задаются на шаге 6 (image_prompts), здесь только Excel и генерация. */
+  images: [{ id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" }],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
     { id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" },
@@ -129,13 +115,21 @@ export function excelSlotForNodeType(nodeType: string): NodePromptSlot {
   };
 }
 
-const LEGACY_IMAGES_SLOT_IDS = new Set(["outsee"]);
-
 /** Дополняет сохранённые custom_prompts недостающими слотами из BASE (и чинит устаревшие id). */
 export function mergePromptSlotsWithDefaults(
   nodeType: string,
   slots: NodePromptSlot[],
 ): NodePromptSlot[] {
+  if (nodeType === "images") {
+    const defaults = defaultPromptSlots(nodeType);
+    const excel =
+      slots.find((s) => s.kind === "excel") ??
+      defaults.find((s) => s.kind === "excel") ??
+      excelSlotForNodeType(nodeType);
+    const customs = slots.filter((s) => s.custom === true && s.kind !== "excel");
+    return excel ? [excel, ...customs] : defaults;
+  }
+
   const defaults = defaultPromptSlots(nodeType);
   if (!defaults.length || !slots.length) return slots;
 
@@ -161,14 +155,9 @@ export function mergePromptSlotsWithDefaults(
     }
   }
 
-  if (nodeType === "images") {
-    for (const legacyId of LEGACY_IMAGES_SLOT_IDS) byId.delete(legacyId);
-  }
-
   for (const s of slots) {
     if (s.kind === "excel" || s.kind === "text") continue;
     if (merged.some((m) => m.id === s.id)) continue;
-    if (nodeType === "images" && LEGACY_IMAGES_SLOT_IDS.has(s.id)) continue;
     merged.push(s);
   }
 
