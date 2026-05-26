@@ -312,7 +312,10 @@ Write-Host "===================================" -ForegroundColor Green
 Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Запуск Studio (рекомендуется):" -ForegroundColor Cyan
+Write-Host "Обновить + запустить (каждый день):" -ForegroundColor Cyan
+Write-Host "  Двойной клик: ЗАПУСК.cmd  или  update-and-start.cmd" -ForegroundColor White
+Write-Host ""
+Write-Host "Только Launcher:" -ForegroundColor Cyan
 Write-Host "  Двойной клик: VideoPipelineStudio.cmd" -ForegroundColor White
 Write-Host "  Кнопка * Quick start  или  2 Start Studio" -ForegroundColor White
 Write-Host "  Браузер: http://127.0.0.1:8765  (не :3000)" -ForegroundColor Yellow
