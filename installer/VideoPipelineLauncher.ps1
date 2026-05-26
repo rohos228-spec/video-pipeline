@@ -25,15 +25,7 @@ $script:LogBox = $null
 $script:StatusLbl = $null
 $script:LauncherLogFile = Join-Path $Root "data\launcher.log"
 
-function Write-Log([string]$Text, [string]$Color = "Black") {
-    $line = "$(Get-Date -Format 'HH:mm:ss')  $Text"
-    try {
-        $logDir = Split-Path -Parent $script:LauncherLogFile
-        if (-not (Test-Path $logDir)) {
-            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-        }
-        Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
-    } catch { }
+function Write-LogCore([string]$line, [string]$Color) {
     if (-not $script:LogBox) {
         Write-Host $line
         return
@@ -44,6 +36,169 @@ function Write-Log([string]$Text, [string]$Color = "Black") {
     if (-not $hadSelection) {
         $script:LogBox.ScrollToCaret()
     }
+}
+
+function Write-Log([string]$Text, [string]$Color = "Black") {
+    $line = "$(Get-Date -Format 'HH:mm:ss')  $Text"
+    try {
+        $logDir = Split-Path -Parent $script:LauncherLogFile
+        if (-not (Test-Path $logDir)) {
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        }
+        Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
+    } catch { }
+    if ($script:LogBox -and $script:LogBox.InvokeRequired) {
+        $l = $line
+        $c = $Color
+        [void]$script:LogBox.BeginInvoke([action]{ Write-LogCore $l $c })
+        return
+    }
+    Write-LogCore $line $Color
+}
+
+function Write-CommandOutput($Output, [string]$Color = "Gray") {
+    foreach ($line in @($Output)) {
+        if ($null -ne $line -and "$line".Length -gt 0) {
+            Write-Log "$line" $Color
+        }
+    }
+}
+
+function Invoke-GitLogged([string]$Label, [string[]]$GitArgs) {
+    Write-Log "> $Label" "DarkBlue"
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & git -C $Root @GitArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    Write-CommandOutput $out
+    if ($code -ne 0) {
+        Write-Log "FAIL $Label (git exit $code)" "DarkRed"
+        return $false
+    }
+    Write-Log "OK $Label" "DarkGreen"
+    return $true
+}
+
+function Invoke-PythonLogged([string]$Label, [string]$PyExe, [string[]]$PyArgs) {
+    Write-Log "> $Label" "DarkBlue"
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & $PyExe @PyArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    Write-CommandOutput $out
+    if ($code -ne 0) {
+        Write-Log "FAIL $Label (exit $code)" "DarkRed"
+        return $false
+    }
+    Write-Log "OK $Label" "DarkGreen"
+    return $true
+}
+
+function Invoke-NpmLogged([string]$Label, [string]$NpmExe, [string[]]$NpmArgs, [string]$WorkDir) {
+    Write-Log "> $Label" "DarkBlue"
+    Push-Location $WorkDir
+    try {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $out = & $NpmExe @NpmArgs 2>&1
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prev
+        }
+        Write-CommandOutput $out
+        if ($code -ne 0) {
+            Write-Log "FAIL $Label (npm exit $code)" "DarkRed"
+            return $false
+        }
+        Write-Log "OK $Label" "DarkGreen"
+        return $true
+    } finally {
+        Pop-Location
+    }
+}
+
+function Stop-PortListener([int]$Port) {
+    try {
+        $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+        foreach ($c in $conns) {
+            if ($c.OwningProcess -gt 0) {
+                Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+                Write-Log "Stopped PID $($c.OwningProcess) on port $Port" "Gray"
+            }
+        }
+    } catch {
+        Write-Log "Port $Port: could not use Get-NetTCPConnection ($($_.Exception.Message))" "Gray"
+    }
+}
+
+function Test-LauncherScriptChanged([string]$BeforeHead, [string]$AfterHead) {
+    if (-not $BeforeHead -or -not $AfterHead -or $BeforeHead -eq $AfterHead) {
+        return $false
+    }
+    $names = @(git -C $Root diff --name-only "$BeforeHead" "$AfterHead" 2>$null)
+    return ($names | Where-Object { $_ -eq "installer/VideoPipelineLauncher.ps1" }).Count -gt 0
+}
+
+function Restart-LauncherGui {
+    $cmd = Join-Path $Root "VideoPipelineStudio.cmd"
+    if (Test-Path $cmd) {
+        Start-Process $cmd -WorkingDirectory $Root
+    } else {
+        Start-Process powershell -ArgumentList @(
+            "-ExecutionPolicy", "Bypass", "-NoProfile", "-File",
+            (Join-Path $Root "installer\VideoPipelineLauncher.ps1")
+        ) -WorkingDirectory $Root
+    }
+    if ($script:MainForm) {
+        $script:MainForm.Close()
+    }
+}
+
+$script:ActionRunning = $false
+$script:CurrentAction = ""
+
+function Start-LauncherAction([string]$Name, [scriptblock]$Action) {
+    if ($script:ActionRunning) {
+        Write-Log "Busy: $($script:CurrentAction) — wait" "DarkOrange"
+        return
+    }
+    $script:ActionRunning = $true
+    $script:CurrentAction = $Name
+    if ($script:MainForm) {
+        $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    }
+    $bw = New-Object System.ComponentModel.BackgroundWorker
+    $bw.DoWork += {
+        param($sender, $e)
+        try {
+            & $Action
+            $e.Result = @{ Ok = $true }
+        } catch {
+            $e.Result = @{ Ok = $false; Err = $_.Exception.Message }
+        }
+    }
+    $bw.RunWorkerCompleted += {
+        param($sender, $e)
+        $script:ActionRunning = $false
+        $script:CurrentAction = ""
+        if ($script:MainForm) {
+            $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::Default
+        }
+        if ($e.Result.Err) {
+            Write-Log "ERROR $Name`: $($e.Result.Err)" "DarkRed"
+        }
+        Update-StatusLabel
+    }
+    $bw.RunWorkerAsync()
 }
 
 function Get-NpmCmd {
@@ -282,40 +437,39 @@ function Update-StatusLabel {
 }
 
 function Sync-ProjectFromGit {
-    $beforeHead = Get-GitHead
+    $script:LastGitBeforeHead = Get-GitHead
+    $beforeHead = $script:LastGitBeforeHead
     $branch = Get-GitBranch
     Write-Log "Git: branch=$branch commit=$beforeHead" "Gray"
-    if (-not (Invoke-Cmd "git fetch origin" {
-        git -C $Root fetch origin 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-    })) {
+    if (-not (Invoke-GitLogged "git fetch origin" @("fetch", "origin"))) {
         return $false
     }
     $pulled = $false
     if ($branch -and $branch -ne "?") {
-        if (Invoke-Cmd "git pull origin $branch" {
-            git -C $Root checkout $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            if ($LASTEXITCODE -ne 0) { throw "git checkout $branch failed" }
-            git -C $Root pull origin $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            if ($LASTEXITCODE -ne 0) { throw "git pull $branch failed" }
-        }) {
-            $pulled = $true
+        if (Invoke-GitLogged "git checkout $branch" @("checkout", $branch)) {
+            if (Invoke-GitLogged "git pull --ff-only origin $branch" @("pull", "--ff-only", "origin", $branch)) {
+                $pulled = $true
+            }
         }
     }
     if (-not $pulled) {
-        if (-not (Invoke-Cmd "git pull origin devin/windows-installer" {
-            git -C $Root checkout devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
-            git -C $Root pull origin devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-            if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
-        })) {
+        if (-not (Invoke-GitLogged "git checkout devin/windows-installer" @("checkout", "devin/windows-installer"))) {
+            return $false
+        }
+        if (-not (Invoke-GitLogged "git pull --ff-only origin devin/windows-installer" @("pull", "--ff-only", "origin", "devin/windows-installer"))) {
             return $false
         }
     }
     $afterHead = Get-GitHead
+    $script:LastGitAfterHead = $afterHead
     if ($beforeHead -eq $afterHead) {
         Write-Log "Git up to date ($afterHead)" "Gray"
     } else {
         Write-Log "Git: $beforeHead -> $afterHead" "DarkGreen"
+    }
+    if (Test-LauncherScriptChanged $beforeHead $afterHead) {
+        Write-Log "Launcher script updated in git — will reopen GUI after this run" "DarkOrange"
+        $script:LauncherNeedsRestart = $true
     }
     return $true
 }
@@ -329,9 +483,7 @@ function Sync-PythonAndWeb {
         Write-Log "No venv - run button 1 Full install" "DarkOrange"
         return $false
     }
-    if (-not (Invoke-Cmd "pip install -e .[dev]" {
-        & $py -m pip install -e ".[dev]" 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-    })) {
+    if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", ".[dev]"))) {
         return $false
     }
     $needBuild = $AlwaysBuildUi -or (Test-WebBuildStale) -or (-not (Test-WebUiBuilt))
@@ -344,17 +496,15 @@ function Sync-PythonAndWeb {
         Write-Log "npm not found - run button 1" "DarkRed"
         return $false
     }
-    if (-not (Invoke-Cmd "npm install + build (web/out)" {
-        Push-Location (Join-Path $Root "web")
-        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-        Pop-Location
-        if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-            throw "web/out/index.html missing after build"
-        }
-    })) {
+    $webDir = Join-Path $Root "web"
+    if (-not (Invoke-NpmLogged "npm install (web)" $npm @("install") $webDir)) {
+        return $false
+    }
+    if (-not (Invoke-NpmLogged "npm run build (web/out)" $npm @("run", "build") $webDir)) {
+        return $false
+    }
+    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+        Write-Log "FAIL web/out/index.html missing after build" "DarkRed"
         return $false
     }
     Write-Log "UI built: $(Get-StudioVersionLabel) (web/out)" "DarkGreen"
@@ -385,33 +535,45 @@ function Do-FullUpdate {
 }
 
 function Do-UpdateAndRun {
-    Write-Log "=== Update + Start (git, backend, UI, browser) ===" "DarkBlue"
+    Write-Log "=== Update + Start (git, pip, UI, backend, browser) ===" "DarkBlue"
+    $script:LauncherNeedsRestart = $false
     if (-not (Test-Installed)) {
         $ok = Invoke-ExternalLog "Install" "powershell.exe" @(
             "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", "`"$(Join-Path $Root 'install.ps1')`"", "-NonInteractive"
         )
         if (-not $ok) { return }
     }
-    if (-not (Sync-ProjectFromGit)) {
-        Write-Log "Stopped: fix git (commit/stash) and retry" "DarkRed"
-        return
+    $gitOk = Sync-ProjectFromGit
+    if (-not $gitOk) {
+        Write-Log "Git failed (stash/commit?) — starting backend with LOCAL code anyway" "DarkOrange"
     }
-    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
-        Write-Log "Stopped: pip or npm build failed" "DarkRed"
-        return
+    $depsOk = Sync-PythonAndWeb -AlwaysBuildUi
+    if (-not $depsOk) {
+        Write-Log "pip/npm had errors — still trying backend (see log above)" "DarkOrange"
+        if (-not (Get-VenvPython)) {
+            Write-Log "No .venv — run button 1 Full install" "DarkRed"
+            return
+        }
     }
     Update-StatusLabel
     Do-Stop
+    Stop-PortListener -Port 8765
     Start-Sleep -Seconds 2
     Start-BackendWindow
-    Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
-    if (Test-BackendReady) {
+    Write-Log "Waiting for backend http://127.0.0.1:8765 (up to 120s) ..." "Gray"
+    if (Test-BackendReady -TimeoutSec 120) {
         Show-StudioVersionFromApi
         Start-Process "http://127.0.0.1:8765"
-        Write-Log "Ready. Backend window must stay open. Browser: Ctrl+F5 if old UI." "DarkGreen"
+        Write-Log "Ready. Keep backend PowerShell window OPEN. Browser: Ctrl+F5 if old UI." "DarkGreen"
     } else {
-        Write-Log "Backend did not respond in 90s - see backend PowerShell window" "DarkRed"
-        Write-Log "Manual: .\run-backend.ps1" "DarkOrange"
+        Write-Log "Backend did not respond in 120s — open the NEW backend window for errors" "DarkRed"
+        Write-Log "Manual: cd `"$Root`" ; .\run-backend.ps1" "DarkOrange"
+        Write-Log "Log file: data\backend.log" "DarkOrange"
+    }
+    if ($script:LauncherNeedsRestart) {
+        Write-Log "Reopening launcher (script was updated by git pull) ..." "DarkOrange"
+        Start-Sleep -Seconds 1
+        Restart-LauncherGui
     }
 }
 
@@ -455,10 +617,19 @@ function Do-StartTelegram {
 }
 
 function Do-Stop {
+    Stop-PortListener -Port 8765
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*$Root*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Write-Log "Processes stopped" "DarkGreen"
+        Where-Object {
+            $_.CommandLine -and (
+                $_.CommandLine -like "*$Root*" -or
+                $_.CommandLine -like "*app.main*" -and $_.CommandLine -like "*video-pipeline*"
+            )
+        } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Log "Stopped python PID $($_.ProcessId)" "Gray"
+        }
+    Write-Log "Stop done (port 8765 + project python)" "DarkGreen"
 }
 
 function Do-BuildWeb {
@@ -553,6 +724,7 @@ $commands = @(
 )
 
 $form = New-Object System.Windows.Forms.Form
+$script:MainForm = $form
 $form.Text = "Video Pipeline Studio $(Get-StudioVersionLabel) git:$(Get-GitHead)"
 $form.Size = New-Object System.Drawing.Size(740, 720)
 $form.StartPosition = "CenterScreen"
@@ -629,7 +801,6 @@ $logHintLbl.ForeColor = [System.Drawing.Color]::Gray
 $form.Controls.Add($logHintLbl)
 
 $tip = New-Object System.Windows.Forms.ToolTip
-$script:WriteLogCmd = Get-Command -Name Write-Log -CommandType Function
 $y = 98
 $col = 0
 for ($i = 0; $i -lt $commands.Count; $i++) {
@@ -639,20 +810,10 @@ for ($i = 0; $i -lt $commands.Count; $i++) {
     $btn.Size = New-Object System.Drawing.Size(228, 36)
     $btn.Location = New-Object System.Drawing.Point((16 + $col * 234), $y)
     $fn = $cmd.Fn
-    $writeLogCmd = $script:WriteLogCmd
+    $actionName = $cmd.Label
     $btn.Add_Click({
         param($sender, $e)
-        try {
-            & $fn
-            Update-StatusLabel
-        } catch {
-            $errMsg = $_.Exception.Message
-            if ($writeLogCmd) {
-                & $writeLogCmd $errMsg "DarkRed"
-            } else {
-                [System.Windows.Forms.MessageBox]::Show($errMsg, "Error") | Out-Null
-            }
-        }
+        Start-LauncherAction $actionName $fn
     }.GetNewClosure())
     $tip.SetToolTip($btn, $cmd.Tip)
     $form.Controls.Add($btn)

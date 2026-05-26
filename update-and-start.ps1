@@ -100,15 +100,47 @@ if ($BackendOnly) {
     exit 0
 }
 
+function Stop-Port8765 {
+    try {
+        Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop |
+            ForEach-Object {
+                if ($_.OwningProcess -gt 0) {
+                    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+                }
+            }
+    } catch { }
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$Root*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Step "stop old backend (port 8765)"
+Stop-Port8765
+Start-Sleep -Seconds 2
+
+Write-Step "start backend (run-backend.ps1)"
+Start-Process powershell -ArgumentList @(
+    "-NoExit", "-ExecutionPolicy", "Bypass", "-File",
+    (Join-Path $Root "run-backend.ps1")
+) -WorkingDirectory $Root
+
+$deadline = (Get-Date).AddSeconds(120)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
+        if ($r.StatusCode -eq 200) { $ready = $true; break }
+    } catch { }
+    Start-Sleep -Milliseconds 500
+}
+if ($ready) {
+    Write-Ok "backend http://127.0.0.1:8765"
+    Start-Process "http://127.0.0.1:8765"
+} else {
+    Write-Warn "backend не ответил за 120с — смотри окно run-backend.ps1 и data\backend.log"
+}
+
 $launcher = Join-Path $Root "VideoPipelineStudio.cmd"
 if (Test-Path $launcher) {
-    Start-Process $launcher -WorkingDirectory $Root
-    Write-Ok "VideoPipelineStudio.cmd"
-    Write-Host "В Launcher: 4 Stop → 2 Start Studio (или * Quick start)" -ForegroundColor DarkGray
-} else {
-    Start-Process powershell -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File",
-        (Join-Path $Root "run-backend.ps1")
-    ) -WorkingDirectory $Root
-    Write-Ok "run-backend.ps1"
+    Write-Host "Launcher (кнопки): $launcher" -ForegroundColor DarkGray
 }
