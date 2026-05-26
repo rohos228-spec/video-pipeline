@@ -1,4 +1,5 @@
 ﻿# Запуск бэкенда из корня репозитория
+# RUN_BACKEND_ID=session-log-v2  (не падает если backend.log занят)
 # powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
 
 $ErrorActionPreference = "Continue"

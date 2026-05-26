@@ -195,9 +195,13 @@ function Unlock-SharedBackendLog {
 
 function Test-Port8765Free {
     try {
-        $c = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
-        if ($c) {
-            Write-Log "Port 8765 still busy (PID $($c.OwningProcess))" "DarkRed"
+        $conns = @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop)
+        if ($conns.Count -gt 0) {
+            foreach ($c in $conns) {
+                if ($c.OwningProcess -gt 0) {
+                    Write-Log "Port 8765 still busy (PID $($c.OwningProcess))" "DarkRed"
+                }
+            }
             return $false
         }
     } catch {
@@ -213,11 +217,48 @@ function Test-RunBackendScriptCurrent {
         return $false
     }
     $text = Get-Content $rb -Raw -ErrorAction SilentlyContinue
-    if ($text -match "Write-BackendLogLine") {
-        Write-Log "run-backend.ps1 OK (per-PID log, no Tee-Object lock)" "Gray"
+    if ($text -match "RUN_BACKEND_ID=session-log-v2" -and $text -match "Write-BackendLogLine") {
+        Write-Log "run-backend.ps1 OK (session-log-v2)" "Gray"
         return $true
     }
-    Write-Log "WARN: old run-backend.ps1 — git pull or * Update + Start again" "DarkOrange"
+    if ($text -match "Out-File.*backend\.log" -or $text -match "Tee-Object.*backend\.log") {
+        Write-Log "WARN: OLD run-backend.ps1 (log lock bug) — repairing from git..." "DarkRed"
+        return $false
+    }
+    Write-Log "WARN: run-backend.ps1 outdated" "DarkOrange"
+    return $false
+}
+
+function Repair-CriticalScriptsFromGit {
+  $files = @(
+        "run-backend.ps1",
+        "scripts/stop-backend.ps1",
+        "stop-backend.cmd",
+        "installer/VideoPipelineLauncher.ps1"
+    )
+    $branch = Get-GitBranch
+    $candidates = @()
+    if ($branch -and $branch -ne "?") { $candidates += $branch }
+    $candidates += @(
+        "cursor/fix-launcher-update-start-977b",
+        "devin/windows-installer"
+    )
+    $seen = @{}
+    foreach ($br in $candidates) {
+        if ($seen[$br]) { continue }
+        $seen[$br] = $true
+        Write-Log "Trying to restore scripts from origin/$br ..." "Gray"
+        if (-not (Invoke-GitLogged "git fetch origin $br" @("fetch", "origin", $br))) {
+            continue
+        }
+        $checkoutArgs = @("checkout", "origin/$br", "--") + $files
+        $ok = Invoke-GitLogged "git checkout scripts from $br" $checkoutArgs
+        if ($ok -and (Test-RunBackendScriptCurrent)) {
+            Write-Log "Scripts restored from origin/$br" "DarkGreen"
+            return $true
+        }
+    }
+    Write-Log "Could not restore run-backend.ps1 — run fix-update-files.cmd" "DarkRed"
     return $false
 }
 
@@ -623,6 +664,8 @@ function Show-StudioVersionFromApi {
 }
 
 function Do-FullUpdate {
+    Stop-AllBackendProcesses
+    Unlock-SharedBackendLog | Out-Null
     if (-not (Sync-ProjectFromGit)) {
         Write-Log "Update aborted: git" "DarkRed"
         return
@@ -664,7 +707,9 @@ function Do-UpdateAndRun {
         }
     }
 
-    Test-RunBackendScriptCurrent | Out-Null
+    if (-not (Test-RunBackendScriptCurrent)) {
+        Repair-CriticalScriptsFromGit | Out-Null
+    }
     Update-StatusLabel
 
     # 2) Ещё раз стоп перед стартом (на случай зависшего окна)
