@@ -35,7 +35,8 @@ export function StudioVersionBadge() {
     };
   }, []);
 
-  const stale =
+  const displayLabel = server?.label ?? CLIENT_STUDIO_VERSION;
+  const uiStale =
     server != null &&
     (server.ui_stale === true || server.label !== CLIENT_STUDIO_VERSION);
   const backendStale =
@@ -45,27 +46,20 @@ export function StudioVersionBadge() {
     <span
       className={cn(
         "inline-flex items-center rounded border px-1.5 py-px font-mono text-[10px] leading-none tracking-normal normal-case",
-        stale || backendStale
+        uiStale || backendStale
           ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
           : "border-border/60 bg-muted/40 text-muted-foreground",
       )}
       title={
-        stale
-          ? `UI устарел: в браузере ${CLIENT_STUDIO_VERSION}, на сервере ${server?.label}. Выполните npm run build в web/ и перезапустите Studio.`
+        uiStale
+          ? `Старый UI в кэше (${CLIENT_STUDIO_VERSION}). Сервер: ${server?.label}. Ctrl+F5 или FIX-VERSION.cmd`
           : server && server.pipeline_ok === false
-            ? `Python устарел: attach=${server.backend_attach}, orchestrator=${server.backend_orchestrator}. Нужен git pull + pip install + Stop → Start Studio.`
-            : `UI: ${CLIENT_STUDIO_VERSION}${server?.backend_attach ? ` | GPT: ${server.backend_attach}` : ""}`
+            ? `Python устарел: attach=${server.backend_attach}`
+            : `Studio ${displayLabel}`
       }
     >
-      {stale ? (
-        <>
-          {CLIENT_STUDIO_VERSION} → {server?.label}
-        </>
-      ) : backendStale ? (
-        <>GPT backend stale</>
-      ) : (
-        CLIENT_STUDIO_VERSION
-      )}
+      {displayLabel}
+      {uiStale ? " !" : null}
     </span>
   );
 }

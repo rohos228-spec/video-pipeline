@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -185,18 +186,41 @@ def _mount_frontend(app: FastAPI) -> None:
         name="next-static",
     )
 
-    def _html_response(path: Path) -> FileResponse:
-        response = FileResponse(path)
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        return response
+    def _patch_index_html_version(html: str) -> str:
+        """Подменяет v102 и др. в отданном index.html на web/STUDIO_VERSION (git pull)."""
+        from app.web.studio_version import read_studio_version_label
+
+        label = read_studio_version_label()
+        html = re.sub(
+            r'(title="UI:\s*)v\d+[^"]*(")',
+            rf"\1{label}\2",
+            html,
+            count=1,
+        )
+        html = re.sub(
+            r"(>)\s*v\d+\s*·\s*[0-9a-fA-F]{4,}\s*(<)",
+            rf"\1{label}\2",
+            html,
+        )
+        return html
+
+    def _html_response(path: Path) -> HTMLResponse:
+        body = path.read_text(encoding="utf-8")
+        body = _patch_index_html_version(body)
+        return HTMLResponse(
+            content=body,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.get("/")
-    async def root_index() -> FileResponse:
+    async def root_index() -> HTMLResponse:
         return _html_response(out_dir / "index.html")
 
     @app.get("/{full_path:path}")
-    async def catch_all(full_path: str) -> FileResponse:
+    async def catch_all(full_path: str) -> FileResponse | HTMLResponse:
         # /api/* обслуживают FastAPI-роутеры — не отдаём index.html (иначе в браузере
         # «открывается проект» вместо JSON на /api/studio-version).
         if full_path == "api" or full_path.startswith("api/"):
