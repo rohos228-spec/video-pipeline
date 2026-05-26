@@ -1,5 +1,8 @@
 ﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
+# LAUNCHER_UPDATE_ID=launcher-smart-update-v80
+
+$script:LAUNCHER_UPDATE_ID = "launcher-smart-update-v80"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -133,6 +136,113 @@ function Stop-PortListener([int]$Port) {
     } catch {
         Write-Log "Port ${Port}: could not use Get-NetTCPConnection ($($_.Exception.Message))" "Gray"
     }
+}
+
+function Stop-AllBackendProcesses {
+    Write-Log "Stopping old backend (port 8765, python, run-backend windows)..." "Gray"
+    $stopScript = Join-Path $Root "scripts\stop-backend.ps1"
+    if (Test-Path $stopScript) {
+        try {
+            & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $stopScript -Quiet 2>&1 |
+                ForEach-Object { if ("$_") { Write-Log "$_" "Gray" } }
+        } catch {
+            Write-Log "stop-backend.ps1: $($_.Exception.Message)" "DarkOrange"
+        }
+    } else {
+        Stop-PortListener -Port 8765
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine -like "*$Root*" } |
+            ForEach-Object {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+    }
+    Start-Sleep -Seconds 2
+    Stop-PortListener -Port 8765
+}
+
+function Unlock-SharedBackendLog {
+    $log = Join-Path $Root "data\backend.log"
+    $dataDir = Join-Path $Root "data"
+    if (-not (Test-Path $dataDir)) {
+        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+    }
+    if (-not (Test-Path $log)) {
+        return $true
+    }
+    try {
+        $fs = [System.IO.File]::Open(
+            $log,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        $fs.Close()
+        Write-Log "backend.log writable" "Gray"
+        return $true
+    } catch {
+        $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $bak = Join-Path $dataDir "backend.log.locked_$stamp"
+        try {
+            Move-Item -Path $log -Destination $bak -Force
+            Write-Log "backend.log was locked — moved to $(Split-Path $bak -Leaf)" "DarkOrange"
+            return $true
+        } catch {
+            Write-Log "backend.log locked (Notepad/other backend?) — new run uses data\backend-PID.log" "DarkOrange"
+            return $false
+        }
+    }
+}
+
+function Test-Port8765Free {
+    try {
+        $c = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
+        if ($c) {
+            Write-Log "Port 8765 still busy (PID $($c.OwningProcess))" "DarkRed"
+            return $false
+        }
+    } catch {
+        return $true
+    }
+    return $true
+}
+
+function Test-RunBackendScriptCurrent {
+    $rb = Join-Path $Root "run-backend.ps1"
+    if (-not (Test-Path $rb)) {
+        Write-Log "WARN: run-backend.ps1 missing" "DarkRed"
+        return $false
+    }
+    $text = Get-Content $rb -Raw -ErrorAction SilentlyContinue
+    if ($text -match "Write-BackendLogLine") {
+        Write-Log "run-backend.ps1 OK (per-PID log, no Tee-Object lock)" "Gray"
+        return $true
+    }
+    Write-Log "WARN: old run-backend.ps1 — git pull or * Update + Start again" "DarkOrange"
+    return $false
+}
+
+function Show-BackendFailureDiagnostics {
+    Write-Log "--- backend diagnostics ---" "DarkOrange"
+    if (-not (Test-Port8765Free)) {
+        Write-Log "Fix: click 4 Stop, then * Update + Start again" "DarkOrange"
+    }
+    $dataDir = Join-Path $Root "data"
+    if (Test-Path $dataDir) {
+        $logs = Get-ChildItem $dataDir -Filter "backend*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($logs) {
+            Write-Log "Newest log: $($logs.Name)" "DarkOrange"
+            try {
+                Get-Content $logs.FullName -Tail 12 -ErrorAction Stop | ForEach-Object {
+                    Write-Log "  $_" "Gray"
+                }
+            } catch {
+                Write-Log "  (cannot read log — file locked)" "Gray"
+            }
+        }
+    }
+    Write-Log "--- end diagnostics ---" "DarkOrange"
 }
 
 function Test-LauncherScriptChanged([string]$BeforeHead, [string]$AfterHead) {
@@ -526,30 +636,48 @@ function Do-FullUpdate {
 }
 
 function Do-UpdateAndRun {
-    Write-Log "=== Update + Start (git, pip, UI, backend, browser) ===" "DarkBlue"
+    Write-Log "=== * Update + Start ($($script:LAUNCHER_UPDATE_ID)) ===" "DarkBlue"
     $script:LauncherNeedsRestart = $false
+
+    # 1) Снять старый бэкенд и разблокировать лог ДО git/pip (типичный crash backend.log)
+    Stop-AllBackendProcesses
+    Unlock-SharedBackendLog | Out-Null
+
     if (-not (Test-Installed)) {
         $ok = Invoke-ExternalLog "Install" "powershell.exe" @(
             "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", "`"$(Join-Path $Root 'install.ps1')`"", "-NonInteractive"
         )
         if (-not $ok) { return }
     }
+
     $gitOk = Sync-ProjectFromGit
     if (-not $gitOk) {
-        Write-Log "Git failed (stash/commit?) — starting backend with LOCAL code anyway" "DarkOrange"
+        Write-Log "Git failed — continue with LOCAL files (commit/stash and retry later)" "DarkOrange"
     }
+
     $depsOk = Sync-PythonAndWeb -AlwaysBuildUi
     if (-not $depsOk) {
-        Write-Log "pip/npm had errors — still trying backend (see log above)" "DarkOrange"
+        Write-Log "pip/npm errors — see log above" "DarkOrange"
         if (-not (Get-VenvPython)) {
-            Write-Log "No .venv — run button 1 Full install" "DarkRed"
+            Write-Log "No .venv — button 1 Full install" "DarkRed"
             return
         }
     }
+
+    Test-RunBackendScriptCurrent | Out-Null
     Update-StatusLabel
-    Start-StudioBackend | Out-Null
+
+    # 2) Ещё раз стоп перед стартом (на случай зависшего окна)
+    Stop-AllBackendProcesses
+    Unlock-SharedBackendLog | Out-Null
+
+    $started = Start-StudioBackend
+    if (-not $started) {
+        Show-BackendFailureDiagnostics
+    }
+
     if ($script:LauncherNeedsRestart) {
-        Write-Log "Reopening launcher (script was updated by git pull) ..." "DarkOrange"
+        Write-Log "Launcher updated from git — reopening window..." "DarkOrange"
         Start-Sleep -Seconds 1
         Restart-LauncherGui
     }
@@ -577,8 +705,14 @@ function Start-StudioBackend {
             Write-Log "UI build failed — API may still work, browser UI incomplete" "DarkOrange"
         }
     }
-    Do-Stop
-    Start-Sleep -Seconds 2
+    Stop-AllBackendProcesses
+    Unlock-SharedBackendLog | Out-Null
+    if (-not (Test-Port8765Free)) {
+        Write-Log "Port 8765 busy — stopping again..." "DarkOrange"
+        Stop-AllBackendProcesses
+        Start-Sleep -Seconds 3
+    }
+    Test-RunBackendScriptCurrent | Out-Null
     Start-BackendWindow
     Write-Log "Waiting for http://127.0.0.1:8765 (120s) ..." "Gray"
     if (Test-BackendReady -TimeoutSec 120) {
@@ -588,8 +722,7 @@ function Start-StudioBackend {
         return $true
     }
     Write-Log "No connection to :8765" "DarkRed"
-    Write-Log "Open start-backend.cmd or run-backend.ps1 — read errors there" "DarkOrange"
-    Write-Log "Check: .\check-backend.cmd" "DarkOrange"
+    Show-BackendFailureDiagnostics
     return $false
 }
 
@@ -605,19 +738,8 @@ function Do-StartTelegram {
 }
 
 function Do-Stop {
-    Stop-PortListener -Port 8765
-    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.CommandLine -and (
-                ($_.CommandLine -like "*$Root*") -or
-                (($_.CommandLine -like "*app.main*") -and ($_.CommandLine -like "*video-pipeline*"))
-            )
-        } |
-        ForEach-Object {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            Write-Log "Stopped python PID $($_.ProcessId)" "Gray"
-        }
-    Write-Log "Stop done (port 8765 + project python)" "DarkGreen"
+    Stop-AllBackendProcesses
+    Write-Log "Stop done" "DarkGreen"
 }
 
 function Do-BuildWeb {
@@ -693,7 +815,7 @@ function Do-OpenBrowser {
 }
 
 $commands = @(
-    @{ Label = "* Update + Start"; Tip = "git pull + pip + UI build + backend + browser"; Fn = { Do-UpdateAndRun } }
+    @{ Label = "* Update + Start"; Tip = "STOP old backend, git pull, pip, npm build, start :8765, browser"; Fn = { Do-UpdateAndRun } }
     @{ Label = "1. Full install"; Tip = "Python, venv, FFmpeg, Node, .env"; Fn = { Do-Install } }
     @{ Label = "2. Start Studio"; Tip = "http://127.0.0.1:8765"; Fn = { Do-StartStudio } }
     @{ Label = "3. Telegram mode"; Tip = "Bot + API (token in .env)"; Fn = { Do-StartTelegram } }
@@ -739,7 +861,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "2 Start Studio = backend + browser. Keep start-backend window OPEN. http://127.0.0.1:8765"
+$hintLbl.Text = "Daily: only * Update + Start. Stops old backend, git pull, build, fresh start. http://127.0.0.1:8765"
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray
@@ -815,5 +937,5 @@ for ($i = 0; $i -lt $commands.Count; $i++) {
 }
 
 Update-StatusLabel
-Write-Log "Ready. Click 2 Start Studio or * Update + Start. Backend: start-backend.cmd" "DarkGreen"
+Write-Log "Ready. Use * Update + Start only ($($script:LAUNCHER_UPDATE_ID))" "DarkGreen"
 [void]$form.ShowDialog()

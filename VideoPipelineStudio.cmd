@@ -3,13 +3,12 @@ REM Video Pipeline Studio - launch GUI from repo root
 cd /d "%~dp0"
 
 set "LAUNCHER=%~dp0installer\VideoPipelineLauncher.ps1"
-findstr /C:"Invoke-ButtonAction" "%LAUNCHER%" >nul 2>&1
+findstr /C:"launcher-smart-update-v80" "%LAUNCHER%" >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo [ERROR] Old launcher file detected. Update first:
-    echo   git pull origin devin/windows-installer
-    echo.
-    echo Or run:  update-launcher.cmd
+    echo [ERROR] Old launcher. In repo folder run:
+    echo   git pull origin cursor/fix-launcher-update-start-977b
+    echo Then reopen VideoPipelineStudio.cmd
     echo.
     pause
     exit /b 1
