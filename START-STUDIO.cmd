@@ -5,6 +5,14 @@ if not exist pyproject.toml (
     pause
     exit /b 1
 )
+echo.
+echo === Video Pipeline Studio ===
+echo Repo: %CD%
+echo Wrong folder? In PowerShell run:
+echo   cd "%CD%"
+echo Or from anywhere:
+echo   "%~dp0Open-Studio.cmd"
+echo.
 echo Starting backend (keep that window open)...
 start "video-pipeline backend" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-backend.ps1"
 echo Waiting for http://127.0.0.1:8765 (up to 120 sec)...
