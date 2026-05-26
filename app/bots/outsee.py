@@ -43,20 +43,21 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
-    # Сначала пытаемся найти АКТИВНУЮ кнопку; только если не нашли —
-    # берём любую (она может быть заблокирована пока не вставлен промт).
-    "button:has-text('Генерировать'):not([disabled])",
-    "button:has-text('Сгенерировать'):not([disabled])",
-    "button:has-text('Создать'):not([disabled])",
-    "button:has-text('Generate'):not([disabled])",
-    "button:has-text('Генерировать')",
-    "button:has-text('Генерация')",
-    "button:has-text('Сгенерировать')",
-    "button:has-text('Создать')",
-    "button:has-text('Generate')",
-    "button:has-text('Run')",
+    # :text() — регистрозависимый частичный матч.
+    # :has-text() — регистроНЕзависимый и матчит Relax-кнопку содержащую
+    # «может генерировать» в описании → кликает Relax вместо Generate!
+    # Поэтому используем :text() везде где важна точность.
+    "button:text('Генерировать'):not([disabled])",
+    "button:text('Сгенерировать'):not([disabled])",
+    "button:text('Generate'):not([disabled])",
+    "button:text('Генерировать')",
+    "button:text('Сгенерировать')",
+    "button:text('Generate')",
+    "button:text('Создать видео'):not([disabled])",
+    "button:text('Создать видео')",
+    "button:text('Run'):not([disabled])",
+    "button:text('Run')",
     "button[data-testid='generate']",
-    "button[type='submit']",
 ]
 
 ASPECT_9_16_SELECTORS = [
@@ -1919,6 +1920,11 @@ class OutseeBot:
                         if (!keys.some(k => low.includes(k))) continue;
                         // Пропускаем элементы с исключёнными словами
                         if (exclude.some(e => low.includes(e))) continue;
+                        // Текст длиннее 40 симв без начала на ключевое слово —
+                        // это описание кнопки (напр. «Дешевле, но может
+                        // генерировать»), а не сама кнопка «Генерировать».
+                        if (text.length > 40
+                            && !keys.some(k => low.startsWith(k))) continue;
                         const r = el.getBoundingClientRect();
                         if (r.width < 36 || r.height < 18) continue;
                         const cs = getComputedStyle(el);
