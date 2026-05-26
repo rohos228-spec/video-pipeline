@@ -40,4 +40,6 @@ if errorlevel 1 (
 
 :end
 echo.
+echo Run diagnose: powershell -ExecutionPolicy Bypass -File diagnose-backend.ps1
+echo.
 pause
