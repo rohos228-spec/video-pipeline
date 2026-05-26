@@ -184,11 +184,15 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
         )
     ).scalars().all()
     cleared = 0
+    status_reset = 0
     for fr in frames:
         if fr.image_prompt:
             fr.image_prompt = None
             cleared += 1
-    return {"frames_cleared": cleared}
+        if fr.status is FrameStatus.image_prompt_ready:
+            fr.status = FrameStatus.planned
+            status_reset += 1
+    return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
 async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -247,18 +251,23 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага 8 «Промты анимации»: frame.animation_prompt = None."""
+    """Сброс шага 8 «Промты анимации»: animation_prompt + статус кадра."""
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
         )
     ).scalars().all()
     cleared = 0
+    status_reset = 0
     for fr in frames:
-        if fr.animation_prompt:
+        had_prompt = bool((fr.animation_prompt or "").strip())
+        if had_prompt:
             fr.animation_prompt = None
             cleared += 1
-    return {"frames_cleared": cleared}
+        if fr.status is FrameStatus.animation_prompt_ready:
+            fr.status = FrameStatus.image_approved
+            status_reset += 1
+    return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
 async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -363,6 +372,52 @@ RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
 
 def is_reset_supported(step_code: str) -> bool:
     return step_code in RESET_SUPPORTED_STEP_CODES
+
+
+_STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
+
+
+async def clear_step_outputs_for_rerun(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+) -> dict[str, Any]:
+    """Очистить только выход этого шага (без downstream) перед повторным запуском.
+
+    Вызывается из `start_step` при «▶ Запустить шаг»: каждый перезапуск
+    идёт с нуля (промт+файлы в ChatGPT, все кадры/предметы), но данные
+    следующих шагов не трогаем — для полного каскада есть reset_step.
+    """
+    if not is_reset_supported(step_code):
+        return {}
+
+    codes = _WRAPPER_TO_CODES.get(step_code, [step_code])
+    summary: dict[str, Any] = {}
+    for code in codes:
+        handler = _STEP_WIPE_BY_CODE.get(code)
+        if handler is None:
+            continue
+        try:
+            details = await handler(session, project)
+            if details:
+                summary[code] = details
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "[#{}] clear_step_outputs_for_rerun: {} failed: {}",
+                project.id,
+                code,
+                e,
+            )
+            summary[code] = {"error": str(e)}
+    if summary:
+        await session.flush()
+        logger.info(
+            "[#{}] clear_step_outputs_for_rerun: step={} cleared={}",
+            project.id,
+            step_code,
+            list(summary.keys()),
+        )
+    return summary
 
 
 # ---------------------------------------------------------------------------

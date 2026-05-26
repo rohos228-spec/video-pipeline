@@ -48,9 +48,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         await session.flush()
         return
 
-    already_done = sum(1 for f in frames if (f.animation_prompt or "").strip())
-    need_initial_chat = already_done == 0
-
     tmp_dir = tmp_gpt_dir(project)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     prompt_file = write_anim_pr_prompt_file(project, tmp_dir, ts=ts)
@@ -62,31 +59,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         try:
-            if need_initial_chat:
-                await gpt.new_conversation()
-                raise_if_cancelled(project.id)
-                logger.info(
-                    "[#{}] anim_pr: новый чат → prompt_file={} ({} байт), chat {} симв.",
-                    project.id,
-                    prompt_file.name,
-                    prompt_file.stat().st_size,
-                    len(initial),
-                )
-                await gpt.ask_with_files(
-                    initial,
-                    [prompt_file],
-                    timeout=300,
-                    project_id=project.id,
-                )
-            else:
-                logger.info(
-                    "[#{}] anim_pr: тот же чат ChatGPT (уже {} промтов в БД), "
-                    "пропускаю initial — следующая пачка картинок",
-                    project.id,
-                    already_done,
-                )
-                await gpt._page_ready()
-                raise_if_cancelled(project.id)
+            # Каждый запуск шага — новый диалог: сопр. текст + мастер-промт (без картинок).
+            # Не смотрим на уже сохранённые animation_prompt в БД: при «заново» часть
+            # кадров могла остаться от прошлого прогона, и тогда раньше сразу шли фото.
+            await gpt.new_conversation()
+            raise_if_cancelled(project.id)
+            logger.info(
+                "[#{}] anim_pr: новый чат → prompt_file={} ({} байт), chat {} симв.",
+                project.id,
+                prompt_file.name,
+                prompt_file.stat().st_size,
+                len(initial),
+            )
+            await gpt.ask_with_files(
+                initial,
+                [prompt_file],
+                timeout=300,
+                project_id=project.id,
+            )
 
             while True:
                 raise_if_cancelled(project.id)

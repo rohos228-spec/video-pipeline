@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.services.reset_step import (
     RESET_SUPPORTED_STEP_CODES,
+    clear_step_outputs_for_rerun,
     is_reset_supported,
     reset_step,
 )
@@ -318,6 +319,48 @@ async def test_reset_objects_wraps_to_hero_and_items(session, tmp_path: Path):
     assert not items
     assert not h_p.exists()
     assert not i_p.exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_anim_pr_only(session, tmp_path: Path):
+    """Повторный запуск anim_pr: чистим только animation_prompt, видео не трогаем."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        image_prompt="ip",
+        animation_prompt="anim done",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    vid_path = tmp_path / "v.mp4"
+    vid_path.write_bytes(b"x")
+    await _mkart(
+        session,
+        p,
+        ArtifactKind.scene_video,
+        path=str(vid_path),
+        frame_id=fr.id,
+    )
+    p.status = ProjectStatus.videos_ready
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "anim_pr")
+    assert "anim_pr" in summary
+    await session.refresh(fr)
+    assert fr.animation_prompt is None
+    assert fr.status is FrameStatus.image_approved
+
+    videos_left = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == p.id,
+                Artifact.kind == ArtifactKind.scene_video,
+            )
+        )
+    ).scalars().all()
+    assert len(videos_left) == 1
+    assert vid_path.exists()
 
 
 @pytest.mark.asyncio
