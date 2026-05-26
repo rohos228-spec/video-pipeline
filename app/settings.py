@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # Whisper
     whisper_model: str = Field("medium", alias="WHISPER_MODEL")
 
+    # Сборка (шаг 11)
+    assembly_clip_audio_db: float = Field(-22.0, alias="ASSEMBLY_CLIP_AUDIO_DB")
+    assembly_bgm_db: float = Field(-17.0, alias="ASSEMBLY_BGM_DB")
+    assembly_max_stretch_ratio: float = Field(0.15, alias="ASSEMBLY_MAX_STRETCH_RATIO")
+    assembly_audio_fade_out_sec: float = Field(3.0, alias="ASSEMBLY_AUDIO_FADE_OUT_SEC")
+
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")

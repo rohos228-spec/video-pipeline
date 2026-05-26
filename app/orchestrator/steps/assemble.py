@@ -1,6 +1,9 @@
-"""Шаг 11: финальная сборка ролика FFmpeg — нарезка клипов по реальным
-длительностям из Whisper, concat, наложение mp3, ASS-субтитры, затем HITL
-approve_final.
+"""Шаг 11: финальная сборка FFmpeg.
+
+1. Подтянуть project.xlsx (лист «план», R49 закадровый текст).
+2. Клипы по номеру кадра (clip_NNN_*.mp4 или артефакт scene_video).
+3. Длительности из Whisper; подгонка клипов (обрезка / замедление ≤15%).
+4. Звук клипов −22 dB, озвучка + BGM −17 dB, ASS-субтитры, HITL approve_final.
 """
 
 from __future__ import annotations
@@ -21,15 +24,35 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.assembly import ClipSpec, assemble, make_simple_ass
+from app.services.assembly import assemble, make_simple_ass
+from app.services.assembly_inputs import (
+    bgm_enabled_for_project,
+    build_clip_specs,
+    load_plan_from_xlsx,
+    resolve_bgm_path,
+    resolve_voice_artifact_path,
+)
 from app.services.hitl import send_hitl_video
-from app.settings import settings
+from app.services.xlsx_v8_import import import_v8_xlsx
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.assembling:
         return
     logger.info("[#{}] assemble starting", project.id)
+
+    xlsx_path = project.data_dir / "project.xlsx"
+    if xlsx_path.exists():
+        try:
+            await import_v8_xlsx(
+                session, project, xlsx_path,
+                keep_fields=True,
+                update_frames_voiceover=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[#{}] xlsx sync before assemble: {}", project.id, e)
+
+    plan_columns = await load_plan_from_xlsx(project)
 
     frames = (
         await session.execute(
@@ -39,41 +62,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров")
 
-    # найдём аудио
-    audio = (
-        await session.execute(
-            select(Artifact)
-            .where(Artifact.project_id == project.id, Artifact.kind == ArtifactKind.audio)
-            .order_by(Artifact.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if audio is None:
-        raise RuntimeError("нет артефакта аудио")
+    voice_path = await resolve_voice_artifact_path(session, project)
+    logger.info("[#{}] озвучка: {}", project.id, voice_path)
 
-    # клипы по кадрам
-    clips: list[ClipSpec] = []
-    for fr in frames:
-        video_art = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_video,
-                )
-                .order_by(Artifact.id.desc())
-                .limit(1)
+    clips = await build_clip_specs(session, project, list(frames), plan_columns)
+
+    bgm_path: Path | None = None
+    if bgm_enabled_for_project(project):
+        bgm_path = resolve_bgm_path(project)
+        if bgm_path:
+            logger.info("[#{}] BGM: {}", project.id, bgm_path)
+        else:
+            logger.info(
+                "[#{}] BGM включён в настройках, файл не найден "
+                "(положите audio/bgm.mp3 или audio/bgm.wav)",
+                project.id,
             )
-        ).scalar_one_or_none()
-        if video_art is None:
-            raise RuntimeError(f"нет клипа для кадра {fr.number}")
-        duration = fr.duration_seconds or ((fr.end_ts or 0.0) - (fr.start_ts or 0.0))
-        if duration <= 0:
-            raise RuntimeError(f"длительность кадра {fr.number} ≤ 0")
-        clips.append(ClipSpec(src=Path(video_art.path), duration=float(duration)))
 
-    # субтитры
     subs_dir = project.data_dir / "subs"
     subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
     make_simple_ass(
@@ -85,10 +90,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         uuid=uuid.uuid4().hex, path=str(subs_path),
     ))
 
-    # сборка
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
-    await assemble(clips, Path(audio.path), out_path, subtitles_ass=subs_path)
+    await assemble(
+        clips,
+        voice_path,
+        out_path,
+        subtitles_ass=subs_path,
+        bgm_path=bgm_path,
+    )
 
     session.add(Artifact(
         project_id=project.id, kind=ArtifactKind.final_video,
@@ -97,7 +107,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.assembled
     await session.flush()
 
-    # HITL approve_final
     await send_hitl_video(
         bot, session, project,
         kind=HITLKind.approve_final,
