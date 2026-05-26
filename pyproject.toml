@@ -10,7 +10,6 @@ dependencies = [
   "aiosqlite>=0.20,<1",
   "alembic>=1.13,<2",
   "fastapi>=0.115,<1",
-  "faster-whisper>=1.0,<2",
   "ffmpeg-python>=0.2,<1",
   "greenlet>=3.0,<4",
   "jinja2>=3.1,<4",
@@ -29,6 +28,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Heavy (~100MB+). Studio UI works without it; install when you need audio/word timestamps:
+#   pip install -e ".[whisper]"
+whisper = [
+  "faster-whisper>=1.0,<2",
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",

@@ -13,7 +13,7 @@ def test_clean_animation_text_strips_label() -> None:
     assert _clean_animation_text(raw) == "Camera dolly in slowly."
 
 
-def test_build_batch_message_format() -> None:
+def test_build_batch_message_has_id_and_voiceover() -> None:
     fr = SimpleNamespace(number=3, voiceover_text="Hello")
     item = FrameImageBatchItem(
         frame=fr,

@@ -1,9 +1,9 @@
 """ChatGPT batch-flow для шага «Промты анимации» (anim_pr).
 
 Один диалог:
-  1) мастер-промт + закадровый текст (все кадры);
-  2) пачки до 5 картинок + для каждой «ID изображения» и «Закадровый текст»;
-  3) парсим ответы «ID изображения» / «текст анимации» и пишем в xlsx (план R48).
+  1) сопр. промт + файл мастер-промта (один раз);
+  2) пачки: до 5 картинок + ID и закадровый по каждому кадру;
+  3) парсим «ID изображения» / «текст анимации» → xlsx план R48.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 from app.generation_options import build_gen_id_prefix
 from app.models import Frame, Project
 from app.services import gpt_text_builder as gtb
+from app.storage.plan_sheet_v8 import read_plan_voiceover
 
 BATCH_SIZE = 5
 
@@ -87,7 +88,8 @@ def build_initial_message(
     *,
     prompt_file_name: str,
 ) -> str:
-    """Текст первого сообщения в чат (мастер-промт уходит отдельным файлом)."""
+    """Первое сообщение: сопр. текст + мастер-промт файлом (без картинок)."""
+    _ = frames
     override = gtb.get_override(project, "anim_pr")
     if override is not None:
         return (
@@ -95,17 +97,28 @@ def build_initial_message(
             + f"\n\n(Мастер-промт — в прикреплённом файле {prompt_file_name}.)"
         )
     return gtb.build_anim_pr_initial_default(
-        project, frames, prompt_file_name=prompt_file_name
+        project, prompt_file_name=prompt_file_name
     )
 
 
+def voiceover_for_frame(project: Project, frame: Frame) -> str:
+    """Закадровый текст: БД → лист «план» R49 (v8)."""
+    vo = (frame.voiceover_text or "").strip()
+    if vo:
+        return vo
+    from_plan = read_plan_voiceover(project, frame.number)
+    if from_plan:
+        return from_plan.strip()
+    return ""
+
+
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
-    """Текст к пачке изображений (без мастер-промта)."""
+    """Текст к пачке: ID изображения + закадровый для каждого кадра (фото отдельно)."""
     parts: list[str] = [
-        "По каждому изображению ниже верни пару строк строго в формате:\n"
-        "ID изображения: …\n"
-        "текст анимации: …\n"
-        "(без пояснений вне этих полей; в «текст анимации» — только готовый промт)\n",
+        "По каждому прикреплённому изображению ответь строго:",
+        "ID изображения: …",
+        "текст анимации: …",
+        "(в «текст анимации» — только готовый промт для видео)\n",
     ]
     for it in items:
         parts.append(f"ID изображения: {it.image_id}")
@@ -126,7 +139,7 @@ def collect_batch_items(
         img = scene_image_path(project, fr.number)
         if img is None:
             continue
-        vo = (fr.voiceover_text or "").strip()
+        vo = voiceover_for_frame(project, fr)
         out.append(
             FrameImageBatchItem(
                 frame=fr,
@@ -213,12 +226,24 @@ def parse_animation_reply(
             )
         )
 
-    # Fallback: если модель не выдержала формат — по одному блоку на кадр из batch
-    if not results and batch_items:
+    # Fallback: порядок блоков = порядок кадров в batch (если ID не распознаны)
+    if len(results) < len(batch_items):
+        got = {p.frame_number for p in results if p.frame_number is not None}
         chunks = [c.strip() for c in re.split(r"\n{2,}", reply or "") if c.strip()]
         for it, chunk in zip(batch_items, chunks, strict=False):
+            if it.frame.number in got:
+                continue
             anim = _clean_animation_text(chunk)
+            if len(anim) < 10:
+                m_anim = re.search(
+                    r"текст\s+анимации\s*:\s*(.+)",
+                    chunk,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if m_anim:
+                    anim = _clean_animation_text(m_anim.group(1))
             if len(anim) >= 10:
+                got.add(it.frame.number)
                 results.append(
                     ParsedAnimationPair(
                         image_id=it.image_id,

@@ -41,25 +41,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "[#{}] xlsx ensure_frame_columns failed: {}", project.id, e
         )
 
-    if all(fr.image_prompt for fr in frames):
-        for fr in frames:
-            try:
-                sheet.write_frame(fr.number, image_prompt=fr.image_prompt)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] xlsx sync image_prompt frame {} failed: {}",
-                    project.id,
-                    fr.number,
-                    e,
-                )
-        project.status = ProjectStatus.image_prompts_ready
-        await session.flush()
-        logger.info(
-            "[#{}] generate_image_prompts: все промты уже есть, skip GPT",
-            project.id,
-        )
-        return
-
     xlsx_path: Path = sheet.ensure_initialized(
         project_id=project.id, slug=project.slug
     )

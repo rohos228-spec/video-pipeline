@@ -1985,10 +1985,9 @@ async def on_step_run_cb(cb: CallbackQuery) -> None:
         # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты — юзер
         # может запустить любой шаг в любой момент. Если данных не хватает,
         # воркер сам упадёт и откатит статус, но решение принимает юзер.
-        from app.services.step_cancel import clear_stop
+        from app.services.project_steps import start_step
 
-        clear_stop(project.id)
-        project.status = step.running_status
+        await start_step(s, project, step_code)
         slug = project.slug
         topic = project.topic
     await cb.answer(f"Запускаю: {step.title}")

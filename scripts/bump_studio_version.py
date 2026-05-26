@@ -56,6 +56,22 @@ def bump() -> str:
     return label
 
 
+def build_web_out() -> None:
+    """Собрать web/out — папка коммитится в git для обновления без npm у пользователя."""
+    import shutil
+
+    web = ROOT / "web"
+    out = web / "out"
+    if out.is_dir():
+        shutil.rmtree(out)
+    subprocess.run(["npm", "install"], cwd=web, check=True)
+    subprocess.run(["npm", "run", "build"], cwd=web, check=True)
+    if not (out / "index.html").is_file():
+        raise SystemExit("web/out/index.html missing after npm run build")
+
+
 if __name__ == "__main__":
     bump()
+    if "--no-build" not in sys.argv:
+        build_web_out()
     sys.exit(0)

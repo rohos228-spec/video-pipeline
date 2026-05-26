@@ -1,10 +1,9 @@
 """Шаг 8: промты анимации через ChatGPT web (один диалог, пачки по 5 картинок).
 
-Схема (как в TG-боте / ручном процессе):
-  1) Новый чат → мастер-промт + закадровый текст (все кадры).
-  2) В том же чате → до 5 изображений + для каждого ID и закадровый текст.
-  3) Парсим «ID изображения» / «текст анимации» → план R48 + БД.
-  4) Повторяем 2–3, пока есть картинки без animation_prompt.
+Схема:
+  1) Один раз: сопр. промт + файл мастер-промта (без картинок).
+  2) Дальше в том же чате: до 5 PNG + к каждому ID и закадровый текст.
+  3) Парсим ответ → план R48 + БД; повторяем 2–3.
 """
 
 from __future__ import annotations
@@ -37,6 +36,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
 
+    for fr in frames:
+        vo = apg.voiceover_for_frame(project, fr)
+        if vo and not (fr.voiceover_text or "").strip():
+            fr.voiceover_text = vo
+
     pending = apg.collect_batch_items(project, frames)
     if not pending:
         logger.info("[#{}] make_animation_prompts: nothing to do", project.id)
@@ -55,21 +59,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         try:
+            # Каждый запуск шага — новый диалог: сопр. текст + мастер-промт (без картинок).
+            # Не смотрим на уже сохранённые animation_prompt в БД: при «заново» часть
+            # кадров могла остаться от прошлого прогона, и тогда раньше сразу шли фото.
             await gpt.new_conversation()
             raise_if_cancelled(project.id)
             logger.info(
-                "[#{}] anim_pr: initial GPT prompt_file={} ({} байт), chat {} симв.",
+                "[#{}] anim_pr: новый чат → ФАЗА 1 только текст+файл {} ({} байт), {} симв.",
                 project.id,
                 prompt_file.name,
                 prompt_file.stat().st_size,
                 len(initial),
             )
-            await gpt.ask_with_files(
+            initial_reply = await gpt.ask_anim_pr_initial(
                 initial,
-                [prompt_file],
+                prompt_file,
                 timeout=300,
                 project_id=project.id,
             )
+            if not (initial_reply or "").strip():
+                logger.warning(
+                    "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                    project.id,
+                )
+            raise_if_cancelled(project.id)
 
             while True:
                 raise_if_cancelled(project.id)
@@ -81,12 +94,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 paths = [it.image_path for it in batch]
                 batch_msg = apg.build_batch_message(batch)
                 logger.info(
-                    "[#{}] anim_pr: batch {} frames ({})",
+                    "[#{}] anim_pr: ФАЗА 2 batch {} кадров {} — только фото + ID/закадровый ({} симв.)",
                     project.id,
                     len(batch),
                     [it.frame.number for it in batch],
+                    len(batch_msg),
                 )
-                reply = await gpt.ask_with_files(
+                reply = await gpt.ask_anim_pr_batch(
                     batch_msg,
                     paths,
                     timeout=600,
@@ -99,6 +113,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"для кадров {[it.frame.number for it in batch]}"
                     )
 
+                saved = 0
                 for pair in pairs:
                     if pair.frame_number is None:
                         continue
@@ -110,8 +125,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         continue
                     fr.animation_prompt = text
                     fr.status = FrameStatus.animation_prompt_ready
-                    await session.flush()
-                    write_plan_animation_prompt(project, fr.number, text)
+                    xlsx_ok = write_plan_animation_prompt(project, fr.number, text)
+                    if xlsx_ok:
+                        saved += 1
+                    else:
+                        logger.warning(
+                            "[#{}] anim_pr: не записан plan R48 для кадра {}",
+                            project.id,
+                            fr.number,
+                        )
                     try:
                         sheet.write_frame(
                             fr.number,
@@ -125,11 +147,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             e,
                         )
                     logger.info(
-                        "[#{}] anim_pr: frame {} prompt len={}",
+                        "[#{}] anim_pr: frame {} prompt len={} (plan R48={})",
                         project.id,
                         fr.number,
                         len(text),
+                        xlsx_ok,
                     )
+
+                await session.flush()
+                await session.commit()
+                logger.info(
+                    "[#{}] anim_pr: пачка сохранена — {} промтов в project.xlsx (план R48)",
+                    project.id,
+                    saved,
+                )
 
                 # Если GPT вернул не все кадры пачки — не зацикливаемся на тех же файлах
                 still_missing = {it.frame.number for it in batch} - {

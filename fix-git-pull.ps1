@@ -24,7 +24,9 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) { throw "git pull failed — close Cursor/Studio and retry" }
 
 Write-Host "==> pip install" -ForegroundColor Cyan
-& ".\.venv\Scripts\python.exe" -m pip install -e ".[dev]"
+$root = (Get-Location).Path
+$spec = (Resolve-Path -LiteralPath $root).Path + '[dev]'
+& ".\.venv\Scripts\python.exe" -m pip install -e $spec
 
 Write-Host "==> npm build" -ForegroundColor Cyan
 Push-Location web

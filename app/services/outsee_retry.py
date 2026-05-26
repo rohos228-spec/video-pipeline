@@ -323,6 +323,7 @@ async def generate_video_with_retries(
     max_attempts_per_prompt: int = 3,
     gpt_rewrite: bool = True,
     project_id: int | None = None,
+    uniquify_prompt_id: bool = False,
     **kwargs: Any,
 ) -> GenerationResult:
     """Аналог `generate_image_with_retries` для видео-генерации.
@@ -331,6 +332,10 @@ async def generate_video_with_retries(
     `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
     при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
     переиспользуем тот же except-handler.
+
+    По умолчанию `uniquify_prompt_id=False`: retry ждёт ту же карточку outsee
+    (не кликает Generate повторно), пока не скачает ролик или не упадёт
+    окончательно. Для картинок в `generate_image_with_retries` — True.
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
@@ -343,9 +348,12 @@ async def generate_video_with_retries(
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
             attempt_kwargs = dict(kwargs)
-            attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
-                base_prompt_id, round_idx, attempt
-            )
+            if uniquify_prompt_id:
+                attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
+                    base_prompt_id, round_idx, attempt
+                )
+            else:
+                attempt_kwargs["prompt_id_prefix"] = base_prompt_id
             try:
                 return await outsee.generate_video(
                     current_prompt, out_path, project_id=project_id,

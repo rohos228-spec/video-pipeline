@@ -6,8 +6,11 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loguru import logger
+
 from app.models import Project, ProjectStatus
 from app.services.disabled_nodes import is_step_disabled
+from app.services.reset_step import clear_step_outputs_for_rerun
 from app.services.step_cancel import clear_stop
 from app.telegram.menu import step_by_code
 
@@ -47,6 +50,22 @@ async def start_step(
     # запуск произвольного шага. is_step_disabled выше всё ещё уважает явно
     # отключённые ноды.
     clear_stop(project.id)
+    try:
+        wiped = await clear_step_outputs_for_rerun(session, project, step_code)
+        if wiped:
+            logger.info(
+                "[#{}] start_step {}: очищены выходы шага перед запуском: {}",
+                project.id,
+                step_code,
+                list(wiped.keys()),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "[#{}] start_step {}: не удалось очистить выходы шага: {}",
+            project.id,
+            step_code,
+            e,
+        )
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

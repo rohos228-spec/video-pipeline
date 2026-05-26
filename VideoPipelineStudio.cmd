@@ -1,19 +1,17 @@
 @echo off
-REM Video Pipeline Studio - launch GUI from repo root
+REM GUI launcher (buttons). Console update: UPDATE-STUDIO.cmd
 cd /d "%~dp0"
 
-set "LAUNCHER=%~dp0installer\VideoPipelineLauncher.ps1"
-findstr /C:"ASCII-only for Windows PowerShell" "%LAUNCHER%" >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo [ERROR] Old launcher file detected. Update first:
-    echo   git pull origin devin/windows-installer
-    echo.
-    echo Or run:  update-launcher.cmd
-    echo.
-    pause
-    exit /b 1
+set "BR=cursor/fix-launcher-update-start-977b"
+where git >nul 2>&1
+if not errorlevel 1 (
+    git fetch origin %BR% 2>nul
+    git checkout -B %BR% origin/%BR% 2>nul
 )
 
-powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -File "%LAUNCHER%"
-if errorlevel 1 pause
+powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -File "%~dp0installer\VideoPipelineLauncher.ps1"
+if errorlevel 1 (
+    echo.
+    echo GUI failed? Try: UPDATE-STUDIO.cmd
+    pause
+)
