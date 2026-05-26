@@ -69,11 +69,14 @@ const BASE: Record<string, NodePromptSlot[]> = {
   images: [{ id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" }],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
+    { id: "frames", title: "Промты по кадрам", kind: "frame_prompts" },
     { id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" },
   ],
+  /** Outsee: в outsee уходит frame.animation_prompt; мастер — те же .md, что шаг 8 (anim_pr). */
   videos: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "video" },
-    { id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" },
+    { id: "frames", title: "Промты по кадрам", kind: "frame_prompts" },
+    { id: "main", title: "Мастер-промт анимации", kind: "gpt", stepCode: "anim_pr" },
   ],
   audio: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "audio" },
@@ -128,6 +131,21 @@ export function mergePromptSlotsWithDefaults(
       excelSlotForNodeType(nodeType);
     const customs = slots.filter((s) => s.custom === true && s.kind !== "excel");
     return excel ? [excel, ...customs] : defaults;
+  }
+
+  if (nodeType === "videos") {
+    const defaults = defaultPromptSlots(nodeType);
+    const excel =
+      slots.find((s) => s.kind === "excel") ??
+      defaults.find((s) => s.kind === "excel") ??
+      excelSlotForNodeType(nodeType);
+    const rest = defaults.filter((s) => s.kind !== "excel");
+    const customs = slots.filter((s) => s.custom === true && s.kind !== "excel");
+    const mergedRest = [...rest];
+    for (const c of customs) {
+      if (!mergedRest.some((m) => m.id === c.id)) mergedRest.push(c);
+    }
+    return excel ? [excel, ...mergedRest] : defaults;
   }
 
   const defaults = defaultPromptSlots(nodeType);
