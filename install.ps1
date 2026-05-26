@@ -164,9 +164,27 @@ Write-OK "venv создан"
 
 Write-Step "Обновляю pip и ставлю зависимости (~1 GB, может занять 5-10 минут)"
 & $venvPython -m pip install --upgrade pip
-& $venvPython -m pip install -e .
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: pip install -e . упал. Скопируй вывод выше и пришли." -ForegroundColor Red
+$repoRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+$pipSpec = $repoRoot
+$pipOk = $false
+for ($attempt = 1; $attempt -le 4; $attempt++) {
+    Write-Host "    pip install -e (попытка $attempt/4)..." -ForegroundColor DarkGray
+    Push-Location -LiteralPath $repoRoot
+    try {
+        & $venvPython -m pip install -e $pipSpec
+        if ($LASTEXITCODE -eq 0) { $pipOk = $true; break }
+    } finally {
+        Pop-Location
+    }
+    if ($attempt -lt 4) {
+        Write-Warn "pip оборвался (сеть?) — повтор через 15 сек..."
+        Start-Sleep -Seconds 15
+    }
+}
+if (-not $pipOk) {
+    Write-Host "ERROR: pip install упал после 4 попыток." -ForegroundColor Red
+    Write-Host "  Запустите снова: .\CONTINUE-INSTALL.cmd" -ForegroundColor Yellow
+    Write-Host "  Или: .\.venv\Scripts\python.exe -m pip install -e `"$pipSpec`"" -ForegroundColor Yellow
     exit 1
 }
 Write-OK "Зависимости установлены"

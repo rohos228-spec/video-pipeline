@@ -202,15 +202,23 @@ function Invoke-StudioPipInstall {
     $spec = Get-StudioPipEditableSpec $Root
     Write-StudioLog "> pip install -e `"$spec`"" 'Cyan'
     Write-StudioLog "  (cwd before pip: $(Get-Location))" 'Gray'
-    Push-Location -LiteralPath $Root
-    try {
-        & $py -m pip install -e $spec
-        $code = $LASTEXITCODE
-    } finally {
-        Pop-Location
+    $code = 1
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-StudioLog "pip retry $attempt/4 in 15 sec (network?)" 'Yellow'
+            Start-Sleep -Seconds 15
+        }
+        Push-Location -LiteralPath $Root
+        try {
+            & $py -m pip install -e $spec
+            $code = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($code -eq 0) { break }
     }
     if ($code -ne 0) {
-        Write-StudioLog "FAIL: pip exit $code — must run from repo with pyproject.toml" 'Red'
+        Write-StudioLog "FAIL: pip exit $code — run CONTINUE-INSTALL.cmd" 'Red'
         return $false
     }
     Write-StudioLog 'OK pip' 'Green'
