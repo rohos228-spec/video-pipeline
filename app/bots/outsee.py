@@ -1715,6 +1715,280 @@ class OutseeBot:
             dumps=dump_paths,
         )
 
+    async def _generation_started(self, page: Page) -> bool:
+        """True — outsee реально начал генерацию (не только «кликнули»)."""
+        try:
+            via_dom = await page.evaluate(
+                """() => {
+                    const low = (document.body.innerText || '').toLowerCase();
+                    const loadWords = [
+                        'генерация', 'генериру', 'generating', 'processing',
+                        'подождите', 'loading', 'создаём', 'creating'
+                    ];
+                    if (loadWords.some(w => low.includes(w))) return 'text';
+                    for (const el of document.querySelectorAll(
+                        'button, [role="button"]'
+                    )) {
+                        const tx = (el.innerText || el.textContent || '')
+                            .toLowerCase();
+                        if (!tx.includes('генерир') && !tx.includes('generate')
+                            && !tx.includes('создать')) continue;
+                        if (el.disabled) return 'btn_disabled';
+                        if (el.getAttribute('aria-disabled') === 'true') {
+                            return 'btn_aria_disabled';
+                        }
+                        if (el.getAttribute('aria-busy') === 'true') {
+                            return 'btn_busy';
+                        }
+                    }
+                    const spin = document.querySelector(
+                        '[class*="animate-spin"], [class*="loading"], '
+                        + '[data-loading="true"]'
+                    );
+                    if (spin) {
+                        const r = spin.getBoundingClientRect();
+                        if (r.width > 8 && r.height > 8) return 'spinner';
+                    }
+                    return null;
+                }"""
+            )
+            if via_dom:
+                logger.info(
+                    "outsee: generation_started signal ({})", via_dom
+                )
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return not await self._generate_button_enabled(page)
+
+    async def _scan_generate_click_targets(self, page: Page) -> list[dict[str, Any]]:
+        try:
+            raw = await page.evaluate(
+                """() => {
+                    const keys = ['генерир', 'generate', 'создать', 'run'];
+                    const out = [];
+                    for (const el of document.querySelectorAll(
+                        'button, [role="button"], a'
+                    )) {
+                        const text = (el.innerText || el.textContent || '')
+                            .trim();
+                        const low = text.toLowerCase();
+                        if (!keys.some(k => low.includes(k))) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 36 || r.height < 18) continue;
+                        const cs = getComputedStyle(el);
+                        if (cs.display === 'none' || cs.visibility === 'hidden') {
+                            continue;
+                        }
+                        if (cs.pointerEvents === 'none') continue;
+                        const op = parseFloat(cs.opacity || '1');
+                        if (op < 0.15) continue;
+                        out.push({
+                            text: text.slice(0, 72),
+                            disabled: !!el.disabled
+                                || el.getAttribute('aria-disabled') === 'true',
+                            cx: Math.round(r.x + r.width / 2),
+                            cy: Math.round(r.y + r.height / 2),
+                            area: Math.round(r.width * r.height),
+                        });
+                    }
+                    out.sort((a, b) => b.area - a.area);
+                    return out;
+                }"""
+            )
+            return list(raw or [])
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _trigger_generate_video(
+        self,
+        page: Page,
+        *,
+        input_sel: str | None,
+        project_id: int | None = None,
+        dumps: list[Path] | None = None,
+        context: dict[str, object] | None = None,
+    ) -> None:
+        """Запуск генерации veo — несколько механик, пока не пошла генерация."""
+        from app.services.step_cancel import (
+            abort_if_cancelled,
+            await_with_cancel,
+            sleep_cancellable,
+        )
+
+        abort_if_cancelled(project_id)
+        strategies_tried: list[str] = []
+
+        async def _started() -> bool:
+            await sleep_cancellable(0.6, project_id)
+            return await self._generation_started(page)
+
+        # A) Горячие клавиши из поля промта (outsee часто так шлёт veo).
+        if input_sel:
+            for keys, name in (
+                ("Control+Enter", "ctrl+enter"),
+                ("Enter", "enter"),
+            ):
+                abort_if_cancelled(project_id)
+                try:
+                    loc = page.locator(input_sel).first
+                    await await_with_cancel(loc.focus(), project_id)
+                    await sleep_cancellable(0.15, project_id)
+                    await await_with_cancel(
+                        page.keyboard.press(keys), project_id
+                    )
+                    strategies_tried.append(name)
+                    logger.info(
+                        "outsee.generate_video: попытка {}", name
+                    )
+                    if await _started():
+                        logger.info(
+                            "outsee.generate_video: старт по {}", name
+                        )
+                        return
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.generate_video: {} failed: {}", name, e
+                    )
+
+        # B) Скан DOM → клик по координатам (CDP + mouse + JS).
+        targets = await self._scan_generate_click_targets(page)
+        logger.info(
+            "outsee.generate_video: scan нашёл {} кнопок Generate-like",
+            len(targets),
+        )
+        for idx, t in enumerate(targets[:6]):
+            if t.get("disabled"):
+                continue
+            cx, cy = float(t["cx"]), float(t["cy"])
+            text = str(t.get("text") or "")[:40]
+            abort_if_cancelled(project_id)
+
+            await _cdp_dispatch_click(
+                page, cx, cy, project_id=project_id
+            )
+            strategies_tried.append(f"cdp#{idx}")
+            logger.info(
+                "outsee.generate_video: CDP click #{} ({:.0f},{:.0f}) {!r}",
+                idx,
+                cx,
+                cy,
+                text,
+            )
+            if await _started():
+                return
+
+            await _viewport_mouse_click(
+                page, cx, cy, project_id=project_id, label=f"gen#{idx}"
+            )
+            strategies_tried.append(f"mouse#{idx}")
+            if await _started():
+                return
+
+            try:
+                await page.evaluate(
+                    """([x, y]) => {
+                        const el = document.elementFromPoint(x, y);
+                        if (!el) return false;
+                        const btn = el.closest(
+                            'button, [role="button"], a'
+                        ) || el;
+                        for (const type of [
+                            'pointerdown', 'mousedown', 'mouseup',
+                            'pointerup', 'click'
+                        ]) {
+                            btn.dispatchEvent(new MouseEvent(type, {
+                                bubbles: true, cancelable: true,
+                                view: window, clientX: x, clientY: y,
+                            }));
+                        }
+                        return true;
+                    }""",
+                    [cx, cy],
+                )
+                strategies_tried.append(f"js#{idx}")
+                if await _started():
+                    logger.info(
+                        "outsee.generate_video: старт по JS #{}", idx
+                    )
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+
+        # C) Playwright get_by_role / селекторы (force).
+        for label, click_fn in (
+            (
+                "role_генерировать",
+                lambda: page.get_by_role(
+                    "button",
+                    name=re.compile(r"генерир|generate|создать", re.I),
+                ).first.click(force=True, timeout=5_000),
+            ),
+            (
+                "selector",
+                lambda: self._click_generate_button(
+                    page,
+                    where="generate_video",
+                    project_id=project_id,
+                    dumps=dumps,
+                    context=context,
+                    physical_only=False,
+                ),
+            ),
+        ):
+            abort_if_cancelled(project_id)
+            try:
+                if label == "selector":
+                    await click_fn()
+                else:
+                    await await_with_cancel(click_fn(), project_id)
+                strategies_tried.append(label)
+                if await _started():
+                    logger.info(
+                        "outsee.generate_video: старт по {}", label
+                    )
+                    return
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: {} failed: {}",
+                    label,
+                    type(e).__name__,
+                )
+
+        # D) physical-only по селекторам (последний шанс).
+        try:
+            await self._click_generate_button(
+                page,
+                where="generate_video",
+                project_id=project_id,
+                dumps=dumps,
+                context=context,
+                physical_only=True,
+            )
+            strategies_tried.append("physical_selectors")
+            if await _started():
+                return
+        except OutseeImageError:
+            pass
+
+        dump_paths: list[Path] = []
+        h, p = await _dump_page(page, "video_generate_all_failed")
+        for x in (h, p):
+            if x:
+                dump_paths.append(x)
+        if dumps is not None:
+            dumps.extend(dump_paths)
+        raise OutseeImageError(
+            "outsee video: не удалось запустить Generate "
+            "(все механики: клавиши, CDP, мышь, JS, role, селекторы)",
+            context={
+                **(context or {}),
+                "strategies": strategies_tried,
+                "targets": targets[:5],
+            },
+            dumps=dump_paths,
+        )
+
     async def _result_img_src(self, page: Page) -> str | None:
         """Src большой картинки из блока «Результат генерации» (или None,
         если блока ещё нет / там плейсхолдер/спиннер)."""
@@ -3103,17 +3377,16 @@ class OutseeBot:
 
             click_ts = _time.monotonic()
             net_events.clear()
-            await self._click_generate_button(
+            await self._trigger_generate_video(
                 page,
-                where="generate_video",
+                input_sel=input_sel,
                 project_id=project_id,
                 dumps=dumps,
                 context={"gen_id": gen_id, "prompt_id": prompt_id_prefix},
-                physical_only=True,
             )
             logger.info(
-                "outsee.generate_video: Generate кликнут (physical), "
-                "жду ролик (gen_id={})",
+                "outsee.generate_video: Generate запущен, жду ролик "
+                "(gen_id={})",
                 gen_id[:8],
             )
 
@@ -3666,6 +3939,71 @@ async def _verify_composer_prompt_filled(
                 "actual_len": len(actual),
                 "expected_len": exp_len,
             },
+        )
+
+
+async def _viewport_mouse_click(
+    page: Page,
+    x: float,
+    y: float,
+    *,
+    project_id: int | None = None,
+    label: str = "",
+) -> None:
+    from app.services.step_cancel import await_with_cancel
+
+    await await_with_cancel(page.mouse.move(x, y), project_id)
+    await asyncio.sleep(0.05)
+    await await_with_cancel(
+        page.mouse.click(x, y, delay=80), project_id
+    )
+    logger.info(
+        "outsee viewport-click: ({:.0f},{:.0f}){}",
+        x,
+        y,
+        f" — {label}" if label else "",
+    )
+
+
+async def _cdp_dispatch_click(
+    page: Page,
+    x: float,
+    y: float,
+    *,
+    project_id: int | None = None,
+) -> None:
+    """Клик через Chrome DevTools Protocol (обходит часть overlay/React)."""
+    from app.services.step_cancel import await_with_cancel
+
+    try:
+        session = await page.context.new_cdp_session(page)
+        for ev_type, button_state in (
+            ("mouseMoved", 0),
+            ("mousePressed", 1),
+            ("mouseReleased", 1),
+        ):
+            await await_with_cancel(
+                session.send(
+                    "Input.dispatchMouseEvent",
+                    {
+                        "type": ev_type,
+                        "x": x,
+                        "y": y,
+                        "button": "left",
+                        "buttons": button_state,
+                        "clickCount": 1,
+                    },
+                ),
+                project_id,
+            )
+            await asyncio.sleep(0.04)
+        logger.info("outsee cdp-click: ({:.0f},{:.0f})", x, y)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee cdp-click failed ({}), fallback mouse", type(e).__name__
+        )
+        await _viewport_mouse_click(
+            page, x, y, project_id=project_id, label="cdp-fallback"
         )
 
 
