@@ -151,9 +151,21 @@ export function NodeStudio({
   }, [open, initialTab]);
 
   useEffect(() => {
-    if (promptFocus?.id) setActiveSlotId(promptFocus.id);
-    else if (pipelineSlots[0]?.id) setActiveSlotId(pipelineSlots[0].id);
-  }, [promptFocus, pipelineSlots, open]);
+    if (!open) return;
+    if (promptFocus?.id) {
+      setActiveSlotId(promptFocus.id);
+      return;
+    }
+    if (nodeType === "images") {
+      const frame = pipelineSlots.find((s) => s.id === "frame_prompts");
+      if (frame) {
+        setActiveSlotId(frame.id);
+        return;
+      }
+    }
+    const firstPrompt = pipelineSlots.find((s) => s.kind !== "excel");
+    setActiveSlotId(firstPrompt?.id ?? pipelineSlots[0]?.id ?? null);
+  }, [promptFocus, pipelineSlots, open, nodeType]);
 
   useEffect(() => {
     if (!open || tab !== "excel") return;
@@ -448,10 +460,8 @@ export function NodeStudio({
                     />
                   ) : showBlocksPanel ? (
                     <p className="text-sm text-muted-foreground">
-                      Генерация через outsee.io в Chrome. Промт каждого кадра —
-                      в слоте «Промты кадров»; мастер-промт шага 6 — в ноде
-                      «Промты картинок» (<code className="text-xs">prompts/05_image_prompts</code>
-                      ).
+                      Генерация через outsee.io в Chrome. Промты кадров — слот
+                      «Промты кадров»; файлы мастер-промта — слот «Мастер-промт».
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">

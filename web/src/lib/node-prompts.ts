@@ -71,13 +71,14 @@ const BASE: Record<string, NodePromptSlot[]> = {
       id: "frame_prompts",
       title: "Промты кадров",
       kind: "frame_prompts",
-      description: "image_prompt из шага 6 — что уходит в outsee",
+      description: "image_prompt по кадрам — уходит в outsee",
     },
     {
-      id: "outsee",
-      title: "Генератор",
-      kind: "blocks",
-      description: "outsee.io (без папки prompts/)",
+      id: "master",
+      title: "Мастер-промт",
+      kind: "gpt",
+      stepCode: "img_pr",
+      description: "prompts/05_image_prompts (шаг 6)",
     },
   ],
   animation_prompts: [
@@ -128,12 +129,64 @@ export function excelSlotForNodeType(nodeType: string): NodePromptSlot {
   };
 }
 
+const LEGACY_IMAGES_SLOT_IDS = new Set(["outsee"]);
+
+/** Дополняет сохранённые custom_prompts недостающими слотами из BASE (и чинит устаревшие id). */
+export function mergePromptSlotsWithDefaults(
+  nodeType: string,
+  slots: NodePromptSlot[],
+): NodePromptSlot[] {
+  const defaults = defaultPromptSlots(nodeType);
+  if (!defaults.length || !slots.length) return slots;
+
+  const byId = new Map(slots.map((s) => [s.id, s]));
+  const merged: NodePromptSlot[] = [];
+
+  for (const d of defaults) {
+    if (d.kind === "excel") continue;
+    const custom = byId.get(d.id);
+    if (custom) {
+      merged.push({
+        ...d,
+        ...custom,
+        id: d.id,
+        kind: d.kind,
+        stepCode: d.stepCode ?? custom.stepCode,
+        title: custom.custom ? custom.title : d.title,
+        description: d.description ?? custom.description,
+      });
+      byId.delete(d.id);
+    } else {
+      merged.push(d);
+    }
+  }
+
+  if (nodeType === "images") {
+    for (const legacyId of LEGACY_IMAGES_SLOT_IDS) byId.delete(legacyId);
+  }
+
+  for (const s of slots) {
+    if (s.kind === "excel" || s.kind === "text") continue;
+    if (merged.some((m) => m.id === s.id)) continue;
+    if (nodeType === "images" && LEGACY_IMAGES_SLOT_IDS.has(s.id)) continue;
+    merged.push(s);
+  }
+
+  const excel =
+    slots.find((s) => s.kind === "excel") ??
+    defaults.find((s) => s.kind === "excel");
+
+  return excel ? [excel, ...merged] : merged;
+}
+
 /** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
 export function resolvePromptSlots(
   nodeType: string,
   slots?: NodePromptSlot[] | null,
 ): NodePromptSlot[] {
-  const raw = slots?.length ? [...slots] : [...defaultPromptSlots(nodeType)];
+  const raw = slots?.length
+    ? mergePromptSlotsWithDefaults(nodeType, [...slots])
+    : [...defaultPromptSlots(nodeType)];
   const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel");
 
   if (!nodeTypeRequiresExcel(nodeType)) {

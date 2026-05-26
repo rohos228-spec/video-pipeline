@@ -238,9 +238,16 @@ export function StudioWorkspace({
         setStudioTab("prompts");
         onStudioOpenChange(true);
       },
-      onViewAllPrompts: (nodeKey: string, _nodeType: string) => {
+      onViewAllPrompts: (nodeKey: string, nodeType: string) => {
         onSelectNode(nodeKey);
-        setPromptFocus(null);
+        const slots = getPromptSlots(nodeKey, nodeType);
+        const focus =
+          nodeType === "images"
+            ? (slots.find((s) => s.id === "frame_prompts") ??
+              slots.find((s) => s.kind !== "excel") ??
+              null)
+            : null;
+        setPromptFocus(focus);
         setStudioTab("prompts");
         onStudioOpenChange(true);
       },
