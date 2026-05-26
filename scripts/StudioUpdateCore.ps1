@@ -43,7 +43,7 @@ function Test-StudioPythonOk {
     param([string]$Root)
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $py)) { return $false }
-    & $py -c "import fastapi, sqlalchemy" 2>$null
+    & $py -c "import fastapi, sqlalchemy, playwright" 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
