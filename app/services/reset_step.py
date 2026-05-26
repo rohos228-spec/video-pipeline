@@ -273,6 +273,15 @@ async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, An
 async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 9 «Видео»: scene_video артефакты + файлы. Также
     сбрасываем frame.status video_* → animation_prompt_ready."""
+    arts = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.scene_video,
+            )
+        )
+    ).scalars().all()
+    frame_ids_with_video = {a.frame_id for a in arts if a.frame_id is not None}
     art_stats = await _wipe_artifacts_by_kind(
         session, project, ArtifactKind.scene_video
     )
@@ -283,17 +292,19 @@ async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any
     ).scalars().all()
     frames_reset = 0
     for fr in frames:
-        if fr.status in (
+        had_video = fr.id in frame_ids_with_video
+        if not had_video and fr.status not in (
             FrameStatus.video_generated,
             FrameStatus.video_approved,
             FrameStatus.done,
         ):
-            fr.status = (
-                FrameStatus.animation_prompt_ready
-                if fr.animation_prompt
-                else FrameStatus.image_approved
-            )
-            frames_reset += 1
+            continue
+        fr.status = (
+            FrameStatus.animation_prompt_ready
+            if fr.animation_prompt
+            else FrameStatus.image_approved
+        )
+        frames_reset += 1
     return {**art_stats, "frames_reset": frames_reset}
 
 

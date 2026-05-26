@@ -37,6 +37,37 @@ from app.services.outsee_retry import generate_video_with_retries
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
 
+async def _scene_video_file_on_disk(
+    session: AsyncSession, project_id: int, frame_id: int
+) -> Path | None:
+    """Последний scene_video артефакт кадра, если файл реально есть на диске."""
+    art = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.frame_id == frame_id,
+                Artifact.kind == ArtifactKind.scene_video,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if art is None or not art.path:
+        return None
+    path = Path(art.path)
+    return path if path.is_file() else None
+
+
+def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
+    """Не гонять outsee, если клип уже есть или кадр финально одобрен."""
+    if fr.status in (FrameStatus.video_approved, FrameStatus.done):
+        return True
+    if fr.status is FrameStatus.video_generated and has_video_file:
+        return True
+    return False
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_videos:
         return
@@ -71,12 +102,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # animation_prompt без триггеров модерации, потом ещё 3 попытки.
         gpt = ChatGPTBot(bs)
 
+        skipped = 0
+        generated = 0
         try:
             for fr in frames:
                 # ⏹ Остановить — проверка между кадрами.
                 raise_if_cancelled(project.id)
-                if fr.status in (FrameStatus.video_generated, FrameStatus.video_approved,
-                                 FrameStatus.done):
+                has_video = (
+                    await _scene_video_file_on_disk(session, project.id, fr.id)
+                    is not None
+                )
+                if _skip_frame_video_generation(fr, has_video):
+                    skipped += 1
+                    logger.debug(
+                        "[#{}] frame {} skip video (status={}, has_file={})",
+                        project.id,
+                        fr.number,
+                        fr.status.value,
+                        has_video,
+                    )
                     continue
                 if not fr.animation_prompt:
                     raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
@@ -135,6 +179,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 fr.status = FrameStatus.video_generated
                 await session.flush()
+                generated += 1
                 logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
         except StepCancelledError as e:
             consume_stop(project.id)
@@ -152,6 +197,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             except Exception:  # noqa: BLE001
                 pass
             raise
+
+    logger.info(
+        "[#{}] generate_videos done loop: frames={} generated={} skipped={}",
+        project.id,
+        len(frames),
+        generated,
+        skipped,
+    )
+    if not frames:
+        logger.warning("[#{}] generate_videos: нет кадров — split не делали?", project.id)
+    elif generated == 0 and skipped == len(frames):
+        logger.info(
+            "[#{}] generate_videos: все кадры уже с клипом — videos_ready",
+            project.id,
+        )
 
     raise_if_cancelled(project.id)
     await session.refresh(project)
