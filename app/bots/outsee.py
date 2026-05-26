@@ -3018,8 +3018,75 @@ class OutseeBot:
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         abort_if_cancelled(project_id)
-        # 0) очистка всех input[type=file]
-        # страницы — старый референс мог остаться от предыдущей генерации).
+
+        # 0а) Кликаем крестики на превью референсных изображений в UI outsee.
+        # set_input_files([]) очищает значение input, но outsee не убирает
+        # визуальный превью — нужно кликнуть кнопку X рядом с превью.
+        # Best-effort: если крестик не нашёлся — продолжаем как раньше.
+        cleared_ui = False
+        # Сначала ищем в контейнере «Первый кадр» (start_frame секция)
+        _first_frame_kws = ["Первый кадр", "First frame", "Start frame",
+                            "Последний кадр", "Last frame"]
+        for _kw in _first_frame_kws:
+            try:
+                _container = page.locator(
+                    f"*:has-text('{_kw}')"
+                ).last  # самый вложенный элемент с этим текстом
+                if await _container.count() == 0:
+                    continue
+                # Ищем кнопки X/Delete внутри контейнера
+                for _btn_sel in [
+                    "button:has(svg.lucide-x)",
+                    "button:has(svg.lucide-trash-2)",
+                    "button:has(svg.lucide-trash)",
+                    "button.absolute",
+                    "button[aria-label*='удалит' i]",
+                    "button[aria-label*='remove' i]",
+                ]:
+                    _btns = _container.locator(_btn_sel)
+                    _n = await _btns.count()
+                    if _n > 0:
+                        for _bi in range(min(_n, 2)):
+                            with contextlib.suppress(Exception):
+                                await _btns.nth(_bi).click(timeout=1_500)
+                        logger.info(
+                            "outsee.{}: кликнут X на превью '{}' ({})",
+                            where, _kw, _btn_sel,
+                        )
+                        cleared_ui = True
+                        await sleep_cancellable(0.4, project_id)
+                        break
+                if cleared_ui:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+        if not cleared_ui:
+            # Fallback: любая кнопка X рядом с img-превью в левой панели
+            for _rm_sel in [
+                ".relative button:has(svg.lucide-x)",
+                ".relative button.absolute",
+                "div[class*='upload'] button:has(svg)",
+                "div[class*='frame'] button:has(svg.lucide-x)",
+            ]:
+                try:
+                    _rm_locs = page.locator(_rm_sel)
+                    _n = await _rm_locs.count()
+                    if _n > 0:
+                        for _bi in range(min(_n, 3)):
+                            with contextlib.suppress(Exception):
+                                await _rm_locs.nth(_bi).click(timeout=1_200)
+                        logger.info(
+                            "outsee.{}: fallback X-click на превью ({})",
+                            where, _rm_sel,
+                        )
+                        await sleep_cancellable(0.4, project_id)
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+
+        # 0б) Очистка всех input[type=file] значений
+        # (старый референс мог остаться от предыдущей генерации).
         try:
             base_clear = page.locator("input[type='file']")
             n_clear = await base_clear.count()
