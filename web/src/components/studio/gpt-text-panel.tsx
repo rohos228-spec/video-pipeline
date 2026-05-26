@@ -93,14 +93,24 @@ export function GptTextPanel({
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        {stepCode === "anim_pr" ? (
+        {stepCode === "anim_pr" || stepCode === "hero" ? (
           <>
-            Сопроводительное сообщение в диалог ChatGPT для каждого кадра (не мастер-промт из
-            «Промт анимации»). При запуске шага подставляются плейсхолдеры{" "}
-            <code className="text-[10px]">{"{{N}}"}</code>,{" "}
-            <code className="text-[10px]">{"{{DURATION}}"}</code>,{" "}
-            <code className="text-[10px]">{"{{VOICEOVER}}"}</code>,{" "}
-            <code className="text-[10px]">{"{{IMAGE_PROMPT}}"}</code>.
+            Полный текст сообщения в ChatGPT (как в боте: «✏️ Сопр. сообщение»). Для каждого
+            кадра подставляются{" "}
+            {stepCode === "anim_pr" ? (
+              <>
+                <code className="text-[10px]">{"{{N}}"}</code>,{" "}
+                <code className="text-[10px]">{"{{DURATION}}"}</code>,{" "}
+                <code className="text-[10px]">{"{{VOICEOVER}}"}</code>,{" "}
+                <code className="text-[10px]">{"{{IMAGE_PROMPT}}"}</code>
+              </>
+            ) : (
+              <>
+                <code className="text-[10px]">{"{{BRIEF}}"}</code>,{" "}
+                <code className="text-[10px]">{"{{HERO_STYLE}}"}</code>
+              </>
+            )}
+            . Мастер-промт из файлов — внутри этого текста (если не переопределён).
           </>
         ) : (
           <>

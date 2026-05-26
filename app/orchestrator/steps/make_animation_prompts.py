@@ -14,7 +14,6 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import gpt_text_builder as gtb
-from app.services.prompt_library import get_project_prompt
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
 
@@ -24,7 +23,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] make_animation_prompts starting", project.id)
 
-    video_master = get_project_prompt(project, "anim_pr")
     anim_template = gtb.get_effective_text(project, "anim_pr")
     frames = (
         await session.execute(
@@ -40,14 +38,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 raise_if_cancelled(project.id)
                 if fr.animation_prompt:
                     continue
-                accompanying = gtb.render_anim_pr_text(
+                ask = gtb.render_anim_pr_text(
                     anim_template,
                     frame_number=fr.number,
                     duration_seconds=fr.duration_seconds,
                     voiceover_text=fr.voiceover_text or "",
                     image_prompt=fr.image_prompt or "",
                 )
-                ask = video_master + "\n\n---\n\n" + accompanying
                 reply = await gpt.ask_fresh(ask, timeout=240, project_id=project.id)
                 if not reply or len(reply) < 30:
                     raise RuntimeError(f"пустой animation_prompt на кадре {fr.number}")

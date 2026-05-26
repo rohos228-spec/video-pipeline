@@ -10,9 +10,15 @@ def test_anim_pr_is_supported() -> None:
     assert gtb.is_supported("anim_pr")
 
 
-def test_anim_pr_default_has_placeholders() -> None:
+def test_anim_pr_default_has_placeholders_and_master(monkeypatch) -> None:
     project = Project(topic="test")
+    monkeypatch.setattr(
+        "app.services.gpt_text_builder.get_project_prompt",
+        lambda _p, _c: "# VIDEO master\n\nAnimate this.",
+    )
     text = gtb.build_default_text(project, "anim_pr")
+    assert "VIDEO master" in text
+    assert "\n\n---\n\n" in text
     assert gtb.ANIM_PLACEHOLDER_N in text
     assert gtb.ANIM_PLACEHOLDER_VOICEOVER in text
     assert "Задача: составь ОДИН промт" in text

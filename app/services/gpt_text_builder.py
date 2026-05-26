@@ -273,18 +273,22 @@ def render_hero_text(
 
 
 def _build_anim_pr_default(project: Project, **_ctx) -> str:  # noqa: ARG001
-    """Шаг 8 «Промты анимации» — сопроводительное сообщение в ChatGPT.
+    """Шаг 8 «Промты анимации» — полный текст в ChatGPT (как `hero`).
 
-    Мастер-промт (`prompts/07_animation/…`) склеивается в воркере:
-    `master + "\\n\\n---\\n\\n" + render_anim_pr_text(template, frame…)`.
+    Мастер-промт из `prompts/07_animation/…` входит в шаблон целиком.
+    Воркер подставляет `{{N}}`, `{{DURATION}}`, `{{VOICEOVER}}`,
+    `{{IMAGE_PROMPT}}` через `render_anim_pr_text` и шлёт один `ask_fresh`.
     """
+    video_master = get_project_prompt(project, "anim_pr").strip()
     return (
-        "Задача: составь ОДИН промт для анимации следующего кадра. "
-        "Без лишних пояснений, только текст промта.\n\n"
-        f"Номер кадра: {ANIM_PLACEHOLDER_N}\n"
-        f"Длительность: {ANIM_PLACEHOLDER_DURATION} сек\n"
-        f"Закадровый текст: {ANIM_PLACEHOLDER_VOICEOVER}\n"
-        f"Изобразительный промт (контекст кадра):\n{ANIM_PLACEHOLDER_IMAGE_PROMPT}\n"
+        video_master
+        + "\n\n---\n\n"
+        + "Задача: составь ОДИН промт для анимации следующего кадра. "
+        + "Без лишних пояснений, только текст промта.\n\n"
+        + f"Номер кадра: {ANIM_PLACEHOLDER_N}\n"
+        + f"Длительность: {ANIM_PLACEHOLDER_DURATION} сек\n"
+        + f"Закадровый текст: {ANIM_PLACEHOLDER_VOICEOVER}\n"
+        + f"Изобразительный промт (контекст кадра):\n{ANIM_PLACEHOLDER_IMAGE_PROMPT}\n"
     )
 
 
