@@ -45,9 +45,29 @@ def _read_baked_ui_build() -> int:
     return 0
 
 
+def _sqlite_project_count(db_path: Path) -> int:
+    import sqlite3
+
+    if not db_path.is_file():
+        return 0
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=2.0)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM projects").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except Exception:
+        return -1
+
+
 def read_studio_version() -> dict[str, str | int | bool]:
+    from app.settings import settings
+
     build, sha, attach_expected, orchestrator_expected = _parse_version_file()
     label = f"v{build} · {sha[:7]}" if sha and sha != "dev" else f"v{build}"
+    db_path = settings.sqlite_path
+    project_count = _sqlite_project_count(db_path)
     ui_baked_build = _read_baked_ui_build()
     ui_stale = ui_baked_build > 0 and ui_baked_build != build
 
@@ -65,6 +85,8 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "build": build,
         "sha": sha,
         "label": label,
+        "db_path": str(db_path),
+        "project_count": project_count,
         "ui_baked_build": ui_baked_build,
         "ui_stale": ui_stale,
         "attach_expected": attach_expected,
