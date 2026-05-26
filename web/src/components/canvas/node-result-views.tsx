@@ -338,7 +338,7 @@ function SplitRowView({ projectId }: { projectId: number }) {
   );
 }
 
-function FramePromptsView({ items }: { items: NodeResultItem[] }) {
+export function FramePromptsView({ items }: { items: NodeResultItem[] }) {
   const [selectedId, setSelectedId] = useState(items[0]?.id ?? "");
   const selected = items.find((i) => i.id === selectedId) ?? items[0];
 

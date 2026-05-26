@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
-import { stepCodeForNodeType } from "@/lib/node-step-map";
+import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
   isEnrichNode,
@@ -42,7 +42,9 @@ import {
 import {
   nodeUsesRawXlsxGrid,
   pickDefaultSheetForNode,
+  xlsxPreviewFocusForNode,
 } from "@/lib/xlsx-sheets";
+import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
@@ -116,6 +118,7 @@ export function NodeStudio({
     isEnrichNode(nodeType) ||
     tab === "excel";
   const rawGrid = nodeUsesRawXlsxGrid(nodeType);
+  const xlsxFocus = xlsxPreviewFocusForNode(nodeType);
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
@@ -124,13 +127,14 @@ export function NodeStudio({
   });
 
   const xlsxPreview = useQuery({
-    queryKey: ["xlsx-preview", projectId, xlsxSheet, rawGrid],
+    queryKey: ["xlsx-preview", projectId, xlsxSheet, rawGrid, xlsxFocus?.startRow],
     queryFn: () =>
       api.previewProjectXlsx(projectId!, {
         sheet: xlsxSheet || undefined,
-        raw: rawGrid,
-        maxRows: rawGrid ? 200 : 40,
-        maxCols: rawGrid ? 30 : 80,
+        raw: rawGrid || Boolean(xlsxFocus),
+        maxRows: xlsxFocus?.maxRows ?? (rawGrid ? 200 : 40),
+        maxCols: rawGrid || xlsxFocus ? 24 : 80,
+        startRow: xlsxFocus?.startRow,
       }),
     enabled:
       open &&
@@ -251,11 +255,13 @@ export function NodeStudio({
   }, [artifacts.data, nodeType]);
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
+  const showFramePromptsPanel =
+    activeSlot?.kind === "frame_prompts" && projectId != null;
   const showFilesPanel =
-    activeSlot &&
-    activeSlot.kind !== "text" &&
-    activeSlot.kind !== "excel" &&
-    activeStepCode;
+    activeSlot?.kind === "gpt" &&
+    Boolean(activeStepCode) &&
+    stepHasPromptVariants(activeStepCode);
+  const showBlocksPanel = activeSlot?.kind === "blocks";
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -419,7 +425,13 @@ export function NodeStudio({
                       projectId={projectId}
                       stepCode={activeStepCode}
                     />
-                  ) : showFilesPanel ? (
+                  ) : showFramePromptsPanel ? (
+                    <FramePromptsPanel
+                      key={`frame-prompts-${projectId}`}
+                      projectId={projectId}
+                      field="image_prompt"
+                    />
+                  ) : showFilesPanel && activeStepCode ? (
                     <PromptFilesPanel
                       key={`files-${nodeKey}-${activeSlot?.id}-${activeStepCode}`}
                       stepCode={activeStepCode}
@@ -434,6 +446,13 @@ export function NodeStudio({
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}
                       activating={activateVariant.isPending}
                     />
+                  ) : showBlocksPanel ? (
+                    <p className="text-sm text-muted-foreground">
+                      Генерация через outsee.io в Chrome. Промт каждого кадра —
+                      в слоте «Промты кадров»; мастер-промт шага 6 — в ноде
+                      «Промты картинок» (<code className="text-xs">prompts/05_image_prompts</code>
+                      ).
+                    </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">
                       Для этой ноды нет редактируемых промтов на этом шаге.

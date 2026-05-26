@@ -283,12 +283,20 @@ export const api = {
   },
   previewProjectXlsx: (
     projectId: number,
-    opts?: { sheet?: string; maxRows?: number; maxCols?: number; row?: number; raw?: boolean },
+    opts?: {
+      sheet?: string;
+      maxRows?: number;
+      maxCols?: number;
+      startRow?: number;
+      row?: number;
+      raw?: boolean;
+    },
   ) => {
     const q = new URLSearchParams();
     if (opts?.sheet) q.set("sheet", opts.sheet);
     if (opts?.maxRows != null) q.set("max_rows", String(opts.maxRows));
     if (opts?.maxCols != null) q.set("max_cols", String(opts.maxCols));
+    if (opts?.startRow != null) q.set("start_row", String(opts.startRow));
     if (opts?.row != null) q.set("row", String(opts.row));
     if (opts?.raw) q.set("raw", "true");
     const qs = q.toString();

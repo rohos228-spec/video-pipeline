@@ -4,7 +4,7 @@ import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
 
-export type NodePromptKind = "gpt" | "text" | "blocks" | "excel";
+export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
 
 export interface NodePromptSlot {
   id: string;
@@ -67,7 +67,18 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   images: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" },
-    { id: "outsee", title: "Генератор изображений", kind: "gpt", description: "Браузер outsee.io" },
+    {
+      id: "frame_prompts",
+      title: "Промты кадров",
+      kind: "frame_prompts",
+      description: "image_prompt из шага 6 — что уходит в outsee",
+    },
+    {
+      id: "outsee",
+      title: "Генератор",
+      kind: "blocks",
+      description: "outsee.io (без папки prompts/)",
+    },
   ],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },

@@ -3,7 +3,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { pickDefaultSheetForNode, xlsxRowsWithContent } from "@/lib/xlsx-sheets";
+import {
+  pickDefaultSheetForNode,
+  xlsxPreviewFocusForNode,
+  xlsxRowsWithContent,
+} from "@/lib/xlsx-sheets";
 import { cn } from "@/lib/utils";
 
 /** Компактное превью таблицы под чипами «Мастер-промты». */
@@ -34,14 +38,16 @@ export function NodeVMenuExcelPreview({
   const sheet = pickDefaultSheetForNode(nodeType, sheets);
   const hasFile = sheets.length > 0;
 
+  const focus = xlsxPreviewFocusForNode(nodeType);
   const preview = useQuery({
-    queryKey: ["v-menu-xlsx-preview", projectId, sheet],
+    queryKey: ["v-menu-xlsx-preview", projectId, sheet, focus?.startRow],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet,
         raw: true,
-        maxRows: 8,
-        maxCols: 6,
+        maxRows: focus?.maxRows ?? 8,
+        maxCols: focus ? 8 : 6,
+        startRow: focus?.startRow,
       }),
     enabled: open && hasFile && Boolean(sheet),
   });

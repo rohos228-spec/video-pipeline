@@ -349,6 +349,21 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       if (items.length) {
         return ready(items, `${items.length} картинок`, "assets", "frame_images");
       }
+      const withImgPrompt = ctx.frames.filter((f) => f.image_prompt?.trim());
+      if (withImgPrompt.length) {
+        return ready(
+          withImgPrompt.map((f) => ({
+            id: `frame_${f.id}`,
+            label: `Кадр ${f.number}`,
+            kind: "text" as const,
+            content: f.image_prompt,
+            frameNumber: f.number,
+          })),
+          `Промты для outsee: ${withImgPrompt.length} кадров`,
+          "studio",
+          "frame_prompts",
+        );
+      }
       return empty("Картинки ещё не сгенерированы", "assets", "frame_images");
     }
 

@@ -393,6 +393,7 @@ async def preview_xlsx(
     sheet: str | None = Query(None),
     max_rows: int = Query(40, ge=1, le=500),
     max_cols: int = Query(80, ge=1, le=200),
+    start_row: int = Query(1, ge=1, le=500),
     row: int | None = Query(None, ge=1, le=500),
     raw: bool = Query(False),
     session: AsyncSession = Depends(get_session),
@@ -441,7 +442,15 @@ async def preview_xlsx(
     rows: list[list[str]] = []
     if active:
         ws = wb[active]
-        for i, row_vals in enumerate(ws.iter_rows(values_only=True)):
+        end_row = min(start_row + max_rows - 1, ws.max_row or start_row)
+        for i, row_vals in enumerate(
+            ws.iter_rows(
+                min_row=start_row,
+                max_row=end_row,
+                max_col=max_cols,
+                values_only=True,
+            )
+        ):
             cells = ["" if c is None else str(c) for c in row_vals]
             if len(cells) > max_cols:
                 cells = cells[:max_cols]
