@@ -21,6 +21,31 @@ function Refresh-Path {
 
 Refresh-Path
 
+$script:LogBox = $null
+$script:StatusLbl = $null
+$script:LauncherLogFile = Join-Path $Root "data\launcher.log"
+
+function Write-Log([string]$Text, [string]$Color = "Black") {
+    $line = "$(Get-Date -Format 'HH:mm:ss')  $Text"
+    try {
+        $logDir = Split-Path -Parent $script:LauncherLogFile
+        if (-not (Test-Path $logDir)) {
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        }
+        Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
+    } catch { }
+    if (-not $script:LogBox) {
+        Write-Host $line
+        return
+    }
+    $hadSelection = $script:LogBox.SelectionLength -gt 0
+    $script:LogBox.SelectionColor = $Color
+    $script:LogBox.AppendText("$line`r`n")
+    if (-not $hadSelection) {
+        $script:LogBox.ScrollToCaret()
+    }
+}
+
 function Get-NpmCmd {
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if ($npm) { return $npm.Source }
@@ -115,28 +140,6 @@ function Start-BackendWindow {
     Start-Process powershell -ArgumentList @(
         "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
     ) -WorkingDirectory $Root
-}
-
-$script:LogBox = $null
-$script:StatusLbl = $null
-$script:LauncherLogFile = Join-Path $Root "data\launcher.log"
-
-function Write-Log([string]$Text, [string]$Color = "Black") {
-    if (-not $script:LogBox) { return }
-    $line = "$(Get-Date -Format 'HH:mm:ss')  $Text"
-    try {
-        $logDir = Split-Path -Parent $script:LauncherLogFile
-        if (-not (Test-Path $logDir)) {
-            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-        }
-        Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
-    } catch { }
-    $hadSelection = $script:LogBox.SelectionLength -gt 0
-    $script:LogBox.SelectionColor = $Color
-    $script:LogBox.AppendText("$line`r`n")
-    if (-not $hadSelection) {
-        $script:LogBox.ScrollToCaret()
-    }
 }
 
 function Copy-LauncherLogs {
@@ -567,6 +570,7 @@ $logHintLbl.ForeColor = [System.Drawing.Color]::Gray
 $form.Controls.Add($logHintLbl)
 
 $tip = New-Object System.Windows.Forms.ToolTip
+$script:WriteLogCmd = Get-Command -Name Write-Log -CommandType Function
 $y = 98
 $col = 0
 for ($i = 0; $i -lt $commands.Count; $i++) {
@@ -576,13 +580,19 @@ for ($i = 0; $i -lt $commands.Count; $i++) {
     $btn.Size = New-Object System.Drawing.Size(228, 36)
     $btn.Location = New-Object System.Drawing.Point((16 + $col * 234), $y)
     $fn = $cmd.Fn
+    $writeLogCmd = $script:WriteLogCmd
     $btn.Add_Click({
         param($sender, $e)
         try {
             & $fn
             Update-StatusLabel
         } catch {
-            Write-Log $_.Exception.Message "DarkRed"
+            $errMsg = $_.Exception.Message
+            if ($writeLogCmd) {
+                & $writeLogCmd $errMsg "DarkRed"
+            } else {
+                [System.Windows.Forms.MessageBox]::Show($errMsg, "Error") | Out-Null
+            }
         }
     }.GetNewClosure())
     $tip.SetToolTip($btn, $cmd.Tip)
