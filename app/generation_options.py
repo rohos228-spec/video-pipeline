@@ -266,6 +266,9 @@ def render_settings_for_gpt(
 
 # ---- Уникальный ID перед промтом -------------------------------------------
 
+# Лимит textarea outsee.io (hero-flow уже проверяет; frames/items — через outsee).
+OUTSEE_PROMPT_MAX_CHARS = 5000
+
 def build_gen_id_prefix(
     project_id: int, frame_number: int | None, short_uuid: str
 ) -> str:

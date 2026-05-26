@@ -981,11 +981,14 @@ class OutseeBot:
         abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
         if prompt_id_prefix:
-            prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
+            from app.generation_options import prepend_gen_id
+
+            prompt = prepend_gen_id(prompt, prompt_id_prefix)
             logger.info(
                 "outsee.generate_image: prompt_id_prefix={} [download-v3: wait→10img]",
                 prompt_id_prefix,
             )
+        _verify_prompt_length_before_send(prompt, where="generate_image")
 
         page_url = _image_page_url(model_slug)
         logger.info(
@@ -1127,8 +1130,38 @@ class OutseeBot:
                 pass
             await await_with_cancel(page.locator(input_sel).first.click(), project_id)
             await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
-            logger.info("outsee.generate_image: промт вставлен ({} симв)", len(prompt))
+            await _verify_composer_prompt_filled(
+                page,
+                input_sel,
+                expected_prompt=prompt,
+                prompt_id_prefix=prompt_id_prefix,
+                where="generate_image",
+            )
+            actual_len = len(await _read_composer_prompt_value(page, input_sel))
+            logger.info(
+                "outsee.generate_image: промт в поле ввода (отправлено {} симв, "
+                "в textarea {} симв)",
+                len(prompt),
+                actual_len,
+            )
             abort_if_cancelled(project_id)
+
+            gen_probe = await _first_visible(
+                page,
+                GENERATE_BUTTON_SELECTORS[:6],
+                timeout_ms=3_000,
+                project_id=project_id,
+            )
+            if gen_probe and await page.locator(gen_probe).first.is_disabled():
+                raise OutseeImageError(
+                    "outsee: кнопка Generate заблокирована — промт не принят",
+                    context={
+                        "gen_id": gen_id,
+                        "prompt_len": len(prompt),
+                        "composer_len": actual_len,
+                    },
+                    dumps=dumps,
+                )
 
             # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
             if aspect_ratio:
@@ -2989,6 +3022,90 @@ def _prompt_id_search_tokens(prompt_id_prefix: str) -> list[str]:
 
 def _count_tokens_in_text(text: str, tokens: list[str]) -> int:
     return sum(text.count(tok) for tok in tokens if tok)
+
+
+def _verify_prompt_length_before_send(full_prompt: str, *, where: str) -> None:
+    """Outsee отклоняет или молча обрезает промты длиннее лимита."""
+    from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
+
+    n = len(full_prompt)
+    if n > OUTSEE_PROMPT_MAX_CHARS:
+        raise OutseeImageError(
+            f"outsee: промт {n} симв — лимит outsee {OUTSEE_PROMPT_MAX_CHARS}. "
+            "Сожмите image_prompt (шаг «Промты картинок») или дождитесь "
+            "GPT-сжатия в retry.",
+            context={
+                "where": where,
+                "prompt_len": n,
+                "limit": OUTSEE_PROMPT_MAX_CHARS,
+            },
+        )
+
+
+async def _read_composer_prompt_value(page: Page, input_sel: str) -> str:
+    loc = page.locator(input_sel).first
+    try:
+        val = await loc.input_value()
+        if val and val.strip():
+            return val.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        raw = await loc.evaluate(
+            """el => {
+                const t = (el.tagName || '').toLowerCase();
+                if (t === 'textarea' || t === 'input') return el.value || '';
+                return el.innerText || el.textContent || '';
+            }"""
+        )
+        return raw.strip() if isinstance(raw, str) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _verify_composer_prompt_filled(
+    page: Page,
+    input_sel: str,
+    *,
+    expected_prompt: str,
+    prompt_id_prefix: str | None,
+    where: str,
+) -> None:
+    """После fill(): outsee иногда не принимает длинный промт — не ждём таймаут."""
+    from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
+
+    actual = await _read_composer_prompt_value(page, input_sel)
+    exp_len = len(expected_prompt)
+    if len(actual) < 20:
+        raise OutseeImageError(
+            "outsee: промт не попал в поле ввода (пусто или слишком коротко)",
+            context={
+                "where": where,
+                "actual_len": len(actual),
+                "expected_len": exp_len,
+            },
+        )
+    if prompt_id_prefix:
+        tokens = _prompt_id_search_tokens(prompt_id_prefix)
+        if not any(tok in actual for tok in tokens if len(tok) >= 6):
+            raise OutseeImageError(
+                "outsee: ID промта не найден в поле после вставки",
+                context={
+                    "where": where,
+                    "prompt_id_prefix": prompt_id_prefix,
+                    "actual_len": len(actual),
+                },
+            )
+    ref_len = min(exp_len, OUTSEE_PROMPT_MAX_CHARS)
+    if ref_len >= 200 and len(actual) < int(ref_len * 0.85):
+        raise OutseeImageError(
+            f"outsee: промт обрезан outsee ({len(actual)} из {exp_len} симв)",
+            context={
+                "where": where,
+                "actual_len": len(actual),
+                "expected_len": exp_len,
+            },
+        )
 
 
 async def _physical_mouse_click(

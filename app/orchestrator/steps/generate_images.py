@@ -575,6 +575,19 @@ async def _generate_and_send(
     file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
     prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
 
+    from app.generation_options import OUTSEE_PROMPT_MAX_CHARS, prepend_gen_id
+
+    full_prompt_len = len(prepend_gen_id(frame.image_prompt or "", prompt_id_prefix))
+    if full_prompt_len > OUTSEE_PROMPT_MAX_CHARS:
+        logger.warning(
+            "[#{}] frame {}: image_prompt {} симв > outsee {} — "
+            "GPT сожмёт перед отправкой",
+            project.id,
+            frame.number,
+            full_prompt_len,
+            OUTSEE_PROMPT_MAX_CHARS,
+        )
+
     # Настройки картинки из проекта (с дефолтами).
     img_gen = IMAGE_GENERATORS_BY_ID.get(
         project.image_generator or DEFAULTS["image_generator"]

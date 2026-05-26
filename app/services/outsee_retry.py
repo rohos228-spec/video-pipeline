@@ -52,6 +52,7 @@ from app.bots.outsee import (
     OutseeBot,
     OutseeImageError,
 )
+from app.generation_options import OUTSEE_PROMPT_MAX_CHARS, prepend_gen_id
 from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 from app.services.step_cancel import StepCancelledError
 
@@ -67,6 +68,102 @@ _GPT_REWRITE_META = (
 _MIN_REWRITE_LEN = 30
 
 
+def _outsee_full_prompt(body: str, prefix: str | None) -> str:
+    if prefix:
+        return prepend_gen_id(body, prefix)
+    return body
+
+
+async def _compress_prompt_for_outsee(
+    gpt: ChatGPTBot,
+    prompt_body: str,
+    *,
+    prefix: str | None = None,
+    project_id: int | None = None,
+) -> str | None:
+    """Сжимает тело промта до лимита outsee (как hero-flow в generate_hero)."""
+    reserve = (len(prefix) + 2) if prefix else 0
+    max_body = max(400, OUTSEE_PROMPT_MAX_CHARS - reserve)
+    last = prompt_body.strip()
+    if len(last) <= max_body:
+        return last
+    meta = (
+        f"Сожми промт для outsee.io до ≤{max_body} символов (включая пробелы). "
+        "Убери повторы и воду, оставь суть и визуальные детали. "
+        "Верни ТОЛЬКО новый текст без пояснений."
+    )
+    for attempt in range(1, 4):
+        if attempt == 1:
+            ask = f"{meta}\n\n{last}"
+        else:
+            ask = (
+                f"Прошлый ответ был {len(last)} символов — нужно ≤{max_body}. "
+                f"Сожми ещё сильнее, сохрани суть. Верни ТОЛЬКО текст.\n\n"
+                f"Прошлый промт:\n\n{last}"
+            )
+        try:
+            reply = await gpt.ask_fresh(ask, timeout=600, project_id=project_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee_retry: GPT-сжатие упало ({}: {})", type(e).__name__, e
+            )
+            return None
+        last = (reply or "").strip()
+        if len(last) < _MIN_REWRITE_LEN:
+            continue
+        if len(last) <= max_body:
+            logger.info(
+                "outsee_retry: GPT-сжатие OK: {} → {} симв (лимит {})",
+                len(prompt_body), len(last), max_body,
+            )
+            return last
+        logger.warning(
+            "outsee_retry: GPT-сжатие attempt {}: {} симв (нужно ≤{})",
+            attempt, len(last), max_body,
+        )
+    return None
+
+
+async def _prepare_prompt_for_outsee(
+    gpt: ChatGPTBot | None,
+    prompt_body: str,
+    prefix: str | None,
+    *,
+    project_id: int | None = None,
+) -> str:
+    full = _outsee_full_prompt(prompt_body, prefix)
+    if len(full) <= OUTSEE_PROMPT_MAX_CHARS:
+        return prompt_body
+    logger.warning(
+        "outsee_retry: промт {} симв > лимита outsee {} — сжимаю через GPT",
+        len(full),
+        OUTSEE_PROMPT_MAX_CHARS,
+    )
+    if gpt is None:
+        raise OutseeImageError(
+            f"outsee: промт {len(full)} симв — лимит {OUTSEE_PROMPT_MAX_CHARS}, "
+            "GPT недоступен для сжатия",
+            context={"prompt_len": len(full), "limit": OUTSEE_PROMPT_MAX_CHARS},
+        )
+    compressed = await _compress_prompt_for_outsee(
+        gpt, prompt_body, prefix=prefix, project_id=project_id
+    )
+    if not compressed:
+        raise OutseeImageError(
+            f"outsee: не удалось сжать промт {len(full)} симв до "
+            f"{OUTSEE_PROMPT_MAX_CHARS}",
+            context={"prompt_len": len(full), "limit": OUTSEE_PROMPT_MAX_CHARS},
+        )
+    full2 = _outsee_full_prompt(compressed, prefix)
+    if len(full2) > OUTSEE_PROMPT_MAX_CHARS:
+        raise OutseeImageError(
+            f"outsee: после сжатия промт всё ещё {len(full2)} симв "
+            f"(лимит {OUTSEE_PROMPT_MAX_CHARS})",
+            context={"prompt_len": len(full2), "limit": OUTSEE_PROMPT_MAX_CHARS},
+        )
+    return compressed
+
+
 async def _ask_gpt_to_rewrite(
     gpt: ChatGPTBot,
     original_prompt: str,
@@ -75,7 +172,10 @@ async def _ask_gpt_to_rewrite(
 ) -> str | None:
     """Запрашивает у ChatGPT переписанный промт без триггеров модерации.
     Возвращает stripped-текст, либо None если rewrite не получился."""
-    full_request = f"{_GPT_REWRITE_META}\n\n{original_prompt}"
+    full_request = (
+        f"{_GPT_REWRITE_META}. Лимит outsee: ≤{OUTSEE_PROMPT_MAX_CHARS} символов.\n\n"
+        f"{original_prompt}"
+    )
     try:
         reply = await gpt.ask_fresh(
             full_request, timeout=600, project_id=project_id
@@ -99,6 +199,11 @@ async def _ask_gpt_to_rewrite(
         "outsee_retry: GPT-rewrite OK, новый промт {} симв (был {})",
         len(text), len(original_prompt),
     )
+    if len(text) > OUTSEE_PROMPT_MAX_CHARS:
+        logger.warning(
+            "outsee_retry: GPT-rewrite {} симв > {} — попросим сжать при отправке",
+            len(text), OUTSEE_PROMPT_MAX_CHARS,
+        )
     return text
 
 
@@ -162,8 +267,16 @@ async def generate_image_with_retries(
                 base_prompt_id, round_idx, attempt
             )
             try:
+                send_prompt = await _prepare_prompt_for_outsee(
+                    gpt,
+                    current_prompt,
+                    attempt_kwargs.get("prompt_id_prefix")
+                    if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
+                    else None,
+                    project_id=pid if isinstance(pid, int) else None,
+                )
                 return await outsee.generate_image(
-                    current_prompt, out_path, **attempt_kwargs
+                    send_prompt, out_path, **attempt_kwargs
                 )
             except StepCancelledError:
                 raise
