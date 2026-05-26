@@ -176,28 +176,33 @@ function Start-LauncherAction([string]$Name, [scriptblock]$Action) {
     if ($script:MainForm) {
         $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     }
+    # PS 5.1: события через add_DoWork, не +=
+    $actionBlock = $Action
+    $actionLabel = $Name
     $bw = New-Object System.ComponentModel.BackgroundWorker
-    $bw.DoWork += {
+    $onDoWork = [System.ComponentModel.DoWorkEventHandler]{
         param($sender, $e)
         try {
-            & $Action
+            & $actionBlock
             $e.Result = @{ Ok = $true }
         } catch {
             $e.Result = @{ Ok = $false; Err = $_.Exception.Message }
         }
     }
-    $bw.RunWorkerCompleted += {
+    $onCompleted = [System.ComponentModel.RunWorkerCompletedEventHandler]{
         param($sender, $e)
         $script:ActionRunning = $false
         $script:CurrentAction = ""
         if ($script:MainForm) {
             $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         }
-        if ($e.Result.Err) {
-            Write-Log "ERROR $Name`: $($e.Result.Err)" "DarkRed"
+        if ($e.Result -and $e.Result.Err) {
+            Write-Log "ERROR ${actionLabel}: $($e.Result.Err)" "DarkRed"
         }
         Update-StatusLabel
     }
+    $bw.add_DoWork($onDoWork)
+    $bw.add_RunWorkerCompleted($onCompleted)
     $bw.RunWorkerAsync()
 }
 
