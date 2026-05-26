@@ -14,13 +14,13 @@ export function FramePromptsPanel({
   projectId: number;
   field: "image_prompt" | "animation_prompt";
 }) {
-  const project = useQuery({
-    queryKey: ["project", projectId],
-    queryFn: () => api.getProject(projectId),
+  const framesQuery = useQuery({
+    queryKey: ["frames", projectId],
+    queryFn: () => api.listFrames(projectId),
   });
 
   const items: NodeResultItem[] = useMemo(() => {
-    const frames = project.data?.frames ?? [];
+    const frames = framesQuery.data ?? [];
     return frames
       .filter((f) => {
         const text =
@@ -36,9 +36,9 @@ export function FramePromptsPanel({
           "",
         frameNumber: f.number,
       }));
-  }, [project.data?.frames, field]);
+  }, [framesQuery.data, field]);
 
-  if (project.isLoading) {
+  if (framesQuery.isLoading) {
     return (
       <div className="flex justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
