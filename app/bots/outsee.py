@@ -2375,6 +2375,7 @@ class OutseeBot:
         *,
         where: str,
         project_id: int | None = None,
+        prefer_first: bool = False,
     ) -> bool:
         """Робастная загрузка референсной картинки в input[type=file]
         на странице outsee.io.
@@ -2393,9 +2394,9 @@ class OutseeBot:
              но пусть будет. Быстрый path.
           3) ЛЮБОЙ input[type=file] в DOM (вкл. скрытый). Playwright
              `set_input_files` работает на скрытых input'ах тоже —
-             он не требует видимости. Берём ПОСЛЕДНИЙ (он в outsee
-             обычно и есть «видимый для юзера» — прикрепленный к самой
-             последней кнопке на экране).
+             он не требует видимости. Для image ref — ПОСЛЕДНИЙ input;
+             для video start_frame — ПЕРВЫЙ (левый/начальный кадр;
+             последний на странице veo — конечный кадр).
 
         Возвращает True в случае успеха. False — если input вообще не
         нашлся в DOM или set_input_files упал. Свои dump'ы НЕ снимает —
@@ -2467,15 +2468,15 @@ class OutseeBot:
                 where, image_path.name,
             )
             return False
-        # Берём последний input[type=file] — в outsee.io именно он
-        # привязан к UI-кнопке загрузки референса (предыдущие обычно
-        # для иных фич, вроде формы регистрации).
+        pick_first = prefer_first or "start_frame" in where
+        target = base.first if pick_first else base.last
+        slot_label = "first" if pick_first else "last"
         try:
-            await base.last.set_input_files(str(image_path))
+            await target.set_input_files(str(image_path))
             logger.info(
                 "outsee.{}: reference {} загружен в скрытый input "
-                "(input[type=file] count={}, взят last)",
-                where, image_path.name, count,
+                "(input[type=file] count={}, взят {})",
+                where, image_path.name, count, slot_label,
             )
             await sleep_cancellable(1.0, project_id)
             return True
@@ -2800,6 +2801,7 @@ class OutseeBot:
                     start_frame,
                     where="generate_video[start_frame]",
                     project_id=project_id,
+                    prefer_first=True,
                 )
                 if not attached:
                     raise RuntimeError(
@@ -2814,6 +2816,10 @@ class OutseeBot:
             )
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            await self._wait_button_enabled(
+                page, gen_sel, timeout_s=600, project_id=project_id
+            )
+            abort_if_cancelled(project_id)
             await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
 
         # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
@@ -2829,6 +2835,21 @@ class OutseeBot:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         await _download_via_context(page, video_url, out_path, project_id=project_id)
         logger.info("outsee video saved → {}", out_path)
+        # Не начинаем следующий кадр, пока outsee не освободил Generate
+        # (предыдущий ролик полностью скачан и UI снова готов).
+        gen_sel_done = await _first_visible(
+            page, GENERATE_BUTTON_SELECTORS, timeout_ms=5_000, project_id=project_id
+        )
+        if gen_sel_done:
+            try:
+                await self._wait_button_enabled(
+                    page, gen_sel_done, timeout_s=120, project_id=project_id
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: Generate не стал активным после "
+                    "скачивания — продолжаю"
+                )
         return GenerationResult(file_path=out_path, raw_url=video_url)
 
     async def _find_video_by_prompt_id(

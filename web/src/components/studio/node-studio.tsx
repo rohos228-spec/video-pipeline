@@ -260,8 +260,6 @@ export function NodeStudio({
   }, [artifacts.data, nodeType]);
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
-  const framePromptField: "image_prompt" | "animation_prompt" =
-    nodeType === "image_prompts" ? "image_prompt" : "animation_prompt";
   const showFramePromptsPanel =
     activeSlot?.kind === "frame_prompts" && projectId != null;
   const showFilesPanel =
@@ -434,9 +432,9 @@ export function NodeStudio({
                     />
                   ) : showFramePromptsPanel ? (
                     <FramePromptsPanel
-                      key={`frame-prompts-${projectId}-${framePromptField}`}
+                      key={`frame-prompts-${projectId}`}
                       projectId={projectId}
-                      field={framePromptField}
+                      field="image_prompt"
                     />
                   ) : showFilesPanel && activeStepCode ? (
                     <PromptFilesPanel
@@ -455,7 +453,8 @@ export function NodeStudio({
                     />
                   ) : showBlocksPanel ? (
                     <p className="text-sm text-muted-foreground">
-                      Генерация через outsee.io в Chrome. Выберите слот в меню V.
+                      Генерация через outsee.io в Chrome. Промты кадров — слот
+                      «Промты кадров»; файлы мастер-промта — слот «Мастер-промт».
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">
