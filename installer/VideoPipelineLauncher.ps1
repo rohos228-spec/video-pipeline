@@ -47,13 +47,8 @@ function Write-Log([string]$Text, [string]$Color = "Black") {
         }
         Add-Content -Path $script:LauncherLogFile -Value $line -Encoding UTF8
     } catch { }
-    if ($script:LogBox -and $script:LogBox.InvokeRequired) {
-        $l = $line
-        $c = $Color
-        [void]$script:LogBox.BeginInvoke([action]{ Write-LogCore $l $c })
-        return
-    }
     Write-LogCore $line $Color
+    [System.Windows.Forms.Application]::DoEvents()
 }
 
 function Write-CommandOutput($Output, [string]$Color = "Gray") {
@@ -163,47 +158,24 @@ function Restart-LauncherGui {
     }
 }
 
-$script:ActionRunning = $false
-$script:CurrentAction = ""
-
-function Start-LauncherAction([string]$Name, [scriptblock]$Action) {
-    if ($script:ActionRunning) {
-        Write-Log "Busy: $($script:CurrentAction) — wait" "DarkOrange"
-        return
-    }
-    $script:ActionRunning = $true
-    $script:CurrentAction = $Name
+function Invoke-ButtonAction([string]$Label, [scriptblock]$Action) {
+    Write-Log "=== $Label ===" "DarkBlue"
     if ($script:MainForm) {
         $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
     }
-    # PS 5.1: события через add_DoWork, не +=
-    $actionBlock = $Action
-    $actionLabel = $Name
-    $bw = New-Object System.ComponentModel.BackgroundWorker
-    $onDoWork = [System.ComponentModel.DoWorkEventHandler]{
-        param($sender, $e)
-        try {
-            & $actionBlock
-            $e.Result = @{ Ok = $true }
-        } catch {
-            $e.Result = @{ Ok = $false; Err = $_.Exception.Message }
+    try {
+        & $Action
+        Update-StatusLabel
+    } catch {
+        Write-Log "ERROR ${Label}: $($_.Exception.Message)" "DarkRed"
+        if ($_.Exception.InnerException) {
+            Write-Log $_.Exception.InnerException.Message "DarkRed"
         }
-    }
-    $onCompleted = [System.ComponentModel.RunWorkerCompletedEventHandler]{
-        param($sender, $e)
-        $script:ActionRunning = $false
-        $script:CurrentAction = ""
+    } finally {
         if ($script:MainForm) {
             $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::Default
         }
-        if ($e.Result -and $e.Result.Err) {
-            Write-Log "ERROR ${actionLabel}: $($e.Result.Err)" "DarkRed"
-        }
-        Update-StatusLabel
     }
-    $bw.add_DoWork($onDoWork)
-    $bw.add_RunWorkerCompleted($onCompleted)
-    $bw.RunWorkerAsync()
 }
 
 function Get-NpmCmd {
@@ -216,11 +188,17 @@ function Get-NpmCmd {
 
 function Test-BackendReady([int]$TimeoutSec = 90) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $n = 0
     while ((Get-Date) -lt $deadline) {
+        [System.Windows.Forms.Application]::DoEvents()
         try {
             $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
             if ($r.StatusCode -eq 200) { return $true }
         } catch { }
+        $n++
+        if (($n % 10) -eq 0) {
+            Write-Log "still waiting for :8765 ..." "Gray"
+        }
         Start-Sleep -Milliseconds 500
     }
     return $false
@@ -297,9 +275,17 @@ function Ensure-WebBuilt {
 }
 
 function Start-BackendWindow {
-    Start-Process powershell -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "run-backend.ps1")
-    ) -WorkingDirectory $Root
+    $cmd = Join-Path $Root "start-backend.cmd"
+    if (Test-Path $cmd) {
+        Write-Log "Starting backend: start-backend.cmd (new window)" "Gray"
+        Start-Process -FilePath $cmd -WorkingDirectory $Root
+        return
+    }
+    Write-Log "Starting backend: run-backend.ps1 (new window)" "Gray"
+    Start-Process powershell.exe -ArgumentList @(
+        "-NoExit", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File",
+        (Join-Path $Root "run-backend.ps1")
+    ) -WorkingDirectory $Root -WindowStyle Normal
 }
 
 function Copy-LauncherLogs {
@@ -561,20 +547,7 @@ function Do-UpdateAndRun {
         }
     }
     Update-StatusLabel
-    Do-Stop
-    Stop-PortListener -Port 8765
-    Start-Sleep -Seconds 2
-    Start-BackendWindow
-    Write-Log "Waiting for backend http://127.0.0.1:8765 (up to 120s) ..." "Gray"
-    if (Test-BackendReady -TimeoutSec 120) {
-        Show-StudioVersionFromApi
-        Start-Process "http://127.0.0.1:8765"
-        Write-Log "Ready. Keep backend PowerShell window OPEN. Browser: Ctrl+F5 if old UI." "DarkGreen"
-    } else {
-        Write-Log "Backend did not respond in 120s — open the NEW backend window for errors" "DarkRed"
-        Write-Log "Manual: cd `"$Root`" ; .\run-backend.ps1" "DarkOrange"
-        Write-Log "Log file: data\backend.log" "DarkOrange"
-    }
+    Start-StudioBackend | Out-Null
     if ($script:LauncherNeedsRestart) {
         Write-Log "Reopening launcher (script was updated by git pull) ..." "DarkOrange"
         Start-Sleep -Seconds 1
@@ -593,25 +566,35 @@ function Do-Install {
     Update-StatusLabel
 }
 
-function Do-StartStudio {
-    if (-not (Get-VenvPython)) { throw "Run install first (button 1)" }
-    if (-not (Ensure-WebBuilt)) { throw "Web UI build failed" }
+function Start-StudioBackend {
+    if (-not (Get-VenvPython)) {
+        Write-Log "No .venv — button 1 Full install" "DarkRed"
+        return $false
+    }
     if (-not (Test-WebUiBuilt)) {
-        Write-Log "Web UI still missing after build attempt" "DarkRed"
-        return
+        Write-Log "web/out missing — building UI first..." "DarkOrange"
+        if (-not (Ensure-WebBuilt)) {
+            Write-Log "UI build failed — API may still work, browser UI incomplete" "DarkOrange"
+        }
     }
     Do-Stop
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
     Start-BackendWindow
-    Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
-    if (Test-BackendReady) {
-        Write-Log "Studio ready at http://127.0.0.1:8765 (backend window must stay open)" "DarkGreen"
+    Write-Log "Waiting for http://127.0.0.1:8765 (120s) ..." "Gray"
+    if (Test-BackendReady -TimeoutSec 120) {
+        Show-StudioVersionFromApi
         Start-Process "http://127.0.0.1:8765"
-    }     else {
-        Write-Log "Backend did not respond in 90s - see errors in the backend PowerShell window" "DarkRed"
-        Write-Log "Tip: run .\run-backend.ps1 manually in this folder to see the error" "DarkOrange"
-        Write-Log "If log says 45s here — git pull (launcher is outdated)" "DarkOrange"
+        Write-Log "Studio OK — keep backend window OPEN" "DarkGreen"
+        return $true
     }
+    Write-Log "No connection to :8765" "DarkRed"
+    Write-Log "Open start-backend.cmd or run-backend.ps1 — read errors there" "DarkOrange"
+    Write-Log "Check: .\check-backend.cmd" "DarkOrange"
+    return $false
+}
+
+function Do-StartStudio {
+    Start-StudioBackend | Out-Null
 }
 
 function Do-StartTelegram {
@@ -626,8 +609,8 @@ function Do-Stop {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object {
             $_.CommandLine -and (
-                $_.CommandLine -like "*$Root*" -or
-                $_.CommandLine -like "*app.main*" -and $_.CommandLine -like "*video-pipeline*"
+                ($_.CommandLine -like "*$Root*") -or
+                (($_.CommandLine -like "*app.main*") -and ($_.CommandLine -like "*video-pipeline*"))
             )
         } |
         ForEach-Object {
@@ -756,7 +739,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "Every day: * Update + Start (v in log). URL http://127.0.0.1:8765 — keep backend window open."
+$hintLbl.Text = "2 Start Studio = backend + browser. Keep start-backend window OPEN. http://127.0.0.1:8765"
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray
@@ -818,7 +801,12 @@ for ($i = 0; $i -lt $commands.Count; $i++) {
     $actionName = $cmd.Label
     $btn.Add_Click({
         param($sender, $e)
-        Start-LauncherAction $actionName $fn
+        $sender.Enabled = $false
+        try {
+            Invoke-ButtonAction $actionName $fn
+        } finally {
+            $sender.Enabled = $true
+        }
     }.GetNewClosure())
     $tip.SetToolTip($btn, $cmd.Tip)
     $form.Controls.Add($btn)
@@ -827,5 +815,5 @@ for ($i = 0; $i -lt $commands.Count; $i++) {
 }
 
 Update-StatusLabel
-Write-Log "Ready. Double-click VideoPipelineStudio.cmd to reopen." "DarkGreen"
+Write-Log "Ready. Click 2 Start Studio or * Update + Start. Backend: start-backend.cmd" "DarkGreen"
 [void]$form.ShowDialog()

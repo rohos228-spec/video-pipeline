@@ -16,11 +16,11 @@ if not exist "web\out\index.html" (
     echo [OK] web UI built
 )
 
-findstr /C:"Copy-LauncherLogs" "installer\VideoPipelineLauncher.ps1" >nul 2>&1
+findstr /C:"Invoke-ButtonAction" "installer\VideoPipelineLauncher.ps1" >nul 2>&1
 if errorlevel 1 (
-    echo [WARN] Old launcher - run: update-launcher.cmd or git pull
+    echo [WARN] Old launcher - git pull or update-launcher.cmd
 ) else (
-    echo [OK] Launcher has Copy logs feature
+    echo [OK] Launcher buttons fixed
 )
 
 echo.

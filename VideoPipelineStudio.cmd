@@ -3,7 +3,7 @@ REM Video Pipeline Studio - launch GUI from repo root
 cd /d "%~dp0"
 
 set "LAUNCHER=%~dp0installer\VideoPipelineLauncher.ps1"
-findstr /C:"ASCII-only for Windows PowerShell" "%LAUNCHER%" >nul 2>&1
+findstr /C:"Invoke-ButtonAction" "%LAUNCHER%" >nul 2>&1
 if errorlevel 1 (
     echo.
     echo [ERROR] Old launcher file detected. Update first:
