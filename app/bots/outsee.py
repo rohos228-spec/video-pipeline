@@ -3631,33 +3631,6 @@ class OutseeBot:
                 len(baseline_video_urls),
             )
 
-            # Проверяем что ролик с НАШИМ ID ещё НЕ готов в DOM.
-            # Если предыдущая попытка закончилась таймаутом, но видео
-            # дорендерилось — оно уже есть в DOM. Тогда пропускаем Generate.
-            if prompt_id_prefix:
-                _early_id_check = await self._find_video_by_prompt_id(
-                    page, prompt_id_prefix
-                )
-                if _early_id_check and _video_url_looks_like_result(_early_id_check):
-                    logger.info(
-                        "outsee.generate_video: ролик {} уже в DOM до клика "
-                        "Generate — пропускаем, сразу скачиваем ({})",
-                        prompt_id_prefix,
-                        _early_id_check[:100],
-                    )
-                    video_url = _early_id_check
-                    # Перепрыгиваем прямо к скачиванию
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    await _download_via_video_card_click(
-                        page,
-                        prompt_id_prefix=prompt_id_prefix,
-                        out_path=out_path,
-                        video_url=video_url,
-                        project_id=project_id,
-                    )
-                    logger.info("outsee video saved (early) → {}", out_path)
-                    return GenerationResult(file_path=out_path, raw_url=video_url)
-
             pre_rejected_text = await self._outsee_failure_text(page)
             if pre_rejected_text:
                 logger.info(
@@ -3959,19 +3932,18 @@ class OutseeBot:
                     page, prompt_id_prefix
                 )
                 if by_id and _video_url_looks_like_result(by_id):
-                    # НЕ проверяем baseline для ID-матча: если в DOM есть
-                    # карточка с НАШИМ ID — это наш ролик, даже если он
-                    # появился до начала текущей попытки (retry сценарий:
-                    # попытка 1 тайм-аутнулась, видео дорендерилось и попало
-                    # в baseline попытки 2 — baseline-фильтр его выбрасывал).
-                    logger.info(
-                        "_wait_video_url_strict: matched by prompt_id "
-                        "{} за {:.0f} сек: {}",
-                        prompt_id_prefix,
-                        elapsed,
-                        by_id[:140],
-                    )
-                    return by_id
+                    by_id_norm = _strip_url_query(by_id)
+                    fresh_ok = by_id_norm not in baseline_video_urls
+                    if fresh_ok:
+                        if (not net_events) or _url_is_fresh(by_id, net_events):
+                            logger.info(
+                                "_wait_video_url_strict: matched by prompt_id "
+                                "{} за {:.0f} сек: {}",
+                                prompt_id_prefix,
+                                elapsed,
+                                by_id[:140],
+                            )
+                            return by_id
 
             new_videos = await self._completed_new_videos(
                 page, baseline_video_urls
