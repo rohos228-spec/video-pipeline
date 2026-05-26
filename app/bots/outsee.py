@@ -2698,6 +2698,7 @@ class OutseeBot:
             StepCancelledError,
             abort_if_cancelled,
             await_with_cancel,
+            sleep_cancellable,
         )
 
         abort_if_cancelled(project_id)
@@ -2750,29 +2751,25 @@ class OutseeBot:
                 )
 
         if not already_in_progress:
-            # 1) ввод промта
             input_sel = await _first_visible(
                 page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000, project_id=project_id
             )
             if not input_sel:
                 raise RuntimeError("outsee video: не найден ввод промта")
+            prompt_loc = page.locator(input_sel).first
             try:
                 await await_with_cancel(
-                    page.locator(input_sel).first.scroll_into_view_if_needed(timeout=5_000),
+                    prompt_loc.scroll_into_view_if_needed(timeout=5_000),
                     project_id,
                 )
             except Exception:  # noqa: BLE001
                 pass
-            await await_with_cancel(page.locator(input_sel).first.click(), project_id)
-            await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
 
-            # 2) аспект (с верификацией состояния)
+            # 1) аспект / разрешение / Relax — до промта и до start_frame
             if aspect_ratio:
                 await _select_aspect_ratio(
                     page, aspect_ratio, where="generate_video", project_id=project_id
                 )
-
-            # 2.5) разрешение 720p / 1080p (best-effort)
             if resolution:
                 res_sel = await _first_visible(
                     page, _resolution_selectors(resolution), timeout_ms=3_000, project_id=project_id
@@ -2785,12 +2782,11 @@ class OutseeBot:
                         )
                     except Exception:  # noqa: BLE001
                         pass
-
-            # 2.7) Relax (только для veo-3-1-fast по словам пользователя)
             await _toggle_relax(page, want_on=relax, where="generate_video", project_id=project_id)
             abort_if_cancelled(project_id)
 
-            # 3) загрузка стартового кадра (скрытый input — как у картинок)
+            # 2) стартовый кадр ДО промта — иначе outsee сбрасывает поле и
+            # кнопка «Генерировать» остаётся disabled.
             if start_frame is not None:
                 if not start_frame.exists():
                     raise RuntimeError(
@@ -2808,19 +2804,41 @@ class OutseeBot:
                         "outsee video: не удалось загрузить стартовый кадр "
                         "(input[type=file] не найден на странице outsee video)"
                     )
+                await sleep_cancellable(1.0, project_id)
 
-            # 4) generate
+            # 3) промт — после загрузки кадра
+            await await_with_cancel(prompt_loc.click(), project_id)
+            await await_with_cancel(prompt_loc.fill(prompt), project_id)
+            try:
+                await await_with_cancel(prompt_loc.press("Tab"), project_id)
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info(
+                "outsee.generate_video: промт введён ({} симв)",
+                len(prompt or ""),
+            )
+
+            # 4) Generate
             abort_if_cancelled(project_id)
             gen_sel = await _first_visible(
                 page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
             )
             if not gen_sel:
                 raise RuntimeError("outsee video: не найдена кнопка Generate")
+            logger.info("outsee.generate_video: кнопка Generate найдена ({})", gen_sel)
+            try:
+                await await_with_cancel(
+                    page.locator(gen_sel).first.scroll_into_view_if_needed(timeout=5_000),
+                    project_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             await self._wait_button_enabled(
                 page, gen_sel, timeout_s=600, project_id=project_id
             )
             abort_if_cancelled(project_id)
             await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
+            logger.info("outsee.generate_video: Generate кликнут")
 
         # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
         # ищем `<video>` в карточке с нашим [ID: ...], только если не
