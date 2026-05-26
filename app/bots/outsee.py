@@ -1777,50 +1777,43 @@ class OutseeBot:
         )
 
     async def _generation_started(self, page: Page) -> bool:
-        """True — outsee реально начал генерацию (не только «кликнули»)."""
-        try:
-            via_dom = await page.evaluate(
-                """() => {
-                    const low = (document.body.innerText || '').toLowerCase();
-                    const loadWords = [
-                        'генерация', 'генериру', 'generating', 'processing',
-                        'подождите', 'loading', 'создаём', 'creating'
-                    ];
-                    if (loadWords.some(w => low.includes(w))) return 'text';
-                    for (const el of document.querySelectorAll(
-                        'button, [role="button"]'
-                    )) {
-                        const tx = (el.innerText || el.textContent || '')
-                            .toLowerCase();
-                        if (!tx.includes('генерир') && !tx.includes('generate')
-                            && !tx.includes('создать')) continue;
-                        if (el.disabled) return 'btn_disabled';
-                        if (el.getAttribute('aria-disabled') === 'true') {
-                            return 'btn_aria_disabled';
-                        }
-                        if (el.getAttribute('aria-busy') === 'true') {
-                            return 'btn_busy';
-                        }
-                    }
-                    const spin = document.querySelector(
-                        '[class*="animate-spin"], [class*="loading"], '
-                        + '[data-loading="true"]'
-                    );
-                    if (spin) {
-                        const r = spin.getBoundingClientRect();
-                        if (r.width > 8 && r.height > 8) return 'spinner';
-                    }
-                    return null;
-                }"""
-            )
-            if via_dom:
-                logger.info(
-                    "outsee: generation_started signal ({})", via_dom
+        """True — outsee реально начал генерацию (не только «кликнули»).
+
+        Надёжный критерий: кнопка Generate ЗАБЛОКИРОВАНА (disabled).
+        Это единственный сигнал, который outsee держит всё время рендера
+        (5–15 мин). Спиннер или текст «генерация» НЕ используем как
+        самостоятельный критерий — они появляются и при клике тогла
+        «Безлимит/Relax» (анимация переключения), что давало false positive.
+
+        Текстовые/spinner-сигналы используются ТОЛЬКО если Generate-кнопка
+        тоже disabled — для диагностики в лог.
+        """
+        # Самый надёжный сигнал: кнопка Generate заблокирована.
+        btn_enabled = await self._generate_button_enabled(page)
+        if not btn_enabled:
+            try:
+                diag = await page.evaluate(
+                    """() => {
+                        const low = (document.body.innerText || '').toLowerCase();
+                        const loadWords = [
+                            'генерация', 'генериру', 'generating', 'processing',
+                            'подождите', 'loading', 'создаём', 'creating'
+                        ];
+                        const hasText = loadWords.some(w => low.includes(w));
+                        const spin = document.querySelector(
+                            '[class*="animate-spin"], [class*="loading"], '
+                            + '[data-loading="true"]'
+                        );
+                        const hasSpinner = !!(spin
+                            && spin.getBoundingClientRect().width > 8);
+                        return hasText ? 'text' : (hasSpinner ? 'spinner' : 'btn_disabled');
+                    }"""
                 )
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-        return not await self._generate_button_enabled(page)
+            except Exception:  # noqa: BLE001
+                diag = "btn_disabled"
+            logger.info("outsee: generation_started signal ({})", diag)
+            return True
+        return False
 
     async def _ensure_relax_for_video(
         self,
@@ -1909,6 +1902,13 @@ class OutseeBot:
             raw = await page.evaluate(
                 """() => {
                     const keys = ['генерир', 'generate', 'создать', 'run'];
+                    // Исключаем кнопки Relax/Безлимит/Режим — они тоже
+                    // содержат слово «генерир» в описании («может генерировать»),
+                    // но НЕ являются кнопкой запуска генерации.
+                    const exclude = [
+                        'relax', 'безлимит', 'режим', 'дешевле',
+                        'cheaper', 'mode', 'качество', 'quality',
+                    ];
                     const out = [];
                     for (const el of document.querySelectorAll(
                         'button, [role="button"], a'
@@ -1917,6 +1917,8 @@ class OutseeBot:
                             .trim();
                         const low = text.toLowerCase();
                         if (!keys.some(k => low.includes(k))) continue;
+                        // Пропускаем элементы с исключёнными словами
+                        if (exclude.some(e => low.includes(e))) continue;
                         const r = el.getBoundingClientRect();
                         if (r.width < 36 || r.height < 18) continue;
                         const cs = getComputedStyle(el);
