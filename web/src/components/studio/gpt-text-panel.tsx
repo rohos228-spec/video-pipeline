@@ -93,24 +93,17 @@ export function GptTextPanel({
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        {stepCode === "anim_pr" || stepCode === "hero" ? (
+        {stepCode === "anim_pr" ? (
           <>
-            Полный текст сообщения в ChatGPT (как в боте: «✏️ Сопр. сообщение»). Для каждого
-            кадра подставляются{" "}
-            {stepCode === "anim_pr" ? (
-              <>
-                <code className="text-[10px]">{"{{N}}"}</code>,{" "}
-                <code className="text-[10px]">{"{{DURATION}}"}</code>,{" "}
-                <code className="text-[10px]">{"{{VOICEOVER}}"}</code>,{" "}
-                <code className="text-[10px]">{"{{IMAGE_PROMPT}}"}</code>
-              </>
-            ) : (
-              <>
-                <code className="text-[10px]">{"{{BRIEF}}"}</code>,{" "}
-                <code className="text-[10px]">{"{{HERO_STYLE}}"}</code>
-              </>
-            )}
-            . Мастер-промт из файлов — внутри этого текста (если не переопределён).
+            Первое сообщение в одном диалоге ChatGPT: мастер-промт и закадровый текст по всем
+            кадрам. Дальше воркер шлёт картинки пачками по 5 с «ID изображения» и «Закадровый
+            текст» — в том же чате.
+          </>
+        ) : stepCode === "hero" ? (
+          <>
+            Полный текст сообщения в ChatGPT. Плейсхолдеры{" "}
+            <code className="text-[10px]">{"{{BRIEF}}"}</code>,{" "}
+            <code className="text-[10px]">{"{{HERO_STYLE}}"}</code> подставляются при запуске.
           </>
         ) : (
           <>

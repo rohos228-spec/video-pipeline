@@ -64,6 +64,16 @@ async def _gpt_text_context(session: AsyncSession, project: Project, step_code: 
                 (fr.voiceover_text or "").strip() for fr in frames
             )
             ctx["n_frames"] = len(frames)
+    if step_code == "anim_pr":
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number.asc())
+            )
+        ).scalars().all()
+        if frames:
+            ctx["frames"] = frames
     return ctx
 
 

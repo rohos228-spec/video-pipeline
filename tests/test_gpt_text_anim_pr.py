@@ -1,8 +1,11 @@
-"""Тесты сопр. сообщения шага anim_pr (промты анимации)."""
+"""Тесты сопр. сообщения и batch-парсера шага anim_pr."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.models import Project
+from app.services import animation_prompt_gpt as apg
 from app.services import gpt_text_builder as gtb
 
 
@@ -10,45 +13,49 @@ def test_anim_pr_is_supported() -> None:
     assert gtb.is_supported("anim_pr")
 
 
-def test_anim_pr_default_has_placeholders_and_master(monkeypatch) -> None:
+def test_anim_pr_initial_default_includes_master_and_voiceover(monkeypatch) -> None:
     project = Project(topic="test")
+    frames = [
+        SimpleNamespace(number=1, voiceover_text="Первая фраза"),
+        SimpleNamespace(number=2, voiceover_text="Вторая"),
+    ]
     monkeypatch.setattr(
         "app.services.gpt_text_builder.get_project_prompt",
-        lambda _p, _c: "# VIDEO master\n\nAnimate this.",
+        lambda _p, _c: "# MASTER\n\nRules.",
     )
-    text = gtb.build_default_text(project, "anim_pr")
-    assert "VIDEO master" in text
-    assert "\n\n---\n\n" in text
-    assert gtb.ANIM_PLACEHOLDER_N in text
-    assert gtb.ANIM_PLACEHOLDER_VOICEOVER in text
-    assert "Задача: составь ОДИН промт" in text
+    text = gtb.build_anim_pr_initial_default(project, frames)
+    assert "MASTER" in text
+    assert "Кадр 1: Первая фраза" in text
+    assert "Кадр 2: Вторая" in text
 
 
-def test_render_anim_pr_text_substitutes_frame() -> None:
-    template = gtb.build_default_text(Project(), "anim_pr")
-    rendered = gtb.render_anim_pr_text(
-        template,
-        frame_number=3,
-        duration_seconds=2.5,
-        voiceover_text="Привет мир",
-        image_prompt="A cat on a roof",
+def test_parse_animation_reply_pairs() -> None:
+    frames = [
+        SimpleNamespace(number=1, voiceover_text="VO1", image_prompt=""),
+        SimpleNamespace(number=2, voiceover_text="VO2", image_prompt=""),
+    ]
+    batch = [
+        apg.FrameImageBatchItem(
+            frame=frames[0],
+            image_path=__import__("pathlib").Path("/tmp/a.png"),
+            image_id="[ID: P1-F1-abc12345]",
+            voiceover="VO1",
+        ),
+        apg.FrameImageBatchItem(
+            frame=frames[1],
+            image_path=__import__("pathlib").Path("/tmp/b.png"),
+            image_id="[ID: P1-F2-def67890]",
+            voiceover="VO2",
+        ),
+    ]
+    reply = (
+        "ID изображения: [ID: P1-F1-abc12345]\n"
+        "текст анимации: Slow camera push on the hero.\n\n"
+        "ID изображения: [ID: P1-F2-def67890]\n"
+        "текст анимации: Gentle wind in the curtains.\n"
     )
-    assert "{{" not in rendered
-    assert "Номер кадра: 3" in rendered
-    assert "2.5 сек" in rendered
-    assert "Привет мир" in rendered
-    assert "A cat on a roof" in rendered
-
-
-def test_anim_pr_override_preserved() -> None:
-    project = Project(topic="t")
-    project.gpt_text_overrides = {"anim_pr": "Кадр {{N}}: {{VOICEOVER}}"}
-    assert gtb.get_effective_text(project, "anim_pr") == "Кадр {{N}}: {{VOICEOVER}}"
-    out = gtb.render_anim_pr_text(
-        gtb.get_effective_text(project, "anim_pr"),
-        frame_number=1,
-        duration_seconds=4,
-        voiceover_text="VO",
-        image_prompt="img",
-    )
-    assert out == "Кадр 1: VO"
+    pairs = apg.parse_animation_reply(reply, frames, batch_items=batch)
+    assert len(pairs) == 2
+    assert pairs[0].frame_number == 1
+    assert "Slow camera" in pairs[0].animation_text
+    assert pairs[1].frame_number == 2

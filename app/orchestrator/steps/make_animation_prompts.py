@@ -1,6 +1,10 @@
-"""Шаг 8: для каждого кадра — текстовый анимационный промт через ChatGPT web.
-Мастер-промт VIDEO_SHORTS пока черновой; пользователь позже пришлёт финальный
-и мы заменим prompts/VIDEO_SHORTS.v*.md.
+"""Шаг 8: промты анимации через ChatGPT web (один диалог, пачки по 5 картинок).
+
+Схема (как в TG-боте / ручном процессе):
+  1) Новый чат → мастер-промт + закадровый текст (все кадры).
+  2) В том же чате → до 5 изображений + для каждого ID и закадровый текст.
+  3) Парсим «ID изображения» / «текст анимации» → план R48 + БД.
+  4) Повторяем 2–3, пока есть картинки без animation_prompt.
 """
 
 from __future__ import annotations
@@ -13,60 +17,121 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
-from app.services import gpt_text_builder as gtb
+from app.services import animation_prompt_gpt as apg
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
+from app.storage.plan_sheet_v8 import write_plan_animation_prompt
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_animation_prompts:
         return
-    logger.info("[#{}] make_animation_prompts starting", project.id)
+    logger.info("[#{}] make_animation_prompts starting (batch GPT flow)", project.id)
 
-    anim_template = gtb.get_effective_text(project, "anim_pr")
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
 
+    pending = apg.collect_batch_items(project, frames)
+    if not pending:
+        logger.info("[#{}] make_animation_prompts: nothing to do", project.id)
+        project.status = ProjectStatus.animation_prompts_ready
+        await session.flush()
+        return
+
+    initial = apg.build_initial_message(project, frames)
+    sheet = _sheet_for_project(project)
+
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         try:
-            for fr in frames:
-                # ⏹ Остановить — проверка между кадрами.
+            await gpt.new_conversation()
+            raise_if_cancelled(project.id)
+            logger.info(
+                "[#{}] anim_pr: initial GPT message ({} симв.)",
+                project.id,
+                len(initial),
+            )
+            await gpt.ask(initial, timeout=300, project_id=project.id)
+
+            while True:
                 raise_if_cancelled(project.id)
-                if fr.animation_prompt:
-                    continue
-                ask = gtb.render_anim_pr_text(
-                    anim_template,
-                    frame_number=fr.number,
-                    duration_seconds=fr.duration_seconds,
-                    voiceover_text=fr.voiceover_text or "",
-                    image_prompt=fr.image_prompt or "",
+                pending = apg.collect_batch_items(project, frames)
+                if not pending:
+                    break
+
+                batch = pending[: apg.BATCH_SIZE]
+                paths = [it.image_path for it in batch]
+                batch_msg = apg.build_batch_message(batch)
+                logger.info(
+                    "[#{}] anim_pr: batch {} frames ({})",
+                    project.id,
+                    len(batch),
+                    [it.frame.number for it in batch],
                 )
-                reply = await gpt.ask_fresh(ask, timeout=240, project_id=project.id)
-                if not reply or len(reply) < 30:
-                    raise RuntimeError(f"пустой animation_prompt на кадре {fr.number}")
-                fr.animation_prompt = reply
-                fr.status = FrameStatus.animation_prompt_ready
-                await session.flush()
-                try:
-                    _sheet_for_project(project).write_frame(
-                        fr.number,
-                        animation_prompt=reply,
-                        frame_status=fr.status.value,
+                reply = await gpt.ask_with_files(
+                    batch_msg,
+                    paths,
+                    timeout=600,
+                    project_id=project.id,
+                )
+                pairs = apg.parse_animation_reply(reply, frames, batch_items=batch)
+                if not pairs:
+                    raise RuntimeError(
+                        "ChatGPT не вернул пары «ID изображения» / «текст анимации» "
+                        f"для кадров {[it.frame.number for it in batch]}"
                     )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[#{}] xlsx write_frame(animation_prompt) failed: {}",
+
+                for pair in pairs:
+                    if pair.frame_number is None:
+                        continue
+                    fr = next((f for f in frames if f.number == pair.frame_number), None)
+                    if fr is None:
+                        continue
+                    text = pair.animation_text.strip()
+                    if len(text) < 10:
+                        continue
+                    fr.animation_prompt = text
+                    fr.status = FrameStatus.animation_prompt_ready
+                    await session.flush()
+                    write_plan_animation_prompt(project, fr.number, text)
+                    try:
+                        sheet.write_frame(
+                            fr.number,
+                            animation_prompt=text,
+                            frame_status=fr.status.value,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "[#{}] xlsx write_frame(animation_prompt) failed: {}",
+                            project.id,
+                            e,
+                        )
+                    logger.info(
+                        "[#{}] anim_pr: frame {} prompt len={}",
                         project.id,
-                        e,
+                        fr.number,
+                        len(text),
                     )
+
+                # Если GPT вернул не все кадры пачки — не зацикливаемся на тех же файлах
+                still_missing = {it.frame.number for it in batch} - {
+                    p.frame_number for p in pairs if p.frame_number is not None
+                }
+                if still_missing:
+                    raise RuntimeError(
+                        f"не получены animation_prompt для кадров {sorted(still_missing)}"
+                    )
+
         except StepCancelledError as e:
             consume_stop(project.id)
-            logger.info("[#{}] make_animation_prompts: {} — выхожу из цикла",
-                        project.id, e)
+            logger.info(
+                "[#{}] make_animation_prompts: {} — выхожу из цикла",
+                project.id,
+                e,
+            )
             try:
                 await session.refresh(project)
             except Exception:  # noqa: BLE001
@@ -76,6 +141,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.animation_prompts_ready
     await session.flush()
     try:
-        _sheet_for_project(project).write_general(status=project.status.value)
+        sheet.write_general(status=project.status.value)
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_general(status) failed: {}", project.id, e)

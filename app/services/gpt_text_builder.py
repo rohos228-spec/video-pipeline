@@ -23,9 +23,9 @@
   - `hero`   — Шаг 4 «Hero» (per-hero/per-variation, с плейсхолдерами
                `{{BRIEF}}` и `{{HERO_STYLE}}`, см. `_build_hero_default`)
   - `img_pr` — Шаг 6 «Промты картинок» (батч на все кадры разом)
-  - `anim_pr` — Шаг 8 «Промты анимации» (per-frame, плейсхолдеры
-               `{{N}}`, `{{DURATION}}`, `{{VOICEOVER}}`, `{{IMAGE_PROMPT}}`,
-               см. `render_anim_pr_text`)
+  - `anim_pr` — Шаг 8 «Промты анимации»: одно окно ChatGPT, первое
+               сообщение = мастер + закадровый текст; далее пачки картинок
+               (см. `animation_prompt_gpt` и `make_animation_prompts.py`)
 Шаги 6 «Картинки» и 8 «Видео» не шлют текст в GPT (генерация в outsee),
 поэтому override для них тоже не нужен.
 
@@ -72,14 +72,6 @@ ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
 # — поэтому в самом шаблоне они хранятся литерально.
 HERO_PLACEHOLDER_BRIEF = "{{BRIEF}}"
 HERO_PLACEHOLDER_STYLE = "{{HERO_STYLE}}"
-
-# Плейсхолдеры шага `anim_pr` — подставляются в `make_animation_prompts.py`
-# для каждого кадра отдельно.
-ANIM_PLACEHOLDER_N = "{{N}}"
-ANIM_PLACEHOLDER_DURATION = "{{DURATION}}"
-ANIM_PLACEHOLDER_VOICEOVER = "{{VOICEOVER}}"
-ANIM_PLACEHOLDER_IMAGE_PROMPT = "{{IMAGE_PROMPT}}"
-
 
 def is_supported(step_code: str) -> bool:
     return step_code in SUPPORTED_STEPS
@@ -272,42 +264,30 @@ def render_hero_text(
     return out
 
 
-def _build_anim_pr_default(project: Project, **_ctx) -> str:  # noqa: ARG001
-    """Шаг 8 «Промты анимации» — полный текст в ChatGPT (как `hero`).
-
-    Мастер-промт из `prompts/07_animation/…` входит в шаблон целиком.
-    Воркер подставляет `{{N}}`, `{{DURATION}}`, `{{VOICEOVER}}`,
-    `{{IMAGE_PROMPT}}` через `render_anim_pr_text` и шлёт один `ask_fresh`.
-    """
+def build_anim_pr_initial_default(project: Project, frames: list) -> str:
+    """Первое сообщение в ChatGPT: мастер-промт + закадровый текст по кадрам."""
     video_master = get_project_prompt(project, "anim_pr").strip()
+    vo_lines: list[str] = []
+    for fr in frames:
+        vo = (getattr(fr, "voiceover_text", None) or "").strip()
+        if vo:
+            vo_lines.append(f"Кадр {fr.number}: {vo}")
+    voice_block = (
+        "\n".join(vo_lines)
+        if vo_lines
+        else "(закадровый текст по кадрам пока не задан)"
+    )
     return (
         video_master
         + "\n\n---\n\n"
-        + "Задача: составь ОДИН промт для анимации следующего кадра. "
-        + "Без лишних пояснений, только текст промта.\n\n"
-        + f"Номер кадра: {ANIM_PLACEHOLDER_N}\n"
-        + f"Длительность: {ANIM_PLACEHOLDER_DURATION} сек\n"
-        + f"Закадровый текст: {ANIM_PLACEHOLDER_VOICEOVER}\n"
-        + f"Изобразительный промт (контекст кадра):\n{ANIM_PLACEHOLDER_IMAGE_PROMPT}\n"
+        + "Закадровый текст по кадрам:\n"
+        + voice_block
     )
 
 
-def render_anim_pr_text(
-    template: str,
-    *,
-    frame_number: int,
-    duration_seconds: float | int | None,
-    voiceover_text: str,
-    image_prompt: str,
-) -> str:
-    """Подставляет в шаблон «сопр. сообщения» шага `anim_pr` данные кадра."""
-    dur = duration_seconds if duration_seconds is not None else 0
-    img = (image_prompt or "").strip() or "—"
-    out = template.replace(ANIM_PLACEHOLDER_N, str(frame_number))
-    out = out.replace(ANIM_PLACEHOLDER_DURATION, str(dur))
-    out = out.replace(ANIM_PLACEHOLDER_VOICEOVER, (voiceover_text or "").strip())
-    out = out.replace(ANIM_PLACEHOLDER_IMAGE_PROMPT, img)
-    return out
+def _build_anim_pr_default(project: Project, **_ctx) -> str:  # noqa: ARG001
+    """Дефолт для API/TG без списка кадров — только мастер-промт."""
+    return get_project_prompt(project, "anim_pr").strip()
 
 
 def _build_img_pr_default(
@@ -376,6 +356,9 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
     if step_code == "anim_pr":
+        frames = ctx.get("frames")
+        if frames:
+            return build_anim_pr_initial_default(project, frames)
         return _build_anim_pr_default(project, **ctx)
     if step_code.startswith("enrich_"):
         return _build_enrich_default(project, **ctx)
