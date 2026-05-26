@@ -74,6 +74,7 @@ async def _gpt_text_context(session: AsyncSession, project: Project, step_code: 
         ).scalars().all()
         if frames:
             ctx["frames"] = frames
+        ctx["prompt_file_name"] = "prompt_anim_pr.md"
     return ctx
 
 

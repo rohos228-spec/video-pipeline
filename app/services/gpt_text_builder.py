@@ -264,9 +264,13 @@ def render_hero_text(
     return out
 
 
-def build_anim_pr_initial_default(project: Project, frames: list) -> str:
-    """Первое сообщение в ChatGPT: мастер-промт + закадровый текст по кадрам."""
-    video_master = get_project_prompt(project, "anim_pr").strip()
+def build_anim_pr_initial_default(
+    project: Project,
+    frames: list,
+    *,
+    prompt_file_name: str = "prompt_anim_pr.md",
+) -> str:
+    """Сопроводительное сообщение в ChatGPT (мастер-промт — отдельным файлом)."""
     vo_lines: list[str] = []
     for fr in frames:
         vo = (getattr(fr, "voiceover_text", None) or "").strip()
@@ -278,16 +282,23 @@ def build_anim_pr_initial_default(project: Project, frames: list) -> str:
         else "(закадровый текст по кадрам пока не задан)"
     )
     return (
-        video_master
-        + "\n\n---\n\n"
-        + "Закадровый текст по кадрам:\n"
-        + voice_block
+        f"Прикреплён файл: {prompt_file_name} — инструкция по промтам анимации "
+        f"(мастер-промт). Следуй ему при ответах.\n\n"
+        f"Закадровый текст по кадрам:\n{voice_block}\n\n"
+        "Дальше я пришлю изображения пачками (до 5 за раз). Для каждого будет "
+        "«ID изображения» и «Закадровый текст». На каждое изображение отвечай "
+        "строго в формате:\n"
+        "ID изображения: …\n"
+        "текст анимации: …\n"
+        "(в «текст анимации» — только готовый промт, без пояснений)."
     )
 
 
-def _build_anim_pr_default(project: Project, **_ctx) -> str:  # noqa: ARG001
-    """Дефолт для API/TG без списка кадров — только мастер-промт."""
-    return get_project_prompt(project, "anim_pr").strip()
+def _build_anim_pr_default(
+    project: Project, *, prompt_file_name: str = "prompt_anim_pr.md", **_ctx
+) -> str:  # noqa: ARG001
+    """Дефолт «сопр. сообщения» без списка кадров (Studio / TG)."""
+    return build_anim_pr_initial_default(project, [], prompt_file_name=prompt_file_name)
 
 
 def _build_img_pr_default(
@@ -356,10 +367,10 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
     if step_code == "anim_pr":
-        frames = ctx.get("frames")
-        if frames:
-            return build_anim_pr_initial_default(project, frames)
-        return _build_anim_pr_default(project, **ctx)
+        frames = ctx.get("frames") or []
+        return build_anim_pr_initial_default(
+            project, frames, prompt_file_name=ctx.get("prompt_file_name", "prompt_anim_pr.md")
+        )
     if step_code.startswith("enrich_"):
         return _build_enrich_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")

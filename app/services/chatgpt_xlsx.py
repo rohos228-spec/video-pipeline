@@ -125,6 +125,20 @@ def write_img_pr_prompt_file(
     return prompt_file
 
 
+def write_anim_pr_prompt_file(
+    project: Project, tmp_dir: Path, *, ts: str | None = None
+) -> Path:
+    """Мастер-промт шага 8 «Промты анимации» — отдельный файл в ChatGPT."""
+    master = _get_master_or_fallback(
+        project,
+        "anim_pr",
+        "# anim_pr\n\nМастер-промт для шага «Промты анимации» ещё не настроен.",
+    )
+    prompt_file = tmp_dir / f"prompt_anim_pr_{ts or _timestamp()}.md"
+    prompt_file.write_text(master, encoding="utf-8")
+    return prompt_file
+
+
 def chat_message(project: Project, step_code: str, **ctx) -> str:
     """Текст сообщения в ChatGPT (без мастер-промта)."""
     return gtb.get_effective_text(project, step_code, **ctx).strip()

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from aiogram import Bot  # noqa: F401
 from loguru import logger
 from sqlalchemy import select
@@ -18,6 +20,7 @@ from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import animation_prompt_gpt as apg
+from app.services.chatgpt_xlsx import tmp_gpt_dir, write_anim_pr_prompt_file
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
 from app.storage.plan_sheet_v8 import write_plan_animation_prompt
@@ -41,7 +44,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         await session.flush()
         return
 
-    initial = apg.build_initial_message(project, frames)
+    tmp_dir = tmp_gpt_dir(project)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    prompt_file = write_anim_pr_prompt_file(project, tmp_dir, ts=ts)
+    initial = apg.build_initial_message(
+        project, frames, prompt_file_name=prompt_file.name
+    )
     sheet = _sheet_for_project(project)
 
     async with browser_session() as bs:
@@ -50,11 +58,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await gpt.new_conversation()
             raise_if_cancelled(project.id)
             logger.info(
-                "[#{}] anim_pr: initial GPT message ({} симв.)",
+                "[#{}] anim_pr: initial GPT prompt_file={} ({} байт), chat {} симв.",
                 project.id,
+                prompt_file.name,
+                prompt_file.stat().st_size,
                 len(initial),
             )
-            await gpt.ask(initial, timeout=300, project_id=project.id)
+            await gpt.ask_with_files(
+                initial,
+                [prompt_file],
+                timeout=300,
+                project_id=project.id,
+            )
 
             while True:
                 raise_if_cancelled(project.id)

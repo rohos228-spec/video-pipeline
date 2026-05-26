@@ -81,12 +81,22 @@ def image_id_for_frame(project: Project, frame: Frame, image_path: Path | None) 
     return build_gen_id_prefix(project.id, frame.number, "00000000")
 
 
-def build_initial_message(project: Project, frames: list[Frame]) -> str:
-    """Первое сообщение в чат: override или мастер + закадровые тексты."""
+def build_initial_message(
+    project: Project,
+    frames: list[Frame],
+    *,
+    prompt_file_name: str,
+) -> str:
+    """Текст первого сообщения в чат (мастер-промт уходит отдельным файлом)."""
     override = gtb.get_override(project, "anim_pr")
     if override is not None:
-        return override
-    return gtb.build_anim_pr_initial_default(project, frames)
+        return (
+            override.strip()
+            + f"\n\n(Мастер-промт — в прикреплённом файле {prompt_file_name}.)"
+        )
+    return gtb.build_anim_pr_initial_default(
+        project, frames, prompt_file_name=prompt_file_name
+    )
 
 
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
