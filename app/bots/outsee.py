@@ -1630,8 +1630,13 @@ class OutseeBot:
         project_id: int | None = None,
         dumps: list[Path] | None = None,
         context: dict[str, object] | None = None,
+        physical_only: bool = False,
     ) -> str:
-        """Клик Generate — как в generate_image: wait enabled + physical fallback."""
+        """Клик Generate: wait enabled + проверка что генерация стартовала.
+
+        `physical_only=True` (видео): все попытки — реальная мышь по центру
+        кнопки; JS/locator.click не используем — outsee veo часто его игнорит.
+        """
         from app.services.step_cancel import abort_if_cancelled, await_with_cancel, sleep_cancellable
 
         abort_if_cancelled(project_id)
@@ -1664,36 +1669,50 @@ class OutseeBot:
         )
         abort_if_cancelled(project_id)
 
-        pre_rejected_text = await self._outsee_failure_text(page)
-        if pre_rejected_text:
-            logger.info(
-                "outsee.{}: pre-click failure_text ({} симв, kind={})",
-                where,
-                len(pre_rejected_text),
-                _outsee_failure_kind(pre_rejected_text),
-            )
-
         for attempt in range(1, 4):
             abort_if_cancelled(project_id)
-            if attempt == 1:
-                await await_with_cancel(loc.click(), project_id)
-            else:
-                logger.warning(
-                    "outsee.{}: Generate не стартовала — physical click {}/3",
-                    where,
-                    attempt,
-                )
+            use_physical = physical_only or attempt > 1
+            if use_physical:
+                if attempt > 1 or physical_only:
+                    logger.info(
+                        "outsee.{}: клик Generate мышью {}/3",
+                        where,
+                        attempt,
+                    )
                 await _physical_mouse_click(
                     page, loc, project_id=project_id, label=f"{where} Generate"
                 )
-            await sleep_cancellable(0.8, project_id)
+            else:
+                await await_with_cancel(loc.click(), project_id)
+            await sleep_cancellable(1.0, project_id)
             if not await self._generate_button_enabled(page):
-                logger.info("outsee.{}: Generate кликнут, жду результат", where)
+                logger.info(
+                    "outsee.{}: Generate кликнут (gen busy), жду результат",
+                    where,
+                )
                 return gen_sel
+            logger.warning(
+                "outsee.{}: Generate всё ещё активна после клика {}/3",
+                where,
+                attempt,
+            )
 
+        dump_paths: list[Path] = []
+        h, p = await _dump_page(page, f"{where}_generate_stuck")
+        for x in (h, p):
+            if x:
+                dump_paths.append(x)
+        if dumps is not None:
+            dumps.extend(dump_paths)
         raise OutseeImageError(
-            f"outsee {where}: Generate осталась активной после клика",
-            context=context or {},
+            f"outsee {where}: Generate не запустилась — кнопка осталась "
+            "активной после 3 кликов (в т.ч. physical mouse)",
+            context={
+                **(context or {}),
+                "physical_only": physical_only,
+                "gen_sel": gen_sel,
+            },
+            dumps=dump_paths,
         )
 
     async def _result_img_src(self, page: Page) -> str | None:
@@ -3063,27 +3082,6 @@ class OutseeBot:
                     dumps=dumps,
                 )
 
-            gen_sel = await _first_visible(
-                page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
-            )
-            if not gen_sel:
-                h, p = await _dump_page(page, "video_generate_button_notfound")
-                for x in (h, p):
-                    if x:
-                        dumps.append(x)
-                raise OutseeImageError(
-                    "outsee video: не найдена кнопка Generate",
-                    context={"gen_id": gen_id},
-                    dumps=dumps,
-                )
-            logger.info(
-                "outsee.generate_video: кнопка Generate найдена ({})", gen_sel
-            )
-            await self._wait_button_enabled(
-                page, gen_sel, timeout_s=600, project_id=project_id
-            )
-            abort_if_cancelled(project_id)
-
             baseline_video_urls = {
                 _strip_url_query(u)
                 for u in await self._all_video_urls_on_page(page)
@@ -3105,9 +3103,17 @@ class OutseeBot:
 
             click_ts = _time.monotonic()
             net_events.clear()
-            await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
+            await self._click_generate_button(
+                page,
+                where="generate_video",
+                project_id=project_id,
+                dumps=dumps,
+                context={"gen_id": gen_id, "prompt_id": prompt_id_prefix},
+                physical_only=True,
+            )
             logger.info(
-                "outsee.generate_video: Generate кликнут, жду ролик (gen_id={})",
+                "outsee.generate_video: Generate кликнут (physical), "
+                "жду ролик (gen_id={})",
                 gen_id[:8],
             )
 
@@ -3138,11 +3144,37 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
+        failure_after = await self._detect_outsee_failure(page)
+        if failure_after:
+            ftext = failure_after["text"]
+            in_result = bool(failure_after.get("in_result"))
+            is_new = (
+                in_result
+                or not pre_rejected_text
+                or ftext != pre_rejected_text
+            )
+            if is_new:
+                _raise_outsee_failure(
+                    text=ftext,
+                    gen_id=gen_id,
+                    elapsed=0.0,
+                    in_result=in_result,
+                )
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            await _download_via_context(
-                page, video_url, out_path, project_id=project_id
-            )
+            if prompt_id_prefix:
+                await _download_via_video_card_click(
+                    page,
+                    prompt_id_prefix=prompt_id_prefix,
+                    out_path=out_path,
+                    video_url=video_url,
+                    project_id=project_id,
+                )
+            else:
+                await _download_via_context(
+                    page, video_url, out_path, project_id=project_id
+                )
         except OutseeImageError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("video_url", video_url)
@@ -3423,10 +3455,9 @@ class OutseeBot:
                     ):
                         logger.info(
                             "_wait_video_url_strict: gen завершена, handoff "
-                            "(source={}, {:.0f} сек, url={})",
+                            "download-v10video (source={}, {:.0f} сек)",
                             fallback_source,
                             elapsed,
-                            fallback_candidate[:120],
                         )
                         return fallback_candidate
 
@@ -3446,10 +3477,9 @@ class OutseeBot:
                         ]
                     if idle_clean:
                         logger.info(
-                            "_wait_video_url_strict: gen_idle, новые ролики в "
-                            "DOM — handoff за {:.0f} сек: {}",
+                            "_wait_video_url_strict: gen_idle, handoff "
+                            "download-v10video за {:.0f} сек",
                             elapsed,
-                            idle_clean[0][:120],
                         )
                         return idle_clean[0]
 
@@ -3768,6 +3798,270 @@ async def _page_text_excluding_composer(
         return res if isinstance(res, str) else ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+async def _count_gallery_video_thumbs(page: Page) -> int:
+    """Большие `<video>` в галерее (превью роликов)."""
+    try:
+        n = await page.evaluate(
+            """() => {
+                let c = 0;
+                for (const v of document.querySelectorAll('video')) {
+                    const r = v.getBoundingClientRect();
+                    if (r.width >= 120 && r.height >= 120) c++;
+                }
+                return c;
+            }"""
+        )
+        return int(n) if isinstance(n, int) else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+async def _wait_gallery_video_thumbs(
+    page: Page,
+    *,
+    min_count: int = 1,
+    timeout_s: float = 45.0,
+    project_id: int | None = None,
+) -> int:
+    from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+    start = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start < timeout_s:
+        abort_if_cancelled(project_id)
+        n = await _count_gallery_video_thumbs(page)
+        if n >= min_count:
+            return n
+        await sleep_cancellable(1.0, project_id)
+    return await _count_gallery_video_thumbs(page)
+
+
+async def _find_card_by_clicking_videos(
+    page: Page,
+    *,
+    prompt_id_prefix: str,
+    limit: int = 10,
+    project_id: int | None = None,
+) -> Any | None:
+    """Перебор первых N роликов в галерее: physical click → ID в панели."""
+    from app.services.step_cancel import abort_if_cancelled
+
+    abort_if_cancelled(project_id)
+    try:
+        srcs: list[str] = await page.evaluate(
+            """() => {
+                const out = [];
+                for (const v of document.querySelectorAll('video')) {
+                    const r = v.getBoundingClientRect();
+                    if (r.width < 120 || r.height < 120) continue;
+                    const src = v.currentSrc || v.src || '';
+                    if (src && !src.startsWith('data:')) out.push(src);
+                }
+                return out;
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        srcs = []
+
+    if not srcs:
+        logger.info(
+            "_find_card_by_clicking_videos: нет video thumb — fallback на img"
+        )
+        return await _find_card_by_clicking_images(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=limit,
+            project_id=project_id,
+        )
+
+    logger.info(
+        "_find_card_by_clicking_videos: перебор {} роликов (max {})",
+        len(srcs),
+        limit,
+    )
+
+    for idx, src in enumerate(srcs[:limit]):
+        abort_if_cancelled(project_id)
+        stripped = _strip_url_query(src)
+        path_only = re.sub(r"^https?://[^/]+", "", stripped)
+        if not path_only:
+            continue
+        basename = Path(path_only).name
+        vid_loc = None
+        for fragment in (basename, path_only):
+            if not fragment:
+                continue
+            loc = page.locator(f'video[src*="{fragment}"]').first
+            if await loc.count() > 0:
+                vid_loc = loc
+                break
+        if vid_loc is None:
+            loc = page.locator("video").nth(idx)
+            if await loc.count() == 0:
+                continue
+            vid_loc = loc
+
+        try:
+            await _physical_mouse_click(
+                page,
+                vid_loc,
+                project_id=project_id,
+                label=f"gallery video #{idx}",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_find_card_by_clicking_videos: click video #{} ({})",
+                idx,
+                type(e).__name__,
+            )
+            continue
+
+        await asyncio.sleep(0.65)
+        if not await _gallery_detail_panel_has_id(page, prompt_id_prefix):
+            with contextlib.suppress(Exception):
+                await page.keyboard.press("Escape")
+            await asyncio.sleep(0.2)
+            continue
+
+        candidate = vid_loc.locator(
+            "xpath=ancestor::*[descendant::button"
+            "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+        )
+        if await candidate.count() > 0:
+            logger.info(
+                "_find_card_by_clicking_videos: НАШЛИ ролик #{} по ID в панели",
+                idx,
+            )
+            return candidate
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+
+    logger.warning(
+        "_find_card_by_clicking_videos: {} роликов без нашего ID — пробую img",
+        min(len(srcs), limit),
+    )
+    return await _find_card_by_clicking_images(
+        page,
+        prompt_id_prefix=prompt_id_prefix,
+        limit=limit,
+        project_id=project_id,
+    )
+
+
+async def _download_via_video_card_click(
+    page: Page,
+    *,
+    prompt_id_prefix: str,
+    out_path: Path,
+    video_url: str | None = None,
+    timeout_s: float = 120.0,
+    project_id: int | None = None,
+) -> None:
+    """Скачивание veo: physical click по 10 роликам → ID → кнопка ↓."""
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    abort_if_cancelled(project_id)
+    deadline_ms = int(timeout_s * 1000)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n_thumbs = await _wait_gallery_video_thumbs(
+        page, min_count=1, timeout_s=45.0, project_id=project_id
+    )
+    if n_thumbs < 1:
+        logger.warning(
+            "_download_via_video_card_click: нет video thumb за 45с (id={})",
+            prompt_id_prefix,
+        )
+
+    card = None
+    for c_attempt in range(1, 4):
+        card = await _find_card_by_clicking_videos(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=10,
+            project_id=project_id,
+        )
+        if card is not None:
+            break
+        if c_attempt < 3:
+            await asyncio.sleep(2.0)
+
+    if card is None and video_url:
+        card = await _find_card_by_img_url_click(
+            page, video_url, project_id=project_id
+        )
+
+    if card is None:
+        id_el = page.get_by_text(prompt_id_prefix, exact=False).first
+        try:
+            await await_with_cancel(
+                id_el.wait_for(state="visible", timeout=5_000),
+                project_id,
+            )
+            candidate = id_el.locator(
+                "xpath=ancestor::*[descendant::button"
+                "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+            )
+            if await candidate.count() > 0:
+                card = candidate
+        except PWTimeoutError:
+            pass
+
+    if card is None and video_url:
+        logger.warning(
+            "_download_via_video_card_click: карточка не найдена, URL {}",
+            video_url[:120],
+        )
+        await _download_via_context(
+            page, video_url, out_path, project_id=project_id
+        )
+        return
+
+    if card is None:
+        raise OutseeImageError(
+            "outsee video: не нашёл карточку с нашим ID (10 роликов перебраны)",
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "video_url": video_url,
+            },
+        )
+
+    with contextlib.suppress(Exception):
+        await card.scroll_into_view_if_needed(timeout=5_000)
+    with contextlib.suppress(Exception):
+        await card.hover(timeout=5_000)
+
+    download_btn = card.locator("button:has(svg.lucide-download)").first
+    try:
+        async with page.expect_download(timeout=deadline_ms) as dl_info:
+            await _physical_mouse_click(
+                page,
+                download_btn,
+                project_id=project_id,
+                label="video download lucide-download",
+            )
+        download = await dl_info.value
+        await await_with_cancel(download.save_as(str(out_path)), project_id)
+    except PWTimeoutError as e:
+        if video_url:
+            logger.warning(
+                "_download_via_video_card_click: download click timeout, URL fallback"
+            )
+            await _download_via_context(
+                page, video_url, out_path, project_id=project_id
+            )
+            return
+        raise OutseeImageError(
+            "outsee video: клик «Скачать» не вызвал download",
+            context={"prompt_id_prefix": prompt_id_prefix},
+        ) from e
+
+    logger.info(
+        "_download_via_video_card_click: сохранил {} (prompt_id={})",
+        out_path,
+        prompt_id_prefix,
+    )
 
 
 async def _count_big_gallery_imgs(page: Page) -> int:
