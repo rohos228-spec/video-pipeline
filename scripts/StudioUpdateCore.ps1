@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
-$script:StudioUpdateCoreId = "studio-update-core-v3"
+$script:StudioUpdateCoreId = "studio-update-core-v4"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -35,8 +35,38 @@ function Invoke-StudioGit {
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
+    Write-StudioLog "> restore web/out + STUDIO_VERSION from git" "Cyan"
+    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    Show-StudioVersionOnDisk -Root $Root
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     return $true
+}
+
+function Show-StudioVersionOnDisk {
+    param([string]$Root)
+    $vf = Join-Path $Root "web\STUDIO_VERSION"
+    if (-not (Test-Path $vf)) {
+        Write-StudioLog "WARN: web/STUDIO_VERSION missing" "Yellow"
+        return
+    }
+    $lines = @(Get-Content -LiteralPath $vf -Encoding UTF8 | Select-Object -First 2)
+    $build = $lines[0]
+    $sha = if ($lines.Count -gt 1) { $lines[1] } else { "?" }
+    Write-StudioLog "STUDIO_VERSION on disk: v$build  $sha" "Green"
+    $idx = Join-Path $Root "web\out\index.html"
+    if (Test-Path $idx) {
+        $m = Select-String -Path $idx -Pattern 'title="UI:\s*v(\d+)' -AllMatches -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($m -and $m.Matches.Count -gt 0) {
+            $baked = $m.Matches[0].Groups[1].Value
+            Write-StudioLog "web/out baked UI badge: v$baked" "Green"
+            if ($baked -ne $build) {
+                Write-StudioLog "WARN: baked UI ($baked) != STUDIO_VERSION ($build) - run FIX-VERSION or git pull again" "Yellow"
+            }
+        }
+    } else {
+        Write-StudioLog "WARN: web/out/index.html missing" "Yellow"
+    }
 }
 
 function Test-StudioPythonOk {
@@ -88,8 +118,20 @@ function Open-StudioBrowser {
     try { Start-Process "http://127.0.0.1:8765" } catch { }
 }
 
+function Test-StudioCreateApp {
+    param([string]$Root)
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) { return $false }
+    & $py -c "from app.web.api import create_app; create_app()" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Start-StudioBackendWindow {
     param([string]$Root)
+    if (-not (Test-StudioCreateApp $Root)) {
+        Write-StudioLog "FAIL: Python create_app() - backend will crash. git pull required." "Red"
+        return $false
+    }
     $rb = Join-Path $Root "run-backend.ps1"
     Write-StudioLog "Starting run-backend.ps1 window..." "Gray"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root

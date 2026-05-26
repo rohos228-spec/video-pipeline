@@ -24,6 +24,14 @@ $Shortcut.WindowStyle = 1
 $Shortcut.Description = "Video Pipeline Studio - install, update, run"
 $Shortcut.Save()
 
+$UpdateVerPath = Join-Path $Desktop "Video Pipeline - Obnovit versiyu.lnk"
+$UpdateVer = $WshShell.CreateShortcut($UpdateVerPath)
+$UpdateVer.TargetPath = Join-Path $Root "ОБНОВИТЬ-ВЕРСИЮ.cmd"
+$UpdateVer.WorkingDirectory = $Root
+$UpdateVer.WindowStyle = 1
+$UpdateVer.Description = "git pull + UI v109+ + restart backend"
+$UpdateVer.Save()
+
 $StartStudioPath = Join-Path $Desktop "Video Pipeline - Start Studio.lnk"
 $StartStudio = $WshShell.CreateShortcut($StartStudioPath)
 $StartStudio.TargetPath = Join-Path $Root "Open-Studio.cmd"
@@ -34,6 +42,7 @@ $StartStudio.Save()
 
 Write-Host "Shortcuts created:" -ForegroundColor Green
 Write-Host "  $ShortcutPath"
+Write-Host "  $UpdateVerPath"
 Write-Host "  $StartStudioPath"
 Write-Host ""
 Write-Host "Double-click from Desktop (WorkingDirectory = repo; not C:\Users\...)."
