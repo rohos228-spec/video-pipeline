@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "attach-clear-fuzzy-v76"
+CHATGPT_ATTACH_LOGIC_ID = "send-wait-enabled-v77"
 
 # ChatGPT при повторном drop одного имени добавляет суффикс: frame_001.png → frame_001(3).png
 _ATTACHMENT_DEDUP_SUFFIX = re.compile(r"\(\d+\)")
@@ -291,25 +291,182 @@ class ChatGPTBot:
         await _first_matching(page, INPUT_SELECTORS, timeout=30)
         await self._dismiss_no_auth_modal(page)
 
-    async def _click_send(self) -> None:
-        """Нажать Send без ввода текста в композер (только вложения)."""
+    async def _count_user_messages(self) -> int:
         page = await self._page_ready()
-        await self._dismiss_no_auth_modal(page)
-        await asyncio.sleep(0.5)
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=12)
-        if send_sel:
-            logger.info("ChatGPT: Send (только файлы) — кнопка ({})", send_sel)
+        n = await page.evaluate(
+            """() => {
+                return document.querySelectorAll(
+                    "[data-message-author-role='user'], [data-author-role='user']"
+                ).length;
+            }"""
+        )
+        return int(n or 0)
+
+    async def _composer_draft_text(self) -> str:
+        """Текст в поле ввода композера (без подписей к вложениям)."""
+        page = await self._page_ready()
+        text = await page.evaluate(
+            """() => {
+                const el = document.querySelector(
+                    "div#prompt-textarea[contenteditable='true']"
+                ) || document.querySelector("textarea#prompt-textarea")
+                || document.querySelector("div[contenteditable='true'][data-id='root']");
+                if (!el) return "";
+                if (el.tagName === "TEXTAREA") return el.value || "";
+                return el.innerText || "";
+            }"""
+        )
+        return (text or "").strip()
+
+    async def _is_send_button_enabled(self, page: Page) -> tuple[str | None, bool]:
+        """Первая кнопка Send в композере и enabled (не disabled)."""
+        for sel in SEND_BUTTON_SELECTORS:
             try:
-                await page.locator(send_sel).first.click(timeout=5_000)
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.warning("ChatGPT: клик Send упал ({}): {}", send_sel, e)
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                disabled = await loc.get_attribute("disabled")
+                aria = (await loc.get_attribute("aria-disabled") or "").lower()
+                enabled = disabled is None and aria not in ("true", "1")
+                if enabled:
+                    return sel, True
+            except Exception:  # noqa: BLE001
+                continue
+        return None, False
+
+    async def _wait_send_button_enabled(
+        self, page: Page, *, timeout: float = 45
+    ) -> str:
+        """Ждём активную кнопку Send (после ввода текста / загрузки файлов)."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_log = 0.0
+        while asyncio.get_event_loop().time() < deadline:
+            sel, ok = await self._is_send_button_enabled(page)
+            if ok and sel:
+                return sel
+            now = asyncio.get_event_loop().time()
+            if now - last_log > 3.0:
+                logger.info("ChatGPT: жду активную кнопку Send…")
+                last_log = now
+            await asyncio.sleep(0.35)
         await self._dump_composer_html()
         await self._dump_send_button_candidates(page)
         raise RuntimeError(
-            "ChatGPT: не удалось отправить сообщение с вложениями — "
-            "кнопка Send не найдена или неактивна"
+            "ChatGPT: кнопка Send не стала активной — "
+            "текст/файлы не приняты композером"
         )
+
+    async def _verify_message_dispatched(
+        self,
+        page: Page,
+        *,
+        user_msgs_before: int,
+        had_draft: bool,
+        timeout: float = 20,
+    ) -> None:
+        """Проверяем, что сообщение реально ушло (не зависло в черновике)."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            for sel in STOP_BUTTON_SELECTORS:
+                try:
+                    if await page.locator(sel).count() > 0:
+                        logger.info("ChatGPT: отправка подтверждена (Stop generating)")
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
+            if await self._count_user_messages() > user_msgs_before:
+                logger.info("ChatGPT: отправка подтверждена (новое user-сообщение)")
+                return
+            draft = await self._composer_draft_text()
+            if had_draft and len(draft) < 8:
+                logger.info("ChatGPT: отправка подтверждена (композер очищен)")
+                return
+            if not had_draft:
+                # Только файлы — черновик мог быть пустым; ждём user-msg или stop
+                pass
+            await asyncio.sleep(0.4)
+        draft_left = await self._composer_draft_text()
+        raise RuntimeError(
+            "ChatGPT: сообщение не отправилось — черновик остался в композере "
+            f"({len(draft_left)} симв.), user-msgs {user_msgs_before}→"
+            f"{await self._count_user_messages()}"
+        )
+
+    async def _dispatch_composer_send(
+        self,
+        page: Page,
+        *,
+        had_draft: bool,
+        send_timeout: float = 45,
+        verify_timeout: float = 25,
+    ) -> None:
+        """Клик по активной Send + проверка (как в рабочем TG/xlsx-flow)."""
+        await self._dismiss_no_auth_modal(page)
+        user_before = await self._count_user_messages()
+        send_sel = await self._wait_send_button_enabled(page, timeout=send_timeout)
+        btn = page.locator(send_sel).first
+        logger.info("ChatGPT: Send активна ({}) — клик", send_sel)
+        try:
+            await btn.click(timeout=8_000)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ChatGPT: обычный клик Send упал ({}), force-click", e)
+            await btn.click(timeout=8_000, force=True)
+        try:
+            await self._verify_message_dispatched(
+                page,
+                user_msgs_before=user_before,
+                had_draft=had_draft,
+                timeout=verify_timeout,
+            )
+            return
+        except RuntimeError as e:
+            logger.warning("ChatGPT: Send-клик без эффекта ({}), пробую Enter", e)
+        input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=5)
+        if input_sel:
+            await page.locator(input_sel).first.focus()
+        await page.keyboard.press("Enter")
+        await self._verify_message_dispatched(
+            page,
+            user_msgs_before=user_before,
+            had_draft=had_draft,
+            timeout=verify_timeout,
+        )
+
+    async def _fill_composer_text(self, page: Page, text: str, input_sel: str) -> None:
+        """Ввод текста в ProseMirror / textarea (как в раннем боте + insertText)."""
+        locator = page.locator(input_sel).first
+        await locator.click()
+        await locator.focus()
+        stripped = (text or "").strip()
+        if not stripped:
+            return
+        if len(stripped) > 8000:
+            await page.evaluate(
+                """([sel, t]) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return;
+                    if (el.tagName === "TEXTAREA") {
+                        el.focus();
+                        el.value = t;
+                        el.dispatchEvent(new Event("input", { bubbles: true }));
+                    } else {
+                        el.focus();
+                        el.innerText = t;
+                        el.dispatchEvent(
+                            new InputEvent("input", { bubbles: true, data: t })
+                        );
+                    }
+                }""",
+                [input_sel, stripped],
+            )
+        else:
+            await page.keyboard.insert_text(stripped)
+        await asyncio.sleep(0.6)
+
+    async def _click_send(self) -> None:
+        """Нажать Send без ввода текста в композер (только вложения)."""
+        page = await self._page_ready()
+        await self._dispatch_composer_send(page, had_draft=False, send_timeout=60)
 
     async def _count_attachment_previews(self) -> int:
         """Сколько превью вложений сейчас в композере."""
@@ -424,57 +581,32 @@ class ChatGPTBot:
 
         locator = page.locator(input_sel).first
         await locator.click()
-        # Убеждаемся, что поле сфокусировано и пустое. ProseMirror игнорирует
-        # прямое присвоение innerText — поэтому используем CDP Input.insertText
-        # через page.keyboard.insertText: он посылает один beforeinput/input
-        # событие с полным текстом, и ProseMirror корректно обновляет состояние.
         await locator.focus()
-        # После прикрепления файлов Ctrl+A может снять вложения — не чистим.
+        # После прикрепления файлов Ctrl+A снимает вложения — не чистим.
         if clear_first:
             try:
                 await page.keyboard.press("Control+a")
                 await page.keyboard.press("Delete")
             except Exception:  # noqa: BLE001
                 pass
-        await page.keyboard.insert_text(text)
-        # Небольшая пауза, чтобы кнопка Send активировалась.
-        await asyncio.sleep(0.5)
+        stripped = (text or "").strip()
+        if stripped:
+            await self._fill_composer_text(page, stripped, input_sel)
         if not clear_first:
             n_att = await self._count_attachment_previews()
             logger.info(
                 "ChatGPT: после ввода текста превью вложений={} (clear_first=False)",
                 n_att,
             )
-        logger.info("ChatGPT: текст промта введён ({} символов), ищу Send", len(text))
-
-        # Находим кнопку отправки — ждём, пока она активна
-        send_sel = await _first_matching(page, SEND_BUTTON_SELECTORS, timeout=8)
-        if send_sel:
-            logger.info("ChatGPT: Send button найдена ({})", send_sel)
-            try:
-                await page.locator(send_sel).first.click(timeout=5_000)
-                logger.info("ChatGPT: Send button нажата успешно")
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "ChatGPT: Send button найдена ({}), но клик упал: {}",
-                    send_sel, e,
-                )
-        else:
-            logger.warning(
-                "ChatGPT: Send button НЕ найдена ни одним из {} селекторов "
-                "за 8 сек — UI ChatGPT мог измениться. Дамплю композер для диагностики.",
-                len(SEND_BUTTON_SELECTORS),
-            )
-            await self._dump_composer_html()
-            await self._dump_send_button_candidates(page)
-
-        # Запасной путь — Enter (в contenteditable ChatGPT часто реагирует).
-        logger.info("ChatGPT: fallback — жму Enter")
-        try:
-            await page.keyboard.press("Enter")
-        except Exception as e:  # noqa: BLE001
-            logger.warning("ChatGPT: Enter тоже упал: {}", e)
+        logger.info(
+            "ChatGPT: текст в композере ({} симв.), отправляю через активную Send",
+            len(stripped),
+        )
+        await self._dispatch_composer_send(
+            page,
+            had_draft=bool(stripped),
+            send_timeout=60 if not clear_first else 45,
+        )
 
     async def _dump_send_button_candidates(self, page: Page) -> None:
         """Если SEND_BUTTON_SELECTORS не сработали — логируем outerHTML всех
@@ -497,12 +629,41 @@ class ChatGPTBot:
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: dump_send_button_candidates упал: {}", e)
 
+    async def _wait_for_generation_started(
+        self,
+        *,
+        timeout: float = 45,
+        project_id: int | None = None,
+    ) -> None:
+        """После Send: ждём Stop или новый ответ — иначе сообщение не ушло."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        page = await self._page_ready()
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
+            for sel in STOP_BUTTON_SELECTORS:
+                try:
+                    if await page.locator(sel).count() > 0:
+                        return
+                except Exception:  # noqa: BLE001
+                    continue
+            await sleep_cancellable(0.4, project_id)
+        raise TimeoutError(
+            "ChatGPT: после отправки нет индикатора генерации (Stop) — "
+            "сообщение, вероятно, не ушло"
+        )
+
     async def _wait_until_done(
         self, *, timeout: float = 300, project_id: int | None = None
     ) -> None:
         """Ждём, пока пропадёт кнопка "Stop generating"."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
+        await self._wait_for_generation_started(
+            timeout=min(45.0, timeout * 0.25),
+            project_id=project_id,
+        )
         page = await self._page_ready()
         deadline = asyncio.get_event_loop().time() + timeout
         await sleep_cancellable(0.8, project_id)
