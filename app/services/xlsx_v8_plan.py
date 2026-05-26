@@ -1,4 +1,4 @@
-"""Лист «план» v8: закадровый текст (R49), номера кадров (R1/R2), таймкоды Whisper."""
+"""Лист «план» v8: закадровый текст (R49), номера кадров (R1), таймкоды Whisper."""
 
 from __future__ import annotations
 
@@ -44,14 +44,12 @@ def _cell_text(ws, row: int, col: int) -> str | None:
 
 
 def _parse_frame_number(ws, col: int, fallback: int) -> int:
-    for row in (ROW_FRAME_NUMBER_V8, ROW_FRAME_NUMBER_ALT_V8):
-        raw = _cell_text(ws, row, col)
-        if raw is None:
-            continue
+    raw = _cell_text(ws, ROW_FRAME_NUMBER_V8, col)
+    if raw is not None:
         try:
             return int(float(raw))
         except (TypeError, ValueError):
-            continue
+            pass
     return fallback
 
 
