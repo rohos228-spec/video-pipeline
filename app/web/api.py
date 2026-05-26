@@ -215,12 +215,12 @@ def _mount_frontend(app: FastAPI) -> None:
             },
         )
 
-    @app.get("/")
-    async def root_index() -> HTMLResponse:
+    @app.get("/", response_model=None)
+    async def root_index():
         return _html_response(out_dir / "index.html")
 
-    @app.get("/{full_path:path}")
-    async def catch_all(full_path: str) -> FileResponse | HTMLResponse:
+    @app.get("/{full_path:path}", response_model=None)
+    async def catch_all(full_path: str):
         # /api/* обслуживают FastAPI-роутеры — не отдаём index.html (иначе в браузере
         # «открывается проект» вместо JSON на /api/studio-version).
         if full_path == "api" or full_path.startswith("api/"):
