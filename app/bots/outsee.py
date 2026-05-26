@@ -1398,6 +1398,39 @@ class OutseeBot:
             e.dumps = list(dumps)
             raise
 
+        # 5.2) Post-download uniqueness verification: confirm that our
+        # prompt ID matches exactly 1 card in the gallery.  Multiple
+        # matches indicate an ambiguity bug (e.g. retry token collision).
+        if prompt_id_prefix:
+            try:
+                match_count = await _count_gallery_id_matches(
+                    page, prompt_id_prefix
+                )
+                if match_count == 0:
+                    logger.warning(
+                        "outsee image: post-download ID {} не найден в галерее "
+                        "(возможно outsee уже прокрутил карточку). "
+                        "Файл сохранён — продолжаем.",
+                        prompt_id_prefix,
+                    )
+                elif match_count > 1:
+                    logger.warning(
+                        "outsee image: post-download ID {} найден {} раз в "
+                        "галерее — возможна неоднозначность! "
+                        "Проверьте результат вручную.",
+                        prompt_id_prefix,
+                        match_count,
+                    )
+                else:
+                    logger.info(
+                        "outsee image: post-download ID {} — ровно 1 совпадение ✓",
+                        prompt_id_prefix,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee image: post-download проверка упала: {}", e
+                )
+
         logger.info("outsee image saved → {} (gen_id={})", out_path, gen_id[:8])
         return GenerationResult(
             file_path=out_path, raw_url=img_url, gen_id=gen_id,
@@ -1709,27 +1742,10 @@ class OutseeBot:
         идентификатор для сопоставления «картинка ↔ моя генерация».
         Это отсекает любые старые/чужие фото из истории outsee.
         """
-        # Готовим набор токенов для матчинга — от самого строгого
-        # к самому либеральному. Cильные первыми, чтобы не подхватить
-        # 8-hex-чужого uuid'а если случайно их два совпало.
-        tokens: list[str] = [id_token]
-        # Полное содержимое скобок: `P1-HERO1-V1-xxxxxxxx`.
-        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
-        if m:
-            inner = m.group(1)
-            if inner not in tokens:
-                tokens.append(inner)
-        # 8-hex-tail. uuid.uuid4().hex[:8] всегда даёт ровно 8 hex-символов.
-        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
-        if m2:
-            tail = m2.group(1)
-            if tail and tail not in tokens:
-                tokens.append(tail)
+        tokens = _prompt_id_search_tokens(id_token)
 
         js = """
         ([tokens, maxLevels]) => {
-            // Хелпер: содержит ли элемент токен в видимом тексте
-            // ИЛИ в .value, если это textarea/input.
             const hasToken = (el, idToken) => {
                 if (!el) return false;
                 const t = (el.innerText || el.textContent || '');
@@ -1739,39 +1755,74 @@ class OutseeBot:
                     const v = el.value || '';
                     if (v.includes(idToken)) return true;
                 }
+                // data-* attributes and title might hold prompt text
+                try {
+                    for (const attr of el.attributes || []) {
+                        if ((attr.name.startsWith('data-') || attr.name === 'title' || attr.name === 'aria-label')
+                            && attr.value && attr.value.includes(idToken)) return true;
+                    }
+                } catch (_) {}
                 return false;
             };
+
+            // Strategy A: targeted card-like containers first (faster than '*')
+            const cardSelectors = [
+                'article', '[class*="card"]', '[class*="Card"]',
+                '[class*="result"]', '[class*="Result"]',
+                '[class*="gallery"]', '[class*="Gallery"]',
+                '[data-testid]', '[role="listitem"]', '[role="article"]',
+                'li', 'section > div', 'main > div > div',
+            ];
+            for (const idToken of tokens) {
+                for (const sel of cardSelectors) {
+                    try {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            if (!hasToken(el, idToken)) continue;
+                            let cur = el;
+                            for (let i = 0; i < maxLevels && cur; i++) {
+                                const imgs = cur.querySelectorAll('img');
+                                for (const img of imgs) {
+                                    if (!img.src || img.src.startsWith('data:')) continue;
+                                    if (!img.complete || !img.naturalWidth || img.naturalWidth < 200) continue;
+                                    return img.src;
+                                }
+                                cur = cur.parentElement;
+                            }
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            // Strategy B: full DOM scan (original logic, catches anything Strategy A missed)
             for (const idToken of tokens) {
                 const all = document.querySelectorAll('*');
                 for (const el of all) {
                     if (!el || !el.children) continue;
                     if (el === document.body || el === document.documentElement) continue;
                     if (!hasToken(el, idToken)) continue;
-                    // Спускаемся к самому мелкому уровню, где нашёлся idToken,
-                    // чтобы не схватить весь main с галереей.
+                    // Descend to smallest containing element
                     let smallest = el;
+                    let childHas = false;
                     for (const child of el.children) {
-                        if (hasToken(child, idToken)) {
-                            smallest = null;
-                            break;
-                        }
+                        if (hasToken(child, idToken)) { childHas = true; break; }
                     }
-                    // Также проверяем «спрятанные» textarea/input внутри
-                    // (если у el есть descendant textarea с нашим токеном,
-                    // спустимся к нему).
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) {
-                                smallest = null;
-                                break;
-                            }
-                        }
+                    if (childHas) {
+                        // A child also has the token — skip this level but
+                        // DO NOT skip the whole element; the child will be
+                        // visited on its own in the outer loop.
+                        continue;
                     }
-                    if (!smallest) continue;
-                    // Поднимаемся вверх до уровня, где есть <img>.
+                    // Also check hidden textarea/input descendants
+                    const deepInputs = el.querySelectorAll('textarea, input');
+                    let deepMatch = false;
+                    for (const di of deepInputs) {
+                        if (di === el) continue;
+                        const v = di.value || '';
+                        if (v.includes(idToken)) { deepMatch = true; break; }
+                    }
+                    if (deepMatch) continue;
+                    // Walk up to find an ancestor with <img>
                     let cur = smallest;
                     for (let i = 0; i < maxLevels && cur; i++) {
                         const imgs = cur.querySelectorAll('img');
@@ -1780,6 +1831,48 @@ class OutseeBot:
                             if (img.src.startsWith('data:')) continue;
                             if (!img.complete) continue;
                             if (!img.naturalWidth || img.naturalWidth < 200) continue;
+                            return img.src;
+                        }
+                        cur = cur.parentElement;
+                    }
+                }
+            }
+
+            // Strategy C: zero-width-char-tolerant search (outsee sometimes
+            // inserts invisible chars between brackets / after ID:)
+            for (const idToken of tokens) {
+                if (idToken.length < 6) continue;
+                const stripped = idToken.replace(/[\\[\\]]/g, '').replace('ID:', '').trim();
+                if (!stripped || stripped.length < 6) continue;
+                const bodyText = (document.body.innerText || '') + '\\n';
+                const textareas = document.querySelectorAll('textarea, input');
+                let fullText = bodyText;
+                for (const ta of textareas) {
+                    if (ta.value) fullText += ta.value + '\\n';
+                }
+                const cleanText = fullText.replace(/[\\u200B\\u200C\\u200D\\uFEFF\\u00AD]/g, '');
+                if (!cleanText.includes(stripped)) continue;
+                // Token found with zero-width chars stripped — now locate the
+                // containing card by walking all elements again
+                const all2 = document.querySelectorAll('*');
+                for (const el of all2) {
+                    if (!el || el === document.body || el === document.documentElement) continue;
+                    const t = ((el.innerText || el.textContent || '') +
+                               (el.value || '')).replace(/[\\u200B\\u200C\\u200D\\uFEFF\\u00AD]/g, '');
+                    if (!t.includes(stripped)) continue;
+                    let childHas2 = false;
+                    for (const ch of (el.children || [])) {
+                        const ct = ((ch.innerText || ch.textContent || '') +
+                                    (ch.value || '')).replace(/[\\u200B\\u200C\\u200D\\uFEFF\\u00AD]/g, '');
+                        if (ct.includes(stripped)) { childHas2 = true; break; }
+                    }
+                    if (childHas2) continue;
+                    let cur = el;
+                    for (let i = 0; i < maxLevels && cur; i++) {
+                        const imgs = cur.querySelectorAll('img');
+                        for (const img of imgs) {
+                            if (!img.src || img.src.startsWith('data:')) continue;
+                            if (!img.complete || !img.naturalWidth || img.naturalWidth < 200) continue;
                             return img.src;
                         }
                         cur = cur.parentElement;
@@ -2275,6 +2368,38 @@ class OutseeBot:
                 and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF
                 and await self._generate_button_enabled(page)
             ):
+                # Gen is idle — retry ID search after scrolling gallery
+                # (lazy-loaded items may have appeared)
+                await _scroll_gallery_to_load_all(
+                    page, project_id=project_id
+                )
+                await asyncio.sleep(0.5)
+                by_id_retry = await self._find_img_by_prompt_id(
+                    page, prompt_id_prefix
+                )
+                if by_id_retry:
+                    by_id_retry_norm = _strip_url_query(by_id_retry)
+                    if (
+                        by_id_retry_norm != baseline_result_img
+                        and by_id_retry_norm not in baseline_all_srcs
+                        and not any(
+                            m in by_id_retry.lower()
+                            for m in _UI_ASSET_MARKERS
+                        )
+                        and not any(
+                            m in by_id_retry.lower()
+                            for m in _INPUT_REF_MARKERS
+                        )
+                    ):
+                        logger.info(
+                            "_wait_image_url_strict: matched by prompt_id "
+                            "(post-scroll retry) {} за {:.0f} сек: {}",
+                            prompt_id_prefix,
+                            elapsed,
+                            by_id_retry[:140],
+                        )
+                        return by_id_retry
+
                 idle_srcs = await self._completed_new_imgs(
                     page, baseline_all_srcs
                 )
@@ -2305,7 +2430,7 @@ class OutseeBot:
                         )
                         return idle_clean[0]
 
-            # 3) diagnostic
+            # 3) diagnostic + periodic gallery scroll to load lazy items
             if elapsed - last_log > 15:
                 last_log = elapsed
                 n_big = len(await self._all_big_imgs(page))
@@ -2326,6 +2451,12 @@ class OutseeBot:
                         (current[:80] if current else None),
                         n_big,
                         len(baseline_big_imgs),
+                    )
+                # Scroll gallery periodically to trigger lazy-loading
+                # of new items that may have appeared below the fold
+                if prompt_id_prefix:
+                    await _scroll_gallery_to_load_all(
+                        page, project_id=project_id
                     )
 
             await sleep_cancellable(1.0, project_id)
@@ -3174,7 +3305,8 @@ async def _gallery_detail_panel_has_id(
                     const r = el.getBoundingClientRect();
                     return r.width > 8 && r.height > 8;
                 }
-                const midX = window.innerWidth * 0.42;
+                // Phase 1: non-composer textarea/input (strictest — the
+                // detail panel usually renders prompt in a readonly textarea)
                 for (const el of document.querySelectorAll('textarea, input')) {
                     if (composer.has(el) || !visible(el)) continue;
                     const v = (el.value || el.innerText || '').trim();
@@ -3183,14 +3315,39 @@ async def _gallery_detail_panel_has_id(
                         if (tok && v.includes(tok)) return true;
                     }
                 }
-                for (const el of document.querySelectorAll(
-                    'section, aside, div[role="dialog"]'
-                )) {
+                // Phase 2: panel-like containers — widened selector set
+                // and lowered midX threshold (outsee may render the panel
+                // closer to center on narrow viewports)
+                const midX = window.innerWidth * 0.25;
+                const panelSels = [
+                    'section', 'aside',
+                    'div[role="dialog"]', 'div[role="complementary"]',
+                    '[class*="detail"]', '[class*="Detail"]',
+                    '[class*="panel"]', '[class*="Panel"]',
+                    '[class*="prompt"]', '[class*="Prompt"]',
+                    '[class*="sidebar"]', '[class*="Sidebar"]',
+                    '[data-panel]', '[data-testid*="detail"]',
+                    'details',
+                ].join(', ');
+                for (const el of document.querySelectorAll(panelSels)) {
                     if (!visible(el)) continue;
                     const r = el.getBoundingClientRect();
-                    if (r.left < midX || r.width < 80) continue;
+                    if (r.left < midX || r.width < 60) continue;
                     const t = (el.innerText || '').trim();
-                    if (t.length < 30 || t.length > 12000) continue;
+                    if (t.length < 20 || t.length > 15000) continue;
+                    for (const tok of tokens) {
+                        if (tok && t.includes(tok)) return true;
+                    }
+                }
+                // Phase 3: any visible <pre>, <code>, <p> or <span> that
+                // appeared in the right half of the viewport (outsee may
+                // render the prompt in a non-standard container)
+                for (const el of document.querySelectorAll('pre, code, p, span')) {
+                    if (!visible(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.left < midX || r.width < 40) continue;
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (t.length < 10 || t.length > 15000) continue;
                     for (const tok of tokens) {
                         if (tok && t.includes(tok)) return true;
                     }
@@ -3202,6 +3359,59 @@ async def _gallery_detail_panel_has_id(
         return bool(matched)
     except Exception:  # noqa: BLE001
         return False
+
+
+async def _count_gallery_id_matches(
+    page: Page,
+    prompt_id_prefix: str,
+) -> int:
+    """Count how many gallery cards contain our prompt ID.
+
+    Returns the number of *distinct* gallery cards (big images ≥180×180)
+    whose associated text (visible text + textarea/input values within
+    the card's ancestor tree) contains at least one of the ID tokens.
+
+    Used for post-download verification: exactly 1 match means the
+    download was unambiguous; 0 means outsee scrolled the card away;
+    >1 means there's an ID collision / ambiguity.
+    """
+    tokens = _prompt_id_search_tokens(prompt_id_prefix)
+    try:
+        count = await page.evaluate(
+            """([tokens]) => {
+                const hasToken = (text) => {
+                    for (const tok of tokens) {
+                        if (tok && text.includes(tok)) return true;
+                    }
+                    return false;
+                };
+                let matches = 0;
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    const r = img.getBoundingClientRect();
+                    if (r.width < 180 || r.height < 180 || !img.src) continue;
+                    // Walk up to find a card-like ancestor and check its text
+                    let cur = img;
+                    let found = false;
+                    for (let i = 0; i < 12 && cur && !found; i++) {
+                        const t = (cur.innerText || cur.textContent || '');
+                        if (hasToken(t)) { found = true; break; }
+                        // Also check textarea/input values inside
+                        for (const el of cur.querySelectorAll('textarea, input')) {
+                            const v = el.value || '';
+                            if (hasToken(v)) { found = true; break; }
+                        }
+                        cur = cur.parentElement;
+                    }
+                    if (found) matches++;
+                }
+                return matches;
+            }""",
+            [tokens],
+        )
+        return int(count) if isinstance(count, int) else 0
+    except Exception:  # noqa: BLE001
+        return -1
 
 
 async def _page_text_excluding_composer(
@@ -3256,6 +3466,63 @@ async def _count_big_gallery_imgs(page: Page) -> int:
         return 0
 
 
+async def _scroll_gallery_to_load_all(
+    page: Page,
+    *,
+    project_id: int | None = None,
+) -> None:
+    """Scroll the gallery/main container to trigger lazy-loading of
+    off-screen thumbnails.  Outsee renders the gallery in a scrollable
+    container; items below the fold are lazy-loaded and invisible to
+    DOM queries until they enter the viewport.  Scrolling ensures
+    ``_find_card_by_clicking_images`` and ``_find_img_by_prompt_id``
+    can see the freshly generated card even when the gallery is long.
+    """
+    from app.services.step_cancel import abort_if_cancelled
+
+    abort_if_cancelled(project_id)
+    try:
+        await page.evaluate(
+            """() => {
+                // Try common scrollable containers first
+                const scrollCandidates = [
+                    ...document.querySelectorAll(
+                        '[class*="gallery"], [class*="Gallery"], '
+                        + '[class*="scroll"], [class*="Scroll"], '
+                        + '[role="list"], [role="feed"], main'
+                    ),
+                    document.scrollingElement || document.documentElement,
+                ];
+                for (const el of scrollCandidates) {
+                    if (!el) continue;
+                    if (el.scrollHeight > el.clientHeight + 50) {
+                        // Scroll to top (newest items in outsee are at top)
+                        el.scrollTo({top: 0, behavior: 'instant'});
+                    }
+                }
+                // Also scroll the main page to top
+                window.scrollTo({top: 0, behavior: 'instant'});
+            }"""
+        )
+        await asyncio.sleep(0.3)
+        await page.evaluate(
+            """() => {
+                // Then scroll down a bit and back to trigger lazy loads
+                const scrollEl = document.scrollingElement || document.documentElement;
+                scrollEl.scrollTo({top: 500, behavior: 'instant'});
+            }"""
+        )
+        await asyncio.sleep(0.3)
+        await page.evaluate(
+            """() => {
+                const scrollEl = document.scrollingElement || document.documentElement;
+                scrollEl.scrollTo({top: 0, behavior: 'instant'});
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _wait_gallery_thumbs(
     page: Page,
     *,
@@ -3267,11 +3534,16 @@ async def _wait_gallery_thumbs(
     from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
     start = asyncio.get_event_loop().time()
+    scroll_done = False
     while asyncio.get_event_loop().time() - start < timeout_s:
         abort_if_cancelled(project_id)
         n = await _count_big_gallery_imgs(page)
         if n >= min_count:
             return n
+        elapsed = asyncio.get_event_loop().time() - start
+        if not scroll_done and elapsed > 3.0:
+            await _scroll_gallery_to_load_all(page, project_id=project_id)
+            scroll_done = True
         await sleep_cancellable(1.0, project_id)
     return await _count_big_gallery_imgs(page)
 
@@ -3329,7 +3601,7 @@ async def _find_card_by_clicking_images(
     page: Page,
     *,
     prompt_id_prefix: str,
-    limit: int = 10,
+    limit: int = 15,
     project_id: int | None = None,
 ):
     """Стратегия C из `_download_via_card_click`: outsee может прятать
@@ -3337,7 +3609,7 @@ async def _find_card_by_clicking_images(
     которая рендерится ТОЛЬКО по клику на картинку. Поэтому
     `get_by_text` его не находит.
 
-    Алгоритм: берём первые N (по умолчанию 10) больших `<img>` в DOM
+    Алгоритм: берём первые N (по умолчанию 15) больших `<img>` в DOM
     (новые в outsee всегда добавляются сверху галереи), для каждой:
       1) скроллим в видимую часть и кликаем (открывает панель промта);
       2) ждём 600 мс что DOM обновился;
@@ -3350,6 +3622,9 @@ async def _find_card_by_clicking_images(
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     tokens = _prompt_id_search_tokens(prompt_id_prefix)
+
+    # Scroll gallery to ensure off-screen items are loaded
+    await _scroll_gallery_to_load_all(page, project_id=project_id)
 
     # Получаем список больших картинок (визуальный bbox >= 200x200).
     try:
@@ -3378,8 +3653,6 @@ async def _find_card_by_clicking_images(
 
     for idx, src in enumerate(srcs[:limit]):
         abort_if_cancelled(project_id)
-        # Используем уникальный фрагмент src (последние ~80 символов
-        # до query) для CSS-селектора.
         stripped = _strip_url_query(src)
         path_only = re.sub(r"^https?://[^/]+", "", stripped)
         if not path_only:
@@ -3394,7 +3667,6 @@ async def _find_card_by_clicking_images(
         if img_loc is None:
             continue
 
-        # Физический клик мышью по thumb — открывает панель «Промпт».
         try:
             await _physical_mouse_click(
                 page,
@@ -3415,13 +3687,12 @@ async def _find_card_by_clicking_images(
         matched = await _gallery_detail_panel_has_id(page, prompt_id_prefix)
 
         if not matched:
-            # Не наша картинка — закрываем панель Esc'ом и идём дальше.
             with contextlib.suppress(Exception):
                 await page.keyboard.press("Escape")
             await asyncio.sleep(0.2)
             continue
 
-        # Наша! Возвращаем ancestor-карточку с кнопкой download.
+        # Try primary card detection via download-button ancestor
         candidate = img_loc.locator(
             "xpath=ancestor::*[descendant::button"
             "[descendant::svg[contains(@class,'lucide-download')]]][1]"
@@ -3432,10 +3703,22 @@ async def _find_card_by_clicking_images(
                 "(стратегия C — physical mouse + ID в панели)",
                 idx,
             )
-            # НЕ закрываем панель — пусть hover-target виден.
             return candidate
 
-        # Токен совпал, но ancestor-card не нашлась — странно, идём дальше.
+        # Fallback: look for any ancestor with a generic download button
+        fallback_candidate = img_loc.locator(
+            "xpath=ancestor::*[descendant::button[contains(@class,'download') "
+            "or contains(@aria-label,'download') or contains(@aria-label,'Download') "
+            "or contains(@aria-label,'Скачать')]][1]"
+        )
+        if await fallback_candidate.count() > 0:
+            logger.info(
+                "_find_card_by_clicking_images: НАШЛА на картинке #{} "
+                "(стратегия C — fallback download button)",
+                idx,
+            )
+            return fallback_candidate
+
         with contextlib.suppress(Exception):
             await page.keyboard.press("Escape")
 
@@ -3486,18 +3769,22 @@ async def _download_via_card_click(
             prompt_id_prefix,
         )
 
-    # --- C: перебор 10 картинок + ID в панели (основная логика бота).
-    for c_attempt in range(1, 4):
+    # --- C: перебор 15 картинок + ID в панели (основная логика бота).
+    for c_attempt in range(1, 6):
         card = await _find_card_by_clicking_images(
             page,
             prompt_id_prefix=prompt_id_prefix,
-            limit=10,
+            limit=15,
             project_id=project_id,
         )
         if card is not None:
             break
-        if c_attempt < 3:
+        if c_attempt < 5:
             await asyncio.sleep(2.0)
+            if c_attempt >= 2:
+                await _scroll_gallery_to_load_all(
+                    page, project_id=project_id
+                )
 
     # --- D: физический клик по img_url из wait (без ID в панели).
     if card is None and img_url:
@@ -3561,6 +3848,37 @@ async def _download_via_card_click(
                     "_download_via_card_click: стратегия A '{}' ({})",
                     fragment[-40:], type(e).__name__,
                 )
+
+    # --- E (last resort): reload page and retry strategy C once.
+    # Outsee page state can become corrupted after long generation;
+    # a fresh page load re-renders the gallery with all items.
+    if card is None:
+        logger.info(
+            "_download_via_card_click: все стратегии B/C/D/A провалились — "
+            "перезагружаю страницу и пробую стратегию C ещё раз"
+        )
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=15_000)
+            await asyncio.sleep(2.0)
+            n_thumbs2 = await _wait_gallery_thumbs(
+                page, min_count=1, timeout_s=20.0, project_id=project_id
+            )
+            if n_thumbs2 >= 1:
+                card = await _find_card_by_clicking_images(
+                    page,
+                    prompt_id_prefix=prompt_id_prefix,
+                    limit=15,
+                    project_id=project_id,
+                )
+                if card is not None:
+                    logger.info(
+                        "_download_via_card_click: стратегия E (reload+C) сработала!"
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_download_via_card_click: стратегия E (reload) упала: {}",
+                e,
+            )
 
     if card is None and img_url:
         logger.warning(
