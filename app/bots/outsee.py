@@ -43,20 +43,19 @@ PROMPT_INPUT_SELECTORS = [
 ]
 
 GENERATE_BUTTON_SELECTORS = [
-    # :text() — регистрозависимый частичный матч.
-    # :has-text() — регистроНЕзависимый и матчит Relax-кнопку содержащую
-    # «может генерировать» в описании → кликает Relax вместо Generate!
-    # Поэтому используем :text() везде где важна точность.
-    "button:text('Генерировать'):not([disabled])",
-    "button:text('Сгенерировать'):not([disabled])",
-    "button:text('Generate'):not([disabled])",
-    "button:text('Генерировать')",
-    "button:text('Сгенерировать')",
-    "button:text('Generate')",
-    "button:text('Создать видео'):not([disabled])",
-    "button:text('Создать видео')",
-    "button:text('Run'):not([disabled])",
-    "button:text('Run')",
+    # :has-text() — регистроНЕзависимый частичный матч.
+    # Добавляем :not(:has-text('Режим')):not(:has-text('Безлимит'))
+    # чтобы не матчить Relax-кнопку «Relax Режим / может генерировать».
+    "button:has-text('Генерировать'):not([disabled]):not(:has-text('Режим')):not(:has-text('Безлимит'))",
+    "button:has-text('Сгенерировать'):not([disabled])",
+    "button:has-text('Создать'):not([disabled]):not(:has-text('Режим'))",
+    "button:has-text('Generate'):not([disabled]):not(:has-text('Mode'))",
+    "button:has-text('Генерировать'):not(:has-text('Режим')):not(:has-text('Безлимит'))",
+    "button:has-text('Генерация'):not(:has-text('Режим'))",
+    "button:has-text('Сгенерировать')",
+    "button:has-text('Создать'):not(:has-text('Режим'))",
+    "button:has-text('Generate'):not(:has-text('Mode'))",
+    "button:has-text('Run')",
     "button[data-testid='generate']",
 ]
 
