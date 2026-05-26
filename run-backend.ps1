@@ -42,6 +42,10 @@ Write-Host "==> video-pipeline backend (cwd=$Root)" -ForegroundColor Cyan
 Write-Host "    http://127.0.0.1:8765" -ForegroundColor Yellow
 Write-Host "    log (this run): data\backend-$PID.log" -ForegroundColor DarkGray
 Write-Host "    log (shared):   data\backend.log (may be locked if 2 backends)" -ForegroundColor DarkGray
+try {
+    $gitHead = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
+    if ($gitHead) { Write-Host "    git HEAD: $gitHead" -ForegroundColor DarkGray }
+} catch { }
 Write-Host ""
 
 try {
@@ -62,6 +66,25 @@ $env:WEB_HOST = "127.0.0.1"
 $env:WEB_PORT = "8765"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
+
+Write-Host "Preflight: create_app() ..." -ForegroundColor Gray
+$preflightOut = @(& $py -c "from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
+$preflightOk = ($LASTEXITCODE -eq 0) -and ($preflightOut -match "create_app OK")
+if (-not $preflightOk) {
+    Write-Host ""
+    Write-Host "PREFLIGHT FAILED — backend will not listen on :8765" -ForegroundColor Red
+    $preflightOut | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "Usually fixed by: git pull  then run UPDATE-STUDIO.cmd" -ForegroundColor Yellow
+    Write-Host "Need app/web/api.py with response_model=None (commit 5190d6c+)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-BackendLogLine "PREFLIGHT FAILED: $($preflightOut -join ' | ')"
+    Write-Host "Press Enter to close..." -ForegroundColor Gray
+    Read-Host | Out-Null
+    exit 1
+}
+Write-Host "Preflight OK" -ForegroundColor Green
+Write-BackendLogLine "preflight create_app OK"
 
 Write-Host ""
 Write-Host ">>> DO NOT CLOSE THIS WINDOW while Studio is open <<<" -ForegroundColor Yellow
