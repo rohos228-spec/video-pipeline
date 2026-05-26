@@ -297,7 +297,7 @@ function Sync-ProjectFromGit {
             if ($LASTEXITCODE -ne 0) { throw "git checkout $branch failed" }
             git -C $Root pull origin $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
             if ($LASTEXITCODE -ne 0) { throw "git pull $branch failed" }
-        })) {
+        }) {
             $pulled = $true
         }
     }
