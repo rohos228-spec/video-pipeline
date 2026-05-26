@@ -1,8 +1,8 @@
 ﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
-# LAUNCHER_UPDATE_ID=launcher-smart-update-v80
+# LAUNCHER_UPDATE_ID=launcher-update-verify-ui-v81
 
-$script:LAUNCHER_UPDATE_ID = "launcher-smart-update-v80"
+$script:LAUNCHER_UPDATE_ID = "launcher-update-verify-ui-v81"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -370,6 +370,40 @@ function Get-StudioVersionLabel {
     return "v$build · $sha"
 }
 
+function Get-BuiltStudioVersionLabel {
+    $idx = Join-Path $Root "web\out\index.html"
+    if (-not (Test-Path $idx)) { return $null }
+    try {
+        $text = Get-Content $idx -Raw -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    if ($text -match 'v(\d+)\s*[·\.]\s*([0-9a-fA-F]{4,})') {
+        $sha = $Matches[2]
+        if ($sha.Length -gt 7) { $sha = $sha.Substring(0, 7) }
+        return "v$($Matches[1]) · $sha"
+    }
+    if ($text -match 'v(\d+)') {
+        return "v$($Matches[1])"
+    }
+    return $null
+}
+
+function Test-BuiltUiMatchesVersionFile {
+    if (-not (Test-WebUiBuilt)) { return $false }
+    $expected = Get-StudioVersionLabel
+    $built = Get-BuiltStudioVersionLabel
+    if (-not $built) {
+        Write-Log "web/out/index.html есть, но метка версии не найдена — пересоберите UI" "DarkOrange"
+        return $false
+    }
+    if ($built -ne $expected) {
+        Write-Log "UI устарел: файл $expected, в web/out $built" "DarkRed"
+        return $false
+    }
+    return $true
+}
+
 function Test-WebUiBuilt {
     return Test-Path (Join-Path $Root "web\out\index.html")
 }
@@ -582,7 +616,7 @@ function Sync-ProjectFromGit {
     $script:LastGitBeforeHead = Get-GitHead
     $beforeHead = $script:LastGitBeforeHead
     $branch = Get-GitBranch
-    Write-Log "Git: branch=$branch commit=$beforeHead" "Gray"
+    Write-Log "Git: branch=$branch commit=$beforeHead | STUDIO_VERSION=$(Get-StudioVersionLabel)" "Gray"
     if (-not (Invoke-GitLogged "git fetch origin" @("fetch", "origin"))) {
         return $false
     }
@@ -591,23 +625,36 @@ function Sync-ProjectFromGit {
         if (Invoke-GitLogged "git checkout $branch" @("checkout", $branch)) {
             if (Invoke-GitLogged "git pull --ff-only origin $branch" @("pull", "--ff-only", "origin", $branch)) {
                 $pulled = $true
+            } else {
+                Write-Log "git pull failed on $branch — stash/commit local changes, then retry" "DarkRed"
             }
         }
     }
     if (-not $pulled) {
-        if (-not (Invoke-GitLogged "git checkout devin/windows-installer" @("checkout", "devin/windows-installer"))) {
-            return $false
+        $fallbackBranches = @(
+            "cursor/fix-launcher-update-start-977b",
+            "devin/windows-installer"
+        )
+        foreach ($fb in $fallbackBranches) {
+            if ($branch -eq $fb) { continue }
+            Write-Log "Trying fallback branch: $fb" "DarkOrange"
+            if (-not (Invoke-GitLogged "git checkout $fb" @("checkout", $fb))) { continue }
+            if (Invoke-GitLogged "git pull --ff-only origin $fb" @("pull", "--ff-only", "origin", $fb)) {
+                $pulled = $true
+                $branch = $fb
+                break
+            }
         }
-        if (-not (Invoke-GitLogged "git pull --ff-only origin devin/windows-installer" @("pull", "--ff-only", "origin", "devin/windows-installer"))) {
-            return $false
-        }
+    }
+    if (-not $pulled) {
+        return $false
     }
     $afterHead = Get-GitHead
     $script:LastGitAfterHead = $afterHead
     if ($beforeHead -eq $afterHead) {
-        Write-Log "Git up to date ($afterHead)" "Gray"
+        Write-Log "Git up to date ($afterHead) | STUDIO_VERSION=$(Get-StudioVersionLabel)" "Gray"
     } else {
-        Write-Log "Git: $beforeHead -> $afterHead" "DarkGreen"
+        Write-Log "Git: $beforeHead -> $afterHead | STUDIO_VERSION=$(Get-StudioVersionLabel)" "DarkGreen"
     }
     if (Test-LauncherScriptChanged $beforeHead $afterHead) {
         Write-Log "Launcher script updated in git — will reopen GUI after this run" "DarkOrange"
@@ -649,7 +696,12 @@ function Sync-PythonAndWeb {
         Write-Log "FAIL web/out/index.html missing after build" "DarkRed"
         return $false
     }
-    Write-Log "UI built: $(Get-StudioVersionLabel) (web/out)" "DarkGreen"
+    $built = Get-BuiltStudioVersionLabel
+    Write-Log "UI built: file=$(Get-StudioVersionLabel) web/out=$built" "DarkGreen"
+    if (-not (Test-BuiltUiMatchesVersionFile)) {
+        Write-Log "FAIL npm build: версия в web/out не совпала с web/STUDIO_VERSION" "DarkRed"
+        return $false
+    }
     return $true
 }
 
@@ -661,6 +713,12 @@ function Show-StudioVersionFromApi {
         Write-Log "API studio-version недоступен (бэкенд ещё стартует?)" "DarkOrange"
     }
     Write-Log "Файл web/STUDIO_VERSION: $(Get-StudioVersionLabel)" "Gray"
+    $built = Get-BuiltStudioVersionLabel
+    if ($built) {
+        Write-Log "Сборка web/out (бейдж в браузере): $built" "Gray"
+    } else {
+        Write-Log "web/out не собран — в браузере будет старая версия (v102?)" "DarkRed"
+    }
 }
 
 function Do-FullUpdate {
@@ -700,11 +758,16 @@ function Do-UpdateAndRun {
 
     $depsOk = Sync-PythonAndWeb -AlwaysBuildUi
     if (-not $depsOk) {
-        Write-Log "pip/npm errors — see log above" "DarkOrange"
+        Write-Log "ОШИБКА: pip/npm — Studio НЕ запускаем (иначе останется старый UI, напр. v102)" "DarkRed"
+        Write-Log "Проверьте Node.js/npm, лог выше, или запустите force-rebuild-web.cmd" "DarkRed"
         if (-not (Get-VenvPython)) {
             Write-Log "No .venv — button 1 Full install" "DarkRed"
-            return
         }
+        return
+    }
+    if (-not (Test-BuiltUiMatchesVersionFile)) {
+        Write-Log "ОШИБКА: web/out устарел — Studio НЕ запускаем. Кнопка 6 Build Web UI или force-rebuild-web.cmd" "DarkRed"
+        return
     }
 
     if (-not (Test-RunBackendScriptCurrent)) {
