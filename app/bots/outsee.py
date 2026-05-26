@@ -596,6 +596,68 @@ class OutseeContentRejectedError(OutseeImageError):
     существующий error-handling в caller'ах продолжит работать без правок."""
 
 
+# Маркеры видимых плашек ошибок outsee (см. `_detect_outsee_failure`).
+_OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
+    "контент отклон",
+    "content reject",
+    "не прошёл модер",
+    "содержит запрещ",
+    "forbidden word",
+)
+_OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
+    "ошибка генера",
+    "ошибк",  # «Ошибка», «Произошла ошибка»
+    "не удалось сгенер",
+    "не удалось создать",
+    "generation failed",
+    "failed to generate",
+    "something went wrong",
+    "что-то пошло не так",
+    "попробуйте снова",
+    "повторите попытку",
+    "try again",
+    "unable to generate",
+)
+
+
+def _outsee_failure_kind(text: str) -> str:
+    """`moderation` | `generation` | `unknown` (видимая плашка без точного класса)."""
+    low = text.lower()
+    for m in _OUTSEE_MODERATION_MARKERS:
+        if m in low:
+            return "moderation"
+    for m in _OUTSEE_GENERATION_ERROR_MARKERS:
+        if m in low:
+            return "generation"
+    return "unknown"
+
+
+def _raise_outsee_failure(
+    *,
+    text: str,
+    gen_id: str,
+    elapsed: float,
+    in_result: bool,
+) -> None:
+    kind = _outsee_failure_kind(text)
+    ctx = {
+        "gen_id": gen_id,
+        "failure": text[:200],
+        "elapsed_sec": round(elapsed, 1),
+        "in_result_panel": in_result,
+        "kind": kind,
+    }
+    if kind == "moderation":
+        raise OutseeContentRejectedError(
+            "outsee image: контент отклонён модерацией",
+            context=ctx,
+        )
+    raise OutseeImageError(
+        "outsee image: ошибка генерации на outsee.io",
+        context=ctx,
+    )
+
+
 # Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
 # (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
 _MIN_IMAGE_BYTES = 50_000
@@ -921,7 +983,7 @@ class OutseeBot:
         if prompt_id_prefix:
             prompt = f"{prompt_id_prefix}\n\n{prompt.lstrip()}"
             logger.info(
-                "outsee.generate_image: prompt_id_prefix={} [download-v3]",
+                "outsee.generate_image: prompt_id_prefix={} [download-v3: wait→10img]",
                 prompt_id_prefix,
             )
 
@@ -1190,18 +1252,18 @@ class OutseeBot:
             # (В ветке `already_in_progress` мы сюда не заходим —
             # re-baseline не делается, baseline_* уже почищены.)
 
-            # Снимок текста плашки «Контент отклонён» ДО клика Generate.
-            # На свежеоткрытой странице outsee часто рендерит остаток
-            # rejection-плашки от предыдущего запроса (тот же браузерный
-            # контекст / history). Передаём этот текст в детектор, чтобы
-            # он не считал такую плашку «новой» ошибкой.
-            pre_rejected_text = await self._content_rejected_text(page)
+            # Снимок видимой плашки ошибки ДО клика Generate (модерация или
+            # «ошибка генерации»). Outsee часто оставляет остаток от прошлой
+            # попытки в history/result — передаём в wait, чтобы не путать
+            # с НОВОЙ ошибкой, но повтор той же плашки в result-панели после
+            # клика всё равно считаем свежим сбоем.
+            pre_rejected_text = await self._outsee_failure_text(page)
             if pre_rejected_text:
                 logger.info(
-                    "outsee.generate_image: pre-click rejected_text"
-                    " обнаружена ({} симв) — игнорю, считаю её остатком"
-                    " предыдущей попытки",
+                    "outsee.generate_image: pre-click failure_text"
+                    " обнаружена ({} симв, kind={}) — baseline для детектора",
                     len(pre_rejected_text),
+                    _outsee_failure_kind(pre_rejected_text),
                 )
 
             click_ts = _time.monotonic()
@@ -1394,7 +1456,7 @@ class OutseeBot:
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                pre_rejected_text = await self._content_rejected_text(page)
+                pre_rejected_text = await self._outsee_failure_text(page)
                 click_ts = _time.monotonic()
                 net_events.clear()
                 await await_with_cancel(
@@ -1986,7 +2048,40 @@ class OutseeBot:
             now = asyncio.get_event_loop().time()
             elapsed = now - start
 
-            # 0) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
+            # 0) Fail-fast: ошибка генерации / модерация (до ожидания img).
+            if elapsed >= 1.5:
+                failure = await self._detect_outsee_failure(page)
+                if failure:
+                    ftext = failure["text"]
+                    in_result = bool(failure.get("in_result"))
+                    gen_idle = await self._generate_button_enabled(page)
+                    # Не считаем ошибку «новой» только из-за gen_idle:
+                    # плашка из сайдбара/композера (in_result=False) иначе
+                    # рвёт успешную генерацию и уводит в retry без download-v3.
+                    is_new = (
+                        in_result
+                        or not pre_rejected_text
+                        or ftext != pre_rejected_text
+                    )
+                    if is_new:
+                        logger.info(
+                            "_wait_image_url_strict: ошибка outsee за "
+                            "{:.0f} сек (in_result={}, gen_idle={}, "
+                            "kind={}): {}",
+                            elapsed,
+                            in_result,
+                            gen_idle,
+                            _outsee_failure_kind(ftext),
+                            ftext[:120],
+                        )
+                        _raise_outsee_failure(
+                            text=ftext,
+                            gen_id=gen_id,
+                            elapsed=elapsed,
+                            in_result=in_result,
+                        )
+
+            # 1) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
             # Outsee рендерит в карточке результата начало промта, и наш
             # `[ID: P1-HERO1-V1-…]` всегда стоит первой строкой. Если в
             # DOM появилась карточка с НАШИМ ID — берём её картинку,
@@ -2116,34 +2211,17 @@ class OutseeBot:
                                 len(clean), chosen[:120],
                             )
 
-            # 2.7) Если у нас есть fallback_candidate, ВЕРИФИЦИРУЕМ его.
-            #
-            # Иерархия доверия (от сильного к слабому):
-            #  A. net_events: URL РЕАЛЬНО пришёл по сети ПОСЛЕ нашего
-            #     клика Generate. Listener чист в момент клика. Outsee
-            #     не подгружает чужие изображения в этот короткий
-            #     промежуток. Это самое сильное доказательство «это
-            #     наша картинка», и его достаточно — клик-верификация
-            #     не нужна.
-            #  B. click-verification: клик по img открывает правую
-            #     панель «Промпт», в видимом тексте которой должен
-            #     появиться наш [ID: ...]. Слабее: outsee может
-            #     рендерить промт через <textarea>.value, который не
-            #     попадает в body.innerText, и счётчик токенов не
-            #     растёт после клика → ложное «чужая». Использовать
-            #     только как fallback, когда net_events недоступны
-            #     или пусты.
+            # 2.7) С prompt_id_prefix НЕ делаем _verify_img_by_clicking в wait:
+            # ID почти всегда уже в композере → ложное «чужая», бот крутится
+            # до таймаута и уходит в retry вместо download-v3 (10 картинок).
+            # Как в TG-боте: после Generate ждём «ген готова» → скачивание C.
+            _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF = 6.0
             if (
                 prompt_id_prefix
                 and fallback_candidate is not None
                 and _strip_url_query(fallback_candidate)
                 not in rejected_candidates
             ):
-                # A. net_events trust path. Если URL пришёл по сети
-                # после Generate-клика — это сильная гарантия, что
-                # это наша картинка. Click-verification (которая
-                # часто врёт из-за textarea.value vs innerText)
-                # пропускаем.
                 if net_events and _url_is_fresh(
                     fallback_candidate, net_events
                 ):
@@ -2155,47 +2233,52 @@ class OutseeBot:
                         fallback_candidate[:140],
                     )
                     return fallback_candidate
-                # B. Fallback — click-verification, когда нет net_events
-                # или URL не подтверждён сетью.
-                ok = await self._verify_img_by_clicking(
-                    page, fallback_candidate, prompt_id_prefix
-                )
-                if ok:
+                gen_idle = await self._generate_button_enabled(page)
+                if gen_idle and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF:
                     logger.info(
-                        "_wait_image_url_strict: verified by click "
-                        "(source={}) за {:.0f} сек: {}",
-                        fallback_source, elapsed,
-                        fallback_candidate[:140],
+                        "_wait_image_url_strict: gen завершена (gen_idle), "
+                        "переход к download-v3 — перебор 10 картинок "
+                        "(source={}, {:.0f} сек, url={})",
+                        fallback_source,
+                        elapsed,
+                        fallback_candidate[:120],
                     )
                     return fallback_candidate
-                else:
-                    logger.warning(
-                        "_wait_image_url_strict: fallback {} НЕ "
-                        "прошёл ID-верификацию (source={}) — это чужая "
-                        "картинка из gallery, ждём дальше",
-                        fallback_candidate[:100], fallback_source,
-                    )
-                    rejected_candidates.add(
-                        _strip_url_query(fallback_candidate)
-                    )
-                    fallback_candidate = None
-                    fallback_source = None
-                    # Подождём ещё пока придёт НОВАЯ картинка.
-                    await sleep_cancellable(2.0, project_id)
-                    continue
-            # 2.5) Детект плашки «Контент отклонён» (модерация).
-            # Outsee показывает её прямо на странице — ждать дальше
-            # бесполезно: токены уже возвращены, генерации не будет.
-            if elapsed >= 3.0:
-                rejected_text = await self._content_rejected_text(page)
-                if rejected_text and rejected_text != pre_rejected_text:
-                    raise OutseeContentRejectedError(
-                        "outsee image: контент отклонён модерацией",
-                        context={
-                            "gen_id": gen_id,
-                            "rejection": rejected_text[:200],
-                        },
-                    )
+
+            if (
+                prompt_id_prefix
+                and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF
+                and await self._generate_button_enabled(page)
+            ):
+                idle_srcs = await self._completed_new_imgs(
+                    page, baseline_all_srcs
+                )
+                if idle_srcs:
+                    idle_clean = [
+                        u
+                        for u in idle_srcs
+                        if not any(
+                            m in u.lower() for m in _UI_ASSET_MARKERS
+                        )
+                        and not any(
+                            m in u.lower() for m in _INPUT_REF_MARKERS
+                        )
+                    ]
+                    if net_events:
+                        idle_clean = [
+                            u for u in idle_clean
+                            if _url_is_fresh(u, net_events)
+                        ]
+                    elif not net_events:
+                        pass  # доверяем DOM
+                    if idle_clean:
+                        logger.info(
+                            "_wait_image_url_strict: gen_idle, новые img в "
+                            "DOM — handoff download-v3 за {:.0f} сек: {}",
+                            elapsed,
+                            idle_clean[0][:120],
+                        )
+                        return idle_clean[0]
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -2240,6 +2323,21 @@ class OutseeBot:
         if prompt_id_prefix:
             ctx["prompt_id_prefix"] = prompt_id_prefix
             ctx["id_diag"] = await self._diag_id_in_page(page, prompt_id_prefix)
+            # Таймаут wait, но Generate снова активен и в DOM есть картинки —
+            # как в TG-боте: всё равно пробуем download-v3 (10 кликов по ID).
+            if await self._generate_button_enabled(page):
+                handoff_srcs = await self._completed_new_imgs(
+                    page, baseline_all_srcs
+                )
+                if handoff_srcs:
+                    chosen = handoff_srcs[0]
+                    logger.warning(
+                        "_wait_image_url_strict: timeout {:.0f}с, но gen_idle "
+                        "и есть новые img — handoff в download-v3: {}",
+                        timeout,
+                        chosen[:120],
+                    )
+                    return chosen
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
             context=ctx,
@@ -2381,25 +2479,38 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _content_rejected_text(self, page: Page) -> str | None:
-        """Если на странице ВИДИМО показана плашка «Контент отклонён» —
-        возвращает её текст, иначе None.
-
-        Видимость проверяется строго: display!=none, visibility!=hidden,
-        opacity>0, getBoundingClientRect>0, элемент в viewport, и все
-        предки тоже видимы. Без этого outsee даёт false-positive: их
-        React-bundle пререндерит шаблоны ошибок (`отклонённый контент /
-        запрещённые слова`) как невидимые компоненты с ненулевым rect."""
+    async def _generate_button_enabled(self, page: Page) -> bool:
+        """True, если кнопка Generate сейчас активна (генерация не идёт)."""
         try:
-            text = await page.evaluate(
-                """() => {
-                    const triggers = [
-                        'Контент отклон',
-                        'Content reject',
-                        'не прошёл модер',
-                        'содержит запрещ',
-                        'forbidden word',
-                    ];
+            sel = await _first_visible(
+                page,
+                GENERATE_BUTTON_SELECTORS[:4],
+                timeout_ms=800,
+            )
+            if not sel:
+                return False
+            loc = page.locator(sel).first
+            disabled = await loc.get_attribute("disabled")
+            aria = await loc.get_attribute("aria-disabled")
+            return disabled is None and (aria or "").lower() != "true"
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _detect_outsee_failure(self, page: Page) -> dict[str, object] | None:
+        """Видимая плашка ошибки outsee: модерация или сбой генерации.
+
+        Сначала ищет в блоке «Результат генерации» (`in_result=True`),
+        затем по всей странице. Возвращает `{text, in_result}` или None.
+        """
+        mod_js = list(_OUTSEE_MODERATION_MARKERS)
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        try:
+            raw = await page.evaluate(
+                """(markers) => {
+                    const moderation = markers.moderation;
+                    const generation = markers.generation;
+                    const triggers = moderation.concat(generation);
+
                     function isTrulyVisible(el) {
                         const cs = window.getComputedStyle(el);
                         if (cs.display === 'none') return false;
@@ -2420,30 +2531,75 @@ class OutseeBot:
                         }
                         return true;
                     }
-                    const all = Array.from(document.querySelectorAll('*'));
-                    for (const el of all) {
-                        const tag = (el.tagName || '').toLowerCase();
-                        if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
-                        const t = (el.textContent || '').trim();
-                        if (!t || t.length > 1000) continue;
+
+                    function matchText(t) {
                         const low = t.toLowerCase();
-                        let hit = false;
                         for (const tr of triggers) {
-                            if (low.includes(tr.toLowerCase())) {
-                                hit = true; break;
+                            if (low.includes(tr.toLowerCase())) return true;
+                        }
+                        return false;
+                    }
+
+                    function scanRoot(root, inResult) {
+                        if (!root) return null;
+                        const nodes = root.querySelectorAll('*');
+                        for (const el of nodes) {
+                            const tag = (el.tagName || '').toLowerCase();
+                            if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
+                            const t = (el.textContent || '').trim();
+                            if (!t || t.length > 1000) continue;
+                            if (!matchText(t)) continue;
+                            if (!isTrulyVisible(el)) continue;
+                            return { text: t.slice(0, 300), in_result: inResult };
+                        }
+                        return null;
+                    }
+
+                    function findResultRoot() {
+                        const kws = ['Результат генерации', 'Результат', 'Result'];
+                        let best = null;
+                        let bestArea = 0;
+                        for (const el of document.querySelectorAll('section, div, article, main')) {
+                            const t = (el.textContent || '').trim();
+                            if (!t || t.length > 1200) continue;
+                            for (const kw of kws) {
+                                if (!t.includes(kw)) continue;
+                                const r = el.getBoundingClientRect();
+                                const area = r.width * r.height;
+                                if (area > bestArea && r.width >= 120 && r.height >= 60) {
+                                    best = el;
+                                    bestArea = area;
+                                }
                             }
                         }
-                        if (!hit) continue;
-                        if (!isTrulyVisible(el)) continue;
-                        return t.slice(0, 300);
+                        return best;
                     }
-                    return null;
-                }"""
+
+                    const resultRoot = findResultRoot();
+                    if (resultRoot) {
+                        const inPanel = scanRoot(resultRoot, true);
+                        if (inPanel) return inPanel;
+                    }
+                    return scanRoot(document.body, false);
+                }""",
+                {"moderation": mod_js, "generation": gen_js},
             )
-            if isinstance(text, str) and text.strip():
-                return text.strip()
+            if isinstance(raw, dict) and raw.get("text"):
+                text = str(raw["text"]).strip()
+                if text:
+                    return {
+                        "text": text,
+                        "in_result": bool(raw.get("in_result")),
+                    }
         except Exception:  # noqa: BLE001
             pass
+        return None
+
+    async def _outsee_failure_text(self, page: Page) -> str | None:
+        """Текст видимой плашки ошибки (любой kind) или None."""
+        hit = await self._detect_outsee_failure(page)
+        if hit:
+            return str(hit["text"])
         return None
 
     # ----- VIDEO (veo-3-fast Relax) -----
@@ -2843,6 +2999,102 @@ def _count_tokens_in_text(text: str, tokens: list[str]) -> int:
     return sum(text.count(tok) for tok in tokens if tok)
 
 
+async def _physical_mouse_click(
+    page: Page,
+    locator: Any,
+    *,
+    project_id: int | None = None,
+    label: str = "",
+) -> None:
+    """Реальный клик мышью по центру элемента (CDP → Chrome).
+
+    Outsee открывает панель «Промпт» и кнопку Download только на pointer-
+    событиях; `element.click()` в JS или «сухой» locator иногда не срабатывает.
+    """
+    from app.services.step_cancel import await_with_cancel
+
+    with contextlib.suppress(Exception):
+        await await_with_cancel(
+            locator.scroll_into_view_if_needed(timeout=2_000),
+            project_id,
+        )
+    box = await locator.bounding_box()
+    if not box or box.get("width", 0) < 2 or box.get("height", 0) < 2:
+        await await_with_cancel(locator.click(timeout=3_000), project_id)
+        logger.info(
+            "outsee physical-click: fallback locator.click{}",
+            f" ({label})" if label else "",
+        )
+        return
+    x = box["x"] + box["width"] / 2
+    y = box["y"] + box["height"] / 2
+    await page.mouse.move(x, y)
+    await asyncio.sleep(0.05)
+    await page.mouse.click(x, y)
+    logger.info(
+        "outsee physical-click: mouse ({:.0f},{:.0f}){}",
+        x,
+        y,
+        f" — {label}" if label else "",
+    )
+
+
+async def _gallery_detail_panel_has_id(
+    page: Page,
+    prompt_id_prefix: str,
+) -> bool:
+    """После клика по thumb: наш ID в правой панели (НЕ в composer).
+
+    Нельзя использовать `post_count > pre_count` на всей странице — ID уже
+    в composer, счётчик не растёт. Нельзя `evaluate(el.click())` — не мышь.
+    """
+    tokens = _prompt_id_search_tokens(prompt_id_prefix)
+    try:
+        matched = await page.evaluate(
+            """([tokens, composerSels]) => {
+                const composer = new Set();
+                for (const sel of composerSels) {
+                    try {
+                        for (const el of document.querySelectorAll(sel))
+                            composer.add(el);
+                    } catch (e) {}
+                }
+                function visible(el) {
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 8 && r.height > 8;
+                }
+                const midX = window.innerWidth * 0.42;
+                for (const el of document.querySelectorAll('textarea, input')) {
+                    if (composer.has(el) || !visible(el)) continue;
+                    const v = (el.value || el.innerText || '').trim();
+                    if (!v) continue;
+                    for (const tok of tokens) {
+                        if (tok && v.includes(tok)) return true;
+                    }
+                }
+                for (const el of document.querySelectorAll(
+                    'section, aside, div[role="dialog"]'
+                )) {
+                    if (!visible(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.left < midX || r.width < 80) continue;
+                    const t = (el.innerText || '').trim();
+                    if (t.length < 30 || t.length > 12000) continue;
+                    for (const tok of tokens) {
+                        if (tok && t.includes(tok)) return true;
+                    }
+                }
+                return false;
+            }""",
+            [tokens, PROMPT_INPUT_SELECTORS],
+        )
+        return bool(matched)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _page_text_excluding_composer(
     page: Page,
     composer_selectors: list[str] | None = None,
@@ -2947,32 +3199,25 @@ async def _find_card_by_clicking_images(
         if img_loc is None:
             continue
 
-        pre_text = await _page_text_excluding_composer(page)
-        pre_count = _count_tokens_in_text(pre_text, tokens)
-
-        # Клик по картинке — открывает панель «Промпт».
-        with contextlib.suppress(Exception):
-            await await_with_cancel(
-                img_loc.scroll_into_view_if_needed(timeout=2_000),
-                project_id,
-            )
+        # Физический клик мышью по thumb — открывает панель «Промпт».
         try:
-            await await_with_cancel(
-                img_loc.click(timeout=3_000),
-                project_id,
+            await _physical_mouse_click(
+                page,
+                img_loc,
+                project_id=project_id,
+                label=f"gallery img #{idx}",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "_find_card_by_clicking_images: клик по img #{} упал ({})",
-                idx, type(e).__name__,
+                "_find_card_by_clicking_images: mouse click img #{} упал ({})",
+                idx,
+                type(e).__name__,
             )
             continue
 
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.65)
 
-        post_text = await _page_text_excluding_composer(page)
-        post_count = _count_tokens_in_text(post_text, tokens)
-        matched = post_count > pre_count
+        matched = await _gallery_detail_panel_has_id(page, prompt_id_prefix)
 
         if not matched:
             # Не наша картинка — закрываем панель Esc'ом и идём дальше.
@@ -2989,7 +3234,7 @@ async def _find_card_by_clicking_images(
         if await candidate.count() > 0:
             logger.info(
                 "_find_card_by_clicking_images: НАШЛА на картинке #{} "
-                "(стратегия C — клик-верификация)",
+                "(стратегия C — physical mouse + ID в панели)",
                 idx,
             )
             # НЕ закрываем панель — пусть hover-target виден.
@@ -3149,7 +3394,12 @@ async def _download_via_card_click(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
-            await await_with_cancel(download_btn.click(timeout=10_000), project_id)
+            await _physical_mouse_click(
+                page,
+                download_btn,
+                project_id=project_id,
+                label="download lucide-download",
+            )
         download = await dl_info.value
         await await_with_cancel(download.save_as(str(out_path)), project_id)
     except PWTimeoutError as e:
