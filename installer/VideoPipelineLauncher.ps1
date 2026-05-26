@@ -281,44 +281,70 @@ function Update-StatusLabel {
     }
 }
 
-function Do-FullUpdate {
+function Sync-ProjectFromGit {
     $beforeHead = Get-GitHead
-    Write-Log "Update from $beforeHead on branch $(Get-GitBranch)" "Gray"
+    $branch = Get-GitBranch
+    Write-Log "Git: branch=$branch commit=$beforeHead" "Gray"
     if (-not (Invoke-Cmd "git fetch origin" {
         git -C $Root fetch origin 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
     })) {
-        Write-Log "Update aborted: git fetch failed" "DarkRed"
-        return
+        return $false
     }
-    if (-not (Invoke-Cmd "git pull origin devin/windows-installer" {
-        git -C $Root checkout devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "git checkout failed (local changes? commit or stash first)" }
-        git -C $Root pull origin devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
-    })) {
-        Write-Log "Update aborted: git pull failed" "DarkRed"
-        return
+    $pulled = $false
+    if ($branch -and $branch -ne "?") {
+        if (Invoke-Cmd "git pull origin $branch" {
+            git -C $Root checkout $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+            if ($LASTEXITCODE -ne 0) { throw "git checkout $branch failed" }
+            git -C $Root pull origin $branch 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+            if ($LASTEXITCODE -ne 0) { throw "git pull $branch failed" }
+        })) {
+            $pulled = $true
+        }
+    }
+    if (-not $pulled) {
+        if (-not (Invoke-Cmd "git pull origin devin/windows-installer" {
+            git -C $Root checkout devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+            if ($LASTEXITCODE -ne 0) { throw "git checkout failed" }
+            git -C $Root pull origin devin/windows-installer 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
+            if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
+        })) {
+            return $false
+        }
     }
     $afterHead = Get-GitHead
     if ($beforeHead -eq $afterHead) {
-        Write-Log "Git already up to date ($afterHead)" "Gray"
+        Write-Log "Git up to date ($afterHead)" "Gray"
     } else {
-        Write-Log "Git updated: $beforeHead -> $afterHead" "DarkGreen"
+        Write-Log "Git: $beforeHead -> $afterHead" "DarkGreen"
     }
+    return $true
+}
+
+function Sync-PythonAndWeb {
+    param(
+        [switch]$AlwaysBuildUi
+    )
     $py = Get-VenvPython
     if (-not $py) {
-        Write-Log "No venv - run button 1 first" "DarkOrange"
-        return
+        Write-Log "No venv - run button 1 Full install" "DarkOrange"
+        return $false
     }
     if (-not (Invoke-Cmd "pip install -e .[dev]" {
         & $py -m pip install -e ".[dev]" 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
     })) {
-        Write-Log "Update aborted: pip install failed" "DarkRed"
-        return
+        return $false
     }
-    if (-not (Invoke-Cmd "npm install + build" {
-        $npm = Get-NpmCmd
-        if (-not $npm) { throw "npm not found - run button 1 Full install" }
+    $needBuild = $AlwaysBuildUi -or (Test-WebBuildStale) -or (-not (Test-WebUiBuilt))
+    if (-not $needBuild) {
+        Write-Log "Web UI already built: $(Get-StudioVersionLabel)" "Gray"
+        return $true
+    }
+    $npm = Get-NpmCmd
+    if (-not $npm) {
+        Write-Log "npm not found - run button 1" "DarkRed"
+        return $false
+    }
+    if (-not (Invoke-Cmd "npm install + build (web/out)" {
         Push-Location (Join-Path $Root "web")
         & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
         if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
@@ -329,35 +355,68 @@ function Do-FullUpdate {
             throw "web/out/index.html missing after build"
         }
     })) {
-        Write-Log "Update aborted: npm build failed" "DarkRed"
+        return $false
+    }
+    Write-Log "UI built: $(Get-StudioVersionLabel) (web/out)" "DarkGreen"
+    return $true
+}
+
+function Show-StudioVersionFromApi {
+    try {
+        $sv = Invoke-RestMethod "http://127.0.0.1:8765/api/studio-version" -TimeoutSec 5
+        Write-Log "API studio-version: $($sv.label) backend=$($sv.backend_attach)" "DarkGreen"
+    } catch {
+        Write-Log "API studio-version недоступен (бэкенд ещё стартует?)" "DarkOrange"
+    }
+    Write-Log "Файл web/STUDIO_VERSION: $(Get-StudioVersionLabel)" "Gray"
+}
+
+function Do-FullUpdate {
+    if (-not (Sync-ProjectFromGit)) {
+        Write-Log "Update aborted: git" "DarkRed"
+        return
+    }
+    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
+        Write-Log "Update aborted: pip/npm" "DarkRed"
         return
     }
     Update-StatusLabel
-    $uiVer = Get-StudioVersionLabel
-    Write-Log "UI built: $uiVer" "DarkGreen"
-    Write-Log "Next: 4 Stop -> 2 Start Studio -> open http://127.0.0.1:8765 (Ctrl+F5)" "DarkGreen"
-    Write-Log "Check API: http://127.0.0.1:8765/api/studio-version" "Gray"
+    Write-Log "Next: * Update + Start or 2 Start Studio" "DarkGreen"
 }
 
-function Do-QuickStart {
+function Do-UpdateAndRun {
+    Write-Log "=== Update + Start (git, backend, UI, browser) ===" "DarkBlue"
     if (-not (Test-Installed)) {
         $ok = Invoke-ExternalLog "Install" "powershell.exe" @(
             "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", "`"$(Join-Path $Root 'install.ps1')`"", "-NonInteractive"
         )
         if (-not $ok) { return }
     }
-    if (-not (Ensure-WebBuilt)) { return }
+    if (-not (Sync-ProjectFromGit)) {
+        Write-Log "Stopped: fix git (commit/stash) and retry" "DarkRed"
+        return
+    }
+    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
+        Write-Log "Stopped: pip or npm build failed" "DarkRed"
+        return
+    }
     Update-StatusLabel
+    Do-Stop
+    Start-Sleep -Seconds 2
     Start-BackendWindow
     Write-Log "Waiting for backend http://127.0.0.1:8765 ..." "Gray"
     if (Test-BackendReady) {
+        Show-StudioVersionFromApi
         Start-Process "http://127.0.0.1:8765"
-        Write-Log "Studio ready. Keep the backend PowerShell window open." "DarkGreen"
+        Write-Log "Ready. Backend window must stay open. Browser: Ctrl+F5 if old UI." "DarkGreen"
     } else {
-        Write-Log "Backend did not respond in 90s. Check the backend window for errors." "DarkRed"
-        Write-Log "Tip: run .\run-backend.ps1 manually to see the error" "DarkOrange"
-        Write-Log "Tip: run check-web.cmd or button 15 after backend is up." "DarkOrange"
+        Write-Log "Backend did not respond in 90s - see backend PowerShell window" "DarkRed"
+        Write-Log "Manual: .\run-backend.ps1" "DarkOrange"
     }
+}
+
+function Do-QuickStart {
+    Do-UpdateAndRun
 }
 
 function Do-Install {
@@ -475,7 +534,7 @@ function Do-OpenBrowser {
 }
 
 $commands = @(
-    @{ Label = "* Quick start"; Tip = "Install + UI + Studio + browser"; Fn = { Do-QuickStart } }
+    @{ Label = "* Update + Start"; Tip = "git pull + pip + UI build + backend + browser"; Fn = { Do-UpdateAndRun } }
     @{ Label = "1. Full install"; Tip = "Python, venv, FFmpeg, Node, .env"; Fn = { Do-Install } }
     @{ Label = "2. Start Studio"; Tip = "http://127.0.0.1:8765"; Fn = { Do-StartStudio } }
     @{ Label = "3. Telegram mode"; Tip = "Bot + API (token in .env)"; Fn = { Do-StartTelegram } }
@@ -520,7 +579,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "First time: * Quick start. URL: http://127.0.0.1:8765 (not :3000). Keep backend window open."
+$hintLbl.Text = "Every day: * Update + Start (v in log). URL http://127.0.0.1:8765 — keep backend window open."
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray

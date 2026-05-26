@@ -312,8 +312,9 @@ Write-Host "===================================" -ForegroundColor Green
 Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Обновить + запустить (каждый день):" -ForegroundColor Cyan
-Write-Host "  Двойной клик: ЗАПУСК.cmd  или  update-and-start.cmd" -ForegroundColor White
+Write-Host "Обновить + запустить (одна кнопка в меню):" -ForegroundColor Cyan
+Write-Host "  VideoPipelineStudio.cmd -> * Update + Start" -ForegroundColor White
+Write-Host "  (git + pip + UI build + backend + browser)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Только Launcher:" -ForegroundColor Cyan
 Write-Host "  Двойной клик: VideoPipelineStudio.cmd" -ForegroundColor White
