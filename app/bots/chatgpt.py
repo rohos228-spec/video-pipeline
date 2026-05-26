@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import re
 from pathlib import Path
 
 from loguru import logger
@@ -26,7 +27,29 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "drag-drop-primary-v75"
+CHATGPT_ATTACH_LOGIC_ID = "attach-clear-fuzzy-v76"
+
+# ChatGPT при повторном drop одного имени добавляет суффикс: frame_001.png → frame_001(3).png
+_ATTACHMENT_DEDUP_SUFFIX = re.compile(r"\(\d+\)")
+
+
+def attachment_name_visible_in_text(expected_filename: str, composer_text: str) -> bool:
+    """Имя файла видно в композере (точное или с суффиксом (N) от ChatGPT)."""
+    if expected_filename in composer_text:
+        return True
+    stem = Path(expected_filename).stem
+    suffix = Path(expected_filename).suffix
+    if not stem:
+        return False
+    pattern = (
+        re.escape(stem)
+        + r"(?:"
+        + _ATTACHMENT_DEDUP_SUFFIX.pattern
+        + r")?"
+        + re.escape(suffix)
+    )
+    return bool(re.search(pattern, composer_text, re.IGNORECASE))
+
 
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
@@ -324,11 +347,73 @@ class ChatGPTBot:
         )
         return (text or "").strip()
 
+    async def _composer_attachment_labels(self) -> str:
+        """aria-label плиток вложений — ChatGPT часто дублирует имя как name(2).png."""
+        page = await self._page_ready()
+        labels = await page.evaluate(
+            """() => {
+                const form = document.querySelector('main form')
+                    || document.querySelector('form[data-type="unified-composer"]')
+                    || document.querySelector('form');
+                if (!form) return '';
+                const parts = [];
+                for (const el of form.querySelectorAll('[role="group"][aria-label]')) {
+                    const lb = el.getAttribute('aria-label');
+                    if (lb) parts.push(lb);
+                }
+                for (const btn of form.querySelectorAll(
+                    "button[aria-label*='Remove file'], button[aria-label*='Удалить файл']"
+                )) {
+                    const lb = btn.getAttribute('aria-label') || '';
+                    parts.push(lb);
+                }
+                return parts.join('\\n');
+            }"""
+        )
+        return (labels or "").strip()
+
     async def _files_visible_in_composer(self, file_paths: list[Path]) -> bool:
         text = await self._composer_attachment_text()
-        if not text:
+        labels = await self._composer_attachment_labels()
+        haystack = f"{text}\n{labels}".strip()
+        if not haystack:
             return False
-        return all(fp.name in text for fp in file_paths)
+        return all(attachment_name_visible_in_text(fp.name, haystack) for fp in file_paths)
+
+    async def _clear_composer_attachments(self) -> int:
+        """Удаляет все черновые вложения из композера (перед новым batch-upload)."""
+        page = await self._page_ready()
+        removed = 0
+        for _ in range(40):
+            count = await page.evaluate(
+                """() => {
+                    const form = document.querySelector('main form')
+                        || document.querySelector('form[data-type="unified-composer"]')
+                        || document.querySelector('form');
+                    if (!form) return 0;
+                    return form.querySelectorAll(
+                        "button[aria-label*='Remove file'], "
+                        + "button[aria-label*='Удалить файл']"
+                    ).length;
+                }"""
+            )
+            if not count:
+                break
+            btn = page.locator(
+                "form button[aria-label*='Удалить файл'], "
+                "form button[aria-label*='Remove file']"
+            ).last
+            try:
+                await btn.click(timeout=3_000)
+                removed += 1
+                await asyncio.sleep(0.35)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ChatGPT: не удалось снять вложение: {}", e)
+                break
+        if removed:
+            logger.info("ChatGPT: очищено {} черновых вложений в композере", removed)
+            await asyncio.sleep(0.4)
+        return removed
 
     async def _send_prompt(self, text: str, *, clear_first: bool = True) -> None:
         page = await self._page_ready()
@@ -640,24 +725,28 @@ class ChatGPTBot:
         self, file_paths: list[Path], *, timeout: float = 120
     ) -> None:
         """Ждём имена файлов в композере и исчезновение спиннеров на вложениях."""
+        expected = len(file_paths)
         deadline = asyncio.get_event_loop().time() + timeout
         last_log = ""
         while asyncio.get_event_loop().time() < deadline:
             names_ok = await self._files_visible_in_composer(file_paths)
-            state = await self._attachments_upload_state(len(file_paths))
+            state = await self._attachments_upload_state(expected)
+            count = int(state.get("count") or 0)
+            loading = int(state.get("loading") or 0)
             reason = state.get("reason", "?")
-            log_key = f"{names_ok}:{reason}:{state.get('count')}:{state.get('loading')}"
+            count_ok = count >= expected
+            log_key = f"{names_ok}:{reason}:{count}:{loading}"
             if log_key != last_log:
                 logger.info(
                     "ChatGPT: upload state names_ok={} count={}/{} loading={} ({})",
                     names_ok,
-                    state.get("count"),
-                    len(file_paths),
-                    state.get("loading"),
+                    count,
+                    expected,
+                    loading,
                     reason,
                 )
                 last_log = log_key
-            if names_ok and state.get("ok"):
+            if names_ok and count_ok and loading == 0:
                 await asyncio.sleep(0.8)
                 return
             await asyncio.sleep(0.5)
@@ -719,6 +808,7 @@ class ChatGPTBot:
             names,
         )
 
+        await self._clear_composer_attachments()
         before = await self._count_attachment_previews()
 
         # --- Шаг 1: drag-and-drop эмуляция (главный путь). ---
@@ -732,48 +822,38 @@ class ChatGPTBot:
                 logger.info("ChatGPT: drag-drop batch — все файлы видны [{}]", names)
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "ChatGPT: drag-drop batch не удался ({}) — fallback по одному файлу",
+                "ChatGPT: drag-drop batch не удался ({}) — paperclip batch",
                 e,
             )
-            try:
-                for i, fp in enumerate(file_paths, start=1):
-                    logger.info(
-                        "ChatGPT: drag-drop single {}/{} — {}",
-                        i,
-                        len(file_paths),
-                        fp.name,
-                    )
-                    await self._drag_drop_files([fp])
-                    await self._wait_attachments_ready([fp], timeout=120)
-                if await self._files_visible_in_composer(file_paths):
-                    drag_drop_ok = True
-                    logger.info(
-                        "ChatGPT: drag-drop single — все файлы видны [{}]", names
-                    )
-            except Exception as e2:  # noqa: BLE001
-                logger.warning(
-                    "ChatGPT: drag-drop single не удался ({}) — fallback на paperclip",
-                    e2,
-                )
+            await self._clear_composer_attachments()
 
         # --- Шаг 2: paperclip + set_input_files (fallback). ---
         if not drag_drop_ok:
             try:
                 logger.info("ChatGPT: paperclip batch fallback — [{}]", names)
                 await self._attach_batch_via_paperclip(file_paths)
+                drag_drop_ok = True
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "ChatGPT: paperclip batch fallback упал ({}) — пробую по одному",
+                    "ChatGPT: paperclip batch fallback упал ({}) — по одному",
                     e,
                 )
+                await self._clear_composer_attachments()
+                accumulated: list[Path] = []
                 for i, fp in enumerate(file_paths, start=1):
+                    accumulated.append(fp)
                     logger.info(
-                        "ChatGPT: paperclip single fallback {}/{} — {}",
+                        "ChatGPT: paperclip incremental {}/{} — {}",
                         i,
                         len(file_paths),
                         fp.name,
                     )
-                    await self._attach_one_via_paperclip(fp)
+                    page = await self._page_ready()
+                    input_sel = await self._materialize_file_input(fresh=True)
+                    await page.locator(input_sel).last.set_input_files([str(fp)])
+                    await self._fire_file_input_events(input_sel)
+                    await self._wait_attachments_ready(accumulated, timeout=120)
+                drag_drop_ok = await self._files_visible_in_composer(file_paths)
 
         after = await self._count_attachment_previews()
         attached = after - before
