@@ -37,12 +37,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
 
+    for fr in frames:
+        vo = apg.voiceover_for_frame(project, fr)
+        if vo and not (fr.voiceover_text or "").strip():
+            fr.voiceover_text = vo
+
     pending = apg.collect_batch_items(project, frames)
     if not pending:
         logger.info("[#{}] make_animation_prompts: nothing to do", project.id)
         project.status = ProjectStatus.animation_prompts_ready
         await session.flush()
         return
+
+    already_done = sum(1 for f in frames if (f.animation_prompt or "").strip())
+    need_initial_chat = already_done == 0
 
     tmp_dir = tmp_gpt_dir(project)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -55,21 +63,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         try:
-            await gpt.new_conversation()
-            raise_if_cancelled(project.id)
-            logger.info(
-                "[#{}] anim_pr: initial GPT prompt_file={} ({} байт), chat {} симв.",
-                project.id,
-                prompt_file.name,
-                prompt_file.stat().st_size,
-                len(initial),
-            )
-            await gpt.ask_with_files(
-                initial,
-                [prompt_file],
-                timeout=300,
-                project_id=project.id,
-            )
+            if need_initial_chat:
+                await gpt.new_conversation()
+                raise_if_cancelled(project.id)
+                logger.info(
+                    "[#{}] anim_pr: новый чат → prompt_file={} ({} байт), chat {} симв.",
+                    project.id,
+                    prompt_file.name,
+                    prompt_file.stat().st_size,
+                    len(initial),
+                )
+                await gpt.ask_with_files(
+                    initial,
+                    [prompt_file],
+                    timeout=300,
+                    project_id=project.id,
+                )
+            else:
+                logger.info(
+                    "[#{}] anim_pr: тот же чат ChatGPT (уже {} промтов в БД), "
+                    "пропускаю initial — следующая пачка картинок",
+                    project.id,
+                    already_done,
+                )
+                await gpt._page_ready()
+                raise_if_cancelled(project.id)
 
             while True:
                 raise_if_cancelled(project.id)
@@ -81,11 +99,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 paths = [it.image_path for it in batch]
                 batch_msg = apg.build_batch_message(batch)
                 logger.info(
-                    "[#{}] anim_pr: batch {} frames ({})",
+                    "[#{}] anim_pr: batch {} frames ({}) — тот же диалог, msg {} симв.",
                     project.id,
                     len(batch),
                     [it.frame.number for it in batch],
+                    len(batch_msg),
                 )
+                for it in batch:
+                    logger.debug(
+                        "[#{}] anim_pr batch item F{} id={} vo={}…",
+                        project.id,
+                        it.frame.number,
+                        it.image_id,
+                        (it.voiceover[:40] + "…")
+                        if len(it.voiceover) > 40
+                        else it.voiceover,
+                    )
                 reply = await gpt.ask_with_files(
                     batch_msg,
                     paths,
@@ -99,6 +128,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"для кадров {[it.frame.number for it in batch]}"
                     )
 
+                saved = 0
                 for pair in pairs:
                     if pair.frame_number is None:
                         continue
@@ -110,8 +140,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         continue
                     fr.animation_prompt = text
                     fr.status = FrameStatus.animation_prompt_ready
-                    await session.flush()
-                    write_plan_animation_prompt(project, fr.number, text)
+                    xlsx_ok = write_plan_animation_prompt(project, fr.number, text)
+                    if xlsx_ok:
+                        saved += 1
+                    else:
+                        logger.warning(
+                            "[#{}] anim_pr: не записан plan R48 для кадра {}",
+                            project.id,
+                            fr.number,
+                        )
                     try:
                         sheet.write_frame(
                             fr.number,
@@ -125,11 +162,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             e,
                         )
                     logger.info(
-                        "[#{}] anim_pr: frame {} prompt len={}",
+                        "[#{}] anim_pr: frame {} prompt len={} (plan R48={})",
                         project.id,
                         fr.number,
                         len(text),
+                        xlsx_ok,
                     )
+
+                await session.flush()
+                await session.commit()
+                logger.info(
+                    "[#{}] anim_pr: пачка сохранена — {} промтов в project.xlsx (план R48)",
+                    project.id,
+                    saved,
+                )
 
                 # Если GPT вернул не все кадры пачки — не зацикливаемся на тех же файлах
                 still_missing = {it.frame.number for it in batch} - {

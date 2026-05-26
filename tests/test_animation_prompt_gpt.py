@@ -24,3 +24,5 @@ def test_build_batch_message_format() -> None:
     msg = build_batch_message([item])
     assert "ID изображения: [ID: P9-F3-deadbeef]" in msg
     assert "Закадровый текст: Hello" in msg
+    assert "Изображение 1" in msg
+    assert "x.png" in msg
