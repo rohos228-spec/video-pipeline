@@ -27,7 +27,10 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "send-wait-enabled-v78"
+CHATGPT_ATTACH_LOGIC_ID = "anim-pr-two-phase-v79"
+
+_ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
 
 # Ожидание загрузки вложений в композер (тяжёлые пачки PNG могут грузиться >60с).
 ATTACH_UPLOAD_TIMEOUT_SEC = 180.0
@@ -1452,6 +1455,75 @@ class ChatGPTBot:
         reply = await self._read_last_reply()
         logger.info("ChatGPT (file reply) len={}", len(reply))
         return reply
+
+    async def ask_anim_pr_initial(
+        self,
+        prompt: str,
+        master_prompt_file: Path,
+        *,
+        timeout: float = 300,
+        project_id: int | None = None,
+    ) -> str:
+        """Шаг anim_pr фаза 1: только сопр. текст + мастер-промт файлом (без картинок).
+
+        После ответа GPT очищает черновые вложения в композере — дальше пачки PNG.
+        """
+        suf = master_prompt_file.suffix.lower()
+        if suf in _ANIM_PR_IMAGE_SUFFIXES:
+            raise ValueError(
+                f"anim_pr initial: ожидался .md/.txt, не картинка: {master_prompt_file.name}"
+            )
+        if suf not in _ANIM_PR_DOC_SUFFIXES:
+            logger.warning(
+                "anim_pr initial: нестандартное расширение {} — всё равно шлём только этот файл",
+                suf,
+            )
+        logger.info(
+            "anim_pr ФАЗА 1: текст ({} симв.) + файл {} — БЕЗ изображений",
+            len((prompt or "").strip()),
+            master_prompt_file.name,
+        )
+        reply = await self.ask_with_files(
+            prompt,
+            [master_prompt_file],
+            timeout=timeout,
+            project_id=project_id,
+        )
+        removed = await self._clear_composer_attachments()
+        logger.info(
+            "anim_pr ФАЗА 1 готова: ответ {} симв., очищено черновых вложений: {}",
+            len(reply or ""),
+            removed,
+        )
+        return reply
+
+    async def ask_anim_pr_batch(
+        self,
+        prompt: str,
+        image_paths: list[Path],
+        *,
+        timeout: float = 600,
+        project_id: int | None = None,
+    ) -> str:
+        """Шаг anim_pr фаза 2: только PNG/JPEG + текст (ID + закадровый), без мастер-файла."""
+        if not image_paths:
+            raise ValueError("anim_pr batch: нет изображений")
+        for fp in image_paths:
+            if fp.suffix.lower() not in _ANIM_PR_IMAGE_SUFFIXES:
+                raise ValueError(
+                    f"anim_pr batch: только картинки, не {fp.name}"
+                )
+        logger.info(
+            "anim_pr ФАЗА 2: {} фото + текст ({} симв.) — мастер-файл не прикрепляем",
+            len(image_paths),
+            len((prompt or "").strip()),
+        )
+        return await self.ask_with_files(
+            prompt,
+            image_paths,
+            timeout=timeout,
+            project_id=project_id,
+        )
 
     async def _try_download_via_file_card(
         self, page: Page, *, timeout: float = 60,

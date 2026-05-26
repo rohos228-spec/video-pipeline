@@ -65,18 +65,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await gpt.new_conversation()
             raise_if_cancelled(project.id)
             logger.info(
-                "[#{}] anim_pr: новый чат → prompt_file={} ({} байт), chat {} симв.",
+                "[#{}] anim_pr: новый чат → ФАЗА 1 только текст+файл {} ({} байт), {} симв.",
                 project.id,
                 prompt_file.name,
                 prompt_file.stat().st_size,
                 len(initial),
             )
-            await gpt.ask_with_files(
+            initial_reply = await gpt.ask_anim_pr_initial(
                 initial,
-                [prompt_file],
+                prompt_file,
                 timeout=300,
                 project_id=project.id,
             )
+            if not (initial_reply or "").strip():
+                logger.warning(
+                    "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                    project.id,
+                )
+            raise_if_cancelled(project.id)
 
             while True:
                 raise_if_cancelled(project.id)
@@ -88,13 +94,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 paths = [it.image_path for it in batch]
                 batch_msg = apg.build_batch_message(batch)
                 logger.info(
-                    "[#{}] anim_pr: batch {} frames ({}) — фото + ID/закадровый ({} симв.)",
+                    "[#{}] anim_pr: ФАЗА 2 batch {} кадров {} — только фото + ID/закадровый ({} симв.)",
                     project.id,
                     len(batch),
                     [it.frame.number for it in batch],
                     len(batch_msg),
                 )
-                reply = await gpt.ask_with_files(
+                reply = await gpt.ask_anim_pr_batch(
                     batch_msg,
                     paths,
                     timeout=600,
