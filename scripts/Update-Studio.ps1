@@ -1,35 +1,14 @@
-# Console update + start — PowerShell 5.1 (no GUI)
-# Double-click: UPDATE-STUDIO.cmd
-# Or: powershell -ExecutionPolicy Bypass -File .\scripts\Update-Studio.ps1
-
-[CmdletBinding()]
-param(
-    [switch]$SkipStart,
-    [switch]$GitOnly
-)
-
-$ErrorActionPreference = 'Continue'
-$core = Join-Path $PSScriptRoot 'StudioUpdateCore.ps1'
-if (-not (Test-Path $core)) {
-    Write-Host 'ERROR: StudioUpdateCore.ps1 not found' -ForegroundColor Red
-    exit 1
-}
+# Update = git pull + restart Studio. Run: UPDATE-STUDIO.cmd
+$ErrorActionPreference = "Continue"
+$core = Join-Path $PSScriptRoot "StudioUpdateCore.ps1"
 . $core
-
-$Root = Get-StudioRepoRoot -StartDir $PSScriptRoot
+$Root = Get-StudioRepoRoot -StartDir (Split-Path -Parent $PSScriptRoot)
+if (-not $Root) { $Root = Get-StudioRepoRoot -StartDir $PSScriptRoot }
 if (-not $Root) {
-    Write-Host 'ERROR: pyproject.toml not found' -ForegroundColor Red
-    Write-Host 'Put this repo on disk and run UPDATE-STUDIO.cmd from its root (folder with pyproject.toml).' -ForegroundColor Yellow
-    Write-Host "Your shell was: $(Get-Location)" -ForegroundColor Yellow
+    Write-Host "ERROR: open folder with pyproject.toml" -ForegroundColor Red
     exit 1
 }
 Set-Location -LiteralPath $Root
-Write-Host "Repo root: $Root" -ForegroundColor DarkGray
-
-if ($GitOnly) {
-    $ok = Invoke-StudioGit $Root
-    exit $(if ($ok) { 0 } else { 1 })
-}
-
-$ok = Invoke-StudioFullUpdate -Root $Root -SkipStart:$SkipStart
+Write-Host "Repo: $Root" -ForegroundColor DarkGray
+$ok = Invoke-StudioFullUpdate -Root $Root
 exit $(if ($ok) { 0 } else { 1 })

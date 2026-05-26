@@ -1,14 +1,12 @@
-# Shared Studio update logic — PowerShell 5.1, ASCII only
-# Dot-source: . "$PSScriptRoot\scripts\StudioUpdateCore.ps1"
-
-$script:StudioUpdateBranch = 'cursor/fix-launcher-update-start-977b'
-$script:StudioUpdateCoreId = 'studio-update-core-v2'
+# PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
+$script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
+$script:StudioUpdateCoreId = "studio-update-core-v3"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
     $dir = $StartDir
     for ($i = 0; $i -lt 12; $i++) {
-        if (Test-Path (Join-Path $dir 'pyproject.toml')) {
+        if (Test-Path (Join-Path $dir "pyproject.toml")) {
             return (Resolve-Path -LiteralPath $dir).Path
         }
         $parent = Split-Path -Parent $dir
@@ -18,291 +16,105 @@ function Get-StudioRepoRoot {
     return $null
 }
 
-function Assert-StudioRepoRoot {
-    param([string]$Root)
-    $toml = Join-Path $Root 'pyproject.toml'
-    if (-not (Test-Path -LiteralPath $toml)) {
-        Write-StudioLog "FAIL: pyproject.toml not found in: $Root" 'Red'
-        Write-StudioLog 'You are in the wrong folder. cd to video-pipeline repo root first.' 'Yellow'
-        Write-StudioLog 'Example: cd "C:\Users\Love Space\Documents\video-pipeline"' 'Yellow'
-        return $false
-    }
-    return $true
-}
-
-function Get-StudioPipEditableSpec {
-    param([string]$Root)
-    # Absolute path + [dev] — works with spaces in path (Love Space) and any cwd
-    $abs = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\', '/')
-    return ($abs + '[dev]')
-}
-
 function Write-StudioLog {
-    param(
-        [string]$Message,
-        [string]$Color = 'Gray'
-    )
-    $line = "$(Get-Date -Format 'HH:mm:ss')  $Message"
-    Write-Host $line -ForegroundColor $Color
+    param([string]$Message, [string]$Color = "Gray")
+    Write-Host ("{0}  {1}" -f (Get-Date -Format "HH:mm:ss"), $Message) -ForegroundColor $Color
 }
 
 function Invoke-StudioGit {
     param([string]$Root)
-    Write-StudioLog "> git sync -> origin/$($script:StudioUpdateBranch)" 'Cyan'
-    $git = Get-Command git -ErrorAction SilentlyContinue
-    if (-not $git) {
-        Write-StudioLog 'FAIL: git not in PATH' 'Red'
+    Write-StudioLog "> git pull ($($script:StudioUpdateBranch))" "Cyan"
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-StudioLog "FAIL: git not found" "Red"
         return $false
     }
     $br = $script:StudioUpdateBranch
-    $before = (git -C $Root rev-parse --short HEAD 2>$null)
-    if (-not $before) { $before = '?' }
-
-    $dirty = git -C $Root status --porcelain 2>$null
-    if ($dirty) {
-        Write-StudioLog 'Local changes -> git stash push -u' 'Yellow'
-        git -C $Root stash push -u -m 'studio-update-auto' 2>&1 | ForEach-Object { Write-StudioLog $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Write-StudioLog 'FAIL: git stash' 'Red'
-            return $false
-        }
-    }
-
     git -C $Root fetch origin $br 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioLog 'FAIL: git fetch (check internet)' 'Red'
-        return $false
-    }
-
+    if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root checkout -B $br "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioLog 'FAIL: git checkout' 'Red'
-        return $false
-    }
-
-    $localH = (git -C $Root rev-parse HEAD 2>$null)
-    $remoteH = (git -C $Root rev-parse "origin/$br" 2>$null)
-    if ($localH -and $remoteH -and ($localH.Trim() -ne $remoteH.Trim())) {
-        git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Write-StudioLog 'FAIL: git reset --hard' 'Red'
-            return $false
-        }
-    }
-
-    $after = (git -C $Root rev-parse --short HEAD 2>$null)
-    Write-StudioLog "OK git $before -> $after | STUDIO_VERSION=$(Get-StudioVersionLabel $Root)" 'Green'
+    if ($LASTEXITCODE -ne 0) { return $false }
+    git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    if ($LASTEXITCODE -ne 0) { return $false }
+    Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     return $true
 }
 
-function Get-StudioVersionLabel {
+function Test-StudioPythonOk {
     param([string]$Root)
-    $vf = Join-Path $Root 'web\STUDIO_VERSION'
-    if (-not (Test-Path $vf)) { return '?' }
-    $lines = Get-Content $vf -ErrorAction SilentlyContinue
-    if (-not $lines) { return '?' }
-    $build = $lines[0].Trim()
-    $sha = 'dev'
-    if ($lines.Count -gt 1 -and $lines[1].Trim()) {
-        $raw = $lines[1].Trim()
-        if ($raw.Length -gt 7) { $sha = $raw.Substring(0, 7) } else { $sha = $raw }
-    }
-    if ($sha -eq 'dev') { return "v$build" }
-    return "v$build $sha"
-}
-
-function Get-StudioVersionBuildNumber {
-    param([string]$Root)
-    $vf = Join-Path $Root 'web\STUDIO_VERSION'
-    if (-not (Test-Path $vf)) { return 0 }
-    $line = (Get-Content $vf -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($line -match '^\s*(\d+)') { return [int]$Matches[1] }
-    return 0
-}
-
-function Get-StudioBuiltVersionBuildNumber {
-    param([string]$Root)
-    $idx = Join-Path $Root 'web\out\index.html'
-    if (-not (Test-Path $idx)) { return 0 }
-    try {
-        $text = Get-Content $idx -Raw -ErrorAction Stop
-    } catch {
-        return 0
-    }
-    if ($text -match 'v(\d+)') { return [int]$Matches[1] }
-    return 0
-}
-
-function Test-StudioUiReady {
-    param([string]$Root)
-    $fileBuild = Get-StudioVersionBuildNumber $Root
-    $outBuild = Get-StudioBuiltVersionBuildNumber $Root
-    if ($fileBuild -le 0) { return $false }
-    if ($outBuild -le 0) { return $false }
-    if ($fileBuild -ne $outBuild) {
-        Write-StudioLog "UI mismatch: STUDIO_VERSION=v$fileBuild web/out=v$outBuild" 'Red'
-        return $false
-    }
-    return $true
-}
-
-function Get-StudioNpmCmd {
-    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($machine -or $user) { $env:Path = "$machine;$user" }
-    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-    if ($npm) { return $npm.Source }
-    $guess = Join-Path ${env:ProgramFiles} 'nodejs\npm.cmd'
-    if (Test-Path $guess) { return $guess }
-    return $null
-}
-
-function Invoke-StudioNpmBuild {
-    param([string]$Root)
-    $npm = Get-StudioNpmCmd
-    if (-not $npm) {
-        Write-StudioLog 'FAIL: npm.cmd not found (install Node.js LTS)' 'Red'
-        return $false
-    }
-    $webDir = Join-Path $Root 'web'
-    $outDir = Join-Path $webDir 'out'
-    if (Test-Path $outDir) {
-        Write-StudioLog "Removing $outDir" 'Gray'
-        Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Write-StudioLog "> npm install (web)" 'Cyan'
-    $p1 = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$npm`" install" `
-        -WorkingDirectory $webDir -Wait -PassThru -NoNewWindow
-    if ($p1.ExitCode -ne 0) {
-        Write-StudioLog "FAIL: npm install exit $($p1.ExitCode)" 'Red'
-        return $false
-    }
-    Write-StudioLog "> npm run build (web/out)" 'Cyan'
-    $p2 = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$npm`" run build" `
-        -WorkingDirectory $webDir -Wait -PassThru -NoNewWindow
-    if ($p2.ExitCode -ne 0) {
-        Write-StudioLog "FAIL: npm run build exit $($p2.ExitCode)" 'Red'
-        return $false
-    }
-    if (-not (Test-Path (Join-Path $outDir 'index.html'))) {
-        Write-StudioLog 'FAIL: web/out/index.html missing' 'Red'
-        return $false
-    }
-    return (Test-StudioUiReady $Root)
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) { return $false }
+    & $py -c "import fastapi, sqlalchemy" 2>$null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Invoke-StudioPipInstall {
     param([string]$Root)
-    if (-not (Assert-StudioRepoRoot $Root)) { return $false }
-    $py = Join-Path $Root '.venv\Scripts\python.exe'
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $py)) {
-        Write-StudioLog 'FAIL: .venv missing — run install.ps1 from repo root first' 'Red'
+        Write-StudioLog "FAIL: no .venv - run install.ps1 once" "Red"
         return $false
     }
-    $spec = Get-StudioPipEditableSpec $Root
-    Write-StudioLog "> pip install -e `"$spec`"" 'Cyan'
-    Write-StudioLog "  (cwd before pip: $(Get-Location))" 'Gray'
-    $code = 1
-    for ($attempt = 1; $attempt -le 4; $attempt++) {
-        if ($attempt -gt 1) {
-            Write-StudioLog "pip retry $attempt/4 in 15 sec (network?)" 'Yellow'
-            Start-Sleep -Seconds 15
+    $spec = (Resolve-Path -LiteralPath $Root).Path
+    $env:PIP_DEFAULT_TIMEOUT = "300"
+    Write-StudioLog "> pip install -e $spec (slow net: wait)" "Cyan"
+    for ($i = 1; $i -le 6; $i++) {
+        if ($i -gt 1) {
+            Write-StudioLog "pip retry $i/6 in 20 sec" "Yellow"
+            Start-Sleep -Seconds 20
         }
         Push-Location -LiteralPath $Root
-        try {
-            & $py -m pip install -e $spec
-            $code = $LASTEXITCODE
-        } finally {
-            Pop-Location
+        & $py -m pip install --default-timeout=300 -e $spec
+        $code = $LASTEXITCODE
+        Pop-Location
+        if ($code -eq 0) {
+            Write-StudioLog "OK pip" "Green"
+            return $true
         }
-        if ($code -eq 0) { break }
     }
-    if ($code -ne 0) {
-        Write-StudioLog "FAIL: pip exit $code — run CONTINUE-INSTALL.cmd" 'Red'
-        return $false
-    }
-    Write-StudioLog 'OK pip' 'Green'
-    return $true
+    Write-StudioLog "FAIL pip - bad internet. Run CONTINUE-INSTALL.cmd later" "Red"
+    return $false
 }
 
 function Stop-StudioBackend {
     param([string]$Root)
-    Write-StudioLog 'Stopping backend on :8765...' 'Gray'
-    $stopScript = Join-Path $Root 'scripts\stop-backend.ps1'
-    if (Test-Path $stopScript) {
-        & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $stopScript -Quiet 2>&1 |
-            ForEach-Object { Write-StudioLog $_ }
+    $stop = Join-Path $Root "scripts\stop-backend.ps1"
+    if (Test-Path $stop) {
+        & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $stop -Quiet 2>$null
     }
-    try {
-        Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop |
-            ForEach-Object {
-                if ($_.OwningProcess -gt 0) {
-                    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
-                }
-            }
-    } catch { }
     Start-Sleep -Seconds 2
-}
-
-function Test-StudioBackendHealth {
-    param([int]$TimeoutSec = 120)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/health' -TimeoutSec 2 -UseBasicParsing
-            if ($r.StatusCode -eq 200) { return $true }
-        } catch { }
-        Start-Sleep -Milliseconds 500
-    }
-    return $false
 }
 
 function Start-StudioBackendWindow {
     param([string]$Root)
-    $rb = Join-Path $Root 'run-backend.ps1'
-    if (-not (Test-Path $rb)) {
-        Write-StudioLog 'FAIL: run-backend.ps1 missing' 'Red'
-        return $false
-    }
-    Start-Process powershell.exe -ArgumentList @(
-        '-NoExit', '-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', $rb
-    ) -WorkingDirectory $Root
-    Write-StudioLog 'Waiting for http://127.0.0.1:8765 ...' 'Gray'
-    if (Test-StudioBackendHealth -TimeoutSec 120) {
-        Write-StudioLog 'OK backend ready' 'Green'
+    $rb = Join-Path $Root "run-backend.ps1"
+    Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline) {
         try {
-            $sv = Invoke-RestMethod 'http://127.0.0.1:8765/api/studio-version' -TimeoutSec 5
-            Write-StudioLog "API version: $($sv.label) ui_baked=v$($sv.ui_baked_build)" 'Green'
+            $r = Invoke-WebRequest "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
+            if ($r.StatusCode -eq 200) {
+                Start-Process "http://127.0.0.1:8765"
+                Write-StudioLog "OK http://127.0.0.1:8765" "Green"
+                return $true
+            }
         } catch { }
-        Start-Process 'http://127.0.0.1:8765'
-        return $true
+        Start-Sleep -Milliseconds 500
     }
-    Write-StudioLog 'FAIL: backend timeout — read data\backend-*.log' 'Red'
+    Write-StudioLog "FAIL: backend not up - see run-backend window" "Red"
     return $false
 }
 
-function Invoke-StudioUpdateOnly {
-    param([string]$Root)
-    Write-StudioLog "=== Studio update ($($script:StudioUpdateCoreId)) ===" 'Cyan'
-    Write-StudioLog "Root: $Root" 'Gray'
-    if (-not (Invoke-StudioGit $Root)) { return $false }
-    if (-not (Invoke-StudioPipInstall $Root)) { return $false }
-    if (Test-StudioUiReady $Root) {
-        Write-StudioLog "OK prebuilt UI v$(Get-StudioVersionBuildNumber $Root) from git (no npm)" 'Green'
-        return $true
-    }
-    return (Invoke-StudioNpmBuild $Root)
-}
-
 function Invoke-StudioFullUpdate {
-    param(
-        [string]$Root,
-        [switch]$SkipStart
-    )
-    if (-not (Invoke-StudioUpdateOnly $Root)) { return $false }
-    if ($SkipStart) {
-        Write-StudioLog 'Update done (-SkipStart)' 'Green'
-        return $true
+    param([string]$Root)
+    Write-StudioLog "=== update ($($script:StudioUpdateCoreId)) ===" "Cyan"
+    if (-not (Invoke-StudioGit $Root)) { return $false }
+    if (Test-StudioPythonOk $Root) {
+        Write-StudioLog "OK python deps (skip pip on update)" "Green"
+    } else {
+        if (-not (Invoke-StudioPipInstall $Root)) { return $false }
+    }
+    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+        Write-StudioLog "WARN: web/out missing - UI from git pull should fix after next pull" "Yellow"
     }
     Stop-StudioBackend $Root
     return (Start-StudioBackendWindow $Root)
