@@ -502,7 +502,14 @@ export function FlowCanvas({
         deleteKeyCode={["Backspace", "Delete"]}
         onNodeClick={(ev, node) => {
           const t = ev.target as HTMLElement;
-          if (t.closest(".node-v-trigger") || t.closest(".node-v-menu")) return;
+          if (
+            t.closest(".node-v-trigger") ||
+            t.closest(".node-v-menu") ||
+            t.closest(".node-title-trigger") ||
+            t.closest(".node-badge-popover")
+          ) {
+            return;
+          }
           const d = node.data as PipelineNodeData;
           onSelectNode(d.nodeKey);
           onNodeActivate?.(d.nodeKey, d.type);

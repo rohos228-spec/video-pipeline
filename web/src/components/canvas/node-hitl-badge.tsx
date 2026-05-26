@@ -74,7 +74,7 @@ export function NodeHitlBadge({
     <>
       <div
         className={cn(
-          "pointer-events-none absolute -top-5 left-1/2 z-10 h-5 w-px -translate-x-1/2 border-l-2 border-dashed",
+          "pointer-events-none absolute -top-4 left-1/2 z-10 h-4 w-px -translate-x-1/2 border-l-2 border-dashed",
           cfg.connectorClass,
         )}
       />
@@ -84,19 +84,19 @@ export function NodeHitlBadge({
         onMouseDown={(e) => e.stopPropagation()}
         disabled={!clickable}
         className={cn(
-          "nodrag nopan absolute -top-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition",
+          "nodrag nopan absolute -top-10 left-1/2 z-20 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition",
           cfg.className,
           clickable && "cursor-pointer hover:scale-110 hover:brightness-110",
           !clickable && "cursor-default",
         )}
         title={
           clickable
-            ? `${cfg.title} — открыть проверку (как в Telegram)`
+            ? `${cfg.title} — ИИ-проверка и промты`
             : cfg.title
         }
       >
         <Icon
-          className={cn("h-4 w-4", state === "regenerating" && "animate-spin")}
+          className={cn("h-3.5 w-3.5", state === "regenerating" && "animate-spin")}
         />
       </button>
     </>

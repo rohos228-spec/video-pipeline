@@ -23,6 +23,7 @@ import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { NodeResultPanel } from "@/components/canvas/node-result-panel";
+import { NodeTitleSidePanel } from "@/components/canvas/node-title-side-panel";
 import {
   resolveNodeResult,
   type NodeResultContext,
@@ -49,6 +50,10 @@ export function StudioWorkspace({
     "settings",
   );
   const [vMenuNodeKey, setVMenuNodeKey] = useState<string | null>(null);
+  const [badgeMenuNodeKey, setBadgeMenuNodeKey] = useState<string | null>(null);
+  const [titlePanel, setTitlePanel] = useState<{ nodeKey: string; nodeType: string } | null>(
+    null,
+  );
   const [aiOpen, setAiOpen] = useState(false);
   const [aiCtx, setAiCtx] = useState<{ nodeKey: string; nodeType: string } | null>(
     null,
@@ -222,6 +227,10 @@ export function StudioWorkspace({
       disabledNodes,
       vMenuNodeKey,
       setVMenuNodeKey,
+      badgeMenuNodeKey,
+      setBadgeMenuNodeKey,
+      titlePanel,
+      setTitlePanel,
       getPromptSlots,
       getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
@@ -414,6 +423,8 @@ export function StudioWorkspace({
       hitlList.data,
       disabledNodes,
       vMenuNodeKey,
+      badgeMenuNodeKey,
+      titlePanel,
       getPromptSlots,
       project.data?.meta,
       persistMeta,
@@ -448,28 +459,13 @@ export function StudioWorkspace({
           }}
           onNodeActivate={(nodeKey, nodeType) => {
             if (Date.now() < suppressStudioOpenUntil.current) return;
-            if (nodeType === "topic") {
-              onSelectNode(nodeKey);
-              return;
-            }
+            onSelectNode(nodeKey);
+            if (nodeType === "topic") return;
             if (isHitlNodeType(nodeType)) {
               canvasActions.onOpenHitlReview(nodeKey, nodeType);
               return;
             }
-            const kind = hitlKindForNodeType(nodeType);
-            if (kind) {
-              const pending = (hitlList.data ?? []).find(
-                (h) => h.kind === kind && h.decision === "pending",
-              );
-              if (pending) {
-                canvasActions.onOpenHitlReview(nodeKey, nodeType);
-                return;
-              }
-            }
-            onSelectNode(nodeKey);
-            setPromptFocus(null);
-            setStudioTab("settings");
-            onStudioOpenChange(true);
+            canvasActions.onNodeBodyClick(nodeKey, nodeType);
           }}
           disabledNodes={disabledNodes}
         />
@@ -515,6 +511,38 @@ export function StudioWorkspace({
           onOpenChange={(o) => {
             setHitlModalOpen(o);
             if (!o) setHitlModalId(null);
+          }}
+        />
+      )}
+      {projectId != null && titlePanel && (
+        <NodeTitleSidePanel
+          open
+          onOpenChange={(o) => {
+            if (!o) setTitlePanel(null);
+          }}
+          projectId={projectId}
+          nodeKey={titlePanel.nodeKey}
+          nodeType={titlePanel.nodeType}
+          projectMeta={(project.data?.meta || {}) as Record<string, unknown>}
+          promptOverrides={(project.data?.prompt_overrides || {}) as Record<string, unknown>}
+          slots={getPromptSlots(titlePanel.nodeKey, titlePanel.nodeType)}
+          disabled={disabledNodes.has(titlePanel.nodeKey)}
+          onOpenExcel={() => {
+            const excel = getPromptSlots(titlePanel.nodeKey, titlePanel.nodeType).find(
+              (s) => s.kind === "excel",
+            );
+            if (excel) {
+              canvasActions.onOpenPrompt(titlePanel.nodeKey, titlePanel.nodeType, excel);
+            } else {
+              setStudioTab("excel");
+              onSelectNode(titlePanel.nodeKey);
+              onStudioOpenChange(true);
+            }
+            setTitlePanel(null);
+          }}
+          onSelectPrompt={(slot) => {
+            canvasActions.onOpenPrompt(titlePanel.nodeKey, titlePanel.nodeType, slot);
+            setTitlePanel(null);
           }}
         />
       )}

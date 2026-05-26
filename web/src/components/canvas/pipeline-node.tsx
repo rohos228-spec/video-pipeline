@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   CheckCircle2,
@@ -20,6 +20,7 @@ import {
   useCanvasActionsOptional,
 } from "./canvas-actions-context";
 import { NodeVMenu } from "./node-v-menu";
+import { NodeBadgePopover } from "./node-badge-popover";
 import { NodeGenerationBadge } from "./node-generation-badge";
 import { NodeHitlBadge, hitlKindForNodeType, resolveHitlBadgeState } from "./node-hitl-badge";
 import { NodeResultBadge } from "./node-result-badge";
@@ -52,6 +53,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
+  const badgeMenuOpen = actions?.badgeMenuNodeKey === d.nodeKey;
+  const showBadgeMenu = actions && !isHitlNodeType(d.type);
   const resultSnapshot = actions?.getNodeResult(d.type);
   const hitlKind = hitlKindForNodeType(d.type);
   const hitlState =
@@ -69,15 +72,29 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const isHero = d.type === "hero";
 
   useEffect(() => {
-    if (!vMenuOpen) return;
-    const close = (ev: MouseEvent) => {
+    if (!vMenuOpen && !badgeMenuOpen) return;
+    const close = (ev: globalThis.MouseEvent) => {
       const t = ev.target as HTMLElement;
-      if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
-      actions?.setVMenuNodeKey(null);
+      if (
+        t.closest(".node-v-menu") ||
+        t.closest(".node-v-trigger") ||
+        t.closest(".node-badge-popover")
+      ) {
+        return;
+      }
+      if (vMenuOpen) actions?.setVMenuNodeKey(null);
+      if (badgeMenuOpen) actions?.setBadgeMenuNodeKey(null);
     };
     document.addEventListener("click", close, true);
     return () => document.removeEventListener("click", close, true);
-  }, [vMenuOpen, actions]);
+  }, [vMenuOpen, badgeMenuOpen, actions]);
+
+  const openBadgeMenu = (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (!actions || !showBadgeMenu) return;
+    actions.setVMenuNodeKey(null);
+    actions.setBadgeMenuNodeKey(badgeMenuOpen ? null : d.nodeKey);
+  };
 
   return (
     <>
@@ -95,17 +112,48 @@ export function PipelineNode({ data, selected }: NodeProps) {
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
       >
         {actions && showHitlBadge && hitlState && (
-          <NodeHitlBadge
-            state={hitlState}
-            onClick={(e) => {
-              e.stopPropagation();
-              actions.onOpenHitlReview(d.nodeKey, d.type);
-            }}
-          />
+          <>
+            <NodeHitlBadge
+              state={hitlState}
+              onClick={showBadgeMenu ? openBadgeMenu : undefined}
+            />
+            {showBadgeMenu && badgeMenuOpen && actions.projectId && (
+              <NodeBadgePopover
+                open
+                nodeKey={d.nodeKey}
+                nodeType={d.type}
+                projectId={actions.projectId}
+                projectMeta={(actions.project?.meta || {}) as Record<string, unknown>}
+                onClose={() => actions.setBadgeMenuNodeKey(null)}
+                onOpenHitlReview={() => actions.onOpenHitlReview(d.nodeKey, d.type)}
+                onOpenPrompt={(slot) => actions.onOpenPrompt(d.nodeKey, d.type, slot)}
+                onOpenGptText={() => actions.onOpenGptText(d.nodeKey, d.type)}
+              />
+            )}
+          </>
         )}
 
         {actions && !showHitlBadge && (
-          <NodeGenerationBadge nodeType={d.type} status={d.status} />
+          <>
+            <NodeGenerationBadge
+              nodeType={d.type}
+              status={d.status}
+              onClick={showBadgeMenu ? openBadgeMenu : undefined}
+            />
+            {showBadgeMenu && badgeMenuOpen && actions.projectId && (
+              <NodeBadgePopover
+                open
+                nodeKey={d.nodeKey}
+                nodeType={d.type}
+                projectId={actions.projectId}
+                projectMeta={(actions.project?.meta || {}) as Record<string, unknown>}
+                onClose={() => actions.setBadgeMenuNodeKey(null)}
+                onOpenHitlReview={() => actions.onOpenHitlReview(d.nodeKey, d.type)}
+                onOpenPrompt={(slot) => actions.onOpenPrompt(d.nodeKey, d.type, slot)}
+                onOpenGptText={() => actions.onOpenGptText(d.nodeKey, d.type)}
+              />
+            )}
+          </>
         )}
 
         {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
@@ -209,9 +257,26 @@ export function PipelineNode({ data, selected }: NodeProps) {
           </NodeCardIcon>
           <div className="min-w-0 flex-1 flex-col leading-tight pr-8">
             <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[13px] font-semibold tracking-tight">
+              <button
+                type="button"
+                className="node-title-trigger nodrag truncate text-left text-[13px] font-semibold tracking-tight hover:text-primary"
+                title="Промты, Excel и пресеты"
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.stopPropagation();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (!actions || isHitlNodeType(d.type)) return;
+                  actions.setBadgeMenuNodeKey(null);
+                  actions.setVMenuNodeKey(null);
+                  actions.setTitlePanel({ nodeKey: d.nodeKey, nodeType: d.type });
+                }}
+              >
                 {spec.label || formatNodeTypeLabel(d.type)}
-              </span>
+              </button>
               <span className={cn("status-pill shrink-0", statusConfig.bg, statusConfig.text)}>
                 {running ? (
                   <Loader2 className="h-2.5 w-2.5 animate-spin" />

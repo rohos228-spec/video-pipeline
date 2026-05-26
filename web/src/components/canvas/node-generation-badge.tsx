@@ -53,9 +53,10 @@ const STATUS_VISUAL: Record<
   },
 };
 
-/** Индикатор статуса генерации над нодой (только отображение, без клика). */
+/** Индикатор статуса генерации над нодой; клик открывает компактное меню ИИ. */
 export function NodeGenerationBadge({
   status,
+  onClick,
 }: {
   nodeType?: string;
   status: NodeRunStatus;
@@ -67,30 +68,40 @@ export function NodeGenerationBadge({
   generationActive?: boolean;
   autoMode?: boolean;
   hitlList?: unknown[];
-  onOpenHitl?: (e: React.MouseEvent) => void;
+  onClick?: (e: React.MouseEvent) => void;
 }) {
   const visual = STATUS_VISUAL[status];
   const Icon = visual.icon;
+  const clickable = Boolean(onClick);
 
   return (
     <>
       <div
         className={cn(
-          "pointer-events-none absolute -top-5 left-1/2 z-10 h-5 w-px -translate-x-1/2 border-l-2 border-dashed",
+          "pointer-events-none absolute -top-4 left-1/2 z-10 h-4 w-px -translate-x-1/2 border-l-2 border-dashed",
           visual.connector,
         )}
       />
-      <div
+      <button
+        type="button"
+        disabled={!clickable}
+        onClick={onClick}
+        onMouseDown={(e) => e.stopPropagation()}
         className={cn(
-          "pointer-events-none absolute -top-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md",
+          "nodrag nopan absolute -top-10 left-1/2 z-20 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition",
           visual.className,
           status === "running" && "animate-pulse",
+          clickable && "cursor-pointer hover:scale-110 hover:brightness-110",
+          !clickable && "cursor-default",
         )}
-        title={`Статус генерации: ${visual.label}`}
-        aria-hidden
+        title={
+          clickable
+            ? `${visual.label} — ИИ и промты`
+            : `Статус генерации: ${visual.label}`
+        }
       >
-        <Icon className={cn("h-4 w-4", status === "running" && "animate-spin")} />
-      </div>
+        <Icon className={cn("h-3.5 w-3.5", status === "running" && "animate-spin")} />
+      </button>
     </>
   );
 }

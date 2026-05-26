@@ -16,6 +16,10 @@ export interface CanvasActions {
   disabledNodes: Set<string>;
   vMenuNodeKey: string | null;
   setVMenuNodeKey: (key: string | null) => void;
+  badgeMenuNodeKey: string | null;
+  setBadgeMenuNodeKey: (key: string | null) => void;
+  titlePanel: { nodeKey: string; nodeType: string } | null;
+  setTitlePanel: (panel: { nodeKey: string; nodeType: string } | null) => void;
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
   getNodeResult: (nodeType: string) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
