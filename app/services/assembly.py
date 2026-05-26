@@ -7,8 +7,8 @@
 
 Микш:
   - исходный звук клипов: ASSEMBLY_CLIP_AUDIO_DB (по умолчанию −22 dB),
-  - BGM: ASSEMBLY_BGM_DB (по умолчанию −17 dB),
-  - голос ElevenLabs — основная дорожка.
+  - BGM: ASSEMBLY_BGM_DB (по умолчанию −17 dB), зациклить если короче ролика,
+  - голос — зациклить если короче; в конце ролика fade-out 3 с (ASSEMBLY_AUDIO_FADE_OUT_SEC).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.services.audio_filters import labeled_loop_trim_fade
 from app.services.clip_fit import plan_clip_fit
 from app.services.media_probe import probe_duration
 from app.settings import settings
@@ -185,9 +186,25 @@ async def assemble(
             str(concat_mp4),
         ])
 
-        # Голос + опционально BGM поверх звука клипов
+        video_d = await probe_duration(concat_mp4)
+        if video_d <= 0:
+            video_d = t_cursor
+        fade_sec = settings.assembly_audio_fade_out_sec
+        voice_chain = labeled_loop_trim_fade(
+            "1:a", "voice", total_duration=video_d, fade_out_sec=fade_sec
+        )
+        amb_fade_start = max(0.0, video_d - fade_sec)
+        amb_fade_len = min(fade_sec, video_d)
+
         mixed_audio = tmp_dir / "mixed_audio.m4a"
         if bgm_path is not None and bgm_path.exists():
+            bgm_chain = labeled_loop_trim_fade(
+                "2:a",
+                "bgm",
+                total_duration=video_d,
+                fade_out_sec=fade_sec,
+                volume_db=bgm_level_db,
+            )
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(concat_mp4),
@@ -195,14 +212,15 @@ async def assemble(
                 "-i", str(bgm_path),
                 "-filter_complex",
                 (
-                    "[0:a]volume=1[amb];"
-                    f"[1:a]volume=1[voice];"
-                    f"[2:a]volume={bgm_level_db}dB,aloop=loop=-1:size=2e+09[bgm];"
+                    f"[0:a]volume=1,atrim=0:{video_d:.3f},asetpts=PTS-STARTPTS,"
+                    f"afade=t=out:st={amb_fade_start:.3f}:d={amb_fade_len:.3f}[amb];"
+                    f"{voice_chain};"
+                    f"{bgm_chain};"
                     "[amb][voice][bgm]amix=inputs=3:duration=first:dropout_transition=0[a]"
                 ),
                 "-map", "0:v:0", "-map", "[a]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                "-shortest",
+                "-t", f"{video_d:.3f}",
                 str(mixed_audio),
             ])
         else:
@@ -211,10 +229,15 @@ async def assemble(
                 "-i", str(concat_mp4),
                 "-i", str(audio_path),
                 "-filter_complex",
-                "[0:a]volume=1[amb];[1:a]volume=1[voice];[amb][voice]amix=inputs=2:duration=first[a]",
+                (
+                    f"[0:a]volume=1,atrim=0:{video_d:.3f},asetpts=PTS-STARTPTS,"
+                    f"afade=t=out:st={amb_fade_start:.3f}:d={amb_fade_len:.3f}[amb];"
+                    f"{voice_chain};"
+                    "[amb][voice]amix=inputs=2:duration=first:dropout_transition=0[a]"
+                ),
                 "-map", "0:v:0", "-map", "[a]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                "-shortest",
+                "-t", f"{video_d:.3f}",
                 str(mixed_audio),
             ])
 
