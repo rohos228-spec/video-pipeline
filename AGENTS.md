@@ -28,6 +28,25 @@
 - **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
 - Tests use in-memory SQLite and don't require external services or a `.env` file.
 
+### Доставка кода на Windows-машину пользователя
+
+Когда пользователь просит «скачать на винду» или аналогичное — **не давать инструкции**, а сразу сгенерировать готовый PowerShell-блок, который пользователь может целиком вставить в терминал. Пример:
+
+```powershell
+cd $env:USERPROFILE\Desktop
+git clone https://github.com/rohos228-spec/video-pipeline.git
+cd video-pipeline
+git checkout <ветка>
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+cd web; pnpm install; pnpm run build; cd ..
+copy .env.example .env
+Write-Host "Готово! Запусти: .\VideoPipelineStudio.cmd"
+```
+
+Подставить актуальную ветку. Весь блок должен быть copy-paste-ready.
+
 ### Studio UI version badge
 
 - Build counter lives in `web/STUDIO_VERSION` (line 1 = number, line 2 = git short sha).
