@@ -18,10 +18,13 @@ if (-not (Test-Path $core)) {
 
 $Root = Get-StudioRepoRoot -StartDir $PSScriptRoot
 if (-not $Root) {
-    Write-Host 'ERROR: pyproject.toml not found — cd to video-pipeline root' -ForegroundColor Red
+    Write-Host 'ERROR: pyproject.toml not found' -ForegroundColor Red
+    Write-Host 'Put this repo on disk and run UPDATE-STUDIO.cmd from its root (folder with pyproject.toml).' -ForegroundColor Yellow
+    Write-Host "Your shell was: $(Get-Location)" -ForegroundColor Yellow
     exit 1
 }
-Set-Location $Root
+Set-Location -LiteralPath $Root
+Write-Host "Repo root: $Root" -ForegroundColor DarkGray
 
 if ($GitOnly) {
     $ok = Invoke-StudioGit $Root

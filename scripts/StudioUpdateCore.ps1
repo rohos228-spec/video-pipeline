@@ -9,13 +9,32 @@ function Get-StudioRepoRoot {
     $dir = $StartDir
     for ($i = 0; $i -lt 12; $i++) {
         if (Test-Path (Join-Path $dir 'pyproject.toml')) {
-            return $dir
+            return (Resolve-Path -LiteralPath $dir).Path
         }
         $parent = Split-Path -Parent $dir
         if (-not $parent -or $parent -eq $dir) { break }
         $dir = $parent
     }
     return $null
+}
+
+function Assert-StudioRepoRoot {
+    param([string]$Root)
+    $toml = Join-Path $Root 'pyproject.toml'
+    if (-not (Test-Path -LiteralPath $toml)) {
+        Write-StudioLog "FAIL: pyproject.toml not found in: $Root" 'Red'
+        Write-StudioLog 'You are in the wrong folder. cd to video-pipeline repo root first.' 'Yellow'
+        Write-StudioLog 'Example: cd "C:\Users\Love Space\Documents\video-pipeline"' 'Yellow'
+        return $false
+    }
+    return $true
+}
+
+function Get-StudioPipEditableSpec {
+    param([string]$Root)
+    # Absolute path + [dev] — works with spaces in path (Love Space) and any cwd
+    $abs = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\', '/')
+    return ($abs + '[dev]')
 }
 
 function Write-StudioLog {
@@ -174,15 +193,24 @@ function Invoke-StudioNpmBuild {
 
 function Invoke-StudioPipInstall {
     param([string]$Root)
+    if (-not (Assert-StudioRepoRoot $Root)) { return $false }
     $py = Join-Path $Root '.venv\Scripts\python.exe'
-    if (-not (Test-Path $py)) {
-        Write-StudioLog 'FAIL: .venv missing — run install.ps1 first' 'Red'
+    if (-not (Test-Path -LiteralPath $py)) {
+        Write-StudioLog 'FAIL: .venv missing — run install.ps1 from repo root first' 'Red'
         return $false
     }
-    Write-StudioLog '> pip install -e .[dev]  (PS5: single-quoted extras)' 'Cyan'
-    & $py -m pip install -e '.[dev]'
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioLog "FAIL: pip exit $LASTEXITCODE" 'Red'
+    $spec = Get-StudioPipEditableSpec $Root
+    Write-StudioLog "> pip install -e `"$spec`"" 'Cyan'
+    Write-StudioLog "  (cwd before pip: $(Get-Location))" 'Gray'
+    Push-Location -LiteralPath $Root
+    try {
+        & $py -m pip install -e $spec
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($code -ne 0) {
+        Write-StudioLog "FAIL: pip exit $code — must run from repo with pyproject.toml" 'Red'
         return $false
     }
     Write-StudioLog 'OK pip' 'Green'

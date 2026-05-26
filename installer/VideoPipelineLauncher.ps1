@@ -727,8 +727,13 @@ function Sync-PythonAndWeb {
         Write-Log "No venv - run button 1 Full install" "DarkOrange"
         return $false
     }
-    if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", '.[dev]'))) {
-        return $false
+    if (Test-Path $script:StudioCorePath) {
+        if (-not (Invoke-StudioPipInstall $Root)) { return $false }
+    } else {
+        $pipSpec = (Resolve-Path -LiteralPath $Root).Path + '[dev]'
+        if (-not (Invoke-PythonLogged "pip install -e" $py @("-m", "pip", "install", "-e", $pipSpec))) {
+            return $false
+        }
     }
     if (Test-PrebuiltUiFromGit) {
         return $true
