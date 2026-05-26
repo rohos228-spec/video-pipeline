@@ -1581,6 +1581,80 @@ class OutseeBot:
             "предыдущая генерация зависла?"
         )
 
+    async def _click_generate_button(
+        self,
+        page: Page,
+        *,
+        where: str,
+        project_id: int | None = None,
+        dumps: list[Path] | None = None,
+        context: dict[str, object] | None = None,
+    ) -> str:
+        """Клик Generate — как в generate_image: wait enabled + physical fallback."""
+        from app.services.step_cancel import abort_if_cancelled, await_with_cancel, sleep_cancellable
+
+        abort_if_cancelled(project_id)
+        gen_sel = await _first_visible(
+            page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
+        )
+        if not gen_sel:
+            dump_paths: list[Path] = []
+            h, p = await _dump_page(page, f"{where}_generate_notfound")
+            for x in (h, p):
+                if x:
+                    dump_paths.append(x)
+            if dumps is not None:
+                dumps.extend(dump_paths)
+            raise OutseeImageError(
+                f"outsee {where}: не найдена кнопка Generate",
+                context=context or {},
+                dumps=dump_paths,
+            )
+        logger.info("outsee.{}: кнопка Generate найдена ({})", where, gen_sel)
+        loc = page.locator(gen_sel).first
+        try:
+            await await_with_cancel(
+                loc.scroll_into_view_if_needed(timeout=5_000), project_id
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await self._wait_button_enabled(
+            page, gen_sel, timeout_s=600, project_id=project_id
+        )
+        abort_if_cancelled(project_id)
+
+        pre_rejected_text = await self._outsee_failure_text(page)
+        if pre_rejected_text:
+            logger.info(
+                "outsee.{}: pre-click failure_text ({} симв, kind={})",
+                where,
+                len(pre_rejected_text),
+                _outsee_failure_kind(pre_rejected_text),
+            )
+
+        for attempt in range(1, 4):
+            abort_if_cancelled(project_id)
+            if attempt == 1:
+                await await_with_cancel(loc.click(), project_id)
+            else:
+                logger.warning(
+                    "outsee.{}: Generate не стартовала — physical click {}/3",
+                    where,
+                    attempt,
+                )
+                await _physical_mouse_click(
+                    page, loc, project_id=project_id, label=f"{where} Generate"
+                )
+            await sleep_cancellable(0.8, project_id)
+            if not await self._generate_button_enabled(page):
+                logger.info("outsee.{}: Generate кликнут, жду результат", where)
+                return gen_sel
+
+        raise OutseeImageError(
+            f"outsee {where}: Generate осталась активной после клика",
+            context=context or {},
+        )
+
     async def _result_img_src(self, page: Page) -> str | None:
         """Src большой картинки из блока «Результат генерации» (или None,
         если блока ещё нет / там плейсхолдер/спиннер)."""
@@ -2732,17 +2806,6 @@ class OutseeBot:
             pass
         abort_if_cancelled(project_id)
 
-        # Снимок video URL до клика — не скачиваем ролики из истории outsee.
-        baseline_video_urls = {
-            _strip_url_query(u)
-            for u in await self._all_video_urls_on_page(page)
-            if u
-        }
-        logger.info(
-            "outsee.generate_video: baseline video_urls={}",
-            len(baseline_video_urls),
-        )
-
         # Retry на том же prompt_id: карточка с готовым роликом уже в галерее.
         already_in_progress = False
         if prompt_id_prefix:
@@ -2843,30 +2906,31 @@ class OutseeBot:
                     context={"prompt_id": prompt_id_prefix},
                 )
 
-            # 4) Generate
-            abort_if_cancelled(project_id)
-            gen_sel = await _first_visible(
-                page, GENERATE_BUTTON_SELECTORS, timeout_ms=10_000, project_id=project_id
+            # 4) re-baseline + Generate (логика как generate_image)
+            baseline_video_urls = {
+                _strip_url_query(u)
+                for u in await self._all_video_urls_on_page(page)
+                if u
+            }
+            logger.info(
+                "outsee.generate_video: re-baseline video_urls={} перед Generate",
+                len(baseline_video_urls),
             )
-            if not gen_sel:
-                raise RuntimeError("outsee video: не найдена кнопка Generate")
-            logger.info("outsee.generate_video: кнопка Generate найдена ({})", gen_sel)
-            try:
-                await await_with_cancel(
-                    page.locator(gen_sel).first.scroll_into_view_if_needed(timeout=5_000),
-                    project_id,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-            await self._wait_button_enabled(
-                page, gen_sel, timeout_s=600, project_id=project_id
+            await self._click_generate_button(
+                page,
+                where="generate_video",
+                project_id=project_id,
+                context={"prompt_id": prompt_id_prefix or ""},
             )
-            abort_if_cancelled(project_id)
-            await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
             generate_clicked = True
-            logger.info("outsee.generate_video: Generate кликнут")
 
         # 5) ждём НОВЫЙ ролик (как _wait_image_url_strict для картинок).
+        if already_in_progress:
+            baseline_video_urls = {
+                _strip_url_query(u)
+                for u in await self._all_video_urls_on_page(page)
+                if u
+            }
         video_url = await self._wait_video_url_strict(
             page,
             timeout=timeout,
