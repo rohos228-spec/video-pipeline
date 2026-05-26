@@ -61,6 +61,20 @@ def _sqlite_project_count(db_path: Path) -> int:
         return -1
 
 
+def _running_backend_git_short() -> str:
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 def read_studio_version() -> dict[str, str | int | bool]:
     from app.settings import settings
 
@@ -81,10 +95,12 @@ def read_studio_version() -> dict[str, str | int | bool]:
         not orchestrator_expected or orchestrator_expected == backend_orchestrator
     )
 
+    backend_git = _running_backend_git_short()
     return {
         "build": build,
         "sha": sha,
         "label": label,
+        "backend_git": backend_git,
         "db_path": str(db_path),
         "project_count": project_count,
         "ui_baked_build": ui_baked_build,
