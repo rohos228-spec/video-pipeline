@@ -4512,6 +4512,147 @@ async def _download_via_context(
 
 # ---------- recon util: python -m app.bots.outsee recon-image "prompt" ----------
 
+
+async def _recon_generate_buttons(kind: str = "video") -> None:
+    """Скан кнопок Generate на открытой в Chrome странице outsee.
+
+    Запускай ПОСЛЕ логина в outsee в том же Chrome (CDP :29229).
+    Пишет в data/outsee_dumps/: JSON с координатами, PNG, HTML.
+  """
+    import json
+    from datetime import datetime as _dt
+
+    url = settings.outsee_image_url if kind == "image" else settings.outsee_video_url
+    dumps_dir = Path(settings.data_dir) / "outsee_dumps"
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+    ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+    label = f"recon_generate_{kind}_{ts}"
+
+    async with browser_session() as bs:
+        page = await bs.open_page(url, reuse=True)
+        await page.wait_for_load_state("domcontentloaded")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(3)
+
+        scan = await page.evaluate(
+            """() => {
+                const keywords = [
+                    'генерир', 'создать', 'generate', 'run', 'генерация'
+                ];
+                const visible = (el) => {
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 4 && r.height > 4;
+                };
+                const allButtons = [];
+                for (const btn of document.querySelectorAll('button, [role="button"]')) {
+                    const text = (btn.innerText || btn.textContent || '').trim();
+                    const low = text.toLowerCase();
+                    const hit = keywords.some(k => low.includes(k));
+                    if (!hit && !btn.getAttribute('data-testid')) continue;
+                    const r = btn.getBoundingClientRect();
+                    allButtons.push({
+                        tag: btn.tagName,
+                        text: text.slice(0, 80),
+                        disabled: !!btn.disabled,
+                        ariaDisabled: btn.getAttribute('aria-disabled'),
+                        dataTestid: btn.getAttribute('data-testid'),
+                        type: btn.getAttribute('type'),
+                        className: (btn.className && btn.className.toString().slice(0, 100)) || '',
+                        visible: visible(btn),
+                        x: Math.round(r.x), y: Math.round(r.y),
+                        w: Math.round(r.width), h: Math.round(r.height),
+                        cx: Math.round(r.x + r.width / 2),
+                        cy: Math.round(r.y + r.height / 2),
+                    });
+                }
+                return allButtons;
+            }"""
+        )
+
+        selector_hits: list[dict[str, Any]] = []
+        for sel in GENERATE_BUTTON_SELECTORS:
+            hit: dict[str, Any] = {"selector": sel, "count": 0, "visible_nth": []}
+            try:
+                loc = page.locator(sel)
+                count = await loc.count()
+                hit["count"] = count
+                for i in range(min(count, 5)):
+                    nth = loc.nth(i)
+                    try:
+                        vis = await nth.is_visible()
+                        dis = await nth.is_disabled()
+                        box = await nth.bounding_box()
+                        hit["visible_nth"].append({
+                            "i": i,
+                            "visible": vis,
+                            "disabled": dis,
+                            "box": box,
+                        })
+                    except Exception as e:  # noqa: BLE001
+                        hit["visible_nth"].append({"i": i, "err": str(e)})
+            except Exception as e:  # noqa: BLE001
+                hit["error"] = str(e)
+            selector_hits.append(hit)
+
+        first_sel = await _first_visible(
+            page, GENERATE_BUTTON_SELECTORS, timeout_ms=5_000
+        )
+        report = {
+            "kind": kind,
+            "url": page.url,
+            "first_visible_selector": first_sel,
+            "dom_generate_like_buttons": scan or [],
+            "configured_selectors": selector_hits,
+        }
+        json_path = dumps_dir / f"{label}.json"
+        json_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        png_path = dumps_dir / f"{label}.png"
+        html_path = dumps_dir / f"{label}.html"
+        try:
+            await page.screenshot(path=str(png_path), full_page=True, timeout=15_000)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recon screenshot failed: {}", e)
+            png_path = None
+        try:
+            html_path.write_text(await page.content(), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recon html failed: {}", e)
+            html_path = None
+
+        logger.info("=== recon-generate {} ===", kind)
+        logger.info("page url: {}", page.url)
+        logger.info("first_visible GENERATE selector: {}", first_sel)
+        logger.info("DOM buttons (generate-like): {}", len(scan or []))
+        for i, b in enumerate(scan or []):
+            logger.info(
+                "  [{}] visible={} disabled={} ({},{}) {}×{} text={!r}",
+                i,
+                b.get("visible"),
+                b.get("disabled"),
+                b.get("cx"),
+                b.get("cy"),
+                b.get("w"),
+                b.get("h"),
+                b.get("text"),
+            )
+        logger.info("JSON → {}", json_path)
+        if png_path:
+            logger.info("PNG  → {}", png_path)
+        if html_path:
+            logger.info("HTML → {}", html_path)
+        print(f"\nГотово. Открой файл и пришли в чат:\n  {json_path}")
+        if png_path:
+            print(f"  {png_path}")
+
+
 async def _recon(kind: str, prompt: str, start_frame: str | None = None) -> None:
     url = settings.outsee_image_url if kind == "image" else settings.outsee_video_url
     async with browser_session() as bs:
@@ -4553,10 +4694,25 @@ async def _recon(kind: str, prompt: str, start_frame: str | None = None) -> None
 
 
 def _cli() -> None:
+    if len(sys.argv) < 2:
+        print(
+            "usage:\n"
+            "  python -m app.bots.outsee recon-generate [video|image]\n"
+            "  python -m app.bots.outsee recon-video <prompt> [start_frame]\n"
+            "  python -m app.bots.outsee recon-image <prompt>"
+        )
+        sys.exit(1)
+    cmd = sys.argv[1].lower()
+    if cmd.startswith("recon-generate"):
+        kind = "video"
+        if len(sys.argv) > 2 and "image" in sys.argv[2].lower():
+            kind = "image"
+        asyncio.run(_recon_generate_buttons(kind))
+        return
     if len(sys.argv) < 3:
         print("usage: python -m app.bots.outsee recon-image|recon-video <prompt> [start_frame]")
         sys.exit(1)
-    cmd, prompt = sys.argv[1], sys.argv[2]
+    prompt = sys.argv[2]
     start = sys.argv[3] if len(sys.argv) > 3 else None
     kind = "image" if "image" in cmd else "video"
     asyncio.run(_recon(kind, prompt, start))
