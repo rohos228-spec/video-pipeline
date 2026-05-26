@@ -27,7 +27,11 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "send-wait-enabled-v77"
+CHATGPT_ATTACH_LOGIC_ID = "send-wait-enabled-v78"
+
+# Ожидание загрузки вложений в композер (тяжёлые пачки PNG могут грузиться >60с).
+ATTACH_UPLOAD_TIMEOUT_SEC = 180.0
+ATTACH_UPLOAD_POLL_SEC = 5.0
 
 # ChatGPT при повторном drop одного имени добавляет суффикс: frame_001.png → frame_001(3).png
 _ATTACHMENT_DEDUP_SUFFIX = re.compile(r"\(\d+\)")
@@ -335,20 +339,28 @@ class ChatGPTBot:
         return None, False
 
     async def _wait_send_button_enabled(
-        self, page: Page, *, timeout: float = 45
+        self,
+        page: Page,
+        *,
+        timeout: float = ATTACH_UPLOAD_TIMEOUT_SEC,
     ) -> str:
         """Ждём активную кнопку Send (после ввода текста / загрузки файлов)."""
         deadline = asyncio.get_event_loop().time() + timeout
+        started = asyncio.get_event_loop().time()
         last_log = 0.0
         while asyncio.get_event_loop().time() < deadline:
             sel, ok = await self._is_send_button_enabled(page)
             if ok and sel:
                 return sel
             now = asyncio.get_event_loop().time()
-            if now - last_log > 3.0:
-                logger.info("ChatGPT: жду активную кнопку Send…")
+            if now - last_log >= ATTACH_UPLOAD_POLL_SEC:
+                logger.info(
+                    "ChatGPT: жду активную кнопку Send… ({:.0f}/{:.0f}с)",
+                    now - started,
+                    timeout,
+                )
                 last_log = now
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(ATTACH_UPLOAD_POLL_SEC)
         await self._dump_composer_html()
         await self._dump_send_button_candidates(page)
         raise RuntimeError(
@@ -466,7 +478,9 @@ class ChatGPTBot:
     async def _click_send(self) -> None:
         """Нажать Send без ввода текста в композер (только вложения)."""
         page = await self._page_ready()
-        await self._dispatch_composer_send(page, had_draft=False, send_timeout=60)
+        await self._dispatch_composer_send(
+            page, had_draft=False, send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
+        )
 
     async def _count_attachment_previews(self) -> int:
         """Сколько превью вложений сейчас в композере."""
@@ -605,7 +619,9 @@ class ChatGPTBot:
         await self._dispatch_composer_send(
             page,
             had_draft=bool(stripped),
-            send_timeout=60 if not clear_first else 45,
+            send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
+            if not clear_first
+            else 45.0,
         )
 
     async def _dump_send_button_candidates(self, page: Page) -> None:
@@ -883,12 +899,16 @@ class ChatGPTBot:
         return dict(raw or {"ok": False, "count": 0, "loading": 0, "reason": "eval"})
 
     async def _wait_attachments_ready(
-        self, file_paths: list[Path], *, timeout: float = 120
+        self,
+        file_paths: list[Path],
+        *,
+        timeout: float = ATTACH_UPLOAD_TIMEOUT_SEC,
     ) -> None:
         """Ждём имена файлов в композере и исчезновение спиннеров на вложениях."""
         expected = len(file_paths)
         deadline = asyncio.get_event_loop().time() + timeout
-        last_log = ""
+        started = asyncio.get_event_loop().time()
+        last_log_at = 0.0
         while asyncio.get_event_loop().time() < deadline:
             names_ok = await self._files_visible_in_composer(file_paths)
             state = await self._attachments_upload_state(expected)
@@ -896,21 +916,24 @@ class ChatGPTBot:
             loading = int(state.get("loading") or 0)
             reason = state.get("reason", "?")
             count_ok = count >= expected
-            log_key = f"{names_ok}:{reason}:{count}:{loading}"
-            if log_key != last_log:
+            now = asyncio.get_event_loop().time()
+            if now - last_log_at >= ATTACH_UPLOAD_POLL_SEC:
                 logger.info(
-                    "ChatGPT: upload state names_ok={} count={}/{} loading={} ({})",
+                    "ChatGPT: upload check {:.0f}/{:.0f}с — names_ok={} "
+                    "count={}/{} loading={} ({})",
+                    now - started,
+                    timeout,
                     names_ok,
                     count,
                     expected,
                     loading,
                     reason,
                 )
-                last_log = log_key
+                last_log_at = now
             if names_ok and count_ok and loading == 0:
                 await asyncio.sleep(0.8)
                 return
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(ATTACH_UPLOAD_POLL_SEC)
         await self._dump_composer_html()
         raise RuntimeError(
             f"ChatGPT: вложения не готовы за {timeout:.0f}с "
@@ -929,7 +952,7 @@ class ChatGPTBot:
         )
         await page.locator(input_sel).last.set_input_files(paths)
         await self._fire_file_input_events(input_sel)
-        await self._wait_attachments_ready(file_paths, timeout=120)
+        await self._wait_attachments_ready(file_paths)
 
     async def _attach_one_via_paperclip(self, file_path: Path) -> None:
         """Прикрепить один файл через скрепку + set_input_files."""
@@ -977,7 +1000,7 @@ class ChatGPTBot:
         try:
             logger.info("ChatGPT: drag-drop batch — [{}]", names)
             await self._drag_drop_files(file_paths)
-            await self._wait_attachments_ready(file_paths, timeout=120)
+            await self._wait_attachments_ready(file_paths)
             if await self._files_visible_in_composer(file_paths):
                 drag_drop_ok = True
                 logger.info("ChatGPT: drag-drop batch — все файлы видны [{}]", names)
@@ -1013,7 +1036,7 @@ class ChatGPTBot:
                     input_sel = await self._materialize_file_input(fresh=True)
                     await page.locator(input_sel).last.set_input_files([str(fp)])
                     await self._fire_file_input_events(input_sel)
-                    await self._wait_attachments_ready(accumulated, timeout=120)
+                    await self._wait_attachments_ready(accumulated)
                 drag_drop_ok = await self._files_visible_in_composer(file_paths)
 
         after = await self._count_attachment_previews()
@@ -1059,7 +1082,7 @@ class ChatGPTBot:
                     file_path.name,
                     preview_sel,
                 )
-                await self._wait_upload_done(timeout=120)
+                await self._wait_upload_done()
                 drag_drop_ok = True
             else:
                 logger.warning(
@@ -1097,7 +1120,7 @@ class ChatGPTBot:
             raise RuntimeError(
                 f"ChatGPT: {file_path.name} — превью/имя не появилось после set_input_files"
             )
-        await self._wait_upload_done(timeout=120)
+        await self._wait_upload_done()
 
     async def _attach_files_batch(self, file_paths: list[Path]) -> None:
         """Batch drag-drop / set_input_files — запасной путь для нескольких файлов."""
@@ -1114,7 +1137,7 @@ class ChatGPTBot:
                 logger.info(
                     "ChatGPT: batch drag-drop превью ({})", preview_sel
                 )
-                await self._wait_upload_done(timeout=120)
+                await self._wait_upload_done()
                 drag_drop_ok = True
         except Exception as e:  # noqa: BLE001
             logger.warning("ChatGPT: batch drag-drop упал ({}), fallback", e)
@@ -1141,7 +1164,7 @@ class ChatGPTBot:
             raise RuntimeError(
                 f"ChatGPT: batch set_input_files — нет превью/имён [{names}]"
             )
-        await self._wait_upload_done(timeout=120)
+        await self._wait_upload_done()
 
     async def _drag_drop_files(self, file_paths: list[Path]) -> None:
         """Симулирует drag-and-drop файлов на форму композера ChatGPT.
@@ -1274,7 +1297,9 @@ class ChatGPTBot:
             result.get("files"),
         )
 
-    async def _wait_upload_done(self, *, timeout: float = 120) -> None:
+    async def _wait_upload_done(
+        self, *, timeout: float = ATTACH_UPLOAD_TIMEOUT_SEC
+    ) -> None:
         """Ждёт пока в композере исчезнут спиннеры загрузки вложений."""
         page = await self._page_ready()
         spinner_sels = [
@@ -1291,7 +1316,8 @@ class ChatGPTBot:
             "form .animate-spin",
         ]
         deadline = asyncio.get_event_loop().time() + timeout
-        last_count = -1
+        started = asyncio.get_event_loop().time()
+        last_log_at = 0.0
         while asyncio.get_event_loop().time() < deadline:
             total = 0
             for sel in spinner_sels:
@@ -1299,14 +1325,19 @@ class ChatGPTBot:
                     total += await page.locator(sel).count()
                 except Exception:  # noqa: BLE001
                     continue
-            if total != last_count:
-                logger.info("ChatGPT: upload-spinner count={}", total)
-                last_count = total
+            now = asyncio.get_event_loop().time()
+            if now - last_log_at >= ATTACH_UPLOAD_POLL_SEC:
+                logger.info(
+                    "ChatGPT: upload-spinner check {:.0f}/{:.0f}с — count={}",
+                    now - started,
+                    timeout,
+                    total,
+                )
+                last_log_at = now
             if total == 0:
-                # ещё короткая пауза для устойчивости
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.8)
                 return
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(ATTACH_UPLOAD_POLL_SEC)
         logger.warning(
             "ChatGPT: upload-spinner так и не пропал за {}с — "
             "продолжаю, но upload может быть незавершён",

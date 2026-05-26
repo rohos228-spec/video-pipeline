@@ -30,6 +30,7 @@ def test_anim_pr_initial_default_no_master_in_chat(monkeypatch) -> None:
     assert "MASTER" not in text
     assert "prompt_anim_pr_test.md" in text
     assert "Первая фраза" in text
+    assert "только изображения" in text.lower() or "без текста" in text.lower()
 
 
 def test_write_anim_pr_prompt_file(tmp_path: Path, monkeypatch) -> None:

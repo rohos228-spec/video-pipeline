@@ -1,9 +1,9 @@
 """ChatGPT batch-flow для шага «Промты анимации» (anim_pr).
 
 Один диалог:
-  1) мастер-промт + закадровый текст (все кадры);
-  2) пачки до 5 картинок + для каждой «ID изображения» и «Закадровый текст»;
-  3) парсим ответы «ID изображения» / «текст анимации» и пишем в xlsx (план R48).
+  1) мастер-промт (файл) + сопр. текст: ID и закадровый по всем кадрам;
+  2) пачки до 5 картинок без текста в сообщении;
+  3) парсим «ID изображения» / «текст анимации» → xlsx план R48.
 """
 
 from __future__ import annotations
@@ -88,15 +88,40 @@ def build_initial_message(
     *,
     prompt_file_name: str,
 ) -> str:
-    """Текст первого сообщения в чат (мастер-промт уходит отдельным файлом)."""
+    """Текст первого (и единственного текстового) сообщения — мастер-промт в файле."""
+    catalog_items = collect_batch_items(project, frames)
+    catalog_lines: list[str] = []
+    for it in catalog_items:
+        catalog_lines.append(
+            f"Кадр {it.frame.number} — ID изображения: {it.image_id}\n"
+            f"Закадровый текст: {it.voiceover}"
+        )
+    catalog_block = (
+        "\n\n".join(catalog_lines)
+        if catalog_lines
+        else "(нет кадров с изображениями на диске)"
+    )
+    images_only = (
+        "\n\nДальше пришлю только изображения пачками (до 5 за сообщение), "
+        "в порядке кадров из списка выше — без дополнительного текста. "
+        "На каждую пачку отвечай в формате:\n"
+        "ID изображения: …\n"
+        "текст анимации: …"
+    )
     override = gtb.get_override(project, "anim_pr")
     if override is not None:
         return (
             override.strip()
-            + f"\n\n(Мастер-промт — в прикреплённом файле {prompt_file_name}.)"
+            + f"\n\n(Мастер-промт — в прикреплённом файле {prompt_file_name}.)\n\n"
+            f"Кадры для этой сессии:\n{catalog_block}"
+            + images_only
         )
     return gtb.build_anim_pr_initial_default(
-        project, frames, prompt_file_name=prompt_file_name
+        project,
+        frames,
+        prompt_file_name=prompt_file_name,
+        frame_catalog=catalog_block,
+        images_only_note=images_only,
     )
 
 
@@ -112,26 +137,9 @@ def voiceover_for_frame(project: Project, frame: Frame) -> str:
 
 
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
-    """Текст к пачке изображений (без мастер-промта).
-
-    Идёт в одно сообщение вместе с вложениями — для каждого файла явно
-    «ID изображения» и «Закадровый текст».
-    """
-    n = len(items)
-    parts: list[str] = [
-        f"Прикреплено {n} изображений (порядок вложений = порядок блоков ниже).",
-        "Для каждого кадра верни строго две строки (без лишнего текста):",
-        "ID изображения: …",
-        "текст анимации: …",
-        "(в «текст анимации» — только готовый промт для видео)\n",
-    ]
-    for i, it in enumerate(items, start=1):
-        fname = it.image_path.name
-        parts.append(f"--- Изображение {i} ({fname}) ---")
-        parts.append(f"ID изображения: {it.image_id}")
-        parts.append(f"Закадровый текст: {it.voiceover}")
-        parts.append("")
-    return "\n".join(parts).strip()
+    """Пачки кадров уходят без текста — см. `make_animation_prompts` (ask_with_files '')."""
+    _ = items
+    return ""
 
 
 def collect_batch_items(

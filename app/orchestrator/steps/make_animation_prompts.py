@@ -1,10 +1,9 @@
 """Шаг 8: промты анимации через ChatGPT web (один диалог, пачки по 5 картинок).
 
-Схема (как в TG-боте / ручном процессе):
-  1) Новый чат → мастер-промт + закадровый текст (все кадры).
-  2) В том же чате → до 5 изображений + для каждого ID и закадровый текст.
-  3) Парсим «ID изображения» / «текст анимации» → план R48 + БД.
-  4) Повторяем 2–3, пока есть картинки без animation_prompt.
+Схема:
+  1) Один раз: файл мастер-промта + сопр. текст (ID и закадровый по всем кадрам).
+  2) В том же чате — только пачки до 5 PNG, без текста в сообщении.
+  3) Парсим ответ → план R48 + БД; повторяем 2–3.
 """
 
 from __future__ import annotations
@@ -97,26 +96,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
                 batch = pending[: apg.BATCH_SIZE]
                 paths = [it.image_path for it in batch]
-                batch_msg = apg.build_batch_message(batch)
                 logger.info(
-                    "[#{}] anim_pr: batch {} frames ({}) — тот же диалог, msg {} симв.",
+                    "[#{}] anim_pr: batch {} frames ({}) — только изображения, без текста",
                     project.id,
                     len(batch),
                     [it.frame.number for it in batch],
-                    len(batch_msg),
                 )
-                for it in batch:
-                    logger.debug(
-                        "[#{}] anim_pr batch item F{} id={} vo={}…",
-                        project.id,
-                        it.frame.number,
-                        it.image_id,
-                        (it.voiceover[:40] + "…")
-                        if len(it.voiceover) > 40
-                        else it.voiceover,
-                    )
                 reply = await gpt.ask_with_files(
-                    batch_msg,
+                    "",
                     paths,
                     timeout=600,
                     project_id=project.id,

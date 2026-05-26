@@ -269,28 +269,30 @@ def build_anim_pr_initial_default(
     frames: list,
     *,
     prompt_file_name: str = "prompt_anim_pr.md",
+    frame_catalog: str = "",
+    images_only_note: str = "",
 ) -> str:
     """Сопроводительное сообщение в ChatGPT (мастер-промт — отдельным файлом)."""
-    vo_lines: list[str] = []
-    for fr in frames:
-        vo = (getattr(fr, "voiceover_text", None) or "").strip()
-        if vo:
-            vo_lines.append(f"Кадр {fr.number}: {vo}")
-    voice_block = (
-        "\n".join(vo_lines)
-        if vo_lines
-        else "(закадровый текст по кадрам пока не задан)"
-    )
+    if not frame_catalog:
+        vo_lines: list[str] = []
+        for fr in frames:
+            vo = (getattr(fr, "voiceover_text", None) or "").strip()
+            if vo:
+                vo_lines.append(f"Кадр {fr.number}: {vo}")
+        frame_catalog = (
+            "\n".join(vo_lines)
+            if vo_lines
+            else "(закадровый текст по кадрам пока не задан)"
+        )
+    if not images_only_note:
+        images_only_note = (
+            "\n\nДальше — только изображения пачками (до 5), без текста в сообщении."
+        )
     return (
         f"Прикреплён файл: {prompt_file_name} — инструкция по промтам анимации "
         f"(мастер-промт). Следуй ему при ответах.\n\n"
-        f"Закадровый текст по кадрам:\n{voice_block}\n\n"
-        "Дальше я пришлю изображения пачками (до 5 за раз). Для каждого будет "
-        "«ID изображения» и «Закадровый текст». На каждое изображение отвечай "
-        "строго в формате:\n"
-        "ID изображения: …\n"
-        "текст анимации: …\n"
-        "(в «текст анимации» — только готовый промт, без пояснений)."
+        f"Кадры (ID и закадровый):\n{frame_catalog}"
+        f"{images_only_note}"
     )
 
 
