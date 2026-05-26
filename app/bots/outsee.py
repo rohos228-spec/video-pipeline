@@ -2222,17 +2222,9 @@ class OutseeBot:
                 and _strip_url_query(fallback_candidate)
                 not in rejected_candidates
             ):
-                if net_events and _url_is_fresh(
-                    fallback_candidate, net_events
-                ):
-                    logger.info(
-                        "_wait_image_url_strict: trusted by net_events "
-                        "(source={}, URL пришёл по сети после Generate) "
-                        "за {:.0f} сек: {}",
-                        fallback_source, elapsed,
-                        fallback_candidate[:140],
-                    )
-                    return fallback_candidate
+                # С prompt_id_prefix НЕ выходим только по net_events:
+                # URL приходит раньше, чем thumbs в галерее — download-v3
+                # не находит картинки для клика (как в hero-flow).
                 gen_idle = await self._generate_button_enabled(page)
                 if gen_idle and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF:
                     logger.info(
@@ -3130,6 +3122,92 @@ async def _page_text_excluding_composer(
         return ""
 
 
+async def _count_big_gallery_imgs(page: Page) -> int:
+    try:
+        n = await page.evaluate(
+            """() => {
+                let c = 0;
+                for (const img of document.querySelectorAll('img')) {
+                    const r = img.getBoundingClientRect();
+                    if (r.width >= 180 && r.height >= 180 && img.src) c++;
+                }
+                return c;
+            }"""
+        )
+        return int(n) if isinstance(n, int) else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+async def _wait_gallery_thumbs(
+    page: Page,
+    *,
+    min_count: int = 1,
+    timeout_s: float = 45.0,
+    project_id: int | None = None,
+) -> int:
+    """Ждём появления больших thumb'ов в галерее (после gen_idle / net_events)."""
+    from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+    start = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start < timeout_s:
+        abort_if_cancelled(project_id)
+        n = await _count_big_gallery_imgs(page)
+        if n >= min_count:
+            return n
+        await sleep_cancellable(1.0, project_id)
+    return await _count_big_gallery_imgs(page)
+
+
+async def _find_card_by_img_url_click(
+    page: Page,
+    img_url: str,
+    *,
+    project_id: int | None = None,
+) -> Any | None:
+    """Клик по thumb с нашим URL (без ID в панели) — как fallback для hero/frames."""
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    abort_if_cancelled(project_id)
+    url_path = _strip_url_query(img_url)
+    path_only = re.sub(r"^https?://[^/]+", "", url_path)
+    basename = Path(path_only).name if path_only else ""
+    img_loc = None
+    for fragment in (basename, path_only):
+        if not fragment:
+            continue
+        loc = page.locator(f'img[src*="{fragment}"]').first
+        if await loc.count() > 0:
+            img_loc = loc
+            break
+    if img_loc is None:
+        return None
+    try:
+        await _physical_mouse_click(
+            page,
+            img_loc,
+            project_id=project_id,
+            label="url-matched gallery img",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_find_card_by_img_url_click: mouse click ({})", type(e).__name__
+        )
+        return None
+    await asyncio.sleep(0.55)
+    candidate = img_loc.locator(
+        "xpath=ancestor::*[descendant::button"
+        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+    )
+    if await candidate.count() > 0:
+        logger.info(
+            "_find_card_by_img_url_click: карточка по img_url ({})",
+            (basename or path_only)[-48:],
+        )
+        return candidate
+    return None
+
+
 async def _find_card_by_clicking_images(
     page: Page,
     *,
@@ -3270,22 +3348,45 @@ async def _download_via_card_click(
     `input_*.png` — ссылку на наш же референс). Реальный финальный
     PNG/JPEG отдаётся ТОЛЬКО при клике по кнопке «Download».
 
-    Стратегии (как в TG-боте): C → B → A → URL-fallback.
+    Стратегии (как в TG-боте / hero): ждём thumbs → C → D → B → A → URL-fallback.
     """
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     abort_if_cancelled(project_id)
     deadline_ms = int(timeout_s * 1000)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     card = None  # type: ignore[var-annotated]
 
-    # --- C: перебор 10 картинок + ID в панели (основная логика бота).
-    card = await _find_card_by_clicking_images(
-        page,
-        prompt_id_prefix=prompt_id_prefix,
-        limit=10,
-        project_id=project_id,
+    # Галерея часто появляется позже CDN-URL — ждём thumbs (hero и frames).
+    n_thumbs = await _wait_gallery_thumbs(
+        page, min_count=1, timeout_s=45.0, project_id=project_id
     )
+    if n_thumbs < 1:
+        logger.warning(
+            "_download_via_card_click: в галерее нет больших thumb за 45с, "
+            "всё равно пробую клики (id={})",
+            prompt_id_prefix,
+        )
+
+    # --- C: перебор 10 картинок + ID в панели (основная логика бота).
+    for c_attempt in range(1, 4):
+        card = await _find_card_by_clicking_images(
+            page,
+            prompt_id_prefix=prompt_id_prefix,
+            limit=10,
+            project_id=project_id,
+        )
+        if card is not None:
+            break
+        if c_attempt < 3:
+            await asyncio.sleep(2.0)
+
+    # --- D: физический клик по img_url из wait (без ID в панели).
+    if card is None and img_url:
+        card = await _find_card_by_img_url_click(
+            page, img_url, project_id=project_id
+        )
 
     # --- B: get_by_text([ID: …]).
     if card is None:
@@ -3391,7 +3492,6 @@ async def _download_via_card_click(
     #    `lucide-download` стабилен и не зависит от Tailwind-стилей.
     download_btn = card.locator("button:has(svg.lucide-download)").first
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
             await _physical_mouse_click(
@@ -3444,6 +3544,7 @@ async def _download_via_context(
     ctx = page.context
     api = ctx.request
     last: Exception | None = None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     for i in range(1, attempts + 1):
         abort_if_cancelled(project_id)
         try:
@@ -3456,10 +3557,11 @@ async def _download_via_context(
         except Exception as e:  # noqa: BLE001
             last = e
             logger.warning(
-                "_download_via_context: попытка {}/{} упала: {}",
+                "_download_via_context: попытка {}/{} упала: {}: {}",
                 i,
                 attempts,
                 type(e).__name__,
+                e,
             )
             await sleep_cancellable(1.5 * i, project_id)
     assert last is not None
