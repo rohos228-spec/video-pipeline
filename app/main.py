@@ -581,8 +581,26 @@ async def main() -> None:
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None
     if settings.web_enabled:
+        import socket
+
         from app.services.run_sync import background_sync_loop
         from app.web import create_app
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind((settings.web_host, settings.web_port))
+        except OSError as e:
+            logger.error(
+                "port {}:{} already in use ({}). "
+                "Windows: Launcher → 4 Stop, or close the old backend window, "
+                "then run run-backend.ps1 again.",
+                settings.web_host,
+                settings.web_port,
+                e,
+            )
+            raise SystemExit(1) from e
+        finally:
+            probe.close()
 
         web_app = create_app()
         import uvicorn
