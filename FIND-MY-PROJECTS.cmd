@@ -20,10 +20,8 @@ echo Поиск других state.db на диске (профиль польз
 echo.
 powershell -NoProfile -Command "Get-ChildItem -LiteralPath $env:USERPROFILE -Filter state.db -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, @{N='KB';E={[math]::Round($_.Length/1KB,1)}}, LastWriteTime | Format-Table -AutoSize"
 echo.
-echo Частые места - проверь вручную в проводнике:
-echo   %USERPROFILE%\Documents\video-pipeline\data\state.db
-echo   %USERPROFILE%\video-pipeline\data\state.db
-echo   %USERPROFILE%\Desktop
+echo Если нашёл старый state.db не в этой папке - скопируй сюда в data\state.db
+echo (см. RESTORE-PROJECTS.cmd). Не работай из второй копии на диске.
 echo.
 echo Чтобы вернуть проекты: RESTORE-PROJECTS.cmd
 echo.

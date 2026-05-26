@@ -3,7 +3,7 @@ cd /d "%~dp0"
 title Studio update
 if not exist pyproject.toml (
     echo.
-    echo ERROR: open folder Documents\video-pipeline
+    echo ERROR: run from YOUR video-pipeline folder (where pyproject.toml is)
     echo.
     pause
     exit /b 1
