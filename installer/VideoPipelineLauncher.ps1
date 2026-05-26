@@ -1,8 +1,10 @@
 ﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
-# LAUNCHER_UPDATE_ID=launcher-update-verify-ui-v81
+# LAUNCHER_UPDATE_ID=launcher-one-click-v82
 
-$script:LAUNCHER_UPDATE_ID = "launcher-update-verify-ui-v81"
+$script:LAUNCHER_UPDATE_ID = "launcher-one-click-v82"
+# Единственная ветка, с которой кнопка * Update + Start синхронизирует проект.
+$script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -239,10 +241,7 @@ function Repair-CriticalScriptsFromGit {
     $branch = Get-GitBranch
     $candidates = @()
     if ($branch -and $branch -ne "?") { $candidates += $branch }
-    $candidates += @(
-        "cursor/fix-launcher-update-start-977b",
-        "devin/windows-installer"
-    )
+    $candidates += @($script:StudioUpdateBranch, "devin/windows-installer")
     $seen = @{}
     foreach ($br in $candidates) {
         if ($seen[$br]) { continue }
@@ -330,11 +329,33 @@ function Invoke-ButtonAction([string]$Label, [scriptblock]$Action) {
 }
 
 function Get-NpmCmd {
+    Refresh-Path
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($npm) { return $npm.Source }
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if ($npm) { return $npm.Source }
-    $guess = Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"
-    if (Test-Path $guess) { return $guess }
+    $candidates = @(
+        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd"),
+        (Join-Path $env:LOCALAPPDATA "Programs\nodejs\npm.cmd")
+    )
+    foreach ($guess in $candidates) {
+        if ($guess -and (Test-Path $guess)) { return $guess }
+    }
     return $null
+}
+
+function Remove-WebBuildArtifacts {
+    $targets = @(
+        (Join-Path $Root "web\out"),
+        (Join-Path $Root "web\.next")
+    )
+    foreach ($t in $targets) {
+        if (Test-Path $t) {
+            Write-Log "Removing $t (clean UI rebuild)..." "Gray"
+            Remove-Item $t -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Test-BackendReady([int]$TimeoutSec = 90) {
@@ -389,16 +410,31 @@ function Get-BuiltStudioVersionLabel {
     return $null
 }
 
+function Get-StudioVersionBuildNumber {
+    $vf = Join-Path $Root "web\STUDIO_VERSION"
+    if (-not (Test-Path $vf)) { return 0 }
+    $line = (Get-Content $vf -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($line -match '^\s*(\d+)') { return [int]$Matches[1] }
+    return 0
+}
+
+function Get-BuiltStudioVersionBuildNumber {
+    $built = Get-BuiltStudioVersionLabel
+    if (-not $built) { return 0 }
+    if ($built -match '^v(\d+)') { return [int]$Matches[1] }
+    return 0
+}
+
 function Test-BuiltUiMatchesVersionFile {
     if (-not (Test-WebUiBuilt)) { return $false }
-    $expected = Get-StudioVersionLabel
-    $built = Get-BuiltStudioVersionLabel
-    if (-not $built) {
-        Write-Log "web/out/index.html есть, но метка версии не найдена — пересоберите UI" "DarkOrange"
+    $fileBuild = Get-StudioVersionBuildNumber
+    $outBuild = Get-BuiltStudioVersionBuildNumber
+    if ($outBuild -le 0) {
+        Write-Log "web/out собран, но номер версии не найден" "DarkRed"
         return $false
     }
-    if ($built -ne $expected) {
-        Write-Log "UI устарел: файл $expected, в web/out $built" "DarkRed"
+    if ($fileBuild -ne $outBuild) {
+        Write-Log "UI устарел: STUDIO_VERSION=v$fileBuild, web/out=v$outBuild" "DarkRed"
         return $false
     }
     return $true
@@ -435,28 +471,11 @@ function Test-WebBuildStale {
 }
 
 function Ensure-WebBuilt {
-    if (-not (Test-WebBuildStale)) { return $true }
-    if (Test-Path (Join-Path $Root "web\out\index.html")) {
-        Write-Log "Web UI stale (sources newer than web/out) - rebuilding..." "DarkOrange"
-    } else {
-        Write-Log "web/out missing - building UI (npm install + build)..." "DarkOrange"
+    if ((Test-WebUiBuilt) -and (-not (Test-WebBuildStale)) -and (Test-BuiltUiMatchesVersionFile)) {
+        return $true
     }
-    $npm = Get-NpmCmd
-    if (-not $npm) {
-        Write-Log "npm not found. Run button 1 Full install or install Node.js" "DarkRed"
-        return $false
-    }
-    return Invoke-Cmd "Build Web UI" {
-        Push-Location (Join-Path $Root "web")
-        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-        Pop-Location
-        if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-            throw "web/out/index.html still missing after build"
-        }
-    }
+    Write-Log "Web UI missing or stale — rebuilding..." "DarkOrange"
+    return Build-WebUiFromSources
 }
 
 function Start-BackendWindow {
@@ -613,52 +632,71 @@ function Update-StatusLabel {
 }
 
 function Sync-ProjectFromGit {
+    $branch = $script:StudioUpdateBranch
     $script:LastGitBeforeHead = Get-GitHead
     $beforeHead = $script:LastGitBeforeHead
-    $branch = Get-GitBranch
-    Write-Log "Git: branch=$branch commit=$beforeHead | STUDIO_VERSION=$(Get-StudioVersionLabel)" "Gray"
-    if (-not (Invoke-GitLogged "git fetch origin" @("fetch", "origin"))) {
-        return $false
-    }
-    $pulled = $false
-    if ($branch -and $branch -ne "?") {
-        if (Invoke-GitLogged "git checkout $branch" @("checkout", $branch)) {
-            if (Invoke-GitLogged "git pull --ff-only origin $branch" @("pull", "--ff-only", "origin", $branch)) {
-                $pulled = $true
-            } else {
-                Write-Log "git pull failed on $branch — stash/commit local changes, then retry" "DarkRed"
-            }
+    Write-Log "Git update -> origin/$branch (was: $(Get-GitBranch) $beforeHead) | UI file=$(Get-StudioVersionLabel)" "Gray"
+
+    $dirty = git -C $Root status --porcelain 2>$null
+    if ($dirty) {
+        Write-Log "Uncommitted files — auto-stash (restore: git stash list)" "DarkOrange"
+        if (-not (Invoke-GitLogged "git stash (auto)" @("stash", "push", "-u", "-m", "studio-update-auto"))) {
+            return $false
         }
     }
-    if (-not $pulled) {
-        $fallbackBranches = @(
-            "cursor/fix-launcher-update-start-977b",
-            "devin/windows-installer"
-        )
-        foreach ($fb in $fallbackBranches) {
-            if ($branch -eq $fb) { continue }
-            Write-Log "Trying fallback branch: $fb" "DarkOrange"
-            if (-not (Invoke-GitLogged "git checkout $fb" @("checkout", $fb))) { continue }
-            if (Invoke-GitLogged "git pull --ff-only origin $fb" @("pull", "--ff-only", "origin", $fb)) {
-                $pulled = $true
-                $branch = $fb
-                break
-            }
-        }
-    }
-    if (-not $pulled) {
+
+    if (-not (Invoke-GitLogged "git fetch origin $branch" @("fetch", "origin", $branch))) {
         return $false
     }
+    if (-not (Invoke-GitLogged "git checkout $branch" @("checkout", "-B", $branch, "origin/$branch"))) {
+        return $false
+    }
+    $localH = (git -C $Root rev-parse HEAD 2>$null)
+    $remoteH = (git -C $Root rev-parse "origin/$branch" 2>$null)
+    if ($localH -and $remoteH -and ($localH.Trim() -ne $remoteH.Trim())) {
+        if (-not (Invoke-GitLogged "git reset --hard origin/$branch" @("reset", "--hard", "origin/$branch"))) {
+            return $false
+        }
+    }
+
     $afterHead = Get-GitHead
     $script:LastGitAfterHead = $afterHead
     if ($beforeHead -eq $afterHead) {
-        Write-Log "Git up to date ($afterHead) | STUDIO_VERSION=$(Get-StudioVersionLabel)" "Gray"
+        Write-Log "Git synced ($afterHead) | STUDIO_VERSION=$(Get-StudioVersionLabel)" "Gray"
     } else {
         Write-Log "Git: $beforeHead -> $afterHead | STUDIO_VERSION=$(Get-StudioVersionLabel)" "DarkGreen"
     }
     if (Test-LauncherScriptChanged $beforeHead $afterHead) {
-        Write-Log "Launcher script updated in git — will reopen GUI after this run" "DarkOrange"
+        Write-Log "Launcher updated — window will reopen after this run" "DarkOrange"
         $script:LauncherNeedsRestart = $true
+    }
+    Repair-CriticalScriptsFromGit | Out-Null
+    return $true
+}
+
+function Build-WebUiFromSources {
+    Remove-WebBuildArtifacts
+    $npm = Get-NpmCmd
+    if (-not $npm) {
+        Write-Log "Node.js/npm not found. Button 1 Full install, or install Node.js LTS" "DarkRed"
+        return $false
+    }
+    Write-Log "npm: $npm" "Gray"
+    $webDir = Join-Path $Root "web"
+    if (-not (Invoke-NpmLogged "npm install (web)" $npm @("install") $webDir)) {
+        return $false
+    }
+    if (-not (Invoke-NpmLogged "npm run build (web/out)" $npm @("run", "build") $webDir)) {
+        return $false
+    }
+    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+        Write-Log "FAIL web/out/index.html missing after build" "DarkRed"
+        return $false
+    }
+    $built = Get-BuiltStudioVersionLabel
+    Write-Log "UI built: file=v$(Get-StudioVersionBuildNumber) web/out=$built" "DarkGreen"
+    if (-not (Test-BuiltUiMatchesVersionFile)) {
+        return $false
     }
     return $true
 }
@@ -675,33 +713,41 @@ function Sync-PythonAndWeb {
     if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", ".[dev]"))) {
         return $false
     }
-    $needBuild = $AlwaysBuildUi -or (Test-WebBuildStale) -or (-not (Test-WebUiBuilt))
+    $needBuild = $AlwaysBuildUi -or (Test-WebBuildStale) -or (-not (Test-WebUiBuilt)) `
+        -or (-not (Test-BuiltUiMatchesVersionFile))
     if (-not $needBuild) {
-        Write-Log "Web UI already built: $(Get-StudioVersionLabel)" "Gray"
+        Write-Log "Web UI OK: $(Get-BuiltStudioVersionLabel)" "Gray"
         return $true
     }
-    $npm = Get-NpmCmd
-    if (-not $npm) {
-        Write-Log "npm not found - run button 1" "DarkRed"
+    return Build-WebUiFromSources
+}
+
+function Invoke-StudioOneClickUpdate {
+    Write-Log "=== One-click update ($($script:LAUNCHER_UPDATE_ID)) ===" "DarkBlue"
+    Stop-AllBackendProcesses
+    Unlock-SharedBackendLog | Out-Null
+
+    if (-not (Test-Installed)) {
+        $ok = Invoke-ExternalLog "Install" "powershell.exe" @(
+            "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", "`"$(Join-Path $Root 'install.ps1')`"", "-NonInteractive"
+        )
+        if (-not $ok) { return $false }
+    }
+
+    if (-not (Sync-ProjectFromGit)) {
+        Write-Log "Git update failed — check internet and data\launcher.log" "DarkRed"
         return $false
     }
-    $webDir = Join-Path $Root "web"
-    if (-not (Invoke-NpmLogged "npm install (web)" $npm @("install") $webDir)) {
+
+    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
+        Write-Log "Python/UI update failed — fix errors above, then press * Update + Start again" "DarkRed"
         return $false
     }
-    if (-not (Invoke-NpmLogged "npm run build (web/out)" $npm @("run", "build") $webDir)) {
-        return $false
+
+    if (-not (Test-RunBackendScriptCurrent)) {
+        Repair-CriticalScriptsFromGit | Out-Null
     }
-    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-Log "FAIL web/out/index.html missing after build" "DarkRed"
-        return $false
-    }
-    $built = Get-BuiltStudioVersionLabel
-    Write-Log "UI built: file=$(Get-StudioVersionLabel) web/out=$built" "DarkGreen"
-    if (-not (Test-BuiltUiMatchesVersionFile)) {
-        Write-Log "FAIL npm build: версия в web/out не совпала с web/STUDIO_VERSION" "DarkRed"
-        return $false
-    }
+    Update-StatusLabel
     return $true
 }
 
@@ -722,60 +768,17 @@ function Show-StudioVersionFromApi {
 }
 
 function Do-FullUpdate {
-    Stop-AllBackendProcesses
-    Unlock-SharedBackendLog | Out-Null
-    if (-not (Sync-ProjectFromGit)) {
-        Write-Log "Update aborted: git" "DarkRed"
-        return
+    if (Invoke-StudioOneClickUpdate) {
+        Write-Log "Update done. Press * Update + Start or 2 Start Studio" "DarkGreen"
     }
-    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
-        Write-Log "Update aborted: pip/npm" "DarkRed"
-        return
-    }
-    Update-StatusLabel
-    Write-Log "Next: * Update + Start or 2 Start Studio" "DarkGreen"
 }
 
 function Do-UpdateAndRun {
-    Write-Log "=== * Update + Start ($($script:LAUNCHER_UPDATE_ID)) ===" "DarkBlue"
     $script:LauncherNeedsRestart = $false
-
-    # 1) Снять старый бэкенд и разблокировать лог ДО git/pip (типичный crash backend.log)
-    Stop-AllBackendProcesses
-    Unlock-SharedBackendLog | Out-Null
-
-    if (-not (Test-Installed)) {
-        $ok = Invoke-ExternalLog "Install" "powershell.exe" @(
-            "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", "`"$(Join-Path $Root 'install.ps1')`"", "-NonInteractive"
-        )
-        if (-not $ok) { return }
-    }
-
-    $gitOk = Sync-ProjectFromGit
-    if (-not $gitOk) {
-        Write-Log "Git failed — continue with LOCAL files (commit/stash and retry later)" "DarkOrange"
-    }
-
-    $depsOk = Sync-PythonAndWeb -AlwaysBuildUi
-    if (-not $depsOk) {
-        Write-Log "ОШИБКА: pip/npm — Studio НЕ запускаем (иначе останется старый UI, напр. v102)" "DarkRed"
-        Write-Log "Проверьте Node.js/npm, лог выше, или запустите force-rebuild-web.cmd" "DarkRed"
-        if (-not (Get-VenvPython)) {
-            Write-Log "No .venv — button 1 Full install" "DarkRed"
-        }
-        return
-    }
-    if (-not (Test-BuiltUiMatchesVersionFile)) {
-        Write-Log "ОШИБКА: web/out устарел — Studio НЕ запускаем. Кнопка 6 Build Web UI или force-rebuild-web.cmd" "DarkRed"
+    if (-not (Invoke-StudioOneClickUpdate)) {
         return
     }
 
-    if (-not (Test-RunBackendScriptCurrent)) {
-        Repair-CriticalScriptsFromGit | Out-Null
-    }
-    Update-StatusLabel
-
-    # 2) Ещё раз стоп перед стартом (на случай зависшего окна)
     Stop-AllBackendProcesses
     Unlock-SharedBackendLog | Out-Null
 
@@ -851,17 +854,10 @@ function Do-Stop {
 }
 
 function Do-BuildWeb {
-    $npm = Get-NpmCmd
-    if (-not $npm) { throw "npm not found - run button 1 Full install" }
-    Invoke-Cmd "Build Web UI" {
-        Push-Location (Join-Path $Root "web")
-        & $npm install 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-        & $npm run build 2>&1 | ForEach-Object { Write-Log "$_" "Gray" }
-        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-        Pop-Location
+    if (Build-WebUiFromSources) {
+        Update-StatusLabel
+        Write-Log "Web UI rebuilt" "DarkGreen"
     }
-    Update-StatusLabel
 }
 
 function Do-DevUi {
@@ -923,13 +919,13 @@ function Do-OpenBrowser {
 }
 
 $commands = @(
-    @{ Label = "* Update + Start"; Tip = "STOP old backend, git pull, pip, npm build, start :8765, browser"; Fn = { Do-UpdateAndRun } }
+    @{ Label = "* Update + Start"; Tip = "git+pip+npm (full) then :8765 — only button you need daily"; Fn = { Do-UpdateAndRun } }
     @{ Label = "1. Full install"; Tip = "Python, venv, FFmpeg, Node, .env"; Fn = { Do-Install } }
     @{ Label = "2. Start Studio"; Tip = "http://127.0.0.1:8765"; Fn = { Do-StartStudio } }
     @{ Label = "3. Telegram mode"; Tip = "Bot + API (token in .env)"; Fn = { Do-StartTelegram } }
     @{ Label = "4. Stop"; Tip = "Stop python for this project"; Fn = { Do-Stop } }
-    @{ Label = "5. Update all"; Tip = "git pull + pip + npm build"; Fn = { Do-FullUpdate } }
-    @{ Label = "6. Build Web UI"; Tip = "npm run build"; Fn = { Do-BuildWeb } }
+    @{ Label = "5. Update all"; Tip = "Same as * Update without starting Studio"; Fn = { Do-FullUpdate } }
+    @{ Label = "6. Build Web UI"; Tip = "Rebuild web/out only (no git)"; Fn = { Do-BuildWeb } }
     @{ Label = "7. Dev UI :3000"; Tip = "npm run dev"; Fn = { Do-DevUi } }
     @{ Label = "8. Tests"; Tip = "pytest"; Fn = { Do-Tests } }
     @{ Label = "9. Lint"; Tip = "ruff check"; Fn = { Do-Lint } }
@@ -969,7 +965,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "Daily: only * Update + Start. Stops old backend, git pull, build, fresh start. http://127.0.0.1:8765"
+$hintLbl.Text = "One button: * Update + Start = git + pip + npm build + restart. Branch: $($script:StudioUpdateBranch)"
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray
