@@ -31,6 +31,6 @@
 ### Studio UI version badge
 
 - Build counter lives in `web/STUDIO_VERSION` (line 1 = number, line 2 = git short sha).
-- **Before every commit that touches web UI**, run: `python3 scripts/bump_studio_version.py` and commit the updated `web/STUDIO_VERSION`.
-- After bump, rebuild static UI: `cd web && npm run build` (FastAPI serves `web/out/`).
-- Bottom-left badge shows baked version; if it differs from `/api/studio-version`, the UI bundle is stale — rebuild required.
+- **Before every commit that touches web UI**, run: `python3 scripts/bump_studio_version.py` (bumps version and rebuilds `web/out/`).
+- **`web/out/` is committed to git** so Windows users get the new UI from `git pull` without npm. FastAPI serves `web/out/`.
+- Bottom-left badge shows baked version; `/api/studio-version` reports `ui_stale` if `web/out` does not match `STUDIO_VERSION`.

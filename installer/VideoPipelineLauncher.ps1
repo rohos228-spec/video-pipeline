@@ -1,8 +1,8 @@
 ﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
-# LAUNCHER_UPDATE_ID=launcher-one-click-v82
+# LAUNCHER_UPDATE_ID=launcher-prebuilt-ui-v83
 
-$script:LAUNCHER_UPDATE_ID = "launcher-one-click-v82"
+$script:LAUNCHER_UPDATE_ID = "launcher-prebuilt-ui-v83"
 # Единственная ветка, с которой кнопка * Update + Start синхронизирует проект.
 $script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
 
@@ -674,7 +674,20 @@ function Sync-ProjectFromGit {
     return $true
 }
 
+function Test-PrebuiltUiFromGit {
+    if (-not (Test-WebUiBuilt)) { return $false }
+    if (Test-BuiltUiMatchesVersionFile) {
+        Write-Log "Prebuilt UI from git: v$(Get-StudioVersionBuildNumber) (no npm needed)" "DarkGreen"
+        return $true
+    }
+    return $false
+}
+
 function Build-WebUiFromSources {
+  param([switch]$Force)
+    if ((-not $Force) -and (Test-PrebuiltUiFromGit)) {
+        return $true
+    }
     Remove-WebBuildArtifacts
     $npm = Get-NpmCmd
     if (-not $npm) {
@@ -713,13 +726,16 @@ function Sync-PythonAndWeb {
     if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", ".[dev]"))) {
         return $false
     }
+    if (Test-PrebuiltUiFromGit) {
+        return $true
+    }
     $needBuild = $AlwaysBuildUi -or (Test-WebBuildStale) -or (-not (Test-WebUiBuilt)) `
         -or (-not (Test-BuiltUiMatchesVersionFile))
     if (-not $needBuild) {
         Write-Log "Web UI OK: $(Get-BuiltStudioVersionLabel)" "Gray"
         return $true
     }
-    return Build-WebUiFromSources
+    return Build-WebUiFromSources -Force
 }
 
 function Invoke-StudioOneClickUpdate {

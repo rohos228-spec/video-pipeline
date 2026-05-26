@@ -1,6 +1,6 @@
 # Build outputs
 .next/
-out/
+# web/out — коммитим в git, чтобы git pull обновлял UI без npm на Windows
 node_modules/
 *.tsbuildinfo
 

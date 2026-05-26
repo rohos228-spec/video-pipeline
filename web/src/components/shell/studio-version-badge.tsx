@@ -8,6 +8,8 @@ type ServerVersion = {
   build: number;
   sha: string;
   label: string;
+  ui_baked_build?: number;
+  ui_stale?: boolean;
   attach_expected?: string;
   backend_attach?: string;
   backend_ok?: boolean;
@@ -33,7 +35,9 @@ export function StudioVersionBadge() {
     };
   }, []);
 
-  const stale = server != null && server.label !== CLIENT_STUDIO_VERSION;
+  const stale =
+    server != null &&
+    (server.ui_stale === true || server.label !== CLIENT_STUDIO_VERSION);
   const backendStale =
     server != null && (server.pipeline_ok === false || server.backend_ok === false);
 
