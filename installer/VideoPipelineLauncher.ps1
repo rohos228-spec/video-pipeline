@@ -1,8 +1,8 @@
 ﻿# Video Pipeline Studio GUI launcher (ASCII-only for Windows PowerShell 5.x)
 # Double-click VideoPipelineStudio.cmd in repo root
-# LAUNCHER_UPDATE_ID=launcher-prebuilt-ui-v83
+# LAUNCHER_UPDATE_ID=launcher-ps51-core-v84
 
-$script:LAUNCHER_UPDATE_ID = "launcher-prebuilt-ui-v83"
+$script:LAUNCHER_UPDATE_ID = "launcher-ps51-core-v84"
 # Единственная ветка, с которой кнопка * Update + Start синхронизирует проект.
 $script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
 
@@ -15,6 +15,11 @@ if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
     $Root = (Get-Location).Path
 }
 Set-Location $Root
+
+$script:StudioCorePath = Join-Path $Root "scripts\StudioUpdateCore.ps1"
+if (Test-Path $script:StudioCorePath) {
+    . $script:StudioCorePath
+}
 
 function Refresh-Path {
     $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -104,26 +109,25 @@ function Invoke-PythonLogged([string]$Label, [string]$PyExe, [string[]]$PyArgs) 
 
 function Invoke-NpmLogged([string]$Label, [string]$NpmExe, [string[]]$NpmArgs, [string]$WorkDir) {
     Write-Log "> $Label" "DarkBlue"
-    Push-Location $WorkDir
-    try {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            $out = & $NpmExe @NpmArgs 2>&1
-            $code = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $prev
-        }
-        Write-CommandOutput $out
-        if ($code -ne 0) {
-            Write-Log "FAIL $Label (npm exit $code)" "DarkRed"
-            return $false
-        }
-        Write-Log "OK $Label" "DarkGreen"
-        return $true
-    } finally {
-        Pop-Location
+    $argLine = $NpmArgs -join " "
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$NpmExe`" $argLine" `
+        -WorkingDirectory $WorkDir -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput (Join-Path $env:TEMP "vp-npm-out.txt") `
+        -RedirectStandardError (Join-Path $env:TEMP "vp-npm-err.txt")
+    if (Test-Path (Join-Path $env:TEMP "vp-npm-out.txt")) {
+        Get-Content (Join-Path $env:TEMP "vp-npm-out.txt") -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Log $_ "Gray" }
     }
+    if (Test-Path (Join-Path $env:TEMP "vp-npm-err.txt")) {
+        Get-Content (Join-Path $env:TEMP "vp-npm-err.txt") -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Log $_ "DarkOrange" }
+    }
+    if ($proc.ExitCode -ne 0) {
+        Write-Log "FAIL $Label (npm exit $($proc.ExitCode))" "DarkRed"
+        return $false
+    }
+    Write-Log "OK $Label" "DarkGreen"
+    return $true
 }
 
 function Stop-PortListener([int]$Port) {
@@ -723,7 +727,7 @@ function Sync-PythonAndWeb {
         Write-Log "No venv - run button 1 Full install" "DarkOrange"
         return $false
     }
-    if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", ".[dev]"))) {
+    if (-not (Invoke-PythonLogged "pip install -e .[dev]" $py @("-m", "pip", "install", "-e", '.[dev]'))) {
         return $false
     }
     if (Test-PrebuiltUiFromGit) {
@@ -750,14 +754,20 @@ function Invoke-StudioOneClickUpdate {
         if (-not $ok) { return $false }
     }
 
-    if (-not (Sync-ProjectFromGit)) {
-        Write-Log "Git update failed — check internet and data\launcher.log" "DarkRed"
-        return $false
-    }
-
-    if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
-        Write-Log "Python/UI update failed — fix errors above, then press * Update + Start again" "DarkRed"
-        return $false
+    if (Test-Path $script:StudioCorePath) {
+        if (-not (Invoke-StudioUpdateOnly $Root)) {
+            Write-Log "Update FAILED — run UPDATE-STUDIO.cmd (console log)" "DarkRed"
+            return $false
+        }
+    } else {
+        if (-not (Sync-ProjectFromGit)) {
+            Write-Log "Git update failed — check internet" "DarkRed"
+            return $false
+        }
+        if (-not (Sync-PythonAndWeb -AlwaysBuildUi)) {
+            Write-Log "Python/UI update failed" "DarkRed"
+            return $false
+        }
     }
 
     if (-not (Test-RunBackendScriptCurrent)) {
@@ -981,7 +991,7 @@ $form.Controls.Add($StatusLbl)
 $script:StatusLbl = $StatusLbl
 
 $hintLbl = New-Object System.Windows.Forms.Label
-$hintLbl.Text = "One button: * Update + Start = git + pip + npm build + restart. Branch: $($script:StudioUpdateBranch)"
+$hintLbl.Text = "Daily: * Update + Start. If broken: double-click UPDATE-STUDIO.cmd in repo root."
 $hintLbl.AutoSize = $true
 $hintLbl.Location = New-Object System.Drawing.Point(16, 72)
 $hintLbl.ForeColor = [System.Drawing.Color]::DimGray

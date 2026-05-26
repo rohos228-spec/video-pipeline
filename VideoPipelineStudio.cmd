@@ -1,13 +1,17 @@
 @echo off
-REM Video Pipeline Studio — one entry point (launcher self-updates from git before GUI)
+REM GUI launcher (buttons). Console update: UPDATE-STUDIO.cmd
 cd /d "%~dp0"
 
 set "BR=cursor/fix-launcher-update-start-977b"
 where git >nul 2>&1
 if not errorlevel 1 (
-    git fetch origin %BR% >nul 2>&1
-    git checkout -B %BR% origin/%BR% >nul 2>&1
+    git fetch origin %BR% 2>nul
+    git checkout -B %BR% origin/%BR% 2>nul
 )
 
 powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -File "%~dp0installer\VideoPipelineLauncher.ps1"
-if errorlevel 1 pause
+if errorlevel 1 (
+    echo.
+    echo GUI failed? Try: UPDATE-STUDIO.cmd
+    pause
+)
