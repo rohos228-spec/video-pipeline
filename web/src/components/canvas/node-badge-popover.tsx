@@ -9,7 +9,7 @@ import {
   readAutoReviewKinds,
 } from "@/lib/control-mode";
 import { getNodeSpec } from "@/lib/node-catalog";
-import { defaultPromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
+import { type NodePromptSlot } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
 
@@ -24,12 +24,14 @@ export function NodeBadgePopover({
   onOpenHitlReview,
   onOpenPrompt,
   onOpenGptText,
+  slots,
 }: {
   open: boolean;
   nodeKey: string;
   nodeType: string;
   projectId: number;
   projectMeta: Record<string, unknown>;
+  slots: NodePromptSlot[];
   onClose: () => void;
   onOpenHitlReview: () => void;
   onOpenPrompt: (slot: NodePromptSlot) => void;
@@ -39,7 +41,7 @@ export function NodeBadgePopover({
   const kindsOn = new Set(readAutoReviewKinds(projectMeta));
   const targetKind = autoReviewKindForNodeType(nodeType);
   const label = getNodeSpec(nodeType).label;
-  const slots = defaultPromptSlots(nodeType).filter((s) => s.kind !== "excel").slice(0, 4);
+  const promptSlots = slots.filter((s) => s.kind !== "excel");
 
   const patch = useMutation({
     mutationFn: (meta: Record<string, unknown>) => api.patchProject(projectId, { meta }),
@@ -85,9 +87,9 @@ export function NodeBadgePopover({
           </button>
         </div>
 
-        {slots.length > 0 && (
-          <div className="mb-1.5 flex flex-wrap gap-1">
-            {slots.map((slot) => (
+        {promptSlots.length > 0 && (
+          <div className="mb-1.5 max-h-24 overflow-y-auto flex flex-wrap gap-1">
+            {promptSlots.map((slot) => (
               <button
                 key={slot.id}
                 type="button"

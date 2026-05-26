@@ -6,22 +6,32 @@ import {
   Download,
   FileSpreadsheet,
   FolderOpen,
+  Link2,
   Loader2,
+  Plus,
   Save,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
 import {
+  addNodeLinkedFileInMeta,
   buildPresetSnapshot,
   clampPerceptionScore,
   collectPresetFileRefs,
+  fileRefId,
+  mergePresetFiles,
+  normalizeFileName,
+  readNodeLinkedFiles,
   readNodePerception,
   readNodePresets,
+  removeNodeLinkedFileInMeta,
   applyPresetToMeta,
   upsertNodePresetInMeta,
   setNodePerceptionInMeta,
+  type NodePresetFileRef,
   type NodePresetSnapshot,
 } from "@/lib/node-presets";
 import {
@@ -81,6 +91,7 @@ export function NodeTitleSidePanel({
   const folderGroups = useMemo(() => promptFolderGroupsForNode(nodeType), [nodeType]);
   const paths = promptPathsForNode(nodeType);
   const presets = readNodePresets(projectMeta, nodeKey);
+  const linkedFiles = readNodeLinkedFiles(projectMeta, nodeKey);
   const spec = getNodeSpec(nodeType);
   const showExcel = nodeTypeRequiresExcel(nodeType);
 
@@ -114,13 +125,14 @@ export function NodeTitleSidePanel({
     for (const g of folderGroups) {
       folderHints[g.stepCode] = g.folderPath;
     }
-    const fileRefs = collectPresetFileRefs(
+    const fromSlots = collectPresetFileRefs(
       projectMeta,
       nodeKey,
       menuSlots,
       promptOverrides,
       folderHints,
     );
+    const fileRefs = mergePresetFiles(linkedFiles, fromSlots);
     const snapshot = buildPresetSnapshot({
       name,
       nodeKey,
@@ -155,11 +167,42 @@ export function NodeTitleSidePanel({
     });
   };
 
+  const linkFile = (ref: Omit<NodePresetFileRef, "id"> & { id?: string }) => {
+    const meta = addNodeLinkedFileInMeta(projectMeta, nodeKey, ref);
+    persistMeta.mutate(meta, {
+      onSuccess: () => toast.success(`Подключён: ${ref.fileName}.md`),
+    });
+  };
+
+  const unlinkFile = (fileId: string) => {
+    const meta = removeNodeLinkedFileInMeta(projectMeta, nodeKey, fileId);
+    persistMeta.mutate(meta, {
+      onSuccess: () => toast.message("Файл отключён"),
+    });
+  };
+
   const uploadMutation = useMutation({
-    mutationFn: ({ step, file }: { step: string; file: File }) =>
-      api.uploadPromptFile(step, file),
-    onSuccess: () => {
-      toast.success("Файл загружен");
+    mutationFn: async ({ step, files }: { step: string; files: File[] }) => {
+      for (const file of files) {
+        await api.uploadPromptFile(step, file);
+      }
+      return { step, count: files.length };
+    },
+    onSuccess: ({ step, count }, vars) => {
+      let meta = projectMeta;
+      const folderHint = folderGroups.find((g) => g.stepCode === step)?.folderPath;
+      for (const file of vars.files) {
+        const name = normalizeFileName(file.name);
+        meta = addNodeLinkedFileInMeta(meta, nodeKey, {
+          stepCode: step,
+          fileName: name,
+          folderHint,
+        });
+      }
+      persistMeta.mutate(meta);
+      toast.success(
+        count === 1 ? "Файл загружен и подключён" : `Загружено и подключено файлов: ${count}`,
+      );
       qc.invalidateQueries({ queryKey: ["prompt-files"] });
     },
     onError: (e) => toast.error(String(e)),
@@ -192,6 +235,43 @@ export function NodeTitleSidePanel({
             </section>
           )}
 
+          <section className="mb-4 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+            <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-primary">
+              Подключённые файлы
+            </h3>
+            <p className="mb-2 text-[9px] text-muted-foreground">
+              Без ограничения по количеству — любые .md из папок промтов ноды.
+            </p>
+            {linkedFiles.length > 0 ? (
+              <ul className="mb-2 max-h-40 flex flex-col gap-0.5 overflow-y-auto">
+                {linkedFiles.map((f) => (
+                  <li
+                    key={f.id}
+                    className="flex items-center justify-between gap-1 rounded-md bg-black/25 px-2 py-1 font-mono text-[9px]"
+                  >
+                    <span className="min-w-0 truncate" title={f.folderHint ? `prompts/${f.folderHint}/${f.fileName}.md` : undefined}>
+                      {f.folderHint ? `${f.folderHint}/` : ""}
+                      {f.fileName}.md
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-destructive hover:text-destructive/80"
+                      title="Отключить"
+                      onClick={() => unlinkFile(f.id)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mb-2 text-[9px] text-muted-foreground">Пока нет подключённых файлов.</p>
+            )}
+            <span className="text-[9px] text-muted-foreground">
+              Всего: {linkedFiles.length}
+            </span>
+          </section>
+
           <section className="mb-4">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-400/90">
               Промты по папкам
@@ -200,8 +280,17 @@ export function NodeTitleSidePanel({
               <FolderPromptList
                 stepCode={paths.stepCode}
                 folderLabel={paths.legacyDir ? translateFolderName(paths.legacyDir) : "Промты"}
+                folderHint={paths.legacyDir}
                 slots={menuSlots.filter((s) => s.kind === "gpt")}
                 onSelectPrompt={onSelectPrompt}
+                linkedIds={new Set(linkedFiles.map((f) => f.id))}
+                onLinkFile={(fileName) =>
+                  linkFile({
+                    stepCode: paths.stepCode!,
+                    fileName,
+                    folderHint: paths.legacyDir,
+                  })
+                }
               />
             )}
             {folderGroups.map((group) => (
@@ -218,6 +307,15 @@ export function NodeTitleSidePanel({
                   folderLabel={group.label}
                   slots={slotsForFolderGroup(menuSlots, group)}
                   onSelectPrompt={onSelectPrompt}
+                  linkedIds={new Set(linkedFiles.map((f) => f.id))}
+                  folderHint={group.folderPath}
+                  onLinkFile={(fileName) =>
+                    linkFile({
+                      stepCode: group.stepCode,
+                      fileName,
+                      folderHint: group.folderPath,
+                    })
+                  }
                 />
               </div>
             ))}
@@ -258,15 +356,16 @@ export function NodeTitleSidePanel({
               ref={fileRef}
               type="file"
               accept=".md,.txt"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const file = e.target.files?.[0];
+                const chosen = [...(e.target.files ?? [])];
                 const step = uploadStep ?? paths.stepCode;
-                if (!file || !step) {
+                if (!chosen.length || !step) {
                   toast.error("Выберите папку и файл");
                   return;
                 }
-                uploadMutation.mutate({ step, file });
+                uploadMutation.mutate({ step, files: chosen });
                 e.target.value = "";
               }}
             />
@@ -283,7 +382,7 @@ export function NodeTitleSidePanel({
               ) : (
                 <Upload className="h-3.5 w-3.5" />
               )}
-              Загрузить .md в выбранную папку
+              Загрузить .md (можно несколько сразу)
             </Button>
           </section>
 
@@ -371,13 +470,19 @@ export function NodeTitleSidePanel({
 function FolderPromptList({
   stepCode,
   folderLabel,
+  folderHint,
   slots,
   onSelectPrompt,
+  linkedIds,
+  onLinkFile,
 }: {
   stepCode: string;
   folderLabel: string;
+  folderHint?: string;
   slots: NodePromptSlot[];
   onSelectPrompt: (slot: NodePromptSlot) => void;
+  linkedIds?: Set<string>;
+  onLinkFile?: (fileName: string) => void;
 }) {
   const files = useQuery({
     queryKey: ["prompt-files", stepCode, "title-panel"],
@@ -400,21 +505,42 @@ function FolderPromptList({
           <span className="text-[9px] text-muted-foreground">{slot.kind}</span>
         </button>
       ))}
-      {fileNames.map((name) => (
-        <div
-          key={name}
-          className="flex items-center justify-between rounded-md bg-black/20 px-2 py-0.5 font-mono text-[9px] text-muted-foreground"
-        >
-          <span>{name}.md</span>
-          <a
-            href={api.downloadPromptFileUrl(stepCode, name)}
-            className="text-primary hover:underline"
-            onClick={(e) => e.stopPropagation()}
+      {fileNames.map((name) => {
+        const id = fileRefId(stepCode, name);
+        const linked = linkedIds?.has(id);
+        return (
+          <div
+            key={name}
+            className="flex items-center justify-between gap-1 rounded-md bg-black/20 px-2 py-0.5 font-mono text-[9px] text-muted-foreground"
           >
-            <Download className="inline h-3 w-3" />
-          </a>
-        </div>
-      ))}
+            <span className={cn(linked && "text-emerald-400/90")}>
+              {name}.md{linked ? " ✓" : ""}
+            </span>
+            <span className="flex shrink-0 items-center gap-0.5">
+              {onLinkFile && !linked && (
+                <button
+                  type="button"
+                  title="Подключить к ноде"
+                  className="rounded p-0.5 text-primary hover:bg-primary/10"
+                  onClick={() => onLinkFile(name)}
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              )}
+              {onLinkFile && linked && (
+                <Link2 className="h-3 w-3 text-emerald-400/80" aria-hidden />
+              )}
+              <a
+                href={api.downloadPromptFileUrl(stepCode, name)}
+                className="text-primary hover:underline"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download className="inline h-3 w-3" />
+              </a>
+            </span>
+          </div>
+        );
+      })}
       {!slots.length && !fileNames.length && (
         <span className="text-[9px] text-muted-foreground">Нет файлов в {folderLabel}</span>
       )}

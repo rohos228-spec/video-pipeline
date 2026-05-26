@@ -124,6 +124,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 nodeType={d.type}
                 projectId={actions.projectId}
                 projectMeta={(actions.project?.meta || {}) as Record<string, unknown>}
+                slots={slots}
                 onClose={() => actions.setBadgeMenuNodeKey(null)}
                 onOpenHitlReview={() => actions.onOpenHitlReview(d.nodeKey, d.type)}
                 onOpenPrompt={(slot) => actions.onOpenPrompt(d.nodeKey, d.type, slot)}
@@ -147,6 +148,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 nodeType={d.type}
                 projectId={actions.projectId}
                 projectMeta={(actions.project?.meta || {}) as Record<string, unknown>}
+                slots={slots}
                 onClose={() => actions.setBadgeMenuNodeKey(null)}
                 onOpenHitlReview={() => actions.onOpenHitlReview(d.nodeKey, d.type)}
                 onOpenPrompt={(slot) => actions.onOpenPrompt(d.nodeKey, d.type, slot)}

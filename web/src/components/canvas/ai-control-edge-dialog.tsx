@@ -71,7 +71,7 @@ export function AiControlEdgeDialog({
     toast.message(next.has(kind) ? `GPT-проверка: ${kind}` : `Авто-апрув: ${kind}`);
   };
 
-  const slots = defaultPromptSlots(targetType).slice(0, 4);
+  const slots = defaultPromptSlots(targetType);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -88,7 +88,7 @@ export function AiControlEdgeDialog({
         </DialogHeader>
 
         <Section title="Промты ноды">
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
             {slots.map((slot) => (
               <Button
                 key={slot.id}

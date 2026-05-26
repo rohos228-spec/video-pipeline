@@ -5,10 +5,68 @@ import { getPromptSlotVariantsMeta } from "./prompt-slot-storage";
 import type { PromptStyleConfig } from "./prompt-styles";
 
 export interface NodePresetFileRef {
-  slotId: string;
-  stepCode?: string;
+  id: string;
+  slotId?: string;
+  stepCode: string;
   fileName: string;
   folderHint?: string;
+}
+
+export type NodeLinkedFilesMeta = Record<string, NodePresetFileRef[]>;
+
+export function fileRefId(stepCode: string, fileName: string): string {
+  const base = fileName.endsWith(".md") ? fileName.replace(/\.md$/, "") : fileName;
+  return `${stepCode}::${base}`;
+}
+
+export function normalizeFileName(name: string): string {
+  return name.endsWith(".md") ? name.replace(/\.md$/, "") : name;
+}
+
+export function readNodeLinkedFiles(
+  meta: Record<string, unknown> | undefined,
+  nodeKey: string,
+): NodePresetFileRef[] {
+  const all = (meta?.node_linked_files || {}) as NodeLinkedFilesMeta;
+  return all[nodeKey] ?? [];
+}
+
+export function setNodeLinkedFilesInMeta(
+  meta: Record<string, unknown>,
+  nodeKey: string,
+  files: NodePresetFileRef[],
+): Record<string, unknown> {
+  const all = { ...((meta.node_linked_files || {}) as NodeLinkedFilesMeta) };
+  all[nodeKey] = files;
+  return { ...meta, node_linked_files: all };
+}
+
+export function addNodeLinkedFileInMeta(
+  meta: Record<string, unknown>,
+  nodeKey: string,
+  ref: Omit<NodePresetFileRef, "id"> & { id?: string },
+): Record<string, unknown> {
+  const list = [...readNodeLinkedFiles(meta, nodeKey)];
+  const fileName = normalizeFileName(ref.fileName);
+  const id = ref.id ?? fileRefId(ref.stepCode, fileName);
+  if (list.some((f) => f.id === id)) return meta;
+  list.push({
+    id,
+    slotId: ref.slotId,
+    stepCode: ref.stepCode,
+    fileName,
+    folderHint: ref.folderHint,
+  });
+  return setNodeLinkedFilesInMeta(meta, nodeKey, list);
+}
+
+export function removeNodeLinkedFileInMeta(
+  meta: Record<string, unknown>,
+  nodeKey: string,
+  fileId: string,
+): Record<string, unknown> {
+  const list = readNodeLinkedFiles(meta, nodeKey).filter((f) => f.id !== fileId);
+  return setNodeLinkedFilesInMeta(meta, nodeKey, list);
 }
 
 export interface NodePresetSnapshot {
@@ -105,13 +163,15 @@ export function applyPresetToMeta(
   const perceptionAll = { ...((meta.node_perception || {}) as Record<string, number>) };
   perceptionAll[nodeKey] = preset.perceptionScore;
 
-  return {
+  let next: Record<string, unknown> = {
     ...meta,
     custom_prompts: custom,
     prompt_slot_variants: variantsAll,
     prompt_styles: stylesAll,
     node_perception: perceptionAll,
   };
+  next = setNodeLinkedFilesInMeta(next, nodeKey, preset.files.map((f) => ({ ...f })));
+  return next;
 }
 
 export function readNodePerception(
@@ -149,13 +209,27 @@ export function collectPresetFileRefs(
       typeof promptOverrides[slot.stepCode] === "string"
         ? (promptOverrides[slot.stepCode] as string)
         : undefined;
-    const fileName = variant ?? fromOverride ?? slot.id;
+    const fileName = normalizeFileName(String(variant ?? fromOverride ?? slot.id));
     refs.push({
+      id: fileRefId(slot.stepCode, fileName),
       slotId: slot.id,
       stepCode: slot.stepCode,
-      fileName: fileName.endsWith(".md") ? fileName.replace(/\.md$/, "") : fileName,
+      fileName,
       folderHint: folderHints[slot.stepCode],
     });
   }
   return refs;
+}
+
+/** Файлы для пресета: явно подключённые + слоты (без дубликатов). */
+export function mergePresetFiles(
+  linked: NodePresetFileRef[],
+  fromSlots: NodePresetFileRef[],
+): NodePresetFileRef[] {
+  const byId = new Map<string, NodePresetFileRef>();
+  for (const f of linked) byId.set(f.id, f);
+  for (const f of fromSlots) {
+    if (!byId.has(f.id)) byId.set(f.id, f);
+  }
+  return [...byId.values()];
 }
