@@ -22,11 +22,10 @@
   - `split`  — Шаг 3 «Разбивка на блоки»
   - `hero`   — Шаг 4 «Hero» (per-hero/per-variation, с плейсхолдерами
                `{{BRIEF}}` и `{{HERO_STYLE}}`, см. `_build_hero_default`)
-  - `img_pr` — Шаг 5 «Промты картинок» (батч на все кадры разом)
-
-Шаг `anim_pr` (7) собирает текст ПО-РАЗНОМУ для каждого кадра — для
-него override текста на проекте плохо подходит без отдельной системы
-плейсхолдеров `{{N}} / {{VOICEOVER}}`.
+  - `img_pr` — Шаг 6 «Промты картинок» (батч на все кадры разом)
+  - `anim_pr` — Шаг 8 «Промты анимации» (per-frame, плейсхолдеры
+               `{{N}}`, `{{DURATION}}`, `{{VOICEOVER}}`, `{{IMAGE_PROMPT}}`,
+               см. `render_anim_pr_text`)
 Шаги 6 «Картинки» и 8 «Видео» не шлют текст в GPT (генерация в outsee),
 поэтому override для них тоже не нужен.
 
@@ -49,7 +48,7 @@ from app.services.prompt_library import (
 
 # Шаги, для которых поддерживается edit-override «сопр. сообщения».
 SUPPORTED_STEPS: tuple[str, ...] = (
-    "plan", "script", "hero", "split", "img_pr",
+    "plan", "script", "hero", "split", "img_pr", "anim_pr",
     # Слоты «Доп работа с EXCEL» (шаг 5). Каждый слот хранит свой
     # override в `Project.gpt_text_overrides["enrich_<i>"]`. В отличие
     # от других шагов, тут «сопр. сообщение» = ТОЛЬКО сопровождающий
@@ -73,6 +72,13 @@ ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
 # — поэтому в самом шаблоне они хранятся литерально.
 HERO_PLACEHOLDER_BRIEF = "{{BRIEF}}"
 HERO_PLACEHOLDER_STYLE = "{{HERO_STYLE}}"
+
+# Плейсхолдеры шага `anim_pr` — подставляются в `make_animation_prompts.py`
+# для каждого кадра отдельно.
+ANIM_PLACEHOLDER_N = "{{N}}"
+ANIM_PLACEHOLDER_DURATION = "{{DURATION}}"
+ANIM_PLACEHOLDER_VOICEOVER = "{{VOICEOVER}}"
+ANIM_PLACEHOLDER_IMAGE_PROMPT = "{{IMAGE_PROMPT}}"
 
 
 def is_supported(step_code: str) -> bool:
@@ -266,6 +272,40 @@ def render_hero_text(
     return out
 
 
+def _build_anim_pr_default(project: Project, **_ctx) -> str:  # noqa: ARG001
+    """Шаг 8 «Промты анимации» — сопроводительное сообщение в ChatGPT.
+
+    Мастер-промт (`prompts/07_animation/…`) склеивается в воркере:
+    `master + "\\n\\n---\\n\\n" + render_anim_pr_text(template, frame…)`.
+    """
+    return (
+        "Задача: составь ОДИН промт для анимации следующего кадра. "
+        "Без лишних пояснений, только текст промта.\n\n"
+        f"Номер кадра: {ANIM_PLACEHOLDER_N}\n"
+        f"Длительность: {ANIM_PLACEHOLDER_DURATION} сек\n"
+        f"Закадровый текст: {ANIM_PLACEHOLDER_VOICEOVER}\n"
+        f"Изобразительный промт (контекст кадра):\n{ANIM_PLACEHOLDER_IMAGE_PROMPT}\n"
+    )
+
+
+def render_anim_pr_text(
+    template: str,
+    *,
+    frame_number: int,
+    duration_seconds: float | int | None,
+    voiceover_text: str,
+    image_prompt: str,
+) -> str:
+    """Подставляет в шаблон «сопр. сообщения» шага `anim_pr` данные кадра."""
+    dur = duration_seconds if duration_seconds is not None else 0
+    img = (image_prompt or "").strip() or "—"
+    out = template.replace(ANIM_PLACEHOLDER_N, str(frame_number))
+    out = out.replace(ANIM_PLACEHOLDER_DURATION, str(dur))
+    out = out.replace(ANIM_PLACEHOLDER_VOICEOVER, (voiceover_text or "").strip())
+    out = out.replace(ANIM_PLACEHOLDER_IMAGE_PROMPT, img)
+    return out
+
+
 def _build_img_pr_default(
     project: Project,
     *,
@@ -331,6 +371,8 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         return _build_hero_default(project, **ctx)
     if step_code == "img_pr":
         return _build_img_pr_default(project, **ctx)
+    if step_code == "anim_pr":
+        return _build_anim_pr_default(project, **ctx)
     if step_code.startswith("enrich_"):
         return _build_enrich_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")

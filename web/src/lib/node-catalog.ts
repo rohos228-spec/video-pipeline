@@ -143,7 +143,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   animation_prompts: {
     type: "animation_prompts",
     label: "Промты анимации",
-    description: "Генерация animation-prompt'ов (Veo 3.1).",
+    description: "Промты анимации через ChatGPT (по кадрам).",
     category: "media",
     accent: "142 60% 50%",
     iconKey: "wand",

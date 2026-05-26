@@ -93,8 +93,21 @@ export function GptTextPanel({
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        Короткое сопроводительное сообщение в ChatGPT (не мастер-промт). Мастер-промт и Excel
-        уходят отдельными файлами-вложениями — их редактирование через «Файлы промтов» и Excel.
+        {stepCode === "anim_pr" ? (
+          <>
+            Сопроводительное сообщение в диалог ChatGPT для каждого кадра (не мастер-промт из
+            «Промт анимации»). При запуске шага подставляются плейсхолдеры{" "}
+            <code className="text-[10px]">{"{{N}}"}</code>,{" "}
+            <code className="text-[10px]">{"{{DURATION}}"}</code>,{" "}
+            <code className="text-[10px]">{"{{VOICEOVER}}"}</code>,{" "}
+            <code className="text-[10px]">{"{{IMAGE_PROMPT}}"}</code>.
+          </>
+        ) : (
+          <>
+            Короткое сопроводительное сообщение в ChatGPT (не мастер-промт). Мастер-промт и Excel
+            уходят отдельными файлами-вложениями — их редактирование через «Файлы промтов» и Excel.
+          </>
+        )}
       </p>
       <Textarea
         value={draft}
