@@ -435,14 +435,34 @@ async def _toggle_relax(
             if current_on is None:
                 logger.info(
                     "outsee.{}: Relax {} — состояние «Безлимит» неизвестно, "
-                    "кликаю один раз",
+                    "кликаю (physical)",
                     where, "ON" if want_on else "OFF",
                 )
-            await page.locator(limit_sel).first.click(timeout=2_000)
-            logger.info(
-                "outsee.{}: тогл «Безлимит» переключён → хочу Relax={}",
-                where, "ON" if want_on else "OFF",
+            loc = page.locator(limit_sel).first
+            await _physical_mouse_click(
+                page, loc, project_id=project_id, label=f"{where} Безлимит"
             )
+            await asyncio.sleep(0.45)
+            after = await _read_limit_toggle_on(page, limit_sel)
+            logger.info(
+                "outsee.{}: Безлимит physical click → want={}, read={}",
+                where,
+                want_on,
+                after,
+            )
+            if after == want_on:
+                return
+            # Повтор CDP по bbox
+            box = await loc.bounding_box()
+            if box:
+                cx = box["x"] + box["width"] / 2
+                cy = box["y"] + box["height"] / 2
+                await _cdp_dispatch_click(
+                    page, cx, cy, project_id=project_id
+                )
+                await asyncio.sleep(0.45)
+                if await _read_limit_toggle_on(page, limit_sel) == want_on:
+                    return
             return
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -492,10 +512,51 @@ async def _toggle_relax(
                 where,
             )
             return
-        await loc.click(timeout=2_000)
-        logger.info("outsee.{}: Relax {} (sel={})", where, "ON" if want_on else "OFF", sel)
+        await _physical_mouse_click(
+            page, loc, project_id=project_id, label=f"{where} Relax"
+        )
+        logger.info(
+            "outsee.{}: Relax physical {} (sel={})",
+            where,
+            "ON" if want_on else "OFF",
+            sel,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("outsee.{}: Relax toggle упал: {}", where, e)
+
+
+async def _scan_toggle_targets(
+    page: Page, *, keywords: list[str]
+) -> list[dict[str, Any]]:
+    try:
+        raw = await page.evaluate(
+            """(keys) => {
+                const out = [];
+                for (const el of document.querySelectorAll(
+                    'button, [role="switch"], label, [role="button"]'
+                )) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const low = text.toLowerCase();
+                    if (!keys.some(k => low.includes(k))) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 24 || r.height < 14) continue;
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                    out.push({
+                        text: text.slice(0, 48),
+                        cx: Math.round(r.x + r.width / 2),
+                        cy: Math.round(r.y + r.height / 2),
+                        area: Math.round(r.width * r.height),
+                    });
+                }
+                out.sort((a, b) => b.area - a.area);
+                return out;
+            }""",
+            [k.lower() for k in keywords],
+        )
+        return list(raw or [])
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _image_page_url(model_slug: str | None) -> str:
@@ -1761,6 +1822,88 @@ class OutseeBot:
             pass
         return not await self._generate_button_enabled(page)
 
+    async def _ensure_relax_for_video(
+        self,
+        page: Page,
+        *,
+        want_on: bool,
+        where: str,
+        project_id: int | None = None,
+        dumps: list[Path] | None = None,
+    ) -> None:
+        """Relax/Безлимит для veo — physical click + проверка состояния."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
+        if not want_on:
+            await _toggle_relax(
+                page,
+                want_on=False,
+                where=where,
+                dumps=dumps,
+                project_id=project_id,
+            )
+            return
+
+        for attempt in range(1, 4):
+            abort_if_cancelled(project_id)
+            await _toggle_relax(
+                page,
+                want_on=True,
+                where=where,
+                dumps=dumps,
+                project_id=project_id,
+            )
+            limit_sel = await _first_visible(
+                page, LIMIT_TOGGLE_SELECTORS, timeout_ms=3_000, project_id=project_id
+            )
+            if limit_sel:
+                state = await _read_limit_toggle_on(page, limit_sel)
+                if state is True:
+                    logger.info(
+                        "outsee.{}: Relax ON подтверждён (Безлимит, попытка {})",
+                        where,
+                        attempt,
+                    )
+                    return
+
+            targets = await _scan_toggle_targets(
+                page, keywords=["безлимит", "relax"]
+            )
+            logger.info(
+                "outsee.{}: Relax scan → {} целей (попытка {})",
+                where,
+                len(targets),
+                attempt,
+            )
+            for idx, t in enumerate(targets[:4]):
+                cx, cy = float(t["cx"]), float(t["cy"])
+                await _cdp_dispatch_click(page, cx, cy, project_id=project_id)
+                await _viewport_mouse_click(
+                    page, cx, cy, project_id=project_id, label=f"relax#{idx}"
+                )
+                await sleep_cancellable(0.5, project_id)
+                if limit_sel and await _read_limit_toggle_on(page, limit_sel) is True:
+                    logger.info(
+                        "outsee.{}: Relax ON после scan-click #{}", where, idx
+                    )
+                    return
+
+            await sleep_cancellable(0.8, project_id)
+
+        dump_paths: list[Path] = []
+        h, p = await _dump_page(page, "video_relax_not_on")
+        for x in (h, p):
+            if x:
+                dump_paths.append(x)
+        if dumps is not None:
+            dumps.extend(dump_paths)
+        raise OutseeImageError(
+            "outsee video: не удалось включить Relax (Безлимит)",
+            context={"where": where, "want_on": want_on},
+            dumps=dump_paths,
+        )
+
     async def _scan_generate_click_targets(self, page: Page) -> list[dict[str, Any]]:
         try:
             raw = await page.evaluate(
@@ -1823,41 +1966,21 @@ class OutseeBot:
             await sleep_cancellable(0.6, project_id)
             return await self._generation_started(page)
 
-        # A) Горячие клавиши из поля промта (outsee часто так шлёт veo).
-        if input_sel:
-            for keys, name in (
-                ("Control+Enter", "ctrl+enter"),
-                ("Enter", "enter"),
-            ):
-                abort_if_cancelled(project_id)
-                try:
-                    loc = page.locator(input_sel).first
-                    await await_with_cancel(loc.focus(), project_id)
-                    await sleep_cancellable(0.15, project_id)
-                    await await_with_cancel(
-                        page.keyboard.press(keys), project_id
-                    )
-                    strategies_tried.append(name)
-                    logger.info(
-                        "outsee.generate_video: попытка {}", name
-                    )
-                    if await _started():
-                        logger.info(
-                            "outsee.generate_video: старт по {}", name
-                        )
-                        return
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "outsee.generate_video: {} failed: {}", name, e
-                    )
-
-        # B) Скан DOM → клик по координатам (CDP + mouse + JS).
+        # A) Скан DOM → клик «Генерировать» (CDP + mouse + JS) — ПЕРВЫМ.
         targets = await self._scan_generate_click_targets(page)
+        gen_first = [
+            t
+            for t in targets
+            if "генерир" in str(t.get("text") or "").lower()
+            or "generate" in str(t.get("text") or "").lower()
+        ]
+        ordered = gen_first + [t for t in targets if t not in gen_first]
         logger.info(
-            "outsee.generate_video: scan нашёл {} кнопок Generate-like",
+            "outsee.generate_video: scan {} кнопок (генерир-first: {})",
             len(targets),
+            len(gen_first),
         )
-        for idx, t in enumerate(targets[:6]):
+        for idx, t in enumerate(ordered[:8]):
             if t.get("disabled"):
                 continue
             cx, cy = float(t["cx"]), float(t["cy"])
@@ -1914,6 +2037,34 @@ class OutseeBot:
                     return
             except Exception:  # noqa: BLE001
                 pass
+
+        # B) Горячие клавиши (после клика по кнопке).
+        if input_sel:
+            for keys, name in (
+                ("Control+Enter", "ctrl+enter"),
+                ("Enter", "enter"),
+            ):
+                abort_if_cancelled(project_id)
+                try:
+                    loc = page.locator(input_sel).first
+                    await await_with_cancel(loc.focus(), project_id)
+                    await sleep_cancellable(0.15, project_id)
+                    await await_with_cancel(
+                        page.keyboard.press(keys), project_id
+                    )
+                    strategies_tried.append(name)
+                    logger.info(
+                        "outsee.generate_video: попытка {}", name
+                    )
+                    if await _started():
+                        logger.info(
+                            "outsee.generate_video: старт по {}", name
+                        )
+                        return
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.generate_video: {} failed: {}", name, e
+                    )
 
         # C) Playwright get_by_role / селекторы (force).
         for label, click_fn in (
@@ -3250,47 +3401,7 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-            if aspect_ratio:
-                await _select_aspect_ratio(
-                    page,
-                    aspect_ratio,
-                    where="generate_video",
-                    dumps=dumps,
-                    project_id=project_id,
-                )
-
-            if resolution:
-                res_sel = await _first_visible(
-                    page,
-                    _resolution_selectors(resolution),
-                    timeout_ms=3_000,
-                    project_id=project_id,
-                )
-                if res_sel:
-                    try:
-                        await await_with_cancel(
-                            page.locator(res_sel).first.click(), project_id
-                        )
-                        logger.info(
-                            "outsee.generate_video: {} выбран ({})",
-                            resolution,
-                            res_sel,
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "outsee.generate_video: resolution {} не кликнулось",
-                            resolution,
-                        )
-
-            await _toggle_relax(
-                page,
-                want_on=relax,
-                where="generate_video",
-                dumps=dumps,
-                project_id=project_id,
-            )
-            abort_if_cancelled(project_id)
-
+            # --- Порядок veo: кадр → настройки (physical) → Relax → промт → Generate
             if start_frame is not None:
                 if not start_frame.exists():
                     raise OutseeImageError(
@@ -3316,6 +3427,68 @@ class OutseeBot:
                         dumps=dumps,
                     )
                 await sleep_cancellable(1.0, project_id)
+                logger.info("outsee.generate_video: стартовый кадр загружен")
+
+            if aspect_ratio:
+                await _select_aspect_ratio(
+                    page,
+                    aspect_ratio,
+                    where="generate_video",
+                    dumps=dumps,
+                    project_id=project_id,
+                )
+                asp_sel = await _first_visible(
+                    page,
+                    _aspect_selectors(aspect_ratio),
+                    timeout_ms=2_000,
+                    project_id=project_id,
+                )
+                if asp_sel:
+                    try:
+                        await _physical_mouse_click(
+                            page,
+                            page.locator(asp_sel).first,
+                            project_id=project_id,
+                            label=f"aspect {aspect_ratio}",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            if resolution:
+                res_sel = await _first_visible(
+                    page,
+                    _resolution_selectors(resolution),
+                    timeout_ms=5_000,
+                    project_id=project_id,
+                )
+                if res_sel:
+                    try:
+                        await _physical_mouse_click(
+                            page,
+                            page.locator(res_sel).first,
+                            project_id=project_id,
+                            label=f"resolution {resolution}",
+                        )
+                        logger.info(
+                            "outsee.generate_video: {} physical ({})",
+                            resolution,
+                            res_sel,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "outsee.generate_video: resolution {}: {}",
+                            resolution,
+                            e,
+                        )
+
+            await self._ensure_relax_for_video(
+                page,
+                want_on=relax,
+                where="generate_video",
+                project_id=project_id,
+                dumps=dumps,
+            )
+            abort_if_cancelled(project_id)
 
             await await_with_cancel(prompt_loc.click(), project_id)
             await await_with_cancel(prompt_loc.fill(prompt), project_id)
@@ -3339,22 +3512,40 @@ class OutseeBot:
             )
             abort_if_cancelled(project_id)
 
-            gen_probe = await _first_visible(
+            gen_sel = await _first_visible(
                 page,
-                GENERATE_BUTTON_SELECTORS[:6],
-                timeout_ms=3_000,
+                GENERATE_BUTTON_SELECTORS,
+                timeout_ms=15_000,
                 project_id=project_id,
             )
-            if gen_probe and await page.locator(gen_probe).first.is_disabled():
+            if not gen_sel:
+                h, p = await _dump_page(page, "video_generate_notfound_pre")
+                for x in (h, p):
+                    if x:
+                        dumps.append(x)
                 raise OutseeImageError(
-                    "outsee video: кнопка Generate заблокирована — промт/кадр не приняты",
-                    context={
-                        "gen_id": gen_id,
-                        "prompt_len": len(prompt),
-                        "composer_len": actual_len,
-                    },
+                    "outsee video: кнопка Generate не найдена до клика",
+                    context={"gen_id": gen_id},
                     dumps=dumps,
                 )
+            logger.info(
+                "outsee.generate_video: Generate на экране ({})", gen_sel
+            )
+            try:
+                await self._wait_button_enabled(
+                    page, gen_sel, timeout_s=180, project_id=project_id
+                )
+            except Exception as e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee video: Generate не стала активной (промт/кадр/Relax?)",
+                    context={
+                        "gen_id": gen_id,
+                        "gen_sel": gen_sel,
+                        "relax": relax,
+                        "err": str(e),
+                    },
+                    dumps=dumps,
+                ) from e
 
             baseline_video_urls = {
                 _strip_url_query(u)
