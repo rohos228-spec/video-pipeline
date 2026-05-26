@@ -136,7 +136,7 @@ function Stop-PortListener([int]$Port) {
             }
         }
     } catch {
-        Write-Log "Port $Port: could not use Get-NetTCPConnection ($($_.Exception.Message))" "Gray"
+        Write-Log "Port ${Port}: could not use Get-NetTCPConnection ($($_.Exception.Message))" "Gray"
     }
 }
 
