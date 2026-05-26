@@ -84,23 +84,33 @@ function Stop-StudioBackend {
     Start-Sleep -Seconds 2
 }
 
+function Open-StudioBrowser {
+    try { Start-Process "http://127.0.0.1:8765" } catch { }
+}
+
 function Start-StudioBackendWindow {
     param([string]$Root)
     $rb = Join-Path $Root "run-backend.ps1"
+    Write-StudioLog "Starting run-backend.ps1 window..." "Gray"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root
-    $deadline = (Get-Date).AddSeconds(90)
+    $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
         try {
-            $r = Invoke-WebRequest "http://127.0.0.1:8765/api/health" -TimeoutSec 2 -UseBasicParsing
+            $r = Invoke-WebRequest "http://127.0.0.1:8765/api/health" -TimeoutSec 3 -UseBasicParsing
             if ($r.StatusCode -eq 200) {
-                Start-Process "http://127.0.0.1:8765"
-                Write-StudioLog "OK http://127.0.0.1:8765" "Green"
+                Write-StudioLog "OK backend" "Green"
+                try {
+                    $sv = Invoke-RestMethod "http://127.0.0.1:8765/api/studio-version" -TimeoutSec 5
+                    Write-StudioLog "Version: $($sv.label)" "Green"
+                } catch { }
+                Open-StudioBrowser
                 return $true
             }
         } catch { }
         Start-Sleep -Milliseconds 500
     }
-    Write-StudioLog "FAIL: backend not up - see run-backend window" "Red"
+    Write-StudioLog "Open manually: http://127.0.0.1:8765 (see run-backend window)" "Yellow"
+    Open-StudioBrowser
     return $false
 }
 
