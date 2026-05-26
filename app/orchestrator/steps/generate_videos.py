@@ -145,12 +145,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 prompt_id_prefix = build_gen_id_prefix(
                     project.id, fr.number, short_uuid
                 )
-                # Relax по словам пользователя поддерживает только veo-3-1-fast.
-                # Для остальных моделей даже если флаг True — _toggle_relax
-                # тихо ничего не сделает (кнопки нет).
-                video_relax = bool(project.video_relax) and (
-                    project.video_generator == "veo_3_1_fast"
-                )
+                # Relax (Безлимит): None = не задан → включаем по умолчанию.
+                # False = пользователь явно отключил.
+                video_relax = project.video_relax is not False
                 # До 3 попыток с исходным animation_prompt; если все 3 провалились
                 # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
                 result = await generate_video_with_retries(
