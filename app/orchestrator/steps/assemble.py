@@ -30,6 +30,7 @@ from app.services.assembly_inputs import (
     build_clip_specs,
     load_plan_from_xlsx,
     resolve_bgm_path,
+    resolve_voice_artifact_path,
 )
 from app.services.hitl import send_hitl_video
 from app.services.xlsx_v8_import import import_v8_xlsx
@@ -61,18 +62,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров")
 
-    audio = (
-        await session.execute(
-            select(Artifact)
-            .where(Artifact.project_id == project.id, Artifact.kind == ArtifactKind.audio)
-            .order_by(Artifact.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if audio is None:
-        raise RuntimeError(
-            "нет артефакта озвучки — сначала шаг 10 (ElevenLabs + Whisper)"
-        )
+    voice_path = await resolve_voice_artifact_path(session, project)
+    logger.info("[#{}] озвучка: {}", project.id, voice_path)
 
     clips = await build_clip_specs(session, project, list(frames), plan_columns)
 
@@ -83,7 +74,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             logger.info("[#{}] BGM: {}", project.id, bgm_path)
         else:
             logger.info(
-                "[#{}] BGM включён в настройках, файл не найден (положите audio/bgm*.mp3)",
+                "[#{}] BGM включён в настройках, файл не найден "
+                "(положите audio/bgm.mp3 или audio/bgm.wav)",
                 project.id,
             )
 
@@ -102,7 +94,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     out_path = out_dir / f"{project.slug}.mp4"
     await assemble(
         clips,
-        Path(audio.path),
+        voice_path,
         out_path,
         subtitles_ass=subs_path,
         bgm_path=bgm_path,

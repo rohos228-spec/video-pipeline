@@ -12,26 +12,74 @@ from app.models import Artifact, ArtifactKind, Frame, Project
 from app.services.assembly import ClipSpec, parse_frame_number_from_path
 from app.services.xlsx_v8_plan import PlanColumn, read_plan_columns
 
+# Озвучка и BGM: mp3 или wav (ffmpeg / faster-whisper принимают оба).
+AUDIO_FILE_SUFFIXES = frozenset({".mp3", ".wav"})
 
-def resolve_bgm_path(project: Project) -> Path | None:
-    """Фоновая музыка: meta → audio/bgm* → audio/music*."""
+
+def is_supported_audio(path: Path) -> bool:
+    return path.suffix.lower() in AUDIO_FILE_SUFFIXES and path.is_file()
+
+
+def _meta_audio_path(project: Project, *keys: str) -> Path | None:
     meta = project.meta or {}
-    for key in ("assembly_bgm_path", "mass_bgm_path", "bgm_path"):
+    for key in keys:
         raw = meta.get(key)
-        if raw:
-            p = Path(str(raw))
-            if p.exists():
-                return p
+        if not raw:
+            continue
+        p = Path(str(raw))
+        if is_supported_audio(p):
+            return p
+    return None
+
+
+def _latest_audio_glob(audio_dir: Path, patterns: tuple[str, ...]) -> Path | None:
+    candidates: list[Path] = []
+    for pat in patterns:
+        candidates.extend(audio_dir.glob(pat))
+    valid = [p for p in candidates if is_supported_audio(p)]
+    if not valid:
+        return None
+    return sorted(valid, key=lambda p: p.stat().st_mtime)[-1]
+
+
+def resolve_voice_path(
+    project: Project,
+    artifact_path: str | None = None,
+) -> Path | None:
+    """Озвучка: артефакт audio, meta или audio/voice*.{mp3,wav}."""
+    if artifact_path:
+        p = Path(artifact_path)
+        if is_supported_audio(p):
+            return p
+
+    meta_p = _meta_audio_path(
+        project, "assembly_voice_path", "voice_path", "narration_path"
+    )
+    if meta_p is not None:
+        return meta_p
 
     audio_dir = project.data_dir / "audio"
     if not audio_dir.is_dir():
         return None
-    patterns = ("bgm*.mp3", "bgm*.wav", "bgm*.m4a", "music*.mp3", "music*.wav")
-    for pat in patterns:
-        found = sorted(audio_dir.glob(pat))
-        if found:
-            return found[-1]
-    return None
+    return _latest_audio_glob(
+        audio_dir,
+        ("voice*.mp3", "voice*.wav", "narration*.mp3", "narration*.wav"),
+    )
+
+
+def resolve_bgm_path(project: Project) -> Path | None:
+    """Фоновая музыка: meta → audio/bgm*.{mp3,wav} → audio/music*.{mp3,wav}."""
+    meta_p = _meta_audio_path(project, "assembly_bgm_path", "mass_bgm_path", "bgm_path")
+    if meta_p is not None:
+        return meta_p
+
+    audio_dir = project.data_dir / "audio"
+    if not audio_dir.is_dir():
+        return None
+    return _latest_audio_glob(
+        audio_dir,
+        ("bgm*.mp3", "bgm*.wav", "music*.mp3", "music*.wav"),
+    )
 
 
 def bgm_enabled_for_project(project: Project) -> bool:
@@ -87,6 +135,32 @@ async def resolve_scene_video_path(
         if parse_frame_number_from_path(p) == frame.number:
             return p
     return None
+
+
+async def resolve_voice_artifact_path(
+    session: AsyncSession,
+    project: Project,
+) -> Path:
+    """Путь к озвучке для сборки (артефакт или файл на диске)."""
+    audio_art = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.audio,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    art_path = audio_art.path if audio_art else None
+    resolved = resolve_voice_path(project, art_path)
+    if resolved is None:
+        raise RuntimeError(
+            "нет озвучки (mp3/wav): шаг 10 или положите audio/voice.mp3 "
+            "или audio/voice.wav"
+        )
+    return resolved
 
 
 async def build_clip_specs(

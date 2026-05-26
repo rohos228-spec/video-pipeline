@@ -15,10 +15,8 @@ from app.services.xlsx_v8_import import (
     SHEET_PLAN_V8,
 )
 
-# Строка 1 — номера кадров в шапке колонок (1, 2, 3…).
+# Строка 1 — порядковый номер кадра в шапке колонок (1, 2, 3…).
 ROW_FRAME_NUMBER_V8 = 1
-# Строка 2 — «id scene»; если в ячейке число — используем как номер кадра.
-ROW_FRAME_NUMBER_ALT_V8 = 2
 # Пустая строка под таймкод конца последнего слова (сек).
 ROW_VOICE_END_V8 = 51
 ROW_VOICE_END_LABEL = "таймкод конца (сек)"
@@ -54,7 +52,7 @@ def _parse_frame_number(ws, col: int, fallback: int) -> int:
 
 
 def read_plan_columns(xlsx_path: Path) -> list[PlanColumn]:
-    """Читает блоки закадрового текста (R49) и номера кадров из R1/R2."""
+    """Читает блоки закадрового текста (R49) и номера кадров из R1."""
     if not xlsx_path.exists():
         raise FileNotFoundError(xlsx_path)
     wb = load_workbook(filename=str(xlsx_path), data_only=True)

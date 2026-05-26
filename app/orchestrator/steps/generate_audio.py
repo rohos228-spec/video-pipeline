@@ -22,6 +22,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.assembly_inputs import resolve_voice_path
 from app.services.mapper import map_frames
 from app.services.whisper import dump_words_json, transcribe_words
 from app.services.xlsx_v8_plan import (
@@ -70,11 +71,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError("пустой сценарий для озвучки")
 
     audio_dir = project.data_dir / "audio"
-    audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
-
-    async with browser_session() as bs:
-        el = ElevenLabsBot(bs)
-        await el.tts(script_text, audio_path, timeout=600)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    existing_voice = resolve_voice_path(project, None)
+    if existing_voice is not None:
+        audio_path = existing_voice
+        logger.info("[#{}] используем готовую озвучку: {}", project.id, audio_path)
+    else:
+        audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
+        async with browser_session() as bs:
+            el = ElevenLabsBot(bs)
+            await el.tts(script_text, audio_path, timeout=600)
 
     session.add(Artifact(
         project_id=project.id,
