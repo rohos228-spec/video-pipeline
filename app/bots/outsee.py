@@ -2702,16 +2702,24 @@ class OutseeBot:
         )
 
         abort_if_cancelled(project_id)
-        try:
-            await await_with_cancel(
-                page.goto(page_url, wait_until="domcontentloaded"), project_id
-            )
-        except StepCancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "outsee.generate_video: page.goto({}) упал: {} — продолжаю "
-                "без явного reload", page_url, e,
+        page_base = page_url.split("?", 1)[0]
+        cur_base = (page.url or "").split("?", 1)[0]
+        if cur_base != page_base:
+            try:
+                await await_with_cancel(
+                    page.goto(page_url, wait_until="domcontentloaded"), project_id
+                )
+            except StepCancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_video: page.goto({}) упал: {} — продолжаю",
+                    page_url,
+                    e,
+                )
+        else:
+            logger.info(
+                "outsee.generate_video: та же вкладка outsee video — без reload"
             )
         await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
         try:
@@ -2724,32 +2732,30 @@ class OutseeBot:
             pass
         abort_if_cancelled(project_id)
 
-        # 0) АНТИ-ДУБЛИКАТ
-        # странице УЖЕ есть карточка с нашим `prompt_id_prefix` (прошлая
-        # попытка retry'я кликнула Generate, упала по таймауту, а outsee
-        # продолжил рендерить видео) — НЕ кликаем Generate повторно.
-        # Иначе в истории outsee окажется 2-3 одинаковых ролика одного
-        # кадра, а аккаунт сожжёт лимиты на дубликатах.
-        #
-        # Видео генерится 5-15 минут — это ОЧЕНЬ дорогое действие
-        # дублировать. Поэтому проверка тут даже важнее, чем для картинок.
+        # Снимок video URL до клика — не скачиваем ролики из истории outsee.
+        baseline_video_urls = {
+            _strip_url_query(u)
+            for u in await self._all_video_urls_on_page(page)
+            if u
+        }
+        logger.info(
+            "outsee.generate_video: baseline video_urls={}",
+            len(baseline_video_urls),
+        )
+
+        # Retry на том же prompt_id: карточка с готовым роликом уже в галерее.
         already_in_progress = False
         if prompt_id_prefix:
-            try:
-                _counts = await self._count_id_tokens_in_page(
-                    page, [prompt_id_prefix]
-                )
-            except Exception:  # noqa: BLE001
-                _counts = {}
-            if _counts.get(prompt_id_prefix, 0) >= 1:
+            existing = await self._find_video_by_prompt_id(page, prompt_id_prefix)
+            if existing:
                 already_in_progress = True
                 logger.warning(
-                    "outsee.generate_video: на странице УЖЕ есть карточка "
-                    "с {} — НЕ кликаю Generate повторно, жду результат "
-                    "прошлого клика (video рендерится 5-15 мин)",
+                    "outsee.generate_video: карточка с {} уже есть — "
+                    "жду/скачиваю без повторного Generate",
                     prompt_id_prefix,
                 )
 
+        generate_clicked = False
         if not already_in_progress:
             input_sel = await _first_visible(
                 page, PROMPT_INPUT_SELECTORS, timeout_ms=60_000, project_id=project_id
@@ -2813,10 +2819,29 @@ class OutseeBot:
                 await await_with_cancel(prompt_loc.press("Tab"), project_id)
             except Exception:  # noqa: BLE001
                 pass
+            await _verify_composer_prompt_filled(
+                page,
+                input_sel,
+                expected_prompt=prompt,
+                prompt_id_prefix=prompt_id_prefix,
+                where="generate_video",
+            )
             logger.info(
                 "outsee.generate_video: промт введён ({} симв)",
                 len(prompt or ""),
             )
+
+            gen_probe = await _first_visible(
+                page,
+                GENERATE_BUTTON_SELECTORS[:6],
+                timeout_ms=3_000,
+                project_id=project_id,
+            )
+            if gen_probe and await page.locator(gen_probe).first.is_disabled():
+                raise OutseeImageError(
+                    "outsee video: кнопка Generate заблокирована после промта/кадра",
+                    context={"prompt_id": prompt_id_prefix},
+                )
 
             # 4) Generate
             abort_if_cancelled(project_id)
@@ -2838,15 +2863,17 @@ class OutseeBot:
             )
             abort_if_cancelled(project_id)
             await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
+            generate_clicked = True
             logger.info("outsee.generate_video: Generate кликнут")
 
-        # 5) ждём результат. Если есть prompt_id_prefix — приоритетно
-        # ищем `<video>` в карточке с нашим [ID: ...], только если не
-        # нашли — фолбэк на «любой видео-URL в DOM».
-        video_url = await self._wait_video_url(
+        # 5) ждём НОВЫЙ ролик (как _wait_image_url_strict для картинок).
+        video_url = await self._wait_video_url_strict(
             page,
             timeout=timeout,
+            baseline_video_urls=baseline_video_urls,
             prompt_id_prefix=prompt_id_prefix,
+            generate_clicked=generate_clicked,
+            wait_existing_card=already_in_progress,
             project_id=project_id,
         )
 
@@ -2934,6 +2961,8 @@ class OutseeBot:
                 for (const el of all) {
                     if (!el || !el.children) continue;
                     if (el === document.body || el === document.documentElement) continue;
+                    const tag0 = el.tagName && el.tagName.toLowerCase();
+                    if (tag0 === 'textarea' || tag0 === 'input') continue;
                     if (!hasToken(el, idToken)) continue;
                     let smallest = el;
                     for (const child of el.children) {
@@ -2970,6 +2999,104 @@ class OutseeBot:
             )
             return None
 
+    async def _all_video_urls_on_page(self, page: Page) -> list[str]:
+        try:
+            urls = await page.evaluate(
+                """() => {
+                    const list = [];
+                    document.querySelectorAll('video').forEach(v => {
+                        if (v.src) list.push(v.src);
+                        v.querySelectorAll('source').forEach(s => {
+                            if (s.src) list.push(s.src);
+                        });
+                    });
+                    document.querySelectorAll("a[download], a[href*='.mp4']").forEach(a => {
+                        if (a.href) list.push(a.href);
+                    });
+                    return list;
+                }"""
+            )
+            return [u for u in (urls or []) if isinstance(u, str) and u]
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _wait_video_url_strict(
+        self,
+        page: Page,
+        *,
+        timeout: float,
+        baseline_video_urls: set[str],
+        prompt_id_prefix: str | None,
+        generate_clicked: bool,
+        wait_existing_card: bool = False,
+        project_id: int | None = None,
+    ) -> str:
+        """Ждёт новый ролик после Generate (аналог _wait_image_url_strict)."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        if not prompt_id_prefix:
+            raise RuntimeError("outsee video: prompt_id_prefix обязателен")
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        log_every = 15.0
+        next_log = asyncio.get_event_loop().time() + log_every
+        gen_busy_seen = False
+        start = asyncio.get_event_loop().time()
+
+        while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
+            elapsed = asyncio.get_event_loop().time() - start
+
+            if not await self._generate_button_enabled(page):
+                gen_busy_seen = True
+
+            if elapsed >= 2.0:
+                failure = await self._detect_outsee_failure(page)
+                if failure and failure.get("in_result"):
+                    raise OutseeImageError(
+                        f"outsee video: {failure.get('text', 'ошибка генерации')}",
+                        context={"prompt_id": prompt_id_prefix},
+                    )
+
+            by_id = await self._find_video_by_prompt_id(page, prompt_id_prefix)
+            if by_id:
+                norm = _strip_url_query(by_id)
+                if wait_existing_card and norm:
+                    logger.info(
+                        "outsee.generate_video: ролик по ID (retry/та же карточка)",
+                    )
+                    return by_id
+                if norm and norm not in baseline_video_urls:
+                    if gen_busy_seen or generate_clicked or elapsed > 8.0:
+                        logger.info(
+                            "outsee.generate_video: новый ролик по ID ({} симв URL)",
+                            len(by_id),
+                        )
+                        return by_id
+
+            now = asyncio.get_event_loop().time()
+            if now >= next_log:
+                urls = await self._all_video_urls_on_page(page)
+                logger.info(
+                    "outsee.generate_video: ждём новый ролик… {:.0f} сек, "
+                    "urls_in_dom={}, gen_busy={}, clicked={}",
+                    elapsed,
+                    len(urls),
+                    gen_busy_seen,
+                    generate_clicked,
+                )
+                next_log = now + log_every
+            await sleep_cancellable(1.5, project_id)
+
+        raise OutseeImageError(
+            "outsee video: новый ролик не появился (старые из истории игнорируются)",
+            context={
+                "prompt_id": prompt_id_prefix,
+                "generate_clicked": generate_clicked,
+                "gen_busy_seen": gen_busy_seen,
+            },
+        )
+
     async def _wait_video_url(
         self,
         page: Page,
@@ -2978,61 +3105,27 @@ class OutseeBot:
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,
     ) -> str:
-        """Ждёт появление видео-результата в DOM.
-
-        Если передан `prompt_id_prefix` — приоритетно ищем `<video>` в
-        карточке с нашим [ID: ...]. Это защищает от подмены чужим
-        видео из истории outsee и работает в паре с анти-дубликат
-        логикой в `generate_video` (когда мы не кликаем Generate
-        повторно, а ждём результат прошлого клика).
-
-        Fallback — генерический поиск любого видео-URL (для legacy/
-        recon без prompt_id_prefix).
-        """
+        """Legacy: recon / без prompt_id — любой mp4 в DOM."""
+        baseline = {
+            _strip_url_query(u) for u in await self._all_video_urls_on_page(page) if u
+        }
+        if prompt_id_prefix:
+            return await self._wait_video_url_strict(
+                page,
+                timeout=timeout,
+                baseline_video_urls=baseline,
+                prompt_id_prefix=prompt_id_prefix,
+                generate_clicked=True,
+                project_id=project_id,
+            )
         deadline = asyncio.get_event_loop().time() + timeout
-        log_every = 15.0  # сек, логи прогресса
-        next_log = asyncio.get_event_loop().time() + log_every
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
-            # Приоритет 0: видео в карточке с нашим [ID: ...].
-            if prompt_id_prefix:
-                try:
-                    by_id = await self._find_video_by_prompt_id(
-                        page, prompt_id_prefix
-                    )
-                except Exception:  # noqa: BLE001
-                    by_id = None
-                if by_id:
-                    return by_id
-            # Приоритет 1 (fallback): любой видео-URL в DOM.
-            urls = await page.evaluate(
-                """() => {
-                    const list = [];
-                    document.querySelectorAll('video').forEach(v => {
-                        if (v.src) list.push(v.src);
-                        v.querySelectorAll('source').forEach(s => s.src && list.push(s.src));
-                    });
-                    document.querySelectorAll("a[download]").forEach(a => a.href && list.push(a.href));
-                    return list;
-                }"""
-            )
-            # Без prompt_id_prefix берём первый похожий — legacy-режим.
-            if not prompt_id_prefix:
-                for u in urls:
-                    if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
-                        return u
-            now = asyncio.get_event_loop().time()
-            if now >= next_log:
-                logger.info(
-                    "outsee.generate_video: ждём результат… {:.0f} сек, "
-                    "video_urls_in_dom={}, prompt_id={}",
-                    timeout - (deadline - now),
-                    len(urls or []),
-                    prompt_id_prefix,
-                )
-                next_log = now + log_every
+            for u in await self._all_video_urls_on_page(page):
+                if any(tok in u for tok in (".mp4", "blob:", "video", "cdn", "storage")):
+                    return u
             await sleep_cancellable(1.5, project_id)
         raise PWTimeoutError("outsee video: результат не появился за отведённое время")
 
