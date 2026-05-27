@@ -1965,6 +1965,8 @@ class OutseeBot:
           1) Кнопка Generate стала disabled / aria-disabled / aria-busy
           2) Видимый spinner (animate-spin)
           3) Прогресс-бар
+          4) Правая панель показывает превью генерации (видео/картинка
+             в процессе — outsee отображает её справа)
         НЕ проверяем text body — слова «генерация», «loading» и т.п.
         встречаются в обычном UI outsee и дают ложноположительный сигнал.
         """
@@ -2003,6 +2005,25 @@ class OutseeBot:
                     )) {
                         const r = el.getBoundingClientRect();
                         if (r.width > 20 && r.height > 3) return 'progress';
+                    }
+                    // 4) Right panel with generation preview — outsee shows
+                    // a preview panel on the right side during generation
+                    // with a video/image placeholder and a timer/status.
+                    const midX = window.innerWidth * 0.45;
+                    for (const el of document.querySelectorAll(
+                        'video, [class*="preview"], [class*="Preview"], '
+                        + '[class*="result"], [class*="Result"]'
+                    )) {
+                        const r = el.getBoundingClientRect();
+                        if (r.left < midX || r.width < 100 || r.height < 100) continue;
+                        // Check if this panel has a timer/counter/loading text
+                        const parent = el.closest('section, aside, div') || el.parentElement;
+                        if (!parent) continue;
+                        const pt = (parent.innerText || '').toLowerCase();
+                        // Timer pattern: "0:30", "1:45", "00:30", "%"
+                        if (/[0-9]+:[0-9]{2}/.test(pt) || pt.includes('%')) {
+                            return 'right_panel_timer';
+                        }
                     }
                     return null;
                 }"""
@@ -2160,6 +2181,20 @@ class OutseeBot:
         abort_if_cancelled(project_id)
         strategies_tried: list[str] = []
 
+        # Diagnostic dump BEFORE clicking Generate — always save
+        # screenshot + HTML so user can see the page state.
+        h_pre, p_pre = await _dump_page(page, "video_pre_generate")
+        if dumps is not None:
+            for x in (h_pre, p_pre):
+                if x:
+                    dumps.append(x)
+        logger.info(
+            "outsee.generate_video: pre-generate dump saved "
+            "(html={}, png={})",
+            h_pre and h_pre.name,
+            p_pre and p_pre.name,
+        )
+
         # 0) Если генерация уже идёт — ждём её завершения (до 600с).
         if await self._generation_started(page):
             logger.info(
@@ -2258,6 +2293,23 @@ class OutseeBot:
                     return
             except Exception:  # noqa: BLE001
                 pass
+
+        # Diagnostic: dump page after all button clicks failed
+        if not await self._generation_started(page):
+            h_post, p_post = await _dump_page(
+                page, "video_after_button_clicks"
+            )
+            if dumps is not None:
+                for x in (h_post, p_post):
+                    if x:
+                        dumps.append(x)
+            logger.warning(
+                "outsee.generate_video: все {} кнопок кликнуты, "
+                "генерация не стартовала. Dump: html={}, png={}",
+                min(len(ordered), 10),
+                h_post and h_post.name,
+                p_post and p_post.name,
+            )
 
         # B) Горячие клавиши.
         if input_sel:
