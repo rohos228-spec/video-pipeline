@@ -3952,6 +3952,21 @@ class OutseeBot:
                         or not pre_rejected_text
                         or ftext != pre_rejected_text
                     )
+                    # Video generation takes 60-300s. If error appears
+                    # outside result panel within first 15s, it's almost
+                    # certainly a STALE banner from a previous attempt.
+                    # Only trust non-result errors after 15s.
+                    if not in_result and elapsed < 15:
+                        is_new = False
+                        if elapsed < 3:
+                            pass  # completely silent for first 3s
+                        else:
+                            logger.info(
+                                "_wait_video_url_strict: игнорирую старую "
+                                "плашку ({:.0f} сек, in_result=False): {}",
+                                elapsed,
+                                ftext[:80],
+                            )
                     if is_new:
                         logger.info(
                             "_wait_video_url_strict: ошибка outsee за {:.0f} сек "

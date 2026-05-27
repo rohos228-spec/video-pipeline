@@ -178,6 +178,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 await session.flush()
                 generated += 1
                 logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
+                try:
+                    from app.services.event_bus import publish_project_event
+                    await publish_project_event(
+                        project.id,
+                        event_type="video_generated",
+                        payload={"frame_number": fr.number, "path": str(result.file_path)},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except StepCancelledError as e:
             consume_stop(project.id)
             logger.info("[#{}] generate_videos: {} — выхожу из цикла",
