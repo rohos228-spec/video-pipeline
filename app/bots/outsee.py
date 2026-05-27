@@ -1959,21 +1959,27 @@ class OutseeBot:
         )
 
     async def _generation_started(self, page: Page) -> bool:
-        """True — outsee реально начал генерацию (не только «кликнули»)."""
+        """True — outsee реально начал генерацию (не только «кликнули»).
+
+        ТОЛЬКО надёжные сигналы:
+          1) Кнопка Generate стала disabled / aria-disabled / aria-busy
+          2) Видимый spinner (animate-spin)
+          3) Прогресс-бар
+          4) Правая панель показывает превью генерации (видео/картинка
+             в процессе — outsee отображает её справа)
+        НЕ проверяем text body — слова «генерация», «loading» и т.п.
+        встречаются в обычном UI outsee и дают ложноположительный сигнал.
+        """
         try:
             via_dom = await page.evaluate(
                 """() => {
-                    const low = (document.body.innerText || '').toLowerCase();
-                    const loadWords = [
-                        'генерация', 'генериру', 'generating', 'processing',
-                        'подождите', 'loading', 'создаём', 'creating'
-                    ];
-                    if (loadWords.some(w => low.includes(w))) return 'text';
+                    // 1) Generate button disabled = generation running
                     for (const el of document.querySelectorAll(
                         'button, [role="button"]'
                     )) {
                         const tx = (el.innerText || el.textContent || '')
-                            .toLowerCase();
+                            .toLowerCase().trim();
+                        if (tx.length > 30) continue;
                         if (!tx.includes('генерир') && !tx.includes('generate')
                             && !tx.includes('создать')) continue;
                         if (el.disabled) return 'btn_disabled';
@@ -1984,13 +1990,40 @@ class OutseeBot:
                             return 'btn_busy';
                         }
                     }
-                    const spin = document.querySelector(
-                        '[class*="animate-spin"], [class*="loading"], '
+                    // 2) Visible spinner
+                    for (const el of document.querySelectorAll(
+                        '[class*="animate-spin"], [class*="spinner"], '
                         + '[data-loading="true"]'
-                    );
-                    if (spin) {
-                        const r = spin.getBoundingClientRect();
+                    )) {
+                        const r = el.getBoundingClientRect();
                         if (r.width > 8 && r.height > 8) return 'spinner';
+                    }
+                    // 3) Progress bar
+                    for (const el of document.querySelectorAll(
+                        '[role="progressbar"], progress, '
+                        + '[class*="progress"], [class*="Progress"]'
+                    )) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 20 && r.height > 3) return 'progress';
+                    }
+                    // 4) Right panel with generation preview — outsee shows
+                    // a preview panel on the right side during generation
+                    // with a video/image placeholder and a timer/status.
+                    const midX = window.innerWidth * 0.45;
+                    for (const el of document.querySelectorAll(
+                        'video, [class*="preview"], [class*="Preview"], '
+                        + '[class*="result"], [class*="Result"]'
+                    )) {
+                        const r = el.getBoundingClientRect();
+                        if (r.left < midX || r.width < 100 || r.height < 100) continue;
+                        // Check if this panel has a timer/counter/loading text
+                        const parent = el.closest('section, aside, div') || el.parentElement;
+                        if (!parent) continue;
+                        const pt = (parent.innerText || '').toLowerCase();
+                        // Timer pattern: "0:30", "1:45", "00:30", "%"
+                        if (/[0-9]+:[0-9]{2}/.test(pt) || pt.includes('%')) {
+                            return 'right_panel_timer';
+                        }
                     }
                     return null;
                 }"""
@@ -2134,7 +2167,11 @@ class OutseeBot:
         dumps: list[Path] | None = None,
         context: dict[str, object] | None = None,
     ) -> None:
-        """Запуск генерации veo — несколько механик, пока не пошла генерация."""
+        """Запуск генерации veo — несколько механик, пока не пошла генерация.
+
+        Если генерация уже идёт (кнопка disabled) — ждём до 10 мин
+        вместо ошибки.
+        """
         from app.services.step_cancel import (
             abort_if_cancelled,
             await_with_cancel,
@@ -2144,11 +2181,48 @@ class OutseeBot:
         abort_if_cancelled(project_id)
         strategies_tried: list[str] = []
 
+        # Diagnostic dump BEFORE clicking Generate — always save
+        # screenshot + HTML so user can see the page state.
+        h_pre, p_pre = await _dump_page(page, "video_pre_generate")
+        if dumps is not None:
+            for x in (h_pre, p_pre):
+                if x:
+                    dumps.append(x)
+        logger.info(
+            "outsee.generate_video: pre-generate dump saved "
+            "(html={}, png={})",
+            h_pre and h_pre.name,
+            p_pre and p_pre.name,
+        )
+
+        # 0) Если генерация уже идёт — ждём её завершения (до 600с).
+        if await self._generation_started(page):
+            logger.info(
+                "outsee.generate_video: генерация уже идёт — ожидаю "
+                "завершения (до 600с)…"
+            )
+            strategies_tried.append("wait_existing")
+            for _w in range(600):
+                abort_if_cancelled(project_id)
+                await sleep_cancellable(1.0, project_id)
+                if not await self._generation_started(page):
+                    logger.info(
+                        "outsee.generate_video: предыдущая генерация "
+                        "завершилась, продолжаю"
+                    )
+                    break
+            else:
+                logger.warning(
+                    "outsee.generate_video: предыдущая генерация не "
+                    "завершилась за 600с"
+                )
+
         async def _started() -> bool:
-            await sleep_cancellable(0.6, project_id)
+            await sleep_cancellable(0.8, project_id)
             return await self._generation_started(page)
 
-        # A) Скан DOM → клик «Генерировать» (CDP + mouse + JS) — ПЕРВЫМ.
+        # A) Скан DOM → клик по всем найденным кнопкам (до 10).
+        # Три типа клика на каждую: CDP, mouse, JS dispatchEvent.
         targets = await self._scan_generate_click_targets(page)
         gen_first = [
             t
@@ -2162,27 +2236,26 @@ class OutseeBot:
             len(targets),
             len(gen_first),
         )
-        for idx, t in enumerate(ordered[:8]):
+        for idx, t in enumerate(ordered[:10]):
             if t.get("disabled"):
                 continue
             cx, cy = float(t["cx"]), float(t["cy"])
             text = str(t.get("text") or "")[:40]
             abort_if_cancelled(project_id)
 
+            # CDP click
             await _cdp_dispatch_click(
                 page, cx, cy, project_id=project_id
             )
             strategies_tried.append(f"cdp#{idx}")
             logger.info(
                 "outsee.generate_video: CDP click #{} ({:.0f},{:.0f}) {!r}",
-                idx,
-                cx,
-                cy,
-                text,
+                idx, cx, cy, text,
             )
             if await _started():
                 return
 
+            # Physical mouse click
             await _viewport_mouse_click(
                 page, cx, cy, project_id=project_id, label=f"gen#{idx}"
             )
@@ -2190,6 +2263,7 @@ class OutseeBot:
             if await _started():
                 return
 
+            # JS dispatchEvent click
             try:
                 await page.evaluate(
                     """([x, y]) => {
@@ -2220,7 +2294,24 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # B) Горячие клавиши (после клика по кнопке).
+        # Diagnostic: dump page after all button clicks failed
+        if not await self._generation_started(page):
+            h_post, p_post = await _dump_page(
+                page, "video_after_button_clicks"
+            )
+            if dumps is not None:
+                for x in (h_post, p_post):
+                    if x:
+                        dumps.append(x)
+            logger.warning(
+                "outsee.generate_video: все {} кнопок кликнуты, "
+                "генерация не стартовала. Dump: html={}, png={}",
+                min(len(ordered), 10),
+                h_post and h_post.name,
+                p_post and p_post.name,
+            )
+
+        # B) Горячие клавиши.
         if input_sel:
             for keys, name in (
                 ("Control+Enter", "ctrl+enter"),
@@ -2304,6 +2395,38 @@ class OutseeBot:
         except OutseeImageError:
             pass
 
+        # E) Повторный скан после задержки — outsee мог
+        # перерисовать DOM после вставки промта.
+        logger.info(
+            "outsee.generate_video: все стратегии провалились — "
+            "ждём 3с и пробую повторный скан"
+        )
+        await sleep_cancellable(3.0, project_id)
+        targets2 = await self._scan_generate_click_targets(page)
+        for idx2, t2 in enumerate(targets2[:10]):
+            if t2.get("disabled"):
+                continue
+            cx2, cy2 = float(t2["cx"]), float(t2["cy"])
+            text2 = str(t2.get("text") or "")[:40]
+            abort_if_cancelled(project_id)
+            await _cdp_dispatch_click(
+                page, cx2, cy2, project_id=project_id
+            )
+            strategies_tried.append(f"rescan_cdp#{idx2}")
+            logger.info(
+                "outsee.generate_video: rescan CDP #{} ({:.0f},{:.0f}) {!r}",
+                idx2, cx2, cy2, text2,
+            )
+            if await _started():
+                return
+            await _viewport_mouse_click(
+                page, cx2, cy2, project_id=project_id,
+                label=f"rescan#{idx2}",
+            )
+            strategies_tried.append(f"rescan_mouse#{idx2}")
+            if await _started():
+                return
+
         dump_paths: list[Path] = []
         h, p = await _dump_page(page, "video_generate_all_failed")
         for x in (h, p):
@@ -2313,11 +2436,11 @@ class OutseeBot:
             dumps.extend(dump_paths)
         raise OutseeImageError(
             "outsee video: не удалось запустить Generate "
-            "(все механики: клавиши, CDP, мышь, JS, role, селекторы)",
+            "(все механики: клавиши, CDP, мышь, JS, role, селекторы, rescan)",
             context={
                 **(context or {}),
                 "strategies": strategies_tried,
-                "targets": targets[:5],
+                "targets": (targets + targets2)[:10],
             },
             dumps=dump_paths,
         )
