@@ -3590,13 +3590,19 @@ class OutseeBot:
                             e,
                         )
 
-            await self._ensure_relax_for_video(
-                page,
-                want_on=relax,
-                where="generate_video",
-                project_id=project_id,
-                dumps=dumps,
-            )
+            try:
+                await self._ensure_relax_for_video(
+                    page,
+                    want_on=relax,
+                    where="generate_video",
+                    project_id=project_id,
+                    dumps=dumps,
+                )
+            except OutseeImageError:
+                logger.warning(
+                    "outsee.generate_video: Relax не включился — "
+                    "продолжаю без него"
+                )
             abort_if_cancelled(project_id)
 
             await await_with_cancel(prompt_loc.click(), project_id)
