@@ -1970,10 +1970,45 @@ class OutseeBot:
         strategies_tried: list[str] = []
 
         async def _started() -> bool:
-            await sleep_cancellable(0.6, project_id)
+            await sleep_cancellable(0.8, project_id)
             return await self._generation_started(page)
 
-        # A) Скан DOM → клик «Генерировать» (CDP + mouse + JS) — ПЕРВЫМ.
+        # A0) Прямой клик по кнопке "Генерировать" — ищем по тексту,
+        # работает на любом разрешении. Кнопка появляется после ввода
+        # промта, поэтому ждём 1с.
+        await sleep_cancellable(1.0, project_id)
+        for text_v in ("Генерировать", "Generate", "Сгенерировать"):
+            abort_if_cancelled(project_id)
+            try:
+                btn = page.get_by_role(
+                    "button", name=text_v, exact=True
+                ).first
+                if await btn.count() > 0 and await btn.is_visible():
+                    box = await btn.bounding_box()
+                    if box and box["width"] > 30:
+                        cx, cy = (
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                        logger.info(
+                            "outsee.generate_video: A0 кнопка {!r} "
+                            "({:.0f},{:.0f}) — клик мышью",
+                            text_v, cx, cy,
+                        )
+                        await page.mouse.click(cx, cy)
+                        strategies_tried.append(f"A0_mouse_{text_v}")
+                        if await _started():
+                            return
+                        await _cdp_dispatch_click(
+                            page, cx, cy, project_id=project_id,
+                        )
+                        strategies_tried.append(f"A0_cdp_{text_v}")
+                        if await _started():
+                            return
+            except Exception:  # noqa: BLE001
+                pass
+
+        # A) Скан DOM → клик «Генерировать» (CDP + mouse + JS).
         targets = await self._scan_generate_click_targets(page)
         gen_first = [
             t
