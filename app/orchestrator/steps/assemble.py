@@ -73,13 +73,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             raise RuntimeError(f"длительность кадра {fr.number} ≤ 0")
         clips.append(ClipSpec(src=Path(video_art.path), duration=float(duration)))
 
-    # субтитры
+    # субтитры — привязаны к кумулятивному времени клипов, а не к
+    # Whisper timestamps. Каждый субтитр показывается ровно пока
+    # играет его клип, что гарантирует синхронизацию с видеорядом.
     subs_dir = project.data_dir / "subs"
     subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
-    make_simple_ass(
-        [((fr.start_ts or 0.0), (fr.end_ts or 0.0), fr.voiceover_text or "") for fr in frames],
-        subs_path,
-    )
+    cumulative = 0.0
+    sub_entries: list[tuple[float, float, str]] = []
+    for fr, clip in zip(frames, clips):
+        text = (fr.voiceover_text or "").strip()
+        if text:
+            sub_entries.append((cumulative, cumulative + clip.duration, text))
+        cumulative += clip.duration
+    make_simple_ass(sub_entries, subs_path)
     session.add(Artifact(
         project_id=project.id, kind=ArtifactKind.subtitle,
         uuid=uuid.uuid4().hex, path=str(subs_path),
