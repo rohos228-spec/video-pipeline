@@ -11,6 +11,7 @@ from loguru import logger
 from app.models import Project, ProjectStatus
 from app.services.mass_factory import assert_not_factory_template_for_generation
 from app.services.disabled_nodes import is_step_disabled
+from app.orchestrator.graph.planner import assert_step_allowed_by_graph
 from app.services.reset_step import clear_step_outputs_for_rerun
 from app.services.step_cancel import clear_stop
 from app.telegram.menu import step_by_code
@@ -46,11 +47,7 @@ async def start_step(
         label = step_code.replace("_", " ")
         raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
     assert_not_factory_template_for_generation(project)
-    # Ручной запуск шага из UI (▶) — оператор знает, что делает.
-    # Проверка «есть ли все done-предшественники по графу» здесь отключена
-    # намеренно: граф остаётся как навигация/визуализация, но не блокирует
-    # запуск произвольного шага. is_step_disabled выше всё ещё уважает явно
-    # отключённые ноды.
+    await assert_step_allowed_by_graph(session, project, step_code)
     clear_stop(project.id)
     try:
         wiped = await clear_step_outputs_for_rerun(session, project, step_code)
