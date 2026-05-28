@@ -1,10 +1,11 @@
 """Авто-продвижение проектов с `auto_mode=True`.
 
 Для одиночных проектов: если юзер выставил `auto_mode=True` и проект
-дошёл до *_ready статуса — мы запускаем GPT-проверку артефакта (план /
-сценарий) или сразу авто-апруфим (визуальные шаги), затем сами
-триггерим следующий running-статус. Юзеру не нужно нажимать «Запустить
-шаг N+1» в TG.
+дошёл до *_ready статуса — следующий шаг стартует автоматически.
+Без `ai_control` — без ручного одобрения и без GPT-ревью.
+С `ai_control=True` — GPT-проверка (план/сценарий) или авто-апрув
+визуальных шагов, затем running-статус. Юзеру не нужно нажимать
+«Запустить шаг N+1» в TG.
 
 Для массовых проектов: тот же механизм + serial worker запускает по
 одному подпроекту за раз (см. `is_serial_busy` ниже).
@@ -616,9 +617,6 @@ async def maybe_auto_advance(
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
     meta = getattr(project, "meta", None) or {}
-    if not meta.get("ai_control"):
-        if hitl is None or hitl.decision is HITLDecision.pending:
-            return False
 
     if hitl is not None and hitl.decision is HITLDecision.regenerate:
         await _apply_regen(
@@ -644,6 +642,20 @@ async def maybe_auto_advance(
         # бейдж. Ничего не рисуем.
         await _apply_approve(session, project, hitl, transition, bot=None)
         return True
+
+    # auto_mode без ИИ-контроля: шаг завершён → следующий без ручного одобрения.
+    if getattr(project, "auto_mode", False) and not meta.get("ai_control"):
+        logger.info(
+            "auto_advance: #{} {} → step advance (auto_mode, no approval)",
+            project.id,
+            status.value,
+        )
+        await _apply_approve(session, project, hitl, transition, bot=bot)
+        return True
+
+    if not meta.get("ai_control"):
+        if hitl is None or hitl.decision is HITLDecision.pending:
+            return False
 
     # (single-mass parity #4) Решаем нужен ли vision-чек для этого kind'а.
     if transition.kind in VISUAL_REVIEW_KINDS and not _should_vision_check(

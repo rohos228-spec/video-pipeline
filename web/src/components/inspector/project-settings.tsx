@@ -60,8 +60,8 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
         onClick={() => toggleMeta("graph_executor", !graphOn)}
       />
       <ToggleRow
-        label="Авто-продвижение"
-        hint="После одобрения — автоматически следующий шаг"
+        label="Автопродвижение"
+        hint="По шагам без одобрения — следующий шаг стартует сразу после завершения текущего"
         active={autoOn}
         disabled={patch.isPending}
         onClick={() => patch.mutate({ auto_mode: !autoOn })}

@@ -203,3 +203,26 @@ def test_expected_progression_default_3_slots() -> None:
         ProjectStatus.enriching_2,
         ProjectStatus.enriching_3,
     ]
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_advances_without_manual_approval(monkeypatch) -> None:
+    """auto_mode без ai_control: pending HITL не блокирует переход."""
+    from unittest.mock import AsyncMock
+
+    from app.orchestrator.auto_advance import maybe_auto_advance
+
+    project = _make_project(status=ProjectStatus.frames_ready, auto_mode=True)
+    project.meta = {"ai_control": False}
+    hitl = _make_hitl(HITLKind.approve_hero)
+    apply_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.orchestrator.auto_advance.get_latest_hitl",
+        AsyncMock(return_value=hitl),
+    )
+    monkeypatch.setattr("app.orchestrator.auto_advance._apply_approve", apply_mock)
+
+    advanced = await maybe_auto_advance(_StubAsyncSession(), project, bot=None)
+
+    assert advanced is True
+    apply_mock.assert_awaited_once()
