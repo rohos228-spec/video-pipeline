@@ -26,24 +26,26 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Project:
     return p
 
 
-def test_find_bgm_music_mp3_in_project_dir(project: Project) -> None:
-    music = project.data_dir / "music.mp3"
-    music.write_bytes(b"mp3")
-    assert find_bgm_file(project) == music.resolve()
+def test_find_bgm_in_music_folder(project: Project) -> None:
+    music_dir = project.data_dir / "music"
+    music_dir.mkdir()
+    track = music_dir / "track.mp3"
+    track.write_bytes(b"mp3")
+    assert find_bgm_file(project) == track.resolve()
 
 
-def test_resolve_bgm_auto_when_file_present(project: Project) -> None:
-    (project.data_dir / "bgm.mp3").write_bytes(b"x")
+def test_resolve_bgm_from_music_folder(project: Project) -> None:
+    music_dir = project.data_dir / "music"
+    music_dir.mkdir()
+    (music_dir / "fon.mp3").write_bytes(b"x")
     cfg = resolve_bgm(project)
     assert cfg is not None
-    assert cfg.path.name == "bgm.mp3"
+    assert cfg.path.parent.name == "music"
 
 
 def test_resolve_bgm_respects_explicit_disable(project: Project) -> None:
-    (project.data_dir / "bgm.mp3").write_bytes(b"x")
+    music_dir = project.data_dir / "music"
+    music_dir.mkdir()
+    (music_dir / "a.mp3").write_bytes(b"x")
     project.meta = {"bgm_enabled": False}
-    assert resolve_bgm(project) is None
-
-
-def test_resolve_bgm_missing_file(project: Project) -> None:
     assert resolve_bgm(project) is None

@@ -15,6 +15,7 @@ _BGM_FILENAMES = (
     "music.mp3", "music.wav",
     "background.mp3", "fon.mp3",
 )
+_AUDIO_GLOB = ("*.mp3", "*.wav", "*.m4a", "*.ogg", "*.flac")
 
 
 @dataclass(frozen=True)
@@ -48,34 +49,56 @@ def _explicitly_disabled(project: Project) -> bool:
     return False
 
 
+def _first_audio_in_dir(directory: Path) -> Path | None:
+    if not directory.is_dir():
+        return None
+    for pattern in _AUDIO_GLOB:
+        matches = sorted(directory.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
 def find_bgm_file(project: Project) -> Path | None:
-    """Ищет музыку в проекте и типовых путях."""
+    """Ищет музыку: data/videos/<slug>/music/*, bgm.mp3, …"""
     meta = project.meta or {}
     candidates: list[Path] = []
 
     meta_path = meta.get("bgm_path") or meta.get("mass_bgm_path")
     if meta_path:
-        candidates.append(Path(str(meta_path)))
+        p = Path(str(meta_path))
+        if p.is_dir():
+            found = _first_audio_in_dir(p)
+            if found:
+                return found
+        candidates.append(p)
 
     data = project.data_dir
+
+    # главный путь пользователя: data/videos/test3/music/
+    music_dir = data / "music"
+    found = _first_audio_in_dir(music_dir)
+    if found is not None:
+        return found
+
     for name in _BGM_FILENAMES:
         candidates.append(data / name)
         candidates.append(data / "audio" / name)
 
     if settings.bgm_path is not None:
-        candidates.append(settings.bgm_path)
+        p = settings.bgm_path
+        if p.is_dir():
+            found = _first_audio_in_dir(p)
+            if found:
+                return found
+        candidates.append(p)
 
     repo_bgm = settings.data_dir / "bgm"
-    if repo_bgm.is_dir():
-        for name in _BGM_FILENAMES:
-            candidates.append(repo_bgm / name)
+    found = _first_audio_in_dir(repo_bgm)
+    if found is not None:
+        return found
 
-    seen: set[str] = set()
     for path in candidates:
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
         try:
             resolved = path if path.is_absolute() else path.resolve()
         except OSError:
@@ -86,15 +109,14 @@ def find_bgm_file(project: Project) -> Path | None:
 
 
 def resolve_bgm(project: Project) -> BgmConfig | None:
-    """Если bgm/music файл найден — микшируем (если не выключено явно)."""
     if _explicitly_disabled(project):
-        logger.info("[#{}] BGM: выключено флагом bgm_enabled / mass_bgm_enabled", project.id)
+        logger.info("[#{}] BGM: выключено флагом", project.id)
         return None
 
     path = find_bgm_file(project)
     if path is None:
         logger.warning(
-            "[#{}] BGM: файл не найден — положите bgm.mp3 или music.mp3 в {}",
+            "[#{}] BGM: нет файла в {}/music/ (положите .mp3 в папку music)",
             project.id,
             project.data_dir,
         )

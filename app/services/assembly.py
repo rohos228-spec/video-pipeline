@@ -30,6 +30,10 @@ from app.services.bgm import BgmConfig
 CANVAS_W, CANVAS_H = 1080, 1920
 FPS = 30
 SUBTITLES_ASS_NAME = "subs.ass"
+# фиксированная позиция субтитров (центр снизу) — одно слово, без прыжков по высоте
+SUBTITLE_POS_X = CANVAS_W // 2
+SUBTITLE_POS_Y = 1780
+SUBTITLE_ASS_PREFIX = rf"{{\an2\pos({SUBTITLE_POS_X},{SUBTITLE_POS_Y})}}"
 
 
 def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
@@ -198,7 +202,10 @@ def make_simple_ass(
     )
     body_lines: list[str] = []
     for s, e, text in frames:
-        body_lines.append(f"Dialogue: 0,{_fmt_ts(s)},{_fmt_ts(e)},Default,,0,0,0,,{_escape_ass(text)}")
+        line = f"{SUBTITLE_ASS_PREFIX}{_escape_ass(text)}"
+        body_lines.append(
+            f"Dialogue: 0,{_fmt_ts(s)},{_fmt_ts(e)},Default,,0,0,0,,{line}"
+        )
     path.write_text(header + "\n".join(body_lines) + "\n", encoding="utf-8")
     return path
 

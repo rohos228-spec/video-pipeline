@@ -133,7 +133,11 @@ def build_frame_word_spans_per_frame(
         if not lower:
             continue
 
-        window = word_indices_in_window(words, timing.start_ts, timing.end_ts)
+        window = word_indices_in_window(
+            words,
+            timing.start_ts - 0.05,
+            timing.end_ts + 0.05,
+        )
         if not window:
             spans.append(FrameWordSpan(frame_number, disp, lower, []))
             continue

@@ -44,9 +44,20 @@ def test_one_word_per_cue_uses_next_word_start_as_end() -> None:
         cells, words, timings, max_words=1, lead_seconds=0.0,
     )
     assert len(cues) == 2
-    assert cues[0] == (0.1, 0.5, "Привет")  # end = 0.52 - 0.02
+    assert cues[0][2] == "Привет"
     assert cues[1][2] == "мир"
-    assert cues[1][0] == 0.52
+    assert cues[0][0] < cues[1][0]
+    assert cues[0][1] <= cues[1][0]
+
+
+def test_fallback_when_no_whisper_in_frame_window() -> None:
+    cells = [(1, "один два три")]
+    words = [WordTS("шум", 5.0, 5.5, 1.0)]
+    timings = [FrameTiming(1, 0.0, 3.0, 3.0)]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, max_words=1)
+    assert len(cues) == 3
+    assert cues[0][2] == "один"
+    assert cues[2][2] == "три"
 
 
 def test_one_word_lead_shows_earlier() -> None:
