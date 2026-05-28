@@ -38,7 +38,7 @@ class FrameWordSpan:
     frame_number: int
     display_words: list[str]
     lower_words: list[str]
-    whisper_indices: list[int]
+    whisper_indices: list[int]  # индексы в local_words кадра, не глобальные
 
 
 def align_script_tokens(script_tokens: list[str], words: list[WordTS]) -> list[int]:
@@ -115,12 +115,60 @@ def word_indices_in_window(
     return [(i, w) for i, w in enumerate(words) if w.end > start and w.start < end]
 
 
+def extract_local_frame_words(
+    words: list[WordTS],
+    frame_start: float,
+    frame_end: float,
+) -> list[WordTS]:
+    """Whisper только внутри границ кадра; таймкоды 0..duration кадра."""
+    if frame_end <= frame_start:
+        return []
+    local: list[WordTS] = []
+    for w in words:
+        if w.end <= frame_start or w.start >= frame_end:
+            continue
+        local.append(WordTS(
+            word=w.word,
+            start=round(max(0.0, w.start - frame_start), 3),
+            end=round(min(frame_end - frame_start, w.end - frame_start), 3),
+            prob=w.prob,
+        ))
+    return local
+
+
+def align_cell_to_local_words(
+    display_words: list[str],
+    local_words: list[WordTS],
+) -> list[int]:
+    """Индексы local_words для каждого слова текста ячейки (только внутри кадра)."""
+    if not display_words:
+        return []
+    lower = [t.lower() for t in display_words]
+    if not local_words:
+        return []
+    return align_script_tokens(lower, local_words)
+
+
+def build_frame_word_span_for_cell(
+    frame_number: int,
+    text: str,
+    local_words: list[WordTS],
+) -> FrameWordSpan | None:
+    """Одна ячейка plan R49 → текст + align только с Whisper этого фрагмента."""
+    disp = tokenize_display(text)
+    if not disp:
+        return None
+    lower = [t.lower() for t in disp]
+    indices = align_cell_to_local_words(disp, local_words)
+    return FrameWordSpan(frame_number, disp, lower, indices)
+
+
 def build_frame_word_spans_per_frame(
     cells: list[tuple[int, str]],
     words: list[WordTS],
     frame_timings: list[FrameTiming],
 ) -> list[FrameWordSpan]:
-    """Сопоставление текста каждой ячейки R49 только с Whisper внутри окна кадра."""
+    """Каждая ячейка R49 обрабатывается отдельно; whisper_indices — локальные."""
     by_number = {t.frame_number: t for t in frame_timings}
     spans: list[FrameWordSpan] = []
 
@@ -128,24 +176,12 @@ def build_frame_word_spans_per_frame(
         timing = by_number.get(frame_number)
         if timing is None:
             continue
-        disp = tokenize_display(text)
-        lower = [t.lower() for t in disp]
-        if not lower:
-            continue
-
-        window = word_indices_in_window(
-            words,
-            timing.start_ts - 0.05,
-            timing.end_ts + 0.05,
+        local_words = extract_local_frame_words(
+            words, timing.start_ts, timing.end_ts,
         )
-        if not window:
-            spans.append(FrameWordSpan(frame_number, disp, lower, []))
-            continue
-
-        window_words = [w for _, w in window]
-        local_alignment = align_script_tokens(lower, window_words)
-        global_indices = [window[local_i][0] for local_i in local_alignment]
-        spans.append(FrameWordSpan(frame_number, disp, lower, global_indices))
+        span = build_frame_word_span_for_cell(frame_number, text, local_words)
+        if span is not None:
+            spans.append(span)
 
     return spans
 

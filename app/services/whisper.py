@@ -87,11 +87,27 @@ def transcribe_words_many(
     return out
 
 
-def dump_words_json(words: list[WordTS], path: Path) -> None:
+def dump_words_json(
+    words: list[WordTS],
+    path: Path,
+    *,
+    frames: list[dict] | None = None,
+) -> None:
+    """Сохранить word-level таймкоды; frames — границы ячеек R49 (per-frame TTS)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([asdict(w) for w in words], ensure_ascii=False, indent=2), encoding="utf-8")
+    if frames is None:
+        payload: list | dict = [asdict(w) for w in words]
+    else:
+        payload = {
+            "mode": "per_frame",
+            "words": [asdict(w) for w in words],
+            "frames": frames,
+        }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_words_json(path: Path) -> list[WordTS]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    return [WordTS(**row) for row in data]
+    if isinstance(data, list):
+        return [WordTS(**row) for row in data]
+    return [WordTS(**row) for row in data["words"]]

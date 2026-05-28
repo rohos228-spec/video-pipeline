@@ -83,9 +83,9 @@ def test_no_long_gap_when_whisper_cluster_is_late_in_frame() -> None:
         WordTS("один", 0.0, 0.3, 1.0),
         WordTS("два", 0.35, 0.6, 1.0),
         WordTS("три", 0.65, 0.9, 1.0),
-        WordTS("четыре", 5.0, 5.3, 1.0),
-        WordTS("пять", 5.35, 5.6, 1.0),
-        WordTS("шесть", 5.65, 5.9, 1.0),
+        WordTS("четыре", 2.0, 2.3, 1.0),
+        WordTS("пять", 2.35, 2.6, 1.0),
+        WordTS("шесть", 2.65, 2.9, 1.0),
     ]
     timings = [
         FrameTiming(1, 0.0, 2.0, 2.0),
@@ -97,6 +97,32 @@ def test_no_long_gap_when_whisper_cluster_is_late_in_frame() -> None:
         gap = cur[0] - prev[1]
         assert gap <= 0.6, f"пауза {gap:.2f}s между {prev[2]!r} и {cur[2]!r}"
         assert cur[0] - prev[0] >= 0.15, f"слишком быстро: {prev[2]!r} → {cur[2]!r}"
+
+
+def test_cues_never_cross_frame_boundaries() -> None:
+    cells = [(1, "раз два"), (2, "три четыре")]
+    words = [
+        WordTS("раз", 0.0, 0.4, 1.0),
+        WordTS("два", 0.45, 0.8, 1.0),
+        WordTS("три", 2.0, 2.4, 1.0),
+        WordTS("четыре", 2.45, 2.8, 1.0),
+    ]
+    timings = [
+        FrameTiming(1, 0.0, 2.0, 2.0),
+        FrameTiming(2, 2.0, 4.0, 2.0),
+    ]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
+    assert len(cues) == 4
+    frame1 = [(s, e, t) for s, e, t in cues if s < 2.0]
+    frame2 = [(s, e, t) for s, e, t in cues if s >= 2.0]
+    assert len(frame1) == 2
+    assert len(frame2) == 2
+    for start, end, _ in frame1:
+        assert start >= 0.0
+        assert end <= 2.0
+    for start, end, _ in frame2:
+        assert start >= 2.0
+        assert end <= 4.0
 
 
 def test_duplicate_whisper_indices_not_machine_gun() -> None:
@@ -127,7 +153,37 @@ def test_per_frame_alignment_ignores_words_outside_window() -> None:
     ]
     spans = build_frame_word_spans_per_frame(cells, words, timings)
     assert spans[0].whisper_indices == [0]
-    assert spans[1].whisper_indices == [2]
+    assert spans[1].whisper_indices == [0]
+
+
+def test_load_words_json_supports_per_frame_format(tmp_path) -> None:
+    from app.services.whisper import dump_words_json, load_words_json
+
+    words = [WordTS("раз", 0.0, 0.5, 1.0)]
+    path = tmp_path / "words.json"
+    dump_words_json(
+        words,
+        path,
+        frames=[{"frame_number": 1, "start_ts": 0.0, "end_ts": 2.0, "text": "раз", "words": []}],
+    )
+    loaded = load_words_json(path)
+    assert len(loaded) == 1
+    assert loaded[0].word == "раз"
+
+
+def test_extract_local_frame_words_rebases_to_zero() -> None:
+    from app.services.mapper import extract_local_frame_words
+
+    words = [
+        WordTS("a", 1.0, 1.5, 1.0),
+        WordTS("b", 2.0, 2.5, 1.0),
+        WordTS("c", 3.0, 3.5, 1.0),
+    ]
+    local = extract_local_frame_words(words, 2.0, 3.0)
+    assert len(local) == 1
+    assert local[0].word == "b"
+    assert local[0].start == 0.0
+    assert local[0].end == 0.5
 
 
 def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:

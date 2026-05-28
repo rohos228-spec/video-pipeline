@@ -26,6 +26,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.frame_audio import synthesize_per_frame_audio, whisper_words_from_clips
+from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
 from app.services.whisper import dump_words_json
 from app.settings import settings
@@ -94,8 +95,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         model_name=settings.whisper_model,
         language="ru",
     )
+    frame_segments = [
+        {
+            "frame_number": clip.frame_number,
+            "start_ts": clip.start_ts,
+            "end_ts": clip.end_ts,
+            "text": clip.text,
+            "words": [
+                {
+                    "word": w.word,
+                    "start": w.start,
+                    "end": w.end,
+                    "prob": w.prob,
+                }
+                for w in extract_local_frame_words(words, clip.start_ts, clip.end_ts)
+            ],
+        }
+        for clip in clips
+    ]
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
-    dump_words_json(words, words_path)
+    dump_words_json(words, words_path, frames=frame_segments)
     session.add(Artifact(
         project_id=project.id,
         kind=ArtifactKind.whisper_words,
