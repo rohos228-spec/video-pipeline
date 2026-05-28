@@ -80,6 +80,7 @@ async def assemble(
     out_path: Path,
     *,
     subtitles_ass: Path | None = None,
+    max_duration: float | None = None,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
@@ -110,16 +111,20 @@ async def assemble(
             str(concat_mp4),
         ])
 
-        # наложим аудио
+        # наложим аудио — длина ролика = длина озвучки
         with_audio = tmp_dir / "with_audio.mp4"
-        await _run([
+        mux_cmd = [
             "ffmpeg", "-y",
             "-i", str(concat_mp4),
             "-i", str(audio_path),
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            str(with_audio),
-        ])
+            "-shortest",
+        ]
+        if max_duration is not None:
+            mux_cmd.extend(["-t", f"{max_duration:.3f}"])
+        mux_cmd.append(str(with_audio))
+        await _run(mux_cmd)
 
         # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,17 +135,24 @@ async def assemble(
             # ffmpeg's subtitles filter breaks on Windows absolute paths
             # (drive colons/slashes are parsed as filter options). Run from
             # the temp dir and pass a bare filename instead.
-            await _run([
+            burn_cmd = [
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
                 "-vf", subtitles_vf_arg(),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
-                str(out_path),
-            ], cwd=tmp_dir)
+                "-shortest",
+            ]
+            if max_duration is not None:
+                burn_cmd.extend(["-t", f"{max_duration:.3f}"])
+            burn_cmd.append(str(out_path))
+            await _run(burn_cmd, cwd=tmp_dir)
         else:
-            # просто переносим
-            await _run(["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", str(out_path)])
+            copy_cmd = ["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", "-shortest"]
+            if max_duration is not None:
+                copy_cmd.extend(["-t", f"{max_duration:.3f}"])
+            copy_cmd.append(str(out_path))
+            await _run(copy_cmd)
 
     logger.info("assembly done → {}", out_path)
     return out_path

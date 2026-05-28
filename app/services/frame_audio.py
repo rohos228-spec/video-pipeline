@@ -83,6 +83,85 @@ async def concat_mp3_files(paths: list[Path], out_path: Path) -> Path:
     return out_path
 
 
+async def load_frame_clips_from_disk(
+    audio_dir: Path,
+    frame_numbers: list[int],
+) -> list[FrameAudioClip]:
+    """Длительности кадров = ffprobe(frame_NNN.mp3)."""
+    clips: list[FrameAudioClip] = []
+    pos = 0.0
+    for frame_number in frame_numbers:
+        path = frame_audio_path(audio_dir, frame_number)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"нет {path.name} — перезапустите шаг «Аудио» (per-frame TTS)"
+            )
+        duration = await probe_duration(path)
+        clip = FrameAudioClip(
+            frame_number=frame_number,
+            path=path,
+            text="",
+            start_ts=round(pos, 3),
+            end_ts=round(pos + duration, 3),
+            duration=round(duration, 3),
+        )
+        clips.append(clip)
+        pos += duration
+    return clips
+
+
+def _rescale_clips_to_master(clips: list[FrameAudioClip], master: float) -> list[FrameAudioClip]:
+    """Масштабирует границы кадров так, чтобы сумма = master (voice_full.mp3)."""
+    if not clips:
+        return clips
+    raw_sum = sum(c.duration for c in clips)
+    if raw_sum <= 0:
+        raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
+    if abs(raw_sum - master) <= 0.05:
+        out = list(clips)
+        out[-1].end_ts = round(master, 3)
+        out[-1].duration = round(out[-1].end_ts - out[-1].start_ts, 3)
+        return out
+
+    factor = master / raw_sum
+    pos = 0.0
+    out: list[FrameAudioClip] = []
+    for clip in clips:
+        dur = round(clip.duration * factor, 3)
+        out.append(FrameAudioClip(
+            frame_number=clip.frame_number,
+            path=clip.path,
+            text=clip.text,
+            start_ts=round(pos, 3),
+            end_ts=round(pos + dur, 3),
+            duration=dur,
+        ))
+        pos += dur
+    out[-1].end_ts = round(master, 3)
+    out[-1].duration = round(out[-1].end_ts - out[-1].start_ts, 3)
+    return out
+
+
+async def build_assembly_timeline(
+    audio_dir: Path,
+    voice_full_path: Path,
+    frame_numbers: list[int],
+) -> tuple[list[FrameAudioClip], float, float]:
+    """Озвучка — единственное мерило: voice_full задаёт конец ролика,
+    frame_NNN.mp3 — границы кадров (масштабируются под voice_full при расхождении).
+
+    Returns (clips, master_duration, time_scale).
+    """
+    master = await probe_duration(voice_full_path)
+    clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
+    raw_sum = sum(c.duration for c in clips)
+    if raw_sum <= 0:
+        raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
+    scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
+    clips = _rescale_clips_to_master(clips, master)
+    return clips, master, scale
+
+
 async def synthesize_per_frame_audio(
     el: ElevenLabsBot,
     *,

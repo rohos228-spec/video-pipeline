@@ -14,6 +14,7 @@ def build_subtitle_cues_from_cells(
     frame_timings: list[FrameTiming],
     *,
     max_words: int = 2,
+    max_end_ts: float | None = None,
 ) -> list[SubtitleCue]:
     if max_words < 1:
         raise ValueError("max_words must be >= 1")
@@ -60,7 +61,25 @@ def build_subtitle_cues_from_cells(
                 end = start + 0.04
             entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
 
+    if max_end_ts is not None:
+        entries = _clamp_to_audio(entries, max_end_ts)
     return _merge_monotonic(entries)
+
+
+def _clamp_to_audio(entries: list[SubtitleCue], max_end_ts: float) -> list[SubtitleCue]:
+    """Субтитры не выходят за конец озвучки."""
+    cap = max(float(max_end_ts), 0.01)
+    out: list[SubtitleCue] = []
+    for start, end, text in entries:
+        if start >= cap:
+            continue
+        end = min(end, cap)
+        if end <= start:
+            end = min(start + 0.04, cap)
+        if end <= start:
+            continue
+        out.append((round(start, 3), round(end, 3), text))
+    return out
 
 
 def _merge_monotonic(entries: list[SubtitleCue]) -> list[SubtitleCue]:

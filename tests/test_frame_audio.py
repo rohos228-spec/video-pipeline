@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from app.services.frame_audio import FrameAudioClip, concat_mp3_files, delete_frame_audio_files, frame_audio_path
+from app.services.frame_audio import (
+    FrameAudioClip,
+    _rescale_clips_to_master,
+    concat_mp3_files,
+    delete_frame_audio_files,
+    frame_audio_path,
+)
+from app.services.mapper import FrameTiming
 
 
 @pytest.mark.asyncio
@@ -41,3 +48,30 @@ def test_frame_clip_timeline_is_contiguous() -> None:
     for prev, cur in zip(clips, clips[1:]):
         assert cur.start_ts == prev.end_ts
     assert clips[-1].end_ts == 6.0
+
+
+def test_rescale_clips_to_master_matches_voice_full() -> None:
+    clips = [
+        FrameAudioClip(1, Path("a.mp3"), "a", 0.0, 4.0, 4.0),
+        FrameAudioClip(2, Path("b.mp3"), "b", 4.0, 8.0, 4.0),
+    ]
+    out = _rescale_clips_to_master(clips, master=70.0)
+    assert out[-1].end_ts == 70.0
+    assert abs(sum(c.duration for c in out) - 70.0) < 0.01
+    assert out[0].start_ts == 0.0
+    for prev, cur in zip(out, out[1:]):
+        assert cur.start_ts == prev.end_ts
+
+
+def test_subtitles_clamped_to_audio_end() -> None:
+    from app.services.subtitles import build_subtitle_cues_from_cells
+    from app.services.whisper import WordTS
+
+    cells = [(1, "Привет мир")]
+    words = [WordTS("привет", 0.0, 0.5, 1.0), WordTS("мир", 0.5, 1.0, 1.0)]
+    timings = [FrameTiming(1, 0.0, 10.0, 10.0)]
+    cues = build_subtitle_cues_from_cells(
+        cells, words, timings, max_words=2, max_end_ts=1.0,
+    )
+    assert cues
+    assert cues[-1][1] <= 1.0
