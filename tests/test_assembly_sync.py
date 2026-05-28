@@ -83,13 +83,26 @@ def test_subtitles_do_not_overlap() -> None:
     words = [
         WordTS("раз", 0.0, 0.35, 1.0),
         WordTS("два", 0.55, 0.85, 1.0),
-        WordTS("tri", 0.95, 1.25, 1.0),
+        WordTS("три", 0.95, 1.25, 1.0),
     ]
-    words[2] = WordTS("три", 0.95, 1.25, 1.0)
     timings = [FrameTiming(1, 0.0, 2.0, 2.0)]
     cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
     for prev, cur in zip(cues, cues[1:]):
-        assert cur[0] >= prev[1] - 0.01, f"overlap {prev[2]!r} → {cur[2]!r}"
+        assert cur[0] >= prev[1] + 0.04 - 0.001, f"overlap {prev[2]!r} → {cur[2]!r}"
+
+
+def test_lead_does_not_cause_overlap() -> None:
+    cells = [(1, "раз два три")]
+    words = [
+        WordTS("раз", 0.0, 0.50, 1.0),
+        WordTS("два", 0.52, 0.80, 1.0),
+        WordTS("три", 0.82, 1.10, 1.0),
+    ]
+    timings = [FrameTiming(1, 0.0, 2.0, 2.0)]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.18)
+    assert len(cues) >= 2
+    for prev, cur in zip(cues, cues[1:]):
+        assert cur[0] >= prev[1] + 0.04 - 0.001, f"lead overlap {prev[2]!r} → {cur[2]!r}"
 
 
 def test_pause_between_words_is_silent() -> None:

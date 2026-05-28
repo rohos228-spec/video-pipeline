@@ -1,4 +1,4 @@
-"""Субтитры: одно слово = один интервал Whisper, паузы между словами сохраняются."""
+"""Субтитры: одно слово = один интервал Whisper, без наложений на экране."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.services.whisper import WordTS
 
 SubtitleCue = tuple[float, float, str]
 
-_PAUSE_GAP = 0.04  # минимальный зазор между словами на экране
+_PAUSE_GAP = 0.05  # минимум пустого экрана между словами
 _MIN_VISIBLE = 0.10
 _CHARS_PER_SECOND = 14.0
 
@@ -60,6 +60,7 @@ def build_subtitle_cues_from_cells(
             frame_dur=frame_dur,
             chars_per_second=chars_per_second,
         )
+        slots = _enforce_non_overlapping_local(slots)
 
         frame_cues: list[SubtitleCue] = []
         for word_text, (local_start, local_end) in zip(display_words, slots, strict=True):
@@ -74,8 +75,10 @@ def build_subtitle_cues_from_cells(
                 continue
             frame_cues.append((round(start, 3), round(end, 3), word_text))
 
-        frame_cues = _trim_overlaps(frame_cues)
+        frame_cues = _enforce_non_overlapping(frame_cues, frame_start, frame_end)
         all_cues.extend(frame_cues)
+
+    all_cues = _enforce_non_overlapping(all_cues, cap_end=max_end_ts)
 
     expected = sum(len(tokenize_display(t)) for _, t in cells)
     if len(all_cues) < expected:
@@ -100,7 +103,6 @@ def _whisper_word_slots(
     frame_dur: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Каждое слово: start/end из Whisper; пауза = до start следующего слова."""
     n = len(display_words)
     if n == 0:
         return []
@@ -116,7 +118,6 @@ def _whisper_word_slots(
         w = local_words[idx]
         start = max(0.0, w.start)
 
-        # Конец = whisper end, но не заходим на следующее слово (пауза остаётся пустой)
         end = w.end
         next_wh_start = _next_whisper_start(wi, n, indices, local_words, frame_dur)
         if next_wh_start is not None:
@@ -124,15 +125,14 @@ def _whisper_word_slots(
 
         end = min(end, frame_dur)
         if end <= start:
-            end = min(w.end, frame_dur)
+            end = min(max(w.end, start + _MIN_VISIBLE), frame_dur)
         if end <= start:
-            end = min(start + _MIN_VISIBLE, frame_dur)
+            continue
 
-        # 14 символов/с — только если есть место до следующего слова, без съедания паузы
         target = _target_duration(display_words[wi], chars_per_second)
-        gap_room = (next_wh_start - _PAUSE_GAP - start) if next_wh_start else (frame_dur - start)
-        if end - start < target and gap_room > target:
-            end = min(start + target, end if next_wh_start is None else next_wh_start - _PAUSE_GAP)
+        max_end = (next_wh_start - _PAUSE_GAP) if next_wh_start else frame_dur
+        if end - start < target and max_end - start >= target:
+            end = min(start + target, max_end)
 
         if end <= start:
             continue
@@ -164,13 +164,12 @@ def _sequential_indices(
     whisper_count: int,
     word_count: int,
 ) -> list[int]:
-    """Индексы только вперёд — одно whisper-слово не на два Excel-слова без нужды."""
     if not whisper_indices or whisper_count <= 0:
         return list(range(min(word_count, max(whisper_count, 1))))
     out: list[int] = []
     last = 0
     max_i = whisper_count - 1
-    for i, idx in enumerate(whisper_indices):
+    for idx in whisper_indices:
         idx = max(0, min(int(idx), max_i))
         if out and idx < last:
             idx = min(last + 1, max_i) if last < max_i else last
@@ -188,7 +187,6 @@ def _even_slots_from_char_budget(
     frame_dur: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Fallback без Whisper: слоты по символам, с зазорами."""
     weights = [max(len(w), 1) for w in display_words]
     total = sum(weights)
     out: list[tuple[float, float]] = []
@@ -200,20 +198,77 @@ def _even_slots_from_char_budget(
         end = min(start + dur, frame_dur)
         out.append((start, end))
         pos += slot
+    return _enforce_non_overlapping_local(out)
+
+
+def _enforce_non_overlapping_local(
+    slots: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    if len(slots) < 2:
+        return slots
+    out: list[tuple[float, float]] = []
+    for start, end in slots:
+        if out:
+            prev_s, prev_e = out[-1]
+            if start < prev_e + _PAUSE_GAP:
+                start = prev_e + _PAUSE_GAP
+            if end <= start:
+                end = start + _MIN_VISIBLE
+        out.append((start, end))
     return out
 
 
-def _trim_overlaps(entries: list[SubtitleCue]) -> list[SubtitleCue]:
-    """Укорачиваем конец предыдущего слова — не сдвигаем start (иначе отставание)."""
-    if len(entries) < 2:
+def _enforce_non_overlapping(
+    entries: list[SubtitleCue],
+    frame_start: float | None = None,
+    frame_end: float | None = None,
+    *,
+    cap_end: float | None = None,
+) -> list[SubtitleCue]:
+    """Строго: end[i] + gap <= start[i+1]. Lead не может создать наслоение."""
+    if not entries:
         return entries
-    out: list[SubtitleCue] = [entries[0]]
-    for start, end, text in entries[1:]:
-        ps, pe, pt = out[-1]
-        if start < pe + _PAUSE_GAP:
-            pe = max(ps + _MIN_VISIBLE, start - _PAUSE_GAP)
-            out[-1] = (ps, round(pe, 3), pt)
+
+    lo = frame_start if frame_start is not None else 0.0
+    hi = frame_end if frame_end is not None else (cap_end if cap_end is not None else float("inf"))
+    if cap_end is not None:
+        hi = min(hi, cap_end)
+
+    sorted_entries = sorted(entries, key=lambda x: (x[0], x[1]))
+    out: list[SubtitleCue] = []
+
+    for start, end, text in sorted_entries:
+        start = max(start, lo)
+        end = min(end, hi)
+        if start >= hi:
+            continue
+
+        if out:
+            ps, pe, pt = out[-1]
+            if text == pt and abs(start - ps) < 0.02:
+                continue
+
+            if start < pe + _PAUSE_GAP:
+                new_pe = min(pe, start - _PAUSE_GAP)
+                new_pe = max(new_pe, ps + _MIN_VISIBLE)
+                out[-1] = (ps, round(new_pe, 3), pt)
+                pe = out[-1][1]
+
+            if start < pe + _PAUSE_GAP:
+                start = round(pe + _PAUSE_GAP, 3)
+
+        end = min(end, hi)
         if end <= start:
-            end = round(start + _MIN_VISIBLE, 3)
-        out.append((start, end, text))
+            end = round(min(start + _MIN_VISIBLE, hi), 3)
+        if end <= start:
+            continue
+        out.append((round(start, 3), round(end, 3), text))
+
+    for i in range(len(out) - 1):
+        s, e, t = out[i]
+        next_s = out[i + 1][0]
+        if e > next_s - _PAUSE_GAP:
+            e = max(s + _MIN_VISIBLE, next_s - _PAUSE_GAP)
+            out[i] = (s, round(e, 3), t)
+
     return out
