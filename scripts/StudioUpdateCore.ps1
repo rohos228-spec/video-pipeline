@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "devin/windows-installer"
-$script:StudioUpdateCoreId = "studio-update-core-v4"
+$script:StudioUpdateCoreId = "studio-update-core-v5"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -154,6 +154,21 @@ function Start-StudioBackendWindow {
     Write-StudioLog "Open manually: http://127.0.0.1:8765 (see run-backend window)" "Yellow"
     Open-StudioBrowser
     return $false
+}
+
+function Invoke-StudioUpdateOnly {
+    param([string]$Root)
+    Write-StudioLog "=== update only ($($script:StudioUpdateCoreId)) ===" "Cyan"
+    if (-not (Invoke-StudioGit $Root)) { return $false }
+    if (Test-StudioPythonOk $Root) {
+        Write-StudioLog "OK python deps (skip pip on update)" "Green"
+    } else {
+        if (-not (Invoke-StudioPipInstall $Root)) { return $false }
+    }
+    if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
+        Write-StudioLog "WARN: web/out missing - git pull should restore it" "Yellow"
+    }
+    return $true
 }
 
 function Invoke-StudioFullUpdate {
