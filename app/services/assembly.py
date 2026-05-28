@@ -119,17 +119,16 @@ async def assemble(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
             import shutil
-            # Copy ASS to temp dir with simple name — ffmpeg ass filter
-            # chokes on paths with spaces, colons, or non-ASCII on Windows.
             tmp_ass = tmp_dir / "subs.ass"
             shutil.copy2(subtitles_ass, tmp_ass)
-            esc = tmp_ass.resolve().as_posix()
-            # Escape colons and backslashes for ffmpeg filter graph
-            esc = esc.replace("\\", "/").replace(":", "\\:")
+            # Use subtitles filter with filename= key to avoid ffmpeg
+            # parsing the path as positional original_size argument.
+            # Forward slashes + escaped colons for Windows drive letters.
+            esc = tmp_ass.resolve().as_posix().replace(":", "\\\\:")
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
-                "-vf", f"ass={esc}",
+                "-vf", f"subtitles=filename='{esc}'",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
                 str(out_path),
