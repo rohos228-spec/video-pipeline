@@ -58,12 +58,12 @@ def build_subtitle_cues_from_cells(
             local_indices,
             local_words,
             frame_dur=frame_end - frame_start,
-            lead_seconds=lead_seconds,
             chars_per_second=chars_per_second,
         )
 
         frame_cues: list[SubtitleCue] = []
         for word_text, (local_start, local_end) in zip(display_words, slots, strict=True):
+            local_start = max(0.0, local_start - lead_seconds)
             start = frame_start + local_start
             end = frame_start + local_end
             start = max(start, frame_start)
@@ -102,7 +102,6 @@ def _schedule_words_in_frame(
     local_words: list[WordTS],
     *,
     frame_dur: float,
-    lead_seconds: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
     """Распределить слова по [0, frame_dur] — Whisper + длительность по символам."""
@@ -111,7 +110,7 @@ def _schedule_words_in_frame(
         return []
 
     char_slots = _char_weighted_slots(
-        display_words, frame_dur, lead_seconds, chars_per_second,
+        display_words, frame_dur, chars_per_second,
     )
 
     indices = _monotonic_indices(whisper_indices, len(local_words))
@@ -133,8 +132,6 @@ def _schedule_words_in_frame(
     for wi in range(n):
         rel = _word_rel_position(wi, n, indices, local_words, wh_min, wh_span)
         start = rel * frame_dur
-        if wi == 0 and lead_seconds > 0:
-            start = max(0.0, start - lead_seconds)
 
         if wi + 1 < n:
             rel_next = _word_rel_position(wi + 1, n, indices, local_words, wh_min, wh_span)
@@ -180,14 +177,13 @@ def _blend_with_char_slots(
         out.append((start, end))
 
     if len(out) < len(display_words):
-        return _char_weighted_slots(display_words, frame_dur, 0.0, chars_per_second)
+        return _char_weighted_slots(display_words, frame_dur, chars_per_second)
     return out
 
 
 def _char_weighted_slots(
     display_words: list[str],
     frame_dur: float,
-    lead_seconds: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
     """Равномерное распределение по кадру пропорционально числу символов."""
@@ -198,8 +194,6 @@ def _char_weighted_slots(
     for wi, word in enumerate(display_words):
         slot = (weights[wi] / total) * frame_dur
         start = pos
-        if wi == 0 and lead_seconds > 0:
-            start = max(0.0, start - lead_seconds)
         min_dur = _min_duration_for_word(word, chars_per_second)
         end = min(pos + slot - _WORD_GAP, frame_dur)
         end = max(end, start + min_dur)
@@ -281,7 +275,11 @@ def _normalize_within_frame(
             if text == prev_text and abs(start - prev_start) < 0.02:
                 continue
             if start < prev_end:
-                start = prev_end + _WORD_GAP
+                prev_min = _min_duration_for_word(prev_text, chars_per_second)
+                prev_end = max(prev_start + prev_min, start - _WORD_GAP)
+                out[-1] = (prev_start, round(prev_end, 3), prev_text)
+            if start < out[-1][1]:
+                start = out[-1][1] + _WORD_GAP
             if start >= cap:
                 continue
 

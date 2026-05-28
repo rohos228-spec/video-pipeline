@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     bgm_default_level: int = Field(35, alias="BGM_DEFAULT_LEVEL")  # 0..100
     bgm_path: Path | None = Field(None, alias="BGM_PATH")
 
-    # Subtitles — одно слово, лёгкое опережение Whisper (сек)
+    # Subtitles — одно слово; опережение озвучки (Whisper системно отстаёт ~0.2–0.3 с)
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
-    subtitle_lead_seconds: float = Field(0.10, alias="SUBTITLE_LEAD_SECONDS")
+    subtitle_lead_seconds: float = Field(0.30, alias="SUBTITLE_LEAD_SECONDS")
     subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
 
     # Logic

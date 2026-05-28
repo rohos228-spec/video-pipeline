@@ -68,10 +68,11 @@ def test_one_word_lead_shows_earlier() -> None:
     ]
     timings = [FrameTiming(1, 0.0, 1.0, 1.0)]
     cues = build_subtitle_cues_from_cells(
-        cells, words, timings, max_words=1, lead_seconds=0.10,
+        cells, words, timings, max_words=1, lead_seconds=0.30,
     )
     assert len(cues) == 2
-    assert cues[0][0] <= 0.2
+    assert cues[0][0] <= 0.05
+    assert cues[1][0] < 0.45  # без lead было бы ~0.5
     assert cues[1][0] > cues[0][0]
     assert cues[0][1] - cues[0][0] >= 0.28
 
