@@ -69,9 +69,27 @@ export interface ProjectAsset {
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string | object) {
-    super(typeof detail === "string" ? detail : JSON.stringify(detail));
+    super(formatApiError(detail));
     this.name = "ApiError";
   }
+}
+
+export function formatApiError(detail: string | object): string {
+  if (typeof detail === "string") {
+    try {
+      const parsed = JSON.parse(detail) as { detail?: unknown };
+      if (typeof parsed.detail === "string") return parsed.detail;
+    } catch {
+      return detail;
+    }
+    return detail;
+  }
+  if (detail && typeof detail === "object" && "detail" in detail) {
+    const d = (detail as { detail?: unknown }).detail;
+    if (typeof d === "string") return d;
+    if (Array.isArray(d)) return d.map(String).join("; ");
+  }
+  return JSON.stringify(detail);
 }
 
 export const api = {

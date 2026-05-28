@@ -4,25 +4,33 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2, Play, ListVideo } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, formatApiError } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return formatApiError(String(err));
+}
 
 export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const [fileName, setFileName] = useState<string | null>(null);
+  const [localTopics, setLocalTopics] = useState<string[]>([]);
 
   const status = useQuery({
     queryKey: ["mass-factory", project.id],
     queryFn: () => api.getMassFactoryStatus(project.id),
     refetchInterval: 5000,
+    retry: false,
   });
 
   const upload = useMutation({
     mutationFn: (file: File) => api.parseMassTopicsXlsx(project.id, file),
     onSuccess: (r, file) => {
       setFileName(file.name);
+      setLocalTopics(r.topics ?? []);
       qc.invalidateQueries({ queryKey: ["mass-factory", project.id] });
       qc.invalidateQueries({ queryKey: ["project", project.id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
@@ -31,11 +39,15 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
         : "Очередь обновлена";
       toast.success(`Excel: ${r.count} тем. ${hint}`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessage(e)),
   });
 
   const start = useMutation({
-    mutationFn: () => api.startMassLanes(project.id, {}),
+    mutationFn: () => {
+      const topics =
+        (status.data?.topics?.length ? status.data.topics : localTopics) ?? [];
+      return api.startMassLanes(project.id, topics.length ? { topics } : {});
+    },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["mass-factory", project.id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
@@ -43,11 +55,11 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
         `Запущено видео #${r.started_id}. В очереди: ${r.queue_size ?? r.count}, осталось: ${r.remaining ?? 0}`,
       );
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessage(e)),
   });
 
   const qs = status.data;
-  const topics = qs?.topics ?? [];
+  const topics = qs?.topics?.length ? qs.topics : localTopics;
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2.5">
@@ -56,8 +68,8 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
         Фабрика видео
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
-        Шаблон промптов здесь. Каждая строка Excel — отдельное видео в своей папке.
-        Перезаливка Excel заменяет необработанную очередь (готовые final не трогаем).
+        1) Excel тем → 2) Запустить очередь. После git pull перезапустите backend
+        (stop-backend.cmd → start-studio.ps1).
       </p>
 
       <input

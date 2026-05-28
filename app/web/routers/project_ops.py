@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -147,10 +148,24 @@ async def start_mass_lanes(
         meta_topics = meta_template.get("mass_queue_topics") or meta_template.get("mass_excel_topics")
         if isinstance(meta_topics, list):
             topics = [str(t).strip() for t in meta_topics if str(t).strip()]
+    if not topics:
+        bindings = meta_template.get("excel_lane_bindings")
+        if isinstance(bindings, list):
+            ordered = sorted(
+                [b for b in bindings if isinstance(b, dict)],
+                key=lambda b: int(b.get("topic_index") or 0),
+            )
+            for b in ordered:
+                t = str(b.get("topic") or "").strip()
+                if t:
+                    topics.append(t)
     try:
         result = await start_mass_queue(session, template, topics=topics or None, slugify=_slugify)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("mass-lanes/start failed for project #{}", project_id)
+        raise HTTPException(status_code=500, detail=f"ошибка запуска очереди: {exc}") from exc
 
     await session.commit()
     return {
