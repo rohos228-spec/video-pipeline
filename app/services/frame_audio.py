@@ -169,6 +169,40 @@ def frame_clips_from_whisper(
     ]
 
 
+async def split_voice_full_to_frame_clips(
+    voice_full_path: Path,
+    audio_dir: Path,
+    frame_numbers: list[int],
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+) -> int:
+    """Нарезает legacy voice_full на frame_NNN.mp3 по границам Whisper (без повторного TTS)."""
+    from app.services.mapper import map_frames
+
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    timings = map_frames(cells, words, audio_duration=master)
+    by_number = {t.frame_number: t for t in timings}
+    written = 0
+
+    for frame_number in frame_numbers:
+        timing = by_number.get(frame_number)
+        if timing is None or timing.duration <= 0:
+            continue
+        out_path = frame_audio_path(audio_dir, frame_number)
+        await _run_ffmpeg([
+            "ffmpeg", "-y",
+            "-i", str(voice_full_path),
+            "-ss", f"{timing.start_ts:.3f}",
+            "-t", f"{timing.duration:.3f}",
+            "-acodec", "libmp3lame", "-q:a", "4",
+            str(out_path),
+        ])
+        written += 1
+
+    return written
+
+
 async def build_assembly_timeline(
     audio_dir: Path,
     voice_full_path: Path,
@@ -201,9 +235,23 @@ async def build_assembly_timeline(
             "(per-frame TTS из plan R49)"
         )
 
+    split_count = await split_voice_full_to_frame_clips(
+        voice_full_path, audio_dir, frame_numbers, cells, words, master,
+    )
+    if split_count > 0 and has_all_frame_audio(audio_dir, frame_numbers):
+        logger.info(
+            "voice_full нарезан на {} frame_*.mp3 (Whisper) — субтитры per-frame",
+            split_count,
+        )
+        clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
+        raw_sum = sum(c.duration for c in clips)
+        scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
+        clips = _rescale_clips_to_master(clips, master)
+        return clips, master, scale, True
+
     logger.warning(
         "frame_*.mp3 не найдены — границы кадров из Whisper + voice_full ({:.2f}s). "
-        "Для точной синхронизации перезапустите «Аудио».",
+        "Перезапустите «Аудио» для TTS по ячейкам plan R49.",
         master,
     )
     clips = frame_clips_from_whisper(cells, words, master, voice_full_path)

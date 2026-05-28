@@ -119,7 +119,7 @@ async def assemble(
         mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
 
         if bgm is not None and bgm.path.is_file():
-            bgm_gain = max(bgm.level, 0.0) * 0.55
+            bgm_gain = max(bgm.level, 0.0) * 0.85
             trim = f"atrim=0:{max_duration:.3f}," if max_duration is not None else ""
             filter_complex = (
                 f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
