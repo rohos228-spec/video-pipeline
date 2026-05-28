@@ -35,9 +35,10 @@ function Invoke-StudioGit {
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
-    Write-StudioLog "> restore web/out + STUDIO_VERSION from git" "Cyan"
-    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    Show-StudioVersionOnDisk -Root $Root
+    if (-not (Restore-StudioWebUiFromGit -Root $Root)) {
+        Write-StudioLog "FAIL: web/out not synced - close Studio/browser and run FIX-VERSION.cmd" "Red"
+        return $false
+    }
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     return $true
 }
@@ -47,7 +48,7 @@ function Show-StudioVersionOnDisk {
     $vf = Join-Path $Root "web\STUDIO_VERSION"
     if (-not (Test-Path $vf)) {
         Write-StudioLog "WARN: web/STUDIO_VERSION missing" "Yellow"
-        return
+        return $false
     }
     $lines = @(Get-Content -LiteralPath $vf -Encoding UTF8 | Select-Object -First 2)
     $build = $lines[0]
@@ -61,12 +62,32 @@ function Show-StudioVersionOnDisk {
             $baked = $m.Matches[0].Groups[1].Value
             Write-StudioLog "web/out baked UI badge: v$baked" "Green"
             if ($baked -ne $build) {
-                Write-StudioLog "WARN: baked UI ($baked) != STUDIO_VERSION ($build) - run FIX-VERSION or git pull again" "Yellow"
+                Write-StudioLog "WARN: baked UI (v$baked) != STUDIO_VERSION (v$build) - old web/out still on disk" "Yellow"
+                return $false
             }
         }
     } else {
         Write-StudioLog "WARN: web/out/index.html missing" "Yellow"
+        return $false
     }
+    return $true
+}
+
+function Restore-StudioWebUiFromGit {
+    param([string]$Root)
+    $br = $script:StudioUpdateBranch
+    Write-StudioLog "> stop backend before web/out restore" "Cyan"
+    Stop-StudioBackend $Root
+    Write-StudioLog "> restore web/out + STUDIO_VERSION from git" "Cyan"
+    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if (Show-StudioVersionOnDisk -Root $Root) { return $true }
+    Write-StudioLog "web/out still stale - retry restore after stop" "Yellow"
+    Stop-StudioBackend $Root
+    Start-Sleep -Seconds 2
+    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (Show-StudioVersionOnDisk -Root $Root)
 }
 
 function Test-StudioPythonOk {
@@ -188,7 +209,7 @@ function Invoke-StudioFullUpdate {
         if (-not (Invoke-StudioPipInstall $Root)) { return $false }
     }
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-StudioLog "WARN: web/out missing - UI from git pull should fix after next pull" "Yellow"
+        Write-StudioLog "WARN: web/out missing - git pull should restore it" "Yellow"
     }
     Stop-StudioBackend $Root
     return (Start-StudioBackendWindow $Root)
