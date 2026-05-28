@@ -171,7 +171,7 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
     Write-Host "    pip install -e (попытка $attempt/4)..." -ForegroundColor DarkGray
     Push-Location -LiteralPath $repoRoot
     try {
-        & $venvPython -m pip install -e $pipSpec
+        & $venvPython -m pip install -e "${pipSpec}[whisper]"
         if ($LASTEXITCODE -eq 0) { $pipOk = $true; break }
     } finally {
         Pop-Location

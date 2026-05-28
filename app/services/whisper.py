@@ -17,6 +17,19 @@ class WordTS:
     prob: float = 0.0
 
 
+def whisper_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_WHISPER_INSTALL_HINT = (
+    'pip install -e ".[whisper]"   # или: pip install "faster-whisper>=1.0"'
+)
+
+
 def transcribe_words(
     audio_path: Path,
     *,
@@ -26,6 +39,8 @@ def transcribe_words(
     vad_filter: bool = False,
 ) -> list[WordTS]:
     """Word-level таймкоды; vad_filter=False — сохраняет паузы между словами."""
+    if not whisper_available():
+        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
     from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
 
     logger.info("whisper: loading model '{}' ...", model_name)
@@ -62,6 +77,8 @@ def transcribe_words_many(
     """Whisper для нескольких файлов — модель грузится один раз."""
     if not audio_paths:
         return []
+    if not whisper_available():
+        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
     from faster_whisper import WhisperModel
 
     logger.info("whisper: loading model '{}' for {} clips ...", model_name, len(audio_paths))
