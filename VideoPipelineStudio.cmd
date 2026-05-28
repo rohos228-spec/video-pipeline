@@ -7,6 +7,7 @@ where git >nul 2>&1
 if not errorlevel 1 (
     git fetch origin %BR% 2>nul
     git checkout -B %BR% origin/%BR% 2>nul
+    git reset --hard origin/%BR% 2>nul
 )
 
 powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Normal -File "%~dp0installer\VideoPipelineLauncher.ps1"

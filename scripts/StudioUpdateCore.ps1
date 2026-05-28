@@ -21,6 +21,33 @@ function Write-StudioLog {
     Write-Host ("{0}  {1}" -f (Get-Date -Format "HH:mm:ss"), $Message) -ForegroundColor $Color
 }
 
+function Restore-StudioWebUiFromGit {
+    param([string]$Root)
+    $br = $script:StudioUpdateBranch
+    $outDir = Join-Path $Root "web\out"
+    Write-StudioLog "> stop backend before web/out restore" "Cyan"
+    Stop-StudioBackend $Root
+    Start-Sleep -Seconds 1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Write-StudioLog "> restore web/out + STUDIO_VERSION (try $attempt/3)" "Cyan"
+        git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-StudioLog "git checkout web/out failed - delete folder and retry" "Yellow"
+            if (Test-Path $outDir) {
+                Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        }
+        if (Show-StudioVersionOnDisk -Root $Root) { return $true }
+        Stop-StudioBackend $Root
+        if (Test-Path $outDir) {
+            Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
 function Invoke-StudioGit {
     param([string]$Root)
     Write-StudioLog "> git pull ($($script:StudioUpdateBranch))" "Cyan"
@@ -35,11 +62,11 @@ function Invoke-StudioGit {
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
-    if (-not (Restore-StudioWebUiFromGit -Root $Root)) {
-        Write-StudioLog "FAIL: web/out not synced - close Studio/browser and run FIX-VERSION.cmd" "Red"
-        return $false
-    }
+    $uiOk = Restore-StudioWebUiFromGit -Root $Root
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
+    if (-not $uiOk) {
+        Write-StudioLog "WARN: web/out stale - run FORCE-UPDATE.cmd from repo root" "Yellow"
+    }
     return $true
 }
 
@@ -71,23 +98,6 @@ function Show-StudioVersionOnDisk {
         return $false
     }
     return $true
-}
-
-function Restore-StudioWebUiFromGit {
-    param([string]$Root)
-    $br = $script:StudioUpdateBranch
-    Write-StudioLog "> stop backend before web/out restore" "Cyan"
-    Stop-StudioBackend $Root
-    Write-StudioLog "> restore web/out + STUDIO_VERSION from git" "Cyan"
-    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    if ($LASTEXITCODE -ne 0) { return $false }
-    if (Show-StudioVersionOnDisk -Root $Root) { return $true }
-    Write-StudioLog "web/out still stale - retry restore after stop" "Yellow"
-    Stop-StudioBackend $Root
-    Start-Sleep -Seconds 2
-    git -C $Root checkout "origin/$br" -- web/out web/STUDIO_VERSION 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    if ($LASTEXITCODE -ne 0) { return $false }
-    return (Show-StudioVersionOnDisk -Root $Root)
 }
 
 function Test-StudioPythonOk {

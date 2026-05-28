@@ -46,6 +46,13 @@ try {
     $gitHead = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
     if ($gitHead) { Write-Host "    git HEAD: $gitHead" -ForegroundColor DarkGray }
 } catch { }
+$verFile = Join-Path $Root "web\STUDIO_VERSION"
+if (Test-Path $verFile) {
+    $vl = @(Get-Content -LiteralPath $verFile -Encoding UTF8 | Select-Object -First 2)
+    $vb = $vl[0]
+    $vs = if ($vl.Count -gt 1) { $vl[1] } else { "?" }
+    Write-Host "    STUDIO_VERSION: v$vb  $vs" -ForegroundColor Green
+}
 Write-Host ""
 
 try {
