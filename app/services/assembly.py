@@ -25,6 +25,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.services.bgm import BgmConfig
+
 CANVAS_W, CANVAS_H = 1080, 1920
 FPS = 30
 SUBTITLES_ASS_NAME = "subs.ass"
@@ -81,6 +83,7 @@ async def assemble(
     *,
     subtitles_ass: Path | None = None,
     max_duration: float | None = None,
+    bgm: BgmConfig | None = None,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
@@ -111,16 +114,37 @@ async def assemble(
             str(concat_mp4),
         ])
 
-        # наложим аудио — длина ролика = длина озвучки
+        # наложим озвучку (+ опционально BGM под голос)
         with_audio = tmp_dir / "with_audio.mp4"
-        mux_cmd = [
-            "ffmpeg", "-y",
-            "-i", str(concat_mp4),
-            "-i", str(audio_path),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-        ]
+        mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
+
+        if bgm is not None and bgm.path.is_file() and max_duration is not None:
+            bgm_gain = max(bgm.level, 0.0) * 0.35
+            filter_complex = (
+                f"[2:a]volume={bgm_gain:.4f},aloop=loop=-1:size=2e+09,"
+                f"atrim=0:{max_duration:.3f}[bgm];"
+                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
+            mux_cmd.extend([
+                "-i", str(bgm.path),
+                "-filter_complex", filter_complex,
+                "-map", "0:v:0", "-map", "[aout]",
+            ])
+        elif bgm is not None and bgm.path.is_file():
+            bgm_gain = max(bgm.level, 0.0) * 0.35
+            filter_complex = (
+                f"[2:a]volume={bgm_gain:.4f},aloop=loop=-1:size=2e+09[bgm];"
+                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
+            mux_cmd.extend([
+                "-i", str(bgm.path),
+                "-filter_complex", filter_complex,
+                "-map", "0:v:0", "-map", "[aout]",
+            ])
+        else:
+            mux_cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+
+        mux_cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"])
         if max_duration is not None:
             mux_cmd.extend(["-t", f"{max_duration:.3f}"])
         mux_cmd.append(str(with_audio))

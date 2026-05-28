@@ -19,6 +19,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
+from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
@@ -165,12 +166,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
+    bgm = resolve_bgm(project)
     await assemble(
         clips,
         audio_path,
         out_path,
         subtitles_ass=subs_path,
         max_duration=audio_duration,
+        bgm=bgm,
     )
     await session.flush()
 

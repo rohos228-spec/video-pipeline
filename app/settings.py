@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # Whisper
     whisper_model: str = Field("medium", alias="WHISPER_MODEL")
 
+    # Background music (final assemble)
+    bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
+    bgm_default_level: int = Field(25, alias="BGM_DEFAULT_LEVEL")  # 0..100
+    bgm_path: Path = Field(Path("./assets/bgm/default.mp3"), alias="BGM_PATH")
+
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
@@ -64,6 +69,7 @@ class Settings(BaseSettings):
     def _resolve_paths_from_repo_root(self) -> "Settings":
         object.__setattr__(self, "sqlite_path", resolve_project_path(self.sqlite_path))
         object.__setattr__(self, "data_dir", resolve_project_path(self.data_dir))
+        object.__setattr__(self, "bgm_path", resolve_project_path(self.bgm_path))
         return self
 
     @property
