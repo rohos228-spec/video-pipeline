@@ -70,8 +70,48 @@ def test_one_word_lead_shows_earlier() -> None:
     cues = build_subtitle_cues_from_cells(
         cells, words, timings, max_words=1, lead_seconds=0.10,
     )
-    assert cues[0][0] == 0.1
-    assert cues[1][0] == 0.45
+    assert len(cues) == 2
+    assert cues[0][0] <= 0.2
+    assert cues[1][0] > cues[0][0]
+    assert cues[0][1] - cues[0][0] >= 0.28
+
+
+def test_no_long_gap_when_whisper_cluster_is_late_in_frame() -> None:
+    """Слова не должны ждать конца кадра, если Whisper сжал их в хвост окна."""
+    cells = [(1, "один два три"), (2, "четыре пять шесть")]
+    words = [
+        WordTS("один", 0.0, 0.3, 1.0),
+        WordTS("два", 0.35, 0.6, 1.0),
+        WordTS("три", 0.65, 0.9, 1.0),
+        WordTS("четыре", 5.0, 5.3, 1.0),
+        WordTS("пять", 5.35, 5.6, 1.0),
+        WordTS("шесть", 5.65, 5.9, 1.0),
+    ]
+    timings = [
+        FrameTiming(1, 0.0, 2.0, 2.0),
+        FrameTiming(2, 2.0, 5.5, 3.5),
+    ]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
+    assert len(cues) == 6
+    for prev, cur in zip(cues, cues[1:]):
+        gap = cur[0] - prev[1]
+        assert gap <= 0.6, f"пауза {gap:.2f}s между {prev[2]!r} и {cur[2]!r}"
+        assert cur[0] - prev[0] >= 0.15, f"слишком быстро: {prev[2]!r} → {cur[2]!r}"
+
+
+def test_duplicate_whisper_indices_not_machine_gun() -> None:
+    cells = [(1, "раз два три")]
+    words = [
+        WordTS("раз", 0.0, 0.4, 1.0),
+        WordTS("два", 0.45, 0.8, 1.0),
+    ]
+    timings = [FrameTiming(1, 0.0, 3.0, 3.0)]
+    spans = build_frame_word_spans_per_frame(cells, words, timings)
+    assert spans[0].whisper_indices == [0, 1, 1]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
+    assert len(cues) == 3
+    for start, end, _ in cues:
+        assert end - start >= 0.28
 
 
 def test_per_frame_alignment_ignores_words_outside_window() -> None:

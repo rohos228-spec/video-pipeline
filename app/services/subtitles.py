@@ -13,8 +13,9 @@ from app.services.whisper import WordTS
 
 SubtitleCue = tuple[float, float, str]
 
-_WORD_GAP = 0.02
-_MIN_DUR = 0.05
+_WORD_GAP = 0.03
+_MIN_DUR = 0.28
+_MAX_SILENCE = 0.6
 
 
 def build_subtitle_cues_from_cells(
@@ -27,7 +28,7 @@ def build_subtitle_cues_from_cells(
     direct_whisper_times: bool = False,
     lead_seconds: float = 0.0,
 ) -> list[SubtitleCue]:
-    del direct_whisper_times
+    del direct_whisper_times, max_words
     if not words:
         return []
 
@@ -44,35 +45,18 @@ def build_subtitle_cues_from_cells(
         if frame_end <= frame_start:
             continue
 
-        indices = _monotonic_indices(span.whisper_indices, len(words))
-        n = len(span.display_words)
-        frame_dur = frame_end - frame_start
-
-        for wi, text in enumerate(span.display_words):
-            if wi < len(indices):
-                idx = indices[wi]
-                wh_start = words[idx].start
-                wh_end = words[idx].end
-                start = max(wh_start - lead_seconds, frame_start)
-
-                if wi + 1 < len(indices):
-                    next_idx = indices[wi + 1]
-                    end = words[next_idx].start - _WORD_GAP
-                elif idx + 1 < len(words):
-                    end = words[idx + 1].start - _WORD_GAP
-                else:
-                    end = wh_end + 0.05
-            else:
-                # Whisper не сопоставил — равномерно внутри кадра
-                slot = frame_dur / max(n, 1)
-                start = frame_start + wi * slot
-                end = frame_start + (wi + 1) * slot - _WORD_GAP
-
-            end = min(end, frame_end)
+        slots = _schedule_words_in_frame(
+            span.display_words,
+            span.whisper_indices,
+            words,
+            frame_start,
+            frame_end,
+            lead_seconds=lead_seconds,
+        )
+        for text, (start, end) in zip(span.display_words, slots, strict=True):
             if max_end_ts is not None:
                 end = min(end, max_end_ts)
-            if end <= start:
-                end = min(start + _MIN_DUR, frame_end)
+                start = min(start, max_end_ts)
             if end <= start:
                 continue
             raw.append((round(start, 3), round(end, 3), text))
@@ -86,6 +70,112 @@ def build_subtitle_cues_from_cells(
             expected,
         )
     return entries
+
+
+def _schedule_words_in_frame(
+    display_words: list[str],
+    whisper_indices: list[int],
+    words: list[WordTS],
+    frame_start: float,
+    frame_end: float,
+    *,
+    lead_seconds: float,
+) -> list[tuple[float, float]]:
+    """Распределить слова по окну кадра — без длинных пауз и «пулемёта»."""
+    n = len(display_words)
+    frame_dur = frame_end - frame_start
+    if n == 0 or frame_dur <= 0:
+        return []
+
+    indices = _monotonic_indices(whisper_indices, len(words))
+    if len(indices) < n or not _alignment_usable(indices, n):
+        return _equal_slots(n, frame_start, frame_end, lead_seconds)
+
+    wh_starts = [words[i].start for i in indices]
+    wh_ends = [words[i].end for i in indices]
+    wh_min = min(wh_starts)
+    wh_max = max(wh_ends)
+    wh_span = max(wh_max - wh_min, 0.01)
+
+    # Whisper-слова сжаты в конец окна или слишком узкий кластер — равномерно по кадру.
+    late_start = wh_min > frame_start + frame_dur * 0.35
+    narrow = wh_span < frame_dur * 0.25
+    if late_start or narrow:
+        return _equal_slots(n, frame_start, frame_end, lead_seconds)
+
+    slots: list[tuple[float, float]] = []
+    for wi in range(n):
+        idx = indices[wi]
+        rel = _word_rel_position(wi, n, indices, words, wh_min, wh_span)
+        start = frame_start + rel * frame_dur
+        if wi == 0 and lead_seconds > 0:
+            start = max(frame_start, start - lead_seconds)
+
+        if wi + 1 < n:
+            rel_next = _word_rel_position(wi + 1, n, indices, words, wh_min, wh_span)
+            end = frame_start + rel_next * frame_dur - _WORD_GAP
+        else:
+            end = frame_end
+
+        end = max(end, start + _MIN_DUR)
+        end = min(end, frame_end)
+        if end <= start:
+            end = min(start + _MIN_DUR, frame_end)
+        slots.append((start, end))
+
+    return slots
+
+
+def _word_rel_position(
+    wi: int,
+    n: int,
+    indices: list[int],
+    words: list[WordTS],
+    wh_min: float,
+    wh_span: float,
+) -> float:
+    """Относительная позиция слова 0..1; дубликаты индексов не схлопываются."""
+    idx = indices[wi]
+    if wi > 0 and indices[wi - 1] == idx:
+        run_start = wi - 1
+        while run_start > 0 and indices[run_start - 1] == idx:
+            run_start -= 1
+        run_end = wi
+        while run_end + 1 < n and indices[run_end + 1] == idx:
+            run_end += 1
+        run_len = run_end - run_start + 1
+        base = (words[idx].start - wh_min) / wh_span
+        offset = (wi - run_start + 1) / (run_len + 1)
+        step = 1.0 / max(n, 1)
+        return min(1.0, base * 0.85 + offset * step * 0.5)
+    return (words[idx].start - wh_min) / wh_span
+
+
+def _alignment_usable(indices: list[int], word_count: int) -> bool:
+    if not indices:
+        return False
+    unique = len(set(indices))
+    return unique >= max(1, (word_count + 1) // 2)
+
+
+def _equal_slots(
+    n: int,
+    frame_start: float,
+    frame_end: float,
+    lead_seconds: float,
+) -> list[tuple[float, float]]:
+    frame_dur = frame_end - frame_start
+    slot = frame_dur / n
+    out: list[tuple[float, float]] = []
+    for wi in range(n):
+        start = frame_start + wi * slot
+        if wi == 0 and lead_seconds > 0:
+            start = max(frame_start, start - lead_seconds)
+        end = frame_start + (wi + 1) * slot - _WORD_GAP
+        end = max(end, start + _MIN_DUR)
+        end = min(end, frame_end)
+        out.append((start, end))
+    return out
 
 
 def _monotonic_indices(indices: list[int], word_count: int) -> list[int]:
@@ -105,7 +195,7 @@ def _monotonic_indices(indices: list[int], word_count: int) -> list[int]:
 
 
 def _normalize_contiguous(entries: list[SubtitleCue], max_end_ts: float | None) -> list[SubtitleCue]:
-    """Без дыр и наложений: каждое слово до начала следующего."""
+    """Без наложений; короткие паузы заполняем, длинные — не разгоняем слова."""
     if not entries:
         return entries
 
@@ -113,7 +203,7 @@ def _normalize_contiguous(entries: list[SubtitleCue], max_end_ts: float | None) 
     sorted_entries = sorted(entries, key=lambda x: x[0])
     out: list[SubtitleCue] = []
 
-    for i, (start, end, text) in enumerate(sorted_entries):
+    for start, end, text in sorted_entries:
         if start >= cap:
             continue
         end = min(end, cap)
@@ -123,14 +213,11 @@ def _normalize_contiguous(entries: list[SubtitleCue], max_end_ts: float | None) 
             if text == prev_text and abs(start - prev_start) < 0.02:
                 continue
             if start < prev_end:
-                prev_end = max(prev_start + _MIN_DUR, start - _WORD_GAP)
-                out[-1] = (prev_start, round(prev_end, 3), prev_text)
-            if start < out[-1][1]:
-                start = out[-1][1]
+                start = prev_end + _WORD_GAP
+            gap = start - prev_end
+            if 0 < gap <= _MAX_SILENCE:
+                out[-1] = (prev_start, round(min(prev_end + gap * 0.5, start - _WORD_GAP), 3), prev_text)
 
-        if i + 1 < len(sorted_entries):
-            next_start = sorted_entries[i + 1][0]
-            end = min(end, next_start - _WORD_GAP)
         end = max(end, start + _MIN_DUR)
         end = min(end, cap)
         if end <= start:
