@@ -23,7 +23,25 @@ from app.models import (
 )
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
 from app.services.hitl import send_hitl_video
+from app.services.subtitles import build_word_subtitle_cues
+from app.services.whisper import load_words_json
 from app.settings import settings
+
+
+def _frame_timings(frames: list[Frame]) -> list[tuple[float, float]]:
+    if all(fr.start_ts is not None and fr.end_ts is not None for fr in frames):
+        return [(float(fr.start_ts), float(fr.end_ts)) for fr in frames]
+
+    pos = 0.0
+    timings: list[tuple[float, float]] = []
+    for fr in frames:
+        dur = float(fr.duration_seconds or 0.0)
+        timings.append((pos, pos + dur))
+        pos += dur
+    logger.warning(
+        "assemble: frame start_ts/end_ts missing — video timeline falls back to cumulative durations"
+    )
+    return timings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -73,18 +91,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             raise RuntimeError(f"длительность кадра {fr.number} ≤ 0")
         clips.append(ClipSpec(src=Path(video_art.path), duration=float(duration)))
 
-    # субтитры — привязаны к кумулятивному времени клипов, а не к
-    # Whisper timestamps. Каждый субтитр показывается ровно пока
-    # играет его клип, что гарантирует синхронизацию с видеорядом.
+    frame_timings = _frame_timings(frames)
+
+    # субтитры — word-level Whisper, не более 2 слов на экране
     subs_dir = project.data_dir / "subs"
     subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
-    cumulative = 0.0
-    sub_entries: list[tuple[float, float, str]] = []
-    for fr, clip in zip(frames, clips):
-        text = (fr.voiceover_text or "").strip()
-        if text:
-            sub_entries.append((cumulative, cumulative + clip.duration, text))
-        cumulative += clip.duration
+    whisper_art = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.whisper_words,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if whisper_art is None:
+        raise RuntimeError(
+            "нет word-level таймкодов Whisper — перезапустите шаг «Аудио» перед сборкой"
+        )
+    words = load_words_json(Path(whisper_art.path))
+    if not words:
+        raise RuntimeError("Whisper не вернул слова для субтитров")
+    sub_entries = build_word_subtitle_cues(words, max_words=2)
     make_simple_ass(sub_entries, subs_path)
     session.add(Artifact(
         project_id=project.id, kind=ArtifactKind.subtitle,
@@ -94,7 +124,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # сборка
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
-    await assemble(clips, Path(audio.path), out_path, subtitles_ass=subs_path)
+    await assemble(
+        clips,
+        Path(audio.path),
+        out_path,
+        subtitles_ass=subs_path,
+        frame_timings=frame_timings,
+    )
 
     session.add(Artifact(
         project_id=project.id, kind=ArtifactKind.final_video,

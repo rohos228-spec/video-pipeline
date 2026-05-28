@@ -22,6 +22,7 @@ import asyncio
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from loguru import logger
 
@@ -41,6 +42,38 @@ class ClipSpec:
     duration: float  # требуемая длительность после обрезки
 
 
+@dataclass
+class TimelineSegment:
+    kind: Literal["clip", "black"]
+    duration: float
+    src: Path | None = None
+
+
+def build_timeline_segments(
+    clips: list[ClipSpec],
+    frame_timings: list[tuple[float, float]],
+) -> list[TimelineSegment]:
+    """Строит видеоряд по Whisper start/end: вставляет чёрные кадры в паузах."""
+    if len(clips) != len(frame_timings):
+        raise ValueError("clips and frame_timings must have the same length")
+
+    segments: list[TimelineSegment] = []
+    timeline_pos = 0.0
+    for clip, (start_ts, end_ts) in zip(clips, frame_timings):
+        start = max(float(start_ts), 0.0)
+        end = max(float(end_ts), start)
+        gap = start - timeline_pos
+        if gap > 0.01:
+            segments.append(TimelineSegment(kind="black", duration=gap))
+            timeline_pos += gap
+        duration = end - start
+        if duration <= 0:
+            continue
+        segments.append(TimelineSegment(kind="clip", duration=duration, src=clip.src))
+        timeline_pos = end
+    return segments
+
+
 async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     logger.debug("$ {}", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
@@ -53,6 +86,17 @@ async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     if proc.returncode != 0:
         logger.error("ffmpeg stderr:\n{}", stderr.decode(errors="ignore"))
         raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
+
+
+async def _make_black_clip(duration: float, dst: Path) -> None:
+    await _run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c=black:s={CANVAS_W}x{CANVAS_H}:r={FPS}",
+        "-t", f"{duration:.3f}",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        str(dst),
+    ])
 
 
 async def _cut_and_normalize(src: Path, duration: float, dst: Path) -> None:
@@ -80,18 +124,33 @@ async def assemble(
     out_path: Path,
     *,
     subtitles_ass: Path | None = None,
+    frame_timings: list[tuple[float, float]] | None = None,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
+
+    if frame_timings is not None and len(frame_timings) != len(clips):
+        raise ValueError("frame_timings length must match clips")
 
     with tempfile.TemporaryDirectory(prefix="vp_asm_") as tmp:
         tmp_dir = Path(tmp)
         normalized: list[Path] = []
 
-        for i, spec in enumerate(clips):
-            dst = tmp_dir / f"clip_{i:03d}.mp4"
-            await _cut_and_normalize(spec.src, spec.duration, dst)
-            normalized.append(dst)
+        if frame_timings is not None:
+            segments = build_timeline_segments(clips, frame_timings)
+            for i, segment in enumerate(segments):
+                dst = tmp_dir / f"seg_{i:03d}.mp4"
+                if segment.kind == "black":
+                    await _make_black_clip(segment.duration, dst)
+                else:
+                    assert segment.src is not None
+                    await _cut_and_normalize(segment.src, segment.duration, dst)
+                normalized.append(dst)
+        else:
+            for i, spec in enumerate(clips):
+                dst = tmp_dir / f"clip_{i:03d}.mp4"
+                await _cut_and_normalize(spec.src, spec.duration, dst)
+                normalized.append(dst)
 
         # concat demuxer
         list_file = tmp_dir / "concat.txt"
