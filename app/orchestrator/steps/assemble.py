@@ -109,7 +109,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except FileNotFoundError as exc:
         raise RuntimeError(str(exc)) from exc
 
-    words = _scale_whisper_words(words, time_scale)
+    words = _scale_whisper_words(words, time_scale) if not per_frame_audio else words
 
     video_duration = sum(c.duration for c in audio_clips)
     logger.info(

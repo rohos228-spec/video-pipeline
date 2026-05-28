@@ -180,8 +180,8 @@ async def build_assembly_timeline(
 ) -> tuple[list[FrameAudioClip], float, float, bool]:
     """Озвучка — единственное мерило: voice_full задаёт конец ролика.
 
-    frame_NNN.mp3 используются только если они от шага «Аудио» (per_frame TTS).
-    Старые/авто-нарезанные frame_*.mp3 игнорируются.
+    Per-frame: границы кадров = ffprobe(frame_NNN.mp3), без rescale.
+    При расхождении voice_full пересобирается из клипов.
 
     Returns (clips, master_duration, time_scale, uses_per_frame_clips).
     """
@@ -192,9 +192,30 @@ async def build_assembly_timeline(
         raw_sum = sum(c.duration for c in clips)
         if raw_sum <= 0:
             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
-        scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
-        clips = _rescale_clips_to_master(clips, master)
-        return clips, master, scale, True
+
+        if abs(raw_sum - master) > 0.05:
+            logger.info(
+                "voice_full {:.2f}s != clips {:.2f}s — пересборка из frame_*.mp3",
+                master,
+                raw_sum,
+            )
+            paths = [frame_audio_path(audio_dir, n) for n in frame_numbers]
+            await concat_mp3_files(paths, voice_full_path)
+            master = await probe_duration(voice_full_path)
+
+        if abs(raw_sum - master) > 0.15:
+            logger.warning(
+                "drift voice_full {:.2f}s vs clips {:.2f}s — видео по сумме клипов",
+                master,
+                raw_sum,
+            )
+            master = raw_sum
+
+        if clips and abs(clips[-1].end_ts - master) > 0.01:
+            clips[-1].end_ts = round(master, 3)
+            clips[-1].duration = round(clips[-1].end_ts - clips[-1].start_ts, 3)
+
+        return clips, master, 1.0, True
 
     if has_all_frame_audio(audio_dir, frame_numbers) and not per_frame_tts:
         logger.warning(

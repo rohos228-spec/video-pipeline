@@ -1,9 +1,8 @@
 """Шаг 10: озвучка plan R49 — вариант B (один mp3 на ячейку / кадр).
 
 Каждая колонка листа «план» (C49, D49, …) → отдельный TTS → frame_NNN.mp3.
-Длительность кадра = ffprobe(фрагмент), без угадывания Whisper.
-Фрагменты склеиваются в voice_full_*.mp3 для финальной сборки.
-Whisper — по каждому фрагменту, таймкоды с offset для субтитров.
+Длительность кадра = ffprobe(фрагмент). Склейка → voice_full.
+Whisper — один проход по voice_full (точнее, чем 30 отдельных фрагментов).
 """
 
 from __future__ import annotations
@@ -25,10 +24,10 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.frame_audio import synthesize_per_frame_audio, whisper_words_from_clips
+from app.services.frame_audio import synthesize_per_frame_audio
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.whisper import dump_words_json
+from app.services.whisper import dump_words_json, transcribe_words
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -80,18 +79,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             expected,
         )
 
+    clip_meta = [
+        {
+            "frame_number": c.frame_number,
+            "start_ts": c.start_ts,
+            "end_ts": c.end_ts,
+            "duration": c.duration,
+            "text": c.text,
+        }
+        for c in clips
+    ]
     session.add(Artifact(
         project_id=project.id,
         kind=ArtifactKind.audio,
         uuid=uuid.uuid4().hex,
         path=str(full_audio_path),
-        meta={"mode": "per_frame", "clip_count": len(clips)},
+        meta={"mode": "per_frame", "clip_count": len(clips), "clips": clip_meta},
     ))
     await session.flush()
 
-    logger.info("[#{}] whisper per-frame fragments ({} clips)", project.id, len(clips))
-    words = whisper_words_from_clips(
-        clips,
+    logger.info("[#{}] whisper on voice_full ({:.2f}s)", project.id, audio_duration)
+    words = transcribe_words(
+        full_audio_path,
         model_name=settings.whisper_model,
         language="ru",
     )

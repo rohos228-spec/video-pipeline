@@ -1,4 +1,4 @@
-"""Субтитры: одно слово на экран, строго внутри границ каждой ячейки R49."""
+"""Субтитры: прямые таймкоды Whisper внутри каждой ячейки R49."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from app.services.mapper import (
     align_cell_to_local_words,
     extract_local_frame_words,
     tokenize_display,
+    whisper_token,
 )
 from app.services.whisper import WordTS
 
@@ -30,7 +31,7 @@ def build_subtitle_cues_from_cells(
     lead_seconds: float = 0.0,
     chars_per_second: float = _CHARS_PER_SECOND,
 ) -> list[SubtitleCue]:
-    """Субтитры по кадрам: каждая ячейка plan → свой клип, без выхода за границы."""
+    """Субтитры: align Excel ↔ Whisper внутри кадра, старт = word.start − lead."""
     del direct_whisper_times, max_words
     if not frame_timings:
         return []
@@ -91,7 +92,6 @@ def build_subtitle_cues_from_cells(
 
 
 def _min_duration_for_word(word: str, chars_per_second: float) -> float:
-    """14 символов ≈ 1 с — минимальное время показа слова на экране."""
     cps = max(float(chars_per_second), 1.0)
     return max(_MIN_DUR, len(word) / cps)
 
@@ -104,80 +104,78 @@ def _schedule_words_in_frame(
     frame_dur: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Распределить слова по [0, frame_dur] — Whisper + длительность по символам."""
+    """Прямые таймкоды Whisper; fallback — распределение по символам."""
     n = len(display_words)
     if n == 0 or frame_dur <= 0:
         return []
 
-    char_slots = _char_weighted_slots(
-        display_words, frame_dur, chars_per_second,
-    )
+    char_slots = _char_weighted_slots(display_words, frame_dur, chars_per_second)
+    if not local_words or len(whisper_indices) < n:
+        return char_slots
 
     indices = _monotonic_indices(whisper_indices, len(local_words))
-    if len(indices) < n or not _alignment_usable(indices, n):
-        return char_slots
+    if _alignment_strong(display_words, indices, local_words):
+        direct = _direct_whisper_slots(
+            display_words, indices, local_words, frame_dur, chars_per_second,
+        )
+        if len(direct) == n:
+            return direct
 
-    wh_starts = [local_words[i].start for i in indices]
-    wh_ends = [local_words[i].end for i in indices]
-    wh_min = min(wh_starts)
-    wh_max = max(wh_ends)
-    wh_span = max(wh_max - wh_min, 0.01)
-
-    late_start = wh_min > frame_dur * 0.35
-    narrow = wh_span < frame_dur * 0.25
-    if late_start or narrow:
-        return char_slots
-
-    whisper_slots: list[tuple[float, float]] = []
-    for wi in range(n):
-        rel = _word_rel_position(wi, n, indices, local_words, wh_min, wh_span)
-        start = rel * frame_dur
-
-        if wi + 1 < n:
-            rel_next = _word_rel_position(wi + 1, n, indices, local_words, wh_min, wh_span)
-            end = rel_next * frame_dur - _WORD_GAP
-        else:
-            end = frame_dur
-
-        min_dur = _min_duration_for_word(display_words[wi], chars_per_second)
-        end = max(end, start + min_dur)
-        end = min(end, frame_dur)
-        if end <= start:
-            end = min(start + min_dur, frame_dur)
-        whisper_slots.append((start, end))
-
-    return _blend_with_char_slots(whisper_slots, char_slots, display_words, frame_dur, chars_per_second)
+    return char_slots
 
 
-def _blend_with_char_slots(
-    whisper_slots: list[tuple[float, float]],
-    char_slots: list[tuple[float, float]],
+def _alignment_strong(
     display_words: list[str],
+    indices: list[int],
+    local_words: list[WordTS],
+) -> bool:
+    """Align Excel ↔ Whisper достаточно точный для прямых таймкодов."""
+    n = len(display_words)
+    if len(indices) < n or len(set(indices)) < max(1, (n + 1) // 2):
+        return False
+    matches = 0
+    for wi, word in enumerate(display_words):
+        idx = indices[wi]
+        if idx >= len(local_words):
+            continue
+        if word.lower() == whisper_token(local_words[idx]):
+            matches += 1
+    return matches >= max(1, (n + 1) // 2)
+
+
+def _direct_whisper_slots(
+    display_words: list[str],
+    indices: list[int],
+    local_words: list[WordTS],
     frame_dur: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Старт — из Whisper, длительность — не меньше char-слота и len/14."""
+    """start/end = Whisper word.start/end (без растягивания по кадру)."""
+    n = len(display_words)
     out: list[tuple[float, float]] = []
     for wi, word in enumerate(display_words):
-        ws, we = whisper_slots[wi]
-        cs, ce = char_slots[wi]
-        start = ws
-        char_dur = ce - cs
+        idx = indices[wi]
+        start = max(0.0, local_words[idx].start)
+
+        if wi + 1 < n:
+            next_idx = indices[wi + 1]
+            if next_idx > idx:
+                end = local_words[next_idx].start - _WORD_GAP
+            else:
+                end = local_words[idx].end
+        elif idx + 1 < len(local_words):
+            end = local_words[idx + 1].start - _WORD_GAP
+        else:
+            end = local_words[idx].end
+
         min_dur = _min_duration_for_word(word, chars_per_second)
-        end = max(we, start + min_dur, start + char_dur)
+        end = max(end, start + min_dur)
         end = min(end, frame_dur)
-        if out and start < out[-1][1] + _WORD_GAP:
-            start = out[-1][1] + _WORD_GAP
-            end = max(end, start + min_dur)
-            end = min(end, frame_dur)
         if end <= start:
             end = min(start + min_dur, frame_dur)
         if end <= start:
             continue
         out.append((start, end))
-
-    if len(out) < len(display_words):
-        return _char_weighted_slots(display_words, frame_dur, chars_per_second)
     return out
 
 
@@ -186,7 +184,6 @@ def _char_weighted_slots(
     frame_dur: float,
     chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Равномерное распределение по кадру пропорционально числу символов."""
     weights = [max(len(w), 1) for w in display_words]
     total = sum(weights)
     out: list[tuple[float, float]] = []
@@ -201,37 +198,6 @@ def _char_weighted_slots(
         out.append((start, end))
         pos += slot
     return out
-
-
-def _word_rel_position(
-    wi: int,
-    n: int,
-    indices: list[int],
-    local_words: list[WordTS],
-    wh_min: float,
-    wh_span: float,
-) -> float:
-    idx = indices[wi]
-    if wi > 0 and indices[wi - 1] == idx:
-        run_start = wi - 1
-        while run_start > 0 and indices[run_start - 1] == idx:
-            run_start -= 1
-        run_end = wi
-        while run_end + 1 < n and indices[run_end + 1] == idx:
-            run_end += 1
-        run_len = run_end - run_start + 1
-        base = (local_words[idx].start - wh_min) / wh_span
-        offset = (wi - run_start + 1) / (run_len + 1)
-        step = 1.0 / max(n, 1)
-        return min(1.0, base * 0.85 + offset * step * 0.5)
-    return (local_words[idx].start - wh_min) / wh_span
-
-
-def _alignment_usable(indices: list[int], word_count: int) -> bool:
-    if not indices:
-        return False
-    unique = len(set(indices))
-    return unique >= max(1, (word_count + 1) // 2)
 
 
 def _monotonic_indices(indices: list[int], word_count: int) -> list[int]:
@@ -256,7 +222,6 @@ def _normalize_within_frame(
     max_end_ts: float | None,
     chars_per_second: float,
 ) -> list[SubtitleCue]:
-    """Сглаживание только внутри одного кадра — не трогаем соседние ячейки."""
     if not entries:
         return entries
 
