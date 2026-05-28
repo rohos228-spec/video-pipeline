@@ -155,9 +155,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         cells,
         words,
         frame_timings,
-        max_words=2,
+        max_words=settings.subtitle_max_words,
         max_end_ts=audio_duration,
-        direct_whisper_times=per_frame_audio,
         lead_seconds=settings.subtitle_lead_seconds,
     )
     if not sub_entries:

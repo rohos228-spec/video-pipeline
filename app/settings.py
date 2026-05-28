@@ -51,13 +51,14 @@ class Settings(BaseSettings):
     # Whisper
     whisper_model: str = Field("medium", alias="WHISPER_MODEL")
 
-    # Background music — только явный файл (project/bgm.mp3), без шума по умолчанию
-    bgm_default_enabled: bool = Field(False, alias="BGM_DEFAULT_ENABLED")
-    bgm_default_level: int = Field(30, alias="BGM_DEFAULT_LEVEL")  # 0..100
+    # Background music — auto if bgm.mp3 / music.mp3 found in project folder
+    bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
+    bgm_default_level: int = Field(35, alias="BGM_DEFAULT_LEVEL")  # 0..100
     bgm_path: Path | None = Field(None, alias="BGM_PATH")
 
-    # Subtitles — лёгкое опережение Whisper (сек)
-    subtitle_lead_seconds: float = Field(0.08, alias="SUBTITLE_LEAD_SECONDS")
+    # Subtitles — одно слово, лёгкое опережение Whisper (сек)
+    subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
+    subtitle_lead_seconds: float = Field(0.10, alias="SUBTITLE_LEAD_SECONDS")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

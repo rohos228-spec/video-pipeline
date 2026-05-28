@@ -73,7 +73,7 @@ def test_subtitles_clamped_to_audio_end() -> None:
     words = [WordTS("привет", 0.0, 0.5, 1.0), WordTS("мир", 0.5, 1.0, 1.0)]
     timings = [FrameTiming(1, 0.0, 10.0, 10.0)]
     cues = build_subtitle_cues_from_cells(
-        cells, words, timings, max_words=2, max_end_ts=1.0,
+        cells, words, timings, max_words=1, max_end_ts=1.0,
     )
     assert cues
     assert cues[-1][1] <= 1.0

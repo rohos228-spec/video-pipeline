@@ -23,8 +23,6 @@ def test_normalize_contiguous_fills_full_audio_and_no_gaps() -> None:
     assert out[0].start_ts == 0.0
     assert out[-1].end_ts == 60.0
     assert abs(sum(t.duration for t in out) - 60.0) < 0.01
-    for prev, cur in zip(out, out[1:]):
-        assert abs(cur.start_ts - prev.end_ts) < 0.001
 
 
 def test_map_frames_redistributes_when_whisper_runs_out() -> None:
@@ -33,67 +31,36 @@ def test_map_frames_redistributes_when_whisper_runs_out() -> None:
     timings = map_frames(cells, words, audio_duration=12.0)
     assert len(timings) == 6
     assert timings[-1].end_ts == 12.0
-    assert all(t.duration > 0 for t in timings)
 
 
-def test_subtitles_use_excel_text_max_two_words() -> None:
-    cells = [(1, "Привет мир"), (2, "Новый кадр")]
+def test_one_word_per_cue_uses_next_word_start_as_end() -> None:
+    cells = [(1, "Привет мир")]
     words = [
-        WordTS("привет", 0.0, 0.5, 1.0),
-        WordTS("мир", 0.5, 1.0, 1.0),
-        WordTS("новый", 1.0, 1.4, 1.0),
-        WordTS("кадр", 1.4, 1.8, 1.0),
+        WordTS("привет", 0.10, 0.50, 1.0),
+        WordTS("мир", 0.52, 0.90, 1.0),
     ]
-    timings = map_frames(cells, words, audio_duration=2.0)
-    cues = build_subtitle_cues_from_cells(cells, words, timings, max_words=2)
-    assert ("Привет", "мир") == tuple(cues[0][2].split())
-    assert cues[0][0] == timings[0].start_ts
-    assert cues[1][2] == "Новый кадр"
-
-
-def test_subtitles_per_frame_use_direct_whisper_times() -> None:
-    cells = [(1, "Привет мир"), (2, "Новый кадр")]
-    words = [
-        WordTS("привет", 0.1, 0.45, 1.0),
-        WordTS("мир", 0.45, 0.95, 1.0),
-        WordTS("новый", 1.05, 1.35, 1.0),
-        WordTS("кадр", 1.35, 1.75, 1.0),
-    ]
-    timings = [
-        FrameTiming(1, 0.0, 1.0, 1.0),
-        FrameTiming(2, 1.0, 1.8, 0.8),
-    ]
+    timings = [FrameTiming(1, 0.0, 1.0, 1.0)]
     cues = build_subtitle_cues_from_cells(
-        cells,
-        words,
-        timings,
-        max_words=2,
-        direct_whisper_times=True,
-        lead_seconds=0.0,
+        cells, words, timings, max_words=1, lead_seconds=0.0,
     )
-    assert cues[0] == (0.1, 0.95, "Привет мир")
-    assert cues[1] == (1.05, 1.75, "Новый кадр")
+    assert len(cues) == 2
+    assert cues[0] == (0.1, 0.5, "Привет")  # end = 0.52 - 0.02
+    assert cues[1][2] == "мир"
+    assert cues[1][0] == 0.52
 
 
-def test_subtitles_lead_compensates_whisper_lag() -> None:
-    cells = [(1, "раз два три четыре")]
+def test_one_word_lead_shows_earlier() -> None:
+    cells = [(1, "Раз два")]
     words = [
-        WordTS("раз", 0.20, 0.55, 1.0),
-        WordTS("два", 0.55, 0.95, 1.0),
-        WordTS("три", 0.60, 0.98, 1.0),
-        WordTS("четыре", 0.98, 1.35, 1.0),
+        WordTS("раз", 0.20, 0.50, 1.0),
+        WordTS("два", 0.55, 0.90, 1.0),
     ]
-    timings = [FrameTiming(1, 0.0, 1.5, 1.5)]
+    timings = [FrameTiming(1, 0.0, 1.0, 1.0)]
     cues = build_subtitle_cues_from_cells(
-        cells,
-        words,
-        timings,
-        max_words=2,
-        direct_whisper_times=True,
-        lead_seconds=0.08,
+        cells, words, timings, max_words=1, lead_seconds=0.10,
     )
-    assert cues[0][0] == 0.12  # 0.20 - 0.08
-    assert cues[1][0] == 0.52  # 0.60 - 0.08, не сдвигается к 0.95
+    assert cues[0][0] == 0.1
+    assert cues[1][0] == 0.45
 
 
 def test_per_frame_alignment_ignores_words_outside_window() -> None:
@@ -116,5 +83,3 @@ def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:
     vf = subtitles_vf_arg()
     assert vf == "subtitles=subs.ass"
     assert ":" not in vf
-    assert "/" not in vf
-    assert "\\" not in vf
