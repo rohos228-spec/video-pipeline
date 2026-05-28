@@ -67,8 +67,11 @@ def write_plan_prompt_file(
     }.get(project.hero_mode, "")
     extra = f"\n\nДополнительное указание: {hero_hint}" if hero_hint else ""
     prompt_file = tmp_dir / f"prompt_plan_{ts or _timestamp()}.txt"
+    from app.services.gpt_text_builder import inject_topic_placeholders
+
+    master = inject_topic_placeholders(master, actual_topic)
     prompt_file.write_text(
-        f"Тема ролика: {actual_topic}\n\n{master}{extra}",
+        f"Тема ролика: ({actual_topic})\n\n{master}{extra}",
         encoding="utf-8",
     )
     return prompt_file

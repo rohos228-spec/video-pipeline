@@ -38,6 +38,7 @@
 
 from __future__ import annotations
 
+import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
@@ -72,6 +73,31 @@ ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
 # — поэтому в самом шаблоне они хранятся литерально.
 HERO_PLACEHOLDER_BRIEF = "{{BRIEF}}"
 HERO_PLACEHOLDER_STYLE = "{{HERO_STYLE}}"
+
+# Плейсхолдеры темы в мастер-промтах (шаг 1 и др.)
+TOPIC_PLACEHOLDER_PATTERNS: tuple[tuple[str, bool], ...] = (
+    (r"\[ВСТАВЬ ТЕМУ\]", True),
+    (r"\(тема ролика\)", True),
+    (r"\{\{TOPIC\}\}", False),
+    (r"\{\{VAR:PROJECT_TOPIC\}\}", False),
+)
+
+
+def inject_topic_placeholders(text: str, topic: str) -> str:
+    """Подставляет тему ролика в плейсхолдеры мастер-промта.
+
+    ``[ВСТАВЬ ТЕМУ]`` и ``(тема ролика)`` → ``(тема)`` в круглых скобках.
+    ``{{TOPIC}}`` / ``{{VAR:PROJECT_TOPIC}}`` → текст темы без скобок.
+    """
+    t = (topic or "").strip()
+    if not t or not text:
+        return text
+    out = text
+    bracketed = f"({t})"
+    for pattern, wrap in TOPIC_PLACEHOLDER_PATTERNS:
+        repl = bracketed if wrap else t
+        out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
+    return out
 
 def is_supported(step_code: str) -> bool:
     return step_code in SUPPORTED_STEPS
@@ -154,7 +180,7 @@ def _build_plan_default(
     actual_topic = topic if topic is not None else (project.topic or "")
     context_block = _build_topic_context_block(project)
     return (
-        f"Тема ролика: «{actual_topic}».\n\n"
+        f"Тема ролика: ({actual_topic}).\n\n"
         f"{context_block}"
         f"Прикреплены 2 файла:\n"
         f"  1. {prompt_file_name} — инструкция, что именно делать.\n"
