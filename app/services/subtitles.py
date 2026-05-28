@@ -16,6 +16,7 @@ SubtitleCue = tuple[float, float, str]
 
 _WORD_GAP = 0.03
 _MIN_DUR = 0.28
+_CHARS_PER_SECOND = 14.0
 
 
 def build_subtitle_cues_from_cells(
@@ -27,6 +28,7 @@ def build_subtitle_cues_from_cells(
     max_end_ts: float | None = None,
     direct_whisper_times: bool = False,
     lead_seconds: float = 0.0,
+    chars_per_second: float = _CHARS_PER_SECOND,
 ) -> list[SubtitleCue]:
     """Субтитры по кадрам: каждая ячейка plan → свой клип, без выхода за границы."""
     del direct_whisper_times, max_words
@@ -57,6 +59,7 @@ def build_subtitle_cues_from_cells(
             local_words,
             frame_dur=frame_end - frame_start,
             lead_seconds=lead_seconds,
+            chars_per_second=chars_per_second,
         )
 
         frame_cues: list[SubtitleCue] = []
@@ -73,7 +76,7 @@ def build_subtitle_cues_from_cells(
             frame_cues.append((round(start, 3), round(end, 3), word_text))
 
         frame_cues = _normalize_within_frame(
-            frame_cues, frame_start, frame_end, max_end_ts,
+            frame_cues, frame_start, frame_end, max_end_ts, chars_per_second,
         )
         all_cues.extend(frame_cues)
 
@@ -87,6 +90,12 @@ def build_subtitle_cues_from_cells(
     return sorted(all_cues, key=lambda x: x[0])
 
 
+def _min_duration_for_word(word: str, chars_per_second: float) -> float:
+    """14 символов ≈ 1 с — минимальное время показа слова на экране."""
+    cps = max(float(chars_per_second), 1.0)
+    return max(_MIN_DUR, len(word) / cps)
+
+
 def _schedule_words_in_frame(
     display_words: list[str],
     whisper_indices: list[int],
@@ -94,15 +103,20 @@ def _schedule_words_in_frame(
     *,
     frame_dur: float,
     lead_seconds: float,
+    chars_per_second: float,
 ) -> list[tuple[float, float]]:
-    """Распределить слова по [0, frame_dur] — локальные координаты кадра."""
+    """Распределить слова по [0, frame_dur] — Whisper + длительность по символам."""
     n = len(display_words)
     if n == 0 or frame_dur <= 0:
         return []
 
+    char_slots = _char_weighted_slots(
+        display_words, frame_dur, lead_seconds, chars_per_second,
+    )
+
     indices = _monotonic_indices(whisper_indices, len(local_words))
     if len(indices) < n or not _alignment_usable(indices, n):
-        return _equal_slots(n, frame_dur, lead_seconds)
+        return char_slots
 
     wh_starts = [local_words[i].start for i in indices]
     wh_ends = [local_words[i].end for i in indices]
@@ -113,9 +127,9 @@ def _schedule_words_in_frame(
     late_start = wh_min > frame_dur * 0.35
     narrow = wh_span < frame_dur * 0.25
     if late_start or narrow:
-        return _equal_slots(n, frame_dur, lead_seconds)
+        return char_slots
 
-    slots: list[tuple[float, float]] = []
+    whisper_slots: list[tuple[float, float]] = []
     for wi in range(n):
         rel = _word_rel_position(wi, n, indices, local_words, wh_min, wh_span)
         start = rel * frame_dur
@@ -128,13 +142,71 @@ def _schedule_words_in_frame(
         else:
             end = frame_dur
 
-        end = max(end, start + _MIN_DUR)
+        min_dur = _min_duration_for_word(display_words[wi], chars_per_second)
+        end = max(end, start + min_dur)
         end = min(end, frame_dur)
         if end <= start:
-            end = min(start + _MIN_DUR, frame_dur)
-        slots.append((start, end))
+            end = min(start + min_dur, frame_dur)
+        whisper_slots.append((start, end))
 
-    return slots
+    return _blend_with_char_slots(whisper_slots, char_slots, display_words, frame_dur, chars_per_second)
+
+
+def _blend_with_char_slots(
+    whisper_slots: list[tuple[float, float]],
+    char_slots: list[tuple[float, float]],
+    display_words: list[str],
+    frame_dur: float,
+    chars_per_second: float,
+) -> list[tuple[float, float]]:
+    """Старт — из Whisper, длительность — не меньше char-слота и len/14."""
+    out: list[tuple[float, float]] = []
+    for wi, word in enumerate(display_words):
+        ws, we = whisper_slots[wi]
+        cs, ce = char_slots[wi]
+        start = ws
+        char_dur = ce - cs
+        min_dur = _min_duration_for_word(word, chars_per_second)
+        end = max(we, start + min_dur, start + char_dur)
+        end = min(end, frame_dur)
+        if out and start < out[-1][1] + _WORD_GAP:
+            start = out[-1][1] + _WORD_GAP
+            end = max(end, start + min_dur)
+            end = min(end, frame_dur)
+        if end <= start:
+            end = min(start + min_dur, frame_dur)
+        if end <= start:
+            continue
+        out.append((start, end))
+
+    if len(out) < len(display_words):
+        return _char_weighted_slots(display_words, frame_dur, 0.0, chars_per_second)
+    return out
+
+
+def _char_weighted_slots(
+    display_words: list[str],
+    frame_dur: float,
+    lead_seconds: float,
+    chars_per_second: float,
+) -> list[tuple[float, float]]:
+    """Равномерное распределение по кадру пропорционально числу символов."""
+    weights = [max(len(w), 1) for w in display_words]
+    total = sum(weights)
+    out: list[tuple[float, float]] = []
+    pos = 0.0
+    for wi, word in enumerate(display_words):
+        slot = (weights[wi] / total) * frame_dur
+        start = pos
+        if wi == 0 and lead_seconds > 0:
+            start = max(0.0, start - lead_seconds)
+        min_dur = _min_duration_for_word(word, chars_per_second)
+        end = min(pos + slot - _WORD_GAP, frame_dur)
+        end = max(end, start + min_dur)
+        end = min(end, frame_dur)
+        out.append((start, end))
+        pos += slot
+    return out
 
 
 def _word_rel_position(
@@ -168,20 +240,6 @@ def _alignment_usable(indices: list[int], word_count: int) -> bool:
     return unique >= max(1, (word_count + 1) // 2)
 
 
-def _equal_slots(n: int, frame_dur: float, lead_seconds: float) -> list[tuple[float, float]]:
-    slot = frame_dur / n
-    out: list[tuple[float, float]] = []
-    for wi in range(n):
-        start = wi * slot
-        if wi == 0 and lead_seconds > 0:
-            start = max(0.0, start - lead_seconds)
-        end = (wi + 1) * slot - _WORD_GAP
-        end = max(end, start + _MIN_DUR)
-        end = min(end, frame_dur)
-        out.append((start, end))
-    return out
-
-
 def _monotonic_indices(indices: list[int], word_count: int) -> list[int]:
     if not indices:
         return []
@@ -202,6 +260,7 @@ def _normalize_within_frame(
     frame_start: float,
     frame_end: float,
     max_end_ts: float | None,
+    chars_per_second: float,
 ) -> list[SubtitleCue]:
     """Сглаживание только внутри одного кадра — не трогаем соседние ячейки."""
     if not entries:
@@ -226,15 +285,11 @@ def _normalize_within_frame(
             if start >= cap:
                 continue
 
-        end = max(end, start + _MIN_DUR)
+        min_dur = _min_duration_for_word(text, chars_per_second)
+        end = max(end, start + min_dur)
         end = min(end, cap)
         if end <= start:
             continue
         out.append((round(start, 3), round(end, 3), text))
-
-    if out:
-        last_start, last_end, last_text = out[-1]
-        if last_end < cap - 0.01:
-            out[-1] = (last_start, round(min(last_end, cap), 3), last_text)
 
     return out

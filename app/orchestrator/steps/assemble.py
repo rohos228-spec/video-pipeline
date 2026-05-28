@@ -158,6 +158,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         max_words=settings.subtitle_max_words,
         max_end_ts=audio_duration,
         lead_seconds=settings.subtitle_lead_seconds,
+        chars_per_second=settings.subtitle_chars_per_second,
     )
     if not sub_entries:
         raise RuntimeError("не удалось построить субтитры из Excel + Whisper")

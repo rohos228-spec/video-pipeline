@@ -32,7 +32,9 @@ FPS = 30
 SUBTITLES_ASS_NAME = "subs.ass"
 # фиксированная позиция субтитров (центр снизу) — одно слово, без прыжков по высоте
 SUBTITLE_POS_X = CANVAS_W // 2
-SUBTITLE_POS_Y = 1780
+_SUBTITLE_BASE_Y = 1780
+SUBTITLE_Y_RAISE = 0.15  # на 15% выше от базовой позиции (доля высоты кадра)
+SUBTITLE_POS_Y = int(_SUBTITLE_BASE_Y - CANVAS_H * SUBTITLE_Y_RAISE)
 SUBTITLE_ASS_PREFIX = rf"{{\an2\pos({SUBTITLE_POS_X},{SUBTITLE_POS_Y})}}"
 
 

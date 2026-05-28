@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.assembly import subtitles_vf_arg
+from app.services.assembly import SUBTITLE_POS_Y, _SUBTITLE_BASE_Y, CANVAS_H, subtitles_vf_arg
 from app.services.mapper import (
     FrameTiming,
     build_frame_word_spans_per_frame,
@@ -190,3 +190,33 @@ def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:
     vf = subtitles_vf_arg()
     assert vf == "subtitles=subs.ass"
     assert ":" not in vf
+
+
+def test_subtitle_pos_raised_by_15_percent() -> None:
+    assert SUBTITLE_POS_Y == int(_SUBTITLE_BASE_Y - CANVAS_H * 0.15)
+    assert SUBTITLE_POS_Y < _SUBTITLE_BASE_Y
+
+
+def test_char_count_sets_minimum_duration() -> None:
+    long_word = "а" * 14
+    cells = [(1, long_word)]
+    words = [WordTS("шум", 0.0, 0.2, 1.0)]
+    timings = [FrameTiming(1, 0.0, 5.0, 5.0)]
+    cues = build_subtitle_cues_from_cells(
+        cells, words, timings, lead_seconds=0.0, chars_per_second=14.0,
+    )
+    assert len(cues) == 1
+    assert cues[0][1] - cues[0][0] >= 1.0
+
+
+def test_char_weighted_split_longer_word_gets_more_time() -> None:
+    cells = [(1, "я четырнадцать")]
+    words = [WordTS("шум", 5.0, 5.5, 1.0)]
+    timings = [FrameTiming(1, 0.0, 4.0, 4.0)]
+    cues = build_subtitle_cues_from_cells(
+        cells, words, timings, lead_seconds=0.0, chars_per_second=14.0,
+    )
+    assert len(cues) == 2
+    short_dur = cues[0][1] - cues[0][0]
+    long_dur = cues[1][1] - cues[1][0]
+    assert long_dur > short_dur

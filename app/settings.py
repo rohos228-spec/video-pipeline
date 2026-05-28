@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # Subtitles — одно слово, лёгкое опережение Whisper (сек)
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
     subtitle_lead_seconds: float = Field(0.10, alias="SUBTITLE_LEAD_SECONDS")
+    subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
