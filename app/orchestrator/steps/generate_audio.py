@@ -25,6 +25,7 @@ from app.models import (
 from app.services.mapper import map_frames, tokenize_lower
 from app.services.media_probe import probe_duration
 from app.services.whisper import dump_words_json, transcribe_words
+from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 from app.settings import settings
 
 
@@ -41,9 +42,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров")
 
-    script_text = "\n".join(fr.voiceover_text.strip() for fr in frames if fr.voiceover_text)
+    cells = read_plan_voiceover_cells(project, [fr.number for fr in frames])
+    script_text = "\n".join(text for _, text in cells if text.strip())
     if not script_text:
-        raise RuntimeError("пустой сценарий для озвучки")
+        raise RuntimeError(
+            "нет закадрового текста на листе «план» (строка 49) — "
+            "заполните ячейки по кадрам в project.xlsx"
+        )
 
     audio_dir = project.data_dir / "audio"
     audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
@@ -72,8 +77,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         path=str(words_path),
     ))
 
-    # реальные таймкоды кадров
-    cells = [(fr.number, fr.voiceover_text or "") for fr in frames]
+    # реальные таймкоды кадров (текст — только plan R49, одна ячейка = одно видео)
     audio_duration = await probe_duration(audio_path)
     script_word_count = sum(len(tokenize_lower(text)) for _, text in cells)
     logger.info(

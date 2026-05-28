@@ -26,6 +26,7 @@ from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
 from app.services.subtitles import build_subtitle_cues_from_cells
 from app.services.whisper import load_words_json
+from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -71,7 +72,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not words:
         raise RuntimeError("Whisper не вернул слова для субтитров")
 
-    cells = [(fr.number, fr.voiceover_text or "") for fr in frames]
+    cells = read_plan_voiceover_cells(project, [fr.number for fr in frames])
+    if not any(text.strip() for _, text in cells):
+        raise RuntimeError(
+            "нет текста на листе «план» (строка 49) — субтитры и синхронизация "
+            "строятся только из ячеек Excel (одна ячейка = одно видео)"
+        )
+
     frame_timings = [
         FrameTiming(
             fr.number,
