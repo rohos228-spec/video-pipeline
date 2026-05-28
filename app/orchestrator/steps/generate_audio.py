@@ -22,7 +22,8 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.mapper import map_frames
+from app.services.mapper import map_frames, tokenize_lower
+from app.services.media_probe import probe_duration
 from app.services.whisper import dump_words_json, transcribe_words
 from app.settings import settings
 
@@ -73,14 +74,45 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     # реальные таймкоды кадров
     cells = [(fr.number, fr.voiceover_text or "") for fr in frames]
-    timings = map_frames(cells, words)
+    audio_duration = await probe_duration(audio_path)
+    script_word_count = sum(len(tokenize_lower(text)) for _, text in cells)
+    logger.info(
+        "[#{}] whisper alignment: script_tokens={} whisper_words={} audio={:.2f}s",
+        project.id,
+        script_word_count,
+        len(words),
+        audio_duration,
+    )
+    if abs(script_word_count - len(words)) > max(3, script_word_count // 10):
+        logger.warning(
+            "[#{}] whisper/script word count mismatch ({} vs {}) — "
+            "timings use fuzzy alignment + proportional fill",
+            project.id,
+            script_word_count,
+            len(words),
+        )
+    timings = map_frames(cells, words, audio_duration=audio_duration)
     by_num = {t.frame_number: t for t in timings}
+    zero_dur = 0
     for fr in frames:
         t = by_num.get(fr.number)
-        if t and t.duration > 0:
-            fr.start_ts = t.start_ts
-            fr.end_ts = t.end_ts
-            fr.duration_seconds = t.duration
+        if t is None:
+            zero_dur += 1
+            continue
+        fr.start_ts = t.start_ts
+        fr.end_ts = t.end_ts
+        fr.duration_seconds = t.duration
+        if t.duration <= 0:
+            zero_dur += 1
+
+    if zero_dur:
+        logger.warning(
+            "[#{}] generate_audio: {} frames have zero whisper weight — "
+            "timings redistributed across full audio ({:.2f}s)",
+            project.id,
+            zero_dur,
+            audio_duration,
+        )
 
     project.status = ProjectStatus.audio_ready
     await session.flush()
