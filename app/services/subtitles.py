@@ -20,6 +20,7 @@ def build_subtitle_cues_from_cells(
     max_words: int = 2,
     max_end_ts: float | None = None,
     direct_whisper_times: bool = False,
+    lead_seconds: float = 0.0,
 ) -> list[SubtitleCue]:
     if max_words < 1:
         raise ValueError("max_words must be >= 1")
@@ -52,6 +53,7 @@ def build_subtitle_cues_from_cells(
                     frame_start,
                     frame_end,
                     max_words=max_words,
+                    lead_seconds=lead_seconds,
                 )
             )
         else:
@@ -62,6 +64,7 @@ def build_subtitle_cues_from_cells(
                     frame_start,
                     frame_end,
                     max_words=max_words,
+                    lead_seconds=lead_seconds,
                 )
             )
 
@@ -77,30 +80,34 @@ def _cues_direct_whisper(
     frame_end: float,
     *,
     max_words: int,
+    lead_seconds: float,
 ) -> list[SubtitleCue]:
-    """Per-frame TTS: Whisper start/end без растягивания на окно кадра."""
-    entries: list[SubtitleCue] = []
+    """Per-frame TTS: Whisper + опережение (lead), конец = начало следующей фразы."""
     if not span.whisper_indices:
-        return entries
+        return []
 
+    raw: list[tuple[str, float, float]] = []
     for i in range(0, len(span.display_words), max_words):
         chunk_words = span.display_words[i : i + max_words]
         chunk_indices = span.whisper_indices[i : i + max_words]
         if not chunk_indices:
             continue
+        idx0 = max(0, min(chunk_indices[0], len(words) - 1))
+        idx1 = max(0, min(chunk_indices[-1], len(words) - 1))
+        raw.append((" ".join(chunk_words), words[idx0].start, words[idx1].end))
 
-        starts: list[float] = []
-        ends: list[float] = []
-        for wi in chunk_indices:
-            idx = max(0, min(wi, len(words) - 1))
-            starts.append(words[idx].start)
-            ends.append(words[idx].end)
-
-        start = max(starts[0], frame_start)
-        end = min(ends[-1], frame_end)
+    entries: list[SubtitleCue] = []
+    gap = 0.02
+    for j, (text, wh_start, wh_end) in enumerate(raw):
+        start = max(wh_start - lead_seconds, frame_start)
+        if j + 1 < len(raw):
+            next_wh_start = raw[j + 1][1]
+            end = min(next_wh_start - lead_seconds - gap, frame_end)
+        else:
+            end = min(wh_end + 0.04, frame_end)
         if end <= start:
-            end = min(start + 0.04, frame_end)
-        entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
+            end = min(start + 0.06, frame_end)
+        entries.append((round(start, 3), round(end, 3), text))
 
     return entries
 
@@ -112,6 +119,7 @@ def _cues_stretched(
     frame_end: float,
     *,
     max_words: int,
+    lead_seconds: float,
 ) -> list[SubtitleCue]:
     """Legacy fallback: Whisper-времена растягиваются на окно кадра."""
     entries: list[SubtitleCue] = []
@@ -132,14 +140,22 @@ def _cues_stretched(
         rel = min(max(rel, 0.0), 1.0)
         return frame_start + rel * (frame_end - frame_start)
 
+    mapped: list[tuple[str, float, float]] = []
     for i in range(0, len(span.display_words), max_words):
         chunk_words = span.display_words[i : i + max_words]
         chunk_times = wh_times[i : i + max_words]
-        start = map_ts(chunk_times[0][0])
-        end = map_ts(chunk_times[-1][1])
+        mapped.append((" ".join(chunk_words), map_ts(chunk_times[0][0]), map_ts(chunk_times[-1][1])))
+
+    gap = 0.02
+    for j, (text, start, end) in enumerate(mapped):
+        start = max(start - lead_seconds, frame_start)
+        if j + 1 < len(mapped):
+            end = min(mapped[j + 1][1] - lead_seconds - gap, frame_end)
+        else:
+            end = min(end, frame_end)
         if end <= start:
-            end = start + 0.04
-        entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
+            end = min(start + 0.06, frame_end)
+        entries.append((round(start, 3), round(end, 3), text))
 
     return entries
 
@@ -161,6 +177,7 @@ def _clamp_to_audio(entries: list[SubtitleCue], max_end_ts: float) -> list[Subti
 
 
 def _merge_monotonic(entries: list[SubtitleCue]) -> list[SubtitleCue]:
+    """Без сдвига start вперёд — обрезаем end предыдущей фразы."""
     if not entries:
         return entries
     out: list[SubtitleCue] = [entries[0]]
@@ -169,7 +186,8 @@ def _merge_monotonic(entries: list[SubtitleCue]) -> list[SubtitleCue]:
         if text == prev_text and abs(start - prev_start) < 0.02:
             continue
         if start < prev_end:
-            start = prev_end
+            prev_end = max(prev_start + 0.04, start)
+            out[-1] = (prev_start, round(prev_end, 3), prev_text)
         if end <= start:
             end = start + 0.04
         out.append((start, end, text))

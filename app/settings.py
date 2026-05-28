@@ -53,8 +53,11 @@ class Settings(BaseSettings):
 
     # Background music (final assemble)
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
-    bgm_default_level: int = Field(25, alias="BGM_DEFAULT_LEVEL")  # 0..100
+    bgm_default_level: int = Field(40, alias="BGM_DEFAULT_LEVEL")  # 0..100
     bgm_path: Path = Field(Path("./assets/bgm/default.mp3"), alias="BGM_PATH")
+
+    # Subtitles — опережение относительно Whisper (сек), компенсирует запаздывание ASR
+    subtitle_lead_seconds: float = Field(0.15, alias="SUBTITLE_LEAD_SECONDS")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

@@ -25,6 +25,7 @@ from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
 from app.services.subtitles import build_subtitle_cues_from_cells
 from app.services.whisper import WordTS, load_words_json
+from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 
@@ -155,6 +156,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         max_words=2,
         max_end_ts=audio_duration,
         direct_whisper_times=per_frame_audio,
+        lead_seconds=settings.subtitle_lead_seconds,
     )
     if not sub_entries:
         raise RuntimeError("не удалось построить субтитры из Excel + Whisper")

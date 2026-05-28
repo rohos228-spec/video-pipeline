@@ -53,6 +53,16 @@ def test_resolve_bgm_mass_level(project: Project) -> None:
     assert cfg.level == 0.5
 
 
+def test_resolve_bgm_ignores_mass_disabled_on_single_project(project: Project, tmp_path: Path) -> None:
+    """Одиночный проект: mass_bgm_enabled=false не должен глушить BGM."""
+    settings.bgm_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.bgm_path.write_bytes(b"default")
+    project.meta = {"mass_bgm_enabled": False}
+    project.batch_id = None
+    cfg = resolve_bgm(project)
+    assert cfg is not None
+
+
 def test_resolve_bgm_falls_back_to_default_asset(project: Project, tmp_path: Path) -> None:
     settings.bgm_path.parent.mkdir(parents=True, exist_ok=True)
     settings.bgm_path.write_bytes(b"default")

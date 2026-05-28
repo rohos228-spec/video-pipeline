@@ -69,9 +69,31 @@ def test_subtitles_per_frame_use_direct_whisper_times() -> None:
         timings,
         max_words=2,
         direct_whisper_times=True,
+        lead_seconds=0.0,
     )
-    assert cues[0] == (0.1, 0.95, "Привет мир")
-    assert cues[1] == (1.05, 1.75, "Новый кадр")
+    assert cues[0] == (0.1, 0.99, "Привет мир")
+    assert cues[1] == (1.05, 1.79, "Новый кадр")
+
+
+def test_subtitles_lead_compensates_whisper_lag() -> None:
+    cells = [(1, "раз два три четыре")]
+    words = [
+        WordTS("раз", 0.20, 0.55, 1.0),
+        WordTS("два", 0.55, 0.95, 1.0),
+        WordTS("три", 0.60, 0.98, 1.0),
+        WordTS("четыре", 0.98, 1.35, 1.0),
+    ]
+    timings = [FrameTiming(1, 0.0, 1.5, 1.5)]
+    cues = build_subtitle_cues_from_cells(
+        cells,
+        words,
+        timings,
+        max_words=2,
+        direct_whisper_times=True,
+        lead_seconds=0.15,
+    )
+    assert cues[0][0] == 0.05  # 0.20 - 0.15
+    assert cues[1][0] < 0.55  # не отталкивается от позднего end первой фразы
 
 
 def test_per_frame_alignment_ignores_words_outside_window() -> None:

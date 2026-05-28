@@ -17,16 +17,14 @@ class BgmConfig:
     level: float  # 0.0..1.0 — громкость BGM относительно озвучки
 
 
-def _meta_bool(meta: dict, *keys: str) -> bool | None:
-    for key in keys:
-        if key not in meta:
-            continue
-        return bool(meta[key])
-    return None
+def _meta_bool(meta: dict, key: str) -> bool | None:
+    if key not in meta:
+        return None
+    return bool(meta[key])
 
 
 def _meta_level(meta: dict) -> int:
-    for key in ("mass_bgm_level", "bgm_level"):
+    for key in ("bgm_level", "mass_bgm_level"):
         if key in meta:
             try:
                 return max(0, min(100, int(meta[key])))
@@ -35,20 +33,31 @@ def _meta_level(meta: dict) -> int:
     return settings.bgm_default_level
 
 
-def resolve_bgm(project: Project) -> BgmConfig | None:
-    """BGM для assemble: project/bgm.mp3 → meta path → assets default."""
+def _bgm_enabled(project: Project) -> bool:
     meta = project.meta or {}
+    explicit = _meta_bool(meta, "bgm_enabled")
+    if explicit is not None:
+        return explicit
+    if project.batch_id is not None:
+        mass = _meta_bool(meta, "mass_bgm_enabled")
+        if mass is not None:
+            return mass
+    return settings.bgm_default_enabled
 
-    enabled = _meta_bool(meta, "mass_bgm_enabled", "bgm_enabled")
-    if enabled is None:
-        enabled = settings.bgm_default_enabled
-    if not enabled:
+
+def resolve_bgm(project: Project) -> BgmConfig | None:
+    """BGM для assemble: project/bgm.mp3 → data/bgm → assets default."""
+    if not _bgm_enabled(project):
+        logger.info("[#{}] BGM: выключен в настройках проекта", project.id)
         return None
 
+    meta = project.meta or {}
     candidates: list[Path] = [
         project.data_dir / "bgm.mp3",
         project.data_dir / "bgm.wav",
         project.data_dir / "bgm.m4a",
+        settings.data_dir / "bgm" / "default.mp3",
+        settings.data_dir / "bgm" / "default.wav",
     ]
     meta_path = meta.get("bgm_path") or meta.get("mass_bgm_path")
     if meta_path:
@@ -56,13 +65,17 @@ def resolve_bgm(project: Project) -> BgmConfig | None:
     candidates.append(settings.bgm_path)
 
     for path in candidates:
-        if path.is_file():
+        try:
+            resolved = path if path.is_absolute() else path.resolve()
+        except OSError:
+            resolved = path
+        if resolved.is_file():
             level = _meta_level(meta) / 100.0
-            logger.info("[#{}] BGM: {} (level {}%)", project.id, path.name, int(level * 100))
-            return BgmConfig(path=path, level=level)
+            logger.info("[#{}] BGM: {} (level {}%)", project.id, resolved, int(level * 100))
+            return BgmConfig(path=resolved, level=level)
 
     logger.warning(
-        "[#{}] BGM включён, но файл не найден — положите bgm.mp3 в {} или {}",
+        "[#{}] BGM включён, но файл не найден. Положите bgm.mp3 в {} или {}",
         project.id,
         project.data_dir,
         settings.bgm_path,

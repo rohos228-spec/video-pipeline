@@ -118,31 +118,24 @@ async def assemble(
         with_audio = tmp_dir / "with_audio.mp4"
         mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
 
-        if bgm is not None and bgm.path.is_file() and max_duration is not None:
-            bgm_gain = max(bgm.level, 0.0) * 0.35
+        if bgm is not None and bgm.path.is_file():
+            bgm_gain = max(bgm.level, 0.0) * 0.55
+            trim = f"atrim=0:{max_duration:.3f}," if max_duration is not None else ""
             filter_complex = (
-                f"[2:a]volume={bgm_gain:.4f},aloop=loop=-1:size=2e+09,"
-                f"atrim=0:{max_duration:.3f}[bgm];"
-                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
+                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
             )
             mux_cmd.extend([
+                "-stream_loop", "-1",
                 "-i", str(bgm.path),
                 "-filter_complex", filter_complex,
                 "-map", "0:v:0", "-map", "[aout]",
             ])
-        elif bgm is not None and bgm.path.is_file():
-            bgm_gain = max(bgm.level, 0.0) * 0.35
-            filter_complex = (
-                f"[2:a]volume={bgm_gain:.4f},aloop=loop=-1:size=2e+09[bgm];"
-                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-            )
-            mux_cmd.extend([
-                "-i", str(bgm.path),
-                "-filter_complex", filter_complex,
-                "-map", "0:v:0", "-map", "[aout]",
-            ])
+            logger.info("assembly: mixing BGM {} (gain {:.2f})", bgm.path.name, bgm_gain)
         else:
             mux_cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+            if bgm is not None:
+                logger.warning("assembly: BGM path missing, voice only: {}", bgm.path)
 
         mux_cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"])
         if max_duration is not None:
