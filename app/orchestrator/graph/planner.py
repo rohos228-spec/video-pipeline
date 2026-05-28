@@ -23,6 +23,16 @@ from app.orchestrator.node_registry import (
 )
 from app.services.disabled_nodes import disabled_node_types
 
+PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed"})
+
+
+def is_passthrough_node_type(node_type: str) -> bool:
+    return (
+        is_hitl_node_type(node_type)
+        or is_config_node_type(node_type)
+        or node_type in PASSTHROUGH_NODE_TYPES
+    )
+
 
 def graph_executor_enabled(project: Project) -> bool:
     meta = project.meta if isinstance(project.meta, dict) else {}
@@ -84,32 +94,77 @@ class WorkflowGraph:
                 stack.extend(self._in.get(cur, []))
                 continue
             typ = self.node_type(cur)
-            if is_hitl_node_type(typ) or is_config_node_type(typ):
+            if is_passthrough_node_type(typ):
                 stack.extend(self._in.get(cur, []))
                 continue
             result.add(cur)
         return result
 
+    def _flow_work_keys(self, skipped: set[str]) -> set[str]:
+        """Рабочие ноды, достижимые от topic/excel_feed по связям канваса."""
+        roots: list[str] = []
+        for nid, n in self._by_id.items():
+            typ = str(n.get("type") or "")
+            if is_config_node_type(typ) or typ in PASSTHROUGH_NODE_TYPES:
+                roots.append(nid)
+        if not roots:
+            for nid in self._by_id:
+                if nid in skipped:
+                    continue
+                typ = self.node_type(nid)
+                if is_work_node_type(typ) and not self._effective_predecessors(nid, skipped):
+                    roots.append(nid)
+
+        reachable: set[str] = set()
+        queue: deque[str] = deque(roots)
+        seen: set[str] = set()
+        while queue:
+            key = queue.popleft()
+            if key in seen:
+                continue
+            seen.add(key)
+            typ = self.node_type(key)
+            if key not in skipped and is_work_node_type(typ):
+                reachable.add(key)
+            queue.extend(self._out.get(key, []))
+        return reachable
+
     def _work_types_done(self, project: Project) -> set[str]:
         """Какие рабочие типы уже завершены по Project.status."""
         status = project.status
         done: set[str] = set()
+        strict = graph_executor_enabled(project)
+        skipped = self.skipped_keys(project)
+
         if status in READY_TO_NODE_TYPE:
-            done.add(READY_TO_NODE_TYPE[status])
-            # все предшественники в линейном порядке тоже done (fallback)
             cur = READY_TO_NODE_TYPE[status]
-            for typ in LINEAR_NODE_TYPES:
-                if typ == cur:
-                    break
-                done.add(typ)
+            done.add(cur)
+            if strict:
+                for key in self.keys_of_type(cur):
+                    for p in self._effective_predecessors(key, skipped):
+                        done.add(self.node_type(p))
+            else:
+                for typ in LINEAR_NODE_TYPES:
+                    if typ == cur:
+                        break
+                    done.add(typ)
         elif status in RUNNING_TO_NODE_TYPE:
             cur = RUNNING_TO_NODE_TYPE[status]
-            for typ in LINEAR_NODE_TYPES:
-                if typ == cur:
-                    break
-                done.add(typ)
+            if strict:
+                for key in self.keys_of_type(cur):
+                    for p in self._effective_predecessors(key, skipped):
+                        done.add(self.node_type(p))
+            else:
+                for typ in LINEAR_NODE_TYPES:
+                    if typ == cur:
+                        break
+                    done.add(typ)
         elif status is ProjectStatus.published:
-            done = set(LINEAR_NODE_TYPES)
+            if strict:
+                for key in self._flow_work_keys(skipped):
+                    done.add(self.node_type(key))
+            else:
+                done = set(LINEAR_NODE_TYPES)
         return done
 
     def _is_ready(self, node_key: str, project: Project, skipped: set[str]) -> bool:
@@ -139,7 +194,7 @@ class WorkflowGraph:
         skipped = self.skipped_keys(project)
         start_keys = self.keys_of_type(finished_type)
         if not start_keys:
-            return self._linear_next_running(project, ready_status)
+            return None
 
         visited: set[str] = set()
         queue: deque[str] = deque()
@@ -156,10 +211,7 @@ class WorkflowGraph:
                 continue
             visited.add(key)
             typ = self.node_type(key)
-            if is_hitl_node_type(typ):
-                queue.extend(self._out.get(key, []))
-                continue
-            if is_config_node_type(typ):
+            if is_passthrough_node_type(typ):
                 queue.extend(self._out.get(key, []))
                 continue
             if not is_work_node_type(typ):
@@ -172,7 +224,7 @@ class WorkflowGraph:
                     return spec.running_status
             queue.extend(self._out.get(key, []))
 
-        return self._linear_next_running(project, ready_status)
+        return None
 
     def skip_disabled_running(
         self,
@@ -209,10 +261,7 @@ class WorkflowGraph:
                 continue
             visited.add(key)
             ntyp = self.node_type(key)
-            if is_hitl_node_type(ntyp):
-                queue.extend(self._out.get(key, []))
-                continue
-            if is_config_node_type(ntyp):
+            if is_passthrough_node_type(ntyp):
                 queue.extend(self._out.get(key, []))
                 continue
             if not is_work_node_type(ntyp):
@@ -228,15 +277,6 @@ class WorkflowGraph:
                     return spec.running_status
             queue.extend(self._out.get(key, []))
 
-        # Fallback linear skip
-        start_idx = 0
-        for i, (st, t) in enumerate(LINEAR_RUNNING_PIPELINE):
-            if st == target:
-                start_idx = i
-                break
-        for st, t in LINEAR_RUNNING_PIPELINE[start_idx:]:
-            if t not in disabled:
-                return st
         return None
 
     def derived_node_states(self, project: Project) -> dict[str, NodeRunStatus]:
@@ -258,10 +298,14 @@ class WorkflowGraph:
 
         done_types = self._work_types_done(project)
         out: dict[str, NodeRunStatus] = {}
+        flow = self._flow_work_keys(skipped) if graph_executor_enabled(project) else None
 
         for nid, n in self._by_id.items():
             typ = str(n.get("type") or "")
             if nid in skipped or typ in disabled_node_types(project):
+                out[nid] = NodeRunStatus.skipped
+                continue
+            if flow is not None and is_work_node_type(typ) and nid not in flow:
                 out[nid] = NodeRunStatus.skipped
                 continue
             if is_hitl_node_type(typ):
@@ -300,7 +344,12 @@ class WorkflowGraph:
             return True
         target_type = spec.node_type
         skipped = self.skipped_keys(project)
-        target_keys = [k for k in self.keys_of_type(target_type) if k not in skipped]
+        flow = self._flow_work_keys(skipped)
+        target_keys = [
+            k
+            for k in self.keys_of_type(target_type)
+            if k not in skipped and k in flow
+        ]
         if not target_keys:
             return False
         done = self._work_types_done(project)
@@ -312,7 +361,9 @@ class WorkflowGraph:
         for key in target_keys:
             preds = self._effective_predecessors(key, skipped)
             if not preds:
-                return target_type == "plan" or project.status is ProjectStatus.new
+                if target_type == "plan":
+                    return True
+                return bool((project.topic or "").strip())
             if all(self.node_type(p) in done for p in preds):
                 return True
         return False
@@ -346,6 +397,24 @@ async def load_graph_for_project(
     if run and run.nodes_snapshot and run.edges_snapshot:
         return WorkflowGraph(run.nodes_snapshot, run.edges_snapshot)
     return WorkflowGraph.default()
+
+
+async def assert_step_allowed_by_graph(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+) -> None:
+    """Блокирует ручной запуск шага, если он не достижим по связям канваса."""
+    if not graph_executor_enabled(project):
+        return
+    graph = await load_graph_for_project(session, project)
+    if graph.is_step_reachable(project, step_code):
+        return
+    label = step_code.replace("_", " ")
+    raise ValueError(
+        f"шаг «{label}» недоступен по графу — соедините ноду на канвасе "
+        "и сохраните граф, либо отключите «Граф-исполнитель»"
+    )
 
 
 def sync_skip_disabled(
