@@ -50,6 +50,43 @@ def transcribe_words(
     return words
 
 
+def transcribe_words_many(
+    audio_paths: list[Path],
+    *,
+    model_name: str = "medium",
+    language: str = "ru",
+    beam_size: int = 5,
+) -> list[list[WordTS]]:
+    """Whisper для нескольких файлов — модель грузится один раз."""
+    if not audio_paths:
+        return []
+    from faster_whisper import WhisperModel
+
+    logger.info("whisper: loading model '{}' for {} clips ...", model_name, len(audio_paths))
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    out: list[list[WordTS]] = []
+    for audio_path in audio_paths:
+        logger.info("whisper: transcribing {}", audio_path)
+        segments, _info = model.transcribe(
+            str(audio_path),
+            language=language,
+            beam_size=beam_size,
+            word_timestamps=True,
+            vad_filter=True,
+        )
+        words: list[WordTS] = []
+        for seg in segments:
+            for w in seg.words or []:
+                words.append(WordTS(
+                    word=w.word.strip(),
+                    start=float(w.start),
+                    end=float(w.end),
+                    prob=float(getattr(w, "probability", 0.0)),
+                ))
+        out.append(words)
+    return out
+
+
 def dump_words_json(words: list[WordTS], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps([asdict(w) for w in words], ensure_ascii=False, indent=2), encoding="utf-8")

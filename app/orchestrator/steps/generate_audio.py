@@ -1,6 +1,9 @@
-"""Шаг 10: озвучка всего сценария через 11Labs web → один mp3.
-Затем faster-whisper делает word-level таймкоды и мы проставляем реальные
-start_ts/end_ts на Frame.
+"""Шаг 10: озвучка plan R49 — вариант B (один mp3 на ячейку / кадр).
+
+Каждая колонка листа «план» (C49, D49, …) → отдельный TTS → frame_NNN.mp3.
+Длительность кадра = ffprobe(фрагмент), без угадывания Whisper.
+Фрагменты склеиваются в voice_full_*.mp3 для финальной сборки.
+Whisper — по каждому фрагменту, таймкоды с offset для субтитров.
 """
 
 from __future__ import annotations
@@ -22,17 +25,17 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.mapper import map_frames, tokenize_lower
+from app.services.frame_audio import synthesize_per_frame_audio, whisper_words_from_clips
 from app.services.media_probe import probe_duration
-from app.services.whisper import dump_words_json, transcribe_words
-from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
+from app.services.whisper import dump_words_json
 from app.settings import settings
+from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_audio:
         return
-    logger.info("[#{}] generate_audio starting", project.id)
+    logger.info("[#{}] generate_audio starting (per-frame TTS, plan R49)", project.id)
 
     frames = (
         await session.execute(
@@ -43,31 +46,54 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError("нет кадров")
 
     cells = read_plan_voiceover_cells(project, [fr.number for fr in frames])
-    script_text = "\n".join(text for _, text in cells if text.strip())
-    if not script_text:
+    if not any(text.strip() for _, text in cells):
         raise RuntimeError(
             "нет закадрового текста на листе «план» (строка 49) — "
-            "заполните ячейки по кадрам в project.xlsx"
+            "заполните ячейки по кадрам в project.xlsx (кадр 1 = col C)"
         )
 
     audio_dir = project.data_dir / "audio"
-    audio_path = audio_dir / f"voice_{uuid.uuid4().hex[:8]}.mp3"
 
     async with browser_session() as bs:
         el = ElevenLabsBot(bs)
-        await el.tts(script_text, audio_path, timeout=600)
+        clips, full_audio_path = await synthesize_per_frame_audio(
+            el,
+            frames=frames,
+            cells=cells,
+            audio_dir=audio_dir,
+        )
+
+    for fr in frames:
+        clip = next(c for c in clips if c.frame_number == fr.number)
+        fr.start_ts = clip.start_ts
+        fr.end_ts = clip.end_ts
+        fr.duration_seconds = clip.duration
+
+    audio_duration = await probe_duration(full_audio_path)
+    expected = clips[-1].end_ts if clips else 0.0
+    if abs(audio_duration - expected) > 0.15:
+        logger.warning(
+            "[#{}] voice_full duration {:.2f}s != sum clips {:.2f}s",
+            project.id,
+            audio_duration,
+            expected,
+        )
 
     session.add(Artifact(
         project_id=project.id,
         kind=ArtifactKind.audio,
         uuid=uuid.uuid4().hex,
-        path=str(audio_path),
+        path=str(full_audio_path),
+        meta={"mode": "per_frame", "clip_count": len(clips)},
     ))
     await session.flush()
 
-    # whisper
-    logger.info("[#{}] whisper transcribe starting", project.id)
-    words = transcribe_words(audio_path, language="ru", model_name=settings.whisper_model)
+    logger.info("[#{}] whisper per-frame fragments ({} clips)", project.id, len(clips))
+    words = whisper_words_from_clips(
+        clips,
+        model_name=settings.whisper_model,
+        language="ru",
+    )
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
     dump_words_json(words, words_path)
     session.add(Artifact(
@@ -77,49 +103,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         path=str(words_path),
     ))
 
-    # реальные таймкоды кадров (текст — только plan R49, одна ячейка = одно видео)
-    audio_duration = await probe_duration(audio_path)
-    script_word_count = sum(len(tokenize_lower(text)) for _, text in cells)
     logger.info(
-        "[#{}] whisper alignment: script_tokens={} whisper_words={} audio={:.2f}s",
+        "[#{}] generate_audio done: {} frames, {:.2f}s total, {} whisper words",
         project.id,
-        script_word_count,
+        len(clips),
+        clips[-1].end_ts if clips else 0.0,
         len(words),
-        audio_duration,
     )
-    if abs(script_word_count - len(words)) > max(3, script_word_count // 10):
-        logger.warning(
-            "[#{}] whisper/script word count mismatch ({} vs {}) — "
-            "timings use fuzzy alignment + proportional fill",
-            project.id,
-            script_word_count,
-            len(words),
-        )
-    timings = map_frames(cells, words, audio_duration=audio_duration)
-    by_num = {t.frame_number: t for t in timings}
-    zero_dur = 0
-    for fr in frames:
-        t = by_num.get(fr.number)
-        if t is None:
-            zero_dur += 1
-            continue
-        fr.start_ts = t.start_ts
-        fr.end_ts = t.end_ts
-        fr.duration_seconds = t.duration
-        if t.duration <= 0:
-            zero_dur += 1
-
-    if zero_dur:
-        logger.warning(
-            "[#{}] generate_audio: {} frames have zero whisper weight — "
-            "timings redistributed across full audio ({:.2f}s)",
-            project.id,
-            zero_dur,
-            audio_duration,
-        )
 
     project.status = ProjectStatus.audio_ready
     await session.flush()
-    logger.info("[#{}] generate_audio done, {} слов, последний кадр заканчивается на {:.2f}с",
-                project.id, len(words),
-                max((fr.end_ts or 0.0) for fr in frames))

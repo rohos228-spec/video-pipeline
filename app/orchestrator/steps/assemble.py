@@ -91,7 +91,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if any(t.duration <= 0 for t in frame_timings):
         raise RuntimeError(
             "у части кадров нет длительности — перезапустите шаг «Аудио» "
-            "(Whisper + таймкоды Excel)"
+            "(per-frame TTS из plan R49)"
         )
 
     clips: list[ClipSpec] = []

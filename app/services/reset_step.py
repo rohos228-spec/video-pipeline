@@ -309,13 +309,19 @@ async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _wipe_audio(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага 10 «Аудио»: audio + whisper_words артефакты."""
-    return await _wipe_artifacts_by_kind(
+    """Сброс шага 10 «Аудио»: audio + whisper_words + frame_NNN.mp3."""
+    from app.services.frame_audio import delete_frame_audio_files
+
+    stats = await _wipe_artifacts_by_kind(
         session,
         project,
         ArtifactKind.audio,
         ArtifactKind.whisper_words,
     )
+    frame_deleted = delete_frame_audio_files(project.data_dir / "audio")
+    if frame_deleted:
+        stats["frame_clips"] = frame_deleted
+    return stats
 
 
 async def _wipe_assemble(session: AsyncSession, project: Project) -> dict[str, Any]:
