@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.web.api import create_app
 
 app = create_app()
-from app.models import Base, Project, ProjectStatus
+from app.models import Base, Project, ProjectStatus, Workflow
 from app.web.deps import get_session
 
 
@@ -32,14 +32,22 @@ async def session_factory(tmp_path):
 
 @pytest.mark.asyncio
 async def test_mass_lanes_uses_excel_topics_from_meta(session_factory, monkeypatch) -> None:
-    async def _no_wf() -> None:
+    async def _noop_init(_child: Project) -> None:
         return None
 
     monkeypatch.setattr(
-        "app.services.mass_factory._get_default_workflow_id",
-        _no_wf,
+        "app.services.mass_factory.init_child_data_dir",
+        _noop_init,
     )
     async with session_factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[{"id": "n_plan", "type": "plan"}],
+                edges=[],
+            )
+        )
         parent = Project(
             slug="parent-excel",
             topic="Шаблон",

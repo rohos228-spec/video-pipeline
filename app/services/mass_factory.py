@@ -9,8 +9,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import NodeRun, Project, ProjectStatus, WorkflowRun, WorkflowRunStatus
-from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
+from app.models import NodeRun, Project, ProjectStatus, Workflow, WorkflowRun, WorkflowRunStatus
 from app.storage import ProjectSheet
 
 COPY_PROJECT_FIELDS = (
@@ -174,29 +173,38 @@ async def ensure_child_workflow_from_parent(
         await session.execute(select(WorkflowRun).where(WorkflowRun.project_id == parent_id))
     ).scalar_one_or_none()
     if parent_run and parent_run.nodes_snapshot and parent_run.edges_snapshot:
-        run = WorkflowRun(
-            workflow_id=parent_run.workflow_id,
-            project_id=child_id,
-            status=WorkflowRunStatus.new,
-            nodes_snapshot=list(parent_run.nodes_snapshot),
-            edges_snapshot=list(parent_run.edges_snapshot),
-        )
-        session.add(run)
-        await session.flush()
-        for node in run.nodes_snapshot:
-            session.add(
-                NodeRun(
-                    workflow_run_id=run.id,
-                    node_key=node["id"],
-                    node_type=node["type"],
-                )
-            )
-        await session.flush()
-        return
+        nodes_snapshot = list(parent_run.nodes_snapshot)
+        edges_snapshot = list(parent_run.edges_snapshot)
+        workflow_id = parent_run.workflow_id
+    else:
+        wf = (
+            await session.execute(select(Workflow).where(Workflow.is_default == True))  # noqa: E712
+        ).scalar_one_or_none()
+        if wf is None:
+            logger.warning("mass_factory: no parent graph and no default workflow for child #{}", child_id)
+            return
+        nodes_snapshot = list(wf.nodes or [])
+        edges_snapshot = list(wf.edges or [])
+        workflow_id = wf.id
 
-    wf_id = await _get_default_workflow_id()
-    if wf_id:
-        await ensure_run_for_project(child_id, wf_id)
+    run = WorkflowRun(
+        workflow_id=workflow_id,
+        project_id=child_id,
+        status=WorkflowRunStatus.new,
+        nodes_snapshot=nodes_snapshot,
+        edges_snapshot=edges_snapshot,
+    )
+    session.add(run)
+    await session.flush()
+    for node in run.nodes_snapshot:
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key=node["id"],
+                node_type=node["type"],
+            )
+        )
+    await session.flush()
 
 
 async def create_mass_child(
