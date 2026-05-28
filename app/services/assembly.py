@@ -27,6 +27,12 @@ from loguru import logger
 
 CANVAS_W, CANVAS_H = 1080, 1920
 FPS = 30
+SUBTITLES_ASS_NAME = "subs.ass"
+
+
+def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
+    """Return -vf value for burning ASS subtitles from cwd=temp dir."""
+    return f"subtitles={filename}"
 
 
 @dataclass
@@ -35,12 +41,13 @@ class ClipSpec:
     duration: float  # требуемая длительность после обрезки
 
 
-async def _run(cmd: list[str]) -> None:
+async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     logger.debug("$ {}", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd is not None else None,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -119,34 +126,19 @@ async def assemble(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
             import shutil
-            tmp_ass = tmp_dir / "subs.ass"
+            tmp_ass = tmp_dir / SUBTITLES_ASS_NAME
             shutil.copy2(subtitles_ass, tmp_ass)
-            # ffmpeg subtitles/ass filters have broken path parsing on
-            # Windows (colons, spaces). Workaround: use the short 8.3
-            # temp path which has no special characters.
-            import subprocess
-            try:
-                r = subprocess.run(
-                    ["cmd", "/c", "echo", str(tmp_ass)],
-                    capture_output=True, text=True, timeout=5,
-                )
-                short = r.stdout.strip() or str(tmp_ass)
-            except Exception:  # noqa: BLE001
-                short = str(tmp_ass)
-            # For the -vf subtitles filter, use forward slashes and
-            # escape the colon after drive letter.
-            fwd = short.replace("\\", "/")
-            # Escape colon: C:/... -> C\:/...
-            if len(fwd) >= 2 and fwd[1] == ":":
-                fwd = fwd[0] + "\\:" + fwd[2:]
+            # ffmpeg's subtitles filter breaks on Windows absolute paths
+            # (drive colons/slashes are parsed as filter options). Run from
+            # the temp dir and pass a bare filename instead.
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
-                "-vf", f"subtitles={fwd}",
+                "-vf", subtitles_vf_arg(),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
                 str(out_path),
-            ])
+            ], cwd=tmp_dir)
         else:
             # просто переносим
             await _run(["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", str(out_path)])
