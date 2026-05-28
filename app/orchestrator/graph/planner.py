@@ -407,6 +407,14 @@ async def assert_step_allowed_by_graph(
     """Блокирует ручной запуск шага, если он не достижим по связям канваса."""
     if not graph_executor_enabled(project):
         return
+    from app.services.mass_factory import is_mass_factory_child
+
+    if (
+        is_mass_factory_child(project)
+        and step_code == "plan"
+        and project.status is ProjectStatus.new
+    ):
+        return
     graph = await load_graph_for_project(session, project)
     if graph.is_step_reachable(project, step_code):
         return

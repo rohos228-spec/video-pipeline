@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project, ProjectStatus
+from app.models import NodeRun, Project, ProjectStatus, WorkflowRun, WorkflowRunStatus
 from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 
@@ -157,6 +158,47 @@ async def init_child_data_dir(project: Project) -> None:
         logger.warning("[#{}] mass_factory: project.xlsx init: {}", project.id, exc)
 
 
+async def ensure_child_workflow_from_parent(
+    session: AsyncSession,
+    parent_id: int,
+    child_id: int,
+) -> None:
+    """Копирует сохранённый граф родителя в дочерний проект очереди."""
+    existing = (
+        await session.execute(select(WorkflowRun).where(WorkflowRun.project_id == child_id))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return
+
+    parent_run = (
+        await session.execute(select(WorkflowRun).where(WorkflowRun.project_id == parent_id))
+    ).scalar_one_or_none()
+    if parent_run and parent_run.nodes_snapshot and parent_run.edges_snapshot:
+        run = WorkflowRun(
+            workflow_id=parent_run.workflow_id,
+            project_id=child_id,
+            status=WorkflowRunStatus.new,
+            nodes_snapshot=list(parent_run.nodes_snapshot),
+            edges_snapshot=list(parent_run.edges_snapshot),
+        )
+        session.add(run)
+        await session.flush()
+        for node in run.nodes_snapshot:
+            session.add(
+                NodeRun(
+                    workflow_run_id=run.id,
+                    node_key=node["id"],
+                    node_type=node["type"],
+                )
+            )
+        await session.flush()
+        return
+
+    wf_id = await _get_default_workflow_id()
+    if wf_id:
+        await ensure_run_for_project(child_id, wf_id)
+
+
 async def create_mass_child(
     session: AsyncSession,
     template: Project,
@@ -182,9 +224,7 @@ async def create_mass_child(
     session.add(child)
     await session.flush()
     await init_child_data_dir(child)
-    wf_id = await _get_default_workflow_id()
-    if wf_id:
-        await ensure_run_for_project(child.id, wf_id)
+    await ensure_child_workflow_from_parent(session, template.id, child.id)
     return child
 
 
