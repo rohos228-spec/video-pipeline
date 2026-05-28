@@ -34,7 +34,6 @@ def build_subtitle_cues_from_cells(
     if not frame_timings:
         return []
 
-    by_number = {t.frame_number: t for t in frame_timings}
     cell_by_number = dict(cells)
     all_cues: list[SubtitleCue] = []
 
