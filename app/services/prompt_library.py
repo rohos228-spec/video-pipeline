@@ -212,6 +212,7 @@ def get_project_prompt(project, step_code: str) -> str:
     и для шага есть template в `prompts/steps/` — собираем из блоков.
     """
     overrides = getattr(project, "prompt_overrides", None) or {}
+    actual_topic = str(getattr(project, "topic", None) or "")
     from app.services.prompt_composer import (
         STEP_CODE_TO_COMPOSE,
         compose_step,
@@ -235,17 +236,15 @@ def get_project_prompt(project, step_code: str) -> str:
                 composed = compose_step(step_id, blocks, vars_)
                 from app.services.gpt_text_builder import inject_topic_placeholders
 
-                actual_topic = topic if topic is not None else (getattr(project, "topic", None) or "")
-                return inject_topic_placeholders(composed, str(actual_topic))
+                return inject_topic_placeholders(composed, actual_topic)
             except FileNotFoundError:
                 pass
 
     name = resolve_project_prompt_name(overrides, step_code)
     text = read_prompt(step_code, name)
-    actual_topic = topic if topic is not None else (getattr(project, "topic", None) or "")
     from app.services.gpt_text_builder import inject_topic_placeholders
 
-    return inject_topic_placeholders(text, str(actual_topic))
+    return inject_topic_placeholders(text, actual_topic)
 
 
 def make_template_for_new(step_code: str, name: str) -> str:

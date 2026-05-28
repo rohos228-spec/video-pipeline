@@ -33,8 +33,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-git checkout -B %BR% origin/%BR%
 git reset --hard origin/%BR%
+git checkout -B %BR% origin/%BR% 2>nul
 echo HEAD: 
 git rev-parse --short HEAD
 
