@@ -51,13 +51,13 @@ class Settings(BaseSettings):
     # Whisper
     whisper_model: str = Field("medium", alias="WHISPER_MODEL")
 
-    # Background music (final assemble)
-    bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
-    bgm_default_level: int = Field(50, alias="BGM_DEFAULT_LEVEL")  # 0..100
-    bgm_path: Path = Field(Path("./assets/bgm/default.mp3"), alias="BGM_PATH")
+    # Background music — только явный файл (project/bgm.mp3), без шума по умолчанию
+    bgm_default_enabled: bool = Field(False, alias="BGM_DEFAULT_ENABLED")
+    bgm_default_level: int = Field(30, alias="BGM_DEFAULT_LEVEL")  # 0..100
+    bgm_path: Path | None = Field(None, alias="BGM_PATH")
 
-    # Subtitles — опережение относительно Whisper (сек), компенсирует запаздывание ASR
-    subtitle_lead_seconds: float = Field(0.15, alias="SUBTITLE_LEAD_SECONDS")
+    # Subtitles — лёгкое опережение Whisper (сек)
+    subtitle_lead_seconds: float = Field(0.08, alias="SUBTITLE_LEAD_SECONDS")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
@@ -72,7 +72,8 @@ class Settings(BaseSettings):
     def _resolve_paths_from_repo_root(self) -> "Settings":
         object.__setattr__(self, "sqlite_path", resolve_project_path(self.sqlite_path))
         object.__setattr__(self, "data_dir", resolve_project_path(self.data_dir))
-        object.__setattr__(self, "bgm_path", resolve_project_path(self.bgm_path))
+        if self.bgm_path is not None:
+            object.__setattr__(self, "bgm_path", resolve_project_path(self.bgm_path))
         return self
 
     @property

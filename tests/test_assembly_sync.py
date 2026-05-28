@@ -71,8 +71,8 @@ def test_subtitles_per_frame_use_direct_whisper_times() -> None:
         direct_whisper_times=True,
         lead_seconds=0.0,
     )
-    assert cues[0] == (0.1, 0.99, "Привет мир")
-    assert cues[1] == (1.05, 1.79, "Новый кадр")
+    assert cues[0] == (0.1, 0.95, "Привет мир")
+    assert cues[1] == (1.05, 1.75, "Новый кадр")
 
 
 def test_subtitles_lead_compensates_whisper_lag() -> None:
@@ -90,10 +90,10 @@ def test_subtitles_lead_compensates_whisper_lag() -> None:
         timings,
         max_words=2,
         direct_whisper_times=True,
-        lead_seconds=0.15,
+        lead_seconds=0.08,
     )
-    assert cues[0][0] == 0.05  # 0.20 - 0.15
-    assert cues[1][0] < 0.55  # не отталкивается от позднего end первой фразы
+    assert cues[0][0] == 0.12  # 0.20 - 0.08
+    assert cues[1][0] == 0.52  # 0.60 - 0.08, не сдвигается к 0.95
 
 
 def test_per_frame_alignment_ignores_words_outside_window() -> None:

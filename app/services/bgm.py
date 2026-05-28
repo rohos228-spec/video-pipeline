@@ -14,7 +14,7 @@ from app.settings import settings
 @dataclass(frozen=True)
 class BgmConfig:
     path: Path
-    level: float  # 0.0..1.0 — громкость BGM относительно озвучки
+    level: float  # 0.0..1.0
 
 
 def _meta_bool(meta: dict, key: str) -> bool | None:
@@ -46,9 +46,9 @@ def _bgm_enabled(project: Project) -> bool:
 
 
 def resolve_bgm(project: Project) -> BgmConfig | None:
-    """BGM для assemble: project/bgm.mp3 → data/bgm → assets default."""
+    """BGM только из явного файла проекта — без ambient-заглушки."""
     if not _bgm_enabled(project):
-        logger.info("[#{}] BGM: выключен в настройках проекта", project.id)
+        logger.info("[#{}] BGM: выключен", project.id)
         return None
 
     meta = project.meta or {}
@@ -56,13 +56,12 @@ def resolve_bgm(project: Project) -> BgmConfig | None:
         project.data_dir / "bgm.mp3",
         project.data_dir / "bgm.wav",
         project.data_dir / "bgm.m4a",
-        settings.data_dir / "bgm" / "default.mp3",
-        settings.data_dir / "bgm" / "default.wav",
     ]
     meta_path = meta.get("bgm_path") or meta.get("mass_bgm_path")
     if meta_path:
         candidates.insert(0, Path(str(meta_path)))
-    candidates.append(settings.bgm_path)
+    if settings.bgm_path is not None and settings.bgm_path.is_file():
+        candidates.append(settings.bgm_path)
 
     for path in candidates:
         try:
@@ -71,13 +70,12 @@ def resolve_bgm(project: Project) -> BgmConfig | None:
             resolved = path
         if resolved.is_file():
             level = _meta_level(meta) / 100.0
-            logger.info("[#{}] BGM: {} (level {}%)", project.id, resolved, int(level * 100))
+            logger.info("[#{}] BGM: {} (level {}%)", project.id, resolved.name, int(level * 100))
             return BgmConfig(path=resolved, level=level)
 
-    logger.warning(
-        "[#{}] BGM включён, но файл не найден. Положите bgm.mp3 в {} или {}",
+    logger.info(
+        "[#{}] BGM: нет bgm.mp3 в {} — положите свой трек или BGM_PATH в .env",
         project.id,
         project.data_dir,
-        settings.bgm_path,
     )
     return None

@@ -70,6 +70,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     audio_path = Path(audio.path)
     audio_dir = project.data_dir / "audio"
     frame_numbers = [fr.number for fr in frames]
+    per_frame_tts = (audio.meta or {}).get("mode") == "per_frame"
 
     whisper_art = (
         await session.execute(
@@ -103,6 +104,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             frame_numbers,
             cells=cells,
             words=words,
+            per_frame_tts=per_frame_tts,
         )
     except FileNotFoundError as exc:
         raise RuntimeError(str(exc)) from exc
