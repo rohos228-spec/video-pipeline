@@ -121,14 +121,28 @@ async def assemble(
             import shutil
             tmp_ass = tmp_dir / "subs.ass"
             shutil.copy2(subtitles_ass, tmp_ass)
-            # Use subtitles filter with filename= key to avoid ffmpeg
-            # parsing the path as positional original_size argument.
-            # Forward slashes + escaped colons for Windows drive letters.
-            esc = tmp_ass.resolve().as_posix().replace(":", "\\\\:")
+            # ffmpeg subtitles/ass filters have broken path parsing on
+            # Windows (colons, spaces). Workaround: use the short 8.3
+            # temp path which has no special characters.
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ["cmd", "/c", "echo", str(tmp_ass)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                short = r.stdout.strip() or str(tmp_ass)
+            except Exception:  # noqa: BLE001
+                short = str(tmp_ass)
+            # For the -vf subtitles filter, use forward slashes and
+            # escape the colon after drive letter.
+            fwd = short.replace("\\", "/")
+            # Escape colon: C:/... -> C\:/...
+            if len(fwd) >= 2 and fwd[1] == ":":
+                fwd = fwd[0] + "\\:" + fwd[2:]
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
-                "-vf", f"subtitles=filename='{esc}'",
+                "-vf", f"subtitles={fwd}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
                 str(out_path),
