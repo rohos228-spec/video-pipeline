@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     # Paths
     data_dir: Path = Field(Path("./data"), alias="DATA_DIR")
 
-    # Whisper
-    whisper_model: str = Field("medium", alias="WHISPER_MODEL")
+    # Whisper — large-v3 точнее по словам; первый прогон дольше
+    whisper_model: str = Field("large-v3", alias="WHISPER_MODEL")
 
     # Background music — auto if bgm.mp3 / music.mp3 found in project folder
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
@@ -58,8 +58,9 @@ class Settings(BaseSettings):
 
     # Subtitles — одно слово; опережение озвучки (Whisper системно отстаёт ~0.2–0.3 с)
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
-    subtitle_lead_seconds: float = Field(0.30, alias="SUBTITLE_LEAD_SECONDS")
+    subtitle_lead_seconds: float = Field(0.18, alias="SUBTITLE_LEAD_SECONDS")
     subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
+    subtitle_rewhisper_on_assemble: bool = Field(True, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

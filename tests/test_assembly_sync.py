@@ -75,7 +75,35 @@ def test_one_word_lead_shows_earlier() -> None:
     assert cues[0][0] <= 0.05
     assert cues[1][0] < 0.45  # без lead было бы ~0.5
     assert cues[1][0] > cues[0][0]
-    assert cues[0][1] - cues[0][0] >= 0.28
+    assert cues[0][1] - cues[0][0] >= 0.10
+
+
+def test_subtitles_do_not_overlap() -> None:
+    cells = [(1, "раз два три")]
+    words = [
+        WordTS("раз", 0.0, 0.35, 1.0),
+        WordTS("два", 0.55, 0.85, 1.0),
+        WordTS("tri", 0.95, 1.25, 1.0),
+    ]
+    words[2] = WordTS("три", 0.95, 1.25, 1.0)
+    timings = [FrameTiming(1, 0.0, 2.0, 2.0)]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
+    for prev, cur in zip(cues, cues[1:]):
+        assert cur[0] >= prev[1] - 0.01, f"overlap {prev[2]!r} → {cur[2]!r}"
+
+
+def test_pause_between_words_is_silent() -> None:
+    """Между «раз» и «два» пауза 0.2 с — на экране ничего не показываем."""
+    cells = [(1, "раз два")]
+    words = [
+        WordTS("раз", 0.0, 0.40, 1.0),
+        WordTS("два", 0.60, 0.90, 1.0),
+    ]
+    timings = [FrameTiming(1, 0.0, 1.0, 1.0)]
+    cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
+    assert len(cues) == 2
+    gap = cues[1][0] - cues[0][1]
+    assert gap >= 0.15
 
 
 def test_no_long_gap_when_whisper_cluster_is_late_in_frame() -> None:
@@ -138,7 +166,7 @@ def test_duplicate_whisper_indices_not_machine_gun() -> None:
     cues = build_subtitle_cues_from_cells(cells, words, timings, lead_seconds=0.0)
     assert len(cues) == 3
     for start, end, _ in cues:
-        assert end - start >= 0.27
+        assert end - start >= 0.08
 
 
 def test_per_frame_alignment_ignores_words_outside_window() -> None:

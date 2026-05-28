@@ -23,19 +23,20 @@ def transcribe_words(
     model_name: str = "medium",
     language: str = "ru",
     beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> list[WordTS]:
-    """Возвращает плоский список слов в порядке появления, с таймкодами (сек)."""
+    """Word-level таймкоды; vad_filter=False — сохраняет паузы между словами."""
     from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
 
     logger.info("whisper: loading model '{}' ...", model_name)
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    logger.info("whisper: transcribing {}", audio_path)
+    logger.info("whisper: transcribing {} (vad_filter={})", audio_path, vad_filter)
     segments, _info = model.transcribe(
         str(audio_path),
         language=language,
         beam_size=beam_size,
         word_timestamps=True,
-        vad_filter=True,
+        vad_filter=vad_filter,
     )
     words: list[WordTS] = []
     for seg in segments:
@@ -56,6 +57,7 @@ def transcribe_words_many(
     model_name: str = "medium",
     language: str = "ru",
     beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> list[list[WordTS]]:
     """Whisper для нескольких файлов — модель грузится один раз."""
     if not audio_paths:
@@ -72,7 +74,7 @@ def transcribe_words_many(
             language=language,
             beam_size=beam_size,
             word_timestamps=True,
-            vad_filter=True,
+            vad_filter=vad_filter,
         )
         words: list[WordTS] = []
         for seg in segments:

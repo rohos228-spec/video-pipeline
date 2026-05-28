@@ -140,12 +140,36 @@ def align_cell_to_local_words(
     display_words: list[str],
     local_words: list[WordTS],
 ) -> list[int]:
-    """Индексы local_words для каждого слова текста ячейки (только внутри кадра)."""
+    """Индексы local_words для каждого слова ячейки (порядок сохраняется)."""
     if not display_words:
         return []
-    lower = [t.lower() for t in display_words]
     if not local_words:
         return []
+
+    lower = [t.lower() for t in display_words]
+    n, m = len(lower), len(local_words)
+
+    # Один к одному по порядку — типичный случай TTS + Whisper
+    if n == m:
+        return list(range(m))
+
+    # Жадное сопоставление по тексту вперёд по потоку Whisper
+    indices: list[int] = []
+    j = 0
+    for token in lower:
+        matched = None
+        for k in range(j, min(j + 4, m)):
+            if whisper_token(local_words[k]) == token:
+                matched = k
+                break
+        if matched is None:
+            matched = min(j, m - 1)
+        indices.append(matched)
+        j = min(matched + 1, m)
+
+    if len(set(indices)) >= max(1, (n + 1) // 2):
+        return indices
+
     return align_script_tokens(lower, local_words)
 
 

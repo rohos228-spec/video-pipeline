@@ -24,7 +24,7 @@ from app.services.frame_audio import build_assembly_timeline
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
 from app.services.subtitles import build_subtitle_cues_from_cells
-from app.services.whisper import WordTS, load_words_json
+from app.services.whisper import WordTS, load_words_json, transcribe_words
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -90,6 +90,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     words = load_words_json(Path(whisper_art.path))
     if not words:
         raise RuntimeError("Whisper не вернул слова для субтитров")
+
+    if settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
+        logger.info("[#{}] assemble: re-whisper voice_full для субтитров (без TTS)", project.id)
+        words = transcribe_words(
+            audio_path,
+            model_name=settings.whisper_model,
+            language="ru",
+        )
 
     cells = read_plan_voiceover_cells(project, frame_numbers)
     if not any(text.strip() for _, text in cells):
