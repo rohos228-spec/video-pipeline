@@ -25,8 +25,22 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.services.bgm import BgmConfig
+
 CANVAS_W, CANVAS_H = 1080, 1920
 FPS = 30
+SUBTITLES_ASS_NAME = "subs.ass"
+# фиксированная позиция субтитров (центр снизу) — одно слово, без прыжков по высоте
+SUBTITLE_POS_X = CANVAS_W // 2
+_SUBTITLE_BASE_Y = 1780
+SUBTITLE_Y_RAISE = 0.15  # на 15% выше от базовой позиции (доля высоты кадра)
+SUBTITLE_POS_Y = int(_SUBTITLE_BASE_Y - CANVAS_H * SUBTITLE_Y_RAISE)
+SUBTITLE_ASS_PREFIX = rf"{{\an2\pos({SUBTITLE_POS_X},{SUBTITLE_POS_Y})}}"
+
+
+def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
+    """Return -vf value for burning ASS subtitles from cwd=temp dir."""
+    return f"subtitles={filename}"
 
 
 @dataclass
@@ -35,12 +49,13 @@ class ClipSpec:
     duration: float  # требуемая длительность после обрезки
 
 
-async def _run(cmd: list[str]) -> None:
+async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
     logger.debug("$ {}", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd is not None else None,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -73,6 +88,8 @@ async def assemble(
     out_path: Path,
     *,
     subtitles_ass: Path | None = None,
+    max_duration: float | None = None,
+    bgm: BgmConfig | None = None,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
@@ -103,53 +120,62 @@ async def assemble(
             str(concat_mp4),
         ])
 
-        # наложим аудио
+        # наложим озвучку (+ опционально BGM под голос)
         with_audio = tmp_dir / "with_audio.mp4"
-        await _run([
-            "ffmpeg", "-y",
-            "-i", str(concat_mp4),
-            "-i", str(audio_path),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            str(with_audio),
-        ])
+        mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
+
+        if bgm is not None and bgm.path.is_file():
+            bgm_gain = max(bgm.level, 0.0) * 0.50
+            trim = f"atrim=0:{max_duration:.3f}," if max_duration is not None else ""
+            filter_complex = (
+                f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
+                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
+            )
+            mux_cmd.extend([
+                "-stream_loop", "-1",
+                "-i", str(bgm.path),
+                "-filter_complex", filter_complex,
+                "-map", "0:v:0", "-map", "[aout]",
+            ])
+            logger.info("assembly: mixing BGM {} (gain {:.2f})", bgm.path.name, bgm_gain)
+        else:
+            mux_cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+            if bgm is not None:
+                logger.warning("assembly: BGM path missing, voice only: {}", bgm.path)
+
+        mux_cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"])
+        if max_duration is not None:
+            mux_cmd.extend(["-t", f"{max_duration:.3f}"])
+        mux_cmd.append(str(with_audio))
+        await _run(mux_cmd)
 
         # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
             import shutil
-            tmp_ass = tmp_dir / "subs.ass"
+            tmp_ass = tmp_dir / SUBTITLES_ASS_NAME
             shutil.copy2(subtitles_ass, tmp_ass)
-            # ffmpeg subtitles/ass filters have broken path parsing on
-            # Windows (colons, spaces). Workaround: use the short 8.3
-            # temp path which has no special characters.
-            import subprocess
-            try:
-                r = subprocess.run(
-                    ["cmd", "/c", "echo", str(tmp_ass)],
-                    capture_output=True, text=True, timeout=5,
-                )
-                short = r.stdout.strip() or str(tmp_ass)
-            except Exception:  # noqa: BLE001
-                short = str(tmp_ass)
-            # For the -vf subtitles filter, use forward slashes and
-            # escape the colon after drive letter.
-            fwd = short.replace("\\", "/")
-            # Escape colon: C:/... -> C\:/...
-            if len(fwd) >= 2 and fwd[1] == ":":
-                fwd = fwd[0] + "\\:" + fwd[2:]
-            await _run([
+            # ffmpeg's subtitles filter breaks on Windows absolute paths
+            # (drive colons/slashes are parsed as filter options). Run from
+            # the temp dir and pass a bare filename instead.
+            burn_cmd = [
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
-                "-vf", f"subtitles={fwd}",
+                "-vf", subtitles_vf_arg(),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
-                str(out_path),
-            ])
+                "-shortest",
+            ]
+            if max_duration is not None:
+                burn_cmd.extend(["-t", f"{max_duration:.3f}"])
+            burn_cmd.append(str(out_path))
+            await _run(burn_cmd, cwd=tmp_dir)
         else:
-            # просто переносим
-            await _run(["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", str(out_path)])
+            copy_cmd = ["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", "-shortest"]
+            if max_duration is not None:
+                copy_cmd.extend(["-t", f"{max_duration:.3f}"])
+            copy_cmd.append(str(out_path))
+            await _run(copy_cmd)
 
     logger.info("assembly done → {}", out_path)
     return out_path
@@ -178,7 +204,10 @@ def make_simple_ass(
     )
     body_lines: list[str] = []
     for s, e, text in frames:
-        body_lines.append(f"Dialogue: 0,{_fmt_ts(s)},{_fmt_ts(e)},Default,,0,0,0,,{_escape_ass(text)}")
+        line = f"{SUBTITLE_ASS_PREFIX}{_escape_ass(text)}"
+        body_lines.append(
+            f"Dialogue: 0,{_fmt_ts(s)},{_fmt_ts(e)},Default,,0,0,0,,{line}"
+        )
     path.write_text(header + "\n".join(body_lines) + "\n", encoding="utf-8")
     return path
 

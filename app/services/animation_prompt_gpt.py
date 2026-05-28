@@ -102,14 +102,11 @@ def build_initial_message(
 
 
 def voiceover_for_frame(project: Project, frame: Frame) -> str:
-    """Закадровый текст: БД → лист «план» R49 (v8)."""
-    vo = (frame.voiceover_text or "").strip()
-    if vo:
-        return vo
+    """Закадровый текст: только лист «план» R49 (одна ячейка = один кадр)."""
     from_plan = read_plan_voiceover(project, frame.number)
     if from_plan:
         return from_plan.strip()
-    return ""
+    return (frame.voiceover_text or "").strip()
 
 
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:

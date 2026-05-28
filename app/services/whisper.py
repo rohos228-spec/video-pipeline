@@ -17,25 +17,41 @@ class WordTS:
     prob: float = 0.0
 
 
+def whisper_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_WHISPER_INSTALL_HINT = (
+    'pip install -e ".[whisper]"   # или: pip install "faster-whisper>=1.0"'
+)
+
+
 def transcribe_words(
     audio_path: Path,
     *,
     model_name: str = "medium",
     language: str = "ru",
     beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> list[WordTS]:
-    """Возвращает плоский список слов в порядке появления, с таймкодами (сек)."""
+    """Word-level таймкоды; vad_filter=False — сохраняет паузы между словами."""
+    if not whisper_available():
+        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
     from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
 
     logger.info("whisper: loading model '{}' ...", model_name)
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    logger.info("whisper: transcribing {}", audio_path)
+    logger.info("whisper: transcribing {} (vad_filter={})", audio_path, vad_filter)
     segments, _info = model.transcribe(
         str(audio_path),
         language=language,
         beam_size=beam_size,
         word_timestamps=True,
-        vad_filter=True,
+        vad_filter=vad_filter,
     )
     words: list[WordTS] = []
     for seg in segments:
@@ -50,11 +66,67 @@ def transcribe_words(
     return words
 
 
-def dump_words_json(words: list[WordTS], path: Path) -> None:
+def transcribe_words_many(
+    audio_paths: list[Path],
+    *,
+    model_name: str = "medium",
+    language: str = "ru",
+    beam_size: int = 5,
+    vad_filter: bool = False,
+) -> list[list[WordTS]]:
+    """Whisper для нескольких файлов — модель грузится один раз."""
+    if not audio_paths:
+        return []
+    if not whisper_available():
+        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
+    from faster_whisper import WhisperModel
+
+    logger.info("whisper: loading model '{}' for {} clips ...", model_name, len(audio_paths))
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    out: list[list[WordTS]] = []
+    for audio_path in audio_paths:
+        logger.info("whisper: transcribing {}", audio_path)
+        segments, _info = model.transcribe(
+            str(audio_path),
+            language=language,
+            beam_size=beam_size,
+            word_timestamps=True,
+            vad_filter=vad_filter,
+        )
+        words: list[WordTS] = []
+        for seg in segments:
+            for w in seg.words or []:
+                words.append(WordTS(
+                    word=w.word.strip(),
+                    start=float(w.start),
+                    end=float(w.end),
+                    prob=float(getattr(w, "probability", 0.0)),
+                ))
+        out.append(words)
+    return out
+
+
+def dump_words_json(
+    words: list[WordTS],
+    path: Path,
+    *,
+    frames: list[dict] | None = None,
+) -> None:
+    """Сохранить word-level таймкоды; frames — границы ячеек R49 (per-frame TTS)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([asdict(w) for w in words], ensure_ascii=False, indent=2), encoding="utf-8")
+    if frames is None:
+        payload: list | dict = [asdict(w) for w in words]
+    else:
+        payload = {
+            "mode": "per_frame",
+            "words": [asdict(w) for w in words],
+            "frames": frames,
+        }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_words_json(path: Path) -> list[WordTS]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    return [WordTS(**row) for row in data]
+    if isinstance(data, list):
+        return [WordTS(**row) for row in data]
+    return [WordTS(**row) for row in data["words"]]

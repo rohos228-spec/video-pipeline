@@ -38,28 +38,40 @@ def plan_frame_column(frame_number: int) -> int:
 
 def read_plan_voiceover(project: Project, frame_number: int) -> str | None:
     """Закадровый текст кадра — строка 49 листа «план» (v8)."""
+    cells = read_plan_voiceover_cells(project, [frame_number])
+    text = cells[0][1] if cells else ""
+    return text or None
+
+
+def read_plan_voiceover_cells(
+    project: Project,
+    frame_numbers: list[int],
+) -> list[tuple[int, str]]:
+    """Текст каждого кадра: строка 49 листа «план», одна колонка = одно видео."""
+    if not frame_numbers:
+        return []
     path = project.data_dir / "project.xlsx"
     if not path.exists():
-        return None
-    col = plan_frame_column(frame_number)
+        return [(n, "") for n in frame_numbers]
+
+    out: dict[int, str] = dict.fromkeys(frame_numbers, "")
     try:
         with _file_lock(path):
             wb = load_workbook(path, read_only=True, data_only=True)
             ws = _resolve_plan_sheet(wb)
-            if ws is None:
-                wb.close()
-                return None
-            text = _cell_text(ws, ROW_VOICEOVER_V8, col)
+            if ws is not None:
+                for frame_number in frame_numbers:
+                    col = plan_frame_column(frame_number)
+                    text = _cell_text(ws, ROW_VOICEOVER_V8, col)
+                    out[frame_number] = (text or "").strip()
             wb.close()
-            return text
     except Exception as e:  # noqa: BLE001
         logger.warning(
-            "[#{}] read_plan_voiceover frame {} failed: {}",
+            "[#{}] read_plan_voiceover_cells failed: {}",
             project.id,
-            frame_number,
             e,
         )
-        return None
+    return [(n, out[n]) for n in frame_numbers]
 
 
 def write_plan_animation_prompt(
