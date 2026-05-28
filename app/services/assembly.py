@@ -118,14 +118,18 @@ async def assemble(
         # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
-            # ffmpeg filter-граф понимает только forward-slash пути (C:/...),
-            # иначе на Windows он считает ':' разделителем опций фильтра и
-            # теряет файл.
-            esc = subtitles_ass.resolve().as_posix().replace("'", r"\'")
+            import shutil
+            # Copy ASS to temp dir with simple name — ffmpeg ass filter
+            # chokes on paths with spaces, colons, or non-ASCII on Windows.
+            tmp_ass = tmp_dir / "subs.ass"
+            shutil.copy2(subtitles_ass, tmp_ass)
+            esc = tmp_ass.resolve().as_posix()
+            # Escape colons and backslashes for ffmpeg filter graph
+            esc = esc.replace("\\", "/").replace(":", "\\:")
             await _run([
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
-                "-vf", f"ass='{esc}'",
+                "-vf", f"ass={esc}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
                 str(out_path),
