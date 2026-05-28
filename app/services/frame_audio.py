@@ -11,6 +11,7 @@ from loguru import logger
 
 from app.bots.elevenlabs import ElevenLabsBot
 from app.models import Frame
+from app.services.mapper import map_frames
 from app.services.media_probe import probe_duration
 from app.services.whisper import WordTS, transcribe_words_many
 
@@ -35,6 +36,10 @@ def list_frame_audio_paths(audio_dir: Path) -> list[Path]:
     if not audio_dir.is_dir():
         return []
     return sorted(audio_dir.glob(f"{FRAME_AUDIO_PREFIX}*.mp3"))
+
+
+def has_all_frame_audio(audio_dir: Path, frame_numbers: list[int]) -> bool:
+    return all(frame_audio_path(audio_dir, n).is_file() for n in frame_numbers)
 
 
 def delete_frame_audio_files(audio_dir: Path) -> int:
@@ -142,24 +147,67 @@ def _rescale_clips_to_master(clips: list[FrameAudioClip], master: float) -> list
     return out
 
 
+def frame_clips_from_whisper(
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+    voice_full_path: Path,
+) -> list[FrameAudioClip]:
+    """Границы кадров из Whisper + voice_full, когда нет frame_NNN.mp3."""
+    text_by_frame = dict(cells)
+    timings = map_frames(cells, words, audio_duration=master)
+    return [
+        FrameAudioClip(
+            frame_number=t.frame_number,
+            path=voice_full_path,
+            text=text_by_frame.get(t.frame_number, ""),
+            start_ts=t.start_ts,
+            end_ts=t.end_ts,
+            duration=t.duration,
+        )
+        for t in timings
+    ]
+
+
 async def build_assembly_timeline(
     audio_dir: Path,
     voice_full_path: Path,
     frame_numbers: list[int],
+    *,
+    cells: list[tuple[int, str]] | None = None,
+    words: list[WordTS] | None = None,
 ) -> tuple[list[FrameAudioClip], float, float]:
-    """Озвучка — единственное мерило: voice_full задаёт конец ролика,
-    frame_NNN.mp3 — границы кадров (масштабируются под voice_full при расхождении).
+    """Озвучка — единственное мерило: voice_full задаёт конец ролика.
+
+    Если есть frame_NNN.mp3 — границы кадров из ffprobe(фрагмент).
+    Иначе — из Whisper по cells + voice_full (legacy audio без per-frame TTS).
 
     Returns (clips, master_duration, time_scale).
     """
     master = await probe_duration(voice_full_path)
-    clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
-    raw_sum = sum(c.duration for c in clips)
-    if raw_sum <= 0:
-        raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
-    scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
-    clips = _rescale_clips_to_master(clips, master)
-    return clips, master, scale
+
+    if has_all_frame_audio(audio_dir, frame_numbers):
+        clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
+        raw_sum = sum(c.duration for c in clips)
+        if raw_sum <= 0:
+            raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
+        scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
+        clips = _rescale_clips_to_master(clips, master)
+        return clips, master, scale
+
+    if not cells or not words:
+        raise FileNotFoundError(
+            "нет frame_001.mp3 — перезапустите шаг «Аудио» "
+            "(per-frame TTS из plan R49)"
+        )
+
+    logger.warning(
+        "frame_*.mp3 не найдены — границы кадров из Whisper + voice_full ({:.2f}s). "
+        "Для точной синхронизации перезапустите «Аудио».",
+        master,
+    )
+    clips = frame_clips_from_whisper(cells, words, master, voice_full_path)
+    return clips, master, 1.0
 
 
 async def synthesize_per_frame_audio(

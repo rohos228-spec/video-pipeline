@@ -69,28 +69,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     audio_dir = project.data_dir / "audio"
     frame_numbers = [fr.number for fr in frames]
 
-    try:
-        audio_clips, audio_duration, time_scale = await build_assembly_timeline(
-            audio_dir, audio_path, frame_numbers,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    video_duration = sum(c.duration for c in audio_clips)
-    logger.info(
-        "[#{}] assemble: master voice {:.2f}s, {} clips, video timeline {:.2f}s",
-        project.id,
-        audio_duration,
-        len(audio_clips),
-        video_duration,
-    )
-
-    duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
-    frame_timings = [
-        FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
-        for c in audio_clips
-    ]
-
     whisper_art = (
         await session.execute(
             select(Artifact)
@@ -106,7 +84,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError(
             "нет word-level таймкодов Whisper — перезапустите шаг «Аудио» перед сборкой"
         )
-    words = _scale_whisper_words(load_words_json(Path(whisper_art.path)), time_scale)
+    words = load_words_json(Path(whisper_art.path))
     if not words:
         raise RuntimeError("Whisper не вернул слова для субтитров")
 
@@ -115,6 +93,34 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError(
             "нет текста на листе «план» (строка 49) — одна ячейка = одно видео"
         )
+
+    try:
+        audio_clips, audio_duration, time_scale = await build_assembly_timeline(
+            audio_dir,
+            audio_path,
+            frame_numbers,
+            cells=cells,
+            words=words,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    words = _scale_whisper_words(words, time_scale)
+
+    video_duration = sum(c.duration for c in audio_clips)
+    logger.info(
+        "[#{}] assemble: master voice {:.2f}s, {} clips, video timeline {:.2f}s",
+        project.id,
+        audio_duration,
+        len(audio_clips),
+        video_duration,
+    )
+
+    duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
+    frame_timings = [
+        FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
+        for c in audio_clips
+    ]
 
     clips: list[ClipSpec] = []
     for fr in frames:

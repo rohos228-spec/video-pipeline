@@ -12,8 +12,11 @@ from app.services.frame_audio import (
     concat_mp3_files,
     delete_frame_audio_files,
     frame_audio_path,
+    frame_clips_from_whisper,
+    has_all_frame_audio,
 )
 from app.services.mapper import FrameTiming
+from app.services.whisper import WordTS
 
 
 @pytest.mark.asyncio
@@ -65,7 +68,6 @@ def test_rescale_clips_to_master_matches_voice_full() -> None:
 
 def test_subtitles_clamped_to_audio_end() -> None:
     from app.services.subtitles import build_subtitle_cues_from_cells
-    from app.services.whisper import WordTS
 
     cells = [(1, "Привет мир")]
     words = [WordTS("привет", 0.0, 0.5, 1.0), WordTS("мир", 0.5, 1.0, 1.0)]
@@ -75,3 +77,26 @@ def test_subtitles_clamped_to_audio_end() -> None:
     )
     assert cues
     assert cues[-1][1] <= 1.0
+
+
+def test_has_all_frame_audio_false_when_missing(tmp_path: Path) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    assert not has_all_frame_audio(audio_dir, [1, 2])
+
+
+def test_frame_clips_from_whisper_fills_master_duration(tmp_path: Path) -> None:
+    voice = tmp_path / "voice.mp3"
+    voice.write_bytes(b"x")
+    cells = [(1, "один два"), (2, "три четыре")]
+    words = [
+        WordTS("один", 0.0, 1.0, 1.0),
+        WordTS("два", 1.0, 2.0, 1.0),
+        WordTS("три", 2.0, 3.0, 1.0),
+        WordTS("четыре", 3.0, 4.0, 1.0),
+    ]
+    clips = frame_clips_from_whisper(cells, words, master=10.0, voice_full_path=voice)
+    assert len(clips) == 2
+    assert clips[0].start_ts == 0.0
+    assert clips[-1].end_ts == 10.0
+    assert abs(sum(c.duration for c in clips) - 10.0) < 0.01
