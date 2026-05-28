@@ -95,7 +95,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     try:
-        audio_clips, audio_duration, time_scale = await build_assembly_timeline(
+        audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
             audio_dir,
             audio_path,
             frame_numbers,
@@ -109,11 +109,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     video_duration = sum(c.duration for c in audio_clips)
     logger.info(
-        "[#{}] assemble: master voice {:.2f}s, {} clips, video timeline {:.2f}s",
+        "[#{}] assemble: master voice {:.2f}s, {} clips, video {:.2f}s, subtitles={}",
         project.id,
         audio_duration,
         len(audio_clips),
         video_duration,
+        "per-frame" if per_frame_audio else "legacy-stretch",
     )
 
     duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
@@ -152,6 +153,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         frame_timings,
         max_words=2,
         max_end_ts=audio_duration,
+        direct_whisper_times=per_frame_audio,
     )
     if not sub_entries:
         raise RuntimeError("не удалось построить субтитры из Excel + Whisper")

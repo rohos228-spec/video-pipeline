@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from app.services.mapper import FrameTiming, FrameWordSpan, build_frame_word_spans
+from app.services.mapper import (
+    FrameTiming,
+    build_frame_word_spans,
+    build_frame_word_spans_per_frame,
+)
 from app.services.whisper import WordTS
 
 SubtitleCue = tuple[float, float, str]
@@ -15,13 +19,18 @@ def build_subtitle_cues_from_cells(
     *,
     max_words: int = 2,
     max_end_ts: float | None = None,
+    direct_whisper_times: bool = False,
 ) -> list[SubtitleCue]:
     if max_words < 1:
         raise ValueError("max_words must be >= 1")
     if not words:
         return []
 
-    spans = build_frame_word_spans(cells, words)
+    if direct_whisper_times:
+        spans = build_frame_word_spans_per_frame(cells, words, frame_timings)
+    else:
+        spans = build_frame_word_spans(cells, words)
+
     by_number = {t.frame_number: t for t in frame_timings}
     entries: list[SubtitleCue] = []
 
@@ -35,35 +44,104 @@ def build_subtitle_cues_from_cells(
         if frame_end <= frame_start:
             continue
 
-        wh_times: list[tuple[float, float]] = []
-        for wi in span.whisper_indices:
-            idx = max(0, min(wi, len(words) - 1))
-            wh_times.append((words[idx].start, words[idx].end))
-
-        if not wh_times:
-            continue
-
-        wh_start = wh_times[0][0]
-        wh_end = wh_times[-1][1]
-        wh_span = max(wh_end - wh_start, 0.01)
-
-        def map_ts(ts: float) -> float:
-            rel = (ts - wh_start) / wh_span
-            rel = min(max(rel, 0.0), 1.0)
-            return frame_start + rel * (frame_end - frame_start)
-
-        for i in range(0, len(span.display_words), max_words):
-            chunk_words = span.display_words[i : i + max_words]
-            chunk_times = wh_times[i : i + max_words]
-            start = map_ts(chunk_times[0][0])
-            end = map_ts(chunk_times[-1][1])
-            if end <= start:
-                end = start + 0.04
-            entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
+        if direct_whisper_times:
+            entries.extend(
+                _cues_direct_whisper(
+                    span,
+                    words,
+                    frame_start,
+                    frame_end,
+                    max_words=max_words,
+                )
+            )
+        else:
+            entries.extend(
+                _cues_stretched(
+                    span,
+                    words,
+                    frame_start,
+                    frame_end,
+                    max_words=max_words,
+                )
+            )
 
     if max_end_ts is not None:
         entries = _clamp_to_audio(entries, max_end_ts)
     return _merge_monotonic(entries)
+
+
+def _cues_direct_whisper(
+    span,
+    words: list[WordTS],
+    frame_start: float,
+    frame_end: float,
+    *,
+    max_words: int,
+) -> list[SubtitleCue]:
+    """Per-frame TTS: Whisper start/end без растягивания на окно кадра."""
+    entries: list[SubtitleCue] = []
+    if not span.whisper_indices:
+        return entries
+
+    for i in range(0, len(span.display_words), max_words):
+        chunk_words = span.display_words[i : i + max_words]
+        chunk_indices = span.whisper_indices[i : i + max_words]
+        if not chunk_indices:
+            continue
+
+        starts: list[float] = []
+        ends: list[float] = []
+        for wi in chunk_indices:
+            idx = max(0, min(wi, len(words) - 1))
+            starts.append(words[idx].start)
+            ends.append(words[idx].end)
+
+        start = max(starts[0], frame_start)
+        end = min(ends[-1], frame_end)
+        if end <= start:
+            end = min(start + 0.04, frame_end)
+        entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
+
+    return entries
+
+
+def _cues_stretched(
+    span,
+    words: list[WordTS],
+    frame_start: float,
+    frame_end: float,
+    *,
+    max_words: int,
+) -> list[SubtitleCue]:
+    """Legacy fallback: Whisper-времена растягиваются на окно кадра."""
+    entries: list[SubtitleCue] = []
+    wh_times: list[tuple[float, float]] = []
+    for wi in span.whisper_indices:
+        idx = max(0, min(wi, len(words) - 1))
+        wh_times.append((words[idx].start, words[idx].end))
+
+    if not wh_times:
+        return entries
+
+    wh_start = wh_times[0][0]
+    wh_end = wh_times[-1][1]
+    wh_span = max(wh_end - wh_start, 0.01)
+
+    def map_ts(ts: float) -> float:
+        rel = (ts - wh_start) / wh_span
+        rel = min(max(rel, 0.0), 1.0)
+        return frame_start + rel * (frame_end - frame_start)
+
+    for i in range(0, len(span.display_words), max_words):
+        chunk_words = span.display_words[i : i + max_words]
+        chunk_times = wh_times[i : i + max_words]
+        start = map_ts(chunk_times[0][0])
+        end = map_ts(chunk_times[-1][1])
+        if end <= start:
+            end = start + 0.04
+        entries.append((round(start, 3), round(end, 3), " ".join(chunk_words)))
+
+    return entries
 
 
 def _clamp_to_audio(entries: list[SubtitleCue], max_end_ts: float) -> list[SubtitleCue]:

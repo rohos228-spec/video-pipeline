@@ -83,7 +83,7 @@ def build_frame_word_spans(
     cells: list[tuple[int, str]],
     words: list[WordTS],
 ) -> list[FrameWordSpan]:
-    """Токены Excel по кадрам + индексы whisper для каждого слова."""
+    """Токены Excel по кадрам + индексы whisper (глобальное difflib по всему сценарию)."""
     all_lower: list[str] = []
     all_display: list[str] = []
     frame_ranges: list[tuple[int, int, int]] = []
@@ -103,6 +103,46 @@ def build_frame_word_spans(
         lower = all_lower[start:end]
         indices = alignment[start:end] if end > start else []
         spans.append(FrameWordSpan(frame_number, disp, lower, indices))
+    return spans
+
+
+def word_indices_in_window(
+    words: list[WordTS],
+    start: float,
+    end: float,
+) -> list[tuple[int, WordTS]]:
+    """Whisper-слова, пересекающиеся с [start, end)."""
+    return [(i, w) for i, w in enumerate(words) if w.end > start and w.start < end]
+
+
+def build_frame_word_spans_per_frame(
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    frame_timings: list[FrameTiming],
+) -> list[FrameWordSpan]:
+    """Сопоставление текста каждой ячейки R49 только с Whisper внутри окна кадра."""
+    by_number = {t.frame_number: t for t in frame_timings}
+    spans: list[FrameWordSpan] = []
+
+    for frame_number, text in cells:
+        timing = by_number.get(frame_number)
+        if timing is None:
+            continue
+        disp = tokenize_display(text)
+        lower = [t.lower() for t in disp]
+        if not lower:
+            continue
+
+        window = word_indices_in_window(words, timing.start_ts, timing.end_ts)
+        if not window:
+            spans.append(FrameWordSpan(frame_number, disp, lower, []))
+            continue
+
+        window_words = [w for _, w in window]
+        local_alignment = align_script_tokens(lower, window_words)
+        global_indices = [window[local_i][0] for local_i in local_alignment]
+        spans.append(FrameWordSpan(frame_number, disp, lower, global_indices))
+
     return spans
 
 

@@ -176,13 +176,13 @@ async def build_assembly_timeline(
     *,
     cells: list[tuple[int, str]] | None = None,
     words: list[WordTS] | None = None,
-) -> tuple[list[FrameAudioClip], float, float]:
+) -> tuple[list[FrameAudioClip], float, float, bool]:
     """Озвучка — единственное мерило: voice_full задаёт конец ролика.
 
     Если есть frame_NNN.mp3 — границы кадров из ffprobe(фрагмент).
     Иначе — из Whisper по cells + voice_full (legacy audio без per-frame TTS).
 
-    Returns (clips, master_duration, time_scale).
+    Returns (clips, master_duration, time_scale, uses_per_frame_clips).
     """
     master = await probe_duration(voice_full_path)
 
@@ -193,7 +193,7 @@ async def build_assembly_timeline(
             raise RuntimeError("сумма длительностей frame_*.mp3 равна нулю")
         scale = 1.0 if abs(raw_sum - master) <= 0.05 else master / raw_sum
         clips = _rescale_clips_to_master(clips, master)
-        return clips, master, scale
+        return clips, master, scale, True
 
     if not cells or not words:
         raise FileNotFoundError(
@@ -207,7 +207,7 @@ async def build_assembly_timeline(
         master,
     )
     clips = frame_clips_from_whisper(cells, words, master, voice_full_path)
-    return clips, master, 1.0
+    return clips, master, 1.0, False
 
 
 async def synthesize_per_frame_audio(

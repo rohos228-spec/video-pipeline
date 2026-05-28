@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from app.services.assembly import subtitles_vf_arg
-from app.services.mapper import map_frames, normalize_contiguous, FrameTiming
+from app.services.mapper import (
+    FrameTiming,
+    build_frame_word_spans_per_frame,
+    map_frames,
+    normalize_contiguous,
+)
 from app.services.subtitles import build_subtitle_cues_from_cells
 from app.services.whisper import WordTS
 
@@ -44,6 +49,45 @@ def test_subtitles_use_excel_text_max_two_words() -> None:
     assert ("Привет", "мир") == tuple(cues[0][2].split())
     assert cues[0][0] == timings[0].start_ts
     assert cues[1][2] == "Новый кадр"
+
+
+def test_subtitles_per_frame_use_direct_whisper_times() -> None:
+    cells = [(1, "Привет мир"), (2, "Новый кадр")]
+    words = [
+        WordTS("привет", 0.1, 0.45, 1.0),
+        WordTS("мир", 0.45, 0.95, 1.0),
+        WordTS("новый", 1.05, 1.35, 1.0),
+        WordTS("кадр", 1.35, 1.75, 1.0),
+    ]
+    timings = [
+        FrameTiming(1, 0.0, 1.0, 1.0),
+        FrameTiming(2, 1.0, 1.8, 0.8),
+    ]
+    cues = build_subtitle_cues_from_cells(
+        cells,
+        words,
+        timings,
+        max_words=2,
+        direct_whisper_times=True,
+    )
+    assert cues[0] == (0.1, 0.95, "Привет мир")
+    assert cues[1] == (1.05, 1.75, "Новый кадр")
+
+
+def test_per_frame_alignment_ignores_words_outside_window() -> None:
+    cells = [(1, "один"), (2, "два")]
+    words = [
+        WordTS("один", 0.0, 0.4, 1.0),
+        WordTS("шум", 0.5, 0.9, 1.0),
+        WordTS("два", 1.0, 1.4, 1.0),
+    ]
+    timings = [
+        FrameTiming(1, 0.0, 1.0, 1.0),
+        FrameTiming(2, 1.0, 2.0, 1.0),
+    ]
+    spans = build_frame_word_spans_per_frame(cells, words, timings)
+    assert spans[0].whisper_indices == [0]
+    assert spans[1].whisper_indices == [2]
 
 
 def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:
