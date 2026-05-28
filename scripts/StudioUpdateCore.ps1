@@ -136,6 +136,8 @@ function Start-StudioBackendWindow {
     Write-StudioLog "Starting run-backend.ps1 window..." "Gray"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root
     $deadline = (Get-Date).AddSeconds(120)
+    $started = Get-Date
+    $lastWaitLog = -1
     while ((Get-Date) -lt $deadline) {
         try {
             $r = Invoke-WebRequest "http://127.0.0.1:8765/api/health" -TimeoutSec 3 -UseBasicParsing
@@ -150,6 +152,11 @@ function Start-StudioBackendWindow {
             }
         } catch { }
         Start-Sleep -Milliseconds 500
+        $waitSec = [int]((Get-Date) - $started).TotalSeconds
+        if ($waitSec -ge 10 -and ($waitSec % 10) -eq 0 -and $waitSec -ne $lastWaitLog) {
+            Write-StudioLog "waiting for :8765 ... ${waitSec}s (see run-backend window)" "DarkGray"
+            $lastWaitLog = $waitSec
+        }
     }
     Write-StudioLog "Open manually: http://127.0.0.1:8765 (see run-backend window)" "Yellow"
     Open-StudioBrowser
