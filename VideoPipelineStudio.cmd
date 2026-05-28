@@ -2,7 +2,7 @@
 REM GUI launcher (buttons). Console update: UPDATE-STUDIO.cmd
 cd /d "%~dp0"
 
-set "BR=cursor/fix-launcher-update-start-977b"
+set "BR=devin/windows-installer"
 where git >nul 2>&1
 if not errorlevel 1 (
     git fetch origin %BR% 2>nul

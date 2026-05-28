@@ -18,10 +18,10 @@ echo.
 where git >nul 2>&1
 if not errorlevel 1 (
     echo Downloading latest from GitHub...
-    git fetch origin cursor/fix-launcher-update-start-977b 2>nul
-    git checkout -B cursor/fix-launcher-update-start-977b origin/cursor/fix-launcher-update-start-977b 2>nul
-    git reset --hard origin/cursor/fix-launcher-update-start-977b 2>nul
-    git checkout origin/cursor/fix-launcher-update-start-977b -- web/out web/STUDIO_VERSION 2>nul
+    git fetch origin devin/windows-installer 2>nul
+    git checkout -B devin/windows-installer origin/devin/windows-installer 2>nul
+    git reset --hard origin/devin/windows-installer 2>nul
+    git checkout origin/devin/windows-installer -- web/out web/STUDIO_VERSION 2>nul
     echo Git: 
     git rev-parse --short HEAD 2>nul
     echo STUDIO_VERSION:

@@ -68,6 +68,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError("нет артефакта аудио")
 
     audio_path = Path(audio.path)
+    if not audio_path.is_file():
+        raise RuntimeError(f"файл озвучки не найден: {audio_path}")
     audio_dir = project.data_dir / "audio"
     frame_numbers = [fr.number for fr in frames]
     per_frame_tts = (audio.meta or {}).get("mode") == "per_frame"
@@ -83,13 +85,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             .limit(1)
         )
     ).scalar_one_or_none()
-    if whisper_art is None:
-        raise RuntimeError(
-            "нет word-level таймкодов Whisper — перезапустите шаг «Аудио» перед сборкой"
-        )
-    words = load_words_json(Path(whisper_art.path))
-    if not words:
-        raise RuntimeError("Whisper не вернул слова для субтитров")
+    words: list[WordTS] = []
+    if whisper_art is not None:
+        words = load_words_json(Path(whisper_art.path))
 
     if settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
         if whisper_available():
@@ -99,12 +97,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 model_name=settings.whisper_model,
                 language="ru",
             )
+        elif not words:
+            raise RuntimeError(
+                "нет words.json и faster-whisper не установлен — "
+                "pip install -e \".[whisper]\" или перезапустите шаг «Аудио»"
+            )
         else:
             logger.warning(
                 "[#{}] assemble: faster-whisper не установлен — субтитры из words.json. "
                 "Для re-whisper: pip install -e \".[whisper]\"",
                 project.id,
             )
+    elif not words:
+        raise RuntimeError(
+            "нет word-level таймкодов Whisper — перезапустите шаг «Аудио» перед сборкой"
+        )
+    if not words:
+        raise RuntimeError("Whisper не вернул слова для субтитров")
 
     cells = read_plan_voiceover_cells(project, frame_numbers)
     if not any(text.strip() for _, text in cells):

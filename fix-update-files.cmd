@@ -11,15 +11,11 @@ powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0scripts\stop-backe
 
 echo.
 echo [2] git fetch...
-git fetch origin cursor/fix-launcher-update-start-977b
 git fetch origin devin/windows-installer
 
 echo.
 echo [3] checkout critical files...
-git checkout origin/cursor/fix-launcher-update-start-977b -- run-backend.ps1 scripts/stop-backend.ps1 stop-backend.cmd installer/VideoPipelineLauncher.ps1 2>nul
-if errorlevel 1 (
-    git checkout origin/devin/windows-installer -- run-backend.ps1 scripts/stop-backend.ps1 stop-backend.cmd installer/VideoPipelineLauncher.ps1
-)
+git checkout origin/devin/windows-installer -- run-backend.ps1 scripts/stop-backend.ps1 stop-backend.cmd installer/VideoPipelineLauncher.ps1
 
 findstr /C:"RUN_BACKEND_ID=session-log-v2" run-backend.ps1 >nul
 if errorlevel 1 (

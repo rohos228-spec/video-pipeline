@@ -1,5 +1,5 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
-$script:StudioUpdateBranch = "cursor/fix-launcher-update-start-977b"
+$script:StudioUpdateBranch = "devin/windows-installer"
 $script:StudioUpdateCoreId = "studio-update-core-v4"
 
 function Get-StudioRepoRoot {
