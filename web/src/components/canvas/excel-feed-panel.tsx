@@ -27,12 +27,15 @@ export function ExcelFeedPanel({
       setTopicCount(r.count);
       setTopicsPreview(r.topics.slice(0, 5));
       const project = await api.getProject(projectId);
-      const meta = {
+      const meta: Record<string, unknown> = {
         ...((project.meta || {}) as Record<string, unknown>),
         mass_excel_topics: r.topics,
+        mass_queue_topics: r.topics,
         mass_excel_file: file.name,
+        mass_factory: true,
         excel_feed_node: nodeKey,
       };
+      if (r.revision != null) meta.mass_excel_revision = r.revision;
       await api.patchProject(projectId, { meta });
       await qc.invalidateQueries({ queryKey: ["project", projectId] });
       window.dispatchEvent(

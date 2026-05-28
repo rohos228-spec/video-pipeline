@@ -56,7 +56,8 @@ def _topics_from_first_sheet(path: Path) -> list[str]:
     if not rows:
         return []
 
-    ncol = max(len(r) for r in rows if r) if rows else 0
+    lengths = [len(r) for r in rows if r]
+    ncol = max(lengths) if lengths else 0
     if ncol <= 1:
         topics: list[str] = []
         seen: set[str] = set()

@@ -6,8 +6,9 @@ from datetime import datetime
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import NodeRun, Project, ProjectStatus, Workflow, WorkflowRun, WorkflowRunStatus
 from app.storage import ProjectSheet
@@ -240,8 +241,11 @@ async def create_mass_child(
 
 
 async def list_mass_children(session: AsyncSession, parent_id: int) -> list[Project]:
-    rows = (await session.execute(select(Project))).scalars().all()
-    out = [p for p in rows if mass_parent_id(p) == parent_id]
+    parent_expr = cast(func.json_extract(Project.meta, "$.mass_parent_id"), Integer)
+    rows = (
+        await session.execute(select(Project).where(parent_expr == parent_id))
+    ).scalars().all()
+    out = list(rows)
     out.sort(key=lambda p: (p.meta or {}).get("mass_lane_position") or 999)
     return out
 
@@ -249,9 +253,17 @@ async def list_mass_children(session: AsyncSession, parent_id: int) -> list[Proj
 async def delete_new_mass_children(session: AsyncSession, parent_id: int) -> int:
     deleted = 0
     for child in await list_mass_children(session, parent_id):
-        if child.status is ProjectStatus.new:
-            await session.delete(child)
-            deleted += 1
+        if child.status is not ProjectStatus.new:
+            continue
+        run = (
+            await session.execute(
+                select(WorkflowRun).where(WorkflowRun.project_id == child.id)
+            )
+        ).scalar_one_or_none()
+        if run is not None:
+            await session.delete(run)
+        await session.delete(child)
+        deleted += 1
     if deleted:
         await session.flush()
     return deleted
@@ -291,6 +303,7 @@ async def apply_topics_upload(
     if busy is not None:
         meta["mass_queue_pending_replace"] = topics
         parent.meta = meta
+        flag_modified(parent, "meta")
         await session.flush()
         return {
             "topics": topics,
@@ -303,8 +316,10 @@ async def apply_topics_upload(
     await delete_new_mass_children(session, parent.id)
     meta["mass_queue_topics"] = topics
     meta["mass_queue_cursor"] = 0
+    meta["mass_queue_active"] = False
     meta.pop("mass_queue_pending_replace", None)
     parent.meta = meta
+    flag_modified(parent, "meta")
     await session.flush()
     return {
         "topics": topics,

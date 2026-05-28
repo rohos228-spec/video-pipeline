@@ -102,21 +102,46 @@ async def parse_mass_topics_xlsx(
         tmp_path = Path(tmp.name)
     try:
         content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="пустой файл")
         tmp_path.write_bytes(content)
-        topics = parse_topics_xlsx(tmp_path)
+        try:
+            topics = parse_topics_xlsx(tmp_path)
+        except Exception as exc:
+            logger.warning("mass-lanes/parse-topics: parse failed for #{}: {}", project_id, exc)
+            raise HTTPException(
+                status_code=400,
+                detail=f"не удалось прочитать Excel: {exc}",
+            ) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
 
     if not topics:
         raise HTTPException(status_code=400, detail="в Excel не найдено тем (построчно)")
 
-    result = await apply_topics_upload(
-        session,
-        parent,
-        topics=topics,
-        filename=file.filename or "topics.xlsx",
+    try:
+        result = await apply_topics_upload(
+            session,
+            parent,
+            topics=topics,
+            filename=file.filename or "topics.xlsx",
+        )
+        await session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await session.rollback()
+        logger.exception("mass-lanes/parse-topics failed for project #{}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"ошибка сохранения Excel: {exc}",
+        ) from exc
+
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"mass_excel_upload": result.get("count"), "revision": result.get("revision")},
     )
-    await session.commit()
     return {"topics": topics, "cards": [], "count": len(topics), **result}
 
 

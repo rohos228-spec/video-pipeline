@@ -35,8 +35,10 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
       qc.invalidateQueries({ queryKey: ["project", project.id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
       const hint = r.queued_after_current
-        ? "Новый список применится после текущего видео"
-        : "Очередь обновлена";
+        ? `Новый список (${r.count} тем) применится после текущего видео`
+        : (r.revision ?? 0) > 1
+          ? `Список обновлён: ${r.count} тем`
+          : `Очередь: ${r.count} тем`;
       toast.success(`Excel: ${r.count} тем. ${hint}`);
     },
     onError: (e) => toast.error(errorMessage(e)),
