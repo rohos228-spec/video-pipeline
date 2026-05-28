@@ -31,7 +31,14 @@ async def session_factory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mass_lanes_uses_excel_topics_from_meta(session_factory) -> None:
+async def test_mass_lanes_uses_excel_topics_from_meta(session_factory, monkeypatch) -> None:
+    async def _no_wf() -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.mass_factory._get_default_workflow_id",
+        _no_wf,
+    )
     async with session_factory() as session:
         parent = Project(
             slug="parent-excel",
@@ -58,12 +65,14 @@ async def test_mass_lanes_uses_excel_topics_from_meta(session_factory) -> None:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(
                 f"/api/projects/{parent_id}/mass-lanes/start",
-                json={"count": 1},
+                json={},
             )
             assert r.status_code == 200, r.text
             data = r.json()
-            assert data["count"] == 3
-            topics = [c["topic"] for c in data["created"]]
-            assert topics == ["Тема A", "Тема B", "Тема C"]
+            assert data["count"] == 1
+            assert data["queue_size"] == 3
+            assert data["started_id"] is not None
+            topics_started = [c["topic"] for c in data["created"]]
+            assert topics_started == ["Тема A"]
     finally:
         app.dependency_overrides.pop(get_session, None)

@@ -87,31 +87,47 @@ async def stop_project(
 async def parse_mass_topics_xlsx(
     project_id: int,
     file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Парсит topics.xlsx (лист «Темы», колонка B) для массовой генерации."""
-    _ = project_id
+    """Парсит любой xlsx (построчно темы) и сохраняет очередь на родителе (правило B)."""
     import tempfile
 
-    from app.storage import batch_sheet
+    from app.storage.mass_topics import parse_topics_xlsx
+    from app.services.mass_factory import apply_topics_upload
 
+    parent = _project_or_404(await session.get(Project, project_id))
     suffix = Path(file.filename or "topics.xlsx").suffix or ".xlsx"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
         content = await file.read()
         tmp_path.write_bytes(content)
-        rows = batch_sheet.read_topics(tmp_path)
+        topics = parse_topics_xlsx(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    topics: list[str] = []
-    cards: list[dict] = []
-    for row in rows:
-        title = (row.get("title") or row.get("topic") or "").strip()
-        if title:
-            topics.append(title)
-            cards.append(row)
-    return {"topics": topics, "cards": cards, "count": len(topics)}
+    if not topics:
+        raise HTTPException(status_code=400, detail="в Excel не найдено тем (построчно)")
+
+    result = await apply_topics_upload(
+        session,
+        parent,
+        topics=topics,
+        filename=file.filename or "topics.xlsx",
+    )
+    await session.commit()
+    return {"topics": topics, "cards": [], "count": len(topics), **result}
+
+
+@router.get("/{project_id}/mass-factory/status")
+async def mass_factory_status_endpoint(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.mass_factory import mass_factory_status
+
+    parent = _project_or_404(await session.get(Project, project_id))
+    return await mass_factory_status(session, parent)
 
 
 @router.post("/{project_id}/mass-lanes/start")
@@ -120,119 +136,30 @@ async def start_mass_lanes(
     payload: dict,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Массовая генерация: N проектов-копий с auto_mode (как массовый батч в TG)."""
-    from app.services.project_steps import start_step
+    """Очередь видео: родитель-шаблон, генерация в дочерних проектах."""
+    from app.services.mass_factory import start_mass_queue
     from app.web.routers.projects import _slugify
 
     template = _project_or_404(await session.get(Project, project_id))
     meta_template = dict(template.meta or {})
     topics: list[str] = [str(t).strip() for t in (payload.get("topics") or []) if str(t).strip()]
     if not topics:
-        meta_topics = meta_template.get("mass_excel_topics")
+        meta_topics = meta_template.get("mass_queue_topics") or meta_template.get("mass_excel_topics")
         if isinstance(meta_topics, list):
             topics = [str(t).strip() for t in meta_topics if str(t).strip()]
-    if not topics:
-        bindings = meta_template.get("excel_lane_bindings")
-        if isinstance(bindings, list):
-            ordered = sorted(
-                [b for b in bindings if isinstance(b, dict)],
-                key=lambda b: int(b.get("topic_index") or 0),
-            )
-            for b in ordered:
-                t = str(b.get("topic") or "").strip()
-                if t:
-                    topics.append(t)
-    count = int(payload.get("count") or len(topics) or 1)
-    if not topics:
-        base = template.topic or "ролик"
-        topics = [f"{base} — поток {i + 1}" for i in range(count)]
-    copy_fields = (
-        "hero_mode",
-        "image_generator",
-        "aspect_ratio",
-        "image_resolution",
-        "image_relax",
-        "video_generator",
-        "video_resolution",
-        "video_relax",
-        "hero_count",
-        "hero_descriptions",
-        "hero_variations",
-        "hero_variation_modifiers",
-        "item_descriptions",
-        "item_variations",
-        "enrich_slots_count",
-        "prompt_overrides",
-        "gpt_text_overrides",
-    )
-    ai_control = bool(meta_template.get("ai_control"))
-    wf_id = await _get_default_workflow_id()
-    created_projects: list[Project] = []
-    for i, topic in enumerate(topics):
-        slug_base = _slugify(topic)
-        slug = slug_base
-        suffix = 2
-        while (await session.execute(select(Project).where(Project.slug == slug))).scalar_one_or_none():
-            slug = f"{slug_base}-{suffix}"
-            suffix += 1
-        kwargs = {f: getattr(template, f) for f in copy_fields}
-        p = Project(
-            slug=slug,
-            topic=topic,
-            status=ProjectStatus.new,
-            auto_mode=True if ai_control else template.auto_mode,
-            meta={
-                **meta_template,
-                "graph_executor": True,
-                "ai_control": ai_control,
-                "mass_lane": i + 1,
-                "mass_lane_position": i + 1,
-                "mass_parent_id": project_id,
-            },
-            **kwargs,
-        )
-        session.add(p)
-        await session.flush()
-
-        p.data_dir.mkdir(parents=True, exist_ok=True)
-        for sub in (
-            "characters",
-            "items",
-            "scenes",
-            "videos",
-            "audio",
-            "subs",
-            "final",
-        ):
-            (p.data_dir / sub).mkdir(parents=True, exist_ok=True)
-
-        try:
-            sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
-            sheet.ensure_initialized(project_id=p.id, slug=p.slug)
-            sheet.write_general(
-                topic=p.topic,
-                slug=p.slug,
-                hero_mode=p.hero_mode,
-                status=p.status.value,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-        if wf_id:
-            await ensure_run_for_project(p.id, wf_id)
-        created_projects.append(p)
-
-    parent_meta = dict(template.meta or {})
-    parent_meta["mass_queue_active"] = True
-    parent_meta["mass_lanes_count"] = len(created_projects)
-    template.meta = parent_meta
-
-    if created_projects:
-        await start_step(session, created_projects[0], "plan")
+    try:
+        result = await start_mass_queue(session, template, topics=topics or None, slugify=_slugify)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await session.commit()
-    created = [{"id": p.id, "topic": p.topic, "slug": p.slug} for p in created_projects]
-    return {"created": created, "count": len(created), "started_id": created[0]["id"] if created else None}
+    return {
+        "created": [{"id": result["started_id"], "topic": result["topic"]}],
+        "count": 1,
+        "queue_size": result["queue_size"],
+        "remaining": result["remaining"],
+        "started_id": result["started_id"],
+    }
 
 
 @router.post("/{project_id}/steps/{step_code}/reset", response_model=ProjectDetail)

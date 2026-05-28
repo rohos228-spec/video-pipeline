@@ -245,10 +245,28 @@ export const api = {
     projectId: number,
     body: { count?: number; topics?: string[] },
   ) =>
-    http<{ created: { id: number; topic: string; slug: string }[]; count: number; started_id?: number | null }>(
-      `/api/projects/${projectId}/mass-lanes/start`,
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    http<{
+      created: { id: number; topic: string; slug?: string }[];
+      count: number;
+      queue_size?: number;
+      remaining?: number;
+      started_id?: number | null;
+    }>(`/api/projects/${projectId}/mass-lanes/start`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getMassFactoryStatus: (projectId: number) =>
+    http<{
+      active: boolean;
+      topics: string[];
+      cursor: number;
+      revision: number;
+      filename: string;
+      factory: boolean;
+      busy_child_id: number | null;
+      children: { id: number; topic: string; slug: string; status: string; lane_position?: number }[];
+      queued_after_current?: boolean;
+    }>(`/api/projects/${projectId}/mass-factory/status`),
   parseMassTopicsXlsx: async (projectId: number, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -257,7 +275,12 @@ export const api = {
       body: fd,
     });
     if (!res.ok) throw new ApiError(res.status, await res.text());
-    return res.json() as Promise<{ topics: string[]; count: number }>;
+    return res.json() as Promise<{
+      topics: string[];
+      count: number;
+      revision?: number;
+      queued_after_current?: boolean;
+    }>;
   },
   wizardCatalog: () =>
     http<{

@@ -17,7 +17,7 @@ from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.web.deps import get_session
-from app.web.project_dto import project_to_detail
+from app.web.project_dto import project_to_detail, project_to_summary
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -51,7 +51,7 @@ async def list_projects(
     rows = (
         await session.execute(select(Project).order_by(Project.id.desc()))
     ).scalars().all()
-    return list(rows)
+    return [project_to_summary(p) for p in rows]
 
 
 @router.get("/steps/catalog")

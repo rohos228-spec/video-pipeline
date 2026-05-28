@@ -889,9 +889,10 @@ function RunOverlay({
           : { count };
       const r = await api.startMassLanes(projectId, body);
       toast.success(
-        `Создано ${r.count} потоков${r.started_id ? `, запущен #${r.started_id}` : ""}`,
+        `Очередь: ${r.queue_size ?? r.count} видео, старт #${r.started_id}${r.remaining != null ? `, осталось ${r.remaining}` : ""}`,
       );
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["mass-factory", projectId] });
       setMassOpen(false);
       setMassTopics([]);
       setMassTopicsFile(null);
@@ -909,6 +910,8 @@ function RunOverlay({
       setMassTopics(r.topics);
       setMassTopicsFile(file.name);
       setMassCount(String(r.count));
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["mass-factory", projectId] });
       toast.success(`Загружено ${r.count} тем из Excel`);
     } catch (e) {
       toast.error(String(e));

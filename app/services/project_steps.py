@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.models import Project, ProjectStatus
+from app.services.mass_factory import assert_not_factory_template_for_generation
 from app.services.disabled_nodes import is_step_disabled
 from app.services.reset_step import clear_step_outputs_for_rerun
 from app.services.step_cancel import clear_stop
@@ -44,6 +45,7 @@ async def start_step(
     if is_step_disabled(project, step_code):
         label = step_code.replace("_", " ")
         raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
+    assert_not_factory_template_for_generation(project)
     # Ручной запуск шага из UI (▶) — оператор знает, что делает.
     # Проверка «есть ли все done-предшественники по графу» здесь отключена
     # намеренно: граф остаётся как навигация/визуализация, но не блокирует

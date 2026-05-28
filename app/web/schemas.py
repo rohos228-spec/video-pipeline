@@ -31,6 +31,9 @@ class ProjectSummary(_ORM):
     auto_mode: bool
     created_at: datetime
     updated_at: datetime
+    mass_parent_id: int | None = None
+    mass_factory: bool = False
+    mass_lane_position: int | None = None
 
 
 class ProjectDetail(ProjectSummary):

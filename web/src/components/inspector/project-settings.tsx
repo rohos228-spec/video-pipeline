@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { MassFactoryPanel } from "@/components/inspector/mass-factory-panel";
 import {
   readControlMode,
   type ControlMode,
@@ -52,6 +53,7 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
         disabled={patch.isPending}
         onChange={setControlMode}
       />
+      <MassFactoryPanel project={project} />
       <ToggleRow
         label="Граф-исполнитель"
         hint="Переходы по связям канваса, пропуск отключённых нод"

@@ -1,8 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Loader2, Search, FolderOpen, PanelLeftClose, PanelLeft } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Loader2,
+  Search,
+  FolderOpen,
+  PanelLeftClose,
+  PanelLeft,
+  ChevronDown,
+  ChevronRight,
+  ListVideo,
+} from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { ProjectStatus, ProjectSummary } from "@/lib/types";
@@ -26,6 +37,7 @@ export function ProjectSidebar({
   onToggleCollapsed: () => void;
 }) {
   const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
@@ -42,6 +54,26 @@ export function ProjectSidebar({
     onError: (e) => toast.error(`Не получилось удалить: ${String(e)}`),
   });
 
+  const { roots, childrenByParent } = useMemo(() => {
+    const list = projects.data ?? [];
+    const childrenMap = new Map<number, ProjectSummary[]>();
+    const rootList: ProjectSummary[] = [];
+    for (const p of list) {
+      const pid = p.mass_parent_id;
+      if (pid != null) {
+        const arr = childrenMap.get(pid) ?? [];
+        arr.push(p);
+        childrenMap.set(pid, arr);
+      } else {
+        rootList.push(p);
+      }
+    }
+    for (const arr of childrenMap.values()) {
+      arr.sort((a, b) => (a.mass_lane_position ?? 999) - (b.mass_lane_position ?? 999));
+    }
+    return { roots: rootList, childrenByParent: childrenMap };
+  }, [projects.data]);
+
   useEffect(() => {
     if (selectedProjectId != null) return;
     const list = projects.data;
@@ -49,12 +81,22 @@ export function ProjectSidebar({
     onSelect(list[0].id);
   }, [projects.data, selectedProjectId, onSelect]);
 
-  const filtered = (projects.data ?? []).filter((p) =>
-    !filter.trim()
-      ? true
-      : p.topic.toLowerCase().includes(filter.toLowerCase()) ||
-        p.slug.toLowerCase().includes(filter.toLowerCase())
-  );
+  useEffect(() => {
+    const sel = projects.data?.find((p) => p.id === selectedProjectId);
+    if (sel?.mass_parent_id != null) {
+      setExpanded((e) => ({ ...e, [sel.mass_parent_id!]: true }));
+    }
+  }, [selectedProjectId, projects.data]);
+
+  const q = filter.trim().toLowerCase();
+  const filteredRoots = roots.filter((p) => {
+    if (!q) return true;
+    if (p.topic.toLowerCase().includes(q) || p.slug.toLowerCase().includes(q)) return true;
+    const kids = childrenByParent.get(p.id) ?? [];
+    return kids.some(
+      (c) => c.topic.toLowerCase().includes(q) || c.slug.toLowerCase().includes(q),
+    );
+  });
 
   if (collapsed) {
     return (
@@ -91,7 +133,7 @@ export function ProjectSidebar({
           </span>
           {projects.data && (
             <Badge variant="muted" className="h-4 px-1.5 text-[10px]">
-              {projects.data.length}
+              {roots.length}
             </Badge>
           )}
         </div>
@@ -139,20 +181,70 @@ export function ProjectSidebar({
               Не получилось загрузить проекты. Проверь, что бэкенд запущен на :8765.
             </div>
           )}
-          {!projects.isLoading && filtered.length === 0 && (
+          {!projects.isLoading && filteredRoots.length === 0 && (
             <div className="px-3 py-8 text-center text-xs text-muted-foreground">
               {filter ? "Ничего не найдено." : "Пока ни одного проекта."}
             </div>
           )}
-          {filtered.map((p) => (
-            <ProjectRow
-              key={p.id}
-              project={p}
-              selected={p.id === selectedProjectId}
-              onSelect={() => onSelect(p.id)}
-              onDelete={() => deleteMutation.mutate(p.id)}
-            />
-          ))}
+          {filteredRoots.map((p) => {
+            const children = (childrenByParent.get(p.id) ?? []).filter((c) =>
+              !q
+                ? true
+                : c.topic.toLowerCase().includes(q) ||
+                  c.slug.toLowerCase().includes(q) ||
+                  p.topic.toLowerCase().includes(q),
+            );
+            const isFactory = p.mass_factory || children.length > 0;
+            const isOpen = expanded[p.id] ?? isFactory;
+            return (
+              <div key={p.id} className="flex flex-col">
+                <div className="flex items-stretch gap-0.5">
+                  {isFactory ? (
+                    <button
+                      type="button"
+                      className="mt-2 flex h-6 w-5 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                      onClick={() =>
+                        setExpanded((e) => ({ ...e, [p.id]: !isOpen }))
+                      }
+                      aria-label={isOpen ? "Свернуть" : "Показать дочерние"}
+                    >
+                      {isOpen ? (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    <span className="w-5 shrink-0" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <ProjectRow
+                      project={p}
+                      selected={p.id === selectedProjectId}
+                      badge={isFactory ? "шаблон" : undefined}
+                      onSelect={() => onSelect(p.id)}
+                      onDelete={() => deleteMutation.mutate(p.id)}
+                    />
+                  </div>
+                </div>
+                {isFactory && isOpen && children.length > 0 && (
+                  <div className="ml-5 border-l border-violet-500/20 pl-1">
+                    {children.map((c) => (
+                      <ProjectRow
+                        key={c.id}
+                        project={c}
+                        selected={c.id === selectedProjectId}
+                        compact
+                        badge={`#${c.mass_lane_position ?? "?"}`}
+                        onSelect={() => onSelect(c.id)}
+                        onDelete={() => deleteMutation.mutate(c.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </ScrollArea>
     </aside>
@@ -162,11 +254,15 @@ export function ProjectSidebar({
 function ProjectRow({
   project,
   selected,
+  compact,
+  badge,
   onSelect,
   onDelete,
 }: {
   project: ProjectSummary;
   selected: boolean;
+  compact?: boolean;
+  badge?: string;
   onSelect: () => void;
   onDelete: () => void;
 }) {
@@ -183,13 +279,22 @@ function ProjectRow({
       }}
       className={cn(
         "group flex cursor-pointer flex-col items-stretch gap-1.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        compact && "py-1.5",
         selected
           ? "border-primary/30 bg-primary/5 text-foreground"
-          : "hover:border-border hover:bg-accent/50"
+          : "hover:border-border hover:bg-accent/50",
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="line-clamp-1 text-sm font-medium leading-tight">
+        <span
+          className={cn(
+            "line-clamp-1 font-medium leading-tight",
+            compact ? "text-xs" : "text-sm",
+          )}
+        >
+          {compact && (
+            <ListVideo className="mr-1 inline h-3 w-3 text-violet-400" />
+          )}
           {project.topic}
         </span>
         <button
@@ -205,7 +310,14 @@ function ProjectRow({
         </button>
       </div>
       <div className="flex items-center justify-between gap-2 text-[10px]">
-        <StatusPill status={project.status} />
+        <div className="flex items-center gap-1">
+          <StatusPill status={project.status} />
+          {badge && (
+            <Badge variant="muted" className="h-4 px-1 text-[9px]">
+              {badge}
+            </Badge>
+          )}
+        </div>
         <span className="text-muted-foreground">{formatRelativeTime(project.updated_at)}</span>
       </div>
     </div>
@@ -221,7 +333,9 @@ function StatusPill({ status }: { status: ProjectStatus }) {
   );
 }
 
-function statusVariant(s: ProjectStatus): "default" | "success" | "warning" | "destructive" | "info" | "muted" {
+function statusVariant(
+  s: ProjectStatus,
+): "default" | "success" | "warning" | "destructive" | "info" | "muted" {
   if (s === "new") return "muted";
   if (s === "paused" || s === "failed") return "destructive";
   if (s === "published" || s === "assembled") return "success";

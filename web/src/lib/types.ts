@@ -86,6 +86,9 @@ export interface ProjectSummary {
   auto_mode: boolean;
   created_at: string;
   updated_at: string;
+  mass_parent_id?: number | null;
+  mass_factory?: boolean;
+  mass_lane_position?: number | null;
 }
 
 export interface ProjectDetail extends ProjectSummary {

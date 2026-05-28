@@ -212,6 +212,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.assembled
     await session.flush()
 
+    from app.services.mass_factory import on_child_montage_complete
+
+    await on_child_montage_complete(session, project)
+
     await send_hitl_video(
         bot, session, project,
         kind=HITLKind.approve_final,
