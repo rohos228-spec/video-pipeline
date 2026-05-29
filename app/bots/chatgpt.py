@@ -39,6 +39,9 @@ ATTACH_UPLOAD_POLL_SEC = 5.0
 ATTACH_SETTLE_SEC = 5.0
 ATTACH_SETTLE_POLL_SEC = 0.5
 ATTACH_GUARD_MAX_REPAIR = 3
+# Одна фаза поиска кнопки скачивания (не весь download_timeout).
+DOWNLOAD_PHASE_TIMEOUT_SEC = 60.0
+TEXT_REPLY_DOWNLOAD_SUFFIXES = frozenset({".txt", ".md"})
 
 # Фразы ошибок загрузки в композере (EN/RU).
 ATTACHMENT_FAILURE_PHRASES: tuple[str, ...] = (
@@ -114,6 +117,11 @@ def format_attachment_health_error(health: dict) -> str:
     if errors:
         parts.append(f"errors=[{'; '.join(str(e) for e in errors[:3])}]")
     return ", ".join(parts) or "attachments not healthy"
+
+
+def reply_text_usable_as_download(text: str, *, min_len: int = 10) -> bool:
+    """GPT иногда кладёт voiceover в текст ответа, а не во вложение."""
+    return len((text or "").strip()) >= min_len
 
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
@@ -1849,85 +1857,150 @@ class ChatGPTBot:
         logger.info("ChatGPT: last assistant outerHTML:\n{}", html_log)
         return html
 
+    async def _save_download_to_path(self, download: Download, target_path: Path) -> int:
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        await download.save_as(str(target_path))
+        return target_path.stat().st_size if target_path.exists() else -1
+
+    async def _try_download_via_selectors(
+        self,
+        page: Page,
+        selectors: list[str],
+        *,
+        timeout: float = DOWNLOAD_PHASE_TIMEOUT_SEC,
+    ) -> Download | None:
+        """Перебирает селекторы и жмёт с expect_download (popover / assistant)."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            for sel in selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await page.locator(sel).count() == 0:
+                        continue
+                    async with page.expect_download(timeout=8_000) as dl_info:
+                        await loc.click(timeout=4_000)
+                    dl: Download = await dl_info.value
+                    logger.info(
+                        "ChatGPT: download via selector {} filename={}",
+                        sel,
+                        dl.suggested_filename,
+                    )
+                    return dl
+                except Exception:  # noqa: BLE001
+                    continue
+            await asyncio.sleep(0.4)
+        return None
+
+    async def _save_reply_text_as_file(
+        self,
+        target_path: Path,
+        text: str,
+        *,
+        source: str,
+    ) -> Path:
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        cleaned = text.strip()
+        target_path.write_text(cleaned, encoding="utf-8")
+        logger.info(
+            "ChatGPT: saved {} as {} ({} chars, source={})",
+            target_path.name,
+            target_path,
+            len(cleaned),
+            source,
+        )
+        return target_path
+
     async def download_attachment_from_last_reply(
         self,
         target_path: Path,
         *,
         timeout: float = 900,
+        fallback_text: str | None = None,
     ) -> Path:
-        """Из последнего ответа ассистента ищет ссылку на скачивание файла,
-        кликает по ней и сохраняет файл в `target_path`.
+        """Из последнего ответа ассистента скачивает файл в `target_path`.
 
-        Стратегия:
-          1. Прямой клик по карточке файла (button.behavior-btn) с
-             expect_download — в новом UI клик напрямую качает файл.
-          2. Если карточки нет — поиск по DOWNLOAD_LINK_SELECTORS (до 60 сек).
-          3. Если не нашли — hover/click по FILE_CARD_SELECTORS, потом ещё
-             раз поиск уже с полным `timeout`.
-          4. Если всё равно нет — dumpим outerHTML для отладки и RuntimeError.
+        Фазы (каждая ограничена ~60 с, не всем `timeout`):
+          1. Клик по карточке файла (behavior-btn).
+          2. Селекторы Download в ответе ассистента.
+          3. Hover/click по карточке → повтор 1–2.
+          4. Для .txt/.md — текст ответа GPT (fallback_text или read_last_reply).
         """
         page = await self._page_ready()
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        phase_timeout = min(DOWNLOAD_PHASE_TIMEOUT_SEC, max(30.0, timeout * 0.1))
 
-        # 1. Прямой клик по behavior-btn — скачивание через expect_download.
-        # Ждём до 60 сек пока карточка файла появится в ответе
-        # (ChatGPT иногда рендерит файл позже текста).
-        download = await self._try_download_via_file_card(page, timeout=60)
+        download = await self._try_download_via_file_card(
+            page, timeout=phase_timeout
+        )
         if download is not None:
-            await download.save_as(str(target_path))
-            size = target_path.stat().st_size if target_path.exists() else -1
+            size = await self._save_download_to_path(download, target_path)
             logger.info(
                 "ChatGPT: файл скачан (behavior-btn) как {} "
                 "(исходное имя {}, размер {} байт)",
-                target_path, download.suggested_filename, size,
+                target_path,
+                download.suggested_filename,
+                size,
             )
             if size < 1024:
                 logger.warning(
-                    "ChatGPT: размер подозрительно мал ({} байт).", size,
+                    "ChatGPT: размер подозрительно мал ({} байт).", size
                 )
                 await self._dump_last_assistant_html()
             return target_path
 
-        # 2. Классический путь — ищем ссылку/кнопку скачивания.
-        link_sel = await _first_matching(page, DOWNLOAD_LINK_SELECTORS, timeout=60)
-        if not link_sel:
-            await self._hover_file_cards()
-            link_sel = await _first_matching(
-                page, DOWNLOAD_LINK_SELECTORS, timeout=timeout,
-            )
-        if not link_sel:
-            await self._dump_last_assistant_html()
-            raise RuntimeError(
-                "ChatGPT: ссылка на скачивание не найдена в ответе. "
-                "Полный outerHTML последнего ответа залогирован — пришли строки "
-                "из консоли с 'last assistant outerHTML' разработчику."
-            )
-
-        logger.info("ChatGPT: жму на ссылку скачивания {}", link_sel)
-        try:
-            async with page.expect_download(timeout=timeout * 1000) as dl_info:
-                await page.locator(link_sel).first.click()
-            download = await dl_info.value
-        except Exception as e:  # noqa: BLE001
-            await self._dump_last_assistant_html()
-            raise RuntimeError(f"ChatGPT: не удалось скачать файл: {e}") from e
-
-        await download.save_as(str(target_path))
-        size = target_path.stat().st_size if target_path.exists() else -1
-        logger.info(
-            "ChatGPT: файл скачан как {} (исходное имя {}, размер {} байт)",
-            target_path,
-            download.suggested_filename,
-            size,
+        download = await self._try_download_via_selectors(
+            page, DOWNLOAD_LINK_SELECTORS, timeout=phase_timeout
         )
-        if size < 1024:
-            # Логируем outerHTML, чтобы понять почему скачался «крошечный»
-            # файл (часто это svg-иконка из карточки share/edit, а не сам xlsx).
-            logger.warning(
-                "ChatGPT: размер скачанного файла подозрительно мал ({} байт). "
-                "Дампим outerHTML последнего ответа для отладки.",
+        if download is not None:
+            size = await self._save_download_to_path(download, target_path)
+            logger.info(
+                "ChatGPT: файл скачан как {} (исходное имя {}, размер {} байт)",
+                target_path,
+                download.suggested_filename,
                 size,
             )
-            await self._dump_last_assistant_html()
-        return target_path
+            if size < 1024:
+                logger.warning(
+                    "ChatGPT: размер скачанного файла подозрительно мал ({} байт).",
+                    size,
+                )
+                await self._dump_last_assistant_html()
+            return target_path
+
+        await self._hover_file_cards()
+        download = await self._try_download_via_file_card(page, timeout=20.0)
+        if download is None:
+            download = await self._try_download_via_selectors(
+                page, DOWNLOAD_LINK_SELECTORS, timeout=phase_timeout
+            )
+        if download is not None:
+            size = await self._save_download_to_path(download, target_path)
+            logger.info(
+                "ChatGPT: файл скачан после hover как {} ({} байт)",
+                target_path,
+                size,
+            )
+            return target_path
+
+        suffix = target_path.suffix.lower()
+        if suffix in TEXT_REPLY_DOWNLOAD_SUFFIXES:
+            reply_text = (fallback_text or "").strip()
+            if not reply_text_usable_as_download(reply_text):
+                reply_text = await self._read_last_reply()
+            if reply_text_usable_as_download(reply_text):
+                return await self._save_reply_text_as_file(
+                    target_path,
+                    reply_text,
+                    source="reply_text_fallback",
+                )
+
+        await self._dump_last_assistant_html()
+        raise RuntimeError(
+            "ChatGPT: ссылка на скачивание не найдена в ответе. "
+            "Полный outerHTML последнего ответа залогирован — пришли строки "
+            "из консоли с 'last assistant outerHTML' разработчику."
+        )
+
