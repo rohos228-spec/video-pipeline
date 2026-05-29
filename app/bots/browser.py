@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from loguru import logger
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -38,6 +39,33 @@ _DEAD_BROWSER_MARKERS = (
 def _looks_like_dead_browser(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _DEAD_BROWSER_MARKERS)
+
+
+def url_base_for_reuse(url: str) -> str:
+    """Нормализованный host+path для сравнения вкладок (без query/hash/www)."""
+    if not url:
+        return ""
+    bare = url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    parsed = urlparse(bare)
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = parsed.path.rstrip("/")
+    scheme = (parsed.scheme or "https").lower()
+    return f"{scheme}://{host}{path}"
+
+
+def page_url_matches_target(page_url: str, target_url: str) -> bool:
+    """True если вкладка уже на том же сайте/разделе, что и target URL."""
+    page_base = url_base_for_reuse(page_url)
+    target_base = url_base_for_reuse(target_url)
+    if not page_base or not target_base:
+        return False
+    if page_base == target_base:
+        return True
+    return page_base.startswith(f"{target_base}/") or target_base.startswith(
+        f"{page_base}/"
+    )
 
 
 class BrowserSession:
@@ -144,20 +172,26 @@ class BrowserSession:
         if self.force_new_window:
             reuse = False
         if reuse:
-            target = None
+            target: Page | None = None
             for p in self.context.pages:
                 try:
-                    if p.url and p.url.startswith(url.split("?", 1)[0]):
+                    if p.url and page_url_matches_target(p.url, url):
                         target = p
                         break
                 except Exception:  # noqa: BLE001
                     continue
             if target is not None:
+                logger.info(
+                    "browser.open_page: reuse existing tab url={} for target={}",
+                    target.url,
+                    url,
+                )
                 try:  # noqa: SIM105
                     await target.bring_to_front()
                 except Exception:  # noqa: BLE001
                     pass
                 return target
+        logger.info("browser.open_page: opening new tab for {}", url)
         page = await self.context.new_page()
         await page.goto(url, wait_until="domcontentloaded")
         return page
