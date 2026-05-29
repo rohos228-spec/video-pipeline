@@ -28,8 +28,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         )
     ).scalars().all()
     if not frames:
+        blocks = xsr._count_v8_voiceover_blocks(result.project_xlsx)
         raise RuntimeError(
-            "после xlsx-sync кадры не созданы — проверь ответ ChatGPT"
+            "после xlsx-sync кадры не созданы — в project.xlsx найдено "
+            f"{blocks} voiceover-блоков (лист «план», строка 49). "
+            "Файл мог скачаться, но разбивка пустая или лист переименован — "
+            "проверь ответ ChatGPT."
         )
 
     project.status = ProjectStatus.frames_ready

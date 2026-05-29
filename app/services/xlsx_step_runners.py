@@ -29,14 +29,14 @@ def _count_v8_voiceover_blocks(xlsx_path: Path) -> int:
     """Сколько voiceover-блоков уже записано в v8-xlsx (после разбивки)."""
     from openpyxl import load_workbook
 
-    from app.services.xlsx_v8_import import SHEET_PLAN_V8, _read_voiceover_blocks
+    from app.services.xlsx_v8_import import _read_voiceover_blocks, has_v8_plan_sheet
 
     if not xlsx_path.exists():
         return 0
     try:
         wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
         try:
-            if SHEET_PLAN_V8 not in wb.sheetnames:
+            if not has_v8_plan_sheet(wb):
                 return 0
             return len(_read_voiceover_blocks(wb))
         finally:

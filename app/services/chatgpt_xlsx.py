@@ -20,7 +20,7 @@ from app.models import Project
 from app.services import gpt_text_builder as gtb
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_sync import reload_from_xlsx
-from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
+from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
 
 
@@ -228,7 +228,9 @@ async def sync_project_xlsx(
         wb = load_workbook(
             filename=str(xlsx_path), data_only=True, read_only=True
         )
-        is_v8 = SHEET_PLAN_V8 in wb.sheetnames
+        from app.services.xlsx_v8_import import has_v8_plan_sheet
+
+        is_v8 = has_v8_plan_sheet(wb)
         wb.close()
     except Exception as e:  # noqa: BLE001
         is_v8 = False

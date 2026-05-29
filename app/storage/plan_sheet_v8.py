@@ -14,21 +14,10 @@ from app.models import Project
 from app.services.xlsx_v8_import import (
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
-    SHEET_PLAN_V8,
     _cell_text,
+    _resolve_plan_sheet,
 )
 from app.storage.project_sheet import _file_lock
-
-
-def _resolve_plan_sheet(wb):
-    """Лист «план» (v8), без учёта регистра имени."""
-    if SHEET_PLAN_V8 in wb.sheetnames:
-        return wb[SHEET_PLAN_V8]
-    low = SHEET_PLAN_V8.casefold()
-    for name in wb.sheetnames:
-        if name.casefold() == low:
-            return wb[name]
-    return None
 
 
 def plan_frame_column(frame_number: int) -> int:
