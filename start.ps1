@@ -86,7 +86,8 @@ if ($cdpRunning) {
             Write-Host "ERROR: Chrome не найден в стандартных путях. Установи Chrome." -ForegroundColor Red
             exit 1
         }
-        $userDataDir = "$env:USERPROFILE\.vp_browser_data"
+        . (Join-Path $PSScriptRoot "scripts\VpBrowserProfile.ps1")
+        $userDataDir = Get-VpBrowserUserDataDir
         Write-Host ""
         Write-Host "    Запускаю отдельный Chrome для бота." -ForegroundColor Yellow
         Write-Host "    Залогинься в нём при первом запуске:" -ForegroundColor Yellow
