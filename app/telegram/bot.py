@@ -3874,14 +3874,19 @@ async def on_project_stop_running(cb: CallbackQuery) -> None:
         await s.commit()
 
         if info["stopped_kind"] == "running":
+            auto_note = (
+                "Автопродвижение включено — после перезапуска шага пайплайн "
+                "продолжит сам."
+                if project.auto_mode
+                else "Запустите шаг вручную или включите автопродвижение."
+            )
             status_msg = (
                 f"⏹ <b>Остановил шаг</b> «{info['step_title']}»\n"
                 f"Проект #{pid} «{_project_display_topic(project)}» "
                 f"(slug: <code>{slug}</code>)\n"
                 f"Статус: <code>{info['rollback_from']}</code> → "
                 f"<code>{info['rollback_to']}</code>.\n"
-                f"auto_mode выключен — воркер не будет автоматически "
-                f"перезапускать шаг."
+                f"{auto_note}"
             )
         else:
             xlsx_stopped = info["xlsx_stopped"]

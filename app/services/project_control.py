@@ -40,7 +40,6 @@ async def stop_project_running(
         )
         rollback_to_val = rollback_to.value
         project.status = rollback_to
-        project.auto_mode = False
         meta = dict(project.meta or {})
         chain_to = meta.pop("enrich_auto_chain_to", None)
         if chain_to is not None:
@@ -53,24 +52,21 @@ async def stop_project_running(
         project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
         logger.info(
-            "[#{}] STOP: rolled back {} -> {}, auto_mode=False "
-            "(user-requested via ⏹)",
+            "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
             project.id,
             cur.value,
             rollback_to.value,
+            project.auto_mode,
         )
         msg = (
-            f"остановлен шаг «{step_title}» → {rollback_to.value}, "
-            f"auto_mode выключен"
+            f"остановлен шаг «{step_title}» → {rollback_to.value}"
         )
     elif xlsx_stopped:
         ok = True
         stopped_kind = "xlsx"
-        project.auto_mode = False
         project.updated_at = datetime.utcnow()
         msg = (
-            f"остановлен xlsx-flow ({', '.join(xlsx_stopped)}), "
-            f"auto_mode выключен"
+            f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
         )
     else:
         msg = f"Нет активных шагов (статус: {project.status.value})."

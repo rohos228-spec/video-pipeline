@@ -1022,7 +1022,7 @@ function RunOverlay({
         onClick={handleStopProject}
         disabled={busy}
         className="pointer-events-auto gap-1.5 text-xs font-semibold"
-        title="Как ⏹ в Telegram: откат running-шага + выкл. auto_mode"
+        title="Откат running-шага; автопродвижение не сбрасывается"
       >
         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
         ⏹ Остановить текущий шаг

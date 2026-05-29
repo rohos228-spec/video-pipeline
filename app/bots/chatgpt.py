@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v80"
+CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v81"
 
 _ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
@@ -411,21 +411,38 @@ class ChatGPTBot:
         page: Page,
         *,
         timeout: float = ATTACH_UPLOAD_TIMEOUT_SEC,
+        guard_file_paths: list[Path] | None = None,
     ) -> str:
         """Ждём активную кнопку Send (после ввода текста / загрузки файлов)."""
         deadline = asyncio.get_event_loop().time() + timeout
         started = asyncio.get_event_loop().time()
         last_log = 0.0
         while asyncio.get_event_loop().time() < deadline:
+            if guard_file_paths:
+                health = await self._composer_attachment_health(guard_file_paths)
+                if not attachment_health_is_ok(health):
+                    detail = format_attachment_health_error(health)
+                    raise RuntimeError(
+                        "ChatGPT: вложения деградировали пока ждали Send — "
+                        f"{detail}"
+                    )
             sel, ok = await self._is_send_button_enabled(page)
             if ok and sel:
                 return sel
             now = asyncio.get_event_loop().time()
             if now - last_log >= ATTACH_UPLOAD_POLL_SEC:
+                att_note = ""
+                if guard_file_paths:
+                    health = await self._composer_attachment_health(guard_file_paths)
+                    att_note = (
+                        f", attachments={health.get('count')}/"
+                        f"{health.get('expected')}"
+                    )
                 logger.info(
-                    "ChatGPT: жду активную кнопку Send… ({:.0f}/{:.0f}с)",
+                    "ChatGPT: жду активную кнопку Send… ({:.0f}/{:.0f}с{})",
                     now - started,
                     timeout,
+                    att_note,
                 )
                 last_log = now
             await asyncio.sleep(ATTACH_UPLOAD_POLL_SEC)
@@ -479,13 +496,26 @@ class ChatGPTBot:
         had_draft: bool,
         send_timeout: float = 45,
         verify_timeout: float = 25,
+        guard_file_paths: list[Path] | None = None,
     ) -> None:
         """Клик по активной Send + проверка (как в рабочем TG/xlsx-flow)."""
         await self._dismiss_no_auth_modal(page)
         user_before = await self._count_user_messages()
-        send_sel = await self._wait_send_button_enabled(page, timeout=send_timeout)
+        send_sel = await self._wait_send_button_enabled(
+            page,
+            timeout=send_timeout,
+            guard_file_paths=guard_file_paths,
+        )
+        if guard_file_paths:
+            await self._guard_attachments_before_send(guard_file_paths)
+            await self._wait_attachments_stable(
+                guard_file_paths, settle_sec=min(ATTACH_SETTLE_SEC, 3.0)
+            )
         btn = page.locator(send_sel).first
-        logger.info("ChatGPT: Send активна ({}) — клик", send_sel)
+        logger.info(
+            "ChatGPT: Send активна ({}) — финальная проверка вложений ok, клик",
+            send_sel,
+        )
         try:
             await btn.click(timeout=8_000)
         except Exception as e:  # noqa: BLE001
@@ -551,7 +581,10 @@ class ChatGPTBot:
             await self._guard_attachments_before_send(guard_file_paths)
         page = await self._page_ready()
         await self._dispatch_composer_send(
-            page, had_draft=False, send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
+            page,
+            had_draft=False,
+            send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC,
+            guard_file_paths=guard_file_paths,
         )
 
     async def _count_attachment_previews(self) -> int:
@@ -694,15 +727,45 @@ class ChatGPTBot:
             "ChatGPT: текст в композере ({} симв.), отправляю через активную Send",
             len(stripped),
         )
-        if guard_file_paths:
-            await self._guard_attachments_before_send(guard_file_paths)
-        await self._dispatch_composer_send(
-            page,
-            had_draft=bool(stripped),
-            send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
-            if not clear_first
-            else 45.0,
+        max_send_attempts = (
+            ATTACH_GUARD_MAX_REPAIR if guard_file_paths else 1
         )
+        last_err: RuntimeError | None = None
+        for send_attempt in range(1, max_send_attempts + 1):
+            try:
+                if guard_file_paths:
+                    await self._guard_attachments_before_send(guard_file_paths)
+                await self._dispatch_composer_send(
+                    page,
+                    had_draft=bool(stripped),
+                    send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
+                    if not clear_first
+                    else 45.0,
+                    guard_file_paths=guard_file_paths if not clear_first else None,
+                )
+                return
+            except RuntimeError as e:
+                last_err = e
+                msg = str(e).lower()
+                if (
+                    not guard_file_paths
+                    or send_attempt >= max_send_attempts
+                    or ("вложен" not in msg and "attachment" not in msg)
+                ):
+                    raise
+                logger.warning(
+                    "ChatGPT: send attempt {}/{} failed ({}), re-attach",
+                    send_attempt,
+                    max_send_attempts,
+                    e,
+                )
+                await self._attach_files(guard_file_paths)
+                if stripped:
+                    input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
+                    if input_sel:
+                        await self._fill_composer_text(page, stripped, input_sel)
+        if last_err is not None:
+            raise last_err
 
     async def _dump_send_button_candidates(self, page: Page) -> None:
         """Если SEND_BUTTON_SELECTORS не сработали — логируем outerHTML всех
