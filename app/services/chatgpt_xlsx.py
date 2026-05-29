@@ -86,11 +86,31 @@ def write_script_prompt_file(
         "script",
         "Мастер-промт для шага «Закадровый текст» ещё не настроен.",
     )
+    hero_hint = {
+        "hero": (
+            "РЕЖИМ: A (герой). В плане hero_needed=true. "
+            "Найди главного персонажа по теме и плану, "
+            "пиши персонажный сценарий — см. раздел «РЕЖИМ A» в инструкции."
+        ),
+        "no_hero": (
+            "РЕЖИМ: B (тема). hero_needed=false. "
+            "Без биографического героя — подробно раскрой тему, "
+            "см. раздел «РЕЖИМ B» в инструкции."
+        ),
+        "auto": (
+            "РЕЖИМ: определи сам по листу «Общий план» в xlsx "
+            "(hero_needed и содержание плана) — A или B."
+        ),
+    }.get(project.hero_mode or "auto", "")
+    from app.services.gpt_text_builder import inject_topic_placeholders
+
+    prompt_text = inject_topic_placeholders(prompt_text, topic)
+    extra = f"\n\n---\n\nУКАЗАНИЕ ПРОЕКТА:\n{hero_hint}\n" if hero_hint else ""
     prompt_file = tmp_dir / f"prompt_script_{ts or _timestamp()}.txt"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 2 «Закадровый текст»)\n"
         f"# Тема ролика: «{topic}»\n\n"
-        f"{prompt_text}\n",
+        f"{prompt_text}{extra}\n",
         encoding="utf-8",
     )
     return prompt_file
