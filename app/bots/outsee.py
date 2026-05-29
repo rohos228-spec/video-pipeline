@@ -1147,14 +1147,23 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         dumps: list[Path] = []
-        try:
-            await await_with_cancel(
-                page.goto(page_url, wait_until="domcontentloaded"), project_id
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "outsee.generate_image: page.goto({}) упал: {} — продолжаю "
-                "без явного reload", page_url, e,
+        from app.bots.browser import url_base_for_reuse
+
+        page_base = url_base_for_reuse(page_url)
+        cur_base = url_base_for_reuse(page.url or "")
+        if cur_base != page_base:
+            try:
+                await await_with_cancel(
+                    page.goto(page_url, wait_until="domcontentloaded"), project_id
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "outsee.generate_image: page.goto({}) упал: {} — продолжаю "
+                    "без явного reload", page_url, e,
+                )
+        else:
+            logger.info(
+                "outsee.generate_image: та же вкладка outsee image — без reload"
             )
         await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
         try:
@@ -3431,8 +3440,10 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         dumps: list[Path] = []
-        page_base = page_url.split("?", 1)[0]
-        cur_base = (page.url or "").split("?", 1)[0]
+        from app.bots.browser import url_base_for_reuse
+
+        page_base = url_base_for_reuse(page_url)
+        cur_base = url_base_for_reuse(page.url or "")
         if cur_base != page_base:
             try:
                 await await_with_cancel(
