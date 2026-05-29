@@ -18,11 +18,34 @@ from app.models import Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import xlsx_gpt_flow as xgf
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
+from app.services.voiceover_split_local import (
+    parse_dash_separated_blocks,
+    split_voiceover_locally,
+    write_voiceover_blocks_to_xlsx,
+)
 from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v72"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v73"
+
+
+def _apply_split_fallback(
+    xlsx_path: Path,
+    voiceover_path: Path,
+    *,
+    gpt_reply: str,
+) -> int:
+    """GPT часто не пишет R49 — пробуем блоки из ответа или voiceover.txt."""
+    blocks = parse_dash_separated_blocks(gpt_reply)
+    if len(blocks) < 2 and voiceover_path.exists():
+        blocks = split_voiceover_locally(
+            voiceover_path.read_text(encoding="utf-8")
+        )
+    if len(blocks) < 2:
+        return _count_v8_voiceover_blocks(xlsx_path)
+    write_voiceover_blocks_to_xlsx(xlsx_path, blocks)
+    return _count_v8_voiceover_blocks(xlsx_path)
 
 
 def diagnose_split_xlsx(xlsx_path: Path) -> str:
@@ -38,7 +61,7 @@ def diagnose_split_xlsx(xlsx_path: Path) -> str:
     if not xlsx_path.exists():
         return f"файл не найден: {xlsx_path}"
     try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        wb = load_workbook(filename=str(xlsx_path), data_only=True)
         try:
             sheets = list(wb.sheetnames)
             if not has_v8_plan_sheet(wb):
@@ -63,7 +86,7 @@ def _count_v8_voiceover_blocks(xlsx_path: Path) -> int:
     if not xlsx_path.exists():
         return 0
     try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        wb = load_workbook(filename=str(xlsx_path), data_only=True)
         try:
             if not has_v8_plan_sheet(wb):
                 return 0
@@ -304,6 +327,11 @@ async def run_split_xlsx(
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
 
     downloaded_blocks = _count_v8_voiceover_blocks(downloaded)
+    if downloaded_blocks < 2:
+        downloaded_blocks = _apply_split_fallback(
+            downloaded, voiceover, gpt_reply=reply or ""
+        )
+
     on_disk_blocks = _count_v8_voiceover_blocks(proj_xlsx)
     logger.info(
         "split_xlsx: voiceover blocks — downloaded={}, project.xlsx={}",
@@ -324,12 +352,22 @@ async def run_split_xlsx(
         )
         downloaded = proj_xlsx
     else:
-        diag = diagnose_split_xlsx(downloaded)
-        raise RuntimeError(
-            "разбивка не найдена в xlsx после GPT — "
-            f"downloaded={downloaded_blocks} блоков, "
-            f"project.xlsx={on_disk_blocks} блоков. {diag}"
+        on_disk_blocks = _apply_split_fallback(
+            proj_xlsx, voiceover, gpt_reply=reply or ""
         )
+        if on_disk_blocks >= 2:
+            logger.warning(
+                "split_xlsx: applied local fallback — {} blocks in project.xlsx",
+                on_disk_blocks,
+            )
+            downloaded = proj_xlsx
+        else:
+            diag = diagnose_split_xlsx(downloaded)
+            raise RuntimeError(
+                "разбивка не найдена в xlsx после GPT — "
+                f"downloaded={downloaded_blocks} блоков, "
+                f"project.xlsx={on_disk_blocks} блоков. {diag}"
+            )
 
     return XlsxRoundtripResult(
         reply_text=reply,

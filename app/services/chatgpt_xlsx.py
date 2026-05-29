@@ -254,6 +254,8 @@ async def sync_project_xlsx(
             logger.warning(
                 "[#{}] sync_project_xlsx v8 failed: {}", project.id, e
             )
+            if update_frames_voiceover:
+                raise
     try:
         info_v7 = await reload_from_xlsx(session, project, xlsx_path)
         logger.info("[#{}] sync_project_xlsx v7: {}", project.id, info_v7)
@@ -261,6 +263,8 @@ async def sync_project_xlsx(
             sync_info = info_v7
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] sync_project_xlsx v7 failed: {}", project.id, e)
+    if sync_info and sync_info.get("error") and update_frames_voiceover:
+        raise RuntimeError(f"xlsx-sync: {sync_info['error']}")
     return sync_info
 
 
