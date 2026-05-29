@@ -32,6 +32,7 @@ if (Test-Path $dest) {
 
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
 Copy-Item -Path (Join-Path $src "*") -Destination $dest -Recurse -Force
+Clear-VpChromeProfileLocks -UserDataDir $dest
 
 Write-Host ""
 Write-Host "[ok] Profile copied. Run Start-Chrome.cmd" -ForegroundColor Green

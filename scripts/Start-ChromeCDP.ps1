@@ -15,7 +15,14 @@ Write-Host "Profile: $(Get-VpBrowserUserDataDir)" -ForegroundColor Yellow
 Write-Host "Log in once - sessions are saved in this folder." -ForegroundColor DarkGray
 Write-Host ""
 
-Start-VpChromeCdp -OpenUrl $OpenUrl -ForceNew:$ForceNew
+try {
+    Start-VpChromeCdp -OpenUrl $OpenUrl -ForceNew:$ForceNew
+} catch {
+    Write-Host ""
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Show-VpChromeDiagnostics -Port 29229
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Keep Chrome open while the pipeline runs." -ForegroundColor Yellow
