@@ -22,7 +22,61 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v70"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v71"
+
+
+def _count_v8_voiceover_blocks(xlsx_path: Path) -> int:
+    """Сколько voiceover-блоков уже записано в v8-xlsx (после разбивки)."""
+    from openpyxl import load_workbook
+
+    from app.services.xlsx_v8_import import SHEET_PLAN_V8, _read_voiceover_blocks
+
+    if not xlsx_path.exists():
+        return 0
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        try:
+            if SHEET_PLAN_V8 not in wb.sheetnames:
+                return 0
+            return len(_read_voiceover_blocks(wb))
+        finally:
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("split_xlsx: cannot count voiceover blocks in {}: {}", xlsx_path, e)
+        return 0
+
+
+def _try_reuse_split_download(
+    tmp_dir: Path, proj_xlsx: Path, *, min_blocks: int = 2
+) -> XlsxRoundtripResult | None:
+    """Если GPT уже отдал xlsx в tmp_gpt, не дергаем ChatGPT повторно."""
+    candidates = sorted(
+        tmp_dir.glob("split_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates[:5]:
+        if candidate.stat().st_size < 1024:
+            continue
+        if validate_xlsx(candidate) is not None:
+            continue
+        blocks = _count_v8_voiceover_blocks(candidate)
+        if blocks < min_blocks:
+            continue
+        backup = backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, candidate)
+        logger.info(
+            "split_xlsx: reuse downloaded {} ({} voiceover blocks) — skip GPT",
+            candidate.name,
+            blocks,
+        )
+        return XlsxRoundtripResult(
+            reply_text="",
+            downloaded_path=candidate,
+            project_xlsx=proj_xlsx,
+            backup_path=backup,
+        )
+    return None
 
 
 @dataclass
@@ -180,6 +234,22 @@ async def run_split_xlsx(
         project, "split", prompt_file_name=prompt_file.name
     )
     downloaded = tmp_dir / f"split_{ts}.xlsx"
+
+    existing_blocks = _count_v8_voiceover_blocks(proj_xlsx)
+    if existing_blocks >= 2:
+        logger.info(
+            "split_xlsx: project.xlsx already has {} voiceover blocks — skip GPT",
+            existing_blocks,
+        )
+        return XlsxRoundtripResult(
+            reply_text="",
+            downloaded_path=proj_xlsx,
+            project_xlsx=proj_xlsx,
+        )
+
+    reused = _try_reuse_split_download(tmp_dir, proj_xlsx)
+    if reused is not None:
+        return reused
 
     logger.info(
         "split_xlsx: prompt={}, xlsx={}, voiceover={}, chat_len={}",

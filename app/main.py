@@ -270,6 +270,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     from app.services.advance_runner import advance_project_job
     from app.services.step_cancel import (
         StepCancelledError,
+        is_generation_active,
         register_advance_task,
         unregister_advance_task,
     )
@@ -341,6 +342,13 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 p.id,
                                 info["message"],
                             )
+                        continue
+                    if is_generation_active(p.id):
+                        logger.debug(
+                            "worker: #{} {} — шаг уже выполняется, пропуск тика",
+                            p.id,
+                            p.status.value,
+                        )
                         continue
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value

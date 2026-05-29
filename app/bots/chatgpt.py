@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v81"
+CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v82"
 
 _ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
@@ -746,6 +746,17 @@ class ChatGPTBot:
                 return
             except RuntimeError as e:
                 last_err = e
+                page = await self._page_ready()
+                for sel in STOP_BUTTON_SELECTORS:
+                    try:
+                        if await page.locator(sel).count() > 0:
+                            logger.info(
+                                "ChatGPT: генерация уже идёт — "
+                                "не повторяю send/re-attach"
+                            )
+                            return
+                    except Exception:  # noqa: BLE001
+                        continue
                 msg = str(e).lower()
                 if (
                     not guard_file_paths

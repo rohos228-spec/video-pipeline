@@ -32,6 +32,7 @@ from app.services import xlsx_gpt_flow as xgf
 from app.services import xlsx_sync
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
+from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
@@ -155,6 +156,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             break  # успех
         except Exception as e:  # noqa: BLE001
             last_err = e
+            xlsx_ok = (
+                xlsx_path.exists()
+                and xlsx_path.stat().st_size >= 1024
+                and validate_xlsx(xlsx_path) is None
+            )
+            if xlsx_ok:
+                logger.warning(
+                    "[#{}] enrich_xlsx slot={} GPT error after valid xlsx on disk "
+                    "({} байт) — skip retry, use downloaded file: {}",
+                    project.id,
+                    slot_idx,
+                    xlsx_path.stat().st_size,
+                    e,
+                )
+                break
             logger.warning(
                 "[#{}] enrich_xlsx slot={} attempt {}/{} FAILED: {}",
                 project.id,
