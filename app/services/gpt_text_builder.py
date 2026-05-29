@@ -410,11 +410,15 @@ def get_effective_text(project: Project, step_code: str, **ctx) -> str:
     1. Если в `project.gpt_text_overrides[step_code]` есть непустой текст —
        вернёт его.
     2. Иначе соберёт дефолт из мастер-промта + контекста проекта.
+    3. Для plan/script/split — дописывает блок параметров из meta.
     """
+    from app.services.node_step_params import append_step_params_to_gpt_text
+
     override = get_override(project, step_code)
-    if override is not None:
-        return override
-    return build_default_text(project, step_code, **ctx)
+    body = override if override is not None else build_default_text(project, step_code, **ctx)
+    if step_code in ("plan", "script", "split"):
+        return append_step_params_to_gpt_text(project, step_code, body)
+    return body
 
 
 async def set_override(
