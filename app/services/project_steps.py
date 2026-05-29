@@ -49,6 +49,14 @@ async def start_step(
     assert_not_factory_template_for_generation(project)
     await assert_step_allowed_by_graph(session, project, step_code)
     clear_stop(project.id)
+    meta = dict(project.meta or {})
+    if meta.pop("mass_lane_user_stop", None) is not None:
+        project.meta = meta
+        logger.info(
+            "[#{}] start_step {}: cleared mass_lane_user_stop",
+            project.id,
+            step_code,
+        )
     try:
         wiped = await clear_step_outputs_for_rerun(session, project, step_code)
         if wiped:

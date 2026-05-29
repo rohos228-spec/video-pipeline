@@ -8,8 +8,9 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
+from app.services.mass_factory import mass_parent_id
 from app.services.project_state import is_running_status
-from app.services.step_cancel import is_generation_active, request_stop
+from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
@@ -51,6 +52,15 @@ async def stop_project_running(
             )
         project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
+        clear_stop(project.id)
+        if mass_parent_id(project) is not None:
+            meta = dict(project.meta or {})
+            meta["mass_lane_user_stop"] = True
+            project.meta = meta
+            logger.info(
+                "[#{}] STOP: mass lane paused (mass_lane_user_stop) until manual start",
+                project.id,
+            )
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
             project.id,
