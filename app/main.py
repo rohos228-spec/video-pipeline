@@ -214,14 +214,39 @@ async def _recompute_all_projects() -> None:
 
 def _running_status_requires(
     running_status: ProjectStatus,
+    project: Project | None = None,
 ) -> ProjectStatus | None:
     """Найти `requires` шага, чей running_status == running_status.
 
     Используется при анти-зацикливании: чтобы откатить упавший проект
     к prerequisite предыдущего шага (а не в тупиковый `failed`).
+
+    Для `generating_hero` после enrich-слотов откатываемся к последнему
+    `enrich_N_ready`, а не к `frames_ready` — иначе граф заново запустит
+    уже пройденные enrich-шаги.
     """
     # Импорт внутри функции, чтобы избежать кругового импорта на старте.
+    from app.models import ProjectStatus as PS
     from app.telegram.menu import step_by_running_status
+
+    if running_status is PS.generating_hero and project is not None:
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        slots: list[int] = []
+        for raw in meta.get("enrich_completed_slots") or []:
+            try:
+                slots.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if slots:
+            slot_ready = {
+                1: PS.enrich_1_ready,
+                2: PS.enrich_2_ready,
+                3: PS.enrich_3_ready,
+                4: PS.enrich_4_ready,
+                5: PS.enrich_5_ready,
+            }.get(max(slots))
+            if slot_ready is not None:
+                return slot_ready
 
     step = step_by_running_status(running_status)
     return step.requires if step is not None else None
@@ -371,7 +396,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 # НЕ ставим `failed`: он лочит всё меню.
                                 prev_running = p.status
                                 requires = _running_status_requires(
-                                    prev_running
+                                    prev_running, p
                                 )
                                 if requires is None:
                                     # Шаг 1 (planning) — откатываемся в `new`.

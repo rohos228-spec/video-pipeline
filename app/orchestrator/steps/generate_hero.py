@@ -256,6 +256,50 @@ async def _v1_artifact_for_hero(
     return None
 
 
+async def _bootstrap_excel_hero_from_xlsx(
+    session: AsyncSession,
+    project: Project,
+) -> dict | None:
+    """Подтянуть лист «Персонажи» в meta['excel_hero'], если hero не задан вручную."""
+    xlsx = project.data_dir / "project.xlsx"
+    if not xlsx.exists():
+        return None
+
+    meta = dict(project.meta or {})
+    if project.hero_mode == "no_hero":
+        return None
+
+    has_manual_hero = bool(
+        (project.hero_description or "").strip()
+        or (project.hero_count and project.hero_count > 0)
+        or any((d or "").strip() for d in (project.hero_descriptions or []))
+    )
+    if has_manual_hero and not meta.get("excel_hero_enabled"):
+        return None
+
+    from app.services.excel_characters import parse_persons_sheet
+
+    try:
+        chars = parse_persons_sheet(xlsx)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[#{}] excel_hero bootstrap: parse failed: {}", project.id, e)
+        return None
+
+    if not chars:
+        return None
+
+    cfg = {"characters": [c.to_dict() for c in chars]}
+    meta["excel_hero"] = cfg
+    project.meta = meta
+    await session.flush()
+    logger.info(
+        "[#{}] excel_hero bootstrap: {} персонаж(ей) из project.xlsx",
+        project.id,
+        len(chars),
+    )
+    return cfg
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
         return
@@ -266,6 +310,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # в этом режиме не используются.
     meta = dict(project.meta or {})
     excel_cfg = meta.get("excel_hero")
+    if not (excel_cfg and isinstance(excel_cfg, dict)):
+        excel_cfg = await _bootstrap_excel_hero_from_xlsx(session, project)
     if excel_cfg and isinstance(excel_cfg, dict):
         await _run_excel(session, project, bot, excel_cfg)
         return

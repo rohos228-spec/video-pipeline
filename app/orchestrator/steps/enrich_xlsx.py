@@ -229,15 +229,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.telegram.menu import status_order as _ord
 
     cur = project.status
+    meta = dict(project.meta or {})
+    completed = [int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+        project.meta = meta
+
     if _ord(cur) < _ord(ready_status):
         project.status = ready_status
-        await session.flush()
-        logger.info(
-            "[#{}] enrich_xlsx slot={} → status={}",
-            project.id,
-            slot_idx,
-            ready_status.value,
-        )
+    await session.flush()
+    logger.info(
+        "[#{}] enrich_xlsx slot={} → status={}",
+        project.id,
+        slot_idx,
+        project.status.value,
+    )
 
     # 6. Auto-chain — если юзер запустил «▶▶ Запустить все слоты подряд»,
     # `project.meta['enrich_auto_chain_to']` хранит целевой номер слота
