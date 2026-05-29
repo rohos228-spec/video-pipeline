@@ -1,5 +1,4 @@
-# Общий профиль Chrome для video-pipeline (ChatGPT, outsee, 11Labs).
-# Логины живут здесь — при смене ПК скопируй эту папку (Restore-Chrome-Profile.cmd).
+# Chrome profile for video-pipeline (ChatGPT, outsee). Logins: %USERPROFILE%\.vp_browser_data
 
 function Get-VpRepoRoot {
     param([string]$StartDir = $PSScriptRoot)
@@ -62,7 +61,7 @@ function Start-VpChromeCdp {
     )
     $chrome = Find-VpChromeExe
     if (-not $chrome) {
-        throw "Chrome не найден. Установи Google Chrome."
+        throw "Chrome not found. Install Google Chrome."
     }
     $userDataDir = Get-VpBrowserUserDataDir
     if (-not (Test-Path $userDataDir)) {
@@ -70,15 +69,15 @@ function Start-VpChromeCdp {
     }
 
     if ((Test-VpChromeCdp -Port $Port) -and -not $ForceNew) {
-        Write-Host "[ok] Chrome CDP уже на :$Port — профиль: $userDataDir" -ForegroundColor Green
+        Write-Host "[ok] Chrome CDP already on :$Port profile: $userDataDir" -ForegroundColor Green
         if ($OpenUrl) {
             Start-Process -FilePath $chrome -ArgumentList @("--user-data-dir=$userDataDir", $OpenUrl)
         }
         return
     }
 
-    Write-Host "Запуск Chrome CDP :$Port" -ForegroundColor Cyan
-    Write-Host "Профиль (логины): $userDataDir" -ForegroundColor DarkGray
+    Write-Host "Starting Chrome CDP :$Port" -ForegroundColor Cyan
+    Write-Host "Profile: $userDataDir" -ForegroundColor DarkGray
     $args = @(
         "--remote-debugging-port=$Port",
         "--user-data-dir=$userDataDir",
@@ -93,9 +92,9 @@ function Start-VpChromeCdp {
         Start-Sleep -Seconds 1
         $waited++
         if (Test-VpChromeCdp -Port $Port) {
-            Write-Host "[ok] CDP готов за $waited сек" -ForegroundColor Green
+            Write-Host "[ok] CDP ready in $waited sec" -ForegroundColor Green
             return
         }
     }
-    Write-Warning "CDP не ответил за 25 сек — проверь окно Chrome"
+    Write-Warning "CDP did not respond in 25 sec - check Chrome window"
 }
