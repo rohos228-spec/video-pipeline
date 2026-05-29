@@ -22,7 +22,36 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v71"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v72"
+
+
+def diagnose_split_xlsx(xlsx_path: Path) -> str:
+    """Краткая диагностика для ошибок split: листы + блоки R49."""
+    from openpyxl import load_workbook
+
+    from app.services.xlsx_v8_import import (
+        ROW_VOICEOVER_V8,
+        _read_voiceover_blocks,
+        has_v8_plan_sheet,
+    )
+
+    if not xlsx_path.exists():
+        return f"файл не найден: {xlsx_path}"
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        try:
+            sheets = list(wb.sheetnames)
+            if not has_v8_plan_sheet(wb):
+                return (
+                    f"листы={sheets!r} — нет листа «план» (v8); "
+                    f"voiceover должен быть в строке {ROW_VOICEOVER_V8}"
+                )
+            blocks = len(_read_voiceover_blocks(wb))
+            return f"листы={sheets!r}, voiceover-блоков (R{ROW_VOICEOVER_V8})={blocks}"
+        finally:
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        return f"не удалось прочитать {xlsx_path.name}: {e}"
 
 
 def _count_v8_voiceover_blocks(xlsx_path: Path) -> int:
@@ -274,8 +303,34 @@ async def run_split_xlsx(
     if validation_err is not None:
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
 
-    backup = backup_to_old(proj_xlsx)
-    replace_with(proj_xlsx, downloaded)
+    downloaded_blocks = _count_v8_voiceover_blocks(downloaded)
+    on_disk_blocks = _count_v8_voiceover_blocks(proj_xlsx)
+    logger.info(
+        "split_xlsx: voiceover blocks — downloaded={}, project.xlsx={}",
+        downloaded_blocks,
+        on_disk_blocks,
+    )
+
+    backup: Path | None = None
+    if downloaded_blocks >= 2:
+        backup = backup_to_old(proj_xlsx)
+        replace_with(proj_xlsx, downloaded)
+    elif on_disk_blocks >= 2:
+        logger.warning(
+            "split_xlsx: GPT xlsx has {} blocks (<2) — keeping project.xlsx "
+            "({} blocks), skip replace",
+            downloaded_blocks,
+            on_disk_blocks,
+        )
+        downloaded = proj_xlsx
+    else:
+        diag = diagnose_split_xlsx(downloaded)
+        raise RuntimeError(
+            "разбивка не найдена в xlsx после GPT — "
+            f"downloaded={downloaded_blocks} блоков, "
+            f"project.xlsx={on_disk_blocks} блоков. {diag}"
+        )
+
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=downloaded,
@@ -350,8 +405,8 @@ async def sync_after_plan(
 
 async def sync_after_split(
     session: AsyncSession, project: Project, xlsx_path: Path
-) -> None:
-    await cx.sync_project_xlsx(
+) -> dict | None:
+    return await cx.sync_project_xlsx(
         session,
         project,
         xlsx_path,

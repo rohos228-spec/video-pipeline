@@ -547,6 +547,15 @@ async def _startup_maintenance() -> None:
 
 
 async def main() -> None:
+    import sys
+
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                with contextlib.suppress(Exception):
+                    reconfigure(encoding="utf-8", errors="replace")
+
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
         settings.telegram_owner_chat_id,
