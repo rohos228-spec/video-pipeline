@@ -75,6 +75,14 @@ MASS_CHILD_DONE_STATUSES = frozenset(
 )
 
 
+def apply_mass_factory_defaults(project: Project) -> None:
+    """Mass factory template: auto-advance ON (children copy this too)."""
+    project.auto_mode = True
+    meta = dict(project.meta or {})
+    meta["mass_factory"] = True
+    project.meta = meta
+
+
 def is_mass_factory_parent(project: Project) -> bool:
     meta = project.meta if isinstance(project.meta, dict) else {}
     return bool(meta.get("mass_factory"))
@@ -221,6 +229,7 @@ async def create_mass_child(
 ) -> Project:
     meta_template = dict(template.meta or {})
     kwargs = {f: getattr(template, f) for f in COPY_PROJECT_FIELDS}
+    kwargs["auto_mode"] = True
     slug = await _unique_slug(session, topic, slugify)
     child = Project(
         slug=slug,
@@ -293,8 +302,8 @@ async def apply_topics_upload(
     filename: str,
 ) -> dict[str, Any]:
     """Правило B: новый Excel заменяет необработанную очередь."""
+    apply_mass_factory_defaults(parent)
     meta = dict(parent.meta or {})
-    meta["mass_factory"] = True
     meta["mass_excel_topics"] = topics
     meta["mass_excel_file"] = filename
     meta["mass_excel_revision"] = int(meta.get("mass_excel_revision") or 0) + 1
@@ -356,6 +365,7 @@ async def start_mass_queue(
     topics: list[str] | None,
     slugify,
 ) -> dict[str, Any]:
+    apply_mass_factory_defaults(parent)
     meta = dict(parent.meta or {})
     meta["mass_factory"] = True
     queue = [str(t).strip() for t in (topics or meta.get("mass_queue_topics") or []) if str(t).strip()]

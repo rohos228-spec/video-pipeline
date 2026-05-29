@@ -35,7 +35,7 @@ export function NewProjectWizard({
   const [wizIndex, setWizIndex] = useState(0);
   const [topic, setTopic] = useState("");
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const [autoMode, setAutoMode] = useState(false);
+  const [autoMode, setAutoMode] = useState(true);
   const [answers, setAnswers] = useState<WizardAnswers>({});
 
   const catalog = useQuery({
@@ -61,7 +61,7 @@ export function NewProjectWizard({
     setWizIndex(0);
     setTopic("");
     setHeroMode("auto");
-    setAutoMode(false);
+    setAutoMode(true);
     setAnswers({});
   };
 
