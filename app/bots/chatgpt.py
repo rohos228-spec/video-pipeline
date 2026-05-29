@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "anim-pr-two-phase-v79"
+CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v80"
 
 _ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
@@ -35,6 +35,29 @@ _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
 # Ожидание загрузки вложений в композер (тяжёлые пачки PNG могут грузиться >60с).
 ATTACH_UPLOAD_TIMEOUT_SEC = 180.0
 ATTACH_UPLOAD_POLL_SEC = 5.0
+# После «готово» ChatGPT иногда отклоняет xlsx через 1–5 с — ждём стабилизации.
+ATTACH_SETTLE_SEC = 5.0
+ATTACH_SETTLE_POLL_SEC = 0.5
+ATTACH_GUARD_MAX_REPAIR = 3
+
+# Фразы ошибок загрузки в композере (EN/RU).
+ATTACHMENT_FAILURE_PHRASES: tuple[str, ...] = (
+    "upload failed",
+    "failed to upload",
+    "couldn't upload",
+    "could not upload",
+    "unable to upload",
+    "file too large",
+    "exceeds the limit",
+    "unsupported file",
+    "invalid file",
+    "error uploading",
+    "не удалось загрузить",
+    "ошибка загрузки",
+    "не удалось прикрепить",
+    "файл слишком больш",
+    "неподдерживаем",
+)
 
 # ChatGPT при повторном drop одного имени добавляет суффикс: frame_001.png → frame_001(3).png
 _ATTACHMENT_DEDUP_SUFFIX = re.compile(r"\(\d+\)")
@@ -57,6 +80,40 @@ def attachment_name_visible_in_text(expected_filename: str, composer_text: str) 
     )
     return bool(re.search(pattern, composer_text, re.IGNORECASE))
 
+
+def find_attachment_failure_phrases(composer_text: str) -> list[str]:
+    """Подстроки из ATTACHMENT_FAILURE_PHRASES, найденные в тексте композера."""
+    hay = (composer_text or "").lower()
+    if not hay:
+        return []
+    return [p for p in ATTACHMENT_FAILURE_PHRASES if p in hay]
+
+
+def attachment_health_is_ok(health: dict) -> bool:
+    return (
+        not health.get("errors")
+        and not health.get("missing")
+        and int(health.get("count") or 0) >= int(health.get("expected") or 0)
+        and int(health.get("loading") or 0) == 0
+    )
+
+
+def format_attachment_health_error(health: dict) -> str:
+    parts: list[str] = []
+    count = int(health.get("count") or 0)
+    expected = int(health.get("expected") or 0)
+    if count < expected:
+        parts.append(f"count {count}/{expected}")
+    loading = int(health.get("loading") or 0)
+    if loading:
+        parts.append(f"loading={loading}")
+    missing = health.get("missing") or []
+    if missing:
+        parts.append(f"missing=[{', '.join(missing)}]")
+    errors = health.get("errors") or []
+    if errors:
+        parts.append(f"errors=[{'; '.join(str(e) for e in errors[:3])}]")
+    return ", ".join(parts) or "attachments not healthy"
 
 # Селекторы для file-input и download-ссылок в чате (с запасом).
 FILE_INPUT_SELECTORS = [
@@ -478,8 +535,12 @@ class ChatGPTBot:
             await page.keyboard.insert_text(stripped)
         await asyncio.sleep(0.6)
 
-    async def _click_send(self) -> None:
+    async def _click_send(
+        self, *, guard_file_paths: list[Path] | None = None
+    ) -> None:
         """Нажать Send без ввода текста в композер (только вложения)."""
+        if guard_file_paths:
+            await self._guard_attachments_before_send(guard_file_paths)
         page = await self._page_ready()
         await self._dispatch_composer_send(
             page, had_draft=False, send_timeout=ATTACH_UPLOAD_TIMEOUT_SEC
@@ -589,7 +650,13 @@ class ChatGPTBot:
             await asyncio.sleep(0.4)
         return removed
 
-    async def _send_prompt(self, text: str, *, clear_first: bool = True) -> None:
+    async def _send_prompt(
+        self,
+        text: str,
+        *,
+        clear_first: bool = True,
+        guard_file_paths: list[Path] | None = None,
+    ) -> None:
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
         input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
@@ -619,6 +686,8 @@ class ChatGPTBot:
             "ChatGPT: текст в композере ({} симв.), отправляю через активную Send",
             len(stripped),
         )
+        if guard_file_paths:
+            await self._guard_attachments_before_send(guard_file_paths)
         await self._dispatch_composer_send(
             page,
             had_draft=bool(stripped),
@@ -901,6 +970,151 @@ class ChatGPTBot:
         )
         return dict(raw or {"ok": False, "count": 0, "loading": 0, "reason": "eval"})
 
+    async def _composer_attachment_dom_errors(self) -> list[str]:
+        """Ошибки загрузки в DOM композера (alert, data-testid=error, красные плитки)."""
+        page = await self._page_ready()
+        raw = await page.evaluate(
+            """() => {
+                const form = document.querySelector('main form')
+                    || document.querySelector('form[data-type="unified-composer"]')
+                    || document.querySelector('form');
+                if (!form) return ['composer form not found'];
+                const errors = [];
+                const push = (t) => {
+                    const s = (t || '').trim();
+                    if (s && s.length < 300 && !errors.includes(s)) errors.push(s);
+                };
+                for (const sel of [
+                    "[role='alert']",
+                    "[data-testid*='error']",
+                    "[data-testid*='upload-failed']",
+                    "[data-testid*='upload_failed']",
+                ]) {
+                    for (const el of form.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) push(el.innerText || el.textContent);
+                    }
+                }
+                for (const tile of form.querySelectorAll(
+                    "[data-testid*='attachment'], [data-testid*='file-preview'], "
+                    + "[class*='attachment'], [class*='Attachment']"
+                )) {
+                    const r = tile.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) continue;
+                    const t = (tile.innerText || tile.textContent || '').trim();
+                    const cls = String(tile.className || '');
+                    const style = window.getComputedStyle(tile);
+                    const failText = /fail|error|couldn|unable|invalid|too large|limit|не удал|ошибк/i.test(t);
+                    const redish = /red|destructive|error/i.test(cls)
+                        || /rgb\\(239|rgb\\(220|rgb\\(248, 113|rgb\\(185, 28/.test(style.color)
+                        || /rgb\\(239|rgb\\(220|rgb\\(248, 113|rgb\\(185, 28/.test(style.borderColor);
+                    if (failText || (redish && t.length > 0 && !/remove|удал/i.test(t))) {
+                        push(t);
+                    }
+                }
+                return errors;
+            }"""
+        )
+        return [str(x) for x in (raw or []) if str(x).strip()]
+
+    async def _composer_attachment_health(
+        self, file_paths: list[Path]
+    ) -> dict[str, int | str | bool | list[str]]:
+        """Полная проверка вложений: count, имена, спиннеры, ошибки UI."""
+        expected = len(file_paths)
+        state = await self._attachments_upload_state(expected)
+        text = await self._composer_attachment_text()
+        labels = await self._composer_attachment_labels()
+        haystack = f"{text}\n{labels}".strip()
+        missing = [
+            fp.name
+            for fp in file_paths
+            if not attachment_name_visible_in_text(fp.name, haystack)
+        ]
+        dom_errors = await self._composer_attachment_dom_errors()
+        phrase_errors = find_attachment_failure_phrases(haystack)
+        errors = list(dict.fromkeys([*dom_errors, *phrase_errors]))
+        count = int(state.get("count") or 0)
+        loading = int(state.get("loading") or 0)
+        health: dict[str, int | str | bool | list[str]] = {
+            "ok": False,
+            "count": count,
+            "expected": expected,
+            "loading": loading,
+            "missing": missing,
+            "errors": errors,
+        }
+        health["ok"] = attachment_health_is_ok(health)
+        return health
+
+    async def _wait_attachments_stable(
+        self,
+        file_paths: list[Path],
+        *,
+        settle_sec: float = ATTACH_SETTLE_SEC,
+    ) -> None:
+        """Ждём, что вложения не «отвалятся» после первичного ok (xlsx часто позже)."""
+        deadline = asyncio.get_event_loop().time() + settle_sec
+        started = asyncio.get_event_loop().time()
+        last_log = 0.0
+        while asyncio.get_event_loop().time() < deadline:
+            health = await self._composer_attachment_health(file_paths)
+            if not attachment_health_is_ok(health):
+                raise RuntimeError(
+                    "ChatGPT: вложения нестабильны — "
+                    f"{format_attachment_health_error(health)}"
+                )
+            now = asyncio.get_event_loop().time()
+            if now - last_log >= ATTACH_UPLOAD_POLL_SEC:
+                logger.info(
+                    "ChatGPT: settle check {:.0f}/{:.0f}с — ok {}/{}",
+                    now - started,
+                    settle_sec,
+                    health.get("count"),
+                    health.get("expected"),
+                )
+                last_log = now
+            await asyncio.sleep(ATTACH_SETTLE_POLL_SEC)
+
+    async def _guard_attachments_before_send(
+        self,
+        file_paths: list[Path],
+        *,
+        max_repair_attempts: int = ATTACH_GUARD_MAX_REPAIR,
+    ) -> None:
+        """Перед Send: проверка + пересборка вложений при ошибке/пропаже файла."""
+        if not file_paths:
+            return
+        names = ", ".join(p.name for p in file_paths)
+        for attempt in range(1, max_repair_attempts + 1):
+            health = await self._composer_attachment_health(file_paths)
+            if attachment_health_is_ok(health):
+                if attempt > 1:
+                    logger.info(
+                        "ChatGPT: attachment guard ok after repair {}/{} [{}]",
+                        attempt,
+                        max_repair_attempts,
+                        names,
+                    )
+                return
+            detail = format_attachment_health_error(health)
+            logger.warning(
+                "ChatGPT: attachment guard fail {}/{} [{}] — {}",
+                attempt,
+                max_repair_attempts,
+                names,
+                detail,
+            )
+            if attempt >= max_repair_attempts:
+                await self._dump_composer_html()
+                raise RuntimeError(
+                    f"ChatGPT: вложения не готовы к отправке — {detail} [{names}]"
+                )
+            await self._clear_composer_attachments()
+            await asyncio.sleep(0.6)
+            await self._attach_files(file_paths, _skip_settle=True)
+            await self._wait_attachments_stable(file_paths)
+
     async def _wait_attachments_ready(
         self,
         file_paths: list[Path],
@@ -961,7 +1175,9 @@ class ChatGPTBot:
         """Прикрепить один файл через скрепку + set_input_files."""
         await self._attach_batch_via_paperclip([file_path])
 
-    async def _attach_files(self, file_paths: list[Path]) -> None:
+    async def _attach_files(
+        self, file_paths: list[Path], *, _skip_settle: bool = False
+    ) -> None:
         """Загружает один или несколько файлов в текущий черновик сообщения.
 
         Стратегия (как ручной аплоад мышкой в Chrome):
@@ -1067,6 +1283,8 @@ class ChatGPTBot:
             len(file_paths),
             attached,
         )
+        if not _skip_settle:
+            await self._wait_attachments_stable(file_paths)
 
     async def _attach_one_file(self, file_path: Path) -> None:
         """Один файл: drag-drop, при неудаче — set_input_files."""
@@ -1404,22 +1622,20 @@ class ChatGPTBot:
         await self._attach_files(file_paths)
         abort_if_cancelled(project_id)
 
-        attached = await self._count_attachment_previews()
-        if attached < len(file_paths):
-            raise RuntimeError(
-                f"ChatGPT: перед отправкой только {attached}/{len(file_paths)} "
-                "превью вложений"
-            )
         logger.info(
-            "ChatGPT: {} вложений в композере, ввожу текст ({} симв.)",
-            attached,
+            "ChatGPT: {} файлов в композере, ввожу текст ({} симв.)",
+            len(file_paths),
             len(prompt),
         )
 
         if (prompt or "").strip():
-            await self._send_prompt(prompt, clear_first=False)
+            await self._send_prompt(
+                prompt,
+                clear_first=False,
+                guard_file_paths=file_paths,
+            )
         else:
-            await self._click_send()
+            await self._click_send(guard_file_paths=file_paths)
 
         await self._wait_until_done(timeout=timeout, project_id=project_id)
 
