@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -141,7 +143,18 @@ async def _unique_slug(session: AsyncSession, base: str, slugify) -> str:
     return candidate
 
 
-async def init_child_data_dir(project: Project) -> None:
+def _purge_lane_gpt_artifacts(project: Project) -> None:
+    """tmp_gpt / voiceover.txt — следы прошлой GPT-генерации на диске."""
+    for name in ("tmp_gpt", "voiceover.txt"):
+        path = project.data_dir / name
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def _init_fresh_project_xlsx(project: Project) -> None:
+    """Всегда чистый шаблон — не reuse старый project.xlsx с диска."""
     project.data_dir.mkdir(parents=True, exist_ok=True)
     for sub in (
         "characters",
@@ -153,17 +166,52 @@ async def init_child_data_dir(project: Project) -> None:
         "final",
     ):
         (project.data_dir / sub).mkdir(parents=True, exist_ok=True)
+    _purge_lane_gpt_artifacts(project)
+    sheet = ProjectSheet(file_path=project.data_dir / "project.xlsx")
+    sheet.reset_from_template(project_id=project.id, slug=project.slug)
+    sheet.write_general(
+        topic=project.topic,
+        slug=project.slug,
+        hero_mode=project.hero_mode,
+        status=project.status.value,
+    )
+
+
+async def init_child_data_dir(project: Project) -> None:
     try:
-        sheet = ProjectSheet(file_path=project.data_dir / "project.xlsx")
-        sheet.ensure_initialized(project_id=project.id, slug=project.slug)
-        sheet.write_general(
-            topic=project.topic,
-            slug=project.slug,
-            hero_mode=project.hero_mode,
-            status=project.status.value,
+        _init_fresh_project_xlsx(project)
+        logger.info(
+            "[#{}] mass_factory: fresh project.xlsx from template ({})",
+            project.id,
+            project.data_dir / "project.xlsx",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[#{}] mass_factory: project.xlsx init: {}", project.id, exc)
+
+
+def reset_factory_parent_workbook(parent: Project) -> None:
+    """Родитель-фабрика: чистый шаблон при новой очереди (не GPT-заполненный)."""
+    if is_mass_factory_child(parent):
+        return
+    try:
+        _purge_lane_gpt_artifacts(parent)
+        sheet = ProjectSheet(file_path=parent.data_dir / "project.xlsx")
+        sheet.reset_from_template(project_id=parent.id, slug=parent.slug)
+        sheet.write_general(
+            topic=parent.topic or "Фабрика видео",
+            slug=parent.slug,
+            hero_mode=parent.hero_mode,
+            status=parent.status.value,
+        )
+        logger.info("[#{}] mass_factory: parent workbook reset from template", parent.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] mass_factory: parent xlsx reset: {}", parent.id, exc)
+
+
+def _purge_child_storage(child: Project) -> None:
+    if child.data_dir.is_dir():
+        shutil.rmtree(child.data_dir, ignore_errors=True)
+        logger.info("[#{}] mass_factory: removed data_dir {}", child.id, child.data_dir)
 
 
 async def ensure_child_workflow_from_parent(
@@ -271,6 +319,7 @@ async def delete_new_mass_children(session: AsyncSession, parent_id: int) -> int
         ).scalar_one_or_none()
         if run is not None:
             await session.delete(run)
+        _purge_child_storage(child)
         await session.delete(child)
         deleted += 1
     if deleted:
@@ -323,6 +372,7 @@ async def apply_topics_upload(
         }
 
     await delete_new_mass_children(session, parent.id)
+    reset_factory_parent_workbook(parent)
     meta["mass_queue_topics"] = topics
     meta["mass_queue_cursor"] = 0
     meta["mass_queue_active"] = False
@@ -380,6 +430,7 @@ async def start_mass_queue(
         raise ValueError("очередь занята — дождитесь завершения текущего видео или остановите шаг")
 
     await delete_new_mass_children(session, parent.id)
+    reset_factory_parent_workbook(parent)
     meta["mass_queue_topics"] = queue
     meta["mass_queue_cursor"] = 0
     meta["mass_queue_active"] = True
