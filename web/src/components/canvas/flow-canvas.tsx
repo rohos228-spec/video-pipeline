@@ -21,7 +21,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, FileSpreadsheet, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
+import { Copy, ClipboardPaste, FileSpreadsheet, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -37,6 +37,12 @@ import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
 import { isProjectRunningStatus } from "@/lib/project-running";
 import { nodeTypeFromKey } from "@/lib/node-key";
+import {
+  isEditableTarget,
+  readCanvasClipboard,
+  writeCanvasClipboard,
+  type CanvasClipboardPayload,
+} from "@/lib/canvas-clipboard";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -121,6 +127,7 @@ export function FlowCanvas({
   const [graphVersion, setGraphVersion] = useState<string>("");
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
+  const selectedNodesRef = useRef<Node<PipelineNodeData>[]>([]);
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -245,6 +252,12 @@ export function FlowCanvas({
   );
 
   const [saving, setSaving] = useState(false);
+  const [selectedCount, setSelectedCount] = useState(0);
+  const [hasClipboard, setHasClipboard] = useState(false);
+
+  useEffect(() => {
+    setHasClipboard(!!readCanvasClipboard()?.nodes.length);
+  }, [projectId]);
 
   const persistWorkflow = useCallback(async () => {
     if (!workflow.data) return;
@@ -393,6 +406,163 @@ export function FlowCanvas({
     };
   }, [setNodes, setEdges, persistWorkflow]);
 
+  const deleteNodesByIds = useCallback(
+    (ids: Set<string>, opts?: { toast?: boolean }) => {
+      if (!ids.size) return;
+      setNodes((prev) => prev.filter((n) => !ids.has(n.id)));
+      setEdges((prev) =>
+        prev.filter((e) => !ids.has(e.source) && !ids.has(e.target)),
+      );
+      if (selectedNodeKey && ids.has(selectedNodeKey)) {
+        onSelectNode(null);
+      }
+      selectedNodesRef.current = selectedNodesRef.current.filter((n) => !ids.has(n.id));
+      setSelectedCount(selectedNodesRef.current.length);
+      scheduleSaveWorkflow();
+      if (opts?.toast !== false) {
+        toast.success(
+          ids.size === 1 ? "Нода удалена" : `Удалено ${ids.size} нод`,
+        );
+      }
+    },
+    [onSelectNode, scheduleSaveWorkflow, selectedNodeKey, setEdges, setNodes],
+  );
+
+  const copySelectedNodes = useCallback(() => {
+    const selected = selectedNodesRef.current;
+    if (!selected.length) {
+      toast.error("Выделите одну или несколько нод (Ctrl+клик или рамкой)");
+      return;
+    }
+    const ids = new Set(selected.map((n) => n.id));
+    const payload: CanvasClipboardPayload = {
+      version: 1,
+      sourceProjectId: projectId,
+      copiedAt: Date.now(),
+      nodes: selected.map((n) => {
+        const d = n.data as PipelineNodeData;
+        return {
+          id: n.id,
+          type: d.type,
+          position: { x: n.position.x, y: n.position.y },
+          data: { label: getNodeSpec(d.type).label },
+        };
+      }),
+      edges: edgesRef.current
+        .filter((e) => ids.has(e.source) && ids.has(e.target))
+        .map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle ?? "out",
+          targetHandle: e.targetHandle ?? "in",
+        })),
+    };
+    writeCanvasClipboard(payload);
+    setHasClipboard(true);
+    toast.success(
+      `Скопировано ${selected.length} нод${payload.edges.length ? ` и ${payload.edges.length} связей` : ""}`,
+    );
+  }, [projectId]);
+
+  const pasteFromClipboard = useCallback(() => {
+    const clip = readCanvasClipboard();
+    if (!clip?.nodes.length) {
+      toast.error("Буфер пуст — выделите ноды и нажмите Ctrl+C");
+      return;
+    }
+    const stamp = Date.now();
+    const idMap = new Map<string, string>();
+    clip.nodes.forEach((n, idx) => {
+      idMap.set(n.id, `n_${n.type}_${stamp}_${idx}`);
+    });
+    const offsetX = 56;
+    const offsetY = 56;
+    const newNodes: Node<PipelineNodeData>[] = clip.nodes.map((n) => {
+      const newId = idMap.get(n.id)!;
+      return {
+        id: newId,
+        type: "pipeline",
+        position: {
+          x: n.position.x + offsetX,
+          y: n.position.y + offsetY,
+        },
+        data: {
+          nodeKey: newId,
+          type: n.type,
+          status: "pending",
+          progress: 0,
+          progressText: null,
+          error: null,
+          attempts: 0,
+        },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        selected: true,
+      };
+    });
+    const newEdges: Edge[] = clip.edges.map((e, idx) => ({
+      id: `e_paste_${stamp}_${idx}`,
+      source: idMap.get(e.source) ?? e.source,
+      target: idMap.get(e.target) ?? e.target,
+      sourceHandle: e.sourceHandle ?? "out",
+      targetHandle: e.targetHandle ?? "in",
+      type: "smoothstep",
+    }));
+    setNodes((prev) => [
+      ...prev.map((n) => ({ ...n, selected: false })),
+      ...newNodes,
+    ]);
+    setEdges((prev) => [...prev, ...newEdges]);
+    selectedNodesRef.current = newNodes;
+    setSelectedCount(newNodes.length);
+    if (newNodes[0]) {
+      onSelectNode((newNodes[0].data as PipelineNodeData).nodeKey);
+    }
+    scheduleSaveWorkflow();
+    const fromOther =
+      clip.sourceProjectId != null &&
+      projectId != null &&
+      clip.sourceProjectId !== projectId;
+    toast.success(
+      fromOther
+        ? `Вставлено ${newNodes.length} нод из проекта #${clip.sourceProjectId}`
+        : `Вставлено ${newNodes.length} нод`,
+    );
+  }, [onSelectNode, projectId, scheduleSaveWorkflow, setEdges, setNodes]);
+
+  const deleteSelectedNodes = useCallback(() => {
+    const selected = selectedNodesRef.current;
+    if (!selected.length && selectedNodeKey) {
+      deleteNodesByIds(new Set([selectedNodeKey]));
+      return;
+    }
+    if (!selected.length) {
+      toast.error("Выделите ноды для удаления");
+      return;
+    }
+    deleteNodesByIds(new Set(selected.map((n) => n.id)));
+  }, [deleteNodesByIds, selectedNodeKey]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (isEditableTarget(ev.target)) return;
+      const mod = ev.ctrlKey || ev.metaKey;
+      if (mod && ev.key.toLowerCase() === "c") {
+        ev.preventDefault();
+        copySelectedNodes();
+        return;
+      }
+      if (mod && ev.key.toLowerCase() === "v") {
+        ev.preventDefault();
+        pasteFromClipboard();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [projectId, copySelectedNodes, pasteFromClipboard]);
+
   const addNode = useCallback(
     (type: string) => {
       if (!workflow.data) return;
@@ -435,15 +605,28 @@ export function FlowCanvas({
     [workflow.data, nodes, setNodes, setEdges]
   );
 
-  const deleteSelectedNode = useCallback(() => {
-    if (!selectedNodeKey) return;
-    setNodes((prev) => prev.filter((n) => n.id !== selectedNodeKey));
-    setEdges((prev) =>
-      prev.filter((e) => e.source !== selectedNodeKey && e.target !== selectedNodeKey)
-    );
-    onSelectNode(null);
-    toast.success("Нода удалена (нажми «Сохранить граф»)");
-  }, [selectedNodeKey, setNodes, setEdges, onSelectNode]);
+  const onNodesDelete = useCallback(
+    (deleted: Node[]) => {
+      const ids = new Set(deleted.map((n) => n.id));
+      setEdges((prev) =>
+        prev.filter((e) => !ids.has(e.source) && !ids.has(e.target)),
+      );
+      selectedNodesRef.current = selectedNodesRef.current.filter(
+        (n) => !ids.has(n.id),
+      );
+      setSelectedCount(selectedNodesRef.current.length);
+      if (selectedNodeKey && ids.has(selectedNodeKey)) {
+        onSelectNode(null);
+      }
+      scheduleSaveWorkflow();
+      toast.success(
+        deleted.length === 1
+          ? "Нода удалена"
+          : `Удалено ${deleted.length} нод`,
+      );
+    },
+    [onSelectNode, scheduleSaveWorkflow, selectedNodeKey, setEdges],
+  );
 
   if (workflows.isLoading || workflow.isLoading) {
     return (
@@ -496,10 +679,15 @@ export function FlowCanvas({
         edgesReconnectable
         nodeDragThreshold={6}
         selectNodesOnDrag={false}
+        selectionOnDrag
+        panOnDrag={[1, 2]}
+        multiSelectionKeyCode={["Control", "Meta"]}
+        selectionKeyCode={null}
         onConnect={onConnect}
         connectionLineStyle={{ strokeDasharray: "6 4", stroke: "hsl(var(--primary))" }}
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
+        onNodesDelete={onNodesDelete}
         onNodeClick={(ev, node) => {
           const t = ev.target as HTMLElement;
           if (t.closest(".node-v-trigger") || t.closest(".node-v-menu")) return;
@@ -508,9 +696,13 @@ export function FlowCanvas({
           onNodeActivate?.(d.nodeKey, d.type);
         }}
         onSelectionChange={(sel) => {
+          selectedNodesRef.current = sel.nodes as Node<PipelineNodeData>[];
+          setSelectedCount(sel.nodes.length);
           const first = sel.nodes[0];
           if (first) {
             onSelectNode((first.data as PipelineNodeData).nodeKey);
+          } else if (sel.nodes.length === 0) {
+            onSelectNode(null);
           }
         }}
         defaultEdgeOptions={{ animated: true }}
@@ -569,8 +761,11 @@ export function FlowCanvas({
         onSave={persistWorkflow}
         saving={saving}
         onAddNode={addNode}
-        onDelete={deleteSelectedNode}
-        canDelete={!!selectedNodeKey}
+        onCopy={copySelectedNodes}
+        onPaste={pasteFromClipboard}
+        canPaste={hasClipboard}
+        onDelete={deleteSelectedNodes}
+        canDelete={selectedCount > 0 || !!selectedNodeKey}
         onAddExcelFeed={() => {
           const stamp = Date.now();
           const id = `excel_feed_${stamp}`;
@@ -676,6 +871,9 @@ function WorkflowToolbar({
   onSave,
   saving,
   onAddNode,
+  onCopy,
+  onPaste,
+  canPaste,
   onDelete,
   canDelete,
   onDuplicateBelow,
@@ -685,6 +883,9 @@ function WorkflowToolbar({
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
+  onCopy: () => void;
+  onPaste: () => void;
+  canPaste: boolean;
   onDelete: () => void;
   canDelete: boolean;
   onDuplicateBelow: () => void;
@@ -734,10 +935,31 @@ function WorkflowToolbar({
           size="sm"
           variant="ghost"
           className="h-8 gap-1 text-xs"
+          onClick={onCopy}
+          title="Копировать выделенные ноды (Ctrl+C)"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          Копировать
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1 text-xs"
+          onClick={onPaste}
+          disabled={!canPaste}
+          title="Вставить скопированные ноды (Ctrl+V) — работает и в другом проекте"
+        >
+          <ClipboardPaste className="h-3.5 w-3.5" />
+          Вставить
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1 text-xs"
           onClick={onDuplicateBelow}
           title="Дублировать весь граф ниже (массовые потоки)"
         >
-          <Copy className="h-3.5 w-3.5" />
+          <Copy className="h-3.5 w-3.5 opacity-60" />
         </Button>
         <Button
           size="sm"
@@ -766,6 +988,7 @@ function WorkflowToolbar({
           className="h-8 gap-1 text-xs text-destructive"
           onClick={onDelete}
           disabled={!canDelete}
+          title="Удалить выделенные ноды (Delete)"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>

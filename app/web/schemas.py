@@ -34,6 +34,9 @@ class ProjectSummary(_ORM):
     mass_parent_id: int | None = None
     mass_factory: bool = False
     mass_lane_position: int | None = None
+    sidebar_folder_id: str | None = None
+    sidebar_order: int | None = None
+    gen_queue_position: int | None = None
 
 
 class ProjectDetail(ProjectSummary):
@@ -67,6 +70,7 @@ class CreateProjectRequest(BaseModel):
     hero_mode: str = "auto"  # hero | no_hero | auto
     workflow_id: int | None = None  # если None — берём дефолтный
     auto_mode: bool = False
+    sidebar_folder_id: str | None = None
 
 
 # ── Frame ──

@@ -12,6 +12,13 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.default_project import default_auto_mode_for_new_project
+from app.services.mass_factory import mass_parent_id
+from app.services.sidebar_layout import (
+    ensure_project_layout,
+    layout_for_api,
+    remove_project_from_layout,
+    sync_projects as sync_sidebar_projects,
+)
 from app.services.event_bus import publish_project_event
 from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
@@ -51,7 +58,33 @@ async def list_projects(
     rows = (
         await session.execute(select(Project).order_by(Project.id.desc()))
     ).scalars().all()
-    return [project_to_summary(p) for p in rows]
+    root_ids = {
+        p.id for p in rows if mass_parent_id(p) is None
+    }
+    sync_sidebar_projects(root_ids)
+    layout = layout_for_api(root_ids)
+    placements = layout.get("project_layout") or {}
+    queue_pos = layout.get("gen_queue_positions") or {}
+    out: list[ProjectSummary] = []
+    for p in rows:
+        if mass_parent_id(p) is not None:
+            out.append(project_to_summary(p))
+            continue
+        pl = placements.get(str(p.id)) or {}
+        try:
+            order = int(pl.get("order"))
+        except (TypeError, ValueError):
+            order = None
+        fid = pl.get("folder_id")
+        out.append(
+            project_to_summary(
+                p,
+                sidebar_folder_id=str(fid) if fid else None,
+                sidebar_order=order,
+                gen_queue_position=queue_pos.get(p.id),
+            )
+        )
+    return out
 
 
 @router.get("/steps/catalog")
@@ -99,6 +132,7 @@ async def create_project(
     )
     session.add(p)
     await session.flush()
+    ensure_project_layout(p.id, folder_id=payload.sidebar_folder_id)
     sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
     sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     sheet.write_general(
@@ -144,6 +178,7 @@ async def delete_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    remove_project_from_layout(project_id)
     await session.delete(p)
     await session.commit()
     await publish_project_event(project_id, event_type="project_deleted")

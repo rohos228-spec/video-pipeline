@@ -5,10 +5,10 @@ import type { NodeCategory } from "./node-catalog";
 
 const PROJECT_STATUS: Partial<Record<ProjectStatus, string>> = {
   new: "новый",
-  planning: "планирование",
-  plan_ready: "план готов",
-  scripting: "сценарий",
-  script_ready: "сценарий готов",
+  planning: "сценарий",
+  plan_ready: "сценарий готов",
+  scripting: "закадровый текст",
+  script_ready: "закадровый текст готов",
   splitting: "разбивка",
   frames_ready: "кадры готовы",
   generating_hero: "персонажи",
@@ -77,8 +77,8 @@ export function formatHeroMode(mode: string): string {
 
 export function formatStepCode(code: string): string {
   const map: Record<string, string> = {
-    plan: "план",
-    script: "сценарий",
+    plan: "сценарий",
+    script: "закадровый текст",
     split: "разбивка",
     hero: "персонажи",
     items: "предметы",

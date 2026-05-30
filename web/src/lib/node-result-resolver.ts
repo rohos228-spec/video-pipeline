@@ -173,7 +173,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
           hasResult: true,
           itemCount: 1,
           summary: "Лист «Общий план» в Excel",
-          items: [{ id: "xlsx_general", label: "Общий план", kind: "xlsx" }],
+          items: [{ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" }],
           replaceMode: "xlsx",
           viewMode: "xlsx_general_plan",
         };
@@ -181,14 +181,14 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       const text = project?.general_plan?.trim();
       if (text) {
         return ready(
-          [{ id: "general_plan", label: "Общий план", kind: "text", content: text }],
+          [{ id: "general_plan", label: "Сценарий", kind: "text", content: text }],
           "Текст плана готов",
           "text",
           "xlsx_general_plan",
           "general_plan",
         );
       }
-      return empty("План ещё не сгенерирован", "text", "xlsx_general_plan");
+      return empty("Сценарий ещё не сгенерирован", "text", "xlsx_general_plan");
     }
 
     case "script": {
@@ -196,7 +196,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       if (text) {
         return ready(
           [{ id: "script_text", label: "Закадровый текст", kind: "text", content: text }],
-          "Сценарий готов",
+          "Закадровый текст готов",
           "text",
           "voiceover_wide",
           "script_text",
@@ -221,7 +221,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
           textField: "script_text",
         };
       }
-      return empty("Сценарий ещё не готов", "text", "voiceover_wide");
+      return empty("Закадровый текст ещё не готов", "text", "voiceover_wide");
     }
 
     case "split": {

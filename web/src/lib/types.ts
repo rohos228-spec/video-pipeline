@@ -89,6 +89,24 @@ export interface ProjectSummary {
   mass_parent_id?: number | null;
   mass_factory?: boolean;
   mass_lane_position?: number | null;
+  sidebar_folder_id?: string | null;
+  sidebar_order?: number | null;
+  gen_queue_position?: number | null;
+}
+
+export interface SidebarFolder {
+  id: string;
+  name: string;
+  order: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface SidebarLayout {
+  folders: SidebarFolder[];
+  project_layout: Record<string, { folder_id: string | null; order: number }>;
+  gen_queue: number[];
+  gen_queue_positions: Record<number, number>;
 }
 
 export interface GenerationConfigPresetSettings {

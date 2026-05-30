@@ -63,9 +63,11 @@ function presetToAnswers(settings: GenerationConfigPresetSettings): WizardAnswer
 export function NewProjectWizard({
   trigger,
   onCreated,
+  folderId = null,
 }: {
   trigger: React.ReactNode;
   onCreated: (p: ProjectSummary) => void;
+  folderId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("topic");
@@ -152,6 +154,7 @@ export function NewProjectWizard({
         topic: topic.trim(),
         hero_mode: heroMode,
         auto_mode: autoMode,
+        sidebar_folder_id: folderId,
       });
       const patch = buildPatch();
       let result = p;

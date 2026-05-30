@@ -200,7 +200,7 @@ def steps_for(project: Project | None) -> list[StepDef]:
     enrich_ready = ENRICH_READY[n_slots - 1]
     return [
         StepDef(
-            1, "plan", "План",
+            1, "plan", "Сценарий",
             ProjectStatus.planning, ProjectStatus.plan_ready, None,
         ),
         StepDef(

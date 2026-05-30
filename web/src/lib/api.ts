@@ -13,6 +13,7 @@ import type {
   HITLDTO,
   ProjectDetail,
   ProjectSummary,
+  SidebarLayout,
   PromptDTO,
   WorkflowDetail,
   WorkflowNode,
@@ -117,12 +118,42 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
-  createProject: (body: { topic: string; hero_mode?: string; auto_mode?: boolean }) =>
+  createProject: (body: {
+    topic: string;
+    hero_mode?: string;
+    auto_mode?: boolean;
+    sidebar_folder_id?: string | null;
+  }) =>
     http<ProjectDetail>(`/api/projects`, { method: "POST", body: JSON.stringify(body) }),
   patchProject: (id: number, body: Partial<ProjectDetail>) =>
     http<ProjectDetail>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
+
+  // ── Sidebar layout ───────────────────────────────────────────────
+  getSidebarLayout: () => http<SidebarLayout>(`/api/sidebar-layout`),
+  updateSidebarLayout: (body: Partial<SidebarLayout>) =>
+    http<SidebarLayout>(`/api/sidebar-layout`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  createSidebarFolder: (name: string) =>
+    http<{ id: string; name: string; order: number }>(`/api/sidebar-layout/folders`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  renameSidebarFolder: (folderId: string, name: string) =>
+    http<{ id: string; name: string }>(`/api/sidebar-layout/folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteSidebarFolder: (folderId: string) =>
+    http<{ ok: boolean }>(`/api/sidebar-layout/folders/${folderId}`, { method: "DELETE" }),
+  toggleGenQueue: (projectId: number) =>
+    http<{ gen_queue: number[]; gen_queue_positions: Record<number, number>; position: number | null }>(
+      `/api/sidebar-layout/gen-queue/toggle`,
+      { method: "POST", body: JSON.stringify({ project_id: projectId }) },
+    ),
   listStepCatalog: () =>
     http<{ code: string; label: string; running_status: string; ready_status: string }[]>(
       `/api/projects/steps/catalog`

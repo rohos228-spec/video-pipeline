@@ -655,6 +655,8 @@ async def maybe_auto_advance(
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
     meta = getattr(project, "meta", None) or {}
+    if meta.get("user_stop"):
+        return False
 
     if hitl is not None and hitl.decision is HITLDecision.regenerate:
         await _apply_regen(

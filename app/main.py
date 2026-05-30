@@ -364,6 +364,23 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
                             try:
+                                from app.services.gen_queue import (
+                                    is_timeline_complete,
+                                    on_project_timeline_maybe_advance_queue,
+                                )
+
+                                if await is_timeline_complete(s, p):
+                                    started = await on_project_timeline_maybe_advance_queue(
+                                        s, p
+                                    )
+                                    if started:
+                                        await s.commit()
+                            except Exception:  # noqa: BLE001
+                                logger.exception(
+                                    "gen_queue advance after step failed for #{}",
+                                    project_id,
+                                )
+                            try:
                                 await notify_step_done(
                                     bot,
                                     project_id,
@@ -473,6 +490,21 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             project_id = ap.id
                             await s.commit()
                             try:
+                                from app.services.gen_queue import (
+                                    on_project_timeline_maybe_advance_queue,
+                                )
+
+                                started = await on_project_timeline_maybe_advance_queue(
+                                    s, ap
+                                )
+                                if started:
+                                    await s.commit()
+                            except Exception:  # noqa: BLE001
+                                logger.exception(
+                                    "gen_queue advance after auto_advance failed for #{}",
+                                    ap.id,
+                                )
+                            try:
                                 await notify_step_done(
                                     bot, project_id, prev, new_status
                                 )
@@ -497,6 +529,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 await s.commit()
                         except Exception:  # noqa: BLE001
                             logger.exception("serial_tick_mass_lanes failed")
+                        try:
+                            from app.services.gen_queue import gen_queue_tick
+
+                            gq = await gen_queue_tick(s)
+                            if gq:
+                                await s.commit()
+                        except Exception:  # noqa: BLE001
+                            logger.exception("gen_queue_tick failed")
                 except Exception:  # noqa: BLE001
                     logger.exception("auto_mode tick failed")
         except Exception:  # noqa: BLE001

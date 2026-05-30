@@ -61,7 +61,7 @@ def test_get_effective_text_appends_params() -> None:
     text = gtb.get_effective_text(p, "plan")
     assert "Тема ролика" in text
     assert "---" in text
-    assert "Общий план" in text
+    assert "Сценарий" in text
     assert "840" in text
 
 

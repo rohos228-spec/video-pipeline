@@ -50,12 +50,18 @@ async def start_step(
     await assert_step_allowed_by_graph(session, project, step_code)
     clear_stop(project.id)
     meta = dict(project.meta or {})
+    cleared: list[str] = []
+    if meta.pop("user_stop", None) is not None:
+        cleared.append("user_stop")
     if meta.pop("mass_lane_user_stop", None) is not None:
+        cleared.append("mass_lane_user_stop")
+    if cleared:
         project.meta = meta
         logger.info(
-            "[#{}] start_step {}: cleared mass_lane_user_stop",
+            "[#{}] start_step {}: cleared {}",
             project.id,
             step_code,
+            ", ".join(cleared),
         )
     try:
         wiped = await clear_step_outputs_for_rerun(session, project, step_code)

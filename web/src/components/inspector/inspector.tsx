@@ -85,7 +85,7 @@ export function Inspector({
               {project.data.general_plan && (
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Общий план
+                    Сценарий
                   </div>
                   <p className="mt-1 whitespace-pre-wrap rounded-md bg-muted/40 p-2.5 font-mono text-[11px] leading-relaxed text-foreground">
                     {project.data.general_plan}

@@ -53,7 +53,7 @@ export function FramesGrid({
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
           ) : !frames.data || frames.data.length === 0 ? (
-            <EmptyMessage text="Кадров пока нет — пройди шаги «План → Сценарий → Разбивка»." />
+            <EmptyMessage text="Кадров пока нет — пройди шаги «Сценарий → Закадровый текст → Разбивка»." />
           ) : (
             <div className="flex flex-col divide-y divide-border">
               {frames.data.map((frame) => (

@@ -32,8 +32,8 @@ import { VisualHitlGallery } from "@/components/hitl/visual-hitl-gallery";
 import { useCanvasActionsOptional } from "@/components/canvas/canvas-actions-context";
 
 const HITL_TITLES: Record<HITLKind, string> = {
-  approve_plan: "Общий план",
-  approve_script: "Сценарий",
+  approve_plan: "Сценарий",
+  approve_script: "Закадровый текст",
   approve_hero: "Референс героя",
   approve_images: "Картинки кадров",
   approve_videos: "Клипы кадров",
@@ -41,7 +41,7 @@ const HITL_TITLES: Record<HITLKind, string> = {
 };
 
 const HITL_DESCRIPTIONS: Record<HITLKind, string> = {
-  approve_plan: "Согласуй концепт ролика, прежде чем мы пойдём писать сценарий.",
+  approve_plan: "Согласуй сценарий ролика, прежде чем мы пойдём писать закадровый текст.",
   approve_script: "Закадровый текст, разбитый по кадрам. После approve пойдёт раскадровка.",
   approve_hero: "Reference-картинка героя. После approve пойдёт генерация всех сцен.",
   approve_images: "Все картинки кадров. Можно одобрить целиком или отклонить.",

@@ -82,7 +82,7 @@ function PlanScriptFields({
         <h3 className="text-sm font-semibold text-foreground">{header}</h3>
         {inheritedFromPlan ? (
           <p className="mt-1 text-xs text-amber-400/90">
-            Длина не задана для сценария — используются значения из «Общий план» (
+            Длина не задана для закадрового текста — используются значения из «Сценарий» (
             {effective} сек).
           </p>
         ) : null}
@@ -231,7 +231,7 @@ export function NodeStepParamsPanel({
       </p>
       {step === "plan" ? (
         <PlanScriptFields
-          header="Общий план"
+          header="Сценарий"
           step="plan"
           params={params}
           inheritedFromPlan={false}
@@ -241,7 +241,7 @@ export function NodeStepParamsPanel({
       ) : null}
       {step === "script" ? (
         <PlanScriptFields
-          header="Сценарий"
+          header="Закадровый текст"
           step="script"
           params={params}
           inheritedFromPlan={

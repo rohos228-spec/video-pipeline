@@ -3,8 +3,8 @@
 export type ControlMode = "manual" | "ai";
 
 export const AUTO_REVIEW_KINDS = [
-  { kind: "approve_plan", label: "Общий план" },
-  { kind: "approve_script", label: "Сценарий" },
+  { kind: "approve_plan", label: "Сценарий" },
+  { kind: "approve_script", label: "Закадровый текст" },
   { kind: "approve_hero", label: "Персонажи" },
   { kind: "approve_images", label: "Картинки" },
   { kind: "approve_videos", label: "Видео" },

@@ -43,7 +43,7 @@ export function TopicEditor({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Тема задаёт направление всего ролика — как в боте перед шагом «Общий план». Может быть
+        Тема задаёт направление всего ролика — как в боте перед шагом «Сценарий». Может быть
         длинным описанием идеи.
       </p>
       <Textarea

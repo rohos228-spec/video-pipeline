@@ -8,7 +8,13 @@ from app.services.step_cancel import is_generation_active
 from app.web.schemas import ProjectDetail, ProjectSummary
 
 
-def project_to_summary(project: Project) -> ProjectSummary:
+def project_to_summary(
+    project: Project,
+    *,
+    sidebar_folder_id: str | None = None,
+    sidebar_order: int | None = None,
+    gen_queue_position: int | None = None,
+) -> ProjectSummary:
     meta = project.meta if isinstance(project.meta, dict) else {}
     lane_raw = meta.get("mass_lane_position")
     lane_pos: int | None
@@ -28,6 +34,9 @@ def project_to_summary(project: Project) -> ProjectSummary:
         mass_parent_id=mass_parent_id(project),
         mass_factory=is_mass_factory_parent(project),
         mass_lane_position=lane_pos,
+        sidebar_folder_id=sidebar_folder_id,
+        sidebar_order=sidebar_order,
+        gen_queue_position=gen_queue_position,
     )
 
 

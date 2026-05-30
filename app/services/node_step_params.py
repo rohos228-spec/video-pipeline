@@ -79,9 +79,9 @@ def build_split_params_block(project: Project) -> str:
 
 def build_step_params_block(project: Project, step_code: str) -> str:
     if step_code == "plan":
-        return build_duration_params_block(project, "plan", header="Общий план")
+        return build_duration_params_block(project, "plan", header="Сценарий")
     if step_code == "script":
-        return build_duration_params_block(project, "script", header="Сценарий")
+        return build_duration_params_block(project, "script", header="Закадровый текст")
     if step_code == "split":
         return build_split_params_block(project)
     return ""

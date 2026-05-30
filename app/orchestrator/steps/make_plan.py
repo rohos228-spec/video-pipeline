@@ -49,7 +49,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         session,
         project,
         kind=HITLKind.approve_plan,
-        title=f"Общий план ролика #{project.id}",
+        title=f"Сценарий ролика #{project.id}",
         text=plan_text,
         payload={"step": "plan"},
     )

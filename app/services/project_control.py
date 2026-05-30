@@ -53,14 +53,19 @@ async def stop_project_running(
         project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
         clear_stop(project.id)
+        meta = dict(project.meta or {})
+        meta["user_stop"] = True
         if mass_parent_id(project) is not None:
-            meta = dict(project.meta or {})
             meta["mass_lane_user_stop"] = True
-            project.meta = meta
             logger.info(
                 "[#{}] STOP: mass lane paused (mass_lane_user_stop) until manual start",
                 project.id,
             )
+        project.meta = meta
+        logger.info(
+            "[#{}] STOP: auto_advance paused (user_stop) until manual step start",
+            project.id,
+        )
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
             project.id,
@@ -74,6 +79,9 @@ async def stop_project_running(
     elif xlsx_stopped:
         ok = True
         stopped_kind = "xlsx"
+        meta = dict(project.meta or {})
+        meta["user_stop"] = True
+        project.meta = meta
         project.updated_at = datetime.utcnow()
         msg = (
             f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"

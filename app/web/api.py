@@ -31,6 +31,7 @@ from app.web.routers import (
     prompt_studio as prompt_studio_router,
     prompts as prompts_router,
     runs as runs_router,
+    sidebar_layout as sidebar_layout_router,
     workflows as workflows_router,
 )
 from app.web.settings_default import seed_default_workflow
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
+    app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)

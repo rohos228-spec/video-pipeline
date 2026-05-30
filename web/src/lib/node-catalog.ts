@@ -46,7 +46,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   plan: {
     type: "plan",
-    label: "Общий план",
+    label: "Сценарий",
     description: "Концепт ролика: тема, аудитория, цепляющий хук.",
     category: "planning",
     accent: "263 75% 65%",
@@ -54,7 +54,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   script: {
     type: "script",
-    label: "Сценарий",
+    label: "Закадровый текст",
     description: "Закадровый текст 1000–1300 знаков, кадровая разбивка.",
     category: "planning",
     accent: "263 75% 65%",

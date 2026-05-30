@@ -22,11 +22,11 @@ const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
   plan: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
-    { id: "main", title: "Промт плана", kind: "gpt", stepCode: "plan" },
+    { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "plan" },
   ],
   script: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "script" },
-    { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "script" },
+    { id: "main", title: "Промт закадрового текста", kind: "gpt", stepCode: "script" },
   ],
   split: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "split" },
