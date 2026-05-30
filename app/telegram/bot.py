@@ -96,7 +96,9 @@ from app.telegram.prompt_picker import (
 )
 from app.telegram.wizard import (
     handle_wizard_callback,
+    send_config_preset_menu,
     send_wizard_question,
+    try_handle_preset_name_message,
 )
 
 dp = Dispatcher()
@@ -5242,6 +5244,10 @@ async def on_text_message(msg: Message) -> None:
         await msg.answer("Что делаем?", reply_markup=main_menu_kb())
         return
 
+    # 0) Имя сохранённой конфигурации генерации
+    if await try_handle_preset_name_message(msg):
+        return
+
     # 1) Если ждём тему нового проекта
     if _pending_topic_input.get(user_id):
         _pending_topic_input.pop(user_id, None)
@@ -6424,8 +6430,8 @@ async def _create_new_project(msg: Message) -> None:
         "Дальше выбери генератор картинок / видео и параметры.",
         parse_mode="HTML",
     )
-    # Запускаем мастер настроек (выбор генераторов/разрешений).
-    await send_wizard_question(msg.bot, msg.chat.id, proj_obj)
+    # Выбор / создание конфигурации или ручной мастер.
+    await send_config_preset_menu(msg.bot, msg.chat.id, proj_obj)
     logger.info("new project {} '{}'", pid, slug)
 
 

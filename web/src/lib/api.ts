@@ -8,6 +8,8 @@ import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
+  GenerationConfigPreset,
+  GenerationConfigPresetSettings,
   HITLDTO,
   ProjectDetail,
   ProjectSummary,
@@ -304,6 +306,23 @@ export const api = {
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
     }>(`/api/generation-options/wizard`),
+  listGenerationConfigPresets: () =>
+    http<{
+      presets: GenerationConfigPreset[];
+      fields: string[];
+    }>(`/api/generation-config-presets`),
+  createGenerationConfigPreset: (body: {
+    name: string;
+    settings: GenerationConfigPresetSettings;
+  }) =>
+    http<GenerationConfigPreset>(`/api/generation-config-presets`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteGenerationConfigPreset: (id: string) =>
+    http<{ ok: boolean }>(`/api/generation-config-presets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   resetProjectStep: (projectId: number, stepCode: string) =>
     http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/reset`, {
       method: "POST",

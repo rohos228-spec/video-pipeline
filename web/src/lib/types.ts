@@ -91,6 +91,25 @@ export interface ProjectSummary {
   mass_lane_position?: number | null;
 }
 
+export interface GenerationConfigPresetSettings {
+  image_generator?: string | null;
+  aspect_ratio?: string | null;
+  image_resolution?: string | null;
+  image_quality?: string | null;
+  image_relax?: boolean | null;
+  video_generator?: string | null;
+  video_resolution?: string | null;
+  video_relax?: boolean | null;
+}
+
+export interface GenerationConfigPreset {
+  id: string;
+  name: string;
+  settings: GenerationConfigPresetSettings;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface ProjectDetail extends ProjectSummary {
   general_plan: string | null;
   script_text: string | null;

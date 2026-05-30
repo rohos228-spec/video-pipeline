@@ -232,11 +232,116 @@ def _kb_for_question(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# project_id → ждём имя пресета после мастера «Создание конфигурации»
+_pending_preset_save_project_ids: set[int] = set()
+# chat_id → project_id — ждём текст с именем пресета
+_pending_preset_name_by_chat: dict[int, int] = {}
+
+
+async def send_config_preset_menu(bot: Bot, chat_id: int, project: Project) -> None:
+    """После /new: выбор сохранённой конфигурации или ручная настройка."""
+    from app.services.generation_config_presets import list_presets
+
+    presets = list_presets()
+    lines = [
+        "<b>Конфигурация генерации</b>",
+        "",
+        "Выбери сохранённую конфигурацию или настрой параметры вручную.",
+    ]
+    if not presets:
+        lines.append("")
+        lines.append("<i>Сохранённых конфигураций пока нет.</i>")
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    for p in presets:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📋 {p['name']}",
+                callback_data=f"wiz:{project.id}:preset:apply:{p['id']}",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="➕ Создание конфигурации",
+            callback_data=f"wiz:{project.id}:preset:create",
+        )
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="⚙️ Настроить вручную",
+            callback_data=f"wiz:{project.id}:preset:manual",
+        )
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="⬅ В меню проекта",
+            callback_data=f"proj:{project.id}:menu",
+        )
+    ])
+    await bot.send_message(
+        chat_id,
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+
+
+async def prompt_save_preset_name(bot: Bot, chat_id: int, project_id: int) -> None:
+    _pending_preset_name_by_chat[chat_id] = project_id
+    await bot.send_message(
+        chat_id,
+        "💾 <b>Сохранение конфигурации</b>\n\n"
+        "Пришли имя для этой конфигурации одним сообщением.\n"
+        "Или отправь <code>-</code> чтобы пропустить.",
+        parse_mode="HTML",
+    )
+
+
+async def try_handle_preset_name_message(msg) -> bool:
+    """True если сообщение обработано как имя пресета."""
+    from app.services.generation_config_presets import create_preset, settings_from_project
+
+    chat_id = msg.chat.id
+    project_id = _pending_preset_name_by_chat.pop(chat_id, None)
+    if project_id is None:
+        return False
+    name = (msg.text or "").strip()
+    if name in ("-", "—", "skip", "/skip"):
+        await msg.answer("Конфигурация не сохранена.")
+        return True
+    if not name:
+        _pending_preset_name_by_chat[chat_id] = project_id
+        await msg.answer("Пустое имя — пришли ещё раз или «-».")
+        return True
+
+    async with session_scope() as s:
+        project = (
+            await s.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            await msg.answer("Проект не найден.")
+            return True
+        try:
+            preset = create_preset(name, settings_from_project(project))
+        except ValueError as e:
+            await msg.answer(f"Не удалось сохранить: {e}")
+            return True
+
+    await msg.answer(
+        f"✅ Конфигурация «<b>{preset['name']}</b>» сохранена.",
+        parse_mode="HTML",
+    )
+    return True
+
+
 async def send_wizard_question(bot: Bot, chat_id: int, project: Project) -> None:
     """Шлёт очередной вопрос мастера для указанного проекта. Если все
     отвечены — присылает финальную сводку + кнопку «В меню проекта»."""
     idx = _wizard_step_index(project)
     if idx >= len(_QUESTIONS):
+        if project.id in _pending_preset_save_project_ids:
+            _pending_preset_save_project_ids.discard(project.id)
+            await prompt_save_preset_name(bot, chat_id, project.id)
         await _send_wizard_complete(bot, chat_id, project)
         return
     q = _QUESTIONS[idx]
@@ -363,6 +468,12 @@ def _settings_overview_kb(project: Project) -> InlineKeyboardMarkup:
                 callback_data=f"wiz:{project.id}:edit:{q.field}",
             )
         ])
+    rows.append([
+        InlineKeyboardButton(
+            text="💾 Сохранить конфигурацию",
+            callback_data=f"wiz:{project.id}:preset:save",
+        ),
+    ])
     rows.append([
         InlineKeyboardButton(
             text="↻ Сбросить все настройки",
@@ -596,6 +707,72 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
 
         await cb.answer(f"{choice.label} ✓")
         await _send_settings_overview(cb.bot, cb.message.chat.id, snap)
+        return
+
+    if action == "preset" and len(parts) >= 4:
+        from app.services.generation_config_presets import (
+            apply_preset_settings,
+            get_preset,
+        )
+
+        sub = parts[3]
+        async with session_scope() as s:
+            project = (
+                await s.execute(select(Project).where(Project.id == project_id))
+            ).scalar_one_or_none()
+            if project is None:
+                await cb.answer("Проект не найден", show_alert=True)
+                return
+
+            if sub == "apply" and len(parts) >= 5:
+                preset = get_preset(parts[4])
+                if preset is None:
+                    await cb.answer("Конфигурация не найдена", show_alert=True)
+                    return
+                apply_preset_settings(project, preset["settings"])
+                try:
+                    from app.storage import for_project as _sheet_for_project
+
+                    labels = {}
+                    for q in _QUESTIONS:
+                        if q.skip_if(project):
+                            continue
+                        labels[q.field] = _current_value_label(project, q)
+                    _sheet_for_project(project).write_general(**labels)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("wizard preset apply xlsx: {}", e)
+                await s.flush()
+                await s.commit()
+                snap = project
+                await cb.answer(f"«{preset['name']}» ✓")
+                await _send_wizard_complete(cb.bot, cb.message.chat.id, snap)
+                return
+
+            if sub == "manual":
+                _pending_preset_save_project_ids.discard(project_id)
+                await cb.answer()
+                await send_wizard_question(cb.bot, cb.message.chat.id, project)
+                return
+
+            if sub == "create":
+                _pending_preset_save_project_ids.add(project_id)
+                await cb.answer()
+                await send_wizard_question(cb.bot, cb.message.chat.id, project)
+                return
+
+            if sub == "save":
+                if not is_wizard_complete(project):
+                    await cb.answer(
+                        "Сначала заполни все настройки", show_alert=True
+                    )
+                    return
+                await cb.answer()
+                await prompt_save_preset_name(
+                    cb.bot, cb.message.chat.id, project_id
+                )
+                return
+
+        await cb.answer("wizard: preset error", show_alert=True)
         return
 
     if action == "reset":

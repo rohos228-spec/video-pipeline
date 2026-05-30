@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { ProjectSummary } from "@/lib/types";
+import type { GenerationConfigPresetSettings, ProjectSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -19,9 +19,46 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-type Phase = "topic" | "hero" | "auto" | "wizard";
+type Phase = "topic" | "config" | "hero" | "auto" | "wizard";
 
 type WizardAnswers = Record<string, string>;
+
+type WizardQuestion = {
+  field: string;
+  title: string;
+  choices: { id: string; label: string }[];
+  cols: number;
+};
+
+function answersToSettings(
+  answers: WizardAnswers,
+  questions: WizardQuestion[],
+): GenerationConfigPresetSettings {
+  const out: GenerationConfigPresetSettings = {};
+  for (const q of questions) {
+    const v = answers[q.field];
+    if (v === undefined) continue;
+    if (q.field === "image_relax" || q.field === "video_relax") {
+      (out as Record<string, boolean>)[q.field] = v === "yes";
+    } else {
+      (out as Record<string, string>)[q.field] = v;
+    }
+  }
+  return out;
+}
+
+function presetToAnswers(settings: GenerationConfigPresetSettings): WizardAnswers {
+  const out: WizardAnswers = {};
+  for (const [k, v] of Object.entries(settings)) {
+    if (v === null || v === undefined) continue;
+    if (k === "image_relax" || k === "video_relax") {
+      out[k] = v ? "yes" : "no";
+    } else {
+      out[k] = String(v);
+    }
+  }
+  return out;
+}
 
 export function NewProjectWizard({
   trigger,
@@ -37,10 +74,20 @@ export function NewProjectWizard({
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
   const [autoMode, setAutoMode] = useState(true);
   const [answers, setAnswers] = useState<WizardAnswers>({});
+  const [skipWizard, setSkipWizard] = useState(false);
+  const [savePresetAfterCreate, setSavePresetAfterCreate] = useState(false);
+  const [savePresetName, setSavePresetName] = useState("");
+  const [selectedPresetName, setSelectedPresetName] = useState<string | null>(null);
 
   const catalog = useQuery({
     queryKey: ["wizard-catalog"],
     queryFn: api.wizardCatalog,
+    enabled: open,
+  });
+
+  const presetsQ = useQuery({
+    queryKey: ["generation-config-presets"],
+    queryFn: api.listGenerationConfigPresets,
     enabled: open,
   });
 
@@ -60,6 +107,15 @@ export function NewProjectWizard({
     });
   }, [catalog.data?.questions, answers.video_generator, answers.image_generator]);
 
+  const deletePreset = useMutation({
+    mutationFn: (id: string) => api.deleteGenerationConfigPreset(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["generation-config-presets"] });
+      toast.success("Конфигурация удалена");
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
   const reset = () => {
     setPhase("topic");
     setWizIndex(0);
@@ -67,6 +123,27 @@ export function NewProjectWizard({
     setHeroMode("auto");
     setAutoMode(true);
     setAnswers({});
+    setSkipWizard(false);
+    setSavePresetAfterCreate(false);
+    setSavePresetName("");
+    setSelectedPresetName(null);
+  };
+
+  const buildPatch = () => {
+    const patch: Record<string, unknown> = {};
+    for (const q of wizardQuestions) {
+      const v = answers[q.field];
+      if (v === undefined) continue;
+      if (q.field === "image_relax" || q.field === "video_relax") {
+        patch[q.field] = v === "yes";
+      } else {
+        patch[q.field] = v;
+      }
+    }
+    if (wizardQuestions.some((q) => q.field === "video_relax") && answers.video_generator !== "veo_3_1_fast") {
+      patch.video_relax = false;
+    }
+    return patch;
   };
 
   const create = useMutation({
@@ -76,26 +153,23 @@ export function NewProjectWizard({
         hero_mode: heroMode,
         auto_mode: autoMode,
       });
-      const patch: Record<string, unknown> = {};
-      for (const q of wizardQuestions) {
-        const v = answers[q.field];
-        if (v === undefined) continue;
-        if (q.field === "image_relax" || q.field === "video_relax") {
-          patch[q.field] = v === "yes";
-        } else {
-          patch[q.field] = v;
-        }
-      }
-      if (wizardQuestions.some((q) => q.field === "video_relax") && answers.video_generator !== "veo_3_1_fast") {
-        patch.video_relax = false;
-      }
+      const patch = buildPatch();
+      let result = p;
       if (Object.keys(patch).length) {
-        return api.patchProject(p.id, patch);
+        result = await api.patchProject(p.id, patch);
       }
-      return p;
+      const name = savePresetName.trim();
+      if (savePresetAfterCreate && name) {
+        await api.createGenerationConfigPreset({
+          name,
+          settings: answersToSettings(answers, wizardQuestions),
+        });
+      }
+      return result;
     },
     onSuccess: (p) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["generation-config-presets"] });
       onCreated(p);
       setOpen(false);
       reset();
@@ -104,12 +178,29 @@ export function NewProjectWizard({
     onError: (e) => toast.error(String(e)),
   });
 
-  const totalSteps = 3 + wizardQuestions.length;
+  const totalSteps = 4 + wizardQuestions.length;
   const currentStepNum =
-    phase === "topic" ? 1 : phase === "hero" ? 2 : phase === "auto" ? 3 : 3 + wizIndex + 1;
+    phase === "topic"
+      ? 1
+      : phase === "config"
+        ? 2
+        : phase === "hero"
+          ? 3
+          : phase === "auto"
+            ? 4
+            : 4 + wizIndex + 1;
 
   const currentWizQ = wizardQuestions[wizIndex];
   const wizAnswered = phase !== "wizard" || !currentWizQ || answers[currentWizQ.field] !== undefined;
+
+  const applyPreset = (preset: { id: string; name: string; settings: GenerationConfigPresetSettings }) => {
+    setAnswers(presetToAnswers(preset.settings));
+    setSkipWizard(true);
+    setSelectedPresetName(preset.name);
+    setSavePresetAfterCreate(false);
+    setSavePresetName("");
+    toast.success(`Конфигурация «${preset.name}» применена`);
+  };
 
   const goNext = () => {
     if (phase === "topic") {
@@ -117,6 +208,10 @@ export function NewProjectWizard({
         toast.error("Введите тему ролика");
         return;
       }
+      setPhase("config");
+      return;
+    }
+    if (phase === "config") {
       setPhase("hero");
       return;
     }
@@ -125,7 +220,7 @@ export function NewProjectWizard({
       return;
     }
     if (phase === "auto") {
-      if (wizardQuestions.length === 0) {
+      if (skipWizard || wizardQuestions.length === 0) {
         create.mutate();
         return;
       }
@@ -154,13 +249,19 @@ export function NewProjectWizard({
       return;
     }
     if (phase === "hero") {
+      setPhase("config");
+      return;
+    }
+    if (phase === "config") {
       setPhase("topic");
     }
   };
 
   const isLast =
-    (phase === "auto" && wizardQuestions.length === 0) ||
+    (phase === "auto" && (skipWizard || wizardQuestions.length === 0)) ||
     (phase === "wizard" && wizIndex >= wizardQuestions.length - 1);
+
+  const presets = presetsQ.data?.presets ?? [];
 
   return (
     <Dialog
@@ -179,13 +280,13 @@ export function NewProjectWizard({
           </DialogDescription>
         </DialogHeader>
 
-        {catalog.isLoading && (
+        {(catalog.isLoading || presetsQ.isLoading) && (
           <div className="flex justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
         )}
 
-        {!catalog.isLoading && phase === "topic" && (
+        {!catalog.isLoading && !presetsQ.isLoading && phase === "topic" && (
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-muted-foreground">Тема ролика</label>
             <Input
@@ -194,6 +295,86 @@ export function NewProjectWizard({
               placeholder="Например: 5 фактов о рачках в стиле киберпанк"
               autoFocus
             />
+          </div>
+        )}
+
+        {!catalog.isLoading && !presetsQ.isLoading && phase === "config" && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm font-medium">Конфигурация генерации</p>
+            {selectedPresetName && (
+              <p className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs">
+                Применена: <b>{selectedPresetName}</b> — мастер настроек будет пропущен
+              </p>
+            )}
+            {presets.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Сохранённых конфигураций пока нет.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-muted-foreground">Выбор конфигурации</p>
+                {presets.map((p) => (
+                  <div key={p.id} className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(p)}
+                      className={cn(
+                        "flex-1 rounded-xl border px-3 py-2 text-left text-xs",
+                        selectedPresetName === p.name
+                          ? "border-emerald-400/50 bg-emerald-400/10"
+                          : "border-white/10 hover:border-white/20",
+                      )}
+                    >
+                      <div className="font-medium">{p.name}</div>
+                    </button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0"
+                      onClick={() => deletePreset.mutate(p.id)}
+                      disabled={deletePreset.isPending}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSkipWizard(false);
+                setSelectedPresetName(null);
+                setAnswers({});
+                setSavePresetAfterCreate(true);
+                setSavePresetName("");
+              }}
+              className={cn(
+                "rounded-xl border px-3 py-2 text-left text-xs",
+                savePresetAfterCreate && !skipWizard
+                  ? "border-violet-400/50 bg-violet-500/10"
+                  : "border-white/10",
+              )}
+            >
+              <div className="font-medium">➕ Создание конфигурации</div>
+              <div className="text-muted-foreground">Пройти мастер и сохранить настройки для следующих проектов</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSkipWizard(false);
+                setSelectedPresetName(null);
+                setSavePresetAfterCreate(false);
+              }}
+              className={cn(
+                "rounded-xl border px-3 py-2 text-left text-xs",
+                !skipWizard && !savePresetAfterCreate
+                  ? "border-amber-400/50 bg-amber-400/10"
+                  : "border-white/10",
+              )}
+            >
+              <div className="font-medium">⚙️ Настроить вручную</div>
+              <div className="text-muted-foreground">Без сохранения пресета — только для этого проекта</div>
+            </button>
           </div>
         )}
 
@@ -274,6 +455,18 @@ export function NewProjectWizard({
                 </Button>
               ))}
             </div>
+            {savePresetAfterCreate && isLast && (
+              <div className="flex flex-col gap-1 pt-2">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Имя конфигурации для сохранения
+                </label>
+                <Input
+                  value={savePresetName}
+                  onChange={(e) => setSavePresetName(e.target.value)}
+                  placeholder="Например: GPT Image 2 — 16:9 — Relax"
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -295,7 +488,13 @@ export function NewProjectWizard({
             <Button
               type="button"
               onClick={goNext}
-              disabled={create.isPending || catalog.isLoading || !wizAnswered}
+              disabled={
+                create.isPending ||
+                catalog.isLoading ||
+                presetsQ.isLoading ||
+                !wizAnswered ||
+                (savePresetAfterCreate && isLast && phase === "wizard" && !savePresetName.trim())
+              }
             >
               {create.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
