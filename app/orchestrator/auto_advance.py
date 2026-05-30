@@ -1015,7 +1015,9 @@ async def serial_next_mass_lane(
     candidates = [
         p
         for p in await _mass_lanes_for_parent(session, parent_id)
-        if p.status is ProjectStatus.new and p.auto_mode
+        if p.status is ProjectStatus.new
+        and p.auto_mode
+        and not (p.meta or {}).get("mass_lane_user_stop")
     ]
     if not candidates:
         return None

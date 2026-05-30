@@ -18,6 +18,7 @@ from app.models import Base, Project, ProjectStatus
 from app.services.advance_runner import advance_project_job
 from app.services.step_cancel import (
     StepCancelledError,
+    is_generation_active,
     is_stop_requested,
     register_advance_task,
     unregister_advance_task,
@@ -62,6 +63,13 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
 
                     await sync_run_for_project(p.id)
                     logger.info("[#{}] worker: ⏹ {}", p.id, info["message"])
+                continue
+            if is_generation_active(p.id):
+                logger.debug(
+                    "[#{}] worker: {} — шаг уже выполняется, пропуск",
+                    p.id,
+                    p.status.value,
+                )
                 continue
             project_id = p.id
             task = asyncio.create_task(advance_project_job(project_id, bot))

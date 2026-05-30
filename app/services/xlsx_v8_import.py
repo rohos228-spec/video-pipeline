@@ -46,6 +46,21 @@ MIN_FRAME = 1.5
 MAX_FRAME = 6.0
 
 
+def _resolve_plan_sheet(wb):
+    """Лист «план» (v8), без учёта регистра имени."""
+    if SHEET_PLAN_V8 in wb.sheetnames:
+        return wb[SHEET_PLAN_V8]
+    low = SHEET_PLAN_V8.casefold()
+    for name in wb.sheetnames:
+        if name.casefold() == low:
+            return wb[name]
+    return None
+
+
+def has_v8_plan_sheet(wb) -> bool:
+    return _resolve_plan_sheet(wb) is not None
+
+
 def _distribute_durations(cells: list[str]) -> list[float]:
     if not cells:
         return []
@@ -130,9 +145,9 @@ def _cell_float(ws, row: int, col: int) -> float | None:
 
 
 def _read_voiceover_blocks(wb) -> list[str]:
-    if SHEET_PLAN_V8 not in wb.sheetnames:
+    ws = _resolve_plan_sheet(wb)
+    if ws is None:
         return []
-    ws = wb[SHEET_PLAN_V8]
     out: list[str] = []
     for col in range(3, ws.max_column + 1):
         s = _cell_text(ws, ROW_VOICEOVER_V8, col)
@@ -152,9 +167,9 @@ def _read_frame_fields(wb) -> list[dict[str, Any]]:
     Кадр считается «существующим», если в колонке непустой voiceover —
     остальное опционально. Это согласовано с _read_voiceover_blocks.
     """
-    if SHEET_PLAN_V8 not in wb.sheetnames:
+    ws = _resolve_plan_sheet(wb)
+    if ws is None:
         return []
-    ws = wb[SHEET_PLAN_V8]
     out: list[dict[str, Any]] = []
     for col in range(3, ws.max_column + 1):
         voice = _cell_text(ws, ROW_VOICEOVER_V8, col)

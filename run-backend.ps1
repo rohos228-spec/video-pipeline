@@ -1,10 +1,18 @@
 ﻿# Запуск бэкенда из корня репозитория
-# RUN_BACKEND_ID=session-log-v2  (не падает если backend.log занят)
+# RUN_BACKEND_ID=session-log-v3  (UTF-8 console + log)
 # powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
 
 $ErrorActionPreference = "Continue"
 $Root = $PSScriptRoot
 Set-Location $Root
+
+# Loguru пишет UTF-8; без этого в консоли Windows кириллица = «каракули».
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { chcp 65001 | Out-Null } catch { }
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 
 $logDir = Join-Path $Root "data"
 $sharedLog = Join-Path $logDir "backend.log"

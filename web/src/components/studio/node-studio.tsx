@@ -45,6 +45,7 @@ import {
   xlsxPreviewFocusForNode,
 } from "@/lib/xlsx-sheets";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
+import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
@@ -259,6 +260,10 @@ export function NodeStudio({
     return list.slice(0, 12);
   }, [artifacts.data, nodeType]);
 
+  const showStepParams =
+    projectId != null &&
+    (nodeType === "plan" || nodeType === "script" || nodeType === "split");
+
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
   const showFramePromptsPanel =
     activeSlot?.kind === "frame_prompts" && projectId != null;
@@ -405,6 +410,9 @@ export function NodeStudio({
             <div className="p-5">
               {tab === "settings" && (
                 <div className="flex flex-col gap-4 text-sm text-muted-foreground">
+                  {showStepParams ? (
+                    <NodeStepParamsPanel projectId={projectId!} nodeType={nodeType} />
+                  ) : null}
                   <p>
                     Мастер-промты выбираются через «Файлы промтов» на вкладке «Промты GPT».
                     Сопроводительный текст для ChatGPT редактируется отдельно — кнопка «Текстовый

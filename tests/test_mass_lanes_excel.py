@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.web.api import create_app
 
 app = create_app()
+from sqlalchemy import select
+
 from app.models import Base, Project, ProjectStatus, Workflow
 from app.web.deps import get_session
 
@@ -82,5 +84,14 @@ async def test_mass_lanes_uses_excel_topics_from_meta(session_factory, monkeypat
             assert data["started_id"] is not None
             topics_started = [c["topic"] for c in data["created"]]
             assert topics_started == ["Тема A"]
+
+        async with session_factory() as session:
+            parent = await session.get(Project, parent_id)
+            assert parent is not None
+            assert parent.auto_mode is True
+            child = (
+                await session.execute(select(Project).where(Project.id == data["started_id"]))
+            ).scalar_one()
+            assert child.auto_mode is True
     finally:
         app.dependency_overrides.pop(get_session, None)

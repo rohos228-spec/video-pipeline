@@ -1,5 +1,5 @@
 @echo off
-cd /d "C:\Users\Love Space\video-pipeline"
+cd /d "%~dp0"
 title video-pipeline BACKEND
 if not exist .venv\Scripts\python.exe (
     echo Run install.ps1 first

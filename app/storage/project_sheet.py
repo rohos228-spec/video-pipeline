@@ -239,6 +239,38 @@ class ProjectSheet:
             self._save(wb)
         return self.file_path
 
+    def reset_from_template(self, *, project_id: int, slug: str) -> Path:
+        """Копирует шаблон заново. Старый project.xlsx уходит в old/."""
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.file_path.exists():
+            old_dir = self.file_path.parent / "old"
+            old_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            dest = old_dir / f"{ts}_{self.file_path.name}"
+            shutil.move(str(self.file_path), str(dest))
+            logger.info("project_sheet: backup {} -> {}", self.file_path.name, dest)
+        tpl = _ensure_template_exists(self.template_path)
+        shutil.copy(tpl, self.file_path)
+        logger.info(
+            "project_sheet: reset {} (копия шаблона {})",
+            self.file_path,
+            tpl,
+        )
+        with _file_lock(self.file_path):
+            wb = self._open()
+            if SHEET_FRAMES not in wb.sheetnames:
+                return self.file_path
+            self._ensure_layout(wb)
+            ws = wb[SHEET_FRAMES]
+            ws.cell(row=ROW_PROJECT_ID, column=2, value=project_id)
+            ws.cell(row=ROW_SCENE_ID, column=2, value=slug)
+            ws.cell(row=ROW_PHOTO_NN_ID, column=2, value="nano-banana-2")
+            ws.cell(row=ROW_VIDEO_NN_ID, column=2, value="veo-3-fast")
+            ws.cell(row=ROW_FORMAT_ID, column=2, value="9:16")
+            ws.cell(row=ROW_UPDATED_AT, column=2, value=_now_iso())
+            self._save(wb)
+        return self.file_path
+
     # ---- общий план / сценарий -----------------------------------------
 
     def write_general(self, **fields: Any) -> None:

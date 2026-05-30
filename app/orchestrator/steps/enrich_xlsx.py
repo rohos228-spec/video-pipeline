@@ -31,7 +31,8 @@ from app.services import gpt_text_builder as gtb
 from app.services import xlsx_gpt_flow as xgf
 from app.services import xlsx_sync
 from app.services.prompt_library import get_project_prompt
-from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
+from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
+from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
@@ -155,6 +156,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             break  # успех
         except Exception as e:  # noqa: BLE001
             last_err = e
+            xlsx_ok = (
+                xlsx_path.exists()
+                and xlsx_path.stat().st_size >= 1024
+                and validate_xlsx(xlsx_path) is None
+            )
+            if xlsx_ok:
+                logger.warning(
+                    "[#{}] enrich_xlsx slot={} GPT error after valid xlsx on disk "
+                    "({} байт) — skip retry, use downloaded file: {}",
+                    project.id,
+                    slot_idx,
+                    xlsx_path.stat().st_size,
+                    e,
+                )
+                break
             logger.warning(
                 "[#{}] enrich_xlsx slot={} attempt {}/{} FAILED: {}",
                 project.id,
@@ -185,7 +201,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     try:
         from openpyxl import load_workbook
         wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
-        is_v8 = SHEET_PLAN_V8 in wb.sheetnames
+        is_v8 = has_v8_plan_sheet(wb)
         wb.close()
     except Exception as e:  # noqa: BLE001
         is_v8 = False
@@ -229,15 +245,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.telegram.menu import status_order as _ord
 
     cur = project.status
+    meta = dict(project.meta or {})
+    completed = [int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+        project.meta = meta
+
     if _ord(cur) < _ord(ready_status):
         project.status = ready_status
-        await session.flush()
-        logger.info(
-            "[#{}] enrich_xlsx slot={} → status={}",
-            project.id,
-            slot_idx,
-            ready_status.value,
-        )
+    await session.flush()
+    logger.info(
+        "[#{}] enrich_xlsx slot={} → status={}",
+        project.id,
+        slot_idx,
+        project.status.value,
+    )
 
     # 6. Auto-chain — если юзер запустил «▶▶ Запустить все слоты подряд»,
     # `project.meta['enrich_auto_chain_to']` хранит целевой номер слота

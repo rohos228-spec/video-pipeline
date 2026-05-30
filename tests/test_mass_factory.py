@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from app.models import Project
 from app.services.mass_factory import (
+    apply_mass_factory_defaults,
     build_child_meta,
     is_mass_factory_parent,
     queue_state,
 )
+
+
+def test_apply_mass_factory_defaults_enables_auto_mode() -> None:
+    p = Project(slug="f", topic="Factory", hero_mode="auto", auto_mode=False)
+    p.meta = {}
+    apply_mass_factory_defaults(p)
+    assert p.auto_mode is True
+    assert p.meta.get("mass_factory") is True
 
 
 def test_build_child_meta_strips_queue_keys() -> None:

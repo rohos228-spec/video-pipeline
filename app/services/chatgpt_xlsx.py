@@ -20,7 +20,7 @@ from app.models import Project
 from app.services import gpt_text_builder as gtb
 from app.services.prompt_library import get_project_prompt
 from app.services.xlsx_sync import reload_from_xlsx
-from app.services.xlsx_v8_import import SHEET_PLAN_V8, import_v8_xlsx
+from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
 
 
@@ -86,11 +86,31 @@ def write_script_prompt_file(
         "script",
         "Мастер-промт для шага «Закадровый текст» ещё не настроен.",
     )
+    hero_hint = {
+        "hero": (
+            "РЕЖИМ: A (герой). В плане hero_needed=true. "
+            "Найди главного персонажа по теме и плану, "
+            "пиши персонажный сценарий — см. раздел «РЕЖИМ A» в инструкции."
+        ),
+        "no_hero": (
+            "РЕЖИМ: B (тема). hero_needed=false. "
+            "Без биографического героя — подробно раскрой тему, "
+            "см. раздел «РЕЖИМ B» в инструкции."
+        ),
+        "auto": (
+            "РЕЖИМ: определи сам по листу «Общий план» в xlsx "
+            "(hero_needed и содержание плана) — A или B."
+        ),
+    }.get(project.hero_mode or "auto", "")
+    from app.services.gpt_text_builder import inject_topic_placeholders
+
+    prompt_text = inject_topic_placeholders(prompt_text, topic)
+    extra = f"\n\n---\n\nУКАЗАНИЕ ПРОЕКТА:\n{hero_hint}\n" if hero_hint else ""
     prompt_file = tmp_dir / f"prompt_script_{ts or _timestamp()}.txt"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 2 «Закадровый текст»)\n"
         f"# Тема ролика: «{topic}»\n\n"
-        f"{prompt_text}\n",
+        f"{prompt_text}{extra}\n",
         encoding="utf-8",
     )
     return prompt_file
@@ -208,7 +228,9 @@ async def sync_project_xlsx(
         wb = load_workbook(
             filename=str(xlsx_path), data_only=True, read_only=True
         )
-        is_v8 = SHEET_PLAN_V8 in wb.sheetnames
+        from app.services.xlsx_v8_import import has_v8_plan_sheet
+
+        is_v8 = has_v8_plan_sheet(wb)
         wb.close()
     except Exception as e:  # noqa: BLE001
         is_v8 = False
@@ -232,6 +254,8 @@ async def sync_project_xlsx(
             logger.warning(
                 "[#{}] sync_project_xlsx v8 failed: {}", project.id, e
             )
+            if update_frames_voiceover:
+                raise
     try:
         info_v7 = await reload_from_xlsx(session, project, xlsx_path)
         logger.info("[#{}] sync_project_xlsx v7: {}", project.id, info_v7)
@@ -239,6 +263,8 @@ async def sync_project_xlsx(
             sync_info = info_v7
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] sync_project_xlsx v7 failed: {}", project.id, e)
+    if sync_info and sync_info.get("error") and update_frames_voiceover:
+        raise RuntimeError(f"xlsx-sync: {sync_info['error']}")
     return sync_info
 
 

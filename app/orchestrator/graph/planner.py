@@ -165,6 +165,14 @@ class WorkflowGraph:
                     done.add(self.node_type(key))
             else:
                 done = set(LINEAR_NODE_TYPES)
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        for slot in meta.get("enrich_completed_slots") or []:
+            try:
+                idx = int(slot)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= idx <= 5:
+                done.add(f"enrich_{idx}")
         return done
 
     def _is_ready(self, node_key: str, project: Project, skipped: set[str]) -> bool:
@@ -198,6 +206,7 @@ class WorkflowGraph:
 
         visited: set[str] = set()
         queue: deque[str] = deque()
+        done = self._work_types_done(project)
         for k in start_keys:
             for nxt in self._out.get(k, []):
                 queue.append(nxt)
@@ -215,6 +224,9 @@ class WorkflowGraph:
                 queue.extend(self._out.get(key, []))
                 continue
             if not is_work_node_type(typ):
+                queue.extend(self._out.get(key, []))
+                continue
+            if typ in done:
                 queue.extend(self._out.get(key, []))
                 continue
             preds = self._effective_predecessors(key, skipped)

@@ -88,7 +88,9 @@ async def telegram_style_ask_and_download(
         logger.info("xlsx-gpt-flow: GPT reply len={}", len(reply or ""))
         logger.info("xlsx-gpt-flow: скачиваю вложение из ответа → {}", download_path)
         await gpt.download_attachment_from_last_reply(
-            download_path, timeout=download_timeout
+            download_path,
+            timeout=download_timeout,
+            fallback_text=reply,
         )
 
     if validate_xlsx_download:

@@ -17,8 +17,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         return
     logger.info("[#{}] split_frames (xlsx-flow) starting", project.id)
 
+    existing_frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    if len(existing_frames) >= 2:
+        logger.info(
+            "[#{}] split_frames: в БД уже {} кадров — пропуск GPT",
+            project.id,
+            len(existing_frames),
+        )
+        project.status = ProjectStatus.frames_ready
+        await session.flush()
+        return
+
     result = await xsr.run_split_xlsx(project)
-    await xsr.sync_after_split(session, project, result.project_xlsx)
+    sync_info = await xsr.sync_after_split(session, project, result.project_xlsx)
+    if sync_info:
+        logger.info("[#{}] split_frames sync: {}", project.id, sync_info)
 
     frames = (
         await session.execute(
@@ -28,8 +47,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         )
     ).scalars().all()
     if not frames:
+        blocks = xsr._count_v8_voiceover_blocks(result.project_xlsx)
+        diag = xsr.diagnose_split_xlsx(result.project_xlsx)
         raise RuntimeError(
-            "после xlsx-sync кадры не созданы — проверь ответ ChatGPT"
+            "после xlsx-sync кадры не созданы — в project.xlsx найдено "
+            f"{blocks} voiceover-блоков. {diag} "
+            "Проверь: строка 49 листа «план», колонки C..N."
         )
 
     project.status = ProjectStatus.frames_ready
