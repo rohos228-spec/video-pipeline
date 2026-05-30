@@ -783,6 +783,7 @@ def project_header(project: Project) -> str:
         getattr(project, "image_resolution", None),
         getattr(project, "video_generator", None),
         getattr(project, "video_resolution", None),
+        image_quality=getattr(project, "image_quality", None),
         image_relax=getattr(project, "image_relax", None),
         video_relax=getattr(project, "video_relax", None),
     )

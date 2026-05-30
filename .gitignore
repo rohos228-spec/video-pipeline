@@ -20,7 +20,12 @@ env/
 # Env & secrets
 .env
 .env.local
+.env.bak
+.env.bak-*
 *.pem
+
+# MCP / local tools
+.ai-orchestra-mcp/node_modules/
 
 # IDE
 .idea/

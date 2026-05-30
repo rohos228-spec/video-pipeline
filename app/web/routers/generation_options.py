@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from app.generation_options import (
     ASPECT_RATIOS,
     IMAGE_GENERATORS,
+    IMAGE_QUALITIES,
     IMAGE_RESOLUTIONS,
     VIDEO_GENERATORS,
     VIDEO_RESOLUTIONS,
@@ -25,7 +26,7 @@ def _choices_to_dict(choices: list) -> list[dict]:
 
 @router.get("/wizard")
 async def wizard_catalog() -> dict:
-    """Вопросы мастера после создания проекта (7 шагов)."""
+    """Вопросы мастера после создания проекта (8 шагов)."""
     questions = []
     for q in wiz._QUESTIONS:
         questions.append(
@@ -41,6 +42,7 @@ async def wizard_catalog() -> dict:
         "image_generators": _choices_to_dict(IMAGE_GENERATORS),
         "aspect_ratios": _choices_to_dict(ASPECT_RATIOS),
         "image_resolutions": _choices_to_dict(IMAGE_RESOLUTIONS),
+        "image_qualities": _choices_to_dict(IMAGE_QUALITIES),
         "video_generators": _choices_to_dict(VIDEO_GENERATORS),
         "video_resolutions": _choices_to_dict(VIDEO_RESOLUTIONS),
         "boolean": _choices_to_dict(wiz.BOOLEAN_CHOICES),

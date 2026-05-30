@@ -44,6 +44,7 @@ from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
+    resolve_image_quality_slug,
 )
 from app.models import (
     Artifact,
@@ -519,6 +520,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
             project.image_resolution or DEFAULTS["image_resolution"]
         )
+        quality_slug = resolve_image_quality_slug(
+            project.image_generator, project.image_quality
+        )
 
         short_uuid = uuid.uuid4().hex[:8]
         file_name = f"hero_{hero_idx}_v{v_idx}_{short_uuid}.png"
@@ -563,6 +567,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     aspect_ratio=HERO_ASPECT_RATIO,
                     model_slug=img_gen.outsee_slug if img_gen else None,
                     resolution=ir.outsee_slug if ir else None,
+                    quality=quality_slug,
                     relax=HERO_RELAX,
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=ref_path,
@@ -914,6 +919,9 @@ async def _generate_one_excel_character(
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
             project.image_resolution or DEFAULTS["image_resolution"]
         )
+        quality_slug = resolve_image_quality_slug(
+            project.image_generator, project.image_quality
+        )
 
         result = None
         if not used_refs and is_regen:
@@ -937,6 +945,7 @@ async def _generate_one_excel_character(
                     aspect_ratio=HERO_ASPECT_RATIO,
                     model_slug=img_gen.outsee_slug if img_gen else None,
                     resolution=ir.outsee_slug if ir else None,
+                    quality=quality_slug,
                     relax=HERO_RELAX,
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=(ref_paths or None) if used_refs else None,

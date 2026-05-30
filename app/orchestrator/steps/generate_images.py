@@ -38,6 +38,7 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     build_gen_id_prefix,
+    resolve_image_quality_slug,
 )
 from app.models import (
     Artifact,
@@ -601,6 +602,9 @@ async def _generate_and_send(
     aspect_slug = ar.outsee_slug if ar else "9:16"
     model_slug = img_gen.outsee_slug if img_gen else None
     res_slug = ir.outsee_slug if ir else None
+    quality_slug = resolve_image_quality_slug(
+        project.image_generator, project.image_quality
+    )
     logger.info(
         "[#{}] frame {} attempt {} gen_id={}: outsee {}",
         project.id,
@@ -657,6 +661,7 @@ async def _generate_and_send(
                     gen_id=gen_id,
                     model_slug=model_slug,
                     resolution=res_slug,
+                    quality=quality_slug,
                     relax=bool(project.image_relax),
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
@@ -675,6 +680,7 @@ async def _generate_and_send(
                 gen_id=gen_id,
                 model_slug=model_slug,
                 resolution=res_slug,
+                quality=quality_slug,
                 relax=bool(project.image_relax),
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,

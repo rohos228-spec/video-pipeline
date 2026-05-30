@@ -98,6 +98,7 @@ export interface ProjectDetail extends ProjectSummary {
   image_generator: string | null;
   aspect_ratio: string | null;
   image_resolution: string | null;
+  image_quality: string | null;
   image_relax: boolean | null;
   video_generator: string | null;
   video_resolution: string | null;

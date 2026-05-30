@@ -49,12 +49,16 @@ export function NewProjectWizard({
   const wizardQuestions = useMemo(() => {
     const qs = catalog.data?.questions ?? [];
     return qs.filter((q) => {
+      if (q.field === "image_quality") {
+        const g = answers.image_generator;
+        if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
+      }
       if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
         return false;
       }
       return true;
     });
-  }, [catalog.data?.questions, answers.video_generator]);
+  }, [catalog.data?.questions, answers.video_generator, answers.image_generator]);
 
   const reset = () => {
     setPhase("topic");

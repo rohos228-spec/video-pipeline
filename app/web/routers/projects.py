@@ -161,7 +161,7 @@ async def patch_project(
         raise HTTPException(status_code=404, detail="project not found")
     ALLOWED = {
         "topic", "hero_mode", "general_plan", "hero_description", "script_text",
-        "image_generator", "aspect_ratio", "image_resolution", "image_relax",
+        "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
         "video_generator", "video_resolution", "video_relax",
         "hero_count", "hero_descriptions", "hero_variations",
         "hero_variation_modifiers",

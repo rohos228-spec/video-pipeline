@@ -93,9 +93,25 @@ ASPECT_RATIOS: list[OptionChoice] = [
 # ---- 3. Разрешение картинки ------------------------------------------------
 
 IMAGE_RESOLUTIONS: list[OptionChoice] = [
+    OptionChoice("1k", "1K", "1K", "1K — компактное разрешение (GPT Image 2)"),
     OptionChoice("2k", "2K", "2K", "2K — стандартное разрешение"),
     OptionChoice("4k", "4K", "4K", "4K — максимальное качество"),
 ]
+
+
+# ---- 3b. Качество картинки (GPT Image 1.5 / 2 на outsee.io) -----------------
+
+IMAGE_QUALITIES: list[OptionChoice] = [
+    OptionChoice("low", "Низкое", "Низкое", "Низкое качество — быстрее"),
+    OptionChoice("medium", "Среднее", "Среднее", "Среднее качество — баланс"),
+    OptionChoice("high", "Высокое", "Высокое", "Высокое качество — детальнее"),
+]
+
+GPT_IMAGE_GENERATOR_IDS = frozenset({"gpt_image_1_5", "gpt_image_2"})
+
+
+def is_gpt_image_generator(generator_id: str | None) -> bool:
+    return (generator_id or "") in GPT_IMAGE_GENERATOR_IDS
 
 
 # ---- 4. Видео-генераторы (13 штук, без Topaz Video Upscale) ---------------
@@ -177,6 +193,7 @@ def _by_id(choices: list[OptionChoice]) -> dict[str, OptionChoice]:
 IMAGE_GENERATORS_BY_ID = _by_id(IMAGE_GENERATORS)
 ASPECT_RATIOS_BY_ID = _by_id(ASPECT_RATIOS)
 IMAGE_RESOLUTIONS_BY_ID = _by_id(IMAGE_RESOLUTIONS)
+IMAGE_QUALITIES_BY_ID = _by_id(IMAGE_QUALITIES)
 VIDEO_GENERATORS_BY_ID = _by_id(VIDEO_GENERATORS)
 VIDEO_RESOLUTIONS_BY_ID = _by_id(VIDEO_RESOLUTIONS)
 
@@ -184,12 +201,26 @@ VIDEO_RESOLUTIONS_BY_ID = _by_id(VIDEO_RESOLUTIONS)
 # ---- Дефолты (используются если юзер ещё не прошёл мастер) -----------------
 
 DEFAULTS = {
-    "image_generator": "nano_banana_2",
-    "aspect_ratio": "9:16",
+    "image_generator": "gpt_image_2",
+    "aspect_ratio": "16_9",
     "image_resolution": "2k",
+    "image_quality": "medium",
     "video_generator": "veo_3_fast",
     "video_resolution": "1080p",
 }
+
+
+def resolve_image_quality_slug(
+    generator_id: str | None,
+    quality_id: str | None = None,
+) -> str | None:
+    """Метка кнопки качества на outsee (Низкое/Среднее/Высокое) или None."""
+    gid = generator_id or DEFAULTS["image_generator"]
+    if not is_gpt_image_generator(gid):
+        return None
+    qid = quality_id or DEFAULTS.get("image_quality", "medium")
+    choice = IMAGE_QUALITIES_BY_ID.get(qid)
+    return choice.outsee_slug if choice else None
 
 
 # ---- Функция-рендер полной сводки настроек проекта ------------------------
@@ -200,6 +231,7 @@ def render_settings_summary(
     image_resolution: str | None,
     video_generator: str | None,
     video_resolution: str | None,
+    image_quality: str | None = None,
     image_relax: bool | None = None,
     video_relax: bool | None = None,
 ) -> str:
@@ -207,6 +239,7 @@ def render_settings_summary(
     ig = IMAGE_GENERATORS_BY_ID.get(image_generator or "")
     ar = ASPECT_RATIOS_BY_ID.get(aspect_ratio or "")
     ir = IMAGE_RESOLUTIONS_BY_ID.get(image_resolution or "")
+    iq = IMAGE_QUALITIES_BY_ID.get(image_quality or "")
     vg = VIDEO_GENERATORS_BY_ID.get(video_generator or "")
     vr = VIDEO_RESOLUTIONS_BY_ID.get(video_resolution or "")
     img_relax_str = (
@@ -215,10 +248,11 @@ def render_settings_summary(
     vid_relax_str = (
         "Relax" if video_relax else ("—" if video_relax is None else "no Relax")
     )
+    qual_part = f" · {iq.label}" if iq else ""
     return (
         f"img-gen: {ig.label if ig else '—'} · "
         f"{ar.label if ar else '—'} · "
-        f"{ir.label if ir else '—'} · "
+        f"{ir.label if ir else '—'}{qual_part} · "
         f"{img_relax_str}\n"
         f"video-gen: {vg.label if vg else '—'} · "
         f"{vr.label if vr else '—'} · "
@@ -232,6 +266,7 @@ def render_settings_for_gpt(
     image_resolution: str | None,
     video_generator: str | None,
     video_resolution: str | None,
+    image_quality: str | None = None,
 ) -> str:
     """Блок для вставки в начало master-промта ChatGPT.
 
@@ -241,6 +276,7 @@ def render_settings_for_gpt(
     ig = IMAGE_GENERATORS_BY_ID.get(image_generator or "")
     ar = ASPECT_RATIOS_BY_ID.get(aspect_ratio or "")
     ir = IMAGE_RESOLUTIONS_BY_ID.get(image_resolution or "")
+    iq = IMAGE_QUALITIES_BY_ID.get(image_quality or "")
     vg = VIDEO_GENERATORS_BY_ID.get(video_generator or "")
     vr = VIDEO_RESOLUTIONS_BY_ID.get(video_resolution or "")
     lines = ["=== TECHNICAL SETTINGS (от пользователя) ==="]
@@ -253,6 +289,8 @@ def render_settings_for_gpt(
         lines.append(f"Aspect ratio: {ar.label} — {ar.short_desc}.")
     if ir:
         lines.append(f"Image resolution: {ir.label} — {ir.short_desc}.")
+    if iq:
+        lines.append(f"Image quality: {iq.label} — {iq.short_desc}.")
     if vg:
         lines.append(
             f"Video generator: {vg.label} — {vg.short_desc}. "

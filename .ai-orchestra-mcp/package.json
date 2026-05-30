@@ -1,0 +1,12 @@
+﻿{
+  "name": "ai-orchestra-aitunnel-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

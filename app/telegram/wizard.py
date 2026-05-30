@@ -36,6 +36,8 @@ from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     IMAGE_GENERATORS,
     IMAGE_GENERATORS_BY_ID,
+    IMAGE_QUALITIES,
+    IMAGE_QUALITIES_BY_ID,
     IMAGE_RESOLUTIONS,
     IMAGE_RESOLUTIONS_BY_ID,
     OptionChoice,
@@ -43,6 +45,7 @@ from app.generation_options import (
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS,
     VIDEO_RESOLUTIONS_BY_ID,
+    is_gpt_image_generator,
 )
 from app.models import Project
 
@@ -97,7 +100,7 @@ def _is_set_bool(field: str) -> Callable[[Project], bool]:
 _QUESTIONS: list[WizardQuestion] = [
     WizardQuestion(
         field="image_generator",
-        title="1/7. Какой <b>генератор картинок</b> использовать?",
+        title="1/8. Какой <b>генератор картинок</b> использовать?",
         choices=IMAGE_GENERATORS,
         image_path=_IMG_GENERATORS_REF,
         cols=1,
@@ -106,7 +109,7 @@ _QUESTIONS: list[WizardQuestion] = [
     ),
     WizardQuestion(
         field="aspect_ratio",
-        title="2/7. Какое <b>соотношение сторон</b> картинок?",
+        title="2/8. Какое <b>соотношение сторон</b> картинок?",
         choices=ASPECT_RATIOS,
         image_path=_ASPECT_REF,
         cols=4,
@@ -115,18 +118,29 @@ _QUESTIONS: list[WizardQuestion] = [
     ),
     WizardQuestion(
         field="image_resolution",
-        title="3/7. <b>Разрешение картинки</b>?",
+        title="3/8. <b>Разрешение картинки</b>?",
         choices=IMAGE_RESOLUTIONS,
         image_path=None,
-        cols=2,
+        cols=3,
         catalog=IMAGE_RESOLUTIONS_BY_ID,
         is_set=_is_set_str("image_resolution"),
     ),
     WizardQuestion(
+        field="image_quality",
+        title="4/8. <b>Качество картинки</b>? (GPT Image)",
+        choices=IMAGE_QUALITIES,
+        image_path=None,
+        cols=3,
+        catalog=IMAGE_QUALITIES_BY_ID,
+        is_set=_is_set_str("image_quality"),
+        skip_if=lambda p: not is_gpt_image_generator(p.image_generator),
+        skip_value="medium",
+    ),
+    WizardQuestion(
         field="image_relax",
         title=(
-            "4/7. <b>Relax-режим картинок</b>?\n"
-            "Если «Да» — outsee выберет Relax перед генерацией."
+            "5/8. <b>Relax-режим картинок</b>?\n"
+            "Если «Да» — outsee включит «Безлимит» перед генерацией."
         ),
         choices=BOOLEAN_CHOICES,
         image_path=None,
@@ -137,7 +151,7 @@ _QUESTIONS: list[WizardQuestion] = [
     ),
     WizardQuestion(
         field="video_generator",
-        title="5/7. Какой <b>видео-генератор</b> использовать?",
+        title="6/8. Какой <b>видео-генератор</b> использовать?",
         choices=VIDEO_GENERATORS,
         image_path=_VIDEO_GENERATORS_REF,
         cols=1,
@@ -146,7 +160,7 @@ _QUESTIONS: list[WizardQuestion] = [
     ),
     WizardQuestion(
         field="video_resolution",
-        title="6/7. <b>Разрешение видео</b>?",
+        title="7/8. <b>Разрешение видео</b>?",
         choices=VIDEO_RESOLUTIONS,
         image_path=None,
         cols=2,
@@ -156,7 +170,7 @@ _QUESTIONS: list[WizardQuestion] = [
     WizardQuestion(
         field="video_relax",
         title=(
-            "7/7. <b>Relax-режим видео</b>?\n"
+            "8/8. <b>Relax-режим видео</b>?\n"
             "Поддерживается только для Veo 3.1 Fast."
         ),
         choices=BOOLEAN_CHOICES,
@@ -290,6 +304,7 @@ _FIELD_LABELS: dict[str, str] = {
     "image_generator": "🖌 Генератор картинок",
     "aspect_ratio": "📐 Соотношение сторон",
     "image_resolution": "🖼️ Разрешение картинки",
+    "image_quality": "✨ Качество картинки",
     "image_relax": "⏱ Relax картинок",
     "video_generator": "🎬 Видео-генератор",
     "video_resolution": "📺 Разрешение видео",
@@ -572,6 +587,7 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
                 image_generator=project.image_generator,
                 aspect_ratio=project.aspect_ratio,
                 image_resolution=project.image_resolution,
+                image_quality=project.image_quality,
                 image_relax=project.image_relax,
                 video_generator=project.video_generator,
                 video_resolution=project.video_resolution,
@@ -593,6 +609,7 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
             project.image_generator = None
             project.aspect_ratio = None
             project.image_resolution = None
+            project.image_quality = None
             project.image_relax = None
             project.video_generator = None
             project.video_resolution = None
@@ -659,6 +676,7 @@ async def handle_wizard_callback(cb: CallbackQuery) -> None:
                 image_generator=project.image_generator,
                 aspect_ratio=project.aspect_ratio,
                 image_resolution=project.image_resolution,
+                image_quality=project.image_quality,
                 image_relax=project.image_relax,
                 video_generator=project.video_generator,
                 video_resolution=project.video_resolution,

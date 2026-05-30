@@ -18,6 +18,7 @@ COPY_PROJECT_FIELDS = (
     "image_generator",
     "aspect_ratio",
     "image_resolution",
+    "image_quality",
     "image_relax",
     "video_generator",
     "video_resolution",

@@ -337,12 +337,22 @@ async def _select_aspect_ratio(
 
 
 def _resolution_selectors(resolution: str) -> list[str]:
-    """Селекторы для кнопки 2K / 4K (картинка) или 720p / 1080p (видео)."""
+    """Селекторы для кнопки 1K / 2K / 4K (картинка) или 720p / 1080p (видео)."""
     return [
         f"button:has-text('{resolution}')",
         f"[data-value='{resolution}']",
         f"[aria-label='{resolution}']",
         f"*:has(> :text-is('{resolution}'))",
+    ]
+
+
+def _quality_selectors(quality_label: str) -> list[str]:
+    """Селекторы для кнопок Низкое / Среднее / Высокое (GPT Image)."""
+    return [
+        f"button:has-text('{quality_label}')",
+        f"[data-value='{quality_label}']",
+        f"[aria-label='{quality_label}']",
+        f"*:has(> :text-is('{quality_label}'))",
     ]
 
 
@@ -1050,6 +1060,7 @@ class OutseeBot:
         gen_id: str | None = None,
         model_slug: str | None = None,
         resolution: str | None = None,
+        quality: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
         reference_image: Path | list[Path] | None = None,
@@ -1062,7 +1073,8 @@ class OutseeBot:
                             используется settings.outsee_image_url как есть.
           aspect_ratio    — строка-ярлык кнопки («16:9», «9:16»…). Жмём
                             кнопку и проверяем состояние.
-          resolution      — строка-ярлык («2K» / «4K»). Best-effort клик.
+          resolution      — строка-ярлык («1K» / «2K» / «4K»). Best-effort клик.
+          quality         — строка-ярлык («Низкое» / «Среднее» / «Высокое»).
           relax           — если True и Relax-кнопка есть на странице — включаем.
           reference_image — если передан Path или list[Path] — загружаем
                             картинку(и) как референс(ы) для генерации
@@ -1112,6 +1124,7 @@ class OutseeBot:
                 gen_id=gen_id,
                 model_slug=model_slug,
                 resolution=resolution,
+                quality=quality,
                 relax=relax,
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=reference_image,
@@ -1133,6 +1146,7 @@ class OutseeBot:
         gen_id: str,
         model_slug: str | None,
         resolution: str | None,
+        quality: str | None,
         relax: bool,
         prompt_id_prefix: str | None,
         reference_image: Path | list[Path] | None,
@@ -1290,6 +1304,26 @@ class OutseeBot:
                     except Exception:  # noqa: BLE001
                         logger.warning(
                             "resolution {} не кликнулось ({})", resolution, res_sel
+                        )
+
+            # 2.6) выбрать качество Низкое / Среднее / Высокое (best-effort)
+            if quality:
+                qual_sel = await _first_visible(
+                    page, _quality_selectors(quality), timeout_ms=3_000,
+                    project_id=project_id,
+                )
+                if qual_sel:
+                    try:
+                        await await_with_cancel(
+                            page.locator(qual_sel).first.click(), project_id
+                        )
+                        logger.info(
+                            "outsee.generate_image: {} выбран ({})",
+                            quality, qual_sel,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "quality {} не кликнулось ({})", quality, qual_sel
                         )
 
             # 2.7) Relax (если попросили)
@@ -3356,6 +3390,7 @@ class OutseeBot:
         gen_id: str | None = None,
         model_slug: str | None = None,
         resolution: str | None = None,
+        quality: str | None = None,
         relax: bool = False,
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,

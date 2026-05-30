@@ -40,6 +40,7 @@ TEMPLATE_FIELDS: tuple[str, ...] = (
     "image_generator",
     "aspect_ratio",
     "image_resolution",
+    "image_quality",
     "image_relax",
     "video_generator",
     "video_resolution",

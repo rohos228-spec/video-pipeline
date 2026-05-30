@@ -35,6 +35,7 @@ from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
+    resolve_image_quality_slug,
 )
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services.outsee_retry import generate_image_with_retries
@@ -107,6 +108,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     ir = IMAGE_RESOLUTIONS_BY_ID.get(
         project.image_resolution or DEFAULTS["image_resolution"]
     )
+    quality_slug = resolve_image_quality_slug(
+        project.image_generator, project.image_quality
+    )
 
     already_done = await _existing_item_indices(session, project)
     out_dir = project.data_dir / "items"
@@ -152,6 +156,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     aspect_ratio=ITEM_ASPECT_RATIO,
                     model_slug=img_gen.outsee_slug if img_gen else None,
                     resolution=ir.outsee_slug if ir else None,
+                    quality=quality_slug,
                     relax=ITEM_RELAX,
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=None,

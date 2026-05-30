@@ -188,6 +188,7 @@ class Project(Base):
     image_generator: Mapped[str | None] = mapped_column(String(40), default=None)
     aspect_ratio: Mapped[str | None] = mapped_column(String(10), default=None)
     image_resolution: Mapped[str | None] = mapped_column(String(10), default=None)
+    image_quality: Mapped[str | None] = mapped_column(String(10), default=None)
     # None = вопрос ещё не задан, False/True — ответ юзера.
     image_relax: Mapped[bool | None] = mapped_column(default=None)
     video_generator: Mapped[str | None] = mapped_column(String(40), default=None)

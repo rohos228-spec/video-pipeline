@@ -43,6 +43,7 @@ class ProjectDetail(ProjectSummary):
     image_generator: str | None = None
     aspect_ratio: str | None = None
     image_resolution: str | None = None
+    image_quality: str | None = None
     image_relax: bool | None = None
     video_generator: str | None = None
     video_resolution: str | None = None

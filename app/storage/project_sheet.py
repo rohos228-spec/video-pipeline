@@ -257,6 +257,7 @@ class ProjectSheet:
             ("image_generator", "Генератор картинок"),
             ("aspect_ratio", "Соотношение сторон"),
             ("image_resolution", "Разрешение картинки"),
+            ("image_quality", "Качество картинки"),
             ("video_generator", "Видео-генератор"),
             ("video_resolution", "Разрешение видео"),
             ("general_plan", "Общий план (от ChatGPT)"),

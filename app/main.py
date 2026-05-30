@@ -37,6 +37,7 @@ async def _init_db() -> None:
             ("image_generator", "VARCHAR(40)"),
             ("aspect_ratio", "VARCHAR(10)"),
             ("image_resolution", "VARCHAR(10)"),
+            ("image_quality", "VARCHAR(10)"),
             ("image_relax", "BOOLEAN DEFAULT 0"),
             ("video_generator", "VARCHAR(40)"),
             ("video_resolution", "VARCHAR(10)"),
