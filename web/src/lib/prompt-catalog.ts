@@ -11,6 +11,7 @@ export const LEGACY_STEP_FOLDER: Record<string, string> = {
   script: "02_script",
   split: "03_razbivka",
   hero: "04_hero",
+  hero_style: "04_hero_style",
   items: "04b_items",
   enrich_1: "05a_enrich_1",
   enrich_2: "05b_enrich_2",

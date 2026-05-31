@@ -26,6 +26,7 @@ export const STEPS_WITH_PROMPT_VARIANTS = new Set([
   "script",
   "split",
   "hero",
+  "hero_style",
   "items",
   "enrich_1",
   "enrich_2",

@@ -47,6 +47,8 @@ class Settings(BaseSettings):
 
     # Paths
     data_dir: Path = Field(Path("./data"), alias="DATA_DIR")
+    # Явный путь к .xlsx-шаблону для новых project.xlsx (иначе — newest v8 в templates/)
+    project_xlsx_template: Path | None = Field(None, alias="PROJECT_XLSX_TEMPLATE")
 
     # Whisper — large-v3 точнее по словам; первый прогон дольше
     whisper_model: str = Field("large-v3", alias="WHISPER_MODEL")

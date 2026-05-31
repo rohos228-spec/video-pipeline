@@ -185,6 +185,26 @@ def _derived_node_states(
     return out
 
 
+def _infer_stale_running_node_status(
+    node_type: str,
+    project_status: ProjectStatus,
+) -> NodeRunStatus:
+    """NodeRun ещё running, проект уже не *ing — done для завершённых шагов, иначе pending."""
+    if project_status not in STATUS_TO_NODE:
+        return NodeRunStatus.pending
+    target_type, target_state = STATUS_TO_NODE[project_status]
+    try:
+        node_idx = NODE_TYPE_ORDER.index(node_type)
+        target_idx = NODE_TYPE_ORDER.index(target_type)
+    except ValueError:
+        return NodeRunStatus.pending
+    if node_idx < target_idx:
+        return NodeRunStatus.done
+    if node_idx == target_idx:
+        return NodeRunStatus.done if target_state == NodeRunStatus.done else NodeRunStatus.pending
+    return NodeRunStatus.pending
+
+
 async def sync_run_for_project(project_id: int) -> None:
     """Подтянуть NodeRun-статусы из текущего Project.status."""
     async with session_scope() as s:
@@ -233,7 +253,7 @@ async def sync_run_for_project(project_id: int) -> None:
                     nr.status == NodeRunStatus.running
                     and not is_running_status(project.status)
                 ):
-                    target = NodeRunStatus.pending
+                    target = _infer_stale_running_node_status(nr.node_type, project.status)
                 else:
                     continue
             if nr.status != target:

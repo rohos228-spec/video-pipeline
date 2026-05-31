@@ -57,9 +57,51 @@ from loguru import logger
 # который пишет промты/URL в специально размеченные ячейки. v8-шаблон
 # структурно другой и заполняется ChatGPT-ом, поэтому при v8 мы пропускаем
 # enforce-разметку (см. _ensure_layout).
-_V8_TEMPLATE = Path("templates/project_template_v8.xlsx")
 _OLD_TEMPLATE = Path("templates/project_template.xlsx")
-DEFAULT_TEMPLATE_PATH = _V8_TEMPLATE if _V8_TEMPLATE.exists() else _OLD_TEMPLATE
+_V8_CANDIDATES = (
+    Path("templates/project_template_v8.xlsx"),
+    Path("templates/project_template_v8..xlsx"),
+)
+
+
+def resolve_default_template_path() -> Path:
+    """Какой .xlsx копировать в project.xlsx при создании.
+
+    Приоритет:
+    1) PROJECT_XLSX_TEMPLATE из .env
+    2) Самый свежий v8-файл в templates/ (в т.ч. project_template_v8..xlsx)
+    3) Legacy templates/project_template.xlsx
+    """
+    try:
+        from app.settings import settings
+
+        if settings.project_xlsx_template is not None:
+            explicit = Path(settings.project_xlsx_template)
+            if explicit.is_file():
+                return explicit
+            logger.warning(
+                "project_sheet: PROJECT_XLSX_TEMPLATE не найден: {}",
+                explicit,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    existing_v8 = [p for p in _V8_CANDIDATES if p.is_file()]
+    if existing_v8:
+        chosen = max(existing_v8, key=lambda p: p.stat().st_mtime)
+        if len(existing_v8) > 1:
+            logger.debug(
+                "project_sheet: v8 template → {} (newest of {})",
+                chosen,
+                [p.name for p in existing_v8],
+            )
+        return chosen
+    if _OLD_TEMPLATE.is_file():
+        return _OLD_TEMPLATE
+    return _V8_CANDIDATES[0]
+
+
+DEFAULT_TEMPLATE_PATH = resolve_default_template_path()
 
 SHEET_FRAMES = "Кадры"
 SHEET_GENERAL = "Общий план ролика"
@@ -202,9 +244,7 @@ class ProjectSheet:
 
     def __init__(self, file_path: Path, *, template_path: Path | None = None) -> None:
         self.file_path = Path(file_path)
-        self.template_path = (
-            Path(template_path) if template_path is not None else DEFAULT_TEMPLATE_PATH
-        )
+        self.template_path = Path(template_path) if template_path is not None else resolve_default_template_path()
 
     # ---- инициализация --------------------------------------------------
 

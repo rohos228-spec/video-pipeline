@@ -13,10 +13,21 @@ export type SplitStepParams = {
   cell_avg_max?: number | null;
 };
 
+export type AudioStepParams = {
+  elevenlabs_voice_id?: string | null;
+};
+
+export type AssembleStepParams = {
+  /** По умолчанию true — прожиг ASS в финальный mp4 */
+  subtitles_enabled?: boolean | null;
+};
+
 export type NodeStepParamsMeta = {
   plan?: PlanScriptStepParams;
   script?: PlanScriptStepParams;
   split?: SplitStepParams;
+  audio?: AudioStepParams;
+  assemble?: AssembleStepParams;
 };
 
 export function readNodeStepParams(meta: Record<string, unknown> | undefined): NodeStepParamsMeta {
@@ -46,7 +57,7 @@ export function effectiveDurationSeconds(
 export function withNodeStepParams(
   meta: Record<string, unknown>,
   step: keyof NodeStepParamsMeta,
-  patch: PlanScriptStepParams | SplitStepParams,
+  patch: PlanScriptStepParams | SplitStepParams | AudioStepParams | AssembleStepParams,
 ): Record<string, unknown> {
   const current = readNodeStepParams(meta);
   return {

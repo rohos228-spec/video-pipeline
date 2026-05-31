@@ -40,8 +40,13 @@ def test_try_reuse_split_download(tmp_path: Path) -> None:
     ws.cell(row=ROW_VOICEOVER_V8, column=3, value="block one")
     ws.cell(row=ROW_VOICEOVER_V8, column=4, value="block two")
     split_file = tmp_dir / "split_20260101_120000.xlsx"
-    wb.save(split_file)
     wb.save(proj_xlsx)
+    wb.save(split_file)
+    import os
+    import time
+
+    newer = time.time() + 60
+    os.utime(split_file, (newer, newer))
 
     assert validate_xlsx(split_file) is None
     reused = xsr._try_reuse_split_download(tmp_dir, proj_xlsx)

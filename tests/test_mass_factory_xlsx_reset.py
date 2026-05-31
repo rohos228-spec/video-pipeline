@@ -55,7 +55,9 @@ async def test_init_child_data_dir_resets_stale_xlsx(
     (slug_dir / "tmp_gpt" / "split_old.xlsx").write_bytes(b"PK")
 
     monkeypatch.setattr("app.models.settings.data_dir", root)
-    monkeypatch.setattr("app.storage.project_sheet._V8_TEMPLATE", tpl)
+    monkeypatch.setattr(
+        "app.storage.project_sheet.resolve_default_template_path", lambda: tpl
+    )
     monkeypatch.setattr("app.storage.project_sheet.DEFAULT_TEMPLATE_PATH", tpl)
 
     project = Project(id=9, topic="Topic A", slug="topic-a", status=ProjectStatus.new)

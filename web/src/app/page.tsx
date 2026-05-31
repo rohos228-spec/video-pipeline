@@ -44,7 +44,17 @@ export default function HomePage() {
         <Inspector
           projectId={selectedProjectId}
           selectedNodeKey={selectedNodeKey}
-          onOpenNodeStudio={() => setStudioOpen(true)}
+          onOpenNodeStudio={() => {
+            if (selectedNodeKey) {
+              window.dispatchEvent(
+                new CustomEvent("studio-open-node-prompts", {
+                  detail: { nodeKey: selectedNodeKey },
+                }),
+              );
+            } else {
+              setStudioOpen(true);
+            }
+          }}
         />
       </div>
     </AppShell>

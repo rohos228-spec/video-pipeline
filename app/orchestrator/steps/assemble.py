@@ -19,12 +19,14 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
+from app.services.media_probe import probe_video_size
 from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
 from app.services.subtitles import build_subtitle_cues_from_cells
 from app.services.whisper import WordTS, load_words_json, transcribe_words, whisper_available
+from app.services.node_step_params import subtitles_enabled_for_project
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -73,6 +75,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     audio_dir = project.data_dir / "audio"
     frame_numbers = [fr.number for fr in frames]
     per_frame_tts = (audio.meta or {}).get("mode") == "per_frame"
+    subs_enabled = subtitles_enabled_for_project(project)
 
     whisper_art = (
         await session.execute(
@@ -89,7 +92,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if whisper_art is not None:
         words = load_words_json(Path(whisper_art.path))
 
-    if settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
+    if subs_enabled and settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
         if whisper_available():
             logger.info("[#{}] assemble: re-whisper voice_full для субтитров (без TTS)", project.id)
             words = transcribe_words(
@@ -108,11 +111,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 "Для re-whisper: pip install -e \".[whisper]\"",
                 project.id,
             )
-    elif not words:
+    elif not words and not per_frame_tts:
         raise RuntimeError(
             "нет word-level таймкодов Whisper — перезапустите шаг «Аудио» перед сборкой"
         )
-    if not words:
+    if subs_enabled and not words:
         raise RuntimeError("Whisper не вернул слова для субтитров")
 
     cells = read_plan_voiceover_cells(project, frame_numbers)
@@ -137,12 +140,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     video_duration = sum(c.duration for c in audio_clips)
     logger.info(
-        "[#{}] assemble: master voice {:.2f}s, {} clips, video {:.2f}s, subtitles={}",
+        "[#{}] assemble: master voice {:.2f}s, {} clips, video {:.2f}s, "
+        "timeline={}, burn_subs={}",
         project.id,
         audio_duration,
         len(audio_clips),
         video_duration,
         "per-frame" if per_frame_audio else "legacy-stretch",
+        subs_enabled,
     )
 
     duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
@@ -173,24 +178,29 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)
         fr.duration_seconds = duration
 
-    subs_dir = project.data_dir / "subs"
-    subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
-    sub_entries = build_subtitle_cues_from_cells(
-        cells,
-        words,
-        frame_timings,
-        max_words=settings.subtitle_max_words,
-        max_end_ts=audio_duration,
-        lead_seconds=settings.subtitle_lead_seconds,
-        chars_per_second=settings.subtitle_chars_per_second,
-    )
-    if not sub_entries:
-        raise RuntimeError("не удалось построить субтитры из Excel + Whisper")
-    make_simple_ass(sub_entries, subs_path)
-    session.add(Artifact(
-        project_id=project.id, kind=ArtifactKind.subtitle,
-        uuid=uuid.uuid4().hex, path=str(subs_path),
-    ))
+    subs_path: Path | None = None
+    if subs_enabled:
+        subs_dir = project.data_dir / "subs"
+        subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
+        sub_entries = build_subtitle_cues_from_cells(
+            cells,
+            words,
+            frame_timings,
+            max_words=settings.subtitle_max_words,
+            max_end_ts=audio_duration,
+            lead_seconds=settings.subtitle_lead_seconds,
+            chars_per_second=settings.subtitle_chars_per_second,
+        )
+        if not sub_entries:
+            raise RuntimeError("не удалось построить субтитры из Excel + Whisper")
+        ass_w, ass_h = await probe_video_size(clips[0].src)
+        make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
+        session.add(Artifact(
+            project_id=project.id, kind=ArtifactKind.subtitle,
+            uuid=uuid.uuid4().hex, path=str(subs_path),
+        ))
+    else:
+        logger.info("[#{}] assemble: субтитры выключены в настройках сборки", project.id)
 
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"

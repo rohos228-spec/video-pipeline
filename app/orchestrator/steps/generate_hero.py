@@ -257,11 +257,11 @@ async def _v1_artifact_for_hero(
     return None
 
 
-async def _bootstrap_excel_hero_from_xlsx(
+async def _load_excel_hero_from_xlsx(
     session: AsyncSession,
     project: Project,
 ) -> dict | None:
-    """Подтянуть лист «Персонажи» в meta['excel_hero'], если hero не задан вручную."""
+    """Прочитать лист «Персонажи» из project.xlsx → meta['excel_hero']."""
     xlsx = project.data_dir / "project.xlsx"
     if not xlsx.exists():
         return None
@@ -283,7 +283,7 @@ async def _bootstrap_excel_hero_from_xlsx(
     try:
         chars = parse_persons_sheet(xlsx)
     except Exception as e:  # noqa: BLE001
-        logger.debug("[#{}] excel_hero bootstrap: parse failed: {}", project.id, e)
+        logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
         return None
 
     if not chars:
@@ -294,11 +294,15 @@ async def _bootstrap_excel_hero_from_xlsx(
     project.meta = meta
     await session.flush()
     logger.info(
-        "[#{}] excel_hero bootstrap: {} персонаж(ей) из project.xlsx",
+        "[#{}] excel_hero load: {} персонаж(ей) из project.xlsx",
         project.id,
         len(chars),
     )
     return cfg
+
+
+# Обратная совместимость для тестов и внешних импортов.
+_bootstrap_excel_hero_from_xlsx = _load_excel_hero_from_xlsx
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -311,8 +315,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # в этом режиме не используются.
     meta = dict(project.meta or {})
     excel_cfg = meta.get("excel_hero")
-    if not (excel_cfg and isinstance(excel_cfg, dict)):
-        excel_cfg = await _bootstrap_excel_hero_from_xlsx(session, project)
+    # После enrich_3 xlsx на диске новее meta — всегда перечитываем.
+    if isinstance(excel_cfg, dict) or meta.get("excel_hero_enabled"):
+        loaded = await _load_excel_hero_from_xlsx(session, project)
+        if loaded:
+            excel_cfg = loaded
+    elif not (excel_cfg and isinstance(excel_cfg, dict)):
+        excel_cfg = await _load_excel_hero_from_xlsx(session, project)
     if excel_cfg and isinstance(excel_cfg, dict):
         await _run_excel(session, project, bot, excel_cfg)
         return

@@ -2,7 +2,7 @@
 
 import type { MouseEvent } from "react";
 import { Check, Circle, HelpCircle, Loader2, Sparkles, X } from "lucide-react";
-import type { HITLDTO } from "@/lib/types";
+import type { HITLDTO, ProjectStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export type HitlBadgeState =
@@ -35,9 +35,72 @@ export function hitlKindForNodeType(nodeType: string): string | null {
   return HITL_NODE_TO_KIND[nodeType] ?? null;
 }
 
+/** Пайплайн уже ушёл дальше *_ready — HITL-gate для этой ноды закрыт. */
+const STATUS_ORDER: ProjectStatus[] = [
+  "new",
+  "planning",
+  "plan_ready",
+  "scripting",
+  "script_ready",
+  "splitting",
+  "frames_ready",
+  "generating_hero",
+  "hero_ready",
+  "generating_items",
+  "items_ready",
+  "enriching_1",
+  "enrich_1_ready",
+  "enriching_2",
+  "enrich_2_ready",
+  "enriching_3",
+  "enrich_3_ready",
+  "enriching_4",
+  "enrich_4_ready",
+  "enriching_5",
+  "enrich_5_ready",
+  "generating_image_prompts",
+  "image_prompts_ready",
+  "generating_images",
+  "images_ready",
+  "generating_animation_prompts",
+  "animation_prompts_ready",
+  "generating_videos",
+  "videos_ready",
+  "generating_audio",
+  "audio_ready",
+  "assembling",
+  "assembled",
+  "publishing",
+  "published",
+  "paused",
+  "failed",
+];
+
+const HITL_GATE_READY: Record<string, ProjectStatus> = {
+  plan: "plan_ready",
+  script: "script_ready",
+  hero: "hero_ready",
+  images: "images_ready",
+  videos: "videos_ready",
+  assemble: "assembled",
+};
+
+export function hitlGatePassedForNode(
+  nodeType: string,
+  projectStatus: ProjectStatus | string | undefined | null,
+): boolean {
+  const gate = HITL_GATE_READY[nodeType];
+  if (!gate || !projectStatus) return false;
+  const curIdx = STATUS_ORDER.indexOf(projectStatus as ProjectStatus);
+  const gateIdx = STATUS_ORDER.indexOf(gate);
+  if (curIdx < 0 || gateIdx < 0) return false;
+  return curIdx > gateIdx;
+}
+
 export function resolveHitlBadgeState(opts: {
   nodeType: string;
   nodeStatus: string;
+  projectStatus?: ProjectStatus | string | null;
   autoMode: boolean;
   aiControl?: boolean;
   hitlList: HITLDTO[];
@@ -51,11 +114,15 @@ export function resolveHitlBadgeState(opts: {
     .filter((h) => h.kind === kind)
     .sort((a, b) => b.id - a.id)[0];
 
+  const gatePassed = hitlGatePassedForNode(opts.nodeType, opts.projectStatus);
+
   if (opts.nodeStatus === "running") return "regenerating";
-  if (hitl?.decision === "pending") return "pending";
   if (hitl?.decision === "regenerate") return "regenerating";
-  if (hitl?.decision === "approved") return "approved";
   if (hitl?.decision === "rejected") return "rejected";
+  if (hitl?.decision === "approved" || gatePassed || opts.nodeStatus === "done") {
+    return "approved";
+  }
+  if (hitl?.decision === "pending") return "pending";
   if (opts.nodeStatus === "waiting_hitl") return "pending";
   return "manual_idle";
 }

@@ -1,11 +1,11 @@
 {
   "label": "Humans Documentary",
-  "description": "Документальный тон, люди в кадре (блок world — заглушка, расширьте при необходимости)",
+  "description": "Документальный тон, люди в кадре",
   "blocks": {
-    "world": "cats_anthropomorphic",
+    "world": "humans_realistic",
     "visual_style": "micro_pixelart",
     "lighting": "cinematic_chiaroscuro",
-    "negative": "no_humans_no_text",
+    "negative": "no_text_logos",
     "voice_tone": "documentary_calm",
     "narrative_structure": "shorts_hook_insight",
     "forbidden_phrases": "ai_cliches_ru"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -26,6 +26,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
 import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
+import { SidebarResizeHandle } from "@/components/sidebar/sidebar-resize-handle";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 
 type DragPayload =
   | { kind: "project"; id: number; folderId: string | null }
@@ -56,6 +58,8 @@ export function ProjectSidebar({
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+  const { width: sidebarWidth, setWidth: setSidebarWidth, minWidth, maxWidth } =
+    useSidebarWidth();
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -102,6 +106,17 @@ export function ProjectSidebar({
       toast.success(`Папка «${folder.name}» создана`);
     },
     onError: (e) => toast.error(String(e)),
+  });
+
+  const deleteFolderMutation = useMutation({
+    mutationFn: (folderId: string) => api.deleteSidebarFolder(folderId),
+    onSuccess: (_data, folderId) => {
+      qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      setActiveFolderId((id) => (id === folderId ? null : id));
+      toast.success("Папка удалена");
+    },
+    onError: (e) => toast.error(`Не получилось удалить папку: ${String(e)}`),
   });
 
   const queueToggleMutation = useMutation({
@@ -185,7 +200,8 @@ export function ProjectSidebar({
       );
       const moving = roots.find((p) => p.id === projectId);
       if (!moving) return;
-      pool.splice(targetIndex, 0, { ...moving, sidebar_folder_id: targetFolderId });
+      const clamped = Math.max(0, Math.min(targetIndex, pool.length));
+      pool.splice(clamped, 0, { ...moving, sidebar_folder_id: targetFolderId });
       const updates = pool.map((p, idx) => ({
         id: p.id,
         folder_id: targetFolderId,
@@ -201,11 +217,17 @@ export function ProjectSidebar({
       const list = folders.filter((f) => f.id !== folderId);
       const moving = folders.find((f) => f.id === folderId);
       if (!moving) return;
-      list.splice(targetIndex, 0, moving);
+      const clamped = Math.max(0, Math.min(targetIndex, list.length));
+      list.splice(clamped, 0, moving);
       const updated = list.map((f, idx) => ({ ...f, order: idx }));
       saveLayoutMutation.mutate({ folders: updated });
     },
     [folders, saveLayoutMutation],
+  );
+
+  const folderIndexById = useCallback(
+    (folderId: string) => folders.findIndex((f) => f.id === folderId),
+    [folders],
   );
 
   const handleDropOnProjects = (
@@ -365,7 +387,16 @@ export function ProjectSidebar({
   const visibleRootProjects = rootProjects.filter(matchProject);
 
   return (
-    <aside className="flex w-[19rem] shrink-0 flex-col border-r border-white/[0.06] bg-gradient-to-b from-card/50 via-card/25 to-background/80 font-light shadow-[inset_-1px_0_0_rgba(255,255,255,0.04)] backdrop-blur-xl transition-[width]">
+    <aside
+      style={{ width: sidebarWidth }}
+      className="relative flex min-h-0 shrink-0 flex-col border-r border-white/[0.06] bg-gradient-to-b from-card/50 via-card/25 to-background/80 font-light shadow-[inset_-1px_0_0_rgba(255,255,255,0.04)] backdrop-blur-xl"
+    >
+      <SidebarResizeHandle
+        width={sidebarWidth}
+        onWidthChange={setSidebarWidth}
+        minWidth={minWidth}
+        maxWidth={maxWidth}
+      />
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3.5 py-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] shadow-sm">
@@ -461,19 +492,10 @@ export function ProjectSidebar({
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="min-h-0 flex-1">
         <div
-          className="flex flex-col gap-1 p-2.5"
+          className="flex flex-col gap-0.5 px-2.5 py-2"
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            const payload = parseDragPayload(e.dataTransfer.getData("application/x-sidebar-item"));
-            if (!payload) return;
-            if (payload.kind === "project") {
-              handleDropOnProjects(null, rootProjects.length, payload);
-            } else if (payload.kind === "folder") {
-              handleDropOnProjects(null, folders.length, payload as DragPayload);
-            }
-          }}
         >
           {projects.isLoading && (
             <div className="flex items-center justify-center py-8">
@@ -487,16 +509,29 @@ export function ProjectSidebar({
             </div>
           )}
 
-          {visibleFolders.map((folder, folderIdx) => {
+          {(visibleFolders.length > 0 || visibleRootProjects.length > 0) && (
+            <DropZone
+              zoneKey="top"
+              activeKey={dragOverKey}
+              onActivate={() => setDragOverKey("top")}
+              onDeactivate={() => setDragOverKey(null)}
+              onDrop={(payload) => {
+                if (payload.kind === "folder") moveFolder(payload.id, 0);
+                else moveProject(payload.id, null, 0);
+              }}
+            />
+          )}
+
+          {visibleFolders.map((folder) => {
             const fKey = `folder:${folder.id}`;
             const isOpen = expanded[fKey] ?? true;
             const folderProjects = (projectsByFolder.get(folder.id) ?? []).filter(matchProject);
             const isActiveFolder = activeFolderId === folder.id;
             return (
+              <Fragment key={folder.id}>
               <div
-                key={folder.id}
                 className={cn(
-                  "group mb-1.5 overflow-hidden rounded-xl border transition-all duration-200",
+                  "group mb-0.5 overflow-hidden rounded-xl border transition-all duration-200",
                   isActiveFolder
                     ? "border-amber-400/20 bg-amber-500/[0.04] shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
                     : "border-white/[0.05] bg-white/[0.02]",
@@ -567,12 +602,34 @@ export function ProjectSidebar({
                       )}
                       strokeWidth={1.5}
                     />
-                    <span className="truncate text-[12px] font-normal tracking-[0.01em]">
+                    <span className="break-words text-[12px] font-normal leading-snug tracking-[0.01em]">
                       {folder.name}
                     </span>
                     <span className="ml-auto rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal tabular-nums text-muted-foreground/70">
                       {folderProjects.length}
                     </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const count = folderProjects.length;
+                      const detail =
+                        count > 0
+                          ? `\n\n${count} ${count === 1 ? "проект" : "проектов"} переместится в корень списка (папка не удаляет проекты).`
+                          : "";
+                      if (
+                        confirm(`Удалить папку «${folder.name}»?${detail}`)
+                      ) {
+                        deleteFolderMutation.mutate(folder.id);
+                      }
+                    }}
+                    disabled={deleteFolderMutation.isPending}
+                    className="invisible h-6 w-6 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
+                    aria-label="Удалить папку"
+                    title="Удалить папку"
+                  >
+                    <Trash2 className="h-3 w-3" strokeWidth={1.5} />
                   </button>
                 </div>
                 {isOpen && (
@@ -585,53 +642,114 @@ export function ProjectSidebar({
                     )}
                   </div>
                 )}
-                <div
-                  className="h-1"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragOverKey(`folder-slot:${folderIdx}`);
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const payload = parseDragPayload(
-                      e.dataTransfer.getData("application/x-sidebar-item"),
-                    );
-                    if (payload?.kind === "folder") {
-                      moveFolder(payload.id, folderIdx);
-                    }
-                  }}
-                />
               </div>
+              <DropZone
+                zoneKey={`after-folder:${folder.id}`}
+                activeKey={dragOverKey}
+                onActivate={() => setDragOverKey(`after-folder:${folder.id}`)}
+                onDeactivate={() => setDragOverKey(null)}
+                onDrop={(payload) => {
+                  const afterIdx = folderIndexById(folder.id) + 1;
+                  if (payload.kind === "folder") moveFolder(payload.id, afterIdx);
+                  else moveProject(payload.id, null, 0);
+                }}
+              />
+              </Fragment>
             );
           })}
+
+          {visibleFolders.length > 0 && visibleRootProjects.length > 0 && (
+            <DropZone
+              zoneKey="folders-root-gap"
+              activeKey={dragOverKey}
+              onActivate={() => setDragOverKey("folders-root-gap")}
+              onDeactivate={() => setDragOverKey(null)}
+              onDrop={(payload) => {
+                if (payload.kind === "folder") moveFolder(payload.id, folders.length);
+                else moveProject(payload.id, null, 0);
+              }}
+            />
+          )}
 
           {visibleRootProjects.map((p, idx) => (
             <div key={p.id}>
               {renderProject(p, { draggable: true })}
-              <div
-                className="h-1"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOverKey(`root-slot:${idx}`);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const payload = parseDragPayload(
-                    e.dataTransfer.getData("application/x-sidebar-item"),
-                  );
-                  if (!payload) return;
+              <DropZone
+                zoneKey={`after-root:${p.id}`}
+                activeKey={dragOverKey}
+                onActivate={() => setDragOverKey(`after-root:${p.id}`)}
+                onDeactivate={() => setDragOverKey(null)}
+                onDrop={(payload) => {
                   if (payload.kind === "project") {
                     handleDropOnProjects(null, idx + 1, payload);
                   } else if (payload.kind === "folder") {
-                    moveFolder(payload.id, idx + 1);
+                    moveFolder(payload.id, folders.length);
                   }
                 }}
               />
             </div>
           ))}
+
+          {(visibleFolders.length > 0 || visibleRootProjects.length > 0) && (
+            <DropZone
+              zoneKey="bottom"
+              activeKey={dragOverKey}
+              onActivate={() => setDragOverKey("bottom")}
+              onDeactivate={() => setDragOverKey(null)}
+              className="min-h-6"
+              onDrop={(payload) => {
+                if (payload.kind === "folder") moveFolder(payload.id, folders.length);
+                else handleDropOnProjects(null, rootProjects.length, payload);
+              }}
+            />
+          )}
         </div>
       </ScrollArea>
     </aside>
+  );
+}
+
+function DropZone({
+  zoneKey,
+  activeKey,
+  onActivate,
+  onDeactivate,
+  onDrop,
+  className,
+}: {
+  zoneKey: string;
+  activeKey: string | null;
+  onActivate: () => void;
+  onDeactivate: () => void;
+  onDrop: (payload: DragPayload) => void;
+  className?: string;
+}) {
+  const active = activeKey === zoneKey;
+  return (
+    <div
+      className={cn(
+        "shrink-0 rounded-lg transition-all duration-150",
+        active ? "my-0.5 min-h-7 bg-primary/10 ring-1 ring-primary/25" : "min-h-3",
+        className,
+      )}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onActivate();
+      }}
+      onDragLeave={(e) => {
+        const related = e.relatedTarget as Node | null;
+        if (related && e.currentTarget.contains(related)) return;
+        onDeactivate();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onDeactivate();
+        const payload = parseDragPayload(e.dataTransfer.getData("application/x-sidebar-item"));
+        if (payload) onDrop(payload);
+      }}
+    />
   );
 }
 
@@ -724,8 +842,8 @@ function ProjectRow({
           <div className="flex items-start justify-between gap-2">
             <span
               className={cn(
-                "line-clamp-2 font-normal leading-snug tracking-[0.01em] text-foreground/90",
-                compact ? "text-[11px]" : "text-[13px]",
+                "min-w-0 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
+                compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
               )}
             >
               {compact && (

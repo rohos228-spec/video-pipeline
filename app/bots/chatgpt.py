@@ -1745,7 +1745,7 @@ class ChatGPTBot:
                 continue
             if text == last_text and len(text) > 0:
                 stable_for += 1.0
-                if stable_for >= 4.0:
+                if stable_for >= 6.0:
                     break
             else:
                 stable_for = 0.0

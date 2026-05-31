@@ -173,7 +173,7 @@ async def upload_prompt_file(
             status_code=400,
             detail=(
                 "имя промта содержит запрещённые символы или превышает "
-                "40 байт UTF-8"
+                "255 байт UTF-8"
             ),
         )
     blob = await file.read()

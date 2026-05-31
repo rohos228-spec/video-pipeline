@@ -251,7 +251,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         completed.append(slot_idx)
         completed.sort()
         meta["enrich_completed_slots"] = completed
-        project.meta = meta
+    # xlsx на диске обновлён — сбросить кэш персонажей, чтобы Hero
+    # перечитал лист «Персонажи» (иначе остаётся старый meta['excel_hero']).
+    if "excel_hero" in meta:
+        meta.pop("excel_hero")
+        logger.info(
+            "[#{}] enrich_xlsx slot={}: сброшен кэш excel_hero после "
+            "обновления xlsx",
+            project.id,
+            slot_idx,
+        )
+    project.meta = meta
 
     if _ord(cur) < _ord(ready_status):
         project.status = ready_status

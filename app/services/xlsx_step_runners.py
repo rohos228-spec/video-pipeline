@@ -101,7 +101,13 @@ def _count_v8_voiceover_blocks(xlsx_path: Path) -> int:
 def _try_reuse_split_download(
     tmp_dir: Path, proj_xlsx: Path, *, min_blocks: int = 2
 ) -> XlsxRoundtripResult | None:
-    """Если GPT уже отдал xlsx в tmp_gpt, не дергаем ChatGPT повторно."""
+    """Если GPT уже отдал xlsx в tmp_gpt, не дергаем ChatGPT повторно.
+
+    Только если скачанный файл новее project.xlsx (иначе это устаревший кэш).
+    """
+    if not proj_xlsx.exists():
+        return None
+    proj_mtime = proj_xlsx.stat().st_mtime
     candidates = sorted(
         tmp_dir.glob("split_*.xlsx"),
         key=lambda p: p.stat().st_mtime,
@@ -109,6 +115,8 @@ def _try_reuse_split_download(
     )
     for candidate in candidates[:5]:
         if candidate.stat().st_size < 1024:
+            continue
+        if candidate.stat().st_mtime <= proj_mtime:
             continue
         if validate_xlsx(candidate) is not None:
             continue
@@ -242,6 +250,7 @@ async def run_script_xlsx(
             [prompt_file, proj_xlsx],
             downloaded,
             project_id=project_id or project.id,
+            ask_timeout=1500.0,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "script", _gpt)
@@ -286,18 +295,6 @@ async def run_split_xlsx(
         project, "split", prompt_file_name=prompt_file.name
     )
     downloaded = tmp_dir / f"split_{ts}.xlsx"
-
-    existing_blocks = _count_v8_voiceover_blocks(proj_xlsx)
-    if existing_blocks >= 2:
-        logger.info(
-            "split_xlsx: project.xlsx already has {} voiceover blocks — skip GPT",
-            existing_blocks,
-        )
-        return XlsxRoundtripResult(
-            reply_text="",
-            downloaded_path=proj_xlsx,
-            project_xlsx=proj_xlsx,
-        )
 
     reused = _try_reuse_split_download(tmp_dir, proj_xlsx)
     if reused is not None:

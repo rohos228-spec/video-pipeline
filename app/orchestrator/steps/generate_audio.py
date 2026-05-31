@@ -58,9 +58,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         el = ElevenLabsBot(bs)
         clips, full_audio_path = await synthesize_per_frame_audio(
             el,
+            project=project,
             frames=frames,
             cells=cells,
             audio_dir=audio_dir,
+            whisper_model=settings.whisper_model,
         )
 
     for fr in frames:

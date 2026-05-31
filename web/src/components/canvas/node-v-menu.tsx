@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowRight,
   Ban,
@@ -25,8 +27,19 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
 
+function openPromptSlot(
+  slot: NodePromptSlot,
+  onClose: () => void,
+  onSelectPrompt: (slot: NodePromptSlot) => void,
+) {
+  onClose();
+  // Два кадра: закрытие V-menu в portal + backdrop guard студии успевают сработать.
+  window.setTimeout(() => onSelectPrompt(slot), 32);
+}
+
 export function NodeVMenu({
   open,
+  anchorRef,
   nodeType,
   slots,
   disabled,
@@ -46,6 +59,7 @@ export function NodeVMenu({
   hasAssets,
 }: {
   open: boolean;
+  anchorRef: RefObject<HTMLElement | null>;
   nodeType: string;
   slots: NodePromptSlot[];
   disabled: boolean;
@@ -64,7 +78,45 @@ export function NodeVMenu({
   hasAssets: boolean;
   projectId?: number | null;
 }) {
-  if (!open) return null;
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    if (!open || !anchorRef.current) return;
+    const update = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setPos({ top: r.bottom + 8, left: r.left + r.width / 2 });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(anchorRef.current);
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    const tick = window.setInterval(update, 150);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+      window.clearInterval(tick);
+    };
+  }, [open, anchorRef]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (ev: Event) => {
+      const t = ev.target as HTMLElement;
+      if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
+      onClose();
+    };
+    document.addEventListener("pointerdown", close, true);
+    return () => document.removeEventListener("pointerdown", close, true);
+  }, [open, onClose]);
+
+  if (!open || !mounted) return null;
 
   const menuSlots = resolvePromptSlots(nodeType, slots);
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
@@ -72,8 +124,14 @@ export function NodeVMenu({
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
-  return (
-    <div className="node-v-menu nodrag nopan nowheel absolute left-1/2 top-[calc(100%+8px)] z-[100] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200">
+  const menu = (
+    <div
+      className="node-v-menu nodrag nopan nowheel fixed z-[10000] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200"
+      style={{ top: pos.top, left: pos.left }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
@@ -104,9 +162,10 @@ export function NodeVMenu({
                 <div key={slot.id} className="relative flex items-center gap-1">
                   <button
                     type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectPrompt(slot);
+                      openPromptSlot(slot, onClose, onSelectPrompt);
                     }}
                     className={cn(
                       "flex w-[88px] shrink-0 flex-col items-center rounded-xl border px-2 py-2 text-center transition-all",
@@ -182,7 +241,7 @@ export function NodeVMenu({
             open={open}
             projectId={projectId!}
             nodeType={nodeType}
-            onOpen={() => onSelectPrompt(excelSlot)}
+            onOpen={() => openPromptSlot(excelSlot, onClose, onSelectPrompt)}
           />
         )}
 
@@ -193,8 +252,10 @@ export function NodeVMenu({
             </span>
             <button
               type="button"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                e.preventDefault();
                 onOpenGptText();
               }}
               className="flex w-full items-start gap-2 rounded-xl border border-violet-400/25 bg-violet-500/10 px-3 py-2.5 text-left transition hover:border-violet-400/50 hover:bg-violet-500/15"
@@ -222,7 +283,7 @@ export function NodeVMenu({
             <MenuAction
               icon={FileSpreadsheet}
               label="Просмотр Excel"
-              onClick={() => onSelectPrompt(excelSlot)}
+              onClick={() => openPromptSlot(excelSlot, onClose, onSelectPrompt)}
             />
           )}
           <MenuAction icon={Unlink} label="Открепить связи" onClick={onDetachNode} />
@@ -245,6 +306,8 @@ export function NodeVMenu({
       />
     </div>
   );
+
+  return createPortal(menu, document.body);
 }
 
 function MenuAction({
@@ -267,6 +330,7 @@ function MenuAction({
         "h-8 justify-start gap-1.5 px-2 text-[10px] font-normal",
         destructive && "text-destructive hover:text-destructive",
       )}
+      onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -279,7 +343,7 @@ function MenuAction({
 }
 
 function slotKindLabel(kind: NodePromptSlot["kind"]): string {
-  if (kind === "gpt") return "файл";
+  if (kind === "gpt") return "файл .md";
   if (kind === "text") return "текст GPT";
   if (kind === "excel") return "project.xlsx";
   if (kind === "blocks") return "outsee";

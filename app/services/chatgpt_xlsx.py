@@ -30,6 +30,50 @@ def tmp_gpt_dir(project: Project) -> Path:
     return d
 
 
+# Кэш GPT round-trip по шагам — чистим перед явным «Запустить шаг».
+_STEP_TMP_GLOBS: dict[str, tuple[str, ...]] = {
+    "plan": ("plan_*.xlsx", "prompt_plan_*"),
+    "script": ("script_*.txt", "prompt_script_*"),
+    "split": ("split_*.xlsx", "prompt_split_*"),
+    "img_pr": ("prompt_img_pr_*"),
+    "anim_pr": ("prompt_anim_pr_*"),
+    "enrich_1": ("prompt_enrich_1_*", "enrich_1_*.xlsx"),
+    "enrich_2": ("prompt_enrich_2_*", "enrich_2_*.xlsx"),
+    "enrich_3": ("prompt_enrich_3_*", "enrich_3_*.xlsx"),
+    "enrich_4": ("prompt_enrich_4_*", "enrich_4_*.xlsx"),
+    "enrich_5": ("prompt_enrich_5_*", "enrich_5_*.xlsx"),
+}
+
+
+def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
+    """Удалить кэш GPT-файлов шага в tmp_gpt (перед повторным запуском)."""
+    tmp_dir = project.data_dir / "tmp_gpt"
+    if not tmp_dir.is_dir():
+        return 0
+    removed = 0
+    for pattern in _STEP_TMP_GLOBS.get(step_code, ()):
+        for path in tmp_dir.glob(pattern):
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError as e:
+                logger.warning(
+                    "[#{}] purge_tmp_gpt {}: cannot delete {}: {}",
+                    project.id,
+                    step_code,
+                    path.name,
+                    e,
+                )
+    if removed:
+        logger.info(
+            "[#{}] purge_tmp_gpt {}: removed {} cached file(s)",
+            project.id,
+            step_code,
+            removed,
+        )
+    return removed
+
+
 def _timestamp() -> str:
     return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 

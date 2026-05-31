@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.services.assembly import SUBTITLE_POS_Y, _SUBTITLE_BASE_Y, CANVAS_H, subtitles_vf_arg
+from app.services.assembly import subtitle_layout, subtitles_vf_arg
+import inspect
+
+from app.services import assembly as asm
 from app.services.mapper import (
     FrameTiming,
     build_frame_word_spans_per_frame,
@@ -228,6 +231,13 @@ def test_extract_local_frame_words_rebases_to_zero() -> None:
     assert local[0].end == 0.5
 
 
+def test_cut_clip_does_not_resize() -> None:
+    src = inspect.getsource(asm._cut_clip)
+    assert "-vf" not in src
+    assert "scale=" not in src
+    assert "1080:1920" not in src
+
+
 def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:
     vf = subtitles_vf_arg()
     assert vf == "subtitles=subs.ass"
@@ -235,8 +245,8 @@ def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:
 
 
 def test_subtitle_pos_raised_by_15_percent() -> None:
-    assert SUBTITLE_POS_Y == int(_SUBTITLE_BASE_Y - CANVAS_H * 0.15)
-    assert SUBTITLE_POS_Y < _SUBTITLE_BASE_Y
+    _, y, _ = subtitle_layout(1920, 1080)
+    assert y < int(1080 * 0.92)
 
 
 def test_char_count_sets_minimum_duration() -> None:

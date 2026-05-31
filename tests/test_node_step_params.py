@@ -8,6 +8,7 @@ from app.services.node_step_params import (
     append_step_params_to_gpt_text,
     build_step_params_block,
     duration_seconds_for_step,
+    subtitles_enabled_for_project,
 )
 
 
@@ -72,3 +73,15 @@ def test_append_preserves_override_body() -> None:
     text = append_step_params_to_gpt_text(p, "plan", "Мой текст")
     assert text.startswith("Мой текст")
     assert "700" in text
+
+
+def test_subtitles_enabled_default_on() -> None:
+    p = Project(topic="t")
+    p.meta = {}
+    assert subtitles_enabled_for_project(p) is True
+
+
+def test_subtitles_enabled_off() -> None:
+    p = Project(topic="t")
+    p.meta = {"node_step_params": {"assemble": {"subtitles_enabled": False}}}
+    assert subtitles_enabled_for_project(p) is False

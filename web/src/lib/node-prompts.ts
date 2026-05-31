@@ -65,8 +65,23 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
   ],
-  /** Outsee: промты задаются на шаге 6 (image_prompts), здесь только Excel и генерация. */
-  images: [{ id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" }],
+  /** Outsee: промты задаются на шаге 6 (image_prompts), здесь Excel + просмотр кадров. */
+  images: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" },
+    {
+      id: "frame_prompts",
+      title: "Промты кадров",
+      kind: "frame_prompts",
+      description: "image_prompt по кадрам — уходит в outsee",
+    },
+    {
+      id: "master",
+      title: "Мастер-промт",
+      kind: "gpt",
+      stepCode: "img_pr",
+      description: "prompts/05_image_prompts (шаг 6)",
+    },
+  ],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
     { id: "main", title: "Промт анимации", kind: "gpt", stepCode: "anim_pr" },
@@ -115,23 +130,26 @@ export function excelSlotForNodeType(nodeType: string): NodePromptSlot {
   };
 }
 
+/** Старые meta.custom_prompts хранили файловые промты как kind=text (до redesign V-меню). */
+function migrateLegacyPromptSlotKinds(slots: NodePromptSlot[]): NodePromptSlot[] {
+  return slots.map((s) => {
+    if (s.kind === "text" && s.id !== "gpt_text") {
+      return { ...s, kind: "gpt" };
+    }
+    return s;
+  });
+}
+
 /** Дополняет сохранённые custom_prompts недостающими слотами из BASE (и чинит устаревшие id). */
 export function mergePromptSlotsWithDefaults(
   nodeType: string,
   slots: NodePromptSlot[],
 ): NodePromptSlot[] {
-  if (nodeType === "images") {
-    const defaults = defaultPromptSlots(nodeType);
-    const excel =
-      slots.find((s) => s.kind === "excel") ??
-      defaults.find((s) => s.kind === "excel") ??
-      excelSlotForNodeType(nodeType);
-    const customs = slots.filter((s) => s.custom === true && s.kind !== "excel");
-    return excel ? [excel, ...customs] : defaults;
-  }
-
   const defaults = defaultPromptSlots(nodeType);
-  if (!defaults.length || !slots.length) return slots;
+  if (!defaults.length) return migrateLegacyPromptSlotKinds(slots);
+  if (!slots.length) return defaults;
+
+  slots = migrateLegacyPromptSlotKinds(slots);
 
   const byId = new Map(slots.map((s) => [s.id, s]));
   const merged: NodePromptSlot[] = [];

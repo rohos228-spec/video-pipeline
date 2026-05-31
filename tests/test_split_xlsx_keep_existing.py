@@ -1,4 +1,4 @@
-"""split_xlsx: skip GPT when project.xlsx already split."""
+"""split_xlsx: повторный запуск шага всегда идёт в GPT (не skip по блокам в xlsx)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _save_split_xlsx(path: Path, *, blocks: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_split_skips_gpt_when_project_already_has_blocks(
+async def test_split_runs_gpt_even_when_project_already_has_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     proj_dir = tmp_path / "data" / "videos" / "p9"
@@ -33,15 +33,34 @@ async def test_split_skips_gpt_when_project_already_has_blocks(
     voiceover.write_text("x" * 300, encoding="utf-8")
     _save_split_xlsx(proj_xlsx, blocks=4)
 
+    tmp_dir = proj_dir / "tmp_gpt"
+    tmp_dir.mkdir()
+
     project = Project(id=9, topic="t", slug="p9")
     monkeypatch.setattr("app.models.settings.data_dir", tmp_path / "data")
     monkeypatch.setattr(type(project), "data_dir", property(lambda self: proj_dir))
 
-    gpt_mock = AsyncMock(return_value="should not run")
-    with patch.object(xsr.xgf, "telegram_style_ask_and_download", gpt_mock):
+    async def fake_gpt(_chat, _files, download_path, **_k) -> str:
+        _save_split_xlsx(Path(download_path), blocks=4)
+        return "ok"
+
+    async def _run_lock(_pid, _step, fn):
+        return await fn()
+
+    gpt_mock = AsyncMock(side_effect=fake_gpt)
+    with (
+        patch.object(xsr.cx, "tmp_gpt_dir", return_value=tmp_dir),
+        patch.object(xsr.cx, "write_split_prompt_file", return_value=tmp_dir / "p.txt"),
+        patch.object(xsr.cx, "chat_message", return_value="msg"),
+        patch.object(xsr, "_ts", return_value="20260101_120000"),
+        patch.object(xsr, "_try_reuse_split_download", return_value=None),
+        patch.object(xsr.xgf, "run_under_xlsx_lock", new=_run_lock),
+        patch.object(xsr.xgf, "telegram_style_ask_and_download", gpt_mock),
+    ):
+        (tmp_dir / "p.txt").write_text("prompt", encoding="utf-8")
         result = await xsr.run_split_xlsx(project)
 
-    gpt_mock.assert_not_called()
+    gpt_mock.assert_called_once()
     assert result.project_xlsx == proj_xlsx
     assert xsr._count_v8_voiceover_blocks(proj_xlsx) == 4
 

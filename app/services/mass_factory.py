@@ -154,6 +154,31 @@ def _purge_lane_gpt_artifacts(project: Project) -> None:
             path.unlink(missing_ok=True)
 
 
+def _xlsx_has_user_content(path: Path) -> bool:
+    """project.xlsx уже заполнен пользователем/GPT (не пустой шаблон)."""
+    if not path.is_file():
+        return False
+    try:
+        if path.stat().st_size < 8_000:
+            return False
+        from openpyxl import load_workbook
+
+        from app.services.xlsx_v8_import import ROW_VOICEOVER_V8, SHEET_PLAN_V8
+
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if SHEET_PLAN_V8 in wb.sheetnames:
+            ws = wb[SHEET_PLAN_V8]
+            for col in range(3, 16):
+                val = ws.cell(row=ROW_VOICEOVER_V8, column=col).value
+                if val and str(val).strip():
+                    wb.close()
+                    return True
+        wb.close()
+    except Exception:  # noqa: BLE001
+        return path.stat().st_size > 25_000
+    return False
+
+
 def _init_fresh_project_xlsx(project: Project) -> None:
     """Всегда чистый шаблон — не reuse старый project.xlsx с диска."""
     project.data_dir.mkdir(parents=True, exist_ok=True)
@@ -193,6 +218,14 @@ async def init_child_data_dir(project: Project) -> None:
 def reset_factory_parent_workbook(parent: Project) -> None:
     """Родитель-фабрика: чистый шаблон при новой очереди (не GPT-заполненный)."""
     if is_mass_factory_child(parent):
+        return
+    xlsx_path = parent.data_dir / "project.xlsx"
+    if _xlsx_has_user_content(xlsx_path):
+        logger.info(
+            "[#{}] mass_factory: parent workbook kept ({} bytes, has plan data)",
+            parent.id,
+            xlsx_path.stat().st_size if xlsx_path.is_file() else 0,
+        )
         return
     try:
         _purge_lane_gpt_artifacts(parent)

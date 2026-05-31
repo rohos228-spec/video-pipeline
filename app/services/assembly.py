@@ -1,19 +1,15 @@
 """FFmpeg-сборка финального ролика.
 
 Вход:
-  - список (clip_path: mp4 на 8 сек, duration: float) в порядке кадров,
+  - список (clip_path: mp4, duration: float) в порядке кадров,
   - путь к единой mp3-озвучке,
   - путь выходного mp4.
 
 Что делаем:
-  1. Для каждого клипа — обрезаем до точной длительности `duration` (c начала)
-     и приводим к канве 1080x1920 с центровкой (чтобы все клипы были 9:16).
-  2. Склеиваем через ffmpeg concat с перекодированием (надёжнее, чем demuxer).
-  3. Накладываем mp3 как основную звуковую дорожку (-map 0:v -map 1:a -shortest).
-  4. (Опционально) — прожигаем ASS-субтитры, если передан путь.
-
-Используем просто subprocess с ffmpeg (без python-биндингов), чтобы не плодить
-зависимостей сверх нужного.
+  1. Обрезка каждого клипа по длительности без смены разрешения и FPS.
+  2. Склейка concat (все клипы должны быть одного размера — как у Outsee).
+  3. Наложение mp3.
+  4. Опционально ASS-субтитры под фактическое разрешение ролика.
 """
 
 from __future__ import annotations
@@ -26,21 +22,25 @@ from pathlib import Path
 from loguru import logger
 
 from app.services.bgm import BgmConfig
+from app.services.media_probe import probe_video_size
 
-CANVAS_W, CANVAS_H = 1080, 1920
-FPS = 30
 SUBTITLES_ASS_NAME = "subs.ass"
-# фиксированная позиция субтитров (центр снизу) — одно слово, без прыжков по высоте
-SUBTITLE_POS_X = CANVAS_W // 2
-_SUBTITLE_BASE_Y = 1780
-SUBTITLE_Y_RAISE = 0.15  # на 15% выше от базовой позиции (доля высоты кадра)
-SUBTITLE_POS_Y = int(_SUBTITLE_BASE_Y - CANVAS_H * SUBTITLE_Y_RAISE)
-SUBTITLE_ASS_PREFIX = rf"{{\an2\pos({SUBTITLE_POS_X},{SUBTITLE_POS_Y})}}"
+# запасной размер ASS, если ffprobe недоступен (16:9)
+DEFAULT_ASS_W, DEFAULT_ASS_H = 1920, 1080
 
 
 def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
     """Return -vf value for burning ASS subtitles from cwd=temp dir."""
     return f"subtitles={filename}"
+
+
+def subtitle_layout(width: int, height: int) -> tuple[int, int, str]:
+    """Центр снизу: позиция субтитров под фактическое разрешение кадра."""
+    x = width // 2
+    base_y = int(height * 0.92)
+    y = int(base_y - height * 0.15)
+    prefix = rf"{{\an2\pos({x},{y})}}"
+    return x, y, prefix
 
 
 @dataclass
@@ -63,23 +63,30 @@ async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
 
 
-async def _cut_and_normalize(src: Path, duration: float, dst: Path) -> None:
-    """Обрезает src до `duration` секунд и приводит к 1080x1920@30, без звука."""
-    vf = (
-        f"scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=decrease,"
-        f"pad={CANVAS_W}:{CANVAS_H}:(ow-iw)/2:(oh-ih)/2:color=black,"
-        f"setsar=1"
-    )
+async def _cut_clip(src: Path, duration: float, dst: Path) -> None:
+    """Только обрезка по времени; разрешение и пропорции исходника не меняем."""
     await _run([
         "ffmpeg", "-y",
         "-i", str(src),
         "-t", f"{duration:.3f}",
-        "-vf", vf,
-        "-r", str(FPS),
-        "-an",  # отбросим оригинальный звук
+        "-an",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
         str(dst),
     ])
+
+
+async def _assert_clips_same_size(clips: list[ClipSpec]) -> tuple[int, int]:
+    """Проверка, что все клипы одного размера (concat иначе ломается)."""
+    w, h = await probe_video_size(clips[0].src)
+    for spec in clips[1:]:
+        w2, h2 = await probe_video_size(spec.src)
+        if (w2, h2) != (w, h):
+            raise RuntimeError(
+                f"клипы разного разрешения: {w}x{h} vs {w2}x{h2} ({spec.src.name}). "
+                "Outsee должен отдавать одинаковый формат на все кадры."
+            )
+    logger.info("assembly: исходное видео {}x{} (без ресайза)", w, h)
+    return w, h
 
 
 async def assemble(
@@ -94,16 +101,17 @@ async def assemble(
     if not clips:
         raise ValueError("нет клипов для сборки")
 
+    await _assert_clips_same_size(clips)
+
     with tempfile.TemporaryDirectory(prefix="vp_asm_") as tmp:
         tmp_dir = Path(tmp)
         normalized: list[Path] = []
 
         for i, spec in enumerate(clips):
             dst = tmp_dir / f"clip_{i:03d}.mp4"
-            await _cut_and_normalize(spec.src, spec.duration, dst)
+            await _cut_clip(spec.src, spec.duration, dst)
             normalized.append(dst)
 
-        # concat demuxer
         list_file = tmp_dir / "concat.txt"
         list_file.write_text(
             "\n".join(f"file '{p.as_posix()}'" for p in normalized),
@@ -115,12 +123,10 @@ async def assemble(
             "-f", "concat", "-safe", "0",
             "-i", str(list_file),
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
-            "-r", str(FPS),
             "-an",
             str(concat_mp4),
         ])
 
-        # наложим озвучку (+ опционально BGM под голос)
         with_audio = tmp_dir / "with_audio.mp4"
         mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
 
@@ -149,15 +155,11 @@ async def assemble(
         mux_cmd.append(str(with_audio))
         await _run(mux_cmd)
 
-        # субтитры (если есть)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subtitles_ass is not None and subtitles_ass.exists():
             import shutil
             tmp_ass = tmp_dir / SUBTITLES_ASS_NAME
             shutil.copy2(subtitles_ass, tmp_ass)
-            # ffmpeg's subtitles filter breaks on Windows absolute paths
-            # (drive colons/slashes are parsed as filter options). Run from
-            # the temp dir and pass a bare filename instead.
             burn_cmd = [
                 "ffmpeg", "-y",
                 "-i", str(with_audio),
@@ -182,17 +184,22 @@ async def assemble(
 
 
 def make_simple_ass(
-    frames: list[tuple[float, float, str]],  # (start_ts, end_ts, text)
+    frames: list[tuple[float, float, str]],
     path: Path,
+    *,
+    width: int | None = None,
+    height: int | None = None,
 ) -> Path:
-    """Простейшие ASS-субтитры: крупный белый текст с чёрной обводкой,
-    позиция по центру снизу. Для шортсов 9:16."""
+    """ASS-субтитры под фактическое разрешение финального ролика."""
+    w = width or DEFAULT_ASS_W
+    h = height or DEFAULT_ASS_H
+    _, _, ass_prefix = subtitle_layout(w, h)
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        f"PlayResX: {CANVAS_W}\n"
-        f"PlayResY: {CANVAS_H}\n"
+        f"PlayResX: {w}\n"
+        f"PlayResY: {h}\n"
         "ScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour,"
@@ -204,7 +211,7 @@ def make_simple_ass(
     )
     body_lines: list[str] = []
     for s, e, text in frames:
-        line = f"{SUBTITLE_ASS_PREFIX}{_escape_ass(text)}"
+        line = f"{ass_prefix}{_escape_ass(text)}"
         body_lines.append(
             f"Dialogue: 0,{_fmt_ts(s)},{_fmt_ts(e)},Default,,0,0,0,,{line}"
         )

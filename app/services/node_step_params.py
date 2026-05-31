@@ -87,6 +87,14 @@ def build_step_params_block(project: Project, step_code: str) -> str:
     return ""
 
 
+def subtitles_enabled_for_project(project: Project) -> bool:
+    """Субтитры при сборке: meta.node_step_params.assemble.subtitles_enabled (по умолчанию вкл.)."""
+    val = _step_bucket(project, "assemble").get("subtitles_enabled")
+    if val is False:
+        return False
+    return True
+
+
 def append_step_params_to_gpt_text(
     project: Project, step_code: str, base_text: str
 ) -> str:

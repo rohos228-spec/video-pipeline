@@ -14,6 +14,7 @@ import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { gptTextSlotForNode, resolvePromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
+import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -45,6 +46,13 @@ export function StudioWorkspace({
     null,
   );
   const [promptFocus, setPromptFocus] = useState<NodePromptSlot | null>(null);
+  /** Синхронный target студии — без гонки с selectedNodeKey из setState. */
+  const [studioTarget, setStudioTarget] = useState<{
+    nodeKey: string;
+    nodeType: string;
+    promptFocus: NodePromptSlot | null;
+    tab: "settings" | "prompts" | "results" | "excel";
+  } | null>(null);
   const [studioTab, setStudioTab] = useState<"settings" | "prompts" | "results" | "excel">(
     "settings",
   );
@@ -60,6 +68,62 @@ export function StudioWorkspace({
   );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
+
+  useEffect(() => {
+    setAssetTray(null);
+    setPromptFocus(null);
+    setStudioTarget(null);
+    setVMenuNodeKey(null);
+    setAiOpen(false);
+    setAiCtx(null);
+    setHitlModalOpen(false);
+    setHitlModalId(null);
+    setResultPanel(null);
+  }, [projectId]);
+
+  const closeStudio = useCallback(() => {
+    suppressStudioOpenUntil.current = Date.now() + 1500;
+    onStudioOpenChange(false);
+    onSelectNode(null);
+    setPromptFocus(null);
+    setStudioTarget(null);
+    setStudioTab("settings");
+    setVMenuNodeKey(null);
+  }, [onStudioOpenChange, onSelectNode]);
+
+  const openStudioForNode = useCallback(
+    (
+      nodeKey: string,
+      nodeType: string,
+      slot: NodePromptSlot | null,
+      tab: "settings" | "prompts" | "results" | "excel" = "prompts",
+    ) => {
+      suppressStudioOpenUntil.current = 0;
+      const resolvedTab =
+        slot?.kind === "excel" ? "excel" : tab;
+      let focus = slot;
+      if (!focus) {
+        const slots = resolvePromptSlots(nodeType, null);
+        focus =
+          slots.find((s) => s.kind === "gpt" || s.kind === "frame_prompts") ??
+          slots.find((s) => s.kind !== "excel") ??
+          slots[0] ??
+          null;
+      }
+      setStudioTarget({
+        nodeKey,
+        nodeType,
+        promptFocus: focus,
+        tab: focus?.kind === "excel" ? "excel" : resolvedTab,
+      });
+      onSelectNode(nodeKey);
+      setVMenuNodeKey(null);
+      setPromptFocus(focus);
+      setStudioTab(focus?.kind === "excel" ? "excel" : resolvedTab);
+      onStudioOpenChange(true);
+    },
+    [onSelectNode, onStudioOpenChange],
+  );
 
   useEffect(() => {
     const onOpen = (ev: Event) => {
@@ -87,17 +151,29 @@ export function StudioWorkspace({
     return () => window.removeEventListener("canvas-open-ai-node", onOpen);
   }, [onSelectNode]);
 
-  // Пользователь явно закрыл студию (крестик / backdrop / Esc).
-  // 1) Гасим студию.
-  // 2) Снимаем выделение ноды — иначе по очередному ре-рендеру / селект-эвенту
-  //    React Flow студия может тут же открыться обратно.
-  // 3) Подкручиваем suppress-таймер до 1.5 сек, чтобы пережить любые
-  //    последующие синтетические клики/select-events.
-  const closeStudio = useCallback(() => {
-    suppressStudioOpenUntil.current = Date.now() + 1500;
-    onStudioOpenChange(false);
-    onSelectNode(null);
-  }, [onStudioOpenChange, onSelectNode]);
+  // Шапка «Промты» → студия выбранной ноды (не legacy PromptEditor из SQLite).
+  useEffect(() => {
+    const onOpenPrompts = (ev: Event) => {
+      if (!projectId) {
+        toast.error("Сначала выберите проект");
+        return;
+      }
+      const d = (ev as CustomEvent<{ nodeKey?: string | null }>).detail ?? {};
+      const nodeKey = d.nodeKey ?? selectedNodeKey;
+      if (!nodeKey) {
+        toast.error("Выберите ноду на канвасе");
+        return;
+      }
+      const nodeType = nodeTypeFromKey(nodeKey);
+      if (nodeType === "topic") {
+        toast.message("У ноды «Тема» нет файловых промтов");
+        return;
+      }
+      openStudioForNode(nodeKey, nodeType, null, "prompts");
+    };
+    window.addEventListener("studio-open-node-prompts", onOpenPrompts);
+    return () => window.removeEventListener("studio-open-node-prompts", onOpenPrompts);
+  }, [projectId, selectedNodeKey, openStudioForNode]);
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -225,30 +301,20 @@ export function StudioWorkspace({
       getPromptSlots,
       getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
-        onSelectNode(nodeKey);
-        setPromptFocus(slot);
-        setStudioTab(slot.kind === "excel" ? "excel" : "prompts");
-        onStudioOpenChange(true);
+        openStudioForNode(nodeKey, nodeType, slot);
       },
       onOpenGptText: (nodeKey: string, nodeType: string) => {
         const slot = gptTextSlotForNode(nodeType);
         if (!slot) return;
-        onSelectNode(nodeKey);
-        setPromptFocus(slot);
-        setStudioTab("prompts");
-        onStudioOpenChange(true);
+        openStudioForNode(nodeKey, nodeType, slot, "prompts");
       },
       onViewAllPrompts: (nodeKey: string, nodeType: string) => {
-        onSelectNode(nodeKey);
         if (nodeType === "images") {
           const excel = getPromptSlots(nodeKey, nodeType).find((s) => s.kind === "excel");
-          setPromptFocus(excel ?? null);
-          setStudioTab("excel");
+          openStudioForNode(nodeKey, nodeType, excel ?? null, "excel");
         } else {
-          setPromptFocus(null);
-          setStudioTab("prompts");
+          openStudioForNode(nodeKey, nodeType, null, "prompts");
         }
-        onStudioOpenChange(true);
       },
       onAddPrompt: async (nodeKey: string, nodeType: string) => {
         const meta = (project.data?.meta || {}) as {
@@ -265,9 +331,19 @@ export function StudioWorkspace({
           custom: true,
         });
         custom[nodeKey] = resolvePromptSlots(nodeType, list);
-        await persistMeta({ custom_prompts: custom });
-        const step = stepCodeForNodeType(nodeType);
         const slotId = `custom_${n}`;
+        const metaBase = (project.data?.meta || {}) as Record<string, unknown>;
+        const metaPatch = withSlotVariant(
+          { ...metaBase, custom_prompts: custom },
+          nodeKey,
+          slotId,
+          slotId,
+        );
+        await persistMeta({
+          custom_prompts: custom,
+          prompt_slot_variants: metaPatch.prompt_slot_variants,
+        });
+        const step = stepCodeForNodeType(nodeType);
         if (step) {
           try {
             await api.savePromptFile(
@@ -309,6 +385,7 @@ export function StudioWorkspace({
           return;
         }
         try {
+          await api.reloadProjectXlsx(projectId).catch(() => undefined);
           await api.runProjectStep(projectId, step);
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
@@ -420,6 +497,7 @@ export function StudioWorkspace({
       onSelectNode,
       onStudioOpenChange,
       selectedNodeKey,
+      openStudioForNode,
       qc,
     ],
   );
@@ -488,14 +566,19 @@ export function StudioWorkspace({
           else onStudioOpenChange(true);
         }}
         projectId={projectId}
-        nodeKey={selectedNodeKey}
-        initialTab={studioTab}
-        promptFocus={promptFocus}
-        nodeDisabled={selectedNodeKey != null && disabledNodes.has(selectedNodeKey)}
+        nodeKey={studioTarget?.nodeKey ?? selectedNodeKey}
+        initialTab={studioTarget?.tab ?? studioTab}
+        promptFocus={studioTarget?.promptFocus ?? promptFocus}
+        nodeDisabled={
+          (studioTarget?.nodeKey ?? selectedNodeKey) != null &&
+          disabledNodes.has(studioTarget?.nodeKey ?? selectedNodeKey ?? "")
+        }
         promptSlots={
-          selectedNodeKey
-            ? getPromptSlots(selectedNodeKey, nodeTypeFromKey(selectedNodeKey))
-            : []
+          studioTarget?.nodeKey
+            ? getPromptSlots(studioTarget.nodeKey, studioTarget.nodeType)
+            : selectedNodeKey
+              ? getPromptSlots(selectedNodeKey, nodeTypeFromKey(selectedNodeKey))
+              : []
         }
       />
       {projectId && aiCtx && (

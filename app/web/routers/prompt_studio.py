@@ -19,7 +19,12 @@ from app.services.prompt_composer import (
     merge_project_prompt_config,
     NODE_TYPE_TO_STEP,
 )
-from app.services.prompt_library import list_prompts as list_variants
+from app.services.prompt_library import (
+    DEFAULT_NAME,
+    is_valid_prompt_name,
+    list_prompts as list_variants,
+    write_prompt,
+)
 from app.services import gpt_text_builder as gtb
 from app.web.deps import get_session
 from sqlalchemy import select
@@ -47,6 +52,11 @@ class PromptOverridesPatch(BaseModel):
 
 class GptTextPatch(BaseModel):
     text: str = ""
+
+
+class GptTextSaveTemplatePayload(BaseModel):
+    name: str
+    text: str | None = None
 
 
 async def _gpt_text_context(session: AsyncSession, project: Project, step_code: str) -> dict:
@@ -126,6 +136,51 @@ async def save_project_gpt_text(
         "text": gtb.get_effective_text(project, step_code, **ctx),
         "supported": True,
         "is_override": gtb.has_override(project, step_code),
+    }
+
+
+@router.post("/projects/{project_id}/gpt-text/{step_code}/save-template")
+async def save_gpt_text_as_template(
+    project_id: int,
+    step_code: str,
+    payload: GptTextSaveTemplatePayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """Сохраняет текущий GPT-сопроводительный текст как шаблон prompts/<step>/<name>.md."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if not gtb.is_supported(step_code):
+        raise HTTPException(status_code=400, detail=f"step {step_code} has no gpt text")
+
+    raw_name = (payload.name or "").strip()
+    if raw_name in ("", DEFAULT_NAME):
+        raise HTTPException(
+            status_code=400,
+            detail="укажите имя шаблона (не «default»)",
+        )
+    if not is_valid_prompt_name(raw_name):
+        raise HTTPException(status_code=400, detail=f"invalid template name: {raw_name!r}")
+
+    if payload.text is not None and payload.text.strip():
+        content = payload.text.strip()
+    else:
+        ctx = await _gpt_text_context(session, project, step_code)
+        try:
+            content = gtb.get_effective_text(project, step_code, **ctx)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="текст пустой — нечего сохранять")
+
+    path = write_prompt(step_code, raw_name, content)
+    return {
+        "step_code": step_code,
+        "name": raw_name,
+        "filename": path.name,
+        "path": str(path),
+        "size": path.stat().st_size,
     }
 
 

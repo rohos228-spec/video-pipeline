@@ -41,8 +41,8 @@ async def get_sidebar_layout() -> dict:
 
     async with session_scope() as session:
         ids = {
-            int(p.id)
-            for p in (await session.execute(select(Project.id))).scalars().all()
+            int(pid)
+            for pid in (await session.execute(select(Project.id))).scalars().all()
         }
     return layout_svc.layout_for_api(ids)
 
@@ -66,8 +66,8 @@ async def put_sidebar_layout(body: LayoutUpdate) -> dict:
 
     async with session_scope() as session:
         ids = {
-            int(p.id)
-            for p in (await session.execute(select(Project.id))).scalars().all()
+            int(pid)
+            for pid in (await session.execute(select(Project.id))).scalars().all()
         }
     return layout_svc.layout_for_api(ids)
 

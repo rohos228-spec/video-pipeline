@@ -87,25 +87,32 @@ STEPS_WITHOUT_PROMPT: set[str] = {"img", "video", "audio", "assemble"}
 
 DEFAULT_NAME = "default"
 
+# Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
+# в веб-студии нужны длинные осмысленные имена файлов.
+MAX_PROMPT_NAME_BYTES = 255
+
+# Для inline-кнопок Telegram (callback_data ≤ 64 байта с префиксом).
+TG_CALLBACK_PROMPT_NAME_BYTES = 40
+
 # Запрещённые символы в имени файла (path traversal / fs-unsafe).
 _UNSAFE_CHARS_RE = re.compile(r'[/\\:\*\?"<>|\x00]')
 
 
-def _sanitize_name(raw: str) -> str:
+def _truncate_utf8(name: str, max_bytes: int) -> str:
+    encoded = name.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return name
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _sanitize_name(raw: str, *, max_bytes: int = MAX_PROMPT_NAME_BYTES) -> str:
     """Убирает из строки символы, опасные для файловой системы.
-    Пробелы, кириллица, цифры, `_`, `-` — остаются.
-    Усекает результат до 40 байт UTF-8."""
+    Пробелы, кириллица, цифры, `_`, `-` — остаются."""
     name = _UNSAFE_CHARS_RE.sub("_", raw).strip().strip(".")
-    # Схлопываем подряд идущие подчёркивания
     name = re.sub(r"_{2,}", "_", name)
     if not name:
         return ""
-    # Усекаем по байтам UTF-8 без обрезания посередине символа
-    encoded = name.encode("utf-8")
-    if len(encoded) <= 40:
-        return name
-    truncated = encoded[:40].decode("utf-8", errors="ignore")
-    return truncated
+    return _truncate_utf8(name, max_bytes)
 
 
 def step_folder_name(step_code: str) -> str | None:
@@ -123,21 +130,21 @@ def step_dir(step_code: str) -> Path:
     return path
 
 
-def is_valid_prompt_name(name: str) -> bool:
+def is_valid_prompt_name(name: str, *, max_bytes: int = MAX_PROMPT_NAME_BYTES) -> bool:
     """Имя варианта: любые символы кроме path-traversal.
-    Пробелы, кириллица, спецсимволы — допустимы.
-
-    Лимит UTF-8: 40 байт (это ~20 кириллических симв, ~40 латинских),
-    чтобы имя гарантированно влезало в Telegram callback_data
-    (макс 64 байта; префиксы вида `prm:<pid>:<step>:sel:<name>` уже
-    занимают ~24 байта)."""
+    Пробелы, кириллица, спецсимволы — допустимы."""
     if not name or not name.strip():
         return False
-    if len(name.encode("utf-8")) > 40:
+    if len(name.encode("utf-8")) > max_bytes:
         return False
     if ".." in name:
         return False
     return not _UNSAFE_CHARS_RE.search(name)
+
+
+def prompt_name_fits_telegram_callback(name: str) -> bool:
+    """Имя влезает в callback_data inline-кнопки Telegram."""
+    return is_valid_prompt_name(name, max_bytes=TG_CALLBACK_PROMPT_NAME_BYTES)
 
 
 def list_prompts(step_code: str) -> list[str]:

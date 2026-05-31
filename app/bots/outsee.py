@@ -894,6 +894,144 @@ def _strip_url_query(url: str | None) -> str:
         return url
 
 
+_OUTSEE_IMAGE_KEY_RE = re.compile(r"(image_\d+_\d+)", re.I)
+
+
+def _outsee_image_stable_key(url: str | None) -> str:
+    """Стабильный ключ картинки outsee: `image_<ts>_<idx>`."""
+    if not url:
+        return ""
+    path = _strip_url_query(url)
+    name = Path(path).name
+    m = _OUTSEE_IMAGE_KEY_RE.search(name)
+    if m:
+        return m.group(1).lower()
+    base = re.sub(r"_thumb", "", name, flags=re.I)
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
+    return base.lower()
+
+
+def _is_outsee_thumb_url(url: str | None) -> bool:
+    if not url:
+        return False
+    return "_thumb" in _strip_url_query(url).lower()
+
+
+def _url_download_priority(url: str) -> tuple[int, int]:
+    """Меньше = лучше кандidate для скачивания (full PNG предпочтительнее thumb)."""
+    low = _strip_url_query(url).lower()
+    score = 0
+    if "_thumb" in low:
+        score += 100
+    if low.endswith((".jpg", ".jpeg")):
+        score += 40
+    if low.endswith(".png"):
+        score -= 30
+    return (score, len(low))
+
+
+def _resolve_best_download_url(
+    primary: str,
+    *,
+    net_events: list[tuple[float, str]] | None = None,
+    extra_urls: list[str] | None = None,
+) -> str:
+    """Из thumb DOM URL выбирает полноразмерный PNG из net_events/DOM."""
+    if not primary:
+        return primary
+    key = _outsee_image_stable_key(primary)
+    pool: list[str] = [primary]
+    if net_events:
+        pool.extend(u for _, u in net_events)
+    if extra_urls:
+        pool.extend(extra_urls)
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for u in pool:
+        if not u or u in seen:
+            continue
+        low = u.lower()
+        if any(m in low for m in _UI_ASSET_MARKERS):
+            continue
+        if any(m in low for m in _INPUT_REF_MARKERS):
+            continue
+        if key and _outsee_image_stable_key(u) != key:
+            continue
+        seen.add(u)
+        candidates.append(u)
+
+    if not candidates:
+        return primary
+    best = min(candidates, key=_url_download_priority)
+    if best != primary and _is_outsee_thumb_url(primary):
+        logger.info(
+            "outsee url-resolve: thumb {} → full {}",
+            primary[:100],
+            best[:100],
+        )
+    return best
+
+
+def _collect_download_url_candidates(
+    primary: str,
+    *,
+    net_events: list[tuple[float, str]] | None = None,
+    extra_urls: list[str] | None = None,
+) -> list[str]:
+    """Упорядоченный список URL для fallback-скачивания (full PNG первым)."""
+    key = _outsee_image_stable_key(primary)
+    pool: list[str] = []
+    if primary:
+        pool.append(primary)
+    pool.append(_resolve_best_download_url(primary, net_events=net_events, extra_urls=extra_urls))
+    if net_events:
+        pool.extend(u for _, u in net_events)
+    if extra_urls:
+        pool.extend(extra_urls)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    keyed: list[str] = []
+    for u in pool:
+        if not u or u in seen:
+            continue
+        if key and _outsee_image_stable_key(u) == key:
+            keyed.append(u)
+            seen.add(u)
+    keyed.sort(key=_url_download_priority)
+    ordered.extend(keyed)
+    for u in pool:
+        if u and u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    return ordered
+
+
+async def _find_full_png_in_dom(page: Page, stable_key: str) -> str | None:
+    if not stable_key:
+        return None
+    try:
+        urls: list[str] = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('img'))
+                .map(i => i.currentSrc || i.src)
+                .filter(Boolean)"""
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    matches = [
+        u
+        for u in urls
+        if stable_key in _strip_url_query(u).lower()
+        and "_thumb" not in u.lower()
+        and ".png" in u.lower()
+    ]
+    if not matches:
+        return None
+    return min(matches, key=_url_download_priority)
+
+
 def _url_is_fresh(
     url: str | None, net_events: list[tuple[float, str]] | None
 ) -> bool:
@@ -1500,6 +1638,7 @@ class OutseeBot:
                     out_path=out_path,
                     project_id=project_id,
                     img_url=img_url,
+                    net_events=net_events,
                 )
             else:
                 await _download_via_context(
@@ -2864,7 +3003,9 @@ class OutseeBot:
                                 elapsed,
                                 current[:140],
                             )
-                            return current
+                            return _resolve_best_download_url(
+                                current, net_events=net_events
+                            )
                         else:
                             # С ID-верификацией — только запоминаем,
                             # если ещё не отвергали этот URL (по норм.).
@@ -2899,7 +3040,8 @@ class OutseeBot:
                     # брал clean[-1] — last — и в ситуации «все галерейные
                     # thumb'ы выглядят new из-за re-sign URL» это приводило
                     # к скачиванию старой картинки. Теперь baseline нормализован
-                    # (без query) + берём first.
+                    # (без query) + берём лучший (full PNG, не thumb).
+                    clean.sort(key=_url_download_priority)
                     chosen = clean[0]
                     if not prompt_id_prefix:
                         logger.info(
@@ -2909,7 +3051,9 @@ class OutseeBot:
                             chosen[:140],
                             len(clean),
                         )
-                        return chosen
+                        return _resolve_best_download_url(
+                            chosen, net_events=net_events, extra_urls=clean
+                        )
                     else:
                         # С ID-верификацией — запоминаем как fallback,
                         # но click-verify всё равно сработает (или net_events).
@@ -2950,7 +3094,10 @@ class OutseeBot:
                         elapsed,
                         fallback_candidate[:120],
                     )
-                    return fallback_candidate
+                    return _resolve_best_download_url(
+                        fallback_candidate,
+                        net_events=net_events,
+                    )
 
             if (
                 prompt_id_prefix
@@ -2979,13 +3126,19 @@ class OutseeBot:
                     elif not net_events:
                         pass  # доверяем DOM
                     if idle_clean:
+                        idle_clean.sort(key=_url_download_priority)
+                        best_idle = idle_clean[0]
                         logger.info(
                             "_wait_image_url_strict: gen_idle, новые img в "
                             "DOM — handoff download-v3 за {:.0f} сек: {}",
                             elapsed,
-                            idle_clean[0][:120],
+                            best_idle[:120],
                         )
-                        return idle_clean[0]
+                        return _resolve_best_download_url(
+                            best_idle,
+                            net_events=net_events,
+                            extra_urls=idle_clean,
+                        )
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -3037,6 +3190,7 @@ class OutseeBot:
                     page, baseline_all_srcs
                 )
                 if handoff_srcs:
+                    handoff_srcs.sort(key=_url_download_priority)
                     chosen = handoff_srcs[0]
                     logger.warning(
                         "_wait_image_url_strict: timeout {:.0f}с, но gen_idle "
@@ -3044,7 +3198,11 @@ class OutseeBot:
                         timeout,
                         chosen[:120],
                     )
-                    return chosen
+                    return _resolve_best_download_url(
+                        chosen,
+                        net_events=net_events,
+                        extra_urls=handoff_srcs,
+                    )
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
             context=ctx,
@@ -4850,6 +5008,7 @@ async def _find_card_by_clicking_images(
     prompt_id_prefix: str,
     limit: int = 10,
     project_id: int | None = None,
+    img_url: str | None = None,
 ):
     """Стратегия C из `_download_via_card_click`: outsee может прятать
     наш `[ID: …]` в `<textarea value="...">` или в правой панели «Промпт»,
@@ -4933,6 +5092,18 @@ async def _find_card_by_clicking_images(
 
         matched = await _gallery_detail_panel_has_id(page, prompt_id_prefix)
 
+        if (
+            not matched
+            and img_url
+            and _outsee_image_stable_key(src) == _outsee_image_stable_key(img_url)
+        ):
+            matched = True
+            logger.info(
+                "_find_card_by_clicking_images: ID в панели не виден, "
+                "но src совпал с wait-handoff (#{})",
+                idx,
+            )
+
         if not matched:
             # Не наша картинка — закрываем панель Esc'ом и идём дальше.
             with contextlib.suppress(Exception):
@@ -4954,15 +5125,92 @@ async def _find_card_by_clicking_images(
             # НЕ закрываем панель — пусть hover-target виден.
             return candidate
 
-        # Токен совпал, но ancestor-card не нашлась — странно, идём дальше.
-        with contextlib.suppress(Exception):
-            await page.keyboard.press("Escape")
+        # src/ID совпали, но кнопки Download в DOM нет — URL-fallback в download_via_card_click.
+        logger.info(
+            "_find_card_by_clicking_images: match #{} без download-кнопки → URL handoff",
+            idx,
+        )
+        return img_loc
 
     logger.warning(
         "_find_card_by_clicking_images: перебрал {} картинок, нашей не нашлось",
         min(len(srcs), limit),
     )
     return None
+
+
+async def _download_via_context_candidates(
+    page: Page,
+    primary_url: str,
+    out_path: Path,
+    *,
+    net_events: list[tuple[float, str]] | None = None,
+    project_id: int | None = None,
+) -> str:
+    """Скачивает по URL, перебирая full PNG вместо thumb."""
+    dom_full = await _find_full_png_in_dom(
+        page, _outsee_image_stable_key(primary_url)
+    )
+    extra = [dom_full] if dom_full else None
+    candidates = _collect_download_url_candidates(
+        primary_url, net_events=net_events, extra_urls=extra
+    )
+    last_err: Exception | None = None
+    for u in candidates:
+        try:
+            await _download_via_context(
+                page, u, out_path, project_id=project_id
+            )
+            size = out_path.stat().st_size
+            if size < _MIN_IMAGE_BYTES:
+                logger.warning(
+                    "_download_via_context_candidates: {} — {} B, "
+                    "пробую следующий URL",
+                    u[:100],
+                    size,
+                )
+                with contextlib.suppress(OSError):
+                    out_path.unlink(missing_ok=True)
+                continue
+            with out_path.open("rb") as f:
+                head = f.read(16)
+            is_img = (
+                head.startswith(_PNG_MAGIC)
+                or head.startswith(_JPEG_MAGIC)
+                or (head[:4] == _RIFF_MAGIC and head[8:12] == _WEBP_TAG)
+            )
+            if not is_img:
+                logger.warning(
+                    "_download_via_context_candidates: {} — не PNG/JPEG/WebP",
+                    u[:100],
+                )
+                with contextlib.suppress(OSError):
+                    out_path.unlink(missing_ok=True)
+                continue
+            logger.info(
+                "_download_via_context_candidates: ok {} ({} B)",
+                u[:120],
+                size,
+            )
+            return u
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            logger.warning(
+                "_download_via_context_candidates: {} ({})",
+                u[:100],
+                type(e).__name__,
+            )
+            with contextlib.suppress(OSError):
+                if out_path.exists() and out_path.stat().st_size < _MIN_IMAGE_BYTES:
+                    out_path.unlink(missing_ok=True)
+    raise OutseeImageError(
+        "outsee image: не удалось скачать full PNG ни по одному URL",
+        context={
+            "primary_url": primary_url[:200],
+            "candidates": len(candidates),
+            "err": f"{type(last_err).__name__}: {last_err}" if last_err else None,
+        },
+    ) from last_err
 
 
 async def _download_via_card_click(
@@ -4973,6 +5221,7 @@ async def _download_via_card_click(
     timeout_s: float = 120.0,
     project_id: int | None = None,
     img_url: str | None = None,
+    net_events: list[tuple[float, str]] | None = None,
 ) -> None:
     """Кликает зелёную «↓ Скачать» на карточке результата с нашим
     `[ID: P{...}-F{...}-{8hex}]` и сохраняет реальный финальный файл
@@ -4991,6 +5240,33 @@ async def _download_via_card_click(
     abort_if_cancelled(project_id)
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Быстрый путь: gen_idle уже дал full PNG URL (как у видео).
+    if img_url:
+        resolved = _resolve_best_download_url(img_url, net_events=net_events)
+        if resolved and not _is_outsee_thumb_url(resolved):
+            try:
+                used = await _download_via_context_candidates(
+                    page,
+                    resolved,
+                    out_path,
+                    net_events=net_events,
+                    project_id=project_id,
+                )
+                _validate_downloaded_image(
+                    out_path, gen_id=prompt_id_prefix, img_url=used
+                )
+                logger.info(
+                    "_download_via_card_click: сохранил {} (URL-first, id={})",
+                    out_path,
+                    prompt_id_prefix,
+                )
+                return
+            except OutseeImageError as e:
+                logger.warning(
+                    "_download_via_card_click: URL-first не удался ({}), card-click",
+                    e,
+                )
 
     card = None  # type: ignore[var-annotated]
 
@@ -5012,6 +5288,7 @@ async def _download_via_card_click(
             prompt_id_prefix=prompt_id_prefix,
             limit=10,
             project_id=project_id,
+            img_url=img_url,
         )
         if card is not None:
             break
@@ -5082,17 +5359,24 @@ async def _download_via_card_click(
                 )
 
     if card is None and img_url:
+        resolved = _resolve_best_download_url(img_url, net_events=net_events)
         logger.warning(
             "_download_via_card_click: клик по карточке не удался, "
-            "скачиваю по URL {}",
+            "скачиваю full PNG по URL (было: {})",
             img_url[:120],
         )
-        await _download_via_context(
-            page, img_url, out_path, project_id=project_id,
+        used = await _download_via_context_candidates(
+            page,
+            resolved,
+            out_path,
+            net_events=net_events,
+            project_id=project_id,
         )
         logger.info(
-            "_download_via_card_click: сохранил {} (URL-fallback, id={})",
-            out_path, prompt_id_prefix,
+            "_download_via_card_click: сохранил {} (URL-fallback, id={}, url={})",
+            out_path,
+            prompt_id_prefix,
+            used[:120],
         )
         return
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RotateCcw, Save } from "lucide-react";
+import { Loader2, RotateCcw, Save, BookmarkPlus } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ export function GptTextPanel({
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [templateName, setTemplateName] = useState("");
 
   const data = useQuery({
     queryKey: ["gpt-text", projectId, stepCode],
@@ -43,6 +44,23 @@ export function GptTextPanel({
       setDirty(false);
       qc.invalidateQueries({ queryKey: ["gpt-text", projectId, stepCode] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+
+  const saveTemplate = useMutation({
+    mutationFn: () => {
+      const name = templateName.trim();
+      if (!name) return Promise.reject(new Error("Введите имя шаблона"));
+      return api.saveGptTextAsTemplate(projectId, stepCode, {
+        name,
+        text: draft,
+      });
+    },
+    onSuccess: (r) => {
+      toast.success(`Шаблон сохранён: ${r.filename}`);
+      setTemplateName("");
+      qc.invalidateQueries({ queryKey: ["prompt-files", stepCode] });
     },
     onError: (e) => toast.error(String(e)),
   });
@@ -128,6 +146,36 @@ export function GptTextPanel({
         className="font-mono text-[11px] leading-relaxed"
         placeholder="Текст сопроводительного сообщения для GPT…"
       />
+      <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+        <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Сохранить как шаблон для новых проектов
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="text"
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            placeholder="имя_шаблона"
+            className="h-8 min-w-[140px] flex-1 rounded-md border border-white/10 bg-background px-2 text-xs"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!templateName.trim() || saveTemplate.isPending}
+            onClick={() => saveTemplate.mutate()}
+          >
+            {saveTemplate.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <BookmarkPlus className="h-3.5 w-3.5" />
+            )}
+            Сохранить как шаблон
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Файл попадёт в prompts/{stepCode}/ и будет доступен при создании следующих проектов.
+        </p>
+      </div>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}

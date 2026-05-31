@@ -35,7 +35,7 @@ import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
-import { isProjectRunningStatus } from "@/lib/project-running";
+import { reconcileNodeRunStatus, workflowStructureKey } from "@/lib/node-run-status";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import {
   isEditableTarget,
@@ -48,6 +48,7 @@ import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
 import { EdgeAiControls } from "@/components/canvas/edge-ai-controls";
+import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
   Dialog,
   DialogContent,
@@ -139,30 +140,60 @@ export function FlowCanvas({
 
   useEffect(() => {
     if (!workflow.data) return;
-    const ver = `${workflow.data.id}:${workflow.data.updated_at}:${workflow.data.version}:${workflow.data.nodes?.[0]?.type ?? ""}`;
+    const ver = workflowStructureKey(workflow.data);
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
-    setNodes(baseNodes as Node<PipelineNodeData>[]);
+    setNodes((prev) => {
+      const prevById = new Map(prev.map((n) => [n.id, n]));
+      return (baseNodes as Node<PipelineNodeData>[]).map((n) => {
+        const old = prevById.get(n.id);
+        if (!old) return n;
+        return {
+          ...n,
+          position: old.position,
+          data: {
+            ...n.data,
+            status: old.data.status,
+            progress: old.data.progress,
+            progressText: old.data.progressText,
+            error: old.data.error,
+            attempts: old.data.attempts,
+          },
+        };
+      });
+    });
     setEdges(baseEdges);
   }, [workflow.data, baseNodes, baseEdges, graphVersion, nodes.length, setNodes, setEdges]);
 
   // Статусы run — отдельно, без сброса позиций нод.
   useEffect(() => {
-    if (!run.data || nodes.length === 0) return;
-    const projectRunning = isProjectRunningStatus(project.data?.status);
+    if (nodes.length === 0) return;
+    // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
+    if (!run.data) return;
+    const projectStatus = project.data?.status;
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
-        if (!nr) return n;
-        let status = nr.status as PipelineNodeData["status"];
-        let progress = nr.progress ?? 0;
-        let progressText = nr.progress_text ?? null;
-        if (status === "running" && !projectRunning) {
-          status = "pending";
-          progress = 0;
-          progressText = null;
+        if (!nr) {
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              status: "pending" as const,
+              progress: 0,
+              progressText: null,
+              error: null,
+            },
+          };
         }
+        const status = reconcileNodeRunStatus(
+          n.data.type,
+          nr.status as PipelineNodeData["status"],
+          projectStatus,
+        );
+        const progress = status === "running" ? (nr.progress ?? 0) : 0;
+        const progressText = status === "running" ? (nr.progress_text ?? null) : null;
         return {
           ...n,
           data: {
@@ -176,7 +207,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, project.data?.status, setNodes, nodes.length]);
+  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
 
   // WS: обновления статуса нод (event-driven, без ожидания polling).
   useRunEvents(run.data?.id ?? null, (evt) => {
@@ -192,7 +223,8 @@ export function FlowCanvas({
             (e.node_key && n.id === e.node_key) ||
             (!e.node_key && n.data.type === e.node_type);
           if (!matches) return n;
-          const to = e.to as PipelineNodeData["status"];
+          const raw = e.to as PipelineNodeData["status"];
+          const to = reconcileNodeRunStatus(n.data.type, raw, project.data?.status);
           return {
             ...n,
             data: {
@@ -679,10 +711,11 @@ export function FlowCanvas({
         edgesReconnectable
         nodeDragThreshold={6}
         selectNodesOnDrag={false}
-        selectionOnDrag
-        panOnDrag={[1, 2]}
+        selectionOnDrag={false}
+        panOnDrag={[0, 1]}
         multiSelectionKeyCode={["Control", "Meta"]}
         selectionKeyCode={null}
+        onPaneContextMenu={(e) => e.preventDefault()}
         onConnect={onConnect}
         connectionLineStyle={{ strokeDasharray: "6 4", stroke: "hsl(var(--primary))" }}
         elementsSelectable
@@ -755,6 +788,7 @@ export function FlowCanvas({
           maskColor="hsl(var(--background) / 0.7)"
         />
         <EdgeAiControls edges={edges} />
+        <RightButtonMarquee />
       </ReactFlow>
       <WorkflowToolbar
         workflowId={workflow.data?.id}

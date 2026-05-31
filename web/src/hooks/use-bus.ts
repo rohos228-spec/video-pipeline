@@ -21,9 +21,9 @@ export function useGlobalEvents() {
       if (type === "node_status_changed" || type === "run_created" || type === "run_cancelled") {
         qc.invalidateQueries({ queryKey: ["runs"] });
         if ((evt as { project_id?: number }).project_id != null) {
-          qc.invalidateQueries({
-            queryKey: ["project-run", (evt as { project_id: number }).project_id],
-          });
+          const pid = (evt as { project_id: number }).project_id;
+          qc.invalidateQueries({ queryKey: ["project-run", pid] });
+          qc.invalidateQueries({ queryKey: ["project", pid] });
         }
       }
       if (type === "hitl_pending" || type === "hitl_decided") {

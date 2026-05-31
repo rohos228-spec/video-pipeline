@@ -10,10 +10,12 @@ from pathlib import Path
 from loguru import logger
 
 from app.bots.elevenlabs import ElevenLabsBot
-from app.models import Frame
+from app.models import Frame, Project
+from app.services.elevenlabs_voices import resolve_elevenlabs_voice_id
 from app.services.mapper import map_frames
 from app.services.media_probe import probe_duration
-from app.services.whisper import WordTS, transcribe_words_many
+from app.services.voiceover_split_local import split_voiceover_locally
+from app.services.whisper import WordTS, transcribe_words, transcribe_words_many
 
 FRAME_AUDIO_PREFIX = "frame_"
 
@@ -237,47 +239,118 @@ async def build_assembly_timeline(
     return clips, master, 1.0, False
 
 
+def resolve_full_voiceover_text(project: Project) -> str:
+    """Полный закадровый текст — voiceover.txt или script_text в БД."""
+    vo_path = project.data_dir / "voiceover.txt"
+    if vo_path.is_file():
+        text = vo_path.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    if project.script_text:
+        return (project.script_text or "").strip()
+    return ""
+
+
+def _voiceover_cells_for_frames(
+    project: Project,
+    frames: list[Frame],
+    cells: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """Ячейки R49; если пусто — режем полный voiceover локально."""
+    out = [(n, (t or "").strip()) for n, t in cells]
+    if any(t for _, t in out):
+        return out
+    full = resolve_full_voiceover_text(project)
+    if not full:
+        return out
+    blocks = split_voiceover_locally(full)
+    if len(blocks) < len(frames):
+        raise RuntimeError(
+            f"voiceover: {len(blocks)} блоков после split, нужно {len(frames)} кадров"
+        )
+    return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+
+
+async def _extract_mp3_segment(
+    src: Path,
+    out_path: Path,
+    start_ts: float,
+    end_ts: float,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    dur = max(0.05, end_ts - start_ts)
+    await _run_ffmpeg([
+        "ffmpeg", "-y",
+        "-ss", f"{start_ts:.3f}",
+        "-t", f"{dur:.3f}",
+        "-i", str(src),
+        "-c", "copy",
+        str(out_path),
+    ])
+
+
 async def synthesize_per_frame_audio(
     el: ElevenLabsBot,
     *,
+    project: Project,
     frames: list[Frame],
     cells: list[tuple[int, str]],
     audio_dir: Path,
     clip_timeout: float = 180.0,
+    whisper_model: str = "large-v3",
+    language: str = "ru",
 ) -> tuple[list[FrameAudioClip], Path]:
-    """TTS для каждой ячейки R49 → frame_NNN.mp3, затем voice_full.mp3."""
+    """Озвучка: весь voiceover одним запросом в 11Labs, тайминги — Whisper."""
     audio_dir.mkdir(parents=True, exist_ok=True)
     delete_frame_audio_files(audio_dir)
 
-    text_by_frame = dict(cells)
-    clips: list[FrameAudioClip] = []
-    pos = 0.0
-
-    for fr in frames:
-        text = (text_by_frame.get(fr.number) or "").strip()
-        if not text:
-            raise RuntimeError(
-                f"кадр {fr.number}: пустая ячейка R49 — "
-                "одна колонка plan = одно видео, текст обязателен"
-            )
-
-        clip_path = frame_audio_path(audio_dir, fr.number)
-        logger.info("[#{}] frame_audio: кадр {} ({} симв.) → {}", fr.project_id, fr.number, len(text), clip_path.name)
-        await el.tts(text, clip_path, timeout=clip_timeout)
-        duration = await probe_duration(clip_path)
-        clip = FrameAudioClip(
-            frame_number=fr.number,
-            path=clip_path,
-            text=text,
-            start_ts=round(pos, 3),
-            end_ts=round(pos + duration, 3),
-            duration=round(duration, 3),
+    full_text = resolve_full_voiceover_text(project)
+    if len(full_text) < 50:
+        raise RuntimeError(
+            "нет voiceover.txt / script_text — сначала шаг «Закадровый текст»"
         )
-        clips.append(clip)
-        pos += duration
+
+    cells = _voiceover_cells_for_frames(project, frames, cells)
+    if not any(t for _, t in cells):
+        raise RuntimeError(
+            "нет закадрового текста на листе «план» (строка 49) и не удалось разбить voiceover"
+        )
 
     full_path = audio_dir / f"voice_full_{uuid.uuid4().hex[:8]}.mp3"
-    await concat_mp3_files([c.path for c in clips], full_path)
+    tts_timeout = max(clip_timeout * max(len(frames), 1), 600.0)
+    logger.info(
+        "[#{}] frame_audio: полный voiceover ({} симв.) → {}",
+        project.id,
+        len(full_text),
+        full_path.name,
+    )
+    voice_id = resolve_elevenlabs_voice_id(project)
+    logger.info("[#{}] frame_audio: 11Labs voice_id={}", project.id, voice_id)
+    await el.tts(
+        full_text,
+        full_path,
+        timeout=tts_timeout,
+        voice_id=voice_id,
+    )
+
+    master = await probe_duration(full_path)
+    words = transcribe_words(
+        full_path,
+        model_name=whisper_model,
+        language=language,
+    )
+    clips = frame_clips_from_whisper(cells, words, master, full_path)
+
+    for clip in clips:
+        seg_path = frame_audio_path(audio_dir, clip.frame_number)
+        await _extract_mp3_segment(
+            full_path,
+            seg_path,
+            clip.start_ts,
+            clip.end_ts,
+        )
+        clip.path = seg_path
+
     return clips, full_path
 
 

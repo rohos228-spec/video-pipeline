@@ -12,7 +12,9 @@ from app.models import Project, ProjectStatus
 from app.services.mass_factory import assert_not_factory_template_for_generation
 from app.services.disabled_nodes import is_step_disabled
 from app.orchestrator.graph.planner import assert_step_allowed_by_graph
-from app.services.reset_step import clear_step_outputs_for_rerun
+from app.services.reset_step import clear_step_outputs_for_rerun, _WRAPPER_TO_CODES
+from app.services.chatgpt_xlsx import purge_tmp_gpt_for_step
+from app.services.xlsx_sync import reload_from_xlsx
 from app.services.step_cancel import clear_stop
 from app.telegram.menu import step_by_code
 
@@ -49,6 +51,23 @@ async def start_step(
     assert_not_factory_template_for_generation(project)
     await assert_step_allowed_by_graph(session, project, step_code)
     clear_stop(project.id)
+
+    proj_xlsx = project.data_dir / "project.xlsx"
+    if proj_xlsx.exists():
+        try:
+            await reload_from_xlsx(session, project, proj_xlsx)
+            logger.info("[#{}] start_step {}: reloaded project.xlsx into DB", project.id, step_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] start_step {}: reload_from_xlsx failed: {}",
+                project.id,
+                step_code,
+                e,
+            )
+
+    for code in _WRAPPER_TO_CODES.get(step_code, [step_code]):
+        purge_tmp_gpt_for_step(project, code)
+
     meta = dict(project.meta or {})
     cleared: list[str] = []
     if meta.pop("user_stop", None) is not None:

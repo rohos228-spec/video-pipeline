@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   CheckCircle2,
@@ -59,6 +59,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
       ? resolveHitlBadgeState({
           nodeType: d.type,
           nodeStatus: d.status,
+          projectStatus: actions.project?.status,
           autoMode: actions.autoMode,
           aiControl: actions.aiControl,
           hitlList: actions.hitlList,
@@ -67,21 +68,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const showHitlBadge = hitlState != null;
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
-
-  useEffect(() => {
-    if (!vMenuOpen) return;
-    const close = (ev: MouseEvent) => {
-      const t = ev.target as HTMLElement;
-      if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
-      actions?.setVMenuNodeKey(null);
-    };
-    document.addEventListener("click", close, true);
-    return () => document.removeEventListener("click", close, true);
-  }, [vMenuOpen, actions]);
+  const anchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <>
       <div
+        ref={anchorRef}
         className={cn(
           "group relative w-[260px] overflow-visible rounded-2xl border border-white/10 bg-gradient-to-br from-card/95 via-card/90 to-card/70 shadow-lg shadow-black/40 backdrop-blur-md transition-all duration-200 premium-node-glow",
           "hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/10",
@@ -140,23 +132,22 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   : "border-border/60 bg-background/80 text-muted-foreground hover:border-primary/50 hover:text-primary",
               )}
               onPointerDown={(e) => {
-                if (e.button !== 0) return;
                 e.stopPropagation();
-                e.preventDefault();
-                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
               }}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
+                actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey);
               }}
-              title="Меню ноды"
+              title="Меню промтов (V)"
             >
               <span className="text-[11px] font-bold">V</span>
             </button>
 
             <NodeVMenu
               open={!!vMenuOpen}
+              anchorRef={anchorRef}
               nodeType={d.type}
               slots={slots}
               disabled={disabled}
@@ -164,12 +155,13 @@ export function PipelineNode({ data, selected }: NodeProps) {
               hasAssets={assetKind != null}
               onClose={() => actions.setVMenuNodeKey(null)}
               onSelectPrompt={(slot) => {
-                actions.setVMenuNodeKey(null);
                 actions.onOpenPrompt(d.nodeKey, d.type, slot);
               }}
               onOpenGptText={() => {
                 actions.setVMenuNodeKey(null);
-                actions.onOpenGptText(d.nodeKey, d.type);
+                window.setTimeout(() => {
+                  actions.onOpenGptText(d.nodeKey, d.type);
+                }, 32);
               }}
               onAddPrompt={() => actions.onAddPrompt(d.nodeKey, d.type)}
               onRemovePrompt={(slot) => actions.onRemovePrompt(d.nodeKey, d.type, slot)}

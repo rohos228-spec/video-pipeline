@@ -2,6 +2,10 @@
 # RUN_BACKEND_ID=session-log-v3  (UTF-8 console + log)
 # powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
 
+param(
+    [switch]$NoPause
+)
+
 $ErrorActionPreference = "Continue"
 $Root = $PSScriptRoot
 Set-Location $Root
@@ -130,6 +134,8 @@ if ($exitCode -ne 0) {
     Write-Host "Backend exited with code $exitCode" -ForegroundColor Red
     Write-Host "See data\backend-$PID.log (and data\backend.log if not locked)" -ForegroundColor Red
 }
-Write-Host ""
-Write-Host "Press Enter to close..." -ForegroundColor Gray
-Read-Host | Out-Null
+if (-not $NoPause) {
+    Write-Host ""
+    Write-Host "Press Enter to close..." -ForegroundColor Gray
+    Read-Host | Out-Null
+}

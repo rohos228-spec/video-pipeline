@@ -8,14 +8,23 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  DEFAULT_ELEVENLABS_VOICE_ID,
+  ELEVENLABS_VOICES,
+  elevenLabsVoiceLabel,
+  findElevenLabsVoice,
+} from "@/lib/elevenlabs-voices";
+import {
   charCountFromDuration,
   effectiveDurationSeconds,
   readNodeStepParams,
   withNodeStepParams,
+  type AssembleStepParams,
+  type AudioStepParams,
   type NodeStepParamsMeta,
   type PlanScriptStepParams,
   type SplitStepParams,
 } from "@/lib/node-step-params";
+import { cn } from "@/lib/utils";
 
 function NumField({
   label,
@@ -117,6 +126,126 @@ function PlanScriptFields({
   );
 }
 
+function AudioFields({
+  params,
+  onSave,
+  saving,
+}: {
+  params: NodeStepParamsMeta;
+  onSave: (patch: AudioStepParams) => void;
+  saving: boolean;
+}) {
+  const savedId = params.audio?.elevenlabs_voice_id ?? DEFAULT_ELEVENLABS_VOICE_ID;
+  const [voiceDraft, setVoiceDraft] = useState(savedId);
+
+  useEffect(() => {
+    setVoiceDraft(savedId);
+  }, [savedId]);
+
+  const selected = findElevenLabsVoice(voiceDraft);
+
+  return (
+    <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">11Labs — голос</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Бот откроет Text to Speech, выберет модель Eleven v3, вставит ID голоса в поиск
+          голоса, выберет карточку и сгенерирует полный закадровый текст.
+        </p>
+      </div>
+      <label className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium text-foreground">Голос</span>
+        <select
+          className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm"
+          value={voiceDraft}
+          onChange={(e) => setVoiceDraft(e.target.value)}
+        >
+          {ELEVENLABS_VOICES.map((v) => (
+            <option key={v.id} value={v.id}>
+              {elevenLabsVoiceLabel(v)}
+            </option>
+          ))}
+        </select>
+        {selected ? (
+          <span className="font-mono text-[11px] text-muted-foreground">ID: {selected.id}</span>
+        ) : null}
+      </label>
+      <Button
+        size="sm"
+        className="w-fit gap-1.5"
+        disabled={saving}
+        onClick={() =>
+          onSave({
+            elevenlabs_voice_id: voiceDraft || DEFAULT_ELEVENLABS_VOICE_ID,
+          })
+        }
+      >
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        Сохранить
+      </Button>
+    </section>
+  );
+}
+
+function AssembleFields({
+  params,
+  onSave,
+  saving,
+}: {
+  params: NodeStepParamsMeta;
+  onSave: (patch: AssembleStepParams) => void;
+  saving: boolean;
+}) {
+  const subsOn = params.assemble?.subtitles_enabled !== false;
+
+  return (
+    <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Сборка FFmpeg</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Субтитры (одно слово по Whisper) прожигаются в финальный mp4. Выключите, если нужен ролик
+          только с озвучкой и картинкой.
+        </p>
+      </div>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onSave({ subtitles_enabled: !subsOn })}
+        className={cn(
+          "flex w-full items-start justify-between gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+          subsOn ? "border-primary/40 bg-primary/10" : "border-border/60 hover:bg-accent/40",
+        )}
+      >
+        <span className="flex flex-col">
+          <span className="text-sm font-medium text-foreground">Субтитры в ролике</span>
+          <span className="text-xs text-muted-foreground">
+            {subsOn ? "Включены — ASS вшивается при сборке" : "Выключены — без прожига текста"}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+            subsOn ? "bg-primary" : "bg-muted",
+          )}
+        >
+          <span
+            className={cn(
+              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              subsOn && "translate-x-4",
+            )}
+          />
+        </span>
+      </button>
+      {saving ? (
+        <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Сохранение…
+        </span>
+      ) : null}
+    </section>
+  );
+}
+
 function SplitFields({
   params,
   onSave,
@@ -191,7 +320,14 @@ export function NodeStepParamsPanel({
   nodeType: string;
 }) {
   const qc = useQueryClient();
-  const step = nodeType === "plan" || nodeType === "script" || nodeType === "split" ? nodeType : null;
+  const step =
+    nodeType === "plan" ||
+    nodeType === "script" ||
+    nodeType === "split" ||
+    nodeType === "audio" ||
+    nodeType === "assemble"
+      ? nodeType
+      : null;
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -218,17 +354,21 @@ export function NodeStepParamsPanel({
 
   if (!step || project.isLoading) return null;
 
-  const persist = (patch: PlanScriptStepParams | SplitStepParams) => {
+  const persist = (
+    patch: PlanScriptStepParams | SplitStepParams | AudioStepParams | AssembleStepParams,
+  ) => {
     save.mutate({ meta: withNodeStepParams(metaRecord, step, patch) });
   };
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-xs text-muted-foreground">
-        Эти параметры автоматически добавляются в конец сопроводительного текста для ChatGPT
-        (вкладка «Промты GPT» → «Текстовый вариант»). Пустые поля в сообщении GPT отображаются
-        как <span className="font-mono">____</span>.
-      </p>
+      {step !== "audio" && step !== "assemble" ? (
+        <p className="text-xs text-muted-foreground">
+          Эти параметры автоматически добавляются в конец сопроводительного текста для ChatGPT
+          (вкладка «Промты GPT» → «Текстовый вариант»). Пустые поля в сообщении GPT отображаются
+          как <span className="font-mono">____</span>.
+        </p>
+      ) : null}
       {step === "plan" ? (
         <PlanScriptFields
           header="Сценарий"
@@ -254,6 +394,12 @@ export function NodeStepParamsPanel({
       ) : null}
       {step === "split" ? (
         <SplitFields params={params} onSave={persist} saving={save.isPending} />
+      ) : null}
+      {step === "audio" ? (
+        <AudioFields params={params} onSave={persist} saving={save.isPending} />
+      ) : null}
+      {step === "assemble" ? (
+        <AssembleFields params={params} onSave={persist} saving={save.isPending} />
       ) : null}
     </div>
   );

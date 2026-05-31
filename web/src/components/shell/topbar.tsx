@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity, KeyRound } from "lucide-react";
+import { Sparkles, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
-import { PromptEditor } from "@/components/prompts/prompt-editor";
 import { FramesGrid } from "@/components/frames/frames-grid";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 
@@ -23,7 +22,6 @@ export function useUi(): UiState {
 
 export function Topbar({ children }: { children?: React.ReactNode }) {
   const [logsOpen, setLogsOpen] = useState(false);
-  const [promptsOpen, setPromptsOpen] = useState(false);
   const [framesOpen, setFramesOpen] = useState(false);
   const [framesProjectId, setFramesProjectId] = useState<number | null>(null);
 
@@ -54,10 +52,15 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setPromptsOpen(true)}
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("studio-open-node-prompts", { detail: {} }),
+              )
+            }
             className="gap-2 text-xs"
+            title="Промты выбранной ноды на канвасе"
           >
-            <KeyRound className="h-3.5 w-3.5" />
+            <Sparkles className="h-3.5 w-3.5" />
             Промты
           </Button>
           <Button
@@ -77,7 +80,6 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         </div>
       </header>
       <LogPanel open={logsOpen} onOpenChange={setLogsOpen} />
-      <PromptEditor open={promptsOpen} onOpenChange={setPromptsOpen} />
       <FramesGrid
         projectId={framesProjectId}
         open={framesOpen}

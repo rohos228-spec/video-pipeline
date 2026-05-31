@@ -279,6 +279,21 @@ export const api = {
       `/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}`,
       { method: "DELETE" }
     ),
+  saveGptTextAsTemplate: (
+    projectId: number,
+    stepCode: string,
+    body: { name: string; text?: string },
+  ) =>
+    http<{
+      step_code: string;
+      name: string;
+      filename: string;
+      path: string;
+      size: number;
+    }>(`/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}/save-template`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   pauseProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resumeProject: (projectId: number) =>

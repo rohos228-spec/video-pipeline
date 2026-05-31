@@ -12,13 +12,13 @@ import {
   Play,
   RefreshCw,
   Settings2,
-  Sparkles,
   Upload,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
+import { getNodeIcon } from "@/lib/node-icons";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
-import { promptPathsForNode } from "@/lib/prompt-catalog";
+import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
   activeVariantForSlot,
   preferredPromptFileName,
@@ -78,6 +78,7 @@ export function NodeStudio({
   const nodeType = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(nodeType);
   const stepCode = stepCodeForNodeType(nodeType);
+  const NodeIcon = getNodeIcon(spec.iconKey);
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
@@ -148,8 +149,12 @@ export function NodeStudio({
 
   useEffect(() => {
     if (!open) return;
+    if (promptFocus) {
+      setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
+      return;
+    }
     setTab(initialTab);
-  }, [open, initialTab]);
+  }, [open, initialTab, promptFocus]);
 
   useEffect(() => {
     if (!open) return;
@@ -158,8 +163,17 @@ export function NodeStudio({
       return;
     }
     const firstPrompt = pipelineSlots.find((s) => s.kind !== "excel");
-    setActiveSlotId(firstPrompt?.id ?? pipelineSlots[0]?.id ?? null);
-  }, [promptFocus, pipelineSlots, open]);
+    if (firstPrompt) {
+      setActiveSlotId(firstPrompt.id);
+      return;
+    }
+    const excel = pipelineSlots.find((s) => s.kind === "excel");
+    if (excel) {
+      setActiveSlotId(excel.id);
+    } else {
+      setActiveSlotId(pipelineSlots[0]?.id ?? null);
+    }
+  }, [promptFocus, pipelineSlots, open, nodeKey]);
 
   useEffect(() => {
     if (!open || tab !== "excel") return;
@@ -174,12 +188,6 @@ export function NodeStudio({
   useEffect(() => {
     if (!open) setXlsxSheet("");
   }, [open, nodeKey]);
-
-  useEffect(() => {
-    if (promptFocus && open) {
-      setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
-    }
-  }, [promptFocus, open]);
 
   const activeSlot =
     allSlots.find((s) => s.id === activeSlotId) ??
@@ -262,7 +270,11 @@ export function NodeStudio({
 
   const showStepParams =
     projectId != null &&
-    (nodeType === "plan" || nodeType === "script" || nodeType === "split");
+    (nodeType === "plan" ||
+      nodeType === "script" ||
+      nodeType === "split" ||
+      nodeType === "audio" ||
+      nodeType === "assemble");
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
   const showFramePromptsPanel =
@@ -274,11 +286,17 @@ export function NodeStudio({
   const showBlocksPanel = activeSlot?.kind === "blocks";
 
   const [mounted, setMounted] = useState(false);
+  const backdropGuardUntil = useRef(0);
   useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    if (open) backdropGuardUntil.current = Date.now() + 500;
+  }, [open]);
 
   if (!nodeKey || !mounted || !open) return null;
 
   const closeNow = (e: SyntheticEvent) => {
+    if (Date.now() < backdropGuardUntil.current) return;
     e.preventDefault();
     e.stopPropagation();
     onOpenChange(false);
@@ -322,7 +340,15 @@ export function NodeStudio({
             <div className="flex items-start justify-between gap-4 pr-12">
               <div>
                 <h2 className="flex items-center gap-2 text-lg font-semibold">
-                  <Sparkles className="h-4 w-4 text-amber-400" />
+                  <span
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl shadow-inner"
+                    style={{
+                      background: `linear-gradient(135deg, hsl(${spec.accent} / 0.25), hsl(${spec.accent} / 0.08))`,
+                      color: `hsl(${spec.accent})`,
+                    }}
+                  >
+                    <NodeIcon className="h-4 w-4" />
+                  </span>
                   {spec.label}
                 </h2>
                 <p className="text-xs text-muted-foreground">{spec.description}</p>
@@ -451,9 +477,10 @@ export function NodeStudio({
                       slotId={activeSlot?.id}
                       preferredFile={preferredFile}
                       folderHint={
-                        activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                        legacyPromptFolder(activeStepCode) ??
+                        (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
                           ? activeSlot.stepCode
-                          : (promptPaths.legacyDir ?? activeStepCode)
+                          : (promptPaths.legacyDir ?? activeStepCode))
                       }
                       activeVariant={activeVariant}
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}
@@ -464,9 +491,26 @@ export function NodeStudio({
                       Генерация через outsee.io в Chrome. Промты кадров — слот
                       «Промты кадров»; файлы мастер-промта — слот «Мастер-промт».
                     </p>
+                  ) : activeSlot?.kind === "excel" ? (
+                    <div className="flex flex-col gap-3 text-sm text-muted-foreground">
+                      <p>
+                        Для этой ноды мастер-промт задаётся через{" "}
+                        <span className="font-medium text-foreground">project.xlsx</span> — откройте
+                        вкладку «Excel».
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => setTab("excel")}
+                      >
+                        Открыть Excel
+                      </Button>
+                    </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      Для этой ноды нет редактируемых промтов на этом шаге.
+                      Для этой ноды нет редактируемых промтов на этом шаге. Добавьте слот через «+
+                      ещё» в меню V.
                     </p>
                   )}
                 </div>
