@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Download, Loader2, Maximize2, Replace, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { NodeResultItem, NodeResultSnapshot } from "@/lib/node-result-resolver";
 import { Button } from "@/components/ui/button";
@@ -88,7 +89,7 @@ function XlsxUploadBar({ projectId }: { projectId: number }) {
       qc.invalidateQueries({ queryKey: ["xlsx-split-row", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   return (
@@ -227,7 +228,7 @@ function VoiceoverWideView({
       toast.success("Текст сохранён");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   if (fileText.isLoading && !text) return <LoadingBlock />;
@@ -405,7 +406,7 @@ function FrameImagesView({
       qc.invalidateQueries({ queryKey: ["project-assets", projectId] });
       onHeroReplaced?.();
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   return (
@@ -642,7 +643,7 @@ function DefaultResultView({
       toast.success("Excel заменён");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const item = snapshot.items[0];

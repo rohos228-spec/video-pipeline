@@ -43,6 +43,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.disabled_nodes import skip_disabled_running, skip_disabled_running_async
+from app.services.step_data_guard import can_enter_running, clamp_status_to_data
 from app.services.auto_review import ReviewResult
 from app.settings import settings
 from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
@@ -466,6 +467,29 @@ async def _hide_hitl_buttons_with_badge(
         pass
 
 
+async def _apply_running_if_data_ok(
+    session: AsyncSession,
+    project: Project,
+    target: ProjectStatus | None,
+) -> ProjectStatus | None:
+    """Проверить данные перед переводом в running; при провале — откатить статус."""
+    if target is None:
+        return None
+    ok, reason, fix = await can_enter_running(session, project, target)
+    if ok:
+        return target
+    logger.warning(
+        "auto_advance: #{} не переводим в {} — {}",
+        project.id,
+        target.value,
+        reason,
+    )
+    if fix is not None:
+        project.status = fix
+        await session.flush()
+    return None
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -503,7 +527,10 @@ async def _apply_approve(
                 nxt.value if nxt else "none",
             )
             return
-        project.status = skipped or nxt
+        nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
+        if nxt is None:
+            return
+        project.status = nxt
     else:
         from app.orchestrator.graph.planner import graph_executor_enabled
 
@@ -530,7 +557,10 @@ async def _apply_approve(
                 candidate.value,
             )
             return
-        project.status = skipped or candidate
+        nxt = await _apply_running_if_data_ok(session, project, skipped or candidate)
+        if nxt is None:
+            return
+        project.status = nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
     logger.info(
@@ -647,6 +677,7 @@ async def maybe_auto_advance(
     """
     if not getattr(project, "auto_mode", False) and not settings.hitl_auto_approve:
         return False
+    await clamp_status_to_data(session, project)
     status = project.status
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать

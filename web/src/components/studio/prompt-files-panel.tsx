@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Loader2, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api, type PromptFileInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -119,10 +120,9 @@ export function PromptFilesPanel({
       setDirty(false);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, selectedName] });
-      // Сбрасываем legacy-варианты в Node Studio (на случай если файл новый).
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const remove = useMutation({
@@ -133,7 +133,7 @@ export function PromptFilesPanel({
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const upload = useMutation({
@@ -144,7 +144,7 @@ export function PromptFilesPanel({
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const fileList = files.data ?? [];

@@ -14,6 +14,7 @@ import {
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { HITLDTO, HITLKind } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -139,7 +140,7 @@ export function HitlModal({
       setEditMode(false);
       setEditedPrompt("");
     },
-    onError: (e) => toast.error(`Ошибка: ${String(e)}`),
+    onError: (e) => toast.error(`Ошибка: ${errorMessageFromUnknown(e)}`),
   });
 
   const decide = (decision: string, edited?: string) => {

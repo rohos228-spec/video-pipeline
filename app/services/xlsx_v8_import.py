@@ -157,6 +157,68 @@ def _read_voiceover_blocks(wb) -> list[str]:
     return out
 
 
+def read_v8_active_frame_count(xlsx_path: Path) -> int:
+    """Сколько кадров в v8-xlsx (колонки с непустым voiceover на листе «план»)."""
+    from openpyxl import load_workbook
+
+    if not xlsx_path.exists():
+        return 0
+    wb = load_workbook(filename=str(xlsx_path), data_only=True)
+    try:
+        return len(_read_voiceover_blocks(wb))
+    finally:
+        wb.close()
+
+
+def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
+    """Номер кадра (1..N) → image_prompt из листа «план» (строка R45).
+
+    Порядок кадров совпадает с _read_voiceover_blocks / import_v8_xlsx.
+    """
+    from openpyxl import load_workbook
+
+    if not xlsx_path.exists():
+        return {}
+    wb = load_workbook(filename=str(xlsx_path), data_only=True)
+    try:
+        fields = _read_frame_fields(wb)
+        return {
+            i: (fields[i - 1].get("image_prompt") or "").strip()
+            for i in range(1, len(fields) + 1)
+            if fields[i - 1].get("image_prompt")
+        }
+    finally:
+        wb.close()
+
+
+async def apply_v8_image_prompts_from_xlsx(
+    session: AsyncSession,
+    project: Project,
+    xlsx_path: Path,
+) -> list[int]:
+    """Подтянуть image_prompt из v8-xlsx в Frame по номеру кадра."""
+    prompts = read_v8_image_prompts_from_path(xlsx_path)
+    if not prompts:
+        return []
+    rows = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    by_number = {f.number: f for f in rows}
+    updated: list[int] = []
+    for num, text in prompts.items():
+        fr = by_number.get(num)
+        if fr is None or not text:
+            continue
+        if fr.image_prompt != text:
+            fr.image_prompt = text
+            updated.append(num)
+    if updated:
+        await session.flush()
+    return updated
+
+
 def _read_frame_fields(wb) -> list[dict[str, Any]]:
     """Читает поля кадров с листа «план» v8: image_prompt (R45),
     animation_prompt (R48), voiceover (R49), duration (R50). Возвращает

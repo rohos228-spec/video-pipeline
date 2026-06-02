@@ -91,6 +91,26 @@ export function reconcileNodeRunStatus(
   return "pending";
 }
 
+/**
+ * Статус ноды на канвасе, если в run ещё нет node_run (refetch / новый run).
+ * Берём чекпоинт из Project.status, чтобы не мигать в «Ожидание».
+ */
+export function inferNodeStatusFromProject(
+  nodeType: string,
+  projectStatus: ProjectStatus | string | null | undefined,
+): NodeRunStatus {
+  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
+  if (!checkpoint) return "pending";
+
+  const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
+  const targetIdx = NODE_TYPE_ORDER.indexOf(checkpoint.type);
+  if (nodeIdx < 0 || targetIdx < 0) return "pending";
+
+  if (nodeIdx < targetIdx) return "done";
+  if (nodeIdx === targetIdx) return checkpoint.state;
+  return "pending";
+}
+
 /** Ключ структуры графа — без updated_at и позиций (сохранение канваса не сбрасывает статусы). */
 export function workflowStructureKey(wf: WorkflowDetail): string {
   const nodes = [...wf.nodes]

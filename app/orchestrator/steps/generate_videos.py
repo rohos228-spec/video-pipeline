@@ -33,6 +33,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_text
+from app.services.artifact_recovery import recover_scene_videos_from_disk
 from app.services.outsee_retry import generate_video_with_retries
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
@@ -63,7 +64,7 @@ def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
     """Не гонять outsee, если клип уже есть или кадр финально одобрен."""
     if fr.status in (FrameStatus.video_approved, FrameStatus.done):
         return True
-    if fr.status is FrameStatus.video_generated and has_video_file:
+    if has_video_file:
         return True
     return False
 
@@ -72,6 +73,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_videos:
         return
     logger.info("[#{}] generate_videos starting", project.id)
+
+    recovered = await recover_scene_videos_from_disk(session, project)
+    if recovered:
+        logger.info(
+            "[#{}] generate_videos: подхвачены клипы с диска {}",
+            project.id,
+            recovered,
+        )
 
     frames = (
         await session.execute(
@@ -108,19 +117,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             for fr in frames:
                 # ⏹ Остановить — проверка между кадрами.
                 raise_if_cancelled(project.id)
-                has_video = (
-                    await _scene_video_file_on_disk(session, project.id, fr.id)
-                    is not None
+                clip_path = await _scene_video_file_on_disk(
+                    session, project.id, fr.id
                 )
+                has_video = clip_path is not None
                 if _skip_frame_video_generation(fr, has_video):
                     skipped += 1
-                    logger.debug(
-                        "[#{}] frame {} skip video (status={}, has_file={})",
+                    logger.info(
+                        "[#{}] frame {} skip video — клип уже есть (status={}, {})",
                         project.id,
                         fr.number,
                         fr.status.value,
-                        has_video,
+                        clip_path,
                     )
+                    if (
+                        has_video
+                        and fr.status
+                        not in (
+                            FrameStatus.video_generated,
+                            FrameStatus.video_approved,
+                            FrameStatus.done,
+                        )
+                    ):
+                        fr.status = FrameStatus.video_generated
+                        await session.flush()
                     continue
                 if not fr.animation_prompt:
                     raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")

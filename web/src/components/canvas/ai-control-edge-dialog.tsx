@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareText, Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import {
   AUTO_REVIEW_KINDS,
@@ -56,7 +57,7 @@ export function AiControlEdgeDialog({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const persist = (patchMeta: Record<string, unknown>) => {

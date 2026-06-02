@@ -18,7 +18,9 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.artifact_recovery import recover_before_assemble
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
+from app.services.step_data_guard import can_enter_running
 from app.services.media_probe import probe_video_size
 from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline
@@ -50,13 +52,55 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] assemble starting", project.id)
 
-    frames = (
+    await recover_before_assemble(session, project)
+    ok, reason, rollback = await can_enter_running(
+        session, project, ProjectStatus.assembling
+    )
+    if not ok:
+        project.status = rollback or ProjectStatus.generating_audio
+        await session.flush()
+        raise RuntimeError(
+            f"сборка невозможна: {reason}. Статус → {project.status.value}"
+        )
+
+    frames_all = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
-    if not frames:
+    if not frames_all:
         raise RuntimeError("нет кадров")
+
+    frames: list[Frame] = []
+    skipped_no_video: list[int] = []
+    for fr in frames_all:
+        video_art = (
+            await session.execute(
+                select(Artifact)
+                .where(
+                    Artifact.project_id == project.id,
+                    Artifact.frame_id == fr.id,
+                    Artifact.kind == ArtifactKind.scene_video,
+                )
+                .order_by(Artifact.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if video_art is not None and Path(video_art.path).is_file():
+            frames.append(fr)
+        elif (fr.voiceover_text or "").strip():
+            skipped_no_video.append(fr.number)
+    if skipped_no_video:
+        logger.warning(
+            "[#{}] assemble: кадры {} без клипа — не входят в финальный ролик",
+            project.id,
+            skipped_no_video,
+        )
+    if not frames:
+        raise RuntimeError(
+            "нет кадров с видео-клипами — сначала шаг «Видео» "
+            f"(пропущены voiceover-кадры: {skipped_no_video or '—'})"
+        )
 
     audio = (
         await session.execute(
@@ -67,7 +111,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalar_one_or_none()
     if audio is None:
-        raise RuntimeError("нет артефакта аудио")
+        raise RuntimeError(
+            "нет артефакта аудио — запустите шаг «Аудио» "
+            "(voice_full*.mp3 в audio/ не зарегистрирован)"
+        )
 
     audio_path = Path(audio.path)
     if not audio_path.is_file():
@@ -125,6 +172,53 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     try:
+        return await _assemble_body(
+            session,
+            project,
+            bot,
+            frames=frames,
+            frames_all=frames_all,
+            skipped_no_video=skipped_no_video,
+            audio=audio,
+            audio_path=audio_path,
+            audio_dir=audio_dir,
+            frame_numbers=frame_numbers,
+            per_frame_tts=per_frame_tts,
+            subs_enabled=subs_enabled,
+            words=words,
+            whisper_art=whisper_art,
+            cells=cells,
+        )
+    except Exception:
+        if project.status is ProjectStatus.assembling:
+            project.status = ProjectStatus.audio_ready
+            await session.flush()
+            logger.warning(
+                "[#{}] assemble failed — status → audio_ready (запустите «Аудио», потом «Сборка»)",
+                project.id,
+            )
+        raise
+
+
+async def _assemble_body(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    *,
+    frames: list[Frame],
+    frames_all: list[Frame],
+    skipped_no_video: list[int],
+    audio,
+    audio_path: Path,
+    audio_dir: Path,
+    frame_numbers: list[int],
+    per_frame_tts: bool,
+    subs_enabled: bool,
+    words: list[WordTS],
+    whisper_art,
+    cells: list[tuple[int, str]],
+) -> None:
+    try:
         audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
             audio_dir,
             audio_path,
@@ -137,6 +231,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError(str(exc)) from exc
 
     words = _scale_whisper_words(words, time_scale) if not per_frame_audio else words
+    _ = frames_all, skipped_no_video, audio, whisper_art  # reserved for future diagnostics
 
     video_duration = sum(c.duration for c in audio_clips)
     logger.info(
@@ -170,9 +265,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if video_art is None:
+        if video_art is None or not Path(video_art.path).is_file():
             raise RuntimeError(f"нет клипа для кадра {fr.number}")
-        duration = duration_by_frame[fr.number]
+        duration = duration_by_frame.get(fr.number)
+        if duration is None:
+            raise RuntimeError(
+                f"нет таймлайна аудио для кадра {fr.number} — перезапустите «Аудио»"
+            )
         clips.append(ClipSpec(src=Path(video_art.path), duration=duration))
         fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)

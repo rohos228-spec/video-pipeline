@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RotateCcw, Save, BookmarkPlus } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,7 +46,7 @@ export function GptTextPanel({
       qc.invalidateQueries({ queryKey: ["gpt-text", projectId, stepCode] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const saveTemplate = useMutation({
@@ -62,7 +63,7 @@ export function GptTextPanel({
       setTemplateName("");
       qc.invalidateQueries({ queryKey: ["prompt-files", stepCode] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const reset = useMutation({
@@ -74,7 +75,7 @@ export function GptTextPanel({
       qc.invalidateQueries({ queryKey: ["gpt-text", projectId, stepCode] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   if (data.isLoading) {

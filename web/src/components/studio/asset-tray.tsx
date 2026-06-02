@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api, type ProjectAsset } from "@/lib/api";
 import type { AssetTrayKind } from "@/components/canvas/canvas-actions-context";
 import { Button } from "@/components/ui/button";
@@ -116,7 +117,7 @@ export function AssetTray({
       qc.invalidateQueries({ queryKey: ["project-assets", projectId, kind] });
       qc.invalidateQueries({ queryKey: ["media-review", projectId, kind] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const hitlApprove = useMutation({
@@ -133,7 +134,7 @@ export function AssetTray({
       toast.success("Одобрено");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   return (

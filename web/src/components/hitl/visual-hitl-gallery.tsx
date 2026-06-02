@@ -8,6 +8,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { HITLDTO } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,7 @@ export function VisualHitlGallery({
       toast.success("Решение записано");
       onDecided();
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const items = (media.data ?? []).filter((f) => f.preview_url || f.file_path);

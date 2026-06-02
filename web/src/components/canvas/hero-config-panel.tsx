@@ -12,6 +12,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -65,7 +66,7 @@ export function HeroConfigPanel({
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       toast.success(`Загружено персонажей: ${r.count}`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const clearExcel = useMutation({
@@ -75,7 +76,7 @@ export function HeroConfigPanel({
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       toast.success("Excel-персонажи отвязаны");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   // ── Ручной режим ──────────────────────────────────────────────────
@@ -132,7 +133,7 @@ export function HeroConfigPanel({
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       toast.success("Описания героев сохранены");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const canSaveManual =

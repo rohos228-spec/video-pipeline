@@ -17,6 +17,7 @@ import {
   GripVertical,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -105,7 +106,7 @@ export function ProjectSidebar({
       setExpanded((e) => ({ ...e, [`folder:${folder.id}`]: true }));
       toast.success(`Папка «${folder.name}» создана`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const deleteFolderMutation = useMutation({
@@ -125,7 +126,7 @@ export function ProjectSidebar({
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const { roots, childrenByParent } = useMemo(() => {
@@ -778,6 +779,7 @@ function ProjectRow({
     <div
       role="button"
       tabIndex={0}
+      data-project-id={project.id}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     outsee_video_url: str = Field(
         "https://outsee.io/video?model=veo-3-fast", alias="OUTSEE_VIDEO_URL"
     )
+    # True = вариант A (image+video): глобальная очередь Outsee, одна новая
+    # картинка/ролик после Generate, без перебора галереи по [ID: …].
+    outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )

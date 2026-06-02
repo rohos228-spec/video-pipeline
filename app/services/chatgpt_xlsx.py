@@ -51,8 +51,11 @@ def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
     if not tmp_dir.is_dir():
         return 0
     removed = 0
+    protect_enrich = not step_code.startswith("enrich_")
     for pattern in _STEP_TMP_GLOBS.get(step_code, ()):
         for path in tmp_dir.glob(pattern):
+            if protect_enrich and path.name.startswith("prompt_enrich_"):
+                continue
             try:
                 path.unlink(missing_ok=True)
                 removed += 1

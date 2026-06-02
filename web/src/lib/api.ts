@@ -158,10 +158,12 @@ export const api = {
     http<{ code: string; label: string; running_status: string; ready_status: string }[]>(
       `/api/projects/steps/catalog`
     ),
-  runProjectStep: (projectId: number, stepCode: string) =>
-    http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run`, {
+  runProjectStep: (projectId: number, stepCode: string, opts?: { dryRun?: boolean }) => {
+    const q = opts?.dryRun ? "?dry_run=true" : "";
+    return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
       method: "POST",
-    }),
+    });
+  },
 
   // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────
   getExcelHero: (projectId: number) =>

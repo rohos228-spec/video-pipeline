@@ -20,6 +20,7 @@ from app.services.sidebar_layout import (
     sync_projects as sync_sidebar_projects,
 )
 from app.services.event_bus import publish_project_event
+from app.services.project_state import recompute_status
 from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
@@ -100,6 +101,9 @@ async def get_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    await recompute_status(session, p, log_prefix="recompute(web_get)")
+    await session.commit()
+    await session.refresh(p)
     return project_to_detail(p)
 
 
@@ -204,9 +208,13 @@ async def patch_project(
         "enrich_slots_count", "prompt_overrides", "gpt_text_overrides",
         "auto_mode", "meta",
     }
+    from sqlalchemy.orm.attributes import flag_modified
+
     for k, v in payload.items():
         if k in ALLOWED:
             setattr(p, k, v)
+            if k in ("meta", "prompt_overrides", "gpt_text_overrides"):
+                flag_modified(p, k)
     p.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(p)
@@ -259,12 +267,26 @@ async def media_review(
 async def run_project_step(
     project_id: int,
     step_code: str,
+    dry_run: bool = False,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project."""
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    if dry_run:
+        from app.web.studio_dry_run import validate_project_step_dry_run
+
+        try:
+            payload = await validate_project_step_dry_run(session, p, step_code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        await publish_project_event(
+            project_id,
+            event_type="step_dry_run_ok",
+            payload=payload,
+        )
+        return p
     try:
         await start_step(session, p, step_code)
     except ValueError as e:

@@ -13,6 +13,7 @@ import { AiNodeDialog } from "@/components/canvas/ai-node-dialog";
 import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { gptTextSlotForNode, resolvePromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
@@ -68,6 +69,13 @@ export function StudioWorkspace({
   );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
+
+  /** Канвас (selected) важнее studioTarget; vMenu — пока открыто меню V на ноде. */
+  const effectiveNodeKey =
+    selectedNodeKey ?? vMenuNodeKey ?? studioTarget?.nodeKey ?? null;
+  const effectiveNodeType = effectiveNodeKey
+    ? nodeTypeFromKey(effectiveNodeKey)
+    : (studioTarget?.nodeType ?? "");
 
   useEffect(() => {
     setAssetTray(null);
@@ -390,7 +398,7 @@ export function StudioWorkspace({
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
         } catch (e) {
-          toast.error(String(e));
+          toast.error(errorMessageFromUnknown(e));
         }
       },
       onToggleDisable: async (nodeKey: string, disabled: boolean) => {
@@ -480,7 +488,7 @@ export function StudioWorkspace({
           a.click();
           toast.success("Промты скачаны");
         } catch (e) {
-          toast.error(String(e));
+          toast.error(errorMessageFromUnknown(e));
         }
       },
     }),
@@ -545,11 +553,18 @@ export function StudioWorkspace({
               }
             }
             onSelectNode(nodeKey);
+            setStudioTarget({
+              nodeKey,
+              nodeType,
+              promptFocus: null,
+              tab: "settings",
+            });
             setPromptFocus(null);
             setStudioTab("settings");
             onStudioOpenChange(true);
           }}
           disabledNodes={disabledNodes}
+          runStepNodeKey={effectiveNodeKey}
         />
         {projectId && assetTray && (
           <AssetTray
@@ -566,19 +581,20 @@ export function StudioWorkspace({
           else onStudioOpenChange(true);
         }}
         projectId={projectId}
-        nodeKey={studioTarget?.nodeKey ?? selectedNodeKey}
+        nodeKey={effectiveNodeKey}
         initialTab={studioTarget?.tab ?? studioTab}
-        promptFocus={studioTarget?.promptFocus ?? promptFocus}
+        promptFocus={
+          effectiveNodeKey && studioTarget?.nodeKey === effectiveNodeKey
+            ? studioTarget.promptFocus ?? promptFocus
+            : promptFocus
+        }
         nodeDisabled={
-          (studioTarget?.nodeKey ?? selectedNodeKey) != null &&
-          disabledNodes.has(studioTarget?.nodeKey ?? selectedNodeKey ?? "")
+          effectiveNodeKey != null && disabledNodes.has(effectiveNodeKey)
         }
         promptSlots={
-          studioTarget?.nodeKey
-            ? getPromptSlots(studioTarget.nodeKey, studioTarget.nodeType)
-            : selectedNodeKey
-              ? getPromptSlots(selectedNodeKey, nodeTypeFromKey(selectedNodeKey))
-              : []
+          effectiveNodeKey
+            ? getPromptSlots(effectiveNodeKey, effectiveNodeType)
+            : []
         }
       />
       {projectId && aiCtx && (

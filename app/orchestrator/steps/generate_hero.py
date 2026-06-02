@@ -79,7 +79,8 @@ def _read_hero_style(project: Project) -> str | None:
     из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
     — возвращает None (вызывающий должен решить, как фоллбэчить)."""
     overrides = getattr(project, "prompt_overrides", None) or {}
-    name = resolve_project_prompt_name(overrides, "hero_style")
+    meta = getattr(project, "meta", None) or {}
+    name = resolve_project_prompt_name(overrides, "hero_style", meta=meta)
     p = prompt_path("hero_style", name)
     if not p.exists():
         return None
@@ -344,10 +345,43 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             descriptions = [project.hero_description]
             n_total = 1
         else:
-            raise RuntimeError(
-                "hero_count=None и hero_description пуст — "
-                "нечем описать героя. Тыкни «4. Hero» в меню заново."
-            )
+            # xlsx мог обновиться после split/enrich — подтянуть «Описание героя».
+            xlsx_path = project.data_dir / "project.xlsx"
+            if xlsx_path.is_file():
+                from app.services.xlsx_sync import reload_from_xlsx
+
+                try:
+                    await reload_from_xlsx(session, project, xlsx_path)
+                    await session.refresh(project)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[#{}] hero: reload_from_xlsx перед генерацией: {}",
+                        project.id,
+                        e,
+                    )
+            if (project.hero_description or "").strip():
+                descriptions = [project.hero_description.strip()]
+                n_total = 1
+                if not project.hero_count:
+                    project.hero_count = 1
+            else:
+                # Ещё раз excel (лист «Персонажи») — мог появиться после enrich.
+                meta["excel_hero_enabled"] = True
+                project.meta = meta
+                await session.flush()
+                loaded = await _load_excel_hero_from_xlsx(session, project)
+                if loaded:
+                    await _run_excel(session, project, bot, loaded)
+                    return
+                logger.warning(
+                    "[#{}] hero: hero_count/description пусты и лист "
+                    "«Персонажи» без данных — пропускаю шаг (hero_ready). "
+                    "Заполни «Описание героя» на листе «Общий план» или "
+                    "столбцы на «Персонажи», затем ▶ Hero",
+                    project.id,
+                )
+                project.status = ProjectStatus.hero_ready
+                return
 
     # Определяем СЛЕДУЮЩУЮ пару (hero_idx, var_idx), которую надо сделать.
     target_pairs = _hero_target_pairs(n_total, variations_cfg)

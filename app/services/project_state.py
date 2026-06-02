@@ -152,14 +152,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     if fr_total == 0:
         return ProjectStatus.script_ready
     # frames ✓
-    if hero_arts == 0 and not has_hero_descr:
+    skip_hero = project.hero_mode == "no_hero" or (project.hero_count or 0) == 0
+    if not skip_hero and hero_arts == 0 and not has_hero_descr:
         # Нет ни сгенерированных hero-картинок, ни описания — шаг 4 не
         # проходил. Стоп на frames_ready.
         return ProjectStatus.frames_ready
     # hero ✓ (минимум описание есть; если артефактов нет — шаг 4 ещё
     # запустится). Логика консервативная: считаем шаг 4 пройденным
     # только при наличии hero_arts.
-    if hero_arts == 0:
+    if not skip_hero and hero_arts == 0:
         return ProjectStatus.frames_ready
     # image_prompts: считаем готовыми, если ВСЕ frames имеют image_prompt.
     if fr_with_img_prompt < fr_total:

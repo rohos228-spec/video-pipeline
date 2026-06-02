@@ -255,7 +255,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       }
       if ((project?.hero_descriptions?.length ?? 0) > 0) {
         return ready(
-          project!.hero_descriptions.map((d, i) => ({
+          (project?.hero_descriptions ?? []).map((d, i) => ({
             id: `hero_desc_${i}`,
             label: `Персонаж ${i + 1}`,
             kind: "text" as const,
@@ -277,7 +277,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
       if (items.length) return ready(items, `${items.length} reference предметов`, "assets");
       if ((project?.item_descriptions?.length ?? 0) > 0) {
         return ready(
-          project!.item_descriptions.map((d, i) => ({
+          (project?.item_descriptions ?? []).map((d, i) => ({
             id: `item_desc_${i}`,
             label: `Предмет ${i + 1}`,
             kind: "text" as const,
@@ -297,14 +297,14 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
     case "enrich_5":
     case "enrich": {
       const xlsx = xlsxAsset(ctx.assets);
-      if (xlsx) {
+      if (xlsx && project?.id) {
         return ready(
           [
             {
               id: xlsx.id,
               label: "project.xlsx",
               kind: "xlsx",
-              downloadUrl: api.downloadProjectXlsx(project!.id),
+              downloadUrl: api.downloadProjectXlsx(project.id),
             },
           ],
           "Таблица Excel загружена",

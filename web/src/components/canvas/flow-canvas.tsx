@@ -33,9 +33,14 @@ import type {
 } from "@/lib/types";
 import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
-import { formatRunStatus, formatStepCode } from "@/lib/format-labels";
+import { formatNodeKeyLabel, formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
-import { reconcileNodeRunStatus, workflowStructureKey } from "@/lib/node-run-status";
+import {
+  inferNodeStatusFromProject,
+  reconcileNodeRunStatus,
+  workflowStructureKey,
+} from "@/lib/node-run-status";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import {
   isEditableTarget,
@@ -66,12 +71,15 @@ const nodeTypes = {
 export function FlowCanvas({
   projectId,
   selectedNodeKey,
+  runStepNodeKey,
   onSelectNode,
   onNodeActivate,
   disabledNodes = new Set<string>(),
 }: {
   projectId: number | null;
   selectedNodeKey: string | null;
+  /** Нода для «Создать Run» / сброса — по умолчанию selectedNodeKey. */
+  runStepNodeKey?: string | null;
   onSelectNode: (key: string | null) => void;
   onNodeActivate?: (nodeKey: string, nodeType: string) => void;
   disabledNodes?: Set<string>;
@@ -176,11 +184,12 @@ export function FlowCanvas({
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) {
+          const status = inferNodeStatusFromProject(n.data.type, projectStatus);
           return {
             ...n,
             data: {
               ...n.data,
-              status: "pending" as const,
+              status,
               progress: 0,
               progressText: null,
               error: null,
@@ -343,7 +352,7 @@ export function FlowCanvas({
         await api.ensureProjectRun(projectId).catch(() => undefined);
       }
     } catch (e) {
-      toast.error(`Не сохранилось: ${String(e)}`);
+      toast.error(`Не сохранилось: ${errorMessageFromUnknown(e)}`);
     } finally {
       setSaving(false);
     }
@@ -892,7 +901,7 @@ export function FlowCanvas({
         projectId={projectId}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
-        selectedNodeKey={selectedNodeKey}
+        runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
         onRunCreated={() => run.refetch()}
       />
       <HitlBanner projectId={projectId} />
@@ -937,7 +946,7 @@ function WorkflowToolbar({
       await qc.invalidateQueries({ queryKey: ["workflows"] });
       toast.success("Workflow скопирован на сервере");
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     }
   };
 
@@ -1050,13 +1059,13 @@ function RunOverlay({
   projectId,
   workflow,
   run,
-  selectedNodeKey,
+  runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
-  selectedNodeKey: string | null;
+  runStepNodeKey: string | null;
   onRunCreated: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -1088,8 +1097,9 @@ function RunOverlay({
 
   if (!workflow) return null;
 
-  const nodeType = nodeTypeFromKey(selectedNodeKey);
+  const nodeType = nodeTypeFromKey(runStepNodeKey);
   const stepCode = stepCodeForNodeType(nodeType);
+  const stepLabel = stepCode ? formatStepCode(stepCode) : null;
 
   const handlePause = async () => {
     setPausing(true);
@@ -1098,7 +1108,7 @@ function RunOverlay({
       toast.success("Проект на паузе");
       onRunCreated();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setPausing(false);
     }
@@ -1111,7 +1121,7 @@ function RunOverlay({
       toast.success("Проект продолжен");
       onRunCreated();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setPausing(false);
     }
@@ -1130,7 +1140,7 @@ function RunOverlay({
       qc.invalidateQueries({ queryKey: ["runs"] });
       onRunCreated();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setBusy(false);
     }
@@ -1154,7 +1164,7 @@ function RunOverlay({
       setMassTopics([]);
       setMassTopicsFile(null);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setBusy(false);
     }
@@ -1171,7 +1181,7 @@ function RunOverlay({
       qc.invalidateQueries({ queryKey: ["mass-factory", projectId] });
       toast.success(`Загружено ${r.count} тем из Excel`);
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setBusy(false);
     }
@@ -1191,7 +1201,7 @@ function RunOverlay({
       await qc.refetchQueries({ queryKey: ["project-run", projectId] });
       onRunCreated();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setBusy(false);
     }
@@ -1208,7 +1218,7 @@ function RunOverlay({
       toast.success(`Шаг «${formatStepCode(stepCode)}» сброшен`);
       onRunCreated();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessageFromUnknown(e));
     } finally {
       setBusy(false);
     }
@@ -1230,7 +1240,7 @@ function RunOverlay({
         description: "Воркер подхватит шаг — HITL в веб-UI",
       });
     } catch (e) {
-      toast.error(`Не получилось запустить: ${String(e)}`);
+      toast.error(`Не получилось запустить: ${errorMessageFromUnknown(e)}`);
     } finally {
       setBusy(false);
     }
@@ -1307,11 +1317,17 @@ function RunOverlay({
       <Button
         size="sm"
         onClick={handleStart}
-        disabled={busy}
+        disabled={busy || !stepCode}
         className="pointer-events-auto gap-1.5"
+        title={
+          stepLabel
+            ? `Запустить шаг «${stepLabel}» для ноды ${formatNodeKeyLabel(runStepNodeKey ?? "")}`
+            : "Выберите ноду с шагом пайплайна"
+        }
       >
         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
         {run ? "Перезапустить" : "Создать Run"}
+        {stepLabel ? ` · ${stepLabel}` : ""}
       </Button>
     </div>
     <Dialog open={massOpen} onOpenChange={setMassOpen}>

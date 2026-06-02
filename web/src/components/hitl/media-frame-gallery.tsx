@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, PenLine } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { HITLDTO } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -60,7 +61,7 @@ export function MediaFrameGallery({
       qc.invalidateQueries({ queryKey: ["media-review", projectId, kind] });
       setEditFrame(null);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const approveFrame = useMutation({
@@ -96,7 +97,7 @@ export function MediaFrameGallery({
         }
       }
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   if (items.length === 0) {

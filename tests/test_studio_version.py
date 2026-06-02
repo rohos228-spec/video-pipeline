@@ -10,6 +10,10 @@ def test_read_studio_version_from_file(tmp_path: Path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr("app.web.studio_version._version_file", lambda: vf)
+    monkeypatch.setattr("app.bots.chatgpt.CHATGPT_ATTACH_LOGIC_ID", "anim-pr-two-phase-v79")
+    monkeypatch.setattr(
+        "app.services.xlsx_step_runners.XLSX_STEP_RUNNERS_ID", "xlsx_step_runners-v70"
+    )
     data = read_studio_version()
     assert data["build"] == 42
     assert data["sha"] == "abc1234"

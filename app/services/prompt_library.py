@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from loguru import logger
+
 # Корень папки `prompts/` — два уровня вверх от текущего файла:
 # app/services/prompt_library.py  →  ../../prompts/
 PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
@@ -86,6 +88,11 @@ STEP_HUMAN_NAMES: dict[str, str] = {
 STEPS_WITHOUT_PROMPT: set[str] = {"img", "video", "audio", "assemble"}
 
 DEFAULT_NAME = "default"
+
+# Слоты enrich — только .md из prompts/05*_enrich_*; не blocks v2 compose.
+ENRICH_STEP_CODES: frozenset[str] = frozenset(
+    f"enrich_{i}" for i in range(1, 6)
+)
 
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
 # в веб-студии нужны длинные осмысленные имена файлов.
@@ -192,21 +199,85 @@ def delete_prompt(step_code: str, name: str) -> bool:
     return True
 
 
+def _clean_variant_name(raw: str) -> str:
+    """Имя .md без расширения, безопасное для `prompt_path`."""
+    if not raw or not str(raw).strip():
+        return ""
+    name = str(raw).strip()
+    if not is_valid_prompt_name(name):
+        name = _sanitize_name(name)
+    return name if name else ""
+
+
+def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
+    """Вариант из Node Studio: `meta.prompt_slot_variants[node][slot]`.
+
+    Зеркало `web/src/lib/prompt-slot-storage.ts` → `activeVariantForSlot`:
+    сначала слот `main`, иначе любой слот с существующим файлом для шага.
+    """
+    if not meta or step_code not in STEP_FOLDERS:
+        return None
+    slot_variants = meta.get("prompt_slot_variants")
+    if not isinstance(slot_variants, dict):
+        return None
+    found_other: str | None = None
+    for slots in slot_variants.values():
+        if not isinstance(slots, dict):
+            continue
+        for slot_id, variant in slots.items():
+            clean = _clean_variant_name(str(variant or ""))
+            if not clean or not prompt_path(step_code, clean).exists():
+                continue
+            if slot_id == "main":
+                return clean
+            if found_other is None:
+                found_other = clean
+    return found_other
+
+
 def resolve_project_prompt_name(
-    overrides: dict | None, step_code: str
+    overrides: dict | None,
+    step_code: str,
+    *,
+    meta: dict | None = None,
 ) -> str:
-    """Какой вариант выбран в проекте для шага. Если override не задан или
-    указанного файла нет — возвращаем `default`."""
+    """Какой вариант .md использовать для шага.
+
+    Приоритет:
+      1. `prompt_overrides[step_code]` — «Сделать активным» / TG picker (явный выбор проекта)
+      2. `meta.prompt_slot_variants` — если override не задан (старые проекты / только meta)
+      3. `default`
+
+    Meta не перебивает override: иначе другая нода на канвасе с устаревшим слотом
+    ломала enrich_1, хотя вы уже активировали нужный файл.
+    """
     overrides = overrides or {}
     chosen = overrides.get(step_code)
-    if not chosen:
-        return DEFAULT_NAME
-    clean = _sanitize_name(chosen) if not is_valid_prompt_name(chosen) else chosen
-    if not clean:
-        return DEFAULT_NAME
-    if not prompt_path(step_code, clean).exists():
-        return DEFAULT_NAME
-    return clean
+    if chosen:
+        clean = _clean_variant_name(str(chosen))
+        if clean and prompt_path(step_code, clean).exists():
+            return clean
+
+    from_meta = _variant_from_studio_meta(meta, step_code)
+    if from_meta:
+        return from_meta
+
+    return DEFAULT_NAME
+
+
+def read_resolved_project_prompt(
+    project, step_code: str
+) -> tuple[str, Path, str]:
+    """(имя варианта, путь к .md, текст) — единая точка для шагов и логов."""
+    overrides = getattr(project, "prompt_overrides", None) or {}
+    meta = getattr(project, "meta", None) or {}
+    name = resolve_project_prompt_name(overrides, step_code, meta=meta)
+    path = prompt_path(step_code, name)
+    text = read_prompt(step_code, name)
+    from app.services.gpt_text_builder import inject_topic_placeholders
+
+    topic = str(getattr(project, "topic", None) or "")
+    return name, path, inject_topic_placeholders(text, topic)
 
 
 def get_project_prompt(project, step_code: str) -> str:
@@ -219,7 +290,6 @@ def get_project_prompt(project, step_code: str) -> str:
     и для шага есть template в `prompts/steps/` — собираем из блоков.
     """
     overrides = getattr(project, "prompt_overrides", None) or {}
-    actual_topic = str(getattr(project, "topic", None) or "")
     from app.services.prompt_composer import (
         STEP_CODE_TO_COMPOSE,
         compose_step,
@@ -227,7 +297,8 @@ def get_project_prompt(project, step_code: str) -> str:
         project_uses_blocks_v2,
     )
 
-    if project_uses_blocks_v2(overrides):
+    # enrich_* всегда из выбранного .md в Studio — не из blocks/steps template.
+    if step_code not in ENRICH_STEP_CODES and project_uses_blocks_v2(overrides):
         step_id = STEP_CODE_TO_COMPOSE.get(step_code)
         if step_id:
             blocks, vars_ = merge_project_prompt_config(
@@ -247,11 +318,14 @@ def get_project_prompt(project, step_code: str) -> str:
             except FileNotFoundError:
                 pass
 
-    name = resolve_project_prompt_name(overrides, step_code)
-    text = read_prompt(step_code, name)
-    from app.services.gpt_text_builder import inject_topic_placeholders
-
-    return inject_topic_placeholders(text, actual_topic)
+    name, path, text = read_resolved_project_prompt(project, step_code)
+    logger.info(
+        "get_project_prompt: step={} variant={!r} path={}",
+        step_code,
+        name,
+        path,
+    )
+    return text
 
 
 def make_template_for_new(step_code: str, name: str) -> str:

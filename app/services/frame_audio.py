@@ -225,10 +225,24 @@ async def build_assembly_timeline(
             "Сбросьте «Аудио» и перезапустите для per-frame озвучки."
         )
 
+    if per_frame_tts:
+        missing = [
+            n
+            for n in frame_numbers
+            if not frame_audio_path(audio_dir, n).is_file()
+        ]
+        if missing:
+            sample = ", ".join(f"frame_{n:03d}.mp3" for n in missing[:5])
+            extra = f" (+{len(missing) - 5})" if len(missing) > 5 else ""
+            raise FileNotFoundError(
+                f"нет {sample}{extra} — перезапустите шаг «Аудио» "
+                f"(per-frame TTS, кадры в сборке: {frame_numbers})"
+            )
+
     if not cells or not words:
         raise FileNotFoundError(
-            "нет frame_001.mp3 — перезапустите шаг «Аудио» "
-            "(per-frame TTS из plan R49)"
+            "нет таймкодов Whisper (words.json) — перезапустите шаг «Аудио» "
+            "или включите faster-whisper на сборке"
         )
 
     logger.info(

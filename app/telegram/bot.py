@@ -1984,6 +1984,18 @@ async def on_step_run_cb(cb: CallbackQuery) -> None:
                 show_alert=True,
             )
             return
+        from app.services.project_state import is_running_status
+        from app.telegram.menu import step_by_running_status
+
+        if is_running_status(project.status):
+            other = step_by_running_status(project.status)
+            other_title = other.title if other is not None else project.status.value
+            await cb.answer(
+                f"Сейчас выполняется «{other_title}». "
+                "Сначала ⏹ останови или дождись завершения.",
+                show_alert=True,
+            )
+            return
         # ПО ТРЕБОВАНИЮ (PR #11): блокировки по prerequisite сняты — юзер
         # может запустить любой шаг в любой момент. Если данных не хватает,
         # воркер сам упадёт и откатит статус, но решение принимает юзер.

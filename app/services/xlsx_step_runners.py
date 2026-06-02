@@ -454,6 +454,15 @@ async def sync_after_img_pr(
     session: AsyncSession, project: Project, xlsx_path: Path
 ) -> None:
     await cx.sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
+    from app.services.xlsx_v8_import import apply_v8_image_prompts_from_xlsx
+
+    applied = await apply_v8_image_prompts_from_xlsx(session, project, xlsx_path)
+    if applied:
+        logger.info(
+            "[#{}] sync_after_img_pr: image_prompt из xlsx для кадров {}",
+            project.id,
+            applied,
+        )
 
 
 def set_status_if_behind(

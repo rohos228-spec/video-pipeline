@@ -63,30 +63,50 @@ async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
 
 
-async def _cut_clip(src: Path, duration: float, dst: Path) -> None:
-    """Только обрезка по времени; разрешение и пропорции исходника не меняем."""
-    await _run([
+async def _cut_clip(
+    src: Path,
+    duration: float,
+    dst: Path,
+    *,
+    target_w: int | None = None,
+    target_h: int | None = None,
+) -> None:
+    """Обрезка по времени; при несовпадении размера — scale+pad под эталон."""
+    cmd: list[str] = [
         "ffmpeg", "-y",
         "-i", str(src),
         "-t", f"{duration:.3f}",
+    ]
+    if target_w is not None and target_h is not None:
+        vf = (
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        )
+        cmd.extend(["-vf", vf])
+    cmd.extend([
         "-an",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
         str(dst),
     ])
+    await _run(cmd)
 
 
-async def _assert_clips_same_size(clips: list[ClipSpec]) -> tuple[int, int]:
-    """Проверка, что все клипы одного размера (concat иначе ломается)."""
-    w, h = await probe_video_size(clips[0].src)
+async def _resolve_assembly_target_size(clips: list[ClipSpec]) -> tuple[int, int]:
+    """Эталон = размер первого клипа в таймлайне; остальные подгоняем."""
+    target_w, target_h = await probe_video_size(clips[0].src)
     for spec in clips[1:]:
         w2, h2 = await probe_video_size(spec.src)
-        if (w2, h2) != (w, h):
-            raise RuntimeError(
-                f"клипы разного разрешения: {w}x{h} vs {w2}x{h2} ({spec.src.name}). "
-                "Outsee должен отдавать одинаковый формат на все кадры."
+        if (w2, h2) != (target_w, target_h):
+            logger.warning(
+                "assembly: {} {}x{} → нормализация под {}x{} (Outsee отдал другой aspect)",
+                spec.src.name,
+                w2,
+                h2,
+                target_w,
+                target_h,
             )
-    logger.info("assembly: исходное видео {}x{} (без ресайза)", w, h)
-    return w, h
+    logger.info("assembly: целевое видео {}x{}", target_w, target_h)
+    return target_w, target_h
 
 
 async def assemble(
@@ -101,7 +121,7 @@ async def assemble(
     if not clips:
         raise ValueError("нет клипов для сборки")
 
-    await _assert_clips_same_size(clips)
+    target_w, target_h = await _resolve_assembly_target_size(clips)
 
     with tempfile.TemporaryDirectory(prefix="vp_asm_") as tmp:
         tmp_dir = Path(tmp)
@@ -109,7 +129,19 @@ async def assemble(
 
         for i, spec in enumerate(clips):
             dst = tmp_dir / f"clip_{i:03d}.mp4"
-            await _cut_clip(spec.src, spec.duration, dst)
+            src_w, src_h = await probe_video_size(spec.src)
+            scale_to = (
+                (target_w, target_h)
+                if (src_w, src_h) != (target_w, target_h)
+                else (None, None)
+            )
+            await _cut_clip(
+                spec.src,
+                spec.duration,
+                dst,
+                target_w=scale_to[0],
+                target_h=scale_to[1],
+            )
             normalized.append(dst)
 
         list_file = tmp_dir / "concat.txt"

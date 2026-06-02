@@ -1,0 +1,317 @@
+{
+  "started": "2026-06-02T05:00:22.337557+00:00",
+  "qa_smoke_id": 17,
+  "qa_full_id": 18,
+  "passed": 44,
+  "failed": 0,
+  "rows": [
+    {
+      "phase": "A",
+      "check_id": "A1",
+      "name": "health",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "A",
+      "check_id": "A2",
+      "name": "studio-version",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "A",
+      "check_id": "A3",
+      "name": "steps catalog",
+      "ok": true,
+      "detail": "codes=11"
+    },
+    {
+      "phase": "A",
+      "check_id": "A4",
+      "name": "workflows default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "A",
+      "check_id": "A5",
+      "name": "workflow nodes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "prep",
+      "check_id": "E-smoke",
+      "name": "ensure-run",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "prep",
+      "check_id": "E2-smoke",
+      "name": "ensure-run idempotent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "prep",
+      "check_id": "E-full",
+      "name": "ensure-run",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "prep",
+      "check_id": "E2-full",
+      "name": "ensure-run idempotent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-plan",
+      "name": "dry_run plan",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-script",
+      "name": "dry_run script",
+      "ok": true,
+      "detail": "400"
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-split",
+      "name": "dry_run split",
+      "ok": true,
+      "detail": "400"
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-img_pr",
+      "name": "dry_run img_pr",
+      "ok": true,
+      "detail": "400"
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-anim_pr",
+      "name": "dry_run anim_pr",
+      "ok": true,
+      "detail": "400"
+    },
+    {
+      "phase": "dry",
+      "check_id": "D-assemble",
+      "name": "dry_run assemble",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "phase": "dry",
+      "check_id": "DF-hero",
+      "name": "dry_run forbidden hero",
+      "ok": true,
+      "detail": "{'detail': 'dry_run недоступен для шага «hero» (боты Outsee/ElevenLabs)'}"
+    },
+    {
+      "phase": "dry",
+      "check_id": "DF-items",
+      "name": "dry_run forbidden items",
+      "ok": true,
+      "detail": "{'detail': 'dry_run недоступен для шага «items» (боты Outsee/ElevenLabs)'}"
+    },
+    {
+      "phase": "dry",
+      "check_id": "DF-img",
+      "name": "dry_run forbidden img",
+      "ok": true,
+      "detail": "{'detail': 'dry_run недоступен для шага «img» (боты Outsee/ElevenLabs)'}"
+    },
+    {
+      "phase": "dry",
+      "check_id": "DF-video",
+      "name": "dry_run forbidden video",
+      "ok": true,
+      "detail": "{'detail': 'dry_run недоступен для шага «video» (боты Outsee/ElevenLabs)'}"
+    },
+    {
+      "phase": "dry",
+      "check_id": "DF-audio",
+      "name": "dry_run forbidden audio",
+      "ok": true,
+      "detail": "{'detail': 'dry_run недоступен для шага «audio» (боты Outsee/ElevenLabs)'}"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-plan",
+      "name": "dry_run/full plan",
+      "ok": true,
+      "detail": "http=200"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-script",
+      "name": "dry_run/full script",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-split",
+      "name": "dry_run/full split",
+      "ok": true,
+      "detail": "http=200"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-hero",
+      "name": "dry_run/full hero",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-items",
+      "name": "dry_run/full items",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-enrich_1",
+      "name": "dry_run/full enrich_1",
+      "ok": true,
+      "detail": "http=200"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-enrich_2",
+      "name": "dry_run/full enrich_2",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-enrich_3",
+      "name": "dry_run/full enrich_3",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-enrich_4",
+      "name": "dry_run/full enrich_4",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-enrich_5",
+      "name": "dry_run/full enrich_5",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-img_pr",
+      "name": "dry_run/full img_pr",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-img",
+      "name": "dry_run/full img",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-anim_pr",
+      "name": "dry_run/full anim_pr",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-video",
+      "name": "dry_run/full video",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-audio",
+      "name": "dry_run/full audio",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-assemble",
+      "name": "dry_run/full assemble",
+      "ok": true,
+      "detail": "http=400"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-get",
+      "name": "get project recompute",
+      "ok": true,
+      "detail": "status=plan_ready"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-frames",
+      "name": "list frames",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-media-images",
+      "name": "media-review images",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-media-videos",
+      "name": "media-review videos",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "phase": "nodes",
+      "check_id": "N-hitl",
+      "name": "list hitl",
+      "ok": true,
+      "detail": "items=0"
+    },
+    {
+      "phase": "regress",
+      "check_id": "R15-status",
+      "name": "project 15 not frames_ready with videos",
+      "ok": true,
+      "detail": "status=assembled"
+    },
+    {
+      "phase": "regress",
+      "check_id": "R15-videos",
+      "name": "project 15 has videos",
+      "ok": true,
+      "detail": "count=10"
+    },
+    {
+      "phase": "pipeline",
+      "check_id": "L-skip",
+      "name": "live GPT pipeline",
+      "ok": true,
+      "detail": "skipped"
+    }
+  ]
+}

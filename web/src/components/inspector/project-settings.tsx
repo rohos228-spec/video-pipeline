@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, Loader2, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -26,7 +27,7 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
       qc.invalidateQueries({ queryKey: ["project", project.id] });
       toast.success("Настройки проекта сохранены");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const toggleMeta = (key: string, value: boolean) => {

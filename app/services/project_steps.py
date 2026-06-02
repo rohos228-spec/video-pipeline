@@ -16,7 +16,8 @@ from app.services.reset_step import clear_step_outputs_for_rerun, _WRAPPER_TO_CO
 from app.services.chatgpt_xlsx import purge_tmp_gpt_for_step
 from app.services.xlsx_sync import reload_from_xlsx
 from app.services.step_cancel import clear_stop
-from app.telegram.menu import step_by_code
+from app.services.project_state import is_running_status
+from app.telegram.menu import step_by_code, step_by_running_status
 
 
 def list_step_codes() -> list[dict[str, str]]:
@@ -28,7 +29,7 @@ def list_step_codes() -> list[dict[str, str]]:
         out.append(
             {
                 "code": st.code,
-                "label": st.label,
+                "label": st.title,
                 "running_status": st.running_status.value,
                 "ready_status": st.ready_status.value,
             }
@@ -50,6 +51,13 @@ async def start_step(
         raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
     assert_not_factory_template_for_generation(project)
     await assert_step_allowed_by_graph(session, project, step_code)
+    if is_running_status(project.status) and project.status is not step.running_status:
+        other = step_by_running_status(project.status)
+        other_title = other.title if other is not None else project.status.value
+        raise ValueError(
+            f"сейчас выполняется «{other_title}» ({project.status.value}). "
+            "Остановите ⏹ или дождитесь завершения."
+        )
     clear_stop(project.id)
 
     proj_xlsx = project.data_dir / "project.xlsx"

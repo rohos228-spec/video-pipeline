@@ -30,7 +30,7 @@ from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_gpt_flow as xgf
 from app.services import xlsx_sync
-from app.services.prompt_library import get_project_prompt
+from app.services.prompt_library import read_resolved_project_prompt
 from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
 from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
@@ -81,6 +81,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         "[#{}] enrich_xlsx slot={} (code={}) starting", project.id, slot_idx, step_code
     )
 
+    await session.refresh(project)
+
     # 1. Гарантируем существование xlsx (для свежих проектов).
     sheet = _sheet_for_project(project)
     xlsx_path: Path = sheet.ensure_initialized(
@@ -91,23 +93,41 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"enrich_xlsx: project.xlsx не найден по пути {xlsx_path}"
         )
 
-    # 2. Мастер-промт → файл; сопр. сообщение → текст в чате.
+    # 2. Мастер-промт → файл; сопр. сообщение → короткий текст в чате.
     try:
-        master = get_project_prompt(project, step_code)
+        variant, src_path, master = read_resolved_project_prompt(project, step_code)
+        logger.info(
+            "[#{}] enrich_xlsx slot={}: активный промт variant={!r} "
+            "path={} ({} симв) overrides={!r}",
+            project.id,
+            slot_idx,
+            variant,
+            src_path,
+            len(master or ""),
+            (getattr(project, "prompt_overrides", None) or {}).get(step_code),
+        )
     except FileNotFoundError:
+        variant = "default"
+        src_path = None
         master = (
             f"# {step_code}\n\n"
             "Мастер-промт для этого слота ещё не настроен. "
             "Открой `prompts/05*_enrich_<i>/default.md` и опиши там, "
             "что именно ChatGPT должен изменить в приложенном xlsx."
         )
+        logger.warning(
+            "[#{}] enrich_xlsx slot={}: файл промта не найден, fallback текст",
+            project.id,
+            slot_idx,
+        )
+
     accompanying = _get_accompanying_text(project, step_code)
 
     from app.services import chatgpt_xlsx as cx
 
     tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = tmp_dir / f"prompt_{step_code}.txt"
-    prompt_file.write_text(master.strip(), encoding="utf-8")
+    prompt_file = tmp_dir / f"prompt_{step_code}_{variant}.md"
+    prompt_file.write_text((master or "").strip(), encoding="utf-8")
 
     # 3. Round-trip до 3 раз.
     from app.services.step_cancel import StepCancelledError, raise_if_cancelled
@@ -115,6 +135,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     last_err: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         raise_if_cancelled(project.id)
+        # ChatGPT re-attach читает те же пути — файл мог быть удалён
+        # (параллельный шаг / purge tmp) пока ждали Send.
+        prompt_file.write_text((master or "").strip(), encoding="utf-8")
         logger.info(
             "[#{}] enrich_xlsx slot={} attempt {}/{}",
             project.id,
@@ -241,9 +264,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id, slot_idx, e,
             )
 
-    # 5. Ставим статус slot_<i>_ready (но не перебиваем более продвинутый).
+    # 5. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
     from app.telegram.menu import status_order as _ord
 
+    await session.refresh(project)
     cur = project.status
     meta = dict(project.meta or {})
     completed = [int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()]
@@ -263,7 +287,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     project.meta = meta
 
-    if _ord(cur) < _ord(ready_status):
+    if project.status is running_status or _ord(project.status) < _ord(ready_status):
         project.status = ready_status
     await session.flush()
     logger.info(

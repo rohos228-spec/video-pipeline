@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
@@ -211,16 +212,17 @@ export function NodeStudio({
         return Promise.reject(new Error("no step"));
       }
       const meta = withSlotVariant(metaRecord, nodeKey, activeSlot.id, variant);
-      await api.patchProject(projectId, { meta });
-      return api.patchProjectPromptConfig(projectId, {
-        legacy: { [activeStepCode]: variant },
-      });
+      const prompt_overrides = {
+        ...((project.data?.prompt_overrides || {}) as Record<string, unknown>),
+        [activeStepCode]: variant,
+      };
+      await api.patchProject(projectId, { meta, prompt_overrides });
     },
     onSuccess: () => {
       toast.success("Активный промт обновлён");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const runStep = useMutation({
@@ -229,7 +231,7 @@ export function NodeStudio({
       toast.success(`Шаг «${spec.label}» запущен`);
       qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const reloadXlsx = useMutation({
@@ -240,7 +242,7 @@ export function NodeStudio({
       qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const uploadXlsx = useMutation({
@@ -251,7 +253,7 @@ export function NodeStudio({
       qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const filteredArtifacts = useMemo(() => {

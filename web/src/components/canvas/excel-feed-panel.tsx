@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
@@ -46,7 +47,7 @@ export function ExcelFeedPanel({
       window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
       toast.success(`Excel: ${r.count} тем — проведите связи к нодам «План»`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   return (

@@ -24,6 +24,10 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.artifact_recovery import (
+    recover_audio_from_disk,
+    recover_scene_videos_from_disk,
+)
 from app.services.frame_audio import synthesize_per_frame_audio
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
@@ -36,6 +40,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_audio:
         return
     logger.info("[#{}] generate_audio starting (per-frame TTS, plan R49)", project.id)
+
+    await recover_scene_videos_from_disk(session, project)
+    if await recover_audio_from_disk(session, project):
+        project.status = ProjectStatus.audio_ready
+        await session.flush()
+        logger.info(
+            "[#{}] generate_audio: озвучка уже на диске — audio_ready",
+            project.id,
+        )
+        return
 
     frames = (
         await session.execute(

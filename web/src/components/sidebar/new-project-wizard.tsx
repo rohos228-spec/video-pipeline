@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import type { GenerationConfigPresetSettings, ProjectSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -115,7 +116,7 @@ export function NewProjectWizard({
       qc.invalidateQueries({ queryKey: ["generation-config-presets"] });
       toast.success("Конфигурация удалена");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const reset = () => {
@@ -178,7 +179,7 @@ export function NewProjectWizard({
       reset();
       toast.success(`Проект «${p.topic}» создан`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const totalSteps = 4 + wizardQuestions.length;

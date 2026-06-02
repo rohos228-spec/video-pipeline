@@ -30,6 +30,12 @@ from playwright.async_api import TimeoutError as PWTimeoutError
 from app.bots.browser import BrowserSession, browser_session
 from app.settings import settings
 
+
+def _outsee_queue_mode() -> bool:
+    """Вариант A: одна генерация Outsee, первая новая картинка после baseline."""
+    return bool(getattr(settings, "outsee_queue_mode", True))
+
+
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
     "textarea[placeholder*='prompt' i]",
@@ -918,6 +924,63 @@ def _is_outsee_thumb_url(url: str | None) -> bool:
     return "_thumb" in _strip_url_query(url).lower()
 
 
+# Outsee отдаёт thumb и full PNG с разных CDN-хостов (см. логи:
+# thumb → storage.yandexcloud.net/outseehistory/…_thumb.jpg,
+# full  → outseehistory.storage.yandexcloud.net/…_0.png).
+_OUTSEE_CDN_BASES: tuple[str, ...] = (
+    "https://outseehistory.storage.yandexcloud.net/",
+    "https://storage.yandexcloud.net/outseehistory/",
+)
+_OUTSEE_GENERATED_PATH_RE = re.compile(
+    r"(generated/\d+/\d+)/(image_\d+_\d+)", re.I
+)
+
+
+def _png_basename_from_thumb_filename(name: str) -> str | None:
+    """`image_1780279147074_0_thumb.jpg` → `image_1780279147074_0.png`.
+
+    Нельзя делать `{key}_0.png` по regex-ключу: ключ уже `…_0`, иначе
+    получается битый `…_0_0.png` (404), как в логе frame 8.
+    """
+    if "_thumb" not in name.lower():
+        return None
+    return re.sub(r"_thumb\.(jpe?g|webp|png)$", ".png", name, flags=re.I)
+
+
+def _guess_full_png_url_from_thumb(url: str) -> str | None:
+    """Outsee CDN: thumb → full PNG (тот же basename, без `_thumb`)."""
+    candidates = _all_full_png_url_candidates(url)
+    return candidates[0] if candidates else None
+
+
+def _all_full_png_url_candidates(url: str) -> list[str]:
+    """Все варианты full-PNG URL для thumb/handoff (оба CDN-хоста)."""
+    if not url:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str | None) -> None:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+
+    path = _strip_url_query(url)
+    name = Path(path).name
+    png_name = _png_basename_from_thumb_filename(name)
+    if png_name:
+        dir_part = path[: path.rfind("/") + 1] if "/" in path else ""
+        _add(f"{dir_part}{png_name}" if dir_part else png_name)
+
+    gm = _OUTSEE_GENERATED_PATH_RE.search(path)
+    if gm and png_name:
+        gen_dir = gm.group(1) + "/"
+        for base in _OUTSEE_CDN_BASES:
+            _add(f"{base}{gen_dir}{png_name}")
+
+    return out
+
+
 def _url_download_priority(url: str) -> tuple[int, int]:
     """Меньше = лучше кандidate для скачивания (full PNG предпочтительнее thumb)."""
     low = _strip_url_query(url).lower()
@@ -928,6 +991,8 @@ def _url_download_priority(url: str) -> tuple[int, int]:
         score += 40
     if low.endswith(".png"):
         score -= 30
+    if "outseehistory.storage.yandexcloud.net" in low:
+        score -= 5  # full PNG чаще на этом хосте, не на storage/…/outseehistory
     return (score, len(low))
 
 
@@ -942,6 +1007,7 @@ def _resolve_best_download_url(
         return primary
     key = _outsee_image_stable_key(primary)
     pool: list[str] = [primary]
+    pool.extend(_all_full_png_url_candidates(primary))
     if net_events:
         pool.extend(u for _, u in net_events)
     if extra_urls:
@@ -1236,42 +1302,50 @@ class OutseeBot:
             from app.generation_options import prepend_gen_id
 
             prompt = prepend_gen_id(prompt, prompt_id_prefix)
+            mode = "queue" if _outsee_queue_mode() else "gallery-id"
             logger.info(
-                "outsee.generate_image: prompt_id_prefix={} [download-v3: wait→10img]",
+                "outsee.generate_image: prompt_id_prefix={} mode={}",
                 prompt_id_prefix,
+                mode,
             )
         _verify_prompt_length_before_send(prompt, where="generate_image")
 
-        page_url = _image_page_url(model_slug)
-        logger.info(
-            "outsee.generate_image: открываю страницу gen_id={} url={}",
-            gen_id[:8], page_url,
-        )
-        page = await self.session.open_page(page_url, reuse=True)
-        from app.services.step_cancel import register_active_page, unregister_active_page
+        from app.services.outsee_lane import outsee_lane
 
-        if project_id is not None:
-            register_active_page(project_id, page)
-        try:
-            return await self._generate_image_on_page(
-                page,
-                prompt=prompt,
-                out_path=out_path,
-                aspect_ratio=aspect_ratio,
-                timeout=timeout,
-                gen_id=gen_id,
-                model_slug=model_slug,
-                resolution=resolution,
-                quality=quality,
-                relax=relax,
-                prompt_id_prefix=prompt_id_prefix,
-                reference_image=reference_image,
-                project_id=project_id,
-                page_url=page_url,
+        async with outsee_lane(project_id=project_id, op="generate_image"):
+            page_url = _image_page_url(model_slug)
+            logger.info(
+                "outsee.generate_image: открываю страницу gen_id={} url={}",
+                gen_id[:8], page_url,
             )
-        finally:
+            page = await self.session.open_page(page_url, reuse=True)
+            from app.services.step_cancel import (
+                register_active_page,
+                unregister_active_page,
+            )
+
             if project_id is not None:
-                unregister_active_page(project_id)
+                register_active_page(project_id, page)
+            try:
+                return await self._generate_image_on_page(
+                    page,
+                    prompt=prompt,
+                    out_path=out_path,
+                    aspect_ratio=aspect_ratio,
+                    timeout=timeout,
+                    gen_id=gen_id,
+                    model_slug=model_slug,
+                    resolution=resolution,
+                    quality=quality,
+                    relax=relax,
+                    prompt_id_prefix=prompt_id_prefix,
+                    reference_image=reference_image,
+                    project_id=project_id,
+                    page_url=page_url,
+                )
+            finally:
+                if project_id is not None:
+                    unregister_active_page(project_id)
 
     async def _generate_image_on_page(
         self,
@@ -1588,6 +1662,13 @@ class OutseeBot:
             # outsee). Это самая строгая верификация — без неё бот мог
             # подхватить чужой/прошлый результат, см. баг с
             # «загрузило старую фотку с другим идентификатором».
+            queue_mode = _outsee_queue_mode()
+            if queue_mode:
+                logger.info(
+                    "outsee.generate_image: queue-mode — ждём одну новую "
+                    "картинку (без галереи/ID), gen_id={}",
+                    gen_id[:8],
+                )
             try:
                 img_url = await self._wait_image_url_strict(
                     page,
@@ -1598,8 +1679,9 @@ class OutseeBot:
                     net_events=net_events,
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
-                    prompt_id_prefix=prompt_id_prefix,
+                    prompt_id_prefix=None if queue_mode else prompt_id_prefix,
                     project_id=project_id,
+                    queue_mode=queue_mode,
                 )
             except OutseeContentRejectedError as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
@@ -1631,7 +1713,16 @@ class OutseeBot:
         # Если prompt_id_prefix не передан (legacy / recon-mode) —
         # фолбэк на старую URL-выкачку.
         try:
-            if prompt_id_prefix:
+            if _outsee_queue_mode():
+                await _download_via_queue_result(
+                    page,
+                    img_url=img_url,
+                    out_path=out_path,
+                    gen_id=gen_id,
+                    net_events=net_events,
+                    project_id=project_id,
+                )
+            elif prompt_id_prefix:
                 await _download_via_card_click(
                     page,
                     prompt_id_prefix=prompt_id_prefix,
@@ -1701,122 +1792,147 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
-        page = await self.session.open_page(settings.outsee_image_url, reuse=True)
-        if project_id is not None:
-            register_active_page(project_id, page)
-        try:
-            await await_with_cancel(
-                page.wait_for_load_state("domcontentloaded"), project_id
-            )
+        from app.services.outsee_lane import outsee_lane
+
+        async with outsee_lane(project_id=project_id, op="regenerate_image"):
+            page = await self.session.open_page(settings.outsee_image_url, reuse=True)
+            if project_id is not None:
+                register_active_page(project_id, page)
             try:
                 await await_with_cancel(
-                    page.wait_for_load_state("networkidle", timeout=15_000),
-                    project_id,
+                    page.wait_for_load_state("domcontentloaded"), project_id
                 )
-            except Exception:
-                pass
-            abort_if_cancelled(project_id)
-
-            baseline_result_img = _strip_url_query(await self._result_img_src(page))
-            baseline_big_imgs = {
-                _strip_url_query(u) for u in await self._all_big_imgs(page)
-            }
-            baseline_dom_srcs = {
-                _strip_url_query(u) for u in await self._all_img_srcs(page)
-            }
-
-            click_ts = _time.monotonic()
-            net_events: list[tuple[float, str]] = []
-
-            def _on_response(resp: Any) -> None:
-                try:
-                    if not _is_candidate_image_response(resp):
-                        return
-                    net_events.append((_time.monotonic() - click_ts, resp.url))
-                except Exception:  # noqa: BLE001
-                    pass
-
-            page.on("response", _on_response)
-
-            try:
-                retry_sel = await _first_visible(
-                    page,
-                    [
-                        "button:has-text('Повторить')",
-                        "button:has-text('Retry')",
-                        "button:has-text('Regenerate')",
-                    ],
-                    timeout_ms=15_000,
-                    project_id=project_id,
-                )
-                if not retry_sel:
-                    raise OutseeImageError(
-                        "outsee image: не найдена кнопка «Повторить» — на странице "
-                        "нет предыдущего результата",
-                        context={"gen_id": gen_id},
-                    )
                 try:
                     await await_with_cancel(
-                        page.locator(retry_sel).first.scroll_into_view_if_needed(
-                            timeout=5_000
-                        ),
+                        page.wait_for_load_state("networkidle", timeout=15_000),
                         project_id,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
-                pre_rejected_text = await self._outsee_failure_text(page)
+                abort_if_cancelled(project_id)
+
+                baseline_result_img = _strip_url_query(
+                    await self._result_img_src(page)
+                )
+                baseline_big_imgs = {
+                    _strip_url_query(u) for u in await self._all_big_imgs(page)
+                }
+                baseline_dom_srcs = {
+                    _strip_url_query(u) for u in await self._all_img_srcs(page)
+                }
+
                 click_ts = _time.monotonic()
-                net_events.clear()
-                await await_with_cancel(
-                    page.locator(retry_sel).first.click(), project_id
+                net_events: list[tuple[float, str]] = []
+
+                def _on_response(resp: Any) -> None:
+                    try:
+                        if not _is_candidate_image_response(resp):
+                            return
+                        net_events.append(
+                            (_time.monotonic() - click_ts, resp.url)
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                page.on("response", _on_response)
+
+                try:
+                    retry_sel = await _first_visible(
+                        page,
+                        [
+                            "button:has-text('Повторить')",
+                            "button:has-text('Retry')",
+                            "button:has-text('Regenerate')",
+                        ],
+                        timeout_ms=15_000,
+                        project_id=project_id,
+                    )
+                    if not retry_sel:
+                        raise OutseeImageError(
+                            "outsee image: не найдена кнопка «Повторить» — "
+                            "на странице нет предыдущего результата",
+                            context={"gen_id": gen_id},
+                        )
+                    try:
+                        await await_with_cancel(
+                            page.locator(retry_sel).first.scroll_into_view_if_needed(
+                                timeout=5_000
+                            ),
+                            project_id,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    pre_rejected_text = await self._outsee_failure_text(page)
+                    click_ts = _time.monotonic()
+                    net_events.clear()
+                    await await_with_cancel(
+                        page.locator(retry_sel).first.click(), project_id
+                    )
+                    logger.info(
+                        "outsee.regenerate_image: «Повторить» кликнут, "
+                        "queue-mode, gen_id={}",
+                        gen_id[:8],
+                    )
+
+                    queue_mode = _outsee_queue_mode()
+                    img_url = await self._wait_image_url_strict(
+                        page,
+                        timeout=timeout,
+                        baseline_result_img=baseline_result_img,
+                        baseline_big_imgs=baseline_big_imgs,
+                        baseline_all_srcs=baseline_dom_srcs,
+                        net_events=net_events,
+                        gen_id=gen_id,
+                        pre_rejected_text=pre_rejected_text,
+                        prompt_id_prefix=None,
+                        project_id=project_id,
+                        queue_mode=queue_mode,
+                    )
+                finally:
+                    try:
+                        page.remove_listener("response", _on_response)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    if _outsee_queue_mode():
+                        await _download_via_queue_result(
+                            page,
+                            img_url=img_url,
+                            out_path=out_path,
+                            gen_id=gen_id,
+                            net_events=net_events,
+                            project_id=project_id,
+                        )
+                    else:
+                        await _download_via_context(
+                            page, img_url, out_path, project_id=project_id
+                        )
+                except Exception as e:  # noqa: BLE001
+                    raise OutseeImageError(
+                        "outsee image: скачивание результата (regenerate) упало",
+                        context={
+                            "gen_id": gen_id,
+                            "img_url": img_url,
+                            "err": f"{type(e).__name__}: {e}",
+                        },
+                    ) from e
+
+                _validate_downloaded_image(
+                    out_path, gen_id=gen_id, img_url=img_url
                 )
                 logger.info(
-                    "outsee.regenerate_image: «Повторить» кликнут, жду картинку (gen_id={})",
+                    "outsee image regenerated → {} (gen_id={})",
+                    out_path,
                     gen_id[:8],
                 )
-
-                img_url = await self._wait_image_url_strict(
-                    page,
-                    timeout=timeout,
-                    baseline_result_img=baseline_result_img,
-                    baseline_big_imgs=baseline_big_imgs,
-                    baseline_all_srcs=baseline_dom_srcs,
-                    net_events=net_events,
-                    gen_id=gen_id,
-                    pre_rejected_text=pre_rejected_text,
-                    project_id=project_id,
+                return GenerationResult(
+                    file_path=out_path, raw_url=img_url, gen_id=gen_id
                 )
             finally:
-                try:
-                    page.remove_listener("response", _on_response)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                await _download_via_context(
-                    page, img_url, out_path, project_id=project_id
-                )
-            except Exception as e:  # noqa: BLE001
-                raise OutseeImageError(
-                    "outsee image: скачивание результата (regenerate) упало",
-                    context={
-                        "gen_id": gen_id,
-                        "img_url": img_url,
-                        "err": f"{type(e).__name__}: {e}",
-                    },
-                ) from e
-        finally:
-            if project_id is not None:
-                unregister_active_page(project_id)
-
-        # Валидация скачанного файла — см. комментарий в `generate_image`.
-        _validate_downloaded_image(out_path, gen_id=gen_id, img_url=img_url)
-
-        logger.info(
-            "outsee image regenerated → {} (gen_id={})", out_path, gen_id[:8]
-        )
-        return GenerationResult(file_path=out_path, raw_url=img_url, gen_id=gen_id)
+                if project_id is not None:
+                    unregister_active_page(project_id)
 
     async def _wait_button_enabled(
         self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
@@ -2844,6 +2960,7 @@ class OutseeBot:
         pre_rejected_text: str | None = None,
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,
+        queue_mode: bool = False,
     ) -> str:
         """Жёсткое ожидание свежей картинки.
 
@@ -2896,6 +3013,9 @@ class OutseeBot:
         rejected_candidates: set[str] = set()
 
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        if queue_mode:
+            prompt_id_prefix = None
 
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
@@ -3563,37 +3683,48 @@ class OutseeBot:
             from app.generation_options import prepend_gen_id
 
             prompt = prepend_gen_id(prompt, prompt_id_prefix)
+            mode = "queue" if _outsee_queue_mode() else "gallery-id"
             logger.info(
-                "outsee.generate_video: prompt_id_prefix={}", prompt_id_prefix
+                "outsee.generate_video: prompt_id_prefix={} mode={}",
+                prompt_id_prefix,
+                mode,
             )
-        page_url = _video_page_url(model_slug)
-        logger.info(
-            "outsee.generate_video: gen_id={} url={}", gen_id[:8], page_url
-        )
-        page = await self.session.open_page(page_url, reuse=True)
-        from app.services.step_cancel import register_active_page, unregister_active_page
+        _verify_prompt_length_before_send(prompt, where="generate_video")
 
-        if project_id is not None:
-            register_active_page(project_id, page)
-        try:
-            return await self._generate_video_on_page(
-                page,
-                prompt=prompt,
-                out_path=out_path,
-                start_frame=start_frame,
-                aspect_ratio=aspect_ratio,
-                timeout=timeout,
-                gen_id=gen_id,
-                model_slug=model_slug,
-                resolution=resolution,
-                relax=relax,
-                prompt_id_prefix=prompt_id_prefix,
-                project_id=project_id,
-                page_url=page_url,
+        from app.services.outsee_lane import outsee_lane
+
+        async with outsee_lane(project_id=project_id, op="generate_video"):
+            page_url = _video_page_url(model_slug)
+            logger.info(
+                "outsee.generate_video: gen_id={} url={}", gen_id[:8], page_url
             )
-        finally:
+            page = await self.session.open_page(page_url, reuse=True)
+            from app.services.step_cancel import (
+                register_active_page,
+                unregister_active_page,
+            )
+
             if project_id is not None:
-                unregister_active_page(project_id)
+                register_active_page(project_id, page)
+            try:
+                return await self._generate_video_on_page(
+                    page,
+                    prompt=prompt,
+                    out_path=out_path,
+                    start_frame=start_frame,
+                    aspect_ratio=aspect_ratio,
+                    timeout=timeout,
+                    gen_id=gen_id,
+                    model_slug=model_slug,
+                    resolution=resolution,
+                    relax=relax,
+                    prompt_id_prefix=prompt_id_prefix,
+                    project_id=project_id,
+                    page_url=page_url,
+                )
+            finally:
+                if project_id is not None:
+                    unregister_active_page(project_id)
 
     async def _generate_video_on_page(
         self,
@@ -3889,6 +4020,13 @@ class OutseeBot:
                 gen_id[:8],
             )
 
+            queue_mode = _outsee_queue_mode()
+            if queue_mode:
+                logger.info(
+                    "outsee.generate_video: queue-mode — ждём один новый "
+                    "ролик (без галереи/ID), gen_id={}",
+                    gen_id[:8],
+                )
             try:
                 video_url = await self._wait_video_url_strict(
                     page,
@@ -3897,8 +4035,9 @@ class OutseeBot:
                     net_events=net_events,
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
-                    prompt_id_prefix=prompt_id_prefix,
+                    prompt_id_prefix=None if queue_mode else prompt_id_prefix,
                     project_id=project_id,
+                    queue_mode=queue_mode,
                 )
             except OutseeContentRejectedError as e:
                 e.dumps = list(dumps)
@@ -3935,7 +4074,15 @@ class OutseeBot:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            if prompt_id_prefix:
+            if _outsee_queue_mode():
+                await _download_via_queue_video_result(
+                    page,
+                    video_url=video_url,
+                    out_path=out_path,
+                    gen_id=gen_id,
+                    project_id=project_id,
+                )
+            elif prompt_id_prefix:
                 await _download_via_video_card_click(
                     page,
                     prompt_id_prefix=prompt_id_prefix,
@@ -4118,6 +4265,7 @@ class OutseeBot:
         pre_rejected_text: str | None = None,
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,
+        queue_mode: bool = False,
     ) -> str:
         """Жёсткое ожидание свежего ролика — зеркало _wait_image_url_strict."""
         start = asyncio.get_event_loop().time()
@@ -4129,6 +4277,9 @@ class OutseeBot:
         _MIN_SEC_BEFORE_HANDOFF = 6.0
 
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        if queue_mode:
+            prompt_id_prefix = None
 
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
@@ -4521,12 +4672,24 @@ async def _cdp_dispatch_click(
         )
 
 
+async def _clear_page_text_selection(page: Page) -> None:
+    """Снять выделение текста — иначе клик по thumb копирует промт вместо панели."""
+    with contextlib.suppress(Exception):
+        await page.evaluate(
+            """() => {
+                const s = window.getSelection();
+                if (s && s.rangeCount) s.removeAllRanges();
+            }"""
+        )
+
+
 async def _physical_mouse_click(
     page: Page,
     locator: Any,
     *,
     project_id: int | None = None,
     label: str = "",
+    prefer_cdp: bool = False,
 ) -> None:
     """Реальный клик мышью по центру элемента (CDP → Chrome).
 
@@ -4535,6 +4698,7 @@ async def _physical_mouse_click(
     """
     from app.services.step_cancel import await_with_cancel
 
+    await _clear_page_text_selection(page)
     with contextlib.suppress(Exception):
         await await_with_cancel(
             locator.scroll_into_view_if_needed(timeout=2_000),
@@ -4550,15 +4714,48 @@ async def _physical_mouse_click(
         return
     x = box["x"] + box["width"] / 2
     y = box["y"] + box["height"] / 2
+    if prefer_cdp:
+        await _cdp_dispatch_click(page, x, y, project_id=project_id)
+        await _clear_page_text_selection(page)
+        logger.info(
+            "outsee physical-click: cdp ({:.0f},{:.0f}){}",
+            x,
+            y,
+            f" — {label}" if label else "",
+        )
+        return
     await page.mouse.move(x, y)
     await asyncio.sleep(0.05)
     await page.mouse.click(x, y)
+    await _clear_page_text_selection(page)
     logger.info(
         "outsee physical-click: mouse ({:.0f},{:.0f}){}",
         x,
         y,
         f" — {label}" if label else "",
     )
+
+
+async def _composer_has_prompt_id(
+    page: Page,
+    prompt_id_prefix: str,
+    *,
+    composer_selectors: list[str] | None = None,
+) -> bool:
+    """ID уже в поле промта композера — галерею кликать не нужно."""
+    tokens = _prompt_id_search_tokens(prompt_id_prefix)
+    selectors = composer_selectors or PROMPT_INPUT_SELECTORS
+    for sel in selectors:
+        try:
+            val = await _read_composer_prompt_value(page, sel)
+        except Exception:  # noqa: BLE001
+            continue
+        if not val:
+            continue
+        for tok in tokens:
+            if tok and tok in val:
+                return True
+    return False
 
 
 async def _gallery_detail_panel_has_id(
@@ -4587,23 +4784,32 @@ async def _gallery_detail_panel_has_id(
                     const r = el.getBoundingClientRect();
                     return r.width > 8 && r.height > 8;
                 }
-                const midX = window.innerWidth * 0.42;
-                for (const el of document.querySelectorAll('textarea, input')) {
-                    if (composer.has(el) || !visible(el)) continue;
-                    const v = (el.value || el.innerText || '').trim();
+                const midX = window.innerWidth * 0.38;
+                function hay(el) {
+                    if (!el || composer.has(el) || !visible(el)) return '';
+                    return (
+                        (el.value || el.innerText || el.textContent || '')
+                        + ' ' + (el.getAttribute('data-value') || '')
+                        + ' ' + (el.getAttribute('aria-label') || '')
+                    ).trim();
+                }
+                for (const el of document.querySelectorAll(
+                    'textarea, input, [contenteditable="true"]'
+                )) {
+                    const v = hay(el);
                     if (!v) continue;
                     for (const tok of tokens) {
                         if (tok && v.includes(tok)) return true;
                     }
                 }
                 for (const el of document.querySelectorAll(
-                    'section, aside, div[role="dialog"]'
+                    'section, aside, div[role="dialog"], div[class*="prompt"]'
                 )) {
                     if (!visible(el)) continue;
                     const r = el.getBoundingClientRect();
                     if (r.left < midX || r.width < 80) continue;
-                    const t = (el.innerText || '').trim();
-                    if (t.length < 30 || t.length > 12000) continue;
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (t.length < 20 || t.length > 12000) continue;
                     for (const tok of tokens) {
                         if (tok && t.includes(tok)) return true;
                     }
@@ -5072,13 +5278,14 @@ async def _find_card_by_clicking_images(
         if img_loc is None:
             continue
 
-        # Физический клик мышью по thumb — открывает панель «Промпт».
+        # CDP-клик по thumb — открывает панель «Промпт» без выделения текста.
         try:
             await _physical_mouse_click(
                 page,
                 img_loc,
                 project_id=project_id,
                 label=f"gallery img #{idx}",
+                prefer_cdp=True,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -5088,7 +5295,7 @@ async def _find_card_by_clicking_images(
             )
             continue
 
-        await asyncio.sleep(0.65)
+        await asyncio.sleep(1.0)
 
         matched = await _gallery_detail_panel_has_id(page, prompt_id_prefix)
 
@@ -5097,12 +5304,12 @@ async def _find_card_by_clicking_images(
             and img_url
             and _outsee_image_stable_key(src) == _outsee_image_stable_key(img_url)
         ):
-            matched = True
             logger.info(
-                "_find_card_by_clicking_images: ID в панели не виден, "
-                "но src совпал с wait-handoff (#{})",
+                "_find_card_by_clicking_images: handoff URL совпал (#{}) — "
+                "скачивание по CDN без клика «Скачать»",
                 idx,
             )
+            return None
 
         if not matched:
             # Не наша картинка — закрываем панель Esc'ом и идём дальше.
@@ -5213,6 +5420,264 @@ async def _download_via_context_candidates(
     ) from last_err
 
 
+async def _find_result_panel_card(page: Page, img_url: str | None) -> Any:
+    """Карточка «Результат генерации» с кнопкой Download (queue-mode)."""
+    if img_url:
+        stripped = _strip_url_query(img_url)
+        path_only = re.sub(r"^https?://[^/]+", "", stripped)
+        basename = Path(path_only).name if path_only else ""
+        for fragment in (basename, path_only):
+            if not fragment:
+                continue
+            img_loc = page.locator(f'img[src*="{fragment}"]').first
+            if await img_loc.count() > 0:
+                card = img_loc.locator(
+                    "xpath=ancestor::*[descendant::button"
+                    "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+                )
+                if await card.count() > 0:
+                    return card
+    for sel in (
+        "xpath=//*[contains(.,'Результат генерации')]"
+        "[descendant::button[descendant::svg[contains(@class,'lucide-download')]]]"
+        "[1]",
+        "xpath=//*[contains(.,'Результат')]"
+        "[descendant::button[descendant::svg[contains(@class,'lucide-download')]]]"
+        "[1]",
+    ):
+        loc = page.locator(sel).first
+        if await loc.count() > 0:
+            return loc
+    return None
+
+
+async def _download_via_queue_result(
+    page: Page,
+    *,
+    img_url: str,
+    out_path: Path,
+    gen_id: str | None = None,
+    net_events: list[tuple[float, str]] | None = None,
+    project_id: int | None = None,
+    timeout_s: float = 120.0,
+) -> None:
+    """Queue-mode: одна свежая картинка — CDN/URL, иначе одна кнопка «Скачать» в результате."""
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    abort_if_cancelled(project_id)
+    deadline_ms = int(timeout_s * 1000)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    dom_full = await _find_full_png_in_dom(page, _outsee_image_stable_key(img_url))
+    extra_urls = list(_all_full_png_url_candidates(img_url))
+    if dom_full:
+        extra_urls.append(dom_full)
+    resolved = _resolve_best_download_url(
+        img_url,
+        net_events=net_events,
+        extra_urls=extra_urls or None,
+    )
+    if resolved:
+        try:
+            used = await _download_via_context_candidates(
+                page,
+                resolved,
+                out_path,
+                net_events=net_events,
+                project_id=project_id,
+            )
+            _validate_downloaded_image(out_path, gen_id=gen_id, img_url=used)
+            logger.info(
+                "_download_via_queue_result: URL {} → {}",
+                used[:120],
+                out_path,
+            )
+            return
+        except OutseeImageError as e:
+            logger.warning(
+                "_download_via_queue_result: URL-first ({}) — кнопка «Скачать»",
+                e,
+            )
+
+    card = await _find_result_panel_card(page, img_url)
+    if card is None:
+        raise OutseeImageError(
+            "outsee image (queue): нет кнопки «Скачать» в блоке результата",
+            context={"gen_id": gen_id, "img_url": img_url[:200]},
+        )
+
+    with contextlib.suppress(Exception):
+        await card.scroll_into_view_if_needed(timeout=5_000)
+    try:
+        await card.hover(timeout=5_000)
+    except Exception:  # noqa: BLE001
+        pass
+
+    download_btn = card.locator("button:has(svg.lucide-download)").first
+    if await download_btn.count() == 0:
+        download_btn = card.locator(
+            "button:has-text('Скачать'), button:has-text('Download')"
+        ).first
+
+    try:
+        async with page.expect_download(timeout=deadline_ms) as dl_info:
+            await _physical_mouse_click(
+                page,
+                download_btn,
+                project_id=project_id,
+                label="queue result download",
+            )
+        download = await dl_info.value
+        await await_with_cancel(download.save_as(str(out_path)), project_id)
+    except PWTimeoutError as e:
+        raise OutseeImageError(
+            "outsee image (queue): клик «Скачать» не вызвал download",
+            context={"gen_id": gen_id, "err": str(e)},
+        ) from e
+
+    _validate_downloaded_image(out_path, gen_id=gen_id, img_url=img_url)
+    logger.info("_download_via_queue_result: save {} (gen_id={})", out_path, gen_id)
+
+
+async def _find_result_panel_video_card(
+    page: Page, video_url: str | None
+) -> Any:
+    """Блок результата veo с кнопкой Download (queue-mode)."""
+    if video_url:
+        stripped = _strip_url_query(video_url)
+        path_only = re.sub(r"^https?://[^/]+", "", stripped)
+        basename = Path(path_only).name if path_only else ""
+        for fragment in (basename, path_only):
+            if not fragment:
+                continue
+            for tag, attr in (("video", "src"), ("source", "src")):
+                loc = page.locator(f'{tag}[{attr}*="{fragment}"]').first
+                if await loc.count() > 0:
+                    card = loc.locator(
+                        "xpath=ancestor::*[descendant::button"
+                        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+                    )
+                    if await card.count() > 0:
+                        return card
+    for sel in (
+        "xpath=//*[contains(.,'Результат генерации')]"
+        "[descendant::button[descendant::svg[contains(@class,'lucide-download')]]]"
+        "[1]",
+        "xpath=//*[contains(.,'Результат')]"
+        "[.//video or .//source]"
+        "[descendant::button[descendant::svg[contains(@class,'lucide-download')]]]"
+        "[1]",
+    ):
+        loc = page.locator(sel).first
+        if await loc.count() > 0:
+            return loc
+    return None
+
+
+async def _download_via_queue_video_result(
+    page: Page,
+    *,
+    video_url: str,
+    out_path: Path,
+    gen_id: str | None = None,
+    project_id: int | None = None,
+    timeout_s: float = 300.0,
+) -> None:
+    """Queue-mode video: URL из wait, иначе одна кнопка «Скачать» в результате."""
+    from app.services.step_cancel import abort_if_cancelled, await_with_cancel
+
+    abort_if_cancelled(project_id)
+    deadline_ms = int(timeout_s * 1000)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if video_url and _video_url_looks_like_result(video_url):
+        try:
+            await _download_via_context(
+                page,
+                video_url,
+                out_path,
+                timeout_ms=deadline_ms,
+                project_id=project_id,
+            )
+            logger.info(
+                "_download_via_queue_video_result: URL {} → {}",
+                video_url[:120],
+                out_path,
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "_download_via_queue_video_result: URL-first ({}) — кнопка",
+                e,
+            )
+
+    card = await _find_result_panel_video_card(page, video_url)
+    if card is None:
+        if video_url:
+            await _download_via_context(
+                page,
+                video_url,
+                out_path,
+                timeout_ms=deadline_ms,
+                project_id=project_id,
+            )
+            logger.info(
+                "_download_via_queue_video_result: fallback URL → {}",
+                out_path,
+            )
+            return
+        raise OutseeImageError(
+            "outsee video (queue): нет кнопки «Скачать» и нет URL",
+            context={"gen_id": gen_id, "video_url": (video_url or "")[:200]},
+        )
+
+    with contextlib.suppress(Exception):
+        await card.scroll_into_view_if_needed(timeout=5_000)
+    with contextlib.suppress(Exception):
+        await card.hover(timeout=5_000)
+
+    download_btn = card.locator("button:has(svg.lucide-download)").first
+    if await download_btn.count() == 0:
+        download_btn = card.locator(
+            "button:has-text('Скачать'), button:has-text('Download')"
+        ).first
+
+    try:
+        async with page.expect_download(timeout=deadline_ms) as dl_info:
+            await _physical_mouse_click(
+                page,
+                download_btn,
+                project_id=project_id,
+                label="queue video download",
+            )
+        download = await dl_info.value
+        await await_with_cancel(download.save_as(str(out_path)), project_id)
+    except PWTimeoutError as e:
+        if video_url:
+            await _download_via_context(
+                page,
+                video_url,
+                out_path,
+                timeout_ms=deadline_ms,
+                project_id=project_id,
+            )
+            logger.info(
+                "_download_via_queue_video_result: click timeout, URL → {}",
+                out_path,
+            )
+            return
+        raise OutseeImageError(
+            "outsee video (queue): клик «Скачать» не вызвал download",
+            context={"gen_id": gen_id, "err": str(e)},
+        ) from e
+
+    logger.info(
+        "_download_via_queue_video_result: save {} (gen_id={})",
+        out_path,
+        gen_id,
+    )
+
+
 async def _download_via_card_click(
     page: Page,
     *,
@@ -5241,10 +5706,20 @@ async def _download_via_card_click(
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Быстрый путь: gen_idle уже дал full PNG URL (как у видео).
+    # Быстрый путь: full PNG из net_events / DOM / guess от thumb (оба CDN).
     if img_url:
-        resolved = _resolve_best_download_url(img_url, net_events=net_events)
-        if resolved and not _is_outsee_thumb_url(resolved):
+        dom_full = await _find_full_png_in_dom(
+            page, _outsee_image_stable_key(img_url)
+        )
+        extra_urls = list(_all_full_png_url_candidates(img_url))
+        if dom_full:
+            extra_urls.append(dom_full)
+        resolved = _resolve_best_download_url(
+            img_url,
+            net_events=net_events,
+            extra_urls=extra_urls or None,
+        )
+        if resolved:
             try:
                 used = await _download_via_context_candidates(
                     page,
@@ -5257,9 +5732,11 @@ async def _download_via_card_click(
                     out_path, gen_id=prompt_id_prefix, img_url=used
                 )
                 logger.info(
-                    "_download_via_card_click: сохранил {} (URL-first, id={})",
+                    "_download_via_card_click: сохранил {} (URL-first, id={}, "
+                    "thumb={})",
                     out_path,
                     prompt_id_prefix,
+                    _is_outsee_thumb_url(img_url),
                 )
                 return
             except OutseeImageError as e:
@@ -5267,6 +5744,43 @@ async def _download_via_card_click(
                     "_download_via_card_click: URL-first не удался ({}), card-click",
                     e,
                 )
+
+    # ID уже в textarea композера — не кликаем галерею (иначе выделяется текст).
+    if img_url and await _composer_has_prompt_id(page, prompt_id_prefix):
+        dom_full = await _find_full_png_in_dom(
+            page, _outsee_image_stable_key(img_url)
+        )
+        extra_urls = list(_all_full_png_url_candidates(img_url))
+        if dom_full:
+            extra_urls.append(dom_full)
+        resolved = _resolve_best_download_url(
+            img_url,
+            net_events=net_events,
+            extra_urls=extra_urls or None,
+        )
+        try:
+            used = await _download_via_context_candidates(
+                page,
+                resolved,
+                out_path,
+                net_events=net_events,
+                project_id=project_id,
+            )
+            _validate_downloaded_image(
+                out_path, gen_id=prompt_id_prefix, img_url=used
+            )
+            logger.info(
+                "_download_via_card_click: сохранил {} (composer-ID, CDN, id={})",
+                out_path,
+                prompt_id_prefix,
+            )
+            return
+        except OutseeImageError as e:
+            logger.warning(
+                "_download_via_card_click: composer-ID CDN не удался ({}), "
+                "пробую галерею",
+                e,
+            )
 
     card = None  # type: ignore[var-annotated]
 
@@ -5389,6 +5903,53 @@ async def _download_via_card_click(
                 "img_url": img_url,
                 "timeout_s": timeout_s,
             },
+        )
+
+    try:
+        card_tag = await card.evaluate(
+            "(el) => (el && el.tagName ? el.tagName.toLowerCase() : '')"
+        )
+    except Exception:  # noqa: BLE001
+        card_tag = ""
+
+    download_btn = card.locator("button:has(svg.lucide-download)").first
+    if card_tag == "img" or await download_btn.count() == 0:
+        if img_url:
+            dom_full = await _find_full_png_in_dom(
+                page, _outsee_image_stable_key(img_url)
+            )
+            extra_urls = list(_all_full_png_url_candidates(img_url))
+            if dom_full:
+                extra_urls.append(dom_full)
+            resolved = _resolve_best_download_url(
+                img_url,
+                net_events=net_events,
+                extra_urls=extra_urls or None,
+            )
+            logger.info(
+                "_download_via_card_click: {} — URL-fallback (thumb={})",
+                "карточка=<img>" if card_tag == "img" else "нет кнопки Download",
+                _is_outsee_thumb_url(img_url),
+            )
+            used = await _download_via_context_candidates(
+                page,
+                resolved,
+                out_path,
+                net_events=net_events,
+                project_id=project_id,
+            )
+            _validate_downloaded_image(
+                out_path, gen_id=prompt_id_prefix, img_url=used
+            )
+            logger.info(
+                "_download_via_card_click: сохранил {} (no-download-btn, id={})",
+                out_path,
+                prompt_id_prefix,
+            )
+            return
+        raise OutseeImageError(
+            "outsee image: карточка без кнопки «Скачать» и нет img_url",
+            context={"prompt_id_prefix": prompt_id_prefix},
         )
 
     # Не критично — карточка может быть и так в видимой области.

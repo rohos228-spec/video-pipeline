@@ -418,7 +418,7 @@ async def _voice_selection_done(page: Page, voice_id: str) -> bool:
     name_hint = _voice_name_hint(voice_id)
     return bool(
         await page.evaluate(
-            """(vid, nameHint) => {
+            """([vid, nameHint]) => {
                 const skip = /Select a voice|Explore|My Voices|Language:|Filters|Accent|Category|Search/i;
                 const rows = [...document.querySelectorAll('div, article, li, button')];
                 for (const row of rows) {
@@ -433,8 +433,7 @@ async def _voice_selection_done(page: Page, voice_id: str) -> bool:
                 }
                 return false;
             }""",
-            voice_id,
-            name_hint,
+            [voice_id, name_hint],
         )
     )
 
@@ -484,7 +483,7 @@ async def _click_voice_result_card(page: Page, voice_id: str, search: Locator) -
             continue
 
     js_ok = await page.evaluate(
-        """(vid, nameHint) => {
+        """([vid, nameHint]) => {
             const fire = (el) => {
                 if (!el) return false;
                 el.scrollIntoView({ block: 'center' });
@@ -528,8 +527,7 @@ async def _click_voice_result_card(page: Page, voice_id: str, search: Locator) -
             }
             return false;
         }""",
-        voice_id,
-        name_hint,
+        [voice_id, name_hint],
     )
     if js_ok and await _voice_selection_done(page, voice_id):
         return True

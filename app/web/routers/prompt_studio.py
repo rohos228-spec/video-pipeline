@@ -313,7 +313,10 @@ async def patch_project_prompt_config(
     for k, v in payload.legacy.items():
         po[k] = v
 
+    from sqlalchemy.orm.attributes import flag_modified
+
     project.prompt_overrides = po
+    flag_modified(project, "prompt_overrides")
     await session.commit()
     blocks, vars_ = merge_project_prompt_config(
         po,
