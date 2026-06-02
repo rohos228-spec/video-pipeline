@@ -1,69 +1,128 @@
-# Update + start backend + wait until :8765 answers
-$Repo = "C:\Users\Love Space\video-pipeline"
-$Branch = "cursor/fix-video-rerun-skip-977b"
+﻿# video-pipeline: запуск бота на Windows
+# Запуск:
+#   powershell -ExecutionPolicy Bypass -File .\start.ps1
+#
+# Что делает:
+#   1. Если Chrome с remote-debugging-port=29229 не запущен — стартует его.
+#   2. Запускает python -m app.main (Telegram-бот + воркер).
+#
+# Ctrl+C для остановки.
 
-Set-Location -LiteralPath $Repo
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = "Stop"
+
+function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
+function Write-OK($msg) { Write-Host "    [ok] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "    [!] $msg" -ForegroundColor Yellow }
+
+# ---------- 0. Проверка папки и venv ----------
+
 if (-not (Test-Path "pyproject.toml")) {
-    Write-Host "ERROR: $Repo not found" -ForegroundColor Red
-    pause
+    Write-Host "ERROR: запусти скрипт из корня репо video-pipeline." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "=== START ===" -ForegroundColor Cyan
-git fetch origin $Branch 2>&1 | Out-Null
-git checkout -B $Branch "origin/$Branch" 2>&1 | Out-Null
-git reset --hard "origin/$Branch" 2>&1 | Out-Null
-
-$py = "$Repo\.venv\Scripts\python.exe"
-if (-not (Test-Path $py)) {
-    Write-Host "Run install.ps1 first" -ForegroundColor Red
-    pause
+$venvPython = ".\.venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    Write-Host "ERROR: venv не найден. Запусти .\install.ps1 сначала." -ForegroundColor Red
     exit 1
 }
 
-& $py -c "from app.web.api import create_app; create_app()" 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Preflight FAILED - fix errors above" -ForegroundColor Red
-    pause
+# ---------- 1. .env проверка ----------
+
+if (-not (Test-Path ".env")) {
+    Write-Host "ERROR: .env не найден. Запусти .\install.ps1 сначала." -ForegroundColor Red
     exit 1
 }
 
-Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
-    try {
-        if ($_.Path -and $_.Path -like "*video-pipeline*") { Stop-Process -Id $_.Id -Force }
-    } catch {}
-}
-Start-Sleep 2
-
-$env:TELEGRAM_ENABLED = "false"
-Start-Process powershell -ArgumentList @(
-    "-NoExit", "-ExecutionPolicy", "Bypass",
-    "-File", "$Repo\run-backend.ps1"
-) -WorkingDirectory $Repo
-
-Write-Host "Waiting for backend on :8765 (max 120 sec)..." -ForegroundColor Yellow
-$ok = $false
-for ($i = 0; $i -lt 120; $i++) {
-    try {
-        $h = Invoke-RestMethod "http://127.0.0.1:8765/api/health" -TimeoutSec 2
-        if ($h.status -eq "ok") { $ok = $true; break }
-    } catch {}
-    Start-Sleep -Seconds 1
-}
-
-if (-not $ok) {
-    Write-Host ""
-    Write-Host "BACKEND NOT RUNNING" -ForegroundColor Red
-    Write-Host "1) Open the other window 'video-pipeline backend'"
-    Write-Host "2) Read red text / traceback there"
-    Write-Host "3) Or run BACKEND.cmd in this folder (backend in this window)"
-    Write-Host ""
-    pause
+$envText = Get-Content ".env" -Raw
+$tgDisabled = $envText -match "(?m)^TELEGRAM_ENABLED\s*=\s*(false|0|no)\s*$"
+$tokenLine = ($envText -split "`n" | Where-Object { $_ -match "^TELEGRAM_BOT_TOKEN=\s*\S" })
+if (-not $tgDisabled -and -not $tokenLine) {
+    Write-Host "ERROR: TELEGRAM_BOT_TOKEN не задан. Либо впиши токен, либо TELEGRAM_ENABLED=false и .\start-studio.ps1" -ForegroundColor Red
     exit 1
 }
+if ($tgDisabled) {
+    Write-Warn "TELEGRAM_ENABLED=false — запускаю без бота (как start-studio.ps1)"
+}
 
-$v = Invoke-RestMethod "http://127.0.0.1:8765/api/studio-version" -TimeoutSec 5
-Write-Host "OK version:" $v.label -ForegroundColor Green
-Start-Process "http://127.0.0.1:8765"
-Write-Host "Browser open. Ctrl+F5"
-pause
+# ---------- 2. Chrome с remote-debugging-port=29229 ----------
+
+Write-Step "Проверяю Chrome с remote-debugging-port=29229"
+
+$cdpRunning = $false
+try {
+    $resp = Invoke-WebRequest -Uri "http://localhost:29229/json/version" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+    if ($resp.StatusCode -eq 200) {
+        $cdpRunning = $true
+    }
+} catch {
+    $cdpRunning = $false
+}
+
+if ($cdpRunning) {
+    Write-OK "Chrome уже работает на 29229 — не трогаю"
+} else {
+    # Проверяем, есть ли вообще ЛЮБОЕ окно chrome.exe запущенное в системе
+    # (включая обычное пользовательское). Если есть — не пытаемся открыть
+    # ещё одно и не ждём CDP: либо юзер сам поднимет нужное окно с CDP,
+    # либо бот свалится при первом обращении и юзер увидит понятную
+    # ошибку. Это лучше чем тупо ждать 15 секунд впустую.
+    $chromeRunning = @(Get-Process -Name chrome -ErrorAction SilentlyContinue).Count -gt 0
+    if ($chromeRunning) {
+        Write-Warn "Chrome уже запущен (но без remote-debugging-port=29229)."
+        Write-Warn "Не открываю новое окно и не жду — запускаю бота сразу."
+        Write-Warn "Если бот упадёт с CDP-ошибкой — закрой ВСЕ окна Chrome и перезапусти .\start.ps1"
+    } else {
+        $chromePaths = @(
+            "C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+        )
+        $chrome = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $chrome) {
+            Write-Host "ERROR: Chrome не найден в стандартных путях. Установи Chrome." -ForegroundColor Red
+            exit 1
+        }
+        . (Join-Path $PSScriptRoot "scripts\VpBrowserProfile.ps1")
+        $userDataDir = Get-VpBrowserUserDataDir
+        Write-Host ""
+        Write-Host "    Запускаю отдельный Chrome для бота." -ForegroundColor Yellow
+        Write-Host "    Залогинься в нём при первом запуске:" -ForegroundColor Yellow
+        Write-Host "      - https://chatgpt.com/" -ForegroundColor Yellow
+        Write-Host "      - https://outsee.io/" -ForegroundColor Yellow
+        Write-Host "    Этот Chrome должен быть открыт всё время, пока работает бот." -ForegroundColor Yellow
+        Write-Host ""
+        Start-Process -FilePath $chrome -ArgumentList @(
+            "--remote-debugging-port=29229",
+            "--user-data-dir=$userDataDir"
+        )
+        # Ждём пока CDP-эндпоинт ответит
+        $maxWait = 15
+        $waited = 0
+        while ($waited -lt $maxWait) {
+            Start-Sleep -Seconds 1
+            $waited++
+            try {
+                $resp = Invoke-WebRequest -Uri "http://localhost:29229/json/version" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                if ($resp.StatusCode -eq 200) {
+                    Write-OK "Chrome поднялся на 29229 (за $waited сек)"
+                    break
+                }
+            } catch { }
+        }
+        if ($waited -ge $maxWait) {
+            Write-Warn "Chrome не ответил по http://localhost:29229/json/version за $maxWait сек. Запускаю бота всё равно — если он упадёт с CDP-ошибкой, проверь Chrome руками."
+        }
+    }
+}
+
+# ---------- 3. Запуск бота ----------
+
+Write-Step "Запускаю video-pipeline (python -m app.main)"
+Write-Host "    Ctrl+C для остановки." -ForegroundColor Yellow
+Write-Host ""
+
+& $venvPython -m app.main
