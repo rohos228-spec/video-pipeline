@@ -27,7 +27,8 @@
   7: img      → generating_images   → images_ready
   8: anim_pr  → generating_animation_prompts → animation_prompts_ready
   9: video    → generating_videos   → videos_ready
- 10: audio    → generating_audio    → audio_ready
+  ·: audio    → generating_audio    → audio_ready  (sub-step, без номера в меню)
+ 10: music    → generating_music    → music_ready
  11: assemble → assembling          → assembled
 """
 
@@ -127,10 +128,12 @@ _STATUS_ORDER: dict[ProjectStatus, int] = {
     ProjectStatus.videos_ready: 28,
     ProjectStatus.generating_audio: 29,
     ProjectStatus.audio_ready: 30,
-    ProjectStatus.assembling: 31,
-    ProjectStatus.assembled: 32,
-    ProjectStatus.publishing: 33,
-    ProjectStatus.published: 34,
+    ProjectStatus.generating_music: 31,
+    ProjectStatus.music_ready: 32,
+    ProjectStatus.assembling: 33,
+    ProjectStatus.assembled: 34,
+    ProjectStatus.publishing: 35,
+    ProjectStatus.published: 36,
     ProjectStatus.paused: 0,
     ProjectStatus.failed: 0,
 }
@@ -248,9 +251,9 @@ def steps_for(project: Project | None) -> list[StepDef]:
             ProjectStatus.animation_prompts_ready,
         ),
         StepDef(
-            10, "audio", "Аудио",
-            ProjectStatus.generating_audio, ProjectStatus.audio_ready,
-            ProjectStatus.videos_ready,
+            10, "music", "Музыка",
+            ProjectStatus.generating_music, ProjectStatus.music_ready,
+            ProjectStatus.audio_ready,
         ),
         StepDef(
             11, "assemble", "Финальная сборка",
@@ -302,7 +305,11 @@ _STEP_BY_CODE["hero"] = StepDef(
     ProjectStatus.generating_hero, ProjectStatus.hero_ready,
     ProjectStatus.frames_ready,
 )
-# Sub-step «Предметы». running=generating_items, ready=items_ready,
+_STEP_BY_CODE["audio"] = StepDef(
+    -1, "audio", "Озвучка",
+    ProjectStatus.generating_audio, ProjectStatus.audio_ready,
+    ProjectStatus.videos_ready,
+)
 # requires=hero_ready.
 _STEP_BY_CODE["items"] = StepDef(
     -1, "items", "Предметы",
@@ -332,7 +339,7 @@ def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     приоритет на sub-step'ах — на будущее).
     """
     # Sub-step'ы (точнее, чем wrapper'ы).
-    for code in ("hero", "items", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
+    for code in ("hero", "items", "audio", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
         sd = _STEP_BY_CODE.get(code)
         if sd is not None and sd.running_status is running_status:
             return sd
@@ -447,6 +454,22 @@ def project_menu_kb(project: Project) -> InlineKeyboardMarkup:
 
     steps = steps_for(project)
     for s in steps:
+        if s.code == "music":
+            audio = step_by_code("audio")
+            if audio is not None:
+                a_icon = step_icon(audio, project.status)
+                a_running = project.status is ProjectStatus.generating_audio
+                if a_running:
+                    a_label = f"{a_icon} Озвучка · идёт… (тык — управление)"
+                else:
+                    a_label = f"{a_icon} Озвучка"
+                rows.append([
+                    InlineKeyboardButton(
+                        text=a_label,
+                        callback_data=f"proj:{project.id}:step:audio",
+                    )
+                ])
+
         icon = step_icon(s, project.status)
 
         # Спец-кейс шаг 4 «Объекты»: считаем «running», если проект

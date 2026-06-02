@@ -438,6 +438,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         return
 
+    from app.services.post_step_validate import finalize_or_retry
+
+    if not await finalize_or_retry(
+        session,
+        project,
+        step="images",
+        ready_status=ProjectStatus.images_ready,
+        running_status=ProjectStatus.generating_images,
+    ):
+        return
+
     project.status = ProjectStatus.images_ready
     await session.flush()
     logger.info("[#{}] generate_images complete", project.id)

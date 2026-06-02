@@ -363,7 +363,14 @@ class WorkflowGraph:
             if k not in skipped and k in flow
         ]
         if not target_keys:
-            return False
+            from app.telegram.menu import step_by_code, status_order
+
+            step = step_by_code(step_code)
+            if step is None:
+                return True
+            if step.requires is None:
+                return True
+            return status_order(project.status) >= status_order(step.requires)
         done = self._work_types_done(project)
         status = project.status
         if status in RUNNING_TO_NODE_TYPE and RUNNING_TO_NODE_TYPE[status] == target_type:

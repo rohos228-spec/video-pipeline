@@ -155,5 +155,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         len(words),
     )
 
+    from app.services.post_step_validate import finalize_or_retry
+
+    if not await finalize_or_retry(
+        session,
+        project,
+        step="audio",
+        ready_status=ProjectStatus.audio_ready,
+        running_status=ProjectStatus.generating_audio,
+    ):
+        return
+
     project.status = ProjectStatus.audio_ready
     await session.flush()

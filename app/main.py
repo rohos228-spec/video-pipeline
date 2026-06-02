@@ -300,6 +300,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         ProjectStatus.generating_images,
         ProjectStatus.generating_animation_prompts,
         ProjectStatus.generating_videos,
+        ProjectStatus.generating_music,
         ProjectStatus.generating_audio,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
@@ -351,6 +352,17 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    from app.services.step_failure_policy import (
+                        clear_failure_on_success,
+                        is_sleeping,
+                        maybe_resume_after_sleep,
+                        record_step_failure,
+                    )
+
+                    if is_sleeping(p):
+                        await maybe_resume_after_sleep(s, p)
+                        if is_sleeping(p):
+                            continue
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
                     project_id = p.id
@@ -360,7 +372,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     register_advance_task(project_id, task)
                     try:
                         result = await task
-                        # успех на этом шаге — сбрасываем счётчик
+                        clear_failure_on_success(p, ProjectStatus(prev_status_value))
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
                             try:
@@ -403,51 +415,45 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         prev = fail_counts.get(key, 0)
                         fail_counts[key] = prev + 1
                         try:
-                            if prev == 0:
-                                # Первая ошибка на этом шаге — сообщаем.
-                                msg = (
-                                    f"⚠️ Ошибка на проекте #{p.id} "
-                                    f"(статус={p.status.value}): "
-                                    f"{type(e).__name__}: {e}"
-                                )
-                                if bot and settings.telegram_active:
+                            from app.services.step_failure_policy import (
+                                record_step_failure,
+                            )
+
+                            action = await record_step_failure(s, p, error=e)
+                            await s.commit()
+                            if bot and settings.telegram_active:
+                                if action == "retry" and prev == 0:
+                                    msg = (
+                                        f"⚠️ #{p.id} ({p.status.value}): "
+                                        f"{type(e).__name__}: {e}"
+                                    )
                                     await bot.send_message(
                                         settings.telegram_owner_chat_id, msg[:3800]
                                     )
-                            elif fail_counts[key] >= MAX_FAIL:
-                                # Проект зависает на одном шаге — откатываем
-                                # на prerequisite предыдущего шага. Юзер
-                                # увидит галочки до этого шага и сможет
-                                # ткнуть упавший шаг для ретрая.
-                                # НЕ ставим `failed`: он лочит всё меню.
-                                prev_running = p.status
-                                requires = _running_status_requires(
-                                    prev_running, p
-                                )
-                                if requires is None:
-                                    # Шаг 1 (planning) — откатываемся в `new`.
-                                    requires = ProjectStatus.new
-                                p.status = requires
-                                await s.flush()
-                                # Сбрасываем счётчик, чтобы при ретрае было
-                                # 3 свежие попытки.
-                                fail_counts.pop(key, None)
-                                await bot.send_message(
-                                    settings.telegram_owner_chat_id,
-                                    (
-                                        f"🛑 Проект #{p.id}: {MAX_FAIL} "
-                                        f"ошибок подряд на шаге "
-                                        f"`{prev_running.value}`. Статус "
-                                        f"откачен к `{requires.value}` — "
-                                        f"открой меню и нажми кнопку "
-                                        f"шага, чтобы повторить попытку. "
-                                        f"Последняя ошибка: "
-                                        f"{type(e).__name__}: {e}"
-                                    )[:3800],
-                                )
+                                elif action == "sleep":
+                                    await bot.send_message(
+                                        settings.telegram_owner_chat_id,
+                                        (
+                                            f"😴 #{p.id}: 3 ошибки — reset, "
+                                            f"пауза 30 мин (макс. 9 попыток)"
+                                        )[:3800],
+                                    )
+                                elif action == "abandon":
+                                    await bot.send_message(
+                                        settings.telegram_owner_chat_id,
+                                        (
+                                            f"🛑 #{p.id}: 3 цикла отказов — "
+                                            f"paused, следующий в очереди"
+                                        )[:3800],
+                                    )
+                                    from app.services.gen_queue import gen_queue_tick
+
+                                    await gen_queue_tick(s)
+                                    await s.commit()
+                            fail_counts.pop(key, None)
                         except Exception:  # noqa: BLE001
                             logger.warning(
-                                "не удалось отправить уведомление об ошибке в Telegram"
+                                "step_failure_policy failed for #{}", p.id
                             )
                     finally:
                         unregister_advance_task(project_id)

@@ -7,6 +7,7 @@ export const GPT_TEXT_STEPS = new Set([
   "hero",
   "img_pr",
   "anim_pr",
+  "music",
   "enrich_1",
   "enrich_2",
   "enrich_3",
@@ -27,6 +28,7 @@ export const NODE_TYPE_TO_GPT_TEXT_STEP: Record<string, string> = {
   enrich_5: "enrich_5",
   image_prompts: "img_pr",
   animation_prompts: "anim_pr",
+  music: "music",
 };
 
 export function isHitlNodeType(nodeType: string): boolean {

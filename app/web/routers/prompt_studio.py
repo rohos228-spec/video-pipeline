@@ -332,3 +332,75 @@ async def patch_project_prompt_config(
         "resolved_blocks": blocks,
         "resolved_vars": {k: str(v) for k, v in vars_.items()},
     }
+
+
+class GptVerdictRunPayload(BaseModel):
+    prompt: str | None = None
+
+
+@router.get("/projects/{project_id}/gpt-verdict/{step_code}")
+async def get_gpt_verdict_context(
+    project_id: int,
+    step_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import (
+        VERDICT_STUDIO_STEPS,
+        artifact_text_for_step,
+        attachments_for_step,
+        load_verdict_check_prompt,
+    )
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+    files = await attachments_for_step(session, project, step_code)
+    return {
+        "step_code": step_code,
+        "supported": True,
+        "prompt": load_verdict_check_prompt(step_code),
+        "artifact_preview": artifact_text_for_step(project, step_code)[:4000],
+        "attachments": [str(p.name) for p in files],
+    }
+
+
+@router.post("/projects/{project_id}/gpt-verdict/{step_code}/run")
+async def run_gpt_verdict(
+    project_id: int,
+    step_code: str,
+    payload: GptVerdictRunPayload | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    from app.bots.browser import browser_session
+    from app.bots.chatgpt import ChatGPTBot
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, run_verdict_review
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+
+    user_prompt = payload.prompt if payload else None
+    async with browser_session() as bs:
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        if meta.get("ai_new_window_per_check"):
+            bs.force_new_window = True
+        gpt = ChatGPTBot(bs)
+        result = await run_verdict_review(
+            session,
+            project,
+            step_code,
+            gpt,
+            user_prompt=user_prompt,
+        )
+    return {
+        "approved": result.approved,
+        "rounds": result.rounds,
+        "fix_text": result.fix_text,
+        "last_raw": result.last_raw[:8000],
+        "history": result.history,
+    }
+

@@ -79,6 +79,14 @@ async def can_enter_running(
             )
         return True, "", None
 
+    if target is ProjectStatus.generating_music:
+        voice = project.data_dir / "voiceover.txt"
+        if not voice.is_file():
+            return False, "нет voiceover.txt", ProjectStatus.script_ready
+        if not (project.topic or "").strip():
+            return False, "не задана тема ролика", ProjectStatus.new
+        return True, "", None
+
     if target is ProjectStatus.assembling:
         await recover_scene_videos_from_disk(session, project)
         await recover_audio_from_disk(session, project)

@@ -324,6 +324,39 @@ async def _wipe_audio(session: AsyncSession, project: Project) -> dict[str, Any]
     return stats
 
 
+async def _wipe_music(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс шага «Музыка»: music артефакты + файлы в music/."""
+    arts = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.music,
+            )
+        )
+    ).scalars().all()
+    files_deleted = 0
+    for a in arts:
+        if a.path:
+            p = Path(a.path)
+            if p.exists():
+                try:
+                    p.unlink()
+                    files_deleted += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[#{}] reset_step.music: {}", project.id, e)
+        await session.delete(a)
+    music_dir = project.data_dir / "music"
+    extra = 0
+    if music_dir.is_dir():
+        for p in music_dir.glob("*.mp3"):
+            try:
+                p.unlink()
+                extra += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[#{}] reset_step.music dir: {}", project.id, e)
+    return {"artifacts": len(arts), "files": files_deleted + extra}
+
+
 async def _wipe_assemble(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 11 «Финальная сборка»: final_video + subtitle артефакты."""
     return await _wipe_artifacts_by_kind(
@@ -354,6 +387,7 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("anim_pr",   _wipe_anim_pr),
     ("video",     _wipe_videos),
     ("audio",     _wipe_audio),
+    ("music",     _wipe_music),
     ("assemble",  _wipe_assemble),
 ]
 
@@ -383,7 +417,7 @@ RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "objects", "hero", "items",
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
-    "img_pr", "img", "anim_pr", "video", "audio", "assemble",
+    "img_pr", "img", "anim_pr", "video", "audio", "music", "assemble",
 })
 
 

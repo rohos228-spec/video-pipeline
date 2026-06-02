@@ -12,7 +12,7 @@ from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_code, step_by_running_status
 
 # Шаги с Outsee / ElevenLabs / CDP — dry_run только для диагностики UI, не для реального старта.
-FORBIDDEN_DRY_RUN_STEPS = frozenset({"hero", "items", "img", "video", "audio"})
+FORBIDDEN_DRY_RUN_STEPS = frozenset({"hero", "items", "img", "video", "audio", "music"})
 
 
 async def validate_project_step_dry_run(

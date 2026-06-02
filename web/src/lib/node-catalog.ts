@@ -156,6 +156,14 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "142 60% 50%",
     iconKey: "film",
   },
+  music: {
+    type: "music",
+    label: "Музыка",
+    description: "Фоновая музыка через GPT + Suno (Outsee).",
+    category: "audio",
+    accent: "330 75% 65%",
+    iconKey: "audio-waveform",
+  },
   audio: {
     type: "audio",
     label: "Озвучка",

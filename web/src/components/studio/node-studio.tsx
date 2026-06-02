@@ -49,6 +49,7 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
+import { GptVerdictPanel } from "@/components/studio/gpt-verdict-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
@@ -279,6 +280,7 @@ export function NodeStudio({
       nodeType === "assemble");
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
+  const showVerdictPanel = activeSlot?.kind === "verdict" && activeStepCode && projectId;
   const showFramePromptsPanel =
     activeSlot?.kind === "frame_prompts" && projectId != null;
   const showFilesPanel =
@@ -414,7 +416,7 @@ export function NodeStudio({
                 </Button>
               ))}
             </div>
-            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
+            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && !showVerdictPanel && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
                 {pipelineSlots.map((slot) => (
                   <Button
@@ -454,13 +456,19 @@ export function NodeStudio({
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
-                  {activeSlot && !showGptTextPanel && showFilesPanel && (
+                  {activeSlot && !showGptTextPanel && !showVerdictPanel && showFilesPanel && (
                     <p className="text-xs text-muted-foreground">
                       Редактируется:{" "}
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
-                  {showGptTextPanel ? (
+                  {showVerdictPanel ? (
+                    <GptVerdictPanel
+                      key={`verdict-${activeStepCode}`}
+                      projectId={projectId}
+                      stepCode={activeStepCode}
+                    />
+                  ) : showGptTextPanel ? (
                     <GptTextPanel
                       key={`gpt-${activeSlot?.id}-${activeStepCode}`}
                       projectId={projectId}

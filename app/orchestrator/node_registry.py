@@ -71,6 +71,9 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
     "audio": WorkNodeSpec(
         "audio", "audio", ProjectStatus.generating_audio, ProjectStatus.audio_ready
     ),
+    "music": WorkNodeSpec(
+        "music", "music", ProjectStatus.generating_music, ProjectStatus.music_ready
+    ),
     "assemble": WorkNodeSpec(
         "assemble", "assemble", ProjectStatus.assembling, ProjectStatus.assembled
     ),
@@ -109,6 +112,7 @@ LINEAR_NODE_TYPES: list[str] = [
     "animation_prompts",
     "videos",
     "audio",
+    "music",
     "assemble",
     "publish",
 ]

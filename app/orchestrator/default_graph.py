@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 3
+LAYOUT_VERSION = 4
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
@@ -24,7 +24,8 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("animation_prompts", "8. Промты анимации", "Генерация animation-prompt'ов"),
         ("videos", "9. Видео", "Генерация 8-сек клипов"),
         ("hitl_videos", "HITL: видео", "Одобрение видео"),
-        ("audio", "10. Аудио", "ElevenLabs TTS + Whisper"),
+        ("audio", "Озвучка", "ElevenLabs TTS + Whisper"),
+        ("music", "10. Музыка", "GPT + Suno (Outsee)"),
         ("assemble", "11. Сборка", "FFmpeg финальный mp4"),
         ("hitl_final", "HITL: финал", "Одобрение финала"),
         ("publish", "12. Публикация", "Публикация на 5 площадок"),

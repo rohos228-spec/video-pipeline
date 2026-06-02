@@ -15,6 +15,7 @@ export const NODE_TO_STEP: Record<string, string> = {
   images: "img",
   animation_prompts: "anim_pr",
   videos: "video",
+  music: "music",
   audio: "audio",
   assemble: "assemble",
   publish: "publish",

@@ -51,6 +51,7 @@ _RUNNING_STATUSES = {
     ProjectStatus.generating_animation_prompts,
     ProjectStatus.generating_videos,
     ProjectStatus.generating_audio,
+    ProjectStatus.generating_music,
     ProjectStatus.assembling,
     ProjectStatus.publishing,
 }
@@ -132,6 +133,14 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             )
         )
     ).scalar_one()
+    music_arts = (
+        await session.execute(
+            select(func.count(Artifact.id)).where(
+                Artifact.project_id == pid,
+                Artifact.kind == ArtifactKind.music,
+            )
+        )
+    ).scalar_one()
     final_arts = (
         await session.execute(
             select(func.count(Artifact.id)).where(
@@ -179,6 +188,8 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         return ProjectStatus.videos_ready
     # audio ✓
     if final_arts == 0:
+        if music_arts > 0:
+            return ProjectStatus.music_ready
         return ProjectStatus.audio_ready
     # final ✓
     return ProjectStatus.assembled  # `published` ставится отдельно по факту YT-аплоада

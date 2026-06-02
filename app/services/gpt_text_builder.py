@@ -49,7 +49,7 @@ from app.services.prompt_library import (
 
 # Шаги, для которых поддерживается edit-override «сопр. сообщения».
 SUPPORTED_STEPS: tuple[str, ...] = (
-    "plan", "script", "hero", "split", "img_pr", "anim_pr",
+    "plan", "script", "hero", "split", "img_pr", "anim_pr", "music",
     # Слоты «Доп работа с EXCEL» (шаг 5). Каждый слот хранит свой
     # override в `Project.gpt_text_overrides["enrich_<i>"]`. В отличие
     # от других шагов, тут «сопр. сообщение» = ТОЛЬКО сопровождающий
@@ -357,6 +357,17 @@ def _build_img_pr_default(
 # Публичные функции
 # --------------------------------------------------------------------------- #
 
+def _build_music_default(project: Project, **_ctx) -> str:  # noqa: ARG001
+    """Сопроводительный текст для GPT → Suno (шаг «Музыка»)."""
+    topic = (project.topic or "").strip() or "(тема не задана)"
+    return (
+        f"Тема ролика: {topic}\n\n"
+        "На основе приложенного voiceover.txt составь один промт для генерации "
+        "фоновой инструментальной музыки в Suno (без вокала).\n"
+        "Верни ТОЛЬКО текст промта для Suno, без пояснений и кавычек."
+    )
+
+
 def _build_enrich_default(project: Project, **_ctx) -> str:  # noqa: ARG001
     """Дефолтный «сопровождающий текст» для enrich-слотов (1..5).
 
@@ -392,6 +403,8 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         )
     if step_code.startswith("enrich_"):
         return _build_enrich_default(project, **ctx)
+    if step_code == "music":
+        return _build_music_default(project, **ctx)
     raise ValueError(f"build_default_text: шаг {step_code!r} не поддерживается")
 
 

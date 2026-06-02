@@ -8,12 +8,12 @@ export type ProjectStatus =
   | "enriching_1" | "enriching_2" | "enriching_3" | "enriching_4" | "enriching_5"
   | "generating_image_prompts" | "generating_images"
   | "generating_animation_prompts" | "generating_videos"
-  | "generating_audio" | "assembling" | "publishing"
+  | "generating_audio" | "generating_music" | "assembling" | "publishing"
   | "plan_ready" | "script_ready" | "frames_ready"
   | "hero_ready" | "items_ready"
   | "enrich_1_ready" | "enrich_2_ready" | "enrich_3_ready" | "enrich_4_ready" | "enrich_5_ready"
   | "image_prompts_ready" | "images_ready" | "animation_prompts_ready"
-  | "videos_ready" | "audio_ready"
+  | "videos_ready" | "audio_ready" | "music_ready"
   | "assembled" | "published" | "paused" | "failed";
 
 export type NodeType =
@@ -22,7 +22,7 @@ export type NodeType =
   | "enrich_1" | "enrich_2" | "enrich_3" | "enrich"
   | "image_prompts" | "images"
   | "animation_prompts" | "videos"
-  | "audio" | "assemble" | "publish"
+  | "audio" | "music" | "assemble" | "publish"
   | "hitl_gate" | "hitl_hero" | "hitl_images" | "hitl_videos" | "hitl_final"
   | string; // допускаем кастомные типы
 

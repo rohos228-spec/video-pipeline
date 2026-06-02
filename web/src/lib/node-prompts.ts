@@ -4,7 +4,7 @@ import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
 
-export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
+export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts" | "verdict";
 
 export interface NodePromptSlot {
   id: string;
@@ -23,23 +23,28 @@ const BASE: Record<string, NodePromptSlot[]> = {
   plan: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
     { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "plan" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "plan" },
   ],
   script: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "script" },
     { id: "main", title: "Промт закадрового текста", kind: "gpt", stepCode: "script" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "script" },
   ],
   split: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "split" },
     { id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "split" },
   ],
   hero: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "hero" },
     { id: "main", title: "Промт персонажа", kind: "gpt", stepCode: "hero" },
     { id: "style", title: "Стиль персонажа", kind: "gpt", stepCode: "hero_style" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "hero" },
   ],
   items: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "items" },
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "items" },
   ],
   enrich_1: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_1" },
@@ -64,6 +69,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
   image_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "img_pr" },
   ],
   /** Outsee: промты задаются на шаге 6 (image_prompts), здесь Excel + просмотр кадров. */
   images: [
@@ -81,6 +87,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
       stepCode: "img_pr",
       description: "prompts/05_image_prompts (шаг 6)",
     },
+    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "images" },
   ],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
@@ -93,6 +100,10 @@ const BASE: Record<string, NodePromptSlot[]> = {
   audio: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "audio" },
     { id: "tts", title: "ElevenLabs TTS", kind: "gpt" },
+  ],
+  music: [
+    { id: "voiceover", title: "voiceover.txt", kind: "text", stepCode: "music" },
+    { id: "gpt_text", title: "Текст для GPT (Suno)", kind: "text", stepCode: "music" },
   ],
   assemble: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "assemble" },

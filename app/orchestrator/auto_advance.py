@@ -159,9 +159,17 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
         ProjectStatus.generating_audio,
         HITLKind.approve_videos,
     )
-    # audio_ready → assembling
+    # audio_ready → generating_music (или assemble если music отключена)
     transitions[ProjectStatus.audio_ready] = StepTransition(
-        ProjectStatus.audio_ready, ProjectStatus.assembling, HITLKind.approve_videos
+        ProjectStatus.audio_ready,
+        ProjectStatus.generating_music,
+        HITLKind.approve_videos,
+    )
+    # music_ready → assembling
+    transitions[ProjectStatus.music_ready] = StepTransition(
+        ProjectStatus.music_ready,
+        ProjectStatus.assembling,
+        HITLKind.approve_videos,
     )
     # assembled → publishing (или конец)
     transitions[ProjectStatus.assembled] = StepTransition(
@@ -222,6 +230,7 @@ def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
         ProjectStatus.generating_animation_prompts,
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
+        ProjectStatus.generating_music,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ])
@@ -284,6 +293,7 @@ def _running_for_ready(ready: ProjectStatus) -> ProjectStatus | None:
         ProjectStatus.enrich_3_ready: ProjectStatus.enriching_3,
         ProjectStatus.enrich_4_ready: ProjectStatus.enriching_4,
         ProjectStatus.enrich_5_ready: ProjectStatus.enriching_5,
+        ProjectStatus.music_ready: ProjectStatus.generating_music,
     }
     _ = step  # silence
     return sub_map.get(ready)
@@ -890,6 +900,7 @@ async def serial_busy_in_batch(session: AsyncSession, batch_id: int) -> int | No
         ProjectStatus.generating_animation_prompts,
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
+        ProjectStatus.generating_music,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ]
@@ -1006,6 +1017,7 @@ MASS_LANE_BUSY_STATUSES = [
     ProjectStatus.generating_animation_prompts,
     ProjectStatus.generating_videos,
     ProjectStatus.generating_audio,
+    ProjectStatus.generating_music,
     ProjectStatus.assembling,
     ProjectStatus.publishing,
 ]

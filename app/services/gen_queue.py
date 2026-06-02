@@ -29,6 +29,7 @@ GEN_QUEUE_BUSY_STATUSES = [
     ProjectStatus.generating_images,
     ProjectStatus.generating_animation_prompts,
     ProjectStatus.generating_videos,
+    ProjectStatus.generating_music,
     ProjectStatus.generating_audio,
     ProjectStatus.assembling,
     ProjectStatus.publishing,

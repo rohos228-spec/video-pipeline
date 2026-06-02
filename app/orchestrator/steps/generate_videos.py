@@ -249,6 +249,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         return
 
+    from app.services.post_step_validate import finalize_or_retry
+
+    if not await finalize_or_retry(
+        session,
+        project,
+        step="video",
+        ready_status=ProjectStatus.videos_ready,
+        running_status=ProjectStatus.generating_videos,
+    ):
+        return
+
     project.status = ProjectStatus.videos_ready
     await session.flush()
 

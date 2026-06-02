@@ -110,6 +110,12 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             await generate_videos.run(session, project, bot)
             return
 
+        if status is ProjectStatus.generating_music:
+            from app.orchestrator.steps import generate_music
+
+            await generate_music.run(session, project, bot)
+            return
+
         if status is ProjectStatus.generating_audio:
             await generate_audio.run(session, project, bot)
             return

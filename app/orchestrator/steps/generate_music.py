@@ -1,4 +1,4 @@
-"""Шаг 10b: фоновая музыка через outsee.io/audio (Suno 5.5).
+"""Шаг 10: фоновая музыка через outsee.io/audio (Suno 5.5).
 
 1. GPT: voiceover.txt + сопроводительный текст → промт для Suno.
 2. Outsee: поле «Название» = тема ролика, промт = ответ GPT → Generate → mp3.
@@ -89,6 +89,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             path=str(music_path),
         )
     )
+    await session.flush()
+
+    from app.services.post_step_validate import finalize_or_retry
+
+    if not await finalize_or_retry(
+        session,
+        project,
+        step="music",
+        ready_status=ProjectStatus.music_ready,
+        running_status=ProjectStatus.generating_music,
+    ):
+        return
+
     project.status = ProjectStatus.music_ready
     await session.flush()
     logger.info("[#{}] generate_music done → {}", project.id, music_path.name)

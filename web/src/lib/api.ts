@@ -296,6 +296,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getGptVerdictContext: (projectId: number, stepCode: string) =>
+    http<{
+      step_code: string;
+      supported: boolean;
+      prompt: string;
+      artifact_preview: string;
+      attachments: string[];
+    }>(`/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}`),
+  runGptVerdict: (projectId: number, stepCode: string, prompt: string) =>
+    http<{
+      approved: boolean;
+      rounds: number;
+      fix_text: string;
+      last_raw: string;
+      history: string[];
+    }>(`/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}/run`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }),
   pauseProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resumeProject: (projectId: number) =>

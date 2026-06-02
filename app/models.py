@@ -36,6 +36,7 @@ class ProjectStatus(str, enum.Enum):
     generating_images = "generating_images"  # картинки
     generating_animation_prompts = "generating_animation_prompts"
     generating_videos = "generating_videos"
+    generating_music = "generating_music"
     generating_audio = "generating_audio"
     assembling = "assembling"
     publishing = "publishing"
@@ -54,6 +55,7 @@ class ProjectStatus(str, enum.Enum):
     images_ready = "images_ready"
     animation_prompts_ready = "animation_prompts_ready"
     videos_ready = "videos_ready"
+    music_ready = "music_ready"
     audio_ready = "audio_ready"
     assembled = "assembled"
     published = "published"
@@ -78,6 +80,7 @@ class ArtifactKind(str, enum.Enum):
     item_reference = "item_reference"  # реф-картинка предмета
     scene_image = "scene_image"
     scene_video = "scene_video"
+    music = "music"
     audio = "audio"
     subtitle = "subtitle"
     whisper_words = "whisper_words"
