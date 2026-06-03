@@ -96,9 +96,10 @@ if ($E2E) {
             npm install
             if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
         }
-        if (-not (Test-Path "$env:LOCALAPPDATA\ms-playwright\chromium-*")) {
+        if (-not (Get-ChildItem "$env:LOCALAPPDATA\ms-playwright" -Filter "chromium-*" -ErrorAction SilentlyContinue)) {
             Write-Host "    playwright install chromium ..." -ForegroundColor DarkGray
             npx playwright install chromium
+            if ($LASTEXITCODE -ne 0) { throw "playwright install failed" }
         }
         npm run test:e2e
         if ($LASTEXITCODE -ne 0) { throw "test:e2e exit $LASTEXITCODE" }

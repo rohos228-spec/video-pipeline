@@ -338,16 +338,63 @@ class GptVerdictRunPayload(BaseModel):
     prompt: str | None = None
 
 
+class GptVerdictTemplateSavePayload(BaseModel):
+    name: str
+    content: str
+
+
+@router.get("/verdict-templates/{step_code}")
+async def list_verdict_templates_route(step_code: str) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, list_verdict_templates
+
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+    return {"step_code": step_code, "templates": list_verdict_templates(step_code)}
+
+
+@router.post("/verdict-templates/{step_code}")
+async def save_verdict_template_route(
+    step_code: str,
+    payload: GptVerdictTemplateSavePayload,
+) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, save_verdict_template
+
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+    try:
+        path = save_verdict_template(step_code, payload.name.strip(), payload.content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "name": payload.name.strip(), "path": str(path.name)}
+
+
+@router.get("/projects/{project_id}/step-attachments/{step_code}")
+async def get_step_attachments(
+    project_id: int,
+    step_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import attachments_for_step
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    files = await attachments_for_step(session, project, step_code)
+    return {"step_code": step_code, "files": [p.name for p in files]}
+
+
 @router.get("/projects/{project_id}/gpt-verdict/{step_code}")
 async def get_gpt_verdict_context(
     project_id: int,
     step_code: str,
+    template: str = "default",
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     from app.services.gpt_verdict_review import (
         VERDICT_STUDIO_STEPS,
         artifact_text_for_step,
         attachments_for_step,
+        list_verdict_templates,
         load_verdict_check_prompt,
     )
 
@@ -357,13 +404,88 @@ async def get_gpt_verdict_context(
     if step_code not in VERDICT_STUDIO_STEPS:
         raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
     files = await attachments_for_step(session, project, step_code)
+    tpl = (template or "default").strip() or "default"
+    from app.services.gpt_verdict_review import verdict_template_for_project
+
+    if tpl == "default":
+        tpl = verdict_template_for_project(project, step_code)
     return {
         "step_code": step_code,
         "supported": True,
-        "prompt": load_verdict_check_prompt(step_code),
+        "template": tpl,
+        "templates": list_verdict_templates(step_code),
+        "prompt": load_verdict_check_prompt(step_code, template=tpl),
         "artifact_preview": artifact_text_for_step(project, step_code)[:4000],
         "attachments": [str(p.name) for p in files],
     }
+
+
+@router.post("/projects/{project_id}/gpt-verdict/{step_code}/save-template")
+async def save_gpt_verdict_as_template(
+    project_id: int,
+    step_code: str,
+    payload: GptVerdictTemplateSavePayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Сохраняет промт GPT-проверки в prompts/check_<step>/<name>.md."""
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, save_verdict_template
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="укажите имя шаблона")
+    if not payload.content.strip():
+        raise HTTPException(status_code=400, detail="промт проверки пуст")
+    try:
+        path = save_verdict_template(step_code, name, payload.content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "step_code": step_code, "name": name, "path": path.name}
+
+
+@router.delete("/projects/{project_id}/gpt-verdict/{step_code}/templates/{name}")
+async def delete_gpt_verdict_template(
+    project_id: int,
+    step_code: str,
+    name: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, delete_verdict_template
+
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+    raw_name = name.strip()
+    try:
+        removed = delete_verdict_template(step_code, raw_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not removed:
+        raise HTTPException(status_code=404, detail="template not found")
+    return {"ok": True, "step_code": step_code, "name": raw_name, "removed": True}
+
+
+@router.delete("/verdict-templates/{step_code}/{name}")
+async def delete_verdict_template_route(step_code: str, name: str) -> dict[str, Any]:
+    from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, delete_verdict_template
+
+    if step_code not in VERDICT_STUDIO_STEPS:
+        raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
+    raw_name = name.strip()
+    try:
+        removed = delete_verdict_template(step_code, raw_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not removed:
+        raise HTTPException(status_code=404, detail="template not found")
+    return {"ok": True, "step_code": step_code, "name": raw_name, "removed": True}
 
 
 @router.post("/projects/{project_id}/gpt-verdict/{step_code}/run")
@@ -376,6 +498,7 @@ async def run_gpt_verdict(
     from app.bots.browser import browser_session
     from app.bots.chatgpt import ChatGPTBot
     from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, run_verdict_review
+    from app.services.step_cancel import StepCancelledError, consume_stop
 
     project = await session.get(Project, project_id)
     if project is None:
@@ -383,21 +506,43 @@ async def run_gpt_verdict(
     if step_code not in VERDICT_STUDIO_STEPS:
         raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
 
+    consume_stop(project_id)
     user_prompt = payload.prompt if payload else None
-    async with browser_session() as bs:
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("ai_new_window_per_check"):
-            bs.force_new_window = True
-        gpt = ChatGPTBot(bs)
-        result = await run_verdict_review(
-            session,
-            project,
-            step_code,
-            gpt,
-            user_prompt=user_prompt,
-        )
+    try:
+        async with browser_session() as bs:
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            if meta.get("ai_new_window_per_check"):
+                bs.force_new_window = True
+            gpt = ChatGPTBot(bs)
+            result = await run_verdict_review(
+                session,
+                project,
+                step_code,
+                gpt,
+                user_prompt=user_prompt,
+            )
+    except StepCancelledError as e:
+        raise HTTPException(status_code=499, detail=str(e)) from e
+
+    from app.orchestrator.auto_advance import advance_after_gpt_verdict
+
+    advanced = await advance_after_gpt_verdict(
+        session,
+        project,
+        step_code,
+        approved=result.approved,
+        fix_applied=result.fix_applied,
+    )
+    if advanced:
+        await session.commit()
+        await session.refresh(project)
+
     return {
         "approved": result.approved,
+        "fix_applied": result.fix_applied,
+        "fix_path": result.fix_path,
+        "advanced": advanced,
+        "status": project.status.value,
         "rounds": result.rounds,
         "fix_text": result.fix_text,
         "last_raw": result.last_raw[:8000],

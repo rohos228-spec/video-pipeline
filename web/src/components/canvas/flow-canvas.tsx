@@ -18,6 +18,7 @@ import {
   addEdge,
   Position,
   Handle,
+  useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,10 +50,10 @@ import {
   type CanvasClipboardPayload,
 } from "@/lib/canvas-clipboard";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
+import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
-import { EdgeAiControls } from "@/components/canvas/edge-ai-controls";
 import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
   Dialog,
@@ -75,6 +76,7 @@ export function FlowCanvas({
   onSelectNode,
   onNodeActivate,
   disabledNodes = new Set<string>(),
+  onCanvasZoom,
 }: {
   projectId: number | null;
   selectedNodeKey: string | null;
@@ -83,6 +85,7 @@ export function FlowCanvas({
   onSelectNode: (key: string | null) => void;
   onNodeActivate?: (nodeKey: string, nodeType: string) => void;
   disabledNodes?: Set<string>;
+  onCanvasZoom?: (zoom: number) => void;
 }) {
   // 1) Дефолтный Workflow с бэкенда.
   const workflows = useQuery({
@@ -732,7 +735,13 @@ export function FlowCanvas({
         onNodesDelete={onNodesDelete}
         onNodeClick={(ev, node) => {
           const t = ev.target as HTMLElement;
-          if (t.closest(".node-v-trigger") || t.closest(".node-v-menu")) return;
+          if (
+            t.closest(".node-v-trigger") ||
+            t.closest(".node-v-menu") ||
+            t.closest(".node-ai-review-trigger")
+          ) {
+            return;
+          }
           const d = node.data as PipelineNodeData;
           onSelectNode(d.nodeKey);
           onNodeActivate?.(d.nodeKey, d.type);
@@ -755,6 +764,8 @@ export function FlowCanvas({
           size={1}
           variant={BackgroundVariant.Dots}
         />
+        {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
+        <NodeAiReviewControls />
         <Controls position="bottom-right" showInteractive={false} />
         {selectedNodeKey && (
           <button
@@ -796,7 +807,6 @@ export function FlowCanvas({
           nodeBorderRadius={4}
           maskColor="hsl(var(--background) / 0.7)"
         />
-        <EdgeAiControls edges={edges} />
         <RightButtonMarquee />
       </ReactFlow>
       <WorkflowToolbar
@@ -1117,8 +1127,14 @@ function RunOverlay({
   const handleResume = async () => {
     setPausing(true);
     try {
-      await api.resumeProject(projectId);
-      toast.success("Проект продолжен");
+      const r = await api.continueProject(projectId);
+      if (r.advanced) {
+        toast.success(`Следующий шаг: ${r.status}`);
+      } else if (r.action === "resumed") {
+        toast.success("Проект продолжен");
+      } else {
+        toast.message("Нет шага для автопродвижения — запустите шаг вручную");
+      }
       onRunCreated();
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
@@ -1436,6 +1452,14 @@ function workflowToReactFlowEdges(wf: WorkflowDetail): Edge[] {
     targetHandle: e.targetHandle ?? undefined,
     type: "smoothstep",
   }));
+}
+
+function ViewportZoomReporter({ onZoom }: { onZoom: (zoom: number) => void }) {
+  const zoom = useStore((s) => s.transform[2]);
+  useEffect(() => {
+    onZoom(zoom);
+  }, [zoom, onZoom]);
+  return null;
 }
 
 // Re-export для удобства внешних компонентов.

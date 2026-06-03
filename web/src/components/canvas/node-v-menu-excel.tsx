@@ -5,7 +5,6 @@ import { FileSpreadsheet, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import {
   pickDefaultSheetForNode,
-  xlsxPreviewFocusForNode,
   xlsxRowsWithContent,
 } from "@/lib/xlsx-sheets";
 import { cn } from "@/lib/utils";
@@ -38,16 +37,15 @@ export function NodeVMenuExcelPreview({
   const sheet = pickDefaultSheetForNode(nodeType, sheets);
   const hasFile = sheets.length > 0;
 
-  const focus = xlsxPreviewFocusForNode(nodeType);
   const preview = useQuery({
-    queryKey: ["v-menu-xlsx-preview", projectId, sheet, focus?.startRow],
+    queryKey: ["v-menu-xlsx-preview", projectId, sheet],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet,
         raw: true,
-        maxRows: focus?.maxRows ?? 8,
-        maxCols: focus ? 8 : 6,
-        startRow: focus?.startRow,
+        maxRows: 500,
+        maxCols: 200,
+        startRow: 1,
       }),
     enabled: open && hasFile && Boolean(sheet),
   });
@@ -88,13 +86,19 @@ export function NodeVMenuExcelPreview({
       )}
 
       {!loading && rows.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-white/10 bg-black/30">
-          <table className="w-full border-collapse text-[8px]">
+        <div className="max-h-48 overflow-auto rounded-md border border-white/10 bg-black/30">
+          <table className="min-w-max border-collapse text-[8px]">
             <tbody>
-              {rows.slice(0, 4).map((row, ri) => (
+              {rows.map((row, ri) => (
                 <tr key={ri} className="border-b border-white/5 last:border-0">
-                  {row.slice(0, 5).map((cell, ci) => (
-                    <td key={ci} className="max-w-[56px] truncate px-1 py-0.5 text-muted-foreground">
+                  <td className="sticky left-0 border-r border-white/10 bg-black/50 px-1 text-muted-foreground">
+                    {ri + 1}
+                  </td>
+                  {row.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      className="min-w-[48px] max-w-[120px] whitespace-pre-wrap px-1 py-0.5 text-muted-foreground"
+                    >
                       {cell || "—"}
                     </td>
                   ))}

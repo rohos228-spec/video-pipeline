@@ -17,6 +17,16 @@ from app.services.project_state import compute_actual_status
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 from app.telegram.menu import status_order
 
+# Шаги, которые не требуют уже готовых кадров с voiceover в Excel/БД.
+_NO_FRAMES_REQUIRED: frozenset[ProjectStatus] = frozenset(
+    {
+        ProjectStatus.planning,
+        ProjectStatus.scripting,
+        ProjectStatus.splitting,
+        ProjectStatus.generating_music,
+    }
+)
+
 
 async def _count_kind(session: AsyncSession, project_id: int, kind: ArtifactKind) -> int:
     return (
@@ -54,9 +64,13 @@ async def can_enter_running(
 
     Возвращает (ok, reason, suggested_status при ok=False).
     """
+    if target not in _NO_FRAMES_REQUIRED:
+        need_frames = await _frames_with_voiceover(session, project)
+        if need_frames == 0:
+            actual = await compute_actual_status(session, project)
+            return False, "нет кадров с voiceover", actual
+
     need_frames = await _frames_with_voiceover(session, project)
-    if need_frames == 0:
-        return False, "нет кадров с voiceover", ProjectStatus.frames_ready
 
     if target is ProjectStatus.generating_videos:
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)

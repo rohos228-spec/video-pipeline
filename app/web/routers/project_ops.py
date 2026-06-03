@@ -60,6 +60,25 @@ async def resume_project(
     return p
 
 
+@router.post("/{project_id}/continue")
+async def continue_project(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Снять stop/паузу и продвинуть проект на следующий шаг (если *_ready)."""
+    from app.orchestrator.auto_advance import continue_project_pipeline
+
+    p = _project_or_404(await session.get(Project, project_id))
+    info = await continue_project_pipeline(session, p, bot=None)
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"continue": True, **info},
+    )
+    return {"project": project_to_detail(p), **info}
+
+
 @router.post("/{project_id}/stop")
 async def stop_project(
     project_id: int, session: AsyncSession = Depends(get_session)

@@ -246,6 +246,23 @@ VISUAL_REVIEW_KINDS = {
     HITLKind.approve_final,
 }
 
+# Какой шаг GPT-проверки «Вердикт» соответствует *_ready статусу.
+READY_VERDICT_STEP: dict[ProjectStatus, str] = {
+    ProjectStatus.plan_ready: "plan",
+    ProjectStatus.script_ready: "script",
+    ProjectStatus.frames_ready: "split",
+    ProjectStatus.hero_ready: "hero",
+    ProjectStatus.items_ready: "items",
+    ProjectStatus.enrich_1_ready: "enrich_1",
+    ProjectStatus.enrich_2_ready: "enrich_2",
+    ProjectStatus.enrich_3_ready: "enrich_3",
+    ProjectStatus.enrich_4_ready: "enrich_4",
+    ProjectStatus.enrich_5_ready: "enrich_5",
+    ProjectStatus.image_prompts_ready: "img_pr",
+    ProjectStatus.animation_prompts_ready: "anim_pr",
+    ProjectStatus.images_ready: "images",
+}
+
 
 # ============================================================
 # Поиск последнего HITL
@@ -673,19 +690,103 @@ async def _apply_reject(
 
 
 # ============================================================
+# Продвижение после GPT-проверки «Вердикт»
+# ============================================================
+
+
+def ready_status_for_verdict_step(step_code: str) -> ProjectStatus | None:
+    for ready, code in READY_VERDICT_STEP.items():
+        if code == step_code:
+            return ready
+    return None
+
+
+async def advance_after_gpt_verdict(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+    *,
+    approved: bool,
+    fix_applied: bool,
+) -> bool:
+    """После «Одобрено» или «Не одобрено»+файл — перейти к следующему running-шагу."""
+    if not approved and not fix_applied:
+        return False
+    ready = ready_status_for_verdict_step(step_code)
+    if ready is None or project.status != ready:
+        logger.info(
+            "[#{}] verdict advance skip: status={} step={}",
+            project.id,
+            project.status.value,
+            step_code,
+        )
+        return False
+    transition = TRANSITIONS.get(ready)
+    if transition is None:
+        return False
+    from app.services.gpt_verdict_review import STEP_TO_HITL
+
+    kind = STEP_TO_HITL.get(step_code)
+    hitl = await get_latest_hitl(session, project.id, kind) if kind else None
+    await _apply_approve(session, project, hitl, transition, bot=None)
+    logger.info(
+        "[#{}] verdict advance {} → {} (approved={} fix_applied={})",
+        project.id,
+        ready.value,
+        project.status.value,
+        approved,
+        fix_applied,
+    )
+    return True
+
+
+async def continue_project_pipeline(
+    session: AsyncSession, project: Project, *, bot: Bot | None = None
+) -> dict[str, object]:
+    """Продолжить пайплайн: снять stop/паузу и продвинуть *_ready → running."""
+    from app.services.project_control import resume_project as resume_project_svc
+    from app.services.step_cancel import clear_stop
+
+    clear_stop(project.id)
+    meta = dict(project.meta or {})
+    cleared: list[str] = []
+    for key in ("user_stop", "mass_lane_user_stop"):
+        if meta.pop(key, None) is not None:
+            cleared.append(key)
+    if cleared:
+        project.meta = meta
+
+    if project.status is ProjectStatus.paused:
+        new_status = await resume_project_svc(session, project)
+        return {"action": "resumed", "status": new_status, "advanced": False}
+
+    advanced = await maybe_auto_advance(session, project, bot, force=True)
+    return {
+        "action": "advanced" if advanced else "idle",
+        "status": project.status.value,
+        "advanced": advanced,
+        "cleared": cleared,
+    }
+
+
+# ============================================================
 # Главная функция
 # ============================================================
 
 
 async def maybe_auto_advance(
-    session: AsyncSession, project: Project, bot: Bot
+    session: AsyncSession, project: Project, bot: Bot, *, force: bool = False
 ) -> bool:
     """Возвращает True если проект был продвинут (или поставлен в paused).
 
     Вызывается ИЗ worker-loop'а ПОСЛЕ обхода running-статусов. Только
     для проектов с `auto_mode=True` в *_ready состоянии.
     """
-    if not getattr(project, "auto_mode", False) and not settings.hitl_auto_approve:
+    if (
+        not force
+        and not getattr(project, "auto_mode", False)
+        and not settings.hitl_auto_approve
+    ):
         return False
     await clamp_status_to_data(session, project)
     status = project.status
@@ -749,7 +850,25 @@ async def maybe_auto_advance(
         await _apply_approve(session, project, hitl, transition, bot=bot)
         return True
 
-    # GPT-чек для текстовых kind'ов:
+    # ИИ-контроль: тот же промт «Вердикт», что выбран в Studio (meta.gpt_verdict_templates).
+    verdict_step = READY_VERDICT_STEP.get(status)
+    if meta.get("ai_control") and verdict_step:
+        from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS
+
+        if verdict_step in VERDICT_STUDIO_STEPS:
+            needs_verdict = transition.kind in TEXT_REVIEW_KINDS or (
+                transition.kind in VISUAL_REVIEW_KINDS
+                and _should_vision_check(project, transition.kind)
+            )
+            if needs_verdict:
+                result = await _run_verdict_review_for_step(
+                    session, project, verdict_step
+                )
+                return await _apply_review_result(
+                    session, project, hitl, transition, result, bot=bot
+                )
+
+    # GPT-чек для текстовых kind'ов (legacy JSON, если не ai_control / нет Verdict-шага):
     if transition.kind in TEXT_REVIEW_KINDS:
         artifact = _artifact_for_kind(project, transition.kind)
         if not artifact:
@@ -796,6 +915,59 @@ def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
     if kind is HITLKind.approve_script:
         return project.script_text or None
     return None
+
+
+async def _run_verdict_review_for_step(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+) -> ReviewResult:
+    """GPT-проверка «Вердикт» — тот же шаблон, что в Studio."""
+    from app.bots.browser import browser_session
+    from app.bots.chatgpt import ChatGPTBot
+    from app.services.gpt_verdict_review import (
+        load_verdict_check_prompt,
+        run_verdict_review,
+        verdict_template_for_project,
+    )
+
+    meta = getattr(project, "meta", None) or {}
+    template = verdict_template_for_project(project, step_code)
+    check_prompt = load_verdict_check_prompt(step_code, template=template)
+    logger.info(
+        "auto_advance: #{} verdict check step={} template={!r} prompt_len={}",
+        project.id,
+        step_code,
+        template,
+        len(check_prompt),
+    )
+
+    async with browser_session() as bs:
+        if meta.get("ai_new_window_per_check"):
+            bs.force_new_window = True
+        gpt = ChatGPTBot(bs)
+        verdict = await run_verdict_review(
+            session,
+            project,
+            step_code,
+            gpt,
+            user_prompt=check_prompt,
+        )
+
+    if verdict.approved or verdict.fix_applied:
+        return ReviewResult(
+            decision=HITLDecision.approved,
+            confidence=1.0,
+            raw_response=verdict.last_raw,
+        )
+    fix = (verdict.fix_text or "").strip()
+    return ReviewResult(
+        decision=HITLDecision.regenerate,
+        confidence=0.0,
+        fix_hints=[fix] if fix else [],
+        reasons=[fix or "GPT: не одобрено"],
+        raw_response=verdict.last_raw,
+    )
 
 
 async def _run_text_review(

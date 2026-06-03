@@ -17,6 +17,7 @@ import {
   Send,
   CheckSquare,
   Sparkles,
+  Music2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -30,6 +31,7 @@ const ICONS: Record<string, LucideIcon> = {
   image: ImageIcon,
   film: Film,
   "audio-waveform": AudioWaveform,
+  music: Music2,
   scissors: Scissors,
   send: Send,
   "check-square": CheckSquare,

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext } from "react";
-import type { HITLDTO, ProjectDetail } from "@/lib/types";
+import type { HITLDTO, NodeRunStatus, ProjectDetail } from "@/lib/types";
 import type { NodePromptSlot } from "@/lib/node-prompts";
 import type { NodeResultSnapshot } from "@/lib/node-result-resolver";
 
@@ -16,8 +16,10 @@ export interface CanvasActions {
   disabledNodes: Set<string>;
   vMenuNodeKey: string | null;
   setVMenuNodeKey: (key: string | null) => void;
+  aiReviewNodeKey: string | null;
+  canvasZoom: number;
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
-  getNodeResult: (nodeType: string) => NodeResultSnapshot;
+  getNodeResult: (nodeType: string, nodeStatus?: NodeRunStatus) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
   onOpenGptText: (nodeKey: string, nodeType: string) => void;
   onViewAllPrompts: (nodeKey: string, nodeType: string) => void;
@@ -31,6 +33,7 @@ export interface CanvasActions {
   onDownloadPrompts: (nodeKey: string, nodeType: string) => void;
   onNodeBodyClick: (nodeKey: string, nodeType: string) => void;
   onOpenHitlReview: (nodeKey: string, nodeType: string) => void;
+  onOpenAiReview: (nodeKey: string, nodeType: string) => void;
   onOpenHitlById: (hitlId: number) => void;
   onOpenNodeResult: (nodeKey: string, nodeType: string) => void;
 }

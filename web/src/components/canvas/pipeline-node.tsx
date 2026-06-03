@@ -20,8 +20,6 @@ import {
   useCanvasActionsOptional,
 } from "./canvas-actions-context";
 import { NodeVMenu } from "./node-v-menu";
-import { NodeGenerationBadge } from "./node-generation-badge";
-import { NodeHitlBadge, hitlKindForNodeType, resolveHitlBadgeState } from "./node-hitl-badge";
 import { NodeResultBadge } from "./node-result-badge";
 import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
@@ -52,20 +50,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
-  const resultSnapshot = actions?.getNodeResult(d.type);
-  const hitlKind = hitlKindForNodeType(d.type);
-  const hitlState =
-    actions && hitlKind
-      ? resolveHitlBadgeState({
-          nodeType: d.type,
-          nodeStatus: d.status,
-          projectStatus: actions.project?.status,
-          autoMode: actions.autoMode,
-          aiControl: actions.aiControl,
-          hitlList: actions.hitlList,
-        })
-      : null;
-  const showHitlBadge = hitlState != null;
+  const resultSnapshot = actions?.getNodeResult(d.type, d.status);
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -86,20 +71,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
         )}
         style={{ borderLeftColor: `hsl(${spec.accent})`, borderLeftWidth: 3 }}
       >
-        {actions && showHitlBadge && hitlState && (
-          <NodeHitlBadge
-            state={hitlState}
-            onClick={(e) => {
-              e.stopPropagation();
-              actions.onOpenHitlReview(d.nodeKey, d.type);
-            }}
-          />
-        )}
-
-        {actions && !showHitlBadge && (
-          <NodeGenerationBadge nodeType={d.type} status={d.status} />
-        )}
-
         {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
           <NodeResultBadge
             snapshot={resultSnapshot}
@@ -152,6 +123,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               slots={slots}
               disabled={disabled}
               projectId={actions.projectId}
+              canvasZoom={actions.canvasZoom}
               hasAssets={assetKind != null}
               onClose={() => actions.setVMenuNodeKey(null)}
               onSelectPrompt={(slot) => {

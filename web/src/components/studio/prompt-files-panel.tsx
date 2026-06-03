@@ -32,13 +32,15 @@ function formatBytes(n: number): string {
 }
 
 function formatModified(mtime: number): string {
-  // mtime приходит в секундах (UNIX time) — JS-Date ждёт миллисекунды.
-  const d = new Date(mtime * 1000);
-  return d.toLocaleString(undefined, {
+  const ms = mtime > 1e12 ? mtime : mtime * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("ru-RU", {
     hour: "2-digit",
     minute: "2-digit",
     day: "2-digit",
     month: "2-digit",
+    year: "numeric",
   });
 }
 

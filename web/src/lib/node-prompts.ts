@@ -4,7 +4,7 @@ import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
 
-export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts" | "verdict";
+export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
 
 export interface NodePromptSlot {
   id: string;
@@ -23,28 +23,23 @@ const BASE: Record<string, NodePromptSlot[]> = {
   plan: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
     { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "plan" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "plan" },
   ],
   script: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "script" },
     { id: "main", title: "Промт закадрового текста", kind: "gpt", stepCode: "script" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "script" },
   ],
   split: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "split" },
     { id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "split" },
   ],
   hero: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "hero" },
     { id: "main", title: "Промт персонажа", kind: "gpt", stepCode: "hero" },
     { id: "style", title: "Стиль персонажа", kind: "gpt", stepCode: "hero_style" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "hero" },
   ],
   items: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "items" },
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "items" },
   ],
   enrich_1: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_1" },
@@ -69,7 +64,6 @@ const BASE: Record<string, NodePromptSlot[]> = {
   image_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "img_pr" },
   ],
   /** Outsee: промты задаются на шаге 6 (image_prompts), здесь Excel + просмотр кадров. */
   images: [
@@ -87,7 +81,6 @@ const BASE: Record<string, NodePromptSlot[]> = {
       stepCode: "img_pr",
       description: "prompts/05_image_prompts (шаг 6)",
     },
-    { id: "verdict", title: "Проверка GPT", kind: "verdict", stepCode: "images" },
   ],
   animation_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "anim_pr" },
@@ -160,7 +153,7 @@ export function mergePromptSlotsWithDefaults(
   if (!defaults.length) return migrateLegacyPromptSlotKinds(slots);
   if (!slots.length) return defaults;
 
-  slots = migrateLegacyPromptSlotKinds(slots);
+  slots = migrateLegacyPromptSlotKinds(slots).filter((s) => s.id !== "verdict");
 
   const byId = new Map(slots.map((s) => [s.id, s]));
   const merged: NodePromptSlot[] = [];
@@ -205,7 +198,7 @@ export function resolvePromptSlots(
   const raw = slots?.length
     ? mergePromptSlotsWithDefaults(nodeType, [...slots])
     : [...defaultPromptSlots(nodeType)];
-  const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel");
+  const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel" && s.id !== "verdict");
 
   if (!nodeTypeRequiresExcel(nodeType)) {
     return raw.filter((s) => s.kind !== "text");

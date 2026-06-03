@@ -1,5 +1,5 @@
 import { api, type ProjectAsset } from "@/lib/api";
-import type { ArtifactDTO, FrameDTO, ProjectDetail } from "@/lib/types";
+import type { ArtifactDTO, FrameDTO, NodeRunStatus, ProjectDetail } from "@/lib/types";
 import { isEnrichNode } from "@/lib/node-prompts";
 import {
   pickGeneralPlanSheet,
@@ -113,7 +113,40 @@ function textAsset(assets: ProjectAsset[], name: string): ProjectAsset | undefin
   return assets.find((a) => a.id === name || a.label === name);
 }
 
-export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): NodeResultSnapshot {
+/** Зелёный кубик — только когда шаг реально завершён (не из общего xlsx). */
+export function gateNodeResultVisibility(
+  snapshot: NodeResultSnapshot,
+  nodeType: string,
+  nodeStatus?: NodeRunStatus,
+): NodeResultSnapshot {
+  if (nodeStatus === "done" || nodeStatus === "waiting_hitl") {
+    return snapshot;
+  }
+  if (nodeType === "topic") {
+    return snapshot;
+  }
+  if (
+    !nodeStatus ||
+    nodeStatus === "pending" ||
+    nodeStatus === "skipped" ||
+    nodeStatus === "running" ||
+    nodeStatus === "failed"
+  ) {
+    return { ...snapshot, hasResult: false, itemCount: 0 };
+  }
+  return snapshot;
+}
+
+export function resolveNodeResult(
+  nodeType: string,
+  ctx: NodeResultContext,
+  nodeStatus?: NodeRunStatus,
+): NodeResultSnapshot {
+  const snapshot = computeNodeResult(nodeType, ctx);
+  return gateNodeResultVisibility(snapshot, nodeType, nodeStatus);
+}
+
+function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResultSnapshot {
   const empty = (
     summary: string,
     replaceMode: NodeResultReplaceMode = "none",
@@ -424,7 +457,7 @@ export function resolveNodeResult(nodeType: string, ctx: NodeResultContext): Nod
 
     default: {
       if (isEnrichNode(nodeType)) {
-        return resolveNodeResult("enrich_1", ctx);
+        return computeNodeResult("enrich_1", ctx);
       }
       const generic = artifactItems(filterArtifacts(ctx.artifacts, nodeType)).slice(0, 8);
       if (generic.length) return ready(generic, `${generic.length} артефактов`, "studio");

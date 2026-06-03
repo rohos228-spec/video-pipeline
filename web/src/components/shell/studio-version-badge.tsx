@@ -36,9 +36,7 @@ export function StudioVersionBadge() {
   }, []);
 
   const displayLabel = server?.label ?? CLIENT_STUDIO_VERSION;
-  const uiStale =
-    server != null &&
-    (server.ui_stale === true || server.label !== CLIENT_STUDIO_VERSION);
+  const uiStale = server != null && server.ui_stale === true;
   const backendStale =
     server != null && (server.pipeline_ok === false || server.backend_ok === false);
 

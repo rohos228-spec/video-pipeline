@@ -103,6 +103,16 @@ def create_app() -> FastAPI:
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
 
+    @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
+    async def api_write_not_found(rest: str) -> None:
+        """Не даём GET catch-all отвечать 405 на неизвестные POST /api/*."""
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=404,
+            detail="API route not found — перезапустите Studio (start-studio.ps1)",
+        )
+
     # ── WebSocket: live-стрим событий выбранного канала ──
     @app.websocket("/ws/{channel:path}")
     async def ws_channel(ws: WebSocket, channel: str) -> None:

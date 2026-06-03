@@ -23,12 +23,13 @@ import { shouldShowStopBar } from "@/lib/project-running";
 import { isAiControlMode } from "@/lib/control-mode";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
+import { NodeAiReviewDialog } from "@/components/canvas/node-ai-review-dialog";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
-import { NodeResultPanel } from "@/components/canvas/node-result-panel";
 import {
   resolveNodeResult,
   type NodeResultContext,
 } from "@/lib/node-result-resolver";
+import { NodeResultPanel } from "@/components/canvas/node-result-panel";
 
 export function StudioWorkspace({
   projectId,
@@ -67,6 +68,10 @@ export function StudioWorkspace({
   const [resultPanel, setResultPanel] = useState<{ nodeKey: string; nodeType: string } | null>(
     null,
   );
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const [aiReview, setAiReview] = useState<{ nodeKey: string; nodeType: string } | null>(
+    null,
+  );
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
@@ -87,6 +92,7 @@ export function StudioWorkspace({
     setHitlModalOpen(false);
     setHitlModalId(null);
     setResultPanel(null);
+    setAiReview(null);
   }, [projectId]);
 
   const closeStudio = useCallback(() => {
@@ -259,7 +265,8 @@ export function StudioWorkspace({
   }, [project.data, artifacts.data, projectAssets.data, frames.data, mediaImages.data, mediaVideos.data]);
 
   const getNodeResult = useCallback(
-    (nodeType: string) => resolveNodeResult(nodeType, resultContext),
+    (nodeType: string, nodeStatus?: import("@/lib/types").NodeRunStatus) =>
+      resolveNodeResult(nodeType, resultContext, nodeStatus),
     [resultContext],
   );
 
@@ -306,6 +313,8 @@ export function StudioWorkspace({
       disabledNodes,
       vMenuNodeKey,
       setVMenuNodeKey,
+      aiReviewNodeKey: aiReview?.nodeKey ?? null,
+      canvasZoom,
       getPromptSlots,
       getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
@@ -463,6 +472,9 @@ export function StudioWorkspace({
           setAssetTray({ kind: trayKind, nodeType });
         }
       },
+      onOpenAiReview: (nodeKey: string, nodeType: string) => {
+        setAiReview({ nodeKey, nodeType });
+      },
       onOpenHitlById: (hitlId: number) => {
         setHitlModalId(hitlId);
         setHitlModalOpen(true);
@@ -499,6 +511,8 @@ export function StudioWorkspace({
       hitlList.data,
       disabledNodes,
       vMenuNodeKey,
+      aiReview,
+      canvasZoom,
       getPromptSlots,
       project.data?.meta,
       persistMeta,
@@ -532,6 +546,7 @@ export function StudioWorkspace({
           onSelectNode={(key) => {
             onSelectNode(key);
           }}
+          onCanvasZoom={setCanvasZoom}
           onNodeActivate={(nodeKey, nodeType) => {
             if (Date.now() < suppressStudioOpenUntil.current) return;
             if (nodeType === "topic") {
@@ -614,6 +629,26 @@ export function StudioWorkspace({
           onOpenChange={(o) => {
             setHitlModalOpen(o);
             if (!o) setHitlModalId(null);
+          }}
+        />
+      )}
+      {projectId != null && aiReview && (
+        <NodeAiReviewDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) setAiReview(null);
+          }}
+          projectId={projectId}
+          nodeKey={aiReview.nodeKey}
+          nodeType={aiReview.nodeType}
+          projectMeta={(project.data?.meta || {}) as Record<string, unknown>}
+          onOpenPrompt={(nodeKey, nodeType) => {
+            setAiReview(null);
+            openStudioForNode(nodeKey, nodeType, null, "prompts");
+          }}
+          onOpenGptText={(nodeKey, nodeType) => {
+            setAiReview(null);
+            openStudioForNode(nodeKey, nodeType, gptTextSlotForNode(nodeType), "prompts");
           }}
         />
       )}

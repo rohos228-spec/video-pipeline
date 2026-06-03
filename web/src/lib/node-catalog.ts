@@ -24,7 +24,7 @@ export interface NodeSpec {
   iconKey:
     | "plan" | "script" | "split" | "user-round" | "package"
     | "wand" | "image" | "film" | "audio-waveform"
-    | "scissors" | "send" | "check-square" | "sparkles";
+    | "scissors" | "send" | "check-square" | "sparkles" | "music";
 }
 
 export const NODE_CATALOG: Record<string, NodeSpec> = {
@@ -161,8 +161,8 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     label: "Музыка",
     description: "Фоновая музыка через GPT + Suno (Outsee).",
     category: "audio",
-    accent: "330 75% 65%",
-    iconKey: "audio-waveform",
+    accent: "292 85% 62%",
+    iconKey: "music",
   },
   audio: {
     type: "audio",

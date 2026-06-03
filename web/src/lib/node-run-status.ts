@@ -19,6 +19,7 @@ const NODE_TYPE_ORDER: readonly string[] = [
   "animation_prompts",
   "videos",
   "audio",
+  "music",
   "assemble",
   "publish",
 ];
@@ -59,11 +60,50 @@ const STATUS_TO_NODE: Record<
   videos_ready: { type: "videos", state: "done" },
   generating_audio: { type: "audio", state: "running" },
   audio_ready: { type: "audio", state: "done" },
+  generating_music: { type: "music", state: "running" },
+  music_ready: { type: "music", state: "done" },
   assembling: { type: "assemble", state: "running" },
   assembled: { type: "assemble", state: "done" },
   publishing: { type: "publish", state: "running" },
   published: { type: "publish", state: "done" },
 };
+
+function checkpointIndices(projectStatus: ProjectStatus | string | null | undefined): {
+  nodeIdx: number;
+  targetIdx: number;
+  checkpoint: (typeof STATUS_TO_NODE)[string] | undefined;
+} {
+  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
+  const nodeIdx = -1;
+  const targetIdx = checkpoint ? NODE_TYPE_ORDER.indexOf(checkpoint.type) : -1;
+  return { nodeIdx, targetIdx, checkpoint };
+}
+
+function statusFromCheckpoint(
+  nodeType: string,
+  projectStatus: ProjectStatus | string | null | undefined,
+  runStatus?: NodeRunStatus,
+): NodeRunStatus | null {
+  const { checkpoint } = checkpointIndices(projectStatus);
+  if (!checkpoint) return null;
+
+  const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
+  const targetIdx = NODE_TYPE_ORDER.indexOf(checkpoint.type);
+  if (nodeIdx < 0 || targetIdx < 0) return null;
+
+  if (nodeIdx < targetIdx) return "done";
+  if (nodeIdx > targetIdx) return "pending";
+
+  if (checkpoint.state === "done") return "done";
+  if (checkpoint.state === "running") {
+    if (runStatus === "waiting_hitl") return "waiting_hitl";
+    if (runStatus === "failed") return "failed";
+    if (runStatus === "skipped") return "skipped";
+    return "running";
+  }
+  if (runStatus === "failed") return "failed";
+  return "pending";
+}
 
 /**
  * NodeRun в БД ещё `running`, а проект уже ушёл в *_ready — раньше UI показывал «Ожидание».
@@ -74,21 +114,12 @@ export function reconcileNodeRunStatus(
   runStatus: NodeRunStatus,
   projectStatus: ProjectStatus | string | null | undefined,
 ): NodeRunStatus {
+  const fromCheckpoint = statusFromCheckpoint(nodeType, projectStatus, runStatus);
+  if (fromCheckpoint != null) return fromCheckpoint;
+
   if (runStatus !== "running") return runStatus;
   if (isProjectRunningStatus(projectStatus)) return runStatus;
-
-  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
-  if (!checkpoint) return "pending";
-
-  const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
-  const targetIdx = NODE_TYPE_ORDER.indexOf(checkpoint.type);
-  if (nodeIdx < 0 || targetIdx < 0) return "pending";
-
-  if (nodeIdx < targetIdx) return "done";
-  if (nodeIdx === targetIdx) {
-    return checkpoint.state === "done" ? "done" : "pending";
-  }
-  return "pending";
+  return runStatus;
 }
 
 /**
@@ -99,15 +130,8 @@ export function inferNodeStatusFromProject(
   nodeType: string,
   projectStatus: ProjectStatus | string | null | undefined,
 ): NodeRunStatus {
-  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
-  if (!checkpoint) return "pending";
-
-  const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
-  const targetIdx = NODE_TYPE_ORDER.indexOf(checkpoint.type);
-  if (nodeIdx < 0 || targetIdx < 0) return "pending";
-
-  if (nodeIdx < targetIdx) return "done";
-  if (nodeIdx === targetIdx) return checkpoint.state;
+  const fromCheckpoint = statusFromCheckpoint(nodeType, projectStatus);
+  if (fromCheckpoint != null) return fromCheckpoint;
   return "pending";
 }
 

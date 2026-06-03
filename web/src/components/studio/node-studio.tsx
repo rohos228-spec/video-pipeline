@@ -41,15 +41,12 @@ import {
   withSlotVariant,
 } from "@/lib/prompt-slot-storage";
 import {
-  nodeUsesRawXlsxGrid,
   pickDefaultSheetForNode,
-  xlsxPreviewFocusForNode,
 } from "@/lib/xlsx-sheets";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
-import { GptVerdictPanel } from "@/components/studio/gpt-verdict-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
@@ -121,8 +118,6 @@ export function NodeStudio({
     allSlots.some((s) => s.kind === "excel") ||
     isEnrichNode(nodeType) ||
     tab === "excel";
-  const rawGrid = nodeUsesRawXlsxGrid(nodeType);
-  const xlsxFocus = xlsxPreviewFocusForNode(nodeType);
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
@@ -131,14 +126,14 @@ export function NodeStudio({
   });
 
   const xlsxPreview = useQuery({
-    queryKey: ["xlsx-preview", projectId, xlsxSheet, rawGrid, xlsxFocus?.startRow],
+    queryKey: ["xlsx-preview", projectId, xlsxSheet],
     queryFn: () =>
       api.previewProjectXlsx(projectId!, {
         sheet: xlsxSheet || undefined,
-        raw: rawGrid || Boolean(xlsxFocus),
-        maxRows: xlsxFocus?.maxRows ?? (rawGrid ? 200 : 40),
-        maxCols: rawGrid || xlsxFocus ? 24 : 80,
-        startRow: xlsxFocus?.startRow,
+        raw: true,
+        maxRows: 500,
+        maxCols: 200,
+        startRow: 1,
       }),
     enabled:
       open &&
@@ -280,7 +275,6 @@ export function NodeStudio({
       nodeType === "assemble");
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
-  const showVerdictPanel = activeSlot?.kind === "verdict" && activeStepCode && projectId;
   const showFramePromptsPanel =
     activeSlot?.kind === "frame_prompts" && projectId != null;
   const showFilesPanel =
@@ -416,7 +410,7 @@ export function NodeStudio({
                 </Button>
               ))}
             </div>
-            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && !showVerdictPanel && (
+            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
                 {pipelineSlots.map((slot) => (
                   <Button
@@ -456,19 +450,13 @@ export function NodeStudio({
 
               {tab === "prompts" && (
                 <div className="flex flex-col gap-4">
-                  {activeSlot && !showGptTextPanel && !showVerdictPanel && showFilesPanel && (
+                  {activeSlot && !showGptTextPanel && showFilesPanel && (
                     <p className="text-xs text-muted-foreground">
                       Редактируется:{" "}
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
-                  {showVerdictPanel ? (
-                    <GptVerdictPanel
-                      key={`verdict-${activeStepCode}`}
-                      projectId={projectId}
-                      stepCode={activeStepCode}
-                    />
-                  ) : showGptTextPanel ? (
+                  {showGptTextPanel ? (
                     <GptTextPanel
                       key={`gpt-${activeSlot?.id}-${activeStepCode}`}
                       projectId={projectId}
@@ -583,51 +571,26 @@ export function NodeStudio({
                     </div>
                   )}
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
-                    <div className="overflow-auto rounded-xl border border-white/10">
-                      {rawGrid ? (
-                        <table className="min-w-max border-collapse text-left text-xs">
-                          <tbody>
-                            {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
-                              <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
-                                <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                                  {ri + 1}
+                    <div className="max-h-[min(70vh,720px)] overflow-auto rounded-xl border border-white/10">
+                      <table className="min-w-max border-collapse text-left text-xs">
+                        <tbody>
+                          {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
+                            <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
+                              <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
+                                {ri + 1}
+                              </td>
+                              {row.map((cell, ci) => (
+                                <td
+                                  key={ci}
+                                  className="min-w-[72px] max-w-[420px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
+                                >
+                                  {cell || "\u00a0"}
                                 </td>
-                                {row.map((cell, ci) => (
-                                  <td
-                                    key={ci}
-                                    className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
-                                  >
-                                    {cell || "\u00a0"}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <table className="w-full min-w-[480px] text-left text-[10px]">
-                          <thead>
-                            <tr className="border-b border-white/10 bg-white/5">
-                              {(xlsxPreview.data?.headers ?? []).map((h, i) => (
-                                <th key={i} className="px-2 py-1.5 font-medium">
-                                  {h}
-                                </th>
                               ))}
                             </tr>
-                          </thead>
-                          <tbody>
-                            {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
-                              <tr key={ri} className="border-b border-white/5">
-                                {row.map((cell, ci) => (
-                                  <td key={ci} className="max-w-[140px] truncate px-2 py-1 text-muted-foreground">
-                                    {cell}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
+                          ))}
+                        </tbody>
+                      </table>
                       {!xlsxPreview.data?.rows?.length && (
                         <p className="p-4 text-xs text-muted-foreground">
                           {nodeType === "plan"

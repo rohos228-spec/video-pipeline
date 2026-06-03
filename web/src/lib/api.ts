@@ -296,17 +296,50 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  getGptVerdictContext: (projectId: number, stepCode: string) =>
+  getGptVerdictContext: (projectId: number, stepCode: string, template = "default") =>
     http<{
       step_code: string;
       supported: boolean;
+      template: string;
+      templates: string[];
       prompt: string;
       artifact_preview: string;
       attachments: string[];
-    }>(`/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}`),
+    }>(
+      `/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}?template=${encodeURIComponent(template)}`,
+    ),
+  listGptVerdictTemplates: (stepCode: string) =>
+    http<{ step_code: string; templates: string[] }>(
+      `/api/prompt-studio/verdict-templates/${stepCode}`,
+    ),
+  saveGptVerdictTemplate: (
+    projectId: number,
+    stepCode: string,
+    body: { name: string; content: string },
+  ) =>
+    http<{ ok: boolean; name: string; path: string }>(
+      `/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}/save-template`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteGptVerdictTemplate: (projectId: number, stepCode: string, name: string) =>
+    http<{ ok: boolean; name: string; removed: boolean }>(
+      `/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}/templates/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getStepAttachments: (projectId: number, stepCode: string) =>
+    http<{ step_code: string; files: string[] }>(
+      `/api/prompt-studio/projects/${projectId}/step-attachments/${stepCode}`,
+    ),
   runGptVerdict: (projectId: number, stepCode: string, prompt: string) =>
     http<{
       approved: boolean;
+      fix_applied: boolean;
+      fix_path: string;
+      advanced: boolean;
+      status: string;
       rounds: number;
       fix_text: string;
       last_raw: string;
@@ -319,6 +352,14 @@ export const api = {
     http<ProjectDetail>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resumeProject: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/resume`, { method: "POST" }),
+  continueProject: (projectId: number) =>
+    http<{
+      project: ProjectDetail;
+      action: string;
+      status: string;
+      advanced: boolean;
+      cleared?: string[];
+    }>(`/api/projects/${projectId}/continue`, { method: "POST" }),
   stopProject: (projectId: number) =>
     http<{
       project: ProjectDetail;

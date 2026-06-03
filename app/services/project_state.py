@@ -62,6 +62,11 @@ def is_running_status(status: ProjectStatus) -> bool:
     return status in _RUNNING_STATUSES
 
 
+def _nonempty_item_descriptions(project: Project) -> list[str]:
+    raw = project.item_descriptions or []
+    return [d.strip() for d in raw if isinstance(d, str) and d.strip()]
+
+
 async def compute_actual_status(session, project: Project) -> ProjectStatus:
     """Вернуть наивысший status, который подтверждён данными в БД.
 
@@ -106,6 +111,14 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             select(func.count(Artifact.id)).where(
                 Artifact.project_id == pid,
                 Artifact.kind == ArtifactKind.hero_reference,
+            )
+        )
+    ).scalar_one()
+    item_arts = (
+        await session.execute(
+            select(func.count(Artifact.id)).where(
+                Artifact.project_id == pid,
+                Artifact.kind == ArtifactKind.item_reference,
             )
         )
     ).scalar_one()
@@ -171,9 +184,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # только при наличии hero_arts.
     if not skip_hero and hero_arts == 0:
         return ProjectStatus.frames_ready
+    # items (4b): опционально — пустой список = шаг пропущен.
+    item_descs = _nonempty_item_descriptions(project)
+    if item_descs and item_arts < len(item_descs):
+        return ProjectStatus.hero_ready
     # image_prompts: считаем готовыми, если ВСЕ frames имеют image_prompt.
     if fr_with_img_prompt < fr_total:
-        return ProjectStatus.hero_ready
+        # hero (+ items при необходимости) пройдены — items_ready, не hero_ready,
+        # иначе recompute/clamp откатывает items_ready → hero_ready → цикл.
+        return ProjectStatus.items_ready
     # image_prompts ✓
     if scene_image_arts < fr_total:
         return ProjectStatus.image_prompts_ready

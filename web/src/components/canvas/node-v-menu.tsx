@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   Ban,
@@ -24,6 +25,8 @@ import {
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { Button } from "@/components/ui/button";
 import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
 
@@ -57,6 +60,7 @@ export function NodeVMenu({
   onDeleteNode,
   onClose,
   hasAssets,
+  canvasZoom = 1,
 }: {
   open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
@@ -77,6 +81,7 @@ export function NodeVMenu({
   onClose: () => void;
   hasAssets: boolean;
   projectId?: number | null;
+  canvasZoom?: number;
 }) {
   const [mounted, setMounted] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -110,13 +115,24 @@ export function NodeVMenu({
     const close = (ev: Event) => {
       const t = ev.target as HTMLElement;
       if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
+      if (t.closest(".react-flow__pane") || t.closest(".react-flow__viewport")) return;
       onClose();
     };
     document.addEventListener("pointerdown", close, true);
     return () => document.removeEventListener("pointerdown", close, true);
   }, [open, onClose]);
 
+  const stepCode = stepCodeForNodeType(nodeType) ?? nodeType;
+  const outbound = useQuery({
+    queryKey: ["step-attachments", projectId, stepCode],
+    queryFn: () => api.getStepAttachments(projectId!, stepCode),
+    enabled: open && projectId != null,
+  });
+  const outboundFiles = outbound.data?.files ?? [];
+
   if (!open || !mounted) return null;
+
+  const zoom = Math.max(0.35, Math.min(canvasZoom, 1.5));
 
   const menuSlots = resolvePromptSlots(nodeType, slots);
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
@@ -126,8 +142,14 @@ export function NodeVMenu({
 
   const menu = (
     <div
-      className="node-v-menu nodrag nopan nowheel fixed z-[10000] w-[min(340px,calc(100vw-2rem))] -translate-x-1/2 animate-in fade-in slide-in-from-top-2 duration-200"
-      style={{ top: pos.top, left: pos.left }}
+      className="node-v-menu nodrag nopan nowheel fixed z-[10000] animate-in fade-in slide-in-from-top-2 duration-200"
+      style={{
+        top: pos.top,
+        left: pos.left,
+        width: Math.max(220, Math.min(340, 340 * zoom)),
+        transform: `translateX(-50%) scale(${zoom})`,
+        transformOrigin: "top center",
+      }}
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
@@ -234,6 +256,21 @@ export function NodeVMenu({
           <p className="mb-3 text-[10px] text-muted-foreground">
             Для этой ноды нет файловых мастер-промтов.
           </p>
+        )}
+
+        {outboundFiles.length > 0 && (
+          <div className="mb-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+            <span className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">
+              Отправляемые файлы
+            </span>
+            <ul className="mt-1.5 space-y-0.5">
+              {outboundFiles.map((f) => (
+                <li key={f} className="font-mono text-[10px] text-foreground/90">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {showExcelPreview && excelSlot && (

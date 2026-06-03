@@ -26,7 +26,8 @@ _REJECT = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-VERDICT_SUFFIX = """
+# Legacy: раньше дописывался в UI/отправку — больше не используем.
+_LEGACY_VERDICT_SUFFIX = """
 
 ФОРМАТ ОТВЕТА (строго, без markdown):
 Вердикт: Одобрено (все хорошо)
@@ -46,6 +47,11 @@ STEP_TO_HITL: dict[str, HITLKind] = {
     "images": HITLKind.approve_images,
     "anim_pr": HITLKind.approve_videos,
     "video": HITLKind.approve_videos,
+    "enrich_1": HITLKind.approve_hero,
+    "enrich_2": HITLKind.approve_hero,
+    "enrich_3": HITLKind.approve_hero,
+    "enrich_4": HITLKind.approve_hero,
+    "enrich_5": HITLKind.approve_hero,
 }
 
 FIX_TARGET_BY_STEP: dict[str, str] = {
@@ -58,11 +64,73 @@ FIX_TARGET_BY_STEP: dict[str, str] = {
     "images": "prompt",
     "anim_pr": "excel",
     "video": "prompt",
+    "enrich_1": "excel",
+    "enrich_2": "excel",
+    "enrich_3": "excel",
+    "enrich_4": "excel",
+    "enrich_5": "excel",
+}
+
+# Шаги с GPT-проверкой «Вердикт» и скачиванием файла при «Не одобрено».
+FILE_FIX_STEPS: frozenset[str] = frozenset(
+    {
+        "plan",
+        "script",
+        "split",
+        "enrich_1",
+        "enrich_2",
+        "enrich_3",
+        "enrich_4",
+        "enrich_5",
+        "img_pr",
+        "anim_pr",
+    }
+)
+
+STEP_VERDICT_FOLDER: dict[str, str] = {
+    "plan": "check_plan",
+    "script": "check_script",
+    "split": "check_script",
+    "hero": "check_hero",
+    "items": "check_hero",
+    "img_pr": "check_images",
+    "images": "check_images",
+    "anim_pr": "check_videos",
+    "enrich_1": "check_plan",
+    "enrich_2": "check_plan",
+    "enrich_3": "check_plan",
+    "enrich_4": "check_plan",
+    "enrich_5": "check_plan",
 }
 
 VERDICT_STUDIO_STEPS: frozenset[str] = frozenset(
-    {"plan", "script", "split", "hero", "items", "img_pr", "images"}
+    {
+        "plan",
+        "script",
+        "split",
+        "hero",
+        "items",
+        "img_pr",
+        "images",
+        "anim_pr",
+        "enrich_1",
+        "enrich_2",
+        "enrich_3",
+        "enrich_4",
+        "enrich_5",
+    }
 )
+
+
+def verdict_template_for_project(project: Project, step_code: str) -> str:
+    """Шаблон проверки из Studio: meta.gpt_verdict_templates[step_code]."""
+    meta = getattr(project, "meta", None) or {}
+    raw = meta.get("gpt_verdict_templates")
+    if isinstance(raw, dict):
+        name = str(raw.get(step_code) or "").strip()
+        if name:
+            return name
+    return "default"
 
 
 @dataclass
@@ -79,6 +147,8 @@ class VerdictRunResult:
     last_raw: str = ""
     fix_text: str = ""
     history: list[str] = field(default_factory=list)
+    fix_applied: bool = False
+    fix_path: str = ""
 
 
 def parse_gpt_verdict(raw: str) -> VerdictResult:
@@ -104,20 +174,110 @@ def build_fix_user_message(fix_text: str, *, target: str = "excel") -> str:
     return f"исправь согласно требованиям: {fix_text}"
 
 
-def load_verdict_check_prompt(step_code: str) -> str:
+def _strip_legacy_verdict_suffix(text: str) -> str:
+    """Убрать старый автодописанный блок формата ответа из файла/черновика."""
+    body = text.rstrip()
+    suffix = _LEGACY_VERDICT_SUFFIX.strip()
+    if suffix and suffix in body:
+        body = body.split(suffix)[0].rstrip()
+    return body
+
+
+def load_verdict_check_prompt(step_code: str, *, template: str = "default") -> str:
     kind = STEP_TO_HITL.get(step_code)
     if kind is None:
         raise ValueError(f"нет GPT-проверки для шага {step_code!r}")
-    base = load_check_prompt(kind)
-    return base.rstrip() + VERDICT_SUFFIX
+    path = verdict_template_path(step_code, template)
+    if path is None or not path.is_file():
+        base = load_check_prompt(kind)
+    else:
+        base = path.read_text(encoding="utf-8")
+    return _strip_legacy_verdict_suffix(base)
+
+
+def verdict_template_dir(step_code: str) -> Path | None:
+    folder = STEP_VERDICT_FOLDER.get(step_code)
+    if folder is None:
+        kind = STEP_TO_HITL.get(step_code)
+        if kind is None:
+            return None
+        folder = CHECK_FOLDER_BY_KIND.get(kind)
+    if not folder:
+        return None
+    return PROMPTS_ROOT / folder
+
+
+def verdict_template_path(step_code: str, name: str) -> Path | None:
+    from app.services.prompt_library import is_valid_prompt_name
+
+    if not is_valid_prompt_name(name):
+        return None
+    root = verdict_template_dir(step_code)
+    if root is None:
+        return None
+    return root / f"{name}.md"
+
+
+def list_verdict_templates(step_code: str) -> list[str]:
+    root = verdict_template_dir(step_code)
+    if root is None or not root.is_dir():
+        return []
+    names = sorted(p.stem for p in root.glob("*.md") if p.is_file())
+    return names or ["default"]
+
+
+def save_verdict_template(step_code: str, name: str, content: str) -> Path:
+    from app.services.prompt_library import is_valid_prompt_name
+
+    if not is_valid_prompt_name(name):
+        raise ValueError(f"invalid template name: {name!r}")
+    path = verdict_template_path(step_code, name)
+    if path is None:
+        raise ValueError(f"no template folder for step {step_code!r}")
+    body = content.rstrip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body + "\n", encoding="utf-8")
+    return path
+
+
+def delete_verdict_template(step_code: str, name: str) -> bool:
+    from app.services.prompt_library import DEFAULT_NAME, is_valid_prompt_name
+
+    if name == DEFAULT_NAME:
+        raise ValueError("шаблон default удалять нельзя")
+    if not is_valid_prompt_name(name):
+        raise ValueError(f"invalid template name: {name!r}")
+    path = verdict_template_path(step_code, name)
+    if path is None:
+        raise ValueError(f"no template folder for step {step_code!r}")
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
 
 
 async def attachments_for_step(
     session: AsyncSession, project: Project, step_code: str
 ) -> list[Path]:
     paths: list[Path] = []
+    if step_code == "topic":
+        return paths
     xlsx = project.data_dir / "project.xlsx"
-    if step_code in ("plan", "script", "split", "img_pr", "anim_pr", "hero", "items"):
+    excel_steps = (
+        "plan",
+        "script",
+        "split",
+        "img_pr",
+        "anim_pr",
+        "hero",
+        "items",
+        "enrich_1",
+        "enrich_2",
+        "enrich_3",
+        "enrich_4",
+        "enrich_5",
+    )
+    if step_code in excel_steps:
         if xlsx.is_file():
             paths.append(xlsx)
     voice = project.data_dir / "voiceover.txt"
@@ -150,6 +310,122 @@ def artifact_text_for_step(project: Project, step_code: str) -> str:
     return ""
 
 
+async def _sync_verdict_excel_fix(
+    session: AsyncSession, project: Project, step_code: str, xlsx_path: Path
+) -> None:
+    from app.services import chatgpt_xlsx as cx
+    from app.services import xlsx_step_runners as xsr
+
+    if step_code == "plan":
+        await xsr.sync_after_plan(session, project, xlsx_path)
+    elif step_code == "split":
+        await xsr.sync_after_split(session, project, xlsx_path)
+    elif step_code == "img_pr":
+        await xsr.sync_after_img_pr(session, project, xlsx_path)
+    else:
+        await cx.sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
+
+
+async def _download_and_apply_verdict_fix(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+    chatgpt_bot: Any,
+    *,
+    fix_text: str,
+    fix_target: str,
+    files: list[Path],
+    last_raw: str,
+) -> Path:
+    """Скачать исправленный файл из ответа GPT (или после fix-сообщения) и применить."""
+    from datetime import datetime
+
+    from app.services import chatgpt_xlsx as cx
+    from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
+
+    tmp_dir = cx.tmp_gpt_dir(project)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    data_dir = project.data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    async def _download_to(path: Path, fallback: str) -> bool:
+        try:
+            await chatgpt_bot.download_attachment_from_last_reply(
+                path,
+                timeout=600,
+                fallback_text=fallback,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] gpt_verdict {} fix download failed: {}",
+                project.id,
+                step_code,
+                e,
+            )
+            return False
+        return path.is_file() and path.stat().st_size >= 10
+
+    if fix_target == "voiceover":
+        tmp_path = tmp_dir / f"verdict_{step_code}_{ts}.txt"
+        target = data_dir / "voiceover.txt"
+        if not await _download_to(tmp_path, last_raw):
+            fix_msg = build_fix_user_message(fix_text, target=fix_target)
+            if files:
+                fix_raw = await chatgpt_bot.ask_with_files(
+                    fix_msg,
+                    files,
+                    timeout=900,
+                    project_id=project.id,
+                )
+            else:
+                fix_raw = await chatgpt_bot.ask_fresh(fix_msg, timeout=900)
+            if not await _download_to(tmp_path, fix_raw or ""):
+                raise RuntimeError("GPT не вернул исправленный voiceover.txt")
+        text = tmp_path.read_text(encoding="utf-8").strip()
+        if len(text) < 10:
+            raise RuntimeError("скачанный voiceover.txt пустой")
+        cx.save_voiceover_text(project, target, text)
+        project.script_text = text
+        await session.flush()
+        logger.info(
+            "[#{}] gpt_verdict {} fix applied → voiceover.txt ({} симв.)",
+            project.id,
+            step_code,
+            len(text),
+        )
+        return target
+
+    tmp_path = tmp_dir / f"verdict_{step_code}_{ts}.xlsx"
+    target = data_dir / "project.xlsx"
+    if not await _download_to(tmp_path, last_raw):
+        fix_msg = build_fix_user_message(fix_text, target=fix_target)
+        if files:
+            fix_raw = await chatgpt_bot.ask_with_files(
+                fix_msg,
+                files,
+                timeout=900,
+                project_id=project.id,
+            )
+        else:
+            fix_raw = await chatgpt_bot.ask_fresh(fix_msg, timeout=900)
+        if not await _download_to(tmp_path, fix_raw or ""):
+            raise RuntimeError("GPT не вернул исправленный xlsx")
+    validation_err = validate_xlsx(tmp_path)
+    if validation_err is not None:
+        raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
+    if target.is_file():
+        backup_to_old(target)
+    replace_with(target, tmp_path)
+    await _sync_verdict_excel_fix(session, project, step_code, target)
+    await session.flush()
+    logger.info(
+        "[#{}] gpt_verdict {} fix applied → project.xlsx",
+        project.id,
+        step_code,
+    )
+    return target
+
+
 async def run_verdict_review(
     session: AsyncSession,
     project: Project,
@@ -159,13 +435,23 @@ async def run_verdict_review(
     user_prompt: str | None = None,
     max_rounds: int = MAX_VERDICT_ROUNDS,
 ) -> VerdictRunResult:
-    """Цикл check → fix → recheck до одобрения или лимита раундов."""
+    """Проверка «Вердикт»: одобрено → готово; не одобрено + файл → скачать и завершить."""
     if step_code not in VERDICT_STUDIO_STEPS:
         raise ValueError(f"шаг {step_code!r} без GPT-проверки «Вердикт»")
 
-    check_prompt = user_prompt or load_verdict_check_prompt(step_code)
+    if user_prompt is not None:
+        check_prompt = _strip_legacy_verdict_suffix(user_prompt)
+    else:
+        template = verdict_template_for_project(project, step_code)
+        check_prompt = load_verdict_check_prompt(step_code, template=template)
+        logger.info(
+            "[#{}] gpt_verdict {} template={!r} prompt_len={}",
+            project.id,
+            step_code,
+            template,
+            len(check_prompt),
+        )
     fix_target = FIX_TARGET_BY_STEP.get(step_code, "excel")
-    artifact = artifact_text_for_step(project, step_code)
     files = await attachments_for_step(session, project, step_code)
 
     history: list[str] = []
@@ -173,10 +459,7 @@ async def run_verdict_review(
     fix_text = ""
 
     for round_idx in range(1, max_rounds + 1):
-        parts = [check_prompt.rstrip()]
-        if artifact:
-            parts.append("\n\n---\n\n" + artifact)
-        full_prompt = "\n".join(parts)
+        full_prompt = check_prompt.rstrip()
 
         await chatgpt_bot.new_conversation()
         if files:
@@ -207,6 +490,43 @@ async def run_verdict_review(
             )
 
         fix_text = verdict.fix_text
+        if step_code in FILE_FIX_STEPS and fix_target in ("excel", "voiceover"):
+            try:
+                fix_path = await _download_and_apply_verdict_fix(
+                    session,
+                    project,
+                    step_code,
+                    chatgpt_bot,
+                    fix_text=fix_text,
+                    fix_target=fix_target,
+                    files=files,
+                    last_raw=last_raw or "",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "[#{}] gpt_verdict {} fix file failed",
+                    project.id,
+                    step_code,
+                )
+                history.append(f"fix_file: error: {e}")
+                return VerdictRunResult(
+                    approved=False,
+                    rounds=round_idx,
+                    last_raw=last_raw or "",
+                    fix_text=fix_text or str(e),
+                    history=history,
+                )
+            history.append(f"fix_file: {fix_path.name}")
+            return VerdictRunResult(
+                approved=False,
+                rounds=round_idx,
+                last_raw=last_raw or "",
+                fix_text=fix_text,
+                history=history,
+                fix_applied=True,
+                fix_path=str(fix_path),
+            )
+
         if round_idx >= max_rounds:
             break
 
@@ -232,10 +552,4 @@ async def run_verdict_review(
 
 
 def verdict_prompt_template_path(step_code: str) -> Path | None:
-    kind = STEP_TO_HITL.get(step_code)
-    if kind is None:
-        return None
-    folder = CHECK_FOLDER_BY_KIND.get(kind)
-    if not folder:
-        return None
-    return PROMPTS_ROOT / folder / "default.md"
+    return verdict_template_path(step_code, "default")
