@@ -75,9 +75,17 @@ export function StudioWorkspace({
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
-  /** Канвас (selected) важнее studioTarget; vMenu — пока открыто меню V на ноде. */
+  const setVMenuNodeKeySynced = useCallback(
+    (key: string | null) => {
+      if (key) onSelectNode(key);
+      setVMenuNodeKey(key);
+    },
+    [onSelectNode],
+  );
+
+  /** V-меню и студия важнее устаревшего selected с канваса. */
   const effectiveNodeKey =
-    selectedNodeKey ?? vMenuNodeKey ?? studioTarget?.nodeKey ?? null;
+    vMenuNodeKey ?? studioTarget?.nodeKey ?? selectedNodeKey ?? null;
   const effectiveNodeType = effectiveNodeKey
     ? nodeTypeFromKey(effectiveNodeKey)
     : (studioTarget?.nodeType ?? "");
@@ -312,7 +320,7 @@ export function StudioWorkspace({
       hitlList: hitlList.data ?? [],
       disabledNodes,
       vMenuNodeKey,
-      setVMenuNodeKey,
+      setVMenuNodeKey: setVMenuNodeKeySynced,
       aiReviewNodeKey: aiReview?.nodeKey ?? null,
       canvasZoom,
       getPromptSlots,
@@ -511,6 +519,7 @@ export function StudioWorkspace({
       hitlList.data,
       disabledNodes,
       vMenuNodeKey,
+      setVMenuNodeKeySynced,
       aiReview,
       canvasZoom,
       getPromptSlots,

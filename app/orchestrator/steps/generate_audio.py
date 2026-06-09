@@ -2,7 +2,7 @@
 
 Каждая колонка листа «план» (C49, D49, …) → отдельный TTS → frame_NNN.mp3.
 Длительность кадра = ffprobe(фрагмент). Склейка → voice_full.
-Whisper — один проход по voice_full (точнее, чем 30 отдельных фрагментов).
+Whisper — один проход по voice_full внутри synthesize_per_frame_audio.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from app.services.artifact_recovery import (
 from app.services.frame_audio import synthesize_per_frame_audio
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.whisper import dump_words_json, transcribe_words
+from app.services.whisper import dump_words_json
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -70,7 +70,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     async with browser_session() as bs:
         el = ElevenLabsBot(bs)
-        clips, full_audio_path = await synthesize_per_frame_audio(
+        clips, full_audio_path, words = await synthesize_per_frame_audio(
             el,
             project=project,
             frames=frames,
@@ -114,11 +114,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     ))
     await session.flush()
 
-    logger.info("[#{}] whisper on voice_full ({:.2f}s)", project.id, audio_duration)
-    words = transcribe_words(
-        full_audio_path,
-        model_name=settings.whisper_model,
-        language="ru",
+    logger.info(
+        "[#{}] whisper words from voice_full ({:.2f}s, {} words)",
+        project.id,
+        audio_duration,
+        len(words),
     )
     frame_segments = [
         {

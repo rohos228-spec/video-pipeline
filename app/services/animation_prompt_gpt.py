@@ -12,10 +12,19 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.generation_options import build_gen_id_prefix
-from app.models import Frame, Project
+from app.models import Frame, FrameStatus, Project
 from app.services import gpt_text_builder as gtb
-from app.storage.plan_sheet_v8 import read_plan_voiceover
+from app.storage.plan_sheet_v8 import (
+    read_plan_animation_prompt_cells,
+    read_plan_voiceover,
+)
+
+MIN_ANIM_PROMPT_LEN = 10
 
 BATCH_SIZE = 5
 
@@ -122,6 +131,60 @@ def build_batch_message(items: list[FrameImageBatchItem]) -> str:
         parts.append(f"Закадровый текст: {it.voiceover}")
         parts.append("")
     return "\n".join(parts).strip()
+
+
+async def sync_animation_prompts_from_xlsx(
+    session: AsyncSession, project: Project
+) -> int:
+    """Лист «план» R48 → Frame.animation_prompt (источник истины при догонке)."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    if not frames:
+        return 0
+    cells = read_plan_animation_prompt_cells(project, [f.number for f in frames])
+    by_num = dict(cells)
+    changed = 0
+    for fr in frames:
+        text = (by_num.get(fr.number) or "").strip()
+        if len(text) < MIN_ANIM_PROMPT_LEN:
+            continue
+        if text == (fr.animation_prompt or "").strip():
+            continue
+        fr.animation_prompt = text
+        if fr.status not in (
+            FrameStatus.video_approved,
+            FrameStatus.video_generated,
+            FrameStatus.done,
+        ):
+            fr.status = FrameStatus.animation_prompt_ready
+        changed += 1
+    if changed:
+        await session.flush()
+        logger.info(
+            "[#{}] sync_animation_prompts_from_xlsx: {} кадров из plan R48 → БД",
+            project.id,
+            changed,
+        )
+    return changed
+
+
+def scan_missing_animation_prompts(
+    project: Project, frames: list[Frame]
+) -> list[int]:
+    """Кадры с картинкой на диске, но без animation_prompt в БД."""
+    missing: list[int] = []
+    for fr in frames:
+        if (fr.animation_prompt or "").strip():
+            continue
+        if scene_image_path(project, fr.number) is None:
+            continue
+        missing.append(fr.number)
+    return missing
 
 
 def collect_batch_items(

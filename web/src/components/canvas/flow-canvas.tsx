@@ -22,7 +22,21 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, ClipboardPaste, FileSpreadsheet, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  Copy,
+  ClipboardPaste,
+  FileSpreadsheet,
+  Film,
+  ImageIcon,
+  Loader2,
+  Play,
+  Save,
+  Sparkles,
+  Square,
+  Trash2,
+  Video,
+} from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
@@ -56,14 +70,11 @@ import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
 import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const nodeTypes = {
   pipeline: PipelineNode,
@@ -140,6 +151,8 @@ export function FlowCanvas({
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const selectedNodesRef = useRef<Node<PipelineNodeData>[]>([]);
+  /** Подавить onSelectionChange после программного setNodes(selected). */
+  const ignoreSelectionChangeRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -220,6 +233,22 @@ export function FlowCanvas({
       }),
     );
   }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
+
+  // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
+  useEffect(() => {
+    setNodes((prev) => {
+      const target = selectedNodeKey;
+      const needsUpdate = prev.some(
+        (n) => !!n.selected !== (target != null && n.id === target),
+      );
+      if (!needsUpdate) return prev;
+      ignoreSelectionChangeRef.current += 1;
+      return prev.map((n) => ({
+        ...n,
+        selected: target != null && n.id === target,
+      }));
+    });
+  }, [selectedNodeKey, setNodes]);
 
   // WS: обновления статуса нод (event-driven, без ожидания polling).
   useRunEvents(run.data?.id ?? null, (evt) => {
@@ -749,6 +778,10 @@ export function FlowCanvas({
         onSelectionChange={(sel) => {
           selectedNodesRef.current = sel.nodes as Node<PipelineNodeData>[];
           setSelectedCount(sel.nodes.length);
+          if (ignoreSelectionChangeRef.current > 0) {
+            ignoreSelectionChangeRef.current -= 1;
+            return;
+          }
           const first = sel.nodes[0];
           if (first) {
             onSelectNode((first.data as PipelineNodeData).nodeKey);
@@ -1080,30 +1113,10 @@ function RunOverlay({
 }) {
   const [busy, setBusy] = useState(false);
   const [pausing, setPausing] = useState(false);
-  const [massOpen, setMassOpen] = useState(false);
-  const [massCount, setMassCount] = useState("3");
-  const [massTopics, setMassTopics] = useState<string[]>([]);
-  const [massTopicsFile, setMassTopicsFile] = useState<string | null>(null);
-  const massFileRef = useRef<HTMLInputElement>(null);
+  const [finishBusy, setFinishBusy] = useState<"images" | "videos" | "animation_prompts" | null>(
+    null,
+  );
   const qc = useQueryClient();
-
-  const project = useQuery({
-    queryKey: ["project", projectId],
-    queryFn: () => api.getProject(projectId),
-    enabled: massOpen,
-  });
-
-  useEffect(() => {
-    if (!massOpen || massTopics.length > 0) return;
-    const meta = (project.data?.meta || {}) as Record<string, unknown>;
-    const fromExcel = meta.mass_excel_topics;
-    if (Array.isArray(fromExcel) && fromExcel.length > 0) {
-      const topics = fromExcel.map(String).filter(Boolean);
-      setMassTopics(topics);
-      setMassCount(String(topics.length));
-      setMassTopicsFile(String(meta.mass_excel_file || "topics.xlsx"));
-    }
-  }, [massOpen, massTopics.length, project.data?.meta]);
 
   if (!workflow) return null;
 
@@ -1162,44 +1175,48 @@ function RunOverlay({
     }
   };
 
-  const handleMassStart = async () => {
-    const count = Math.max(1, Math.min(20, parseInt(massCount, 10) || 1));
-    setBusy(true);
+  const handleFinishImages = async () => {
+    setFinishBusy("images");
     try {
-      const body =
-        massTopics.length > 0
-          ? { topics: massTopics }
-          : { count };
-      const r = await api.startMassLanes(projectId, body);
-      toast.success(
-        `Очередь: ${r.queue_size ?? r.count} видео, старт #${r.started_id}${r.remaining != null ? `, осталось ${r.remaining}` : ""}`,
-      );
-      qc.invalidateQueries({ queryKey: ["projects"] });
-      qc.invalidateQueries({ queryKey: ["mass-factory", projectId] });
-      setMassOpen(false);
-      setMassTopics([]);
-      setMassTopicsFile(null);
+      const r = await api.finishMissingImages(projectId);
+      if (r.queued > 0) toast.success(r.message);
+      else toast.message(r.message);
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      onRunCreated();
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
-      setBusy(false);
+      setFinishBusy(null);
     }
   };
 
-  const handleMassXlsx = async (file: File) => {
-    setBusy(true);
+  const handleFinishVideos = async () => {
+    setFinishBusy("videos");
     try {
-      const r = await api.parseMassTopicsXlsx(projectId, file);
-      setMassTopics(r.topics);
-      setMassTopicsFile(file.name);
-      setMassCount(String(r.count));
+      const r = await api.finishMissingVideos(projectId);
+      if (r.queued > 0) toast.success(r.message);
+      else toast.message(r.message);
       qc.invalidateQueries({ queryKey: ["project", projectId] });
-      qc.invalidateQueries({ queryKey: ["mass-factory", projectId] });
-      toast.success(`Загружено ${r.count} тем из Excel`);
+      onRunCreated();
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
-      setBusy(false);
+      setFinishBusy(null);
+    }
+  };
+
+  const handleFinishAnimationPrompts = async () => {
+    setFinishBusy("animation_prompts");
+    try {
+      const r = await api.finishMissingAnimationPrompts(projectId);
+      if (r.queued > 0) toast.success(r.message);
+      else toast.message(r.message);
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      onRunCreated();
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFinishBusy(null);
     }
   };
 
@@ -1271,15 +1288,46 @@ function RunOverlay({
           {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
         </span>
       </div>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => setMassOpen(true)}
-        disabled={busy}
-        className="pointer-events-auto text-xs"
-      >
-        Массовая
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || finishBusy !== null}
+            className="pointer-events-auto gap-1 text-xs"
+          >
+            {finishBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+            )}
+            Доделка
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuItem
+            disabled={finishBusy !== null}
+            onClick={() => void handleFinishImages()}
+          >
+            <ImageIcon className="mr-2 h-4 w-4" />
+            Доделка картинок
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={finishBusy !== null}
+            onClick={() => void handleFinishVideos()}
+          >
+            <Video className="mr-2 h-4 w-4" />
+            Доделка видео
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={finishBusy !== null}
+            onClick={() => void handleFinishAnimationPrompts()}
+          >
+            <Film className="mr-2 h-4 w-4" />
+            Доделка промтов анимации
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Button
         size="sm"
         variant="outline"
@@ -1346,68 +1394,6 @@ function RunOverlay({
         {stepLabel ? ` · ${stepLabel}` : ""}
       </Button>
     </div>
-    <Dialog open={massOpen} onOpenChange={setMassOpen}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Массовая генерация</DialogTitle>
-          <DialogDescription>
-            Создаёт копии проекта с auto_mode по одному потоку. Темы из Excel-ноды на
-            канвасе подхватываются автоматически (лист «Темы», колонка «Название ролика»).
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-2">
-            <label className="text-xs text-muted-foreground">Число потоков (1–20)</label>
-            <Input
-              value={massCount}
-              onChange={(e) => setMassCount(e.target.value)}
-              type="number"
-              min={1}
-              max={20}
-              disabled={massTopics.length > 0}
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <label className="text-xs text-muted-foreground">Или topics.xlsx</label>
-            <input
-              ref={massFileRef}
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleMassXlsx(f);
-                e.target.value = "";
-              }}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => massFileRef.current?.click()}
-            >
-              {massTopicsFile ? massTopicsFile : "Загрузить Excel с темами"}
-            </Button>
-            {massTopics.length > 0 && (
-              <p className="text-[11px] text-muted-foreground">
-                {massTopics.length} тем: {massTopics.slice(0, 3).join(", ")}
-                {massTopics.length > 3 ? "…" : ""}
-              </p>
-            )}
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setMassOpen(false)}>
-            Отмена
-          </Button>
-          <Button onClick={handleMassStart} disabled={busy}>
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-            Запустить
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
     </>
   );
 }

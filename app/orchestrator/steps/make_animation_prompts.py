@@ -30,6 +30,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] make_animation_prompts starting (batch GPT flow)", project.id)
 
+    synced = await apg.sync_animation_prompts_from_xlsx(session, project)
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
@@ -42,11 +43,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             fr.voiceover_text = vo
 
     pending = apg.collect_batch_items(project, frames)
+    already_done = sum(1 for fr in frames if (fr.animation_prompt or "").strip())
     if not pending:
-        logger.info("[#{}] make_animation_prompts: nothing to do", project.id)
+        logger.info(
+            "[#{}] make_animation_prompts: nothing to do (synced={}, already={})",
+            project.id,
+            synced,
+            already_done,
+        )
         project.status = ProjectStatus.animation_prompts_ready
         await session.flush()
         return
+
+    skip_phase1 = already_done > 0
+    if skip_phase1:
+        first_pending = pending[0].frame.number
+        logger.info(
+            "[#{}] anim_pr: догонка — {} готово, synced={}, первая пачка с кадра {}",
+            project.id,
+            already_done,
+            synced,
+            first_pending,
+        )
 
     tmp_dir = tmp_gpt_dir(project)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -59,30 +77,34 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         gpt = ChatGPTBot(bs)
         try:
-            # Каждый запуск шага — новый диалог: сопр. текст + мастер-промт (без картинок).
-            # Не смотрим на уже сохранённые animation_prompt в БД: при «заново» часть
-            # кадров могла остаться от прошлого прогона, и тогда раньше сразу шли фото.
             await gpt.new_conversation()
             raise_if_cancelled(project.id)
-            logger.info(
-                "[#{}] anim_pr: новый чат → ФАЗА 1 только текст+файл {} ({} байт), {} симв.",
-                project.id,
-                prompt_file.name,
-                prompt_file.stat().st_size,
-                len(initial),
-            )
-            initial_reply = await gpt.ask_anim_pr_initial(
-                initial,
-                prompt_file,
-                timeout=300,
-                project_id=project.id,
-            )
-            if not (initial_reply or "").strip():
-                logger.warning(
-                    "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+            if not skip_phase1:
+                logger.info(
+                    "[#{}] anim_pr: новый чат → ФАЗА 1 только текст+файл {} ({} байт), {} симв.",
                     project.id,
+                    prompt_file.name,
+                    prompt_file.stat().st_size,
+                    len(initial),
                 )
-            raise_if_cancelled(project.id)
+                initial_reply = await gpt.ask_anim_pr_initial(
+                    initial,
+                    prompt_file,
+                    timeout=300,
+                    project_id=project.id,
+                )
+                if not (initial_reply or "").strip():
+                    logger.warning(
+                        "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                        project.id,
+                    )
+                raise_if_cancelled(project.id)
+            else:
+                logger.info(
+                    "[#{}] anim_pr: ФАЗА 1 пропущена — {} промтов уже в xlsx/БД",
+                    project.id,
+                    already_done,
+                )
 
             while True:
                 raise_if_cancelled(project.id)

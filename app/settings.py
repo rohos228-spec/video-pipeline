@@ -27,8 +27,13 @@ class Settings(BaseSettings):
     # Пути в Windows: C:\Users\<user>\vp_state.db → пишется как C:/Users/<user>/vp_state.db
     sqlite_path: Path = Field(Path("./data/state.db"), alias="SQLITE_PATH")
 
-    # Browser — Chrome с --remote-debugging-port=29229 запущен локально на том же ПК
-    browser_cdp_url: str = Field("http://localhost:29229", alias="BROWSER_CDP_URL")
+    # Browser — только Chrome из Start-Chrome.cmd (профиль .vp_browser_data, :29229)
+    browser_cdp_url: str = Field("http://127.0.0.1:29229", alias="BROWSER_CDP_URL")
+    browser_cdp_connect_timeout_ms: int = Field(
+        45_000, alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
+    )
+    # При зависании connect_over_cdp после ws connected — перезапуск Chrome (Win)
+    browser_cdp_auto_recover: bool = Field(True, alias="BROWSER_CDP_AUTO_RECOVER")
 
     # Service URLs
     outsee_image_url: str = Field(

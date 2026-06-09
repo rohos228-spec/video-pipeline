@@ -52,6 +52,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_photo
+from app.services.scan_frames import _disk_has_frame_image
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import (
     StepCancelledError,
@@ -280,25 +281,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         proj_xlsx = project.data_dir / "project.xlsx"
         if proj_xlsx.exists():
             try:
-                from app.services.xlsx_sync import reload_from_xlsx
-                from app.services.xlsx_v8_import import import_v8_xlsx
+                from app.services.chatgpt_xlsx import sync_project_xlsx
 
                 logger.info(
                     "[#{}] generate_images: missing image_prompt у {} кадров — "
-                    "пробую авто-импорт из {}",
+                    "пробую sync_project_xlsx из {}",
                     project.id, len(missing_prompts), proj_xlsx.name,
                 )
                 try:
-                    await import_v8_xlsx(
-                        session, project, proj_xlsx,
-                        keep_fields=False, update_frames_voiceover=False,
+                    await sync_project_xlsx(
+                        session, project, proj_xlsx, keep_fields=False
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("[#{}] v8 reload failed: {}", project.id, e)
-                try:
-                    await reload_from_xlsx(session, project, proj_xlsx)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[#{}] v7 reload failed: {}", project.id, e)
+                    logger.warning(
+                        "[#{}] generate_images: sync_project_xlsx failed: {}",
+                        project.id,
+                        e,
+                    )
                 await session.flush()
                 frames = (
                     await session.execute(
@@ -365,14 +364,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
-    # Кадры, у которых нет картинки (статус не image_generated/image_approved)
-    # → ставим в image_prompt_ready, чтобы цикл их подхватил.
+    # Очередь: только кадры без файла на диске. Уже существующие
+    # frame_NNN_*.png не трогаем (доделка недостающих, а не с нуля).
     for fr in frames:
         if fr.status in (
             FrameStatus.image_approved,
             FrameStatus.failed,
             FrameStatus.image_generated,
         ):
+            continue
+        if _disk_has_frame_image(out_dir, fr.number):
+            fr.status = FrameStatus.image_generated
             continue
         fr.status = FrameStatus.image_prompt_ready
     await session.flush()

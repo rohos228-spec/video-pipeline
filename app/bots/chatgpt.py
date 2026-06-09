@@ -1680,7 +1680,7 @@ class ChatGPTBot:
         prompt: str,
         file_path: Path,
         *,
-        timeout: float = 900,
+        timeout: float = 1800,
     ) -> str:
         """В текущем чате прикрепляет файл, шлёт промт, возвращает текст ответа.
 
@@ -1694,7 +1694,7 @@ class ChatGPTBot:
         prompt: str,
         file_paths: list[Path],
         *,
-        timeout: float = 900,
+        timeout: float = 1800,
         project_id: int | None = None,
     ) -> str:
         """Прикрепляет файлы, вводит сопр. текст в композер и отправляет."""
@@ -1990,7 +1990,7 @@ class ChatGPTBot:
         self,
         target_path: Path,
         *,
-        timeout: float = 900,
+        timeout: float = 1800,
         fallback_text: str | None = None,
     ) -> Path:
         """Из последнего ответа ассистента скачивает файл в `target_path`.

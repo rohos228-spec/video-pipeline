@@ -1,30 +1,10 @@
 # Update (git) + restart backend. ASCII-only for Windows PowerShell 5.1.
 #
-# Usual (rebuild UI + restart, no git):
-#   powershell -ExecutionPolicy Bypass -File .\apply-local.ps1
-#   powershell -ExecutionPolicy Bypass -File .\apply-local.ps1 -SkipBuild -NoBrowser
-#
 # Git merge + restart:
-#   powershell -ExecutionPolicy Bypass -File ".\Obnovit-i-Zapusk.ps1" -SkipBuild -NoBrowser
+#   powershell -ExecutionPolicy Bypass -File .\Obnovit-i-Zapusk.ps1 -SkipBuild
 #
 # Restart only (no git):
-#   powershell -ExecutionPolicy Bypass -File ".\Obnovit-i-Zapusk.ps1" -RestartOnly -SkipBuild -NoBrowser
-
-function Invoke-GitStep {
-    param([string]$Label, [string[]]$GitArgs)
-    Write-Host "==> $Label" -ForegroundColor Cyan
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        # git prints progress to stderr; PS 5.1 must not treat that as a terminating error
-        & git @GitArgs 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
-            throw "git exit $LASTEXITCODE"
-        }
-    } finally {
-        $ErrorActionPreference = $prevEap
-    }
-}
+#   powershell -ExecutionPolicy Bypass -File .\Obnovit-i-Zapusk.ps1 -RestartOnly -SkipBuild
 
 param(
     [Alias("TolkoRestart")]
@@ -33,6 +13,21 @@ param(
     [switch]$NoBrowser,
     [string]$GitBranch = "devin/windows-installer"
 )
+
+function Invoke-GitStep {
+    param([string]$Label, [string[]]$GitArgs)
+    Write-Host "==> $Label" -ForegroundColor Cyan
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & git @GitArgs 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            throw "git exit $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
 
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -46,6 +41,10 @@ if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
 if (-not $RestartOnly) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host "ERROR: git not in PATH" -ForegroundColor Red
+        exit 1
+    }
+    if (-not $GitBranch) {
+        Write-Host "ERROR: GitBranch is empty" -ForegroundColor Red
         exit 1
     }
     try {
@@ -64,7 +63,7 @@ if (-not $RestartOnly) {
         Write-Host "    git OK: $short" -ForegroundColor Green
     } catch {
         Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "       or skip git: .\apply-local.ps1" -ForegroundColor Yellow
+        Write-Host "       or skip git: .\apply-local.ps1 -SkipBuild" -ForegroundColor Yellow
         Write-Host "       or: Obnovit-i-Zapusk.ps1 -RestartOnly -SkipBuild" -ForegroundColor Yellow
         exit 1
     }

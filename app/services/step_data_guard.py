@@ -13,7 +13,7 @@ from app.services.artifact_recovery import (
     recover_audio_from_disk,
     recover_scene_videos_from_disk,
 )
-from app.services.project_state import compute_actual_status
+from app.services.project_state import compute_actual_status, is_running_status
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 from app.telegram.menu import status_order
 
@@ -133,6 +133,11 @@ async def clamp_status_to_data(
     session: AsyncSession, project: Project
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
+    # Running-шаги не трогаем (как recompute_status): иначе при устаревшем
+    # объекте в сессии после advance в другой сессии откатываем scripting→
+    # plan_ready и auto_advance заново шлёт тот же запрос в GPT.
+    if is_running_status(project.status):
+        return None
     actual = await compute_actual_status(session, project)
     if status_order(project.status) > status_order(actual):
         old = project.status

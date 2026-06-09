@@ -190,6 +190,55 @@ async def _approved_excel_ids(
     return out
 
 
+async def _excel_ids_with_artifact(
+    session: AsyncSession, project: Project
+) -> set[str]:
+    """ID персонажей, для которых уже есть hero_reference с файлом на диске."""
+    rows = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+            .order_by(desc(Artifact.id))
+        )
+    ).scalars().all()
+    out: set[str] = set()
+    for a in rows:
+        m = a.meta or {}
+        xid = m.get("excel_id")
+        if not isinstance(xid, str) or not xid or xid in out:
+            continue
+        if a.path and Path(a.path).is_file():
+            out.add(xid)
+    return out
+
+
+def _excel_batch_auto(project: Project) -> bool:
+    """Пакетная генерация всех персонажей за один run() без HITL-пауз."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    return bool(getattr(project, "auto_mode", False)) and not meta.get("ai_control")
+
+
+def _excel_ref_deps_met(
+    ch: ExcelCharacter,
+    *,
+    approved: set[str],
+    generated: set[str],
+    batch_auto: bool,
+) -> bool:
+    if not ch.ref_ids:
+        return True
+    for rid in ch.ref_ids:
+        if batch_auto:
+            if rid not in approved and rid not in generated:
+                return False
+        elif rid not in approved:
+            return False
+    return True
+
+
 async def _is_regen_for_excel_id(
     session: AsyncSession, project: Project, excel_id: str
 ) -> bool:
@@ -348,10 +397,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # xlsx мог обновиться после split/enrich — подтянуть «Описание героя».
             xlsx_path = project.data_dir / "project.xlsx"
             if xlsx_path.is_file():
-                from app.services.xlsx_sync import reload_from_xlsx
+                from app.services.chatgpt_xlsx import sync_project_xlsx
 
                 try:
-                    await reload_from_xlsx(session, project, xlsx_path)
+                    await sync_project_xlsx(session, project, xlsx_path)
                     await session.refresh(project)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -819,68 +868,98 @@ async def _run_excel(
     bot: Bot,
     cfg: dict,
 ) -> None:
-    """Одна итерация excel-режима: обрабатывает первого подходящего
-    не-одобренного персонажа. Worker дёргает run() заново до тех пор,
-    пока статус не уйдёт в `hero_ready`."""
-    chars = _excel_characters_from_meta(cfg)
-    if not chars:
-        logger.warning(
-            "[#{}] excel_hero: список персонажей пуст — переход в hero_ready",
-            project.id,
-        )
-        project.status = ProjectStatus.hero_ready
-        return
+    """Excel-режим: генерирует персонажей из листа «Персонажи».
 
-    approved = await _approved_excel_ids(session, project)
-    if all(ch.id in approved for ch in chars):
-        logger.info(
-            "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
-            project.id, len(chars),
-        )
-        project.status = ProjectStatus.hero_ready
-        return
+    * auto_mode без ai_control — все персонажи за один run(), статус
+      остаётся `generating_hero` до конца (без отката recompute).
+    * иначе — по одному с HITL-паузой (`hero_ready` после каждого).
+    """
+    batch_auto = _excel_batch_auto(project)
 
-    # Ищем первого подходящего:
-    #  - не одобрен;
-    #  - если есть ref_ids — ВСЕ они уже одобрены.
-    # Если такой не найден среди тех, что не одобрены — это deadlock:
-    # все оставшиеся ждут чужих рефов, которые тоже ждут (циклическая
-    # ссылка) или referenced id не существует.
-    target: ExcelCharacter | None = None
-    skipped: list[ExcelCharacter] = []
-    for ch in chars:
-        if ch.id in approved:
-            continue
-        if ch.ref_ids and not all(r in approved for r in ch.ref_ids):
-            skipped.append(ch)
-            continue
-        target = ch
-        break
-
-    if target is None:
-        # Deadlock: остались только реф-вариации с не-одобренными ссылками.
-        names = ", ".join(ch.id for ch in skipped)
-        msg = (
-            f"🚫 Проект #{project.id} excel-hero: "
-            f"остались только персонажи с не-одобренными ссылками "
-            f"({names}). Проверь правила (R7) листа «Персонажи» — "
-            "возможно, циклическая ссылка или ссылка на несуществующий "
-            "ID. Статус откатил в <b>frames_ready</b>."
-        )
-        logger.error("[#{}] excel_hero deadlock: {}", project.id, names)
-        project.status = ProjectStatus.frames_ready
-        await session.flush()
-        try:
-            await bot.send_message(
-                settings.telegram_owner_chat_id, msg, parse_mode="HTML"
+    while True:
+        chars = _excel_characters_from_meta(cfg)
+        if not chars:
+            logger.warning(
+                "[#{}] excel_hero: список персонажей пуст — переход в hero_ready",
+                project.id,
             )
-        except Exception:  # noqa: BLE001
-            logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
-        return
+            project.status = ProjectStatus.hero_ready
+            return
 
-    await _generate_one_excel_character(
-        session, project, bot, target, chars=chars, approved=approved
-    )
+        approved = await _approved_excel_ids(session, project)
+        generated = await _excel_ids_with_artifact(session, project)
+
+        if all(ch.id in approved for ch in chars):
+            logger.info(
+                "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
+                project.id, len(chars),
+            )
+            project.status = ProjectStatus.hero_ready
+            return
+
+        target: ExcelCharacter | None = None
+        skipped: list[ExcelCharacter] = []
+        for ch in chars:
+            if ch.id in approved:
+                continue
+            if (
+                batch_auto
+                and ch.id in generated
+                and not await _is_regen_for_excel_id(session, project, ch.id)
+            ):
+                continue
+            if not _excel_ref_deps_met(
+                ch, approved=approved, generated=generated, batch_auto=batch_auto
+            ):
+                skipped.append(ch)
+                continue
+            target = ch
+            break
+
+        if target is None:
+            if batch_auto and len(generated) >= len(chars):
+                logger.info(
+                    "[#{}] excel_hero: batch — все {} артефактов на диске, hero_ready",
+                    project.id, len(chars),
+                )
+                project.status = ProjectStatus.hero_ready
+                await session.flush()
+                return
+            names = ", ".join(ch.id for ch in skipped)
+            msg = (
+                f"🚫 Проект #{project.id} excel-hero: "
+                f"остались только персонажи с не-одобренными ссылками "
+                f"({names}). Проверь правила (R7) листа «Персонажи» — "
+                "возможно, циклическая ссылка или ссылка на несуществующий "
+                "ID. Статус откатил в <b>frames_ready</b>."
+            )
+            logger.error("[#{}] excel_hero deadlock: {}", project.id, names)
+            project.status = ProjectStatus.frames_ready
+            await session.flush()
+            try:
+                await bot.send_message(
+                    settings.telegram_owner_chat_id, msg, parse_mode="HTML"
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
+            return
+
+        await _generate_one_excel_character(
+            session,
+            project,
+            bot,
+            target,
+            chars=chars,
+            approved=approved,
+            batch_auto=batch_auto,
+        )
+
+        if not batch_auto:
+            return
+
+        await session.refresh(project)
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or cfg
 
 
 async def _generate_one_excel_character(
@@ -891,6 +970,7 @@ async def _generate_one_excel_character(
     *,
     chars: list[ExcelCharacter],
     approved: set[str],
+    batch_auto: bool = False,
 ) -> None:
     """Генерирует одну картинку для excel-персонажа `ch` и шлёт HITL."""
     is_regen = await _is_regen_for_excel_id(session, project, ch.id)
@@ -1093,10 +1173,25 @@ async def _generate_one_excel_character(
         meta=art_meta,
     )
     session.add(art)
+    if batch_auto:
+        project.status = ProjectStatus.generating_hero
+        await session.flush()
+        generated_now = await _excel_ids_with_artifact(session, project)
+        remaining_n = sum(
+            1
+            for c in chars
+            if c.id not in approved and c.id not in generated_now
+        )
+        logger.info(
+            "[#{}] excel_hero batch: {} → {} (осталось {})",
+            project.id, ch.id, file_path.name, remaining_n,
+        )
+        return
+
     project.status = ProjectStatus.hero_ready
     await session.flush()
 
-    # HITL.
+    # HITL (ручной режим — по одному персонажу).
     remaining = [c for c in chars if c.id not in approved and c.id != ch.id]
     if remaining:
         approve_hint = (

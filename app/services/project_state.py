@@ -22,6 +22,8 @@ status молча подменялся на step.requires=hero_ready, при т�
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import func, select
 
 from app.models import (
@@ -65,6 +67,38 @@ def is_running_status(status: ProjectStatus) -> bool:
 def _nonempty_item_descriptions(project: Project) -> list[str]:
     raw = project.item_descriptions or []
     return [d.strip() for d in raw if isinstance(d, str) and d.strip()]
+
+
+def _excel_hero_expected_count(project: Project) -> int:
+    """Сколько персонажей в meta.excel_hero (лист «Персонажи»)."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cfg = meta.get("excel_hero") or {}
+    chars = cfg.get("characters") or []
+    n = 0
+    for c in chars:
+        if isinstance(c, dict) and str((c.get("id") or "")).strip():
+            n += 1
+    return n
+
+
+async def _count_excel_hero_artifacts(session, project_id: int) -> int:
+    """Число уникальных excel_id среди hero_reference с файлом."""
+    rows = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+        )
+    ).scalars().all()
+    seen: set[str] = set()
+    for a in rows:
+        xid = (a.meta or {}).get("excel_id")
+        if not isinstance(xid, str) or not xid or xid in seen:
+            continue
+        if a.path and Path(a.path).is_file():
+            seen.add(xid)
+    return len(seen)
 
 
 async def compute_actual_status(session, project: Project) -> ProjectStatus:
@@ -184,14 +218,37 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # только при наличии hero_arts.
     if not skip_hero and hero_arts == 0:
         return ProjectStatus.frames_ready
+    # Excel-hero: часть персонажей ещё не сгенерирована — hero не завершён.
+    n_excel = _excel_hero_expected_count(project)
+    if n_excel > 0:
+        n_excel_done = await _count_excel_hero_artifacts(session, pid)
+        if n_excel_done < n_excel:
+            return ProjectStatus.hero_ready
     # items (4b): опционально — пустой список = шаг пропущен.
     item_descs = _nonempty_item_descriptions(project)
     if item_descs and item_arts < len(item_descs):
         return ProjectStatus.hero_ready
-    # image_prompts: считаем готовыми, если ВСЕ frames имеют image_prompt.
+    # enrich_1..5: UI и граф смотрят на *_ready; meta не терять при recompute.
     if fr_with_img_prompt < fr_total:
-        # hero (+ items при необходимости) пройдены — items_ready, не hero_ready,
-        # иначе recompute/clamp откатывает items_ready → hero_ready → цикл.
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        enrich_slots: list[int] = []
+        for raw in meta.get("enrich_completed_slots") or []:
+            try:
+                enrich_slots.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if enrich_slots:
+            enrich_ready_by_slot = {
+                1: ProjectStatus.enrich_1_ready,
+                2: ProjectStatus.enrich_2_ready,
+                3: ProjectStatus.enrich_3_ready,
+                4: ProjectStatus.enrich_4_ready,
+                5: ProjectStatus.enrich_5_ready,
+            }
+            st = enrich_ready_by_slot.get(max(enrich_slots))
+            if st is not None:
+                return st
+        # hero (+ items) пройдены, enrich ещё нет — items_ready
         return ProjectStatus.items_ready
     # image_prompts ✓
     if scene_image_arts < fr_total:

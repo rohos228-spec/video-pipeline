@@ -18,6 +18,8 @@ from pathlib import Path
 
 from loguru import logger
 
+_XLSX_FORMAT_ERROR_PREFIX = "ошибка формата эксель таблицы"
+
 
 def _ts() -> str:
     return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -65,12 +67,71 @@ def replace_with_backup(project_xlsx: Path, new_file: Path) -> Path | None:
     return backup
 
 
+def _workbook_sheet_names(path: Path) -> list[str]:
+    from openpyxl import load_workbook  # noqa: PLC0415
+
+    wb = load_workbook(path, read_only=True)
+    names = list(wb.sheetnames)
+    wb.close()
+    return names
+
+
+def _allowed_sheet_layouts() -> list[frozenset[str]]:
+    """Допустимые наборы листов: шаблон из settings + известные v7/v8."""
+    layouts: list[frozenset[str]] = []
+    seen: set[frozenset[str]] = set()
+
+    def _add(names: frozenset[str]) -> None:
+        if names and names not in seen:
+            seen.add(names)
+            layouts.append(names)
+
+    try:
+        from app.services.xlsx_v8_import import SHEET_GENERAL_V8, SHEET_PLAN_V8
+        from app.storage.project_sheet import (
+            SHEET_FRAMES,
+            SHEET_GENERAL,
+            resolve_default_template_path,
+        )
+
+        tpl = resolve_default_template_path()
+        if tpl.is_file():
+            _add(frozenset(_workbook_sheet_names(tpl)))
+        _add(frozenset({SHEET_FRAMES, SHEET_GENERAL}))
+        _add(frozenset({SHEET_PLAN_V8, SHEET_GENERAL_V8}))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("xlsx_versioning: cannot build sheet layouts: {}", e)
+    return layouts
+
+
+def validate_xlsx_sheets(path: Path) -> str | None:
+    """Имена и количество листов должны совпадать с одним из шаблонов."""
+    try:
+        actual = frozenset(_workbook_sheet_names(path))
+    except Exception as e:  # noqa: BLE001
+        return f"{_XLSX_FORMAT_ERROR_PREFIX}: не удалось прочитать листы: {e}"
+    if not actual:
+        return f"{_XLSX_FORMAT_ERROR_PREFIX}: в файле нет листов"
+    for expected in _allowed_sheet_layouts():
+        if actual == expected:
+            return None
+    actual_str = ", ".join(sorted(actual))
+    expected_hint = " | ".join(
+        ", ".join(sorted(layout)) for layout in _allowed_sheet_layouts()
+    )
+    return (
+        f"{_XLSX_FORMAT_ERROR_PREFIX}: листы [{actual_str}] "
+        f"не совпадают с шаблоном (ожидалось: {expected_hint})"
+    )
+
+
 def validate_xlsx(path: Path) -> str | None:
     """Проверяет что `path` — валидный xlsx-файл.
 
     Возвращает None если ок, иначе человекочитаемое сообщение об ошибке.
     Используется после `download_attachment_from_last_reply`, чтобы не
     подменить project.xlsx «пустышкой» (svg-иконкой, html-ошибкой и т.п.).
+    Также сверяет набор листов с шаблоном (имена + количество).
     """
     path = Path(path)
     if not path.exists():
@@ -98,4 +159,76 @@ def validate_xlsx(path: Path) -> str | None:
         wb.close()
     except Exception as e:  # noqa: BLE001
         return f"openpyxl не смог открыть файл: {e}"
+    sheet_err = validate_xlsx_sheets(path)
+    if sheet_err is not None:
+        return sheet_err
     return None
+
+
+def is_valid_xlsx(path: Path) -> bool:
+    return validate_xlsx(path) is None
+
+
+def _quarantine_corrupt(project_xlsx: Path) -> Path | None:
+    """Убрать битый project.xlsx в old/ (не мешает restore)."""
+    project_xlsx = Path(project_xlsx)
+    if not project_xlsx.exists():
+        return None
+    old_dir = old_dir_for(project_xlsx)
+    old_dir.mkdir(parents=True, exist_ok=True)
+    dest = old_dir / f"{_ts()}_CORRUPT_{project_xlsx.name}"
+    try:
+        shutil.move(str(project_xlsx), str(dest))
+        logger.warning("xlsx_versioning: corrupt quarantined {} -> {}", project_xlsx, dest)
+        return dest
+    except OSError as e:
+        logger.warning("xlsx_versioning: cannot quarantine {}: {}", project_xlsx, e)
+        return None
+
+
+def restore_latest_valid_backup(project_xlsx: Path) -> Path | None:
+    """Восстановить project.xlsx из последнего валидного файла в old/."""
+    project_xlsx = Path(project_xlsx)
+    old_dir = old_dir_for(project_xlsx)
+    if not old_dir.is_dir():
+        return None
+    candidates = sorted(
+        old_dir.glob("*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for src in candidates:
+        if "CORRUPT" in src.name:
+            continue
+        if not is_valid_xlsx(src):
+            continue
+        project_xlsx.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, project_xlsx)
+        logger.info("xlsx_versioning: restored {} <- {}", project_xlsx, src)
+        return src
+    return None
+
+
+def repair_project_xlsx_if_corrupt(
+    project_xlsx: Path,
+    *,
+    template_path: Path | None = None,
+) -> bool:
+    """Если project.xlsx битый — restore из old/ или шаблона. True если починили."""
+    project_xlsx = Path(project_xlsx)
+    if project_xlsx.exists() and is_valid_xlsx(project_xlsx):
+        return False
+    if project_xlsx.exists():
+        _quarantine_corrupt(project_xlsx)
+    restored = restore_latest_valid_backup(project_xlsx)
+    if restored is not None:
+        return True
+    if template_path is not None and Path(template_path).exists():
+        project_xlsx.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(template_path, project_xlsx)
+        logger.warning(
+            "xlsx_versioning: no backup; copied template -> {}",
+            project_xlsx,
+        )
+        return True
+    return False

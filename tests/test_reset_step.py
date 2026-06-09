@@ -322,8 +322,8 @@ async def test_reset_objects_wraps_to_hero_and_items(session, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_clear_step_outputs_for_rerun_anim_pr_only(session, tmp_path: Path):
-    """Повторный запуск anim_pr: чистим только animation_prompt, видео не трогаем."""
+async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
+    """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)
     fr = await _mkframe(
         session,
@@ -348,8 +348,8 @@ async def test_clear_step_outputs_for_rerun_anim_pr_only(session, tmp_path: Path
     summary = await clear_step_outputs_for_rerun(session, p, "anim_pr")
     assert "anim_pr" in summary
     await session.refresh(fr)
-    assert fr.animation_prompt is None
-    assert fr.status is FrameStatus.image_approved
+    assert fr.animation_prompt == "anim done"
+    assert fr.status is FrameStatus.animation_prompt_ready
 
     videos_left = (
         await session.execute(

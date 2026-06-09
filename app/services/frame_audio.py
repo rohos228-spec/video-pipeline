@@ -313,7 +313,7 @@ async def synthesize_per_frame_audio(
     clip_timeout: float = 180.0,
     whisper_model: str = "large-v3",
     language: str = "ru",
-) -> tuple[list[FrameAudioClip], Path]:
+) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
     """Озвучка: весь voiceover одним запросом в 11Labs, тайминги — Whisper."""
     audio_dir.mkdir(parents=True, exist_ok=True)
     delete_frame_audio_files(audio_dir)
@@ -365,7 +365,7 @@ async def synthesize_per_frame_audio(
         )
         clip.path = seg_path
 
-    return clips, full_path
+    return clips, full_path, words
 
 
 def whisper_words_from_clips(

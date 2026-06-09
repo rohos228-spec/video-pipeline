@@ -42,6 +42,7 @@ import {
 } from "@/lib/prompt-slot-storage";
 import {
   pickDefaultSheetForNode,
+  xlsxPreviewFocusForNode,
 } from "@/lib/xlsx-sheets";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
@@ -125,15 +126,17 @@ export function NodeStudio({
     enabled: open && projectId != null && showExcel,
   });
 
+  const xlsxFocus = useMemo(() => xlsxPreviewFocusForNode(nodeType), [nodeType]);
+
   const xlsxPreview = useQuery({
-    queryKey: ["xlsx-preview", projectId, xlsxSheet],
+    queryKey: ["xlsx-preview", projectId, xlsxSheet, xlsxFocus?.startRow],
     queryFn: () =>
       api.previewProjectXlsx(projectId!, {
         sheet: xlsxSheet || undefined,
         raw: true,
-        maxRows: 500,
+        maxRows: xlsxFocus?.maxRows ?? 500,
         maxCols: 200,
-        startRow: 1,
+        startRow: xlsxFocus?.startRow ?? 1,
       }),
     enabled:
       open &&
@@ -572,12 +575,17 @@ export function NodeStudio({
                   )}
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
                     <div className="max-h-[min(70vh,720px)] overflow-auto rounded-xl border border-white/10">
+                      {xlsxFocus?.hint ? (
+                        <p className="border-b border-white/10 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
+                          {xlsxFocus.hint}
+                        </p>
+                      ) : null}
                       <table className="min-w-max border-collapse text-left text-xs">
                         <tbody>
                           {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
                             <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
                               <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                                {ri + 1}
+                                {(xlsxFocus?.startRow ?? 1) + ri}
                               </td>
                               {row.map((cell, ci) => (
                                 <td

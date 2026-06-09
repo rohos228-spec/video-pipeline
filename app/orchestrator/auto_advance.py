@@ -788,6 +788,10 @@ async def maybe_auto_advance(
         and not settings.hitl_auto_approve
     ):
         return False
+    try:
+        await session.refresh(project)
+    except Exception:  # noqa: BLE001
+        pass
     await clamp_status_to_data(session, project)
     status = project.status
     if status not in TRANSITIONS:

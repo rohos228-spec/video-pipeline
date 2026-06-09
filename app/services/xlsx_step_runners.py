@@ -250,7 +250,7 @@ async def run_script_xlsx(
             [prompt_file, proj_xlsx],
             downloaded,
             project_id=project_id or project.id,
-            ask_timeout=1500.0,
+            ask_timeout=1800.0,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "script", _gpt)

@@ -14,7 +14,7 @@ from app.services.disabled_nodes import is_step_disabled
 from app.orchestrator.graph.planner import assert_step_allowed_by_graph
 from app.services.reset_step import clear_step_outputs_for_rerun, _WRAPPER_TO_CODES
 from app.services.chatgpt_xlsx import purge_tmp_gpt_for_step
-from app.services.xlsx_sync import reload_from_xlsx
+from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.services.step_cancel import clear_stop
 from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_code, step_by_running_status
@@ -63,11 +63,16 @@ async def start_step(
     proj_xlsx = project.data_dir / "project.xlsx"
     if proj_xlsx.exists():
         try:
-            await reload_from_xlsx(session, project, proj_xlsx)
-            logger.info("[#{}] start_step {}: reloaded project.xlsx into DB", project.id, step_code)
+            info = await sync_project_xlsx(session, project, proj_xlsx)
+            logger.info(
+                "[#{}] start_step {}: synced project.xlsx into DB: {}",
+                project.id,
+                step_code,
+                info,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "[#{}] start_step {}: reload_from_xlsx failed: {}",
+                "[#{}] start_step {}: sync_project_xlsx failed: {}",
                 project.id,
                 step_code,
                 e,

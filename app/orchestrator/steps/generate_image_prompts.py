@@ -169,6 +169,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"GPT не заполнил image_prompt для кадров: {missing}"
         )
 
+    from app.storage.plan_sheet_v8 import write_plan_image_prompts_bulk
+
+    prompts_map = {
+        fr.number: (fr.image_prompt or "").strip()
+        for fr in need
+        if (fr.image_prompt or "").strip()
+    }
+    n_xlsx = write_plan_image_prompts_bulk(project, prompts_map)
+    if n_xlsx:
+        logger.info(
+            "[#{}] v8 plan R45: записано image_prompt для {} кадров",
+            project.id,
+            n_xlsx,
+        )
+
     for fr in need:
         fr.status = FrameStatus.image_prompt_ready
         await session.flush()

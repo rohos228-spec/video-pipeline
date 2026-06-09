@@ -103,8 +103,7 @@ async def _backfill_from_disk() -> None:
 
     from app.db import session_scope
     from app.models import Project
-    from app.services.xlsx_sync import reload_from_xlsx
-    from app.services.xlsx_v8_import import import_v8_xlsx
+    from app.services.chatgpt_xlsx import sync_project_xlsx
 
     try:
         async with session_scope() as s:
@@ -131,40 +130,23 @@ async def _backfill_from_disk() -> None:
                 # пустоты.
                 if proj_xlsx.exists():
                     try:
-                        info_v8 = await import_v8_xlsx(
+                        info = await sync_project_xlsx(
                             s, p, proj_xlsx, keep_fields=True
                         )
-                        if (
-                            info_v8.get("project_fields_changed")
-                            or info_v8.get("frames_created")
-                            or info_v8.get("frames_updated")
+                        if info and (
+                            info.get("project_fields_changed")
+                            or info.get("frames_created")
+                            or info.get("frames_updated")
+                            or info.get("frames_changed")
                         ):
                             logger.info(
-                                "backfill[#{}]: v8 xlsx → DB: {}",
-                                p.id, info_v8,
+                                "backfill[#{}]: xlsx → DB: {}", p.id, info
                             )
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
-                            "backfill[#{}]: v8 import failed: {}", p.id, e,
-                        )
-                    # Старый v7-формат — тоже пробуем (на случай если
-                    # проект мигрирован со старого шаблона).
-                    try:
-                        info = await reload_from_xlsx(s, p, proj_xlsx)
-                        changed = (
-                            info.get("project_fields_changed")
-                            or info.get("frames_changed")
-                            or info.get("frames_created")
-                        )
-                        if changed:
-                            logger.info(
-                                "backfill[#{}]: v7 xlsx → DB: {}",
-                                p.id, info,
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "backfill[#{}]: v7 reload_from_xlsx failed: {}",
-                            p.id, e,
+                            "backfill[#{}]: sync_project_xlsx failed: {}",
+                            p.id,
+                            e,
                         )
 
                 # 2) voiceover.txt → project.script_text (xlsx-flow шага 2
@@ -375,6 +357,10 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         clear_failure_on_success(p, ProjectStatus(prev_status_value))
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
+                            try:
+                                await s.refresh(p)
+                            except Exception:  # noqa: BLE001
+                                pass
                             try:
                                 from app.services.gen_queue import (
                                     is_timeline_complete,

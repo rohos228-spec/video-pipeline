@@ -13,11 +13,12 @@ from app.services.xlsx_versioning import validate_xlsx
 def test_count_v8_voiceover_blocks_empty(tmp_path: Path) -> None:
     from openpyxl import Workbook
 
-    from app.services.xlsx_v8_import import SHEET_PLAN_V8
+    from app.services.xlsx_v8_import import SHEET_GENERAL_V8, SHEET_PLAN_V8
 
     p = tmp_path / "empty.xlsx"
     wb = Workbook()
     wb.active.title = SHEET_PLAN_V8
+    wb.create_sheet(SHEET_GENERAL_V8)
     wb.save(p)
     assert xsr._count_v8_voiceover_blocks(p) == 0
 
@@ -27,6 +28,7 @@ def test_try_reuse_split_download(tmp_path: Path) -> None:
 
     from app.services.xlsx_v8_import import (
         ROW_VOICEOVER_V8,
+        SHEET_GENERAL_V8,
         SHEET_PLAN_V8,
     )
 
@@ -37,6 +39,7 @@ def test_try_reuse_split_download(tmp_path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_PLAN_V8
+    wb.create_sheet(SHEET_GENERAL_V8)
     ws.cell(row=ROW_VOICEOVER_V8, column=3, value="block one")
     ws.cell(row=ROW_VOICEOVER_V8, column=4, value="block two")
     split_file = tmp_dir / "split_20260101_120000.xlsx"

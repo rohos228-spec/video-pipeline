@@ -4824,6 +4824,7 @@ async def on_img_fill_missing(cb: CallbackQuery) -> None:
     from app.services.scan_frames import (
         reset_frames_to_image_prompt_ready,
         scan_missing_frames,
+        sync_frames_with_disk_images,
     )
 
     async with session_scope() as s:
@@ -4848,6 +4849,7 @@ async def on_img_fill_missing(cb: CallbackQuery) -> None:
             return
 
         already_running = project.status is ProjectStatus.generating_images
+        await sync_frames_with_disk_images(s, project)
         changed = await reset_frames_to_image_prompt_ready(s, project, missing)
         if not already_running:
             project.status = ProjectStatus.generating_images

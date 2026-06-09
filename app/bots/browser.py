@@ -1,12 +1,10 @@
-"""Playwright-обёртка: подключение по CDP к уже запущенному Chrome (локально
-на ПК пользователя), получение готовой страницы по URL и базовые helpers.
+"""Playwright: CDP к Chrome пользователя (ChatGPT, Outsee, 11Labs).
 
-Chrome запускается пользователем один раз с флагами (см. HOW_TO_RUN.md):
-  --remote-debugging-port=29229
-  --user-data-dir=%USERPROFILE%\\.vp_browser_data  (Windows)
+Запуск Chrome (Windows): Start-Chrome.cmd или scripts\\Start-ChromeCDP.ps1
+Профиль: %USERPROFILE%\\.vp_browser_data  Порт: 29229
 
-В этом Chrome пользователь залогинен в ChatGPT, outsee.io, 11Labs и т.д. —
-Playwright подхватывает все залогиненные контексты.
+Не запускайте «обычный» Chrome без --remote-debugging-port и без user-data-dir —
+/json/version может отвечать, а connect_over_cdp зависнет после ws connected.
 """
 
 from __future__ import annotations
@@ -18,11 +16,9 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from app.bots import chrome_cdp as cdp
 from app.settings import settings
 
-# Сообщения playwright, по которым мы понимаем что Chrome/контекст «умер»
-# и нужно переподключиться (юзер закрыл вкладку/перезапустил браузер,
-# CDP-соединение разорвалось и т.д.).
 _DEAD_BROWSER_MARKERS = (
     "target page, context or browser has been closed",
     "target closed",
@@ -40,8 +36,15 @@ def _looks_like_dead_browser(exc: BaseException) -> bool:
     return any(m in msg for m in _DEAD_BROWSER_MARKERS)
 
 
+def _looks_like_cdp_connect_failure(exc: BaseException) -> bool:
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    return "connect_over_cdp" in msg or (
+        "timeout" in msg and ("exceeded" in msg or "180000" in msg)
+    )
+
+
 class BrowserSession:
-    """Живая сессия: Playwright → Browser (CDP) → первый существующий context."""
+    """Playwright → Browser (CDP) → первый default context."""
 
     def __init__(self) -> None:
         self._pw = None
@@ -49,16 +52,82 @@ class BrowserSession:
         self.context: BrowserContext | None = None
         self.force_new_window: bool = False
 
-    async def start(self) -> None:
-        self._pw = await async_playwright().start()
-        logger.info("connecting to chrome over cdp at {}", settings.browser_cdp_url)
-        self.browser = await self._pw.chromium.connect_over_cdp(settings.browser_cdp_url)
+    async def _attach_cdp_context(self) -> None:
+        assert self.browser is not None
         if self.browser.contexts:
             self.context = self.browser.contexts[0]
         else:
             self.context = await self.browser.new_context()
-        logger.info("browser connected, contexts={}, pages={}",
-                    len(self.browser.contexts), len(self.context.pages))
+        n_pages = len(self.context.pages) if self.context else 0
+        logger.info(
+            "browser connected, contexts={}, pages={}",
+            len(self.browser.contexts),
+            n_pages,
+        )
+
+    async def _connect_over_cdp_once(self, url: str, *, timeout_ms: int) -> None:
+        assert self._pw is not None
+        self.browser = await self._pw.chromium.connect_over_cdp(url, timeout=timeout_ms)
+        await self._attach_cdp_context()
+
+    async def _connect_over_cdp(self) -> None:
+        assert self._pw is not None
+        url = cdp.normalize_cdp_http_url(settings.browser_cdp_url)
+        timeout_ms = settings.browser_cdp_connect_timeout_ms
+        chrome_restarted = False
+        last_err: BaseException | None = None
+
+        async with cdp._CDP_LOCK:
+            while True:
+                await cdp.log_cdp_health(url)
+                last_err = None
+                for attempt in range(1, 3):
+                    logger.info(
+                        "connecting to chrome over cdp at {} "
+                        "(attempt {}/2, timeout={}ms, restarted={})",
+                        url,
+                        attempt,
+                        timeout_ms,
+                        chrome_restarted,
+                    )
+                    try:
+                        await self._connect_over_cdp_once(url, timeout_ms=timeout_ms)
+                        return
+                    except Exception as e:  # noqa: BLE001
+                        last_err = e
+                        self.browser = None
+                        self.context = None
+                        logger.warning(
+                            "connect_over_cdp attempt {}/2 failed: {}",
+                            attempt,
+                            e,
+                        )
+                        if attempt < 2:
+                            await asyncio.sleep(1.5)
+
+                if (
+                    not chrome_restarted
+                    and last_err is not None
+                    and cdp.playwright_cdp_hang(last_err)
+                    and await cdp.recover_chrome_cdp()
+                ):
+                    chrome_restarted = True
+                    url = cdp.normalize_cdp_http_url(settings.browser_cdp_url)
+                    await asyncio.sleep(2)
+                    continue
+
+                if last_err is not None:
+                    raise RuntimeError(
+                        "Не удалось подключиться к Chrome CDP. "
+                        "Закройте все окна Chrome и запустите Start-Chrome.cmd "
+                        f"(профиль .vp_browser_data, порт {cdp.cdp_port_from_url(url)}). "
+                        f"Причина: {last_err}"
+                    ) from last_err
+                raise RuntimeError("connect_over_cdp: unknown failure")
+
+    async def start(self) -> None:
+        self._pw = await async_playwright().start()
+        await self._connect_over_cdp()
 
     async def stop(self) -> None:
         try:
@@ -67,18 +136,12 @@ class BrowserSession:
         finally:
             if self._pw is not None:
                 await self._pw.stop()
+            self.browser = None
+            self.context = None
+            self._pw = None
 
     async def reconnect(self) -> None:
-        """Переподключиться к Chrome через CDP.
-
-        Используется в случае, когда юзер закрыл chrome-окно, перезапустил
-        браузер или playwright-соединение порвалось. Без этого любые
-        последующие операции на старом `context` падают с TargetClosedError
-        (и кнопки в TG висят в «вечной загрузке» до timeout'а).
-        """
         logger.warning("browser: reconnecting to chrome over cdp...")
-        # Пытаемся аккуратно закрыть старое соединение, но если уже мёртво —
-        # не блокируемся.
         old_browser = self.browser
         self.browser = None
         self.context = None
@@ -87,32 +150,11 @@ class BrowserSession:
                 await old_browser.close()
             except Exception:  # noqa: BLE001
                 pass
-        # `_pw` оставляем тот же — повторный async_playwright().start() в том
-        # же event-loop'е не нужен; если вдруг и playwright «упал», создадим
-        # его заново.
         if self._pw is None:
             self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.connect_over_cdp(
-            settings.browser_cdp_url
-        )
-        if self.browser.contexts:
-            self.context = self.browser.contexts[0]
-        else:
-            self.context = await self.browser.new_context()
-        logger.info(
-            "browser: reconnected, contexts={}, pages={}",
-            len(self.browser.contexts),
-            len(self.context.pages),
-        )
+        await self._connect_over_cdp()
 
     async def open_page(self, url: str, *, reuse: bool = True) -> Page:
-        """Открыть вкладку. Если reuse=True и уже есть вкладка с тем же URL-префиксом —
-        возвращаем её.
-
-        На TargetClosedError (юзер закрыл chrome / браузер упал) делаем один
-        reconnect и повторяем — это лечит «вечную загрузку» кнопок в TG, когда
-        долгий шаг (5/6) подвисал в playwright потому что контекст уже мёртв.
-        """
         last_exc: BaseException | None = None
         for attempt in (0, 1):
             try:
@@ -134,7 +176,6 @@ class BrowserSession:
                         raise
                     continue
                 raise
-        # сюда мы не попадаем — либо вернули page, либо raise
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("open_page: unexpected loop exit")
@@ -145,9 +186,10 @@ class BrowserSession:
             reuse = False
         if reuse:
             target = None
+            prefix = url.split("?", 1)[0]
             for p in self.context.pages:
                 try:
-                    if p.url and p.url.startswith(url.split("?", 1)[0]):
+                    if p.url and p.url.startswith(prefix):
                         target = p
                         break
                 except Exception:  # noqa: BLE001
@@ -173,27 +215,34 @@ async def browser_session() -> AsyncIterator[BrowserSession]:
         await session.stop()
 
 
-async def wait_for_selector_stable(page: Page, selector: str, *, settle_ms: int = 1500,
-                                   timeout_ms: int = 120_000) -> None:
-    """Ждём, пока узел появился и перестал меняться по size/text в течение `settle_ms`."""
+async def wait_for_selector_stable(
+    page: Page,
+    selector: str,
+    *,
+    settle_ms: int = 1500,
+    timeout_ms: int = 120_000,
+) -> None:
     await page.wait_for_selector(selector, timeout=timeout_ms)
     last_sig = None
-    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_ms / 1000
     stable_since: float | None = None
-    while asyncio.get_event_loop().time() < deadline:
+    while loop.time() < deadline:
         try:
             box = await page.locator(selector).bounding_box()
             text = await page.locator(selector).inner_text()
         except Exception:  # noqa: BLE001
             await asyncio.sleep(0.25)
             continue
-        sig = (round(box["width"], 1) if box else None,
-               round(box["height"], 1) if box else None,
-               len(text))
+        sig = (
+            round(box["width"], 1) if box else None,
+            round(box["height"], 1) if box else None,
+            len(text),
+        )
         if sig == last_sig:
             if stable_since is None:
-                stable_since = asyncio.get_event_loop().time()
-            elif (asyncio.get_event_loop().time() - stable_since) * 1000 >= settle_ms:
+                stable_since = loop.time()
+            elif (loop.time() - stable_since) * 1000 >= settle_ms:
                 return
         else:
             last_sig = sig

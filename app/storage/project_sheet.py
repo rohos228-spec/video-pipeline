@@ -253,6 +253,11 @@ class ProjectSheet:
         Гарантирует, что в файле есть оба листа и нужная разметка (для
         старого шаблона). Для v8-шаблона разметку enforce-ить не надо —
         её формирует GPT."""
+        from app.services.xlsx_versioning import repair_project_xlsx_if_corrupt
+
+        repair_project_xlsx_if_corrupt(
+            self.file_path, template_path=self.template_path
+        )
         if not self.file_path.exists():
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             tpl = _ensure_template_exists(self.template_path)
@@ -461,9 +466,23 @@ class ProjectSheet:
         import time as _t
 
         last: Exception | None = None
+        from zipfile import BadZipFile
+
+        from app.services.xlsx_versioning import repair_project_xlsx_if_corrupt
+
         for _ in range(3):
             try:
                 return load_workbook(self.file_path)
+            except BadZipFile:
+                logger.error(
+                    "project_sheet: {} не zip/xlsx — пробую restore из old/",
+                    self.file_path,
+                )
+                if repair_project_xlsx_if_corrupt(
+                    self.file_path, template_path=self.template_path
+                ):
+                    continue
+                raise
             except PermissionError as e:
                 last = e
                 _t.sleep(0.2)

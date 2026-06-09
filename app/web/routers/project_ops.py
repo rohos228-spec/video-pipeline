@@ -19,7 +19,7 @@ from app.services.project_control import resume_project as resume_project_svc
 from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
 from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
-from app.services.xlsx_sync import reload_from_xlsx
+from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.web.deps import get_session
@@ -101,6 +101,66 @@ async def stop_project(
         "generation_still_active": info["generation_still_active"],
         "xlsx_stopped": info["xlsx_stopped"],
     }
+
+
+@router.post("/{project_id}/finish/images")
+async def finish_missing_images(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Доделка картинок: frame_NNN_*.png без файла → generating_images."""
+    from app.services.finish_missing import trigger_finish_missing_images
+
+    p = _project_or_404(await session.get(Project, project_id))
+    info = await trigger_finish_missing_images(session, p)
+    await session.commit()
+    await sync_run_for_project(project_id)
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"finish_missing": "images", **info},
+    )
+    return {**info, "project": project_to_detail(p)}
+
+
+@router.post("/{project_id}/finish/animation-prompts")
+async def resume_animation_prompts(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Догонка промтов анимации: plan R48 → БД → generating_animation_prompts."""
+    from app.services.finish_missing import trigger_resume_animation_prompts
+
+    p = _project_or_404(await session.get(Project, project_id))
+    info = await trigger_resume_animation_prompts(session, p)
+    await session.commit()
+    await sync_run_for_project(project_id)
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"finish_missing": "animation_prompts", **info},
+    )
+    return {**info, "project": project_to_detail(p)}
+
+
+@router.post("/{project_id}/finish/videos")
+async def finish_missing_videos(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Доделка видео: clip_NNN_*.mp4 без файла → generating_videos."""
+    from app.services.finish_missing import trigger_finish_missing_videos
+
+    p = _project_or_404(await session.get(Project, project_id))
+    info = await trigger_finish_missing_videos(session, p)
+    await session.commit()
+    await sync_run_for_project(project_id)
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"finish_missing": "videos", **info},
+    )
+    return {**info, "project": project_to_detail(p)}
 
 
 @router.post("/{project_id}/mass-lanes/parse-topics")
@@ -346,7 +406,7 @@ async def reload_xlsx(
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
         raise HTTPException(status_code=404, detail="project.xlsx not found")
-    await reload_from_xlsx(session, p, xlsx)
+    await sync_project_xlsx(session, p, xlsx)
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "reloaded"})
@@ -365,8 +425,19 @@ async def upload_xlsx(
     dest = p.data_dir / "project.xlsx"
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
-    dest.write_bytes(content)
-    await reload_from_xlsx(session, p, dest)
+    import tempfile
+
+    from app.services.xlsx_versioning import validate_xlsx
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    validation_err = validate_xlsx(tmp_path)
+    if validation_err is not None:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=validation_err)
+    tmp_path.replace(dest)
+    await sync_project_xlsx(session, p, dest)
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "uploaded"})

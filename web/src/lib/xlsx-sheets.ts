@@ -46,13 +46,31 @@ export function nodeUsesRawXlsxGrid(nodeType: string): boolean {
   );
 }
 
-/** Превью Excel в студии V: лист «план», строка промтов кадров. */
+/** Превью Excel в студии: v8-кадры — колонки C..N, ключевые строки 45–49. */
 export function xlsxPreviewFocusForNode(nodeType: string): {
   startRow: number;
   maxRows: number;
+  hint?: string;
 } | null {
+  if (
+    nodeType === "split" ||
+    nodeType === "script" ||
+    nodeType.startsWith("enrich_") ||
+    nodeType === "image_prompts"
+  ) {
+    return {
+      startRow: ROW_IMAGE_PROMPT_V8 - 2,
+      maxRows: 10,
+      hint:
+        "v8: кадры — это колонки (C, D, E…), не строки. Номера кадров — строка 1, озвучка — строка 49, промты картинок — строка 45.",
+    };
+  }
   if (nodeType === "images") {
-    return { startRow: ROW_IMAGE_PROMPT_V8 - 1, maxRows: 6 };
+    return {
+      startRow: ROW_IMAGE_PROMPT_V8 - 2,
+      maxRows: 8,
+      hint: "Строка 45 — промты картинок по кадрам (вправо = следующие кадры).",
+    };
   }
   if (nodeType === "animation_prompts" || nodeType === "videos") {
     return { startRow: ROW_VOICEOVER_V8 - 3, maxRows: 8 };

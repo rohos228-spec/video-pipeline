@@ -50,6 +50,8 @@ from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import (
     GenerationResult,
     OutseeBot,
+    OutseeContentRejectedError,
+    OutseeDownloadError,
     OutseeImageError,
 )
 from app.generation_options import OUTSEE_PROMPT_MAX_CHARS, prepend_gen_id
@@ -282,10 +284,15 @@ async def generate_image_with_retries(
                 raise
             except OutseeImageError as e:
                 last_err = e
+                err_kind = (
+                    "модерация"
+                    if isinstance(e, OutseeContentRejectedError)
+                    else "ошибка"
+                )
                 logger.warning(
-                    "outsee.generate_image [{}] попытка {}/{} (id={}) "
-                    "провалена: {}",
+                    "outsee.generate_image [{}] попытка {}/{} ({}, id={}): {}",
                     round_label, attempt, max_attempts_per_prompt,
+                    err_kind,
                     attempt_kwargs.get("prompt_id_prefix") or "—",
                     e.reason,
                 )
@@ -298,14 +305,25 @@ async def generate_image_with_retries(
         if is_last_round:
             break
         if gpt is None:
+            logger.warning(
+                "outsee.generate_image [{}]: GPT недоступен — rewrite пропущен",
+                round_label,
+            )
             break
+        logger.info(
+            "outsee.generate_image: GPT-rewrite после раунда «{}»",
+            round_label,
+        )
         rewritten = await _ask_gpt_to_rewrite(
             gpt,
             current_prompt,
             project_id=pid if isinstance(pid, int) else None,
         )
         if not rewritten:
-            break  # rewrite не получился — выходим с последней ошибкой
+            logger.warning(
+                "outsee.generate_image: GPT-rewrite не вернул текст — выхожу"
+            )
+            break
         current_prompt = rewritten
 
     if last_err is None:
@@ -344,6 +362,8 @@ async def generate_video_with_retries(
     if gpt_rewrite and gpt is not None:
         rounds.append("rewritten")
 
+    _DOWNLOAD_ONLY_RETRIES = 2
+
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
@@ -361,12 +381,54 @@ async def generate_video_with_retries(
                 )
             except StepCancelledError:
                 raise
+            except OutseeDownloadError as e:
+                video_url = e.context.get("video_url")
+                gen_id = str(e.context.get("gen_id") or "")
+                if isinstance(video_url, str) and video_url and gen_id:
+                    for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
+                        abort_if_cancelled(project_id)
+                        try:
+                            return await outsee.retry_video_download(
+                                video_url=video_url,
+                                out_path=out_path,
+                                gen_id=gen_id,
+                                prompt_id_prefix=attempt_kwargs.get(
+                                    "prompt_id_prefix"
+                                ),
+                                project_id=project_id,
+                                model_slug=attempt_kwargs.get("model_slug"),
+                            )
+                        except OutseeDownloadError as dl_err:
+                            last_err = dl_err
+                            logger.warning(
+                                "outsee.retry_video_download [{}] {}/{}: {}",
+                                round_label,
+                                dl_try,
+                                _DOWNLOAD_ONLY_RETRIES,
+                                dl_err.reason,
+                            )
+                            if dl_try < _DOWNLOAD_ONLY_RETRIES:
+                                await sleep_cancellable(2.0, project_id)
+                    logger.warning(
+                        "outsee.generate_video [{}] download-only retries "
+                        "исчерпаны (id={})",
+                        round_label,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                    )
+                last_err = e
+                if attempt < max_attempts_per_prompt:
+                    await sleep_cancellable(2.0, project_id)
             except OutseeImageError as e:
                 last_err = e
+                err_kind = (
+                    "модерация"
+                    if isinstance(e, OutseeContentRejectedError)
+                    else "ошибка"
+                )
                 logger.warning(
-                    "outsee.generate_video [{}] попытка {}/{} (id={}) "
-                    "провалена: {}",
+                    "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
                     round_label, attempt, max_attempts_per_prompt,
+                    err_kind,
                     attempt_kwargs.get("prompt_id_prefix") or "—",
                     e.reason,
                 )
@@ -377,11 +439,22 @@ async def generate_video_with_retries(
         if is_last_round:
             break
         if gpt is None:
+            logger.warning(
+                "outsee.generate_video [{}]: GPT недоступен — rewrite пропущен",
+                round_label,
+            )
             break
+        logger.info(
+            "outsee.generate_video: GPT-rewrite после раунда «{}»",
+            round_label,
+        )
         rewritten = await _ask_gpt_to_rewrite(
             gpt, current_prompt, project_id=project_id
         )
         if not rewritten:
+            logger.warning(
+                "outsee.generate_video: GPT-rewrite не вернул текст — выхожу"
+            )
             break
         current_prompt = rewritten
 

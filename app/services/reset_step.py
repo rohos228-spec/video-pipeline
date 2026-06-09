@@ -250,6 +250,14 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
     }
 
 
+async def _resume_anim_pr_from_xlsx(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Повторный запуск anim_pr: подтянуть R48 из xlsx, не стирать готовые кадры."""
+    from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
+
+    synced = await sync_animation_prompts_from_xlsx(session, project)
+    return {"synced_from_xlsx": synced}
+
+
 async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 8 «Промты анимации»: animation_prompt + статус кадра."""
     frames = (
@@ -427,6 +435,11 @@ def is_reset_supported(step_code: str) -> bool:
 
 _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 
+# «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
+_STEP_RERUN_BY_CODE: dict[str, Any] = {
+    "anim_pr": _resume_anim_pr_from_xlsx,
+}
+
 
 async def clear_step_outputs_for_rerun(
     session: AsyncSession,
@@ -445,7 +458,7 @@ async def clear_step_outputs_for_rerun(
     codes = _WRAPPER_TO_CODES.get(step_code, [step_code])
     summary: dict[str, Any] = {}
     for code in codes:
-        handler = _STEP_WIPE_BY_CODE.get(code)
+        handler = _STEP_RERUN_BY_CODE.get(code) or _STEP_WIPE_BY_CODE.get(code)
         if handler is None:
             continue
         try:

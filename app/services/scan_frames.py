@@ -66,6 +66,41 @@ async def scan_missing_frames(
     return missing
 
 
+async def sync_frames_with_disk_images(
+    session: AsyncSession, project: Project
+) -> int:
+    """Кадры с `frame_NNN_*.png` на диске → `image_generated`, чтобы
+    воркер не перегенеривал их при «доделке недостающих»."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    scenes_dir = project.data_dir / "scenes"
+    changed = 0
+    for fr in frames:
+        if fr.status in (
+            FrameStatus.image_approved,
+            FrameStatus.image_generated,
+            FrameStatus.failed,
+        ):
+            continue
+        if not _disk_has_frame_image(scenes_dir, fr.number):
+            continue
+        fr.status = FrameStatus.image_generated
+        changed += 1
+    if changed:
+        await session.flush()
+        logger.info(
+            "[#{}] sync_frames_with_disk_images: {} кадров уже на диске → image_generated",
+            project.id,
+            changed,
+        )
+    return changed
+
+
 async def reset_frames_to_image_prompt_ready(
     session: AsyncSession, project: Project, numbers: list[int]
 ) -> int:
@@ -92,6 +127,76 @@ async def reset_frames_to_image_prompt_ready(
         if not (fr.image_prompt or "").strip():
             continue
         fr.status = FrameStatus.image_prompt_ready
+        attrs = dict(fr.attrs or {})
+        if "fail_reason" in attrs:
+            del attrs["fail_reason"]
+            fr.attrs = attrs
+        changed += 1
+    await session.flush()
+    return changed
+
+
+def _disk_has_frame_video(videos_dir: Path, frame_number: int) -> bool:
+    """`clip_<NNN>_*.mp4` в data/.../videos/ (см. generate_videos.py)."""
+    if not videos_dir.exists():
+        return False
+    return any(videos_dir.glob(f"clip_{frame_number:03d}_*.mp4"))
+
+
+async def scan_missing_videos(
+    session: AsyncSession, project: Project
+) -> list[int]:
+    """Кадры с animation_prompt и картинкой, но без clip_XXX_*.mp4 на диске."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    videos_dir = project.data_dir / "videos"
+    scenes_dir = project.data_dir / "scenes"
+    missing: list[int] = []
+    for fr in frames:
+        if not (fr.animation_prompt or "").strip():
+            continue
+        if not _disk_has_frame_image(scenes_dir, fr.number):
+            continue
+        if not _disk_has_frame_video(videos_dir, fr.number):
+            missing.append(fr.number)
+    logger.info(
+        "[#{}] scan_missing_videos: кадров с anim_prompt+картинкой={}, "
+        "без clip на диске={}, videos_dir={}",
+        project.id,
+        sum(1 for f in frames if (f.animation_prompt or "").strip()),
+        len(missing),
+        videos_dir,
+    )
+    return missing
+
+
+async def reset_frames_for_video_regen(
+    session: AsyncSession, project: Project, numbers: list[int]
+) -> int:
+    """Подготовить кадры к догенерации видео (generate_videos)."""
+    if not numbers:
+        return 0
+    rows = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .where(Frame.number.in_(numbers))
+        )
+    ).scalars().all()
+    changed = 0
+    for fr in rows:
+        if not (fr.animation_prompt or "").strip():
+            continue
+        if not _disk_has_frame_image(project.data_dir / "scenes", fr.number):
+            continue
+        if fr.status in (FrameStatus.video_approved, FrameStatus.done):
+            continue
+        fr.status = FrameStatus.animation_prompt_ready
         attrs = dict(fr.attrs or {})
         if "fail_reason" in attrs:
             del attrs["fail_reason"]

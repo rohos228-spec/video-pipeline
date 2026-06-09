@@ -12,7 +12,7 @@ override (через `Project.gpt_text_overrides["enrich_<i>"]`).
   4. Ждём ответ. Скачиваем приложенный к ответу обновлённый xlsx и
      сохраняем поверх исходного `project.xlsx`.
   5. Если ChatGPT не приложил файл — повторяем (новый чат) до 3 раз.
-  6. После успеха — `xlsx_sync.reload_from_xlsx()` → данные в БД,
+  6. После успеха — `sync_project_xlsx()` → данные в БД,
      `recompute_status()` поднимет статус. И принудительно ставим
      статус `enrich_<i>_ready`.
 """
@@ -29,9 +29,7 @@ from app.models import Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_gpt_flow as xgf
-from app.services import xlsx_sync
 from app.services.prompt_library import read_resolved_project_prompt
-from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
 from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
 
@@ -133,6 +131,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 
     last_err: Exception | None = None
+    xlsx_stat_before_run = cx.project_xlsx_stat(xlsx_path)
+
     for attempt in range(1, _MAX_RETRIES + 1):
         raise_if_cancelled(project.id)
         # ChatGPT re-attach читает те же пути — файл мог быть удалён
@@ -179,14 +179,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             break  # успех
         except Exception as e:  # noqa: BLE001
             last_err = e
-            xlsx_ok = (
-                xlsx_path.exists()
-                and xlsx_path.stat().st_size >= 1024
-                and validate_xlsx(xlsx_path) is None
+            xlsx_ok = cx.should_accept_xlsx_after_gpt_error(
+                xlsx_path, xlsx_stat_before_run, e
             )
             if xlsx_ok:
                 logger.warning(
-                    "[#{}] enrich_xlsx slot={} GPT error after valid xlsx on disk "
+                    "[#{}] enrich_xlsx slot={} GPT error after fresh xlsx "
                     "({} байт) — skip retry, use downloaded file: {}",
                     project.id,
                     slot_idx,
@@ -194,6 +192,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     e,
                 )
                 break
+            from app.bots.browser import _looks_like_cdp_connect_failure
+
+            if (
+                not xlsx_ok
+                and xlsx_path.exists()
+                and xlsx_path.stat().st_size >= 1024
+                and validate_xlsx(xlsx_path) is None
+                and _looks_like_cdp_connect_failure(e)
+            ):
+                logger.warning(
+                    "[#{}] enrich_xlsx slot={}: CDP/Chrome не ответил — "
+                    "старый project.xlsx на диске не считаем успехом: {}",
+                    project.id,
+                    slot_idx,
+                    e,
+                )
             logger.warning(
                 "[#{}] enrich_xlsx slot={} attempt {}/{} FAILED: {}",
                 project.id,
@@ -211,58 +225,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ) from e
             continue
 
-    # 4. Reload xlsx → БД. Сначала смотрим формат: если есть лист «план» —
-    # это v8, читаем им (он подтягивает image_prompt/animation_prompt из
-    # R45/R48). Иначе fallback на старый xlsx_sync (лист «Кадры», R29).
-    #
-    # ROOT FIX: раньше тут вызывался ТОЛЬКО `xlsx_sync.reload_from_xlsx`,
-    # который ищет лист «Кадры» и на v8-xlsx тихо ничего не делал. В
-    # результате enrich-слот возвращал xlsx с заполненными промтами, но
-    # в БД они не попадали → шаг 7 «Картинки» ругался «нет image_prompt»
-    # хотя в xlsx промты были.
-    sync_info: dict | None = None
-    try:
-        from openpyxl import load_workbook
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
-        is_v8 = has_v8_plan_sheet(wb)
-        wb.close()
-    except Exception as e:  # noqa: BLE001
-        is_v8 = False
-        logger.warning(
-            "[#{}] enrich_xlsx slot={} cannot peek sheet names: {}",
-            project.id, slot_idx, e,
-        )
+    # 4. Единый импорт xlsx → БД (v8 «план» + fallback v7 «Кадры»).
+    from app.services.chatgpt_xlsx import sync_project_xlsx
 
-    if is_v8:
-        try:
-            sync_info = await import_v8_xlsx(
-                session,
-                project,
-                xlsx_path,
-                keep_fields=False,
-                update_frames_voiceover=True,
-            )
-            logger.info(
-                "[#{}] enrich_xlsx slot={} import_v8_xlsx: {}",
-                project.id, slot_idx, sync_info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] enrich_xlsx slot={} import_v8_xlsx failed: {}",
-                project.id, slot_idx, e,
-            )
-    else:
-        try:
-            sync_info = await xlsx_sync.reload_from_xlsx(session, project, xlsx_path)
-            logger.info(
-                "[#{}] enrich_xlsx slot={} reload_from_xlsx: {}",
-                project.id, slot_idx, sync_info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] enrich_xlsx slot={} reload_from_xlsx failed: {}",
-                project.id, slot_idx, e,
-            )
+    try:
+        sync_info = await sync_project_xlsx(
+            session,
+            project,
+            xlsx_path,
+            keep_fields=False,
+            update_frames_voiceover=True,
+        )
+        logger.info(
+            "[#{}] enrich_xlsx slot={} sync_project_xlsx: {}",
+            project.id,
+            slot_idx,
+            sync_info,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] enrich_xlsx slot={} sync_project_xlsx failed: {}",
+            project.id,
+            slot_idx,
+            e,
+        )
 
     # 5. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
     from app.telegram.menu import status_order as _ord

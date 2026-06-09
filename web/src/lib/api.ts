@@ -369,6 +369,38 @@ export const api = {
     }>(`/api/projects/${projectId}/stop`, {
       method: "POST",
     }),
+  finishMissingImages: (projectId: number) =>
+    http<{
+      ok: boolean;
+      kind: string;
+      missing: number[];
+      queued: number;
+      already_running: boolean;
+      message: string;
+      project: ProjectDetail;
+    }>(`/api/projects/${projectId}/finish/images`, { method: "POST" }),
+  finishMissingVideos: (projectId: number) =>
+    http<{
+      ok: boolean;
+      kind: string;
+      missing: number[];
+      queued: number;
+      already_running: boolean;
+      message: string;
+      project: ProjectDetail;
+    }>(`/api/projects/${projectId}/finish/videos`, { method: "POST" }),
+  finishMissingAnimationPrompts: (projectId: number) =>
+    http<{
+      ok: boolean;
+      kind: string;
+      missing: number[];
+      queued: number;
+      already_done?: number;
+      synced_from_xlsx?: number;
+      already_running: boolean;
+      message: string;
+      project: ProjectDetail;
+    }>(`/api/projects/${projectId}/finish/animation-prompts`, { method: "POST" }),
   startMassLanes: (
     projectId: number,
     body: { count?: number; topics?: string[] },

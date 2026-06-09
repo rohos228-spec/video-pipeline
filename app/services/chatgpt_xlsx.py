@@ -23,6 +23,34 @@ from app.services.xlsx_sync import reload_from_xlsx
 from app.services.xlsx_v8_import import has_v8_plan_sheet, import_v8_xlsx
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
 
+from app.bots.browser import _looks_like_cdp_connect_failure
+
+
+def project_xlsx_stat(path: Path) -> tuple[float, int]:
+    """(mtime, size) для проверки, обновился ли xlsx после GPT."""
+    if path.exists():
+        st = path.stat()
+        return st.st_mtime, st.st_size
+    return 0.0, 0
+
+
+def should_accept_xlsx_after_gpt_error(
+    path: Path,
+    stat_before: tuple[float, int],
+    exc: BaseException,
+) -> bool:
+    """True только если GPT реально записал новый xlsx (не старый файл на диске)."""
+    if _looks_like_cdp_connect_failure(exc):
+        return False
+    if not path.exists() or path.stat().st_size < 1024:
+        return False
+    if validate_xlsx(path) is not None:
+        return False
+    st = path.stat()
+    mtime_b, size_b = stat_before
+    return st.st_mtime > mtime_b + 0.5 or st.st_size != size_b
+
+
 
 def tmp_gpt_dir(project: Project) -> Path:
     d = project.data_dir / "tmp_gpt"
@@ -219,7 +247,7 @@ async def ask_with_prompt_files(
     chat_msg: str,
     attachments: list[Path],
     *,
-    timeout: int = 900,
+    timeout: int = 1800,
     project_id: int | None = None,
 ) -> str:
     """Deprecated: используйте xlsx_gpt_flow.telegram_style_* (bot — источник правды)."""
@@ -251,7 +279,7 @@ async def download_text_attachment(
     gpt: ChatGPTBot,
     target: Path,
     *,
-    timeout: int = 900,
+    timeout: int = 1800,
 ) -> str:
     await gpt.download_attachment_from_last_reply(target, timeout=timeout)
     if not target.exists() or target.stat().st_size < 10:
@@ -268,6 +296,10 @@ async def sync_project_xlsx(
     update_frames_voiceover: bool = False,
 ) -> dict | None:
     """Импортирует project.xlsx в БД (v8 + fallback v7)."""
+    validation_err = validate_xlsx(xlsx_path)
+    if validation_err is not None:
+        raise RuntimeError(validation_err)
+
     sync_info: dict | None = None
     try:
         from openpyxl import load_workbook

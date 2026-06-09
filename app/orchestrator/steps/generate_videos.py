@@ -113,6 +113,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         skipped = 0
         generated = 0
+        session_clip_paths: list[Path] = []
         try:
             for fr in frames:
                 # ⏹ Остановить — проверка между кадрами.
@@ -162,6 +163,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
                 short_uuid = uuid.uuid4().hex[:8]
                 file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
+                duplicate_check_paths: list[Path] = []
+                if fr.number > 1:
+                    duplicate_check_paths.extend(
+                        p
+                        for p in out_dir.glob(f"clip_{fr.number - 1:03d}_*.mp4")
+                        if p.is_file()
+                    )
+                duplicate_check_paths.extend(
+                    p
+                    for p in out_dir.glob(f"clip_{fr.number:03d}_*.mp4")
+                    if p.is_file()
+                )
+                duplicate_check_paths.extend(session_clip_paths)
+                duplicate_check_paths = list(
+                    dict.fromkeys(p.resolve() for p in duplicate_check_paths)
+                )
                 prompt_id_prefix = build_gen_id_prefix(
                     project.id, fr.number, short_uuid
                 )
@@ -184,6 +201,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     resolution=video_res_slug,
                     relax=video_relax,
                     prompt_id_prefix=prompt_id_prefix,
+                    duplicate_check_paths=duplicate_check_paths,
                 )
                 session.add(
                     Artifact(
@@ -197,6 +215,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 fr.status = FrameStatus.video_generated
                 await session.flush()
                 generated += 1
+                session_clip_paths.append(Path(result.file_path))
                 logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
                 try:
                     from app.services.event_bus import publish_project_event
