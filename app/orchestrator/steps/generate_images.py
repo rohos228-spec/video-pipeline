@@ -7,15 +7,16 @@
 Выходной статус: images_ready.
 
 Алгоритм (НЕ БЛОКИРУЕТСЯ на ожидании approve пользователя):
+  Фаза A — все первые кадры (shot_01, строка 45 xlsx):
   1. Берёт следующий кадр в статусе image_prompt_ready.
-  2. Генерит картинку в outsee, сохраняет файл, шлёт в TG карточку
-     с кнопками ✅/🔁/❌/✏ — но НЕ ждёт решения, переходит дальше.
-  3. После того как все кадры «выпущены» в TG, loop ждёт пока каждый
-     из них станет либо approved, либо failed. Параллельно обрабатывает
-     возникающие 🔁 / ✏️ решения — ставит соответствующий кадр на
-     повторную генерацию и запускает новый outsee-проход.
+  2. Генерит картинку в outsee, сохраняет ``frame_NNN_<uuid>.png``.
 
-Таким образом пока ты одобряешь кадр N, бот уже может генерить кадр N+1.
+  Фаза B — вторые кадры (shot_02, строка 46), только где enrich заполнил
+  блок 16–29 / есть промт:
+  3. После завершения фазы A — для каждой сцены с shot_02 генерит
+     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG первого кадра той же колонки.
+
+  HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
 
 from __future__ import annotations
@@ -52,6 +53,13 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_photo
+from app.services.plan_shot2 import (
+    SHOT2_PROMPT_ATTR,
+    SHOT2_STATUS_ATTR,
+    disk_has_shot2_image,
+    find_shot1_image,
+    read_shot2_columns,
+)
 from app.services.scan_frames import _disk_has_frame_image
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import (
@@ -385,29 +393,63 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
         # промт без триггеров модерации, потом ещё 3 попытки.
         gpt = ChatGPTBot(bs)
+        phase = "shot1"
+        shot2_queued = 0
         try:
             while True:
-                # 0) юзер нажал «⏹ Остановить» — кооперативно выходим.
-                # Проверка между кадрами и внутри outsee (~300 мс): текущая
-                # операция прерывается сразу, новый кадр не начнётся.
                 raise_if_cancelled(project.id)
 
-                # 1) подхватить HITL-решения, требующие перегенерации
-                await _apply_pending_regens(session, project.id)
-
-                # 2) взять следующий кадр к обработке
-                target = await _next_frame_to_process(session, project.id)
-                if target is not None:
-                    await _generate_and_send(
-                        session, bot, outsee, gpt, project, target, out_dir
-                    )
+                if phase == "shot1":
+                    await _apply_pending_regens(session, project.id)
+                    target = await _next_frame_to_process(session, project.id)
+                    if target is not None:
+                        await _generate_and_send(
+                            session, bot, outsee, gpt, project, target, out_dir,
+                            shot=1,
+                        )
+                        continue
+                    if await _all_frames_have_image_or_failed(session, project.id):
+                        xlsx_path = project.data_dir / "project.xlsx"
+                        shot2_queued = await _init_shot2_queue(
+                            session, project, frames, out_dir, xlsx_path
+                        )
+                        if shot2_queued:
+                            logger.info(
+                                "[#{}] generate_images: фаза shot_02 — {} сцен",
+                                project.id, shot2_queued,
+                            )
+                            phase = "shot2"
+                            continue
+                        logger.info(
+                            "[#{}] generate_images: shot_02 нет — завершаю",
+                            project.id,
+                        )
+                        break
+                    await sleep_cancellable(3.0, project.id)
                     continue
 
-                # 3) все кадры обработаны? (approved / failed / image_generated)
-                if await _all_frames_have_image_or_failed(session, project.id):
+                # phase == "shot2"
+                target2 = await _next_shot2_frame_to_process(session, project.id)
+                if target2 is not None:
+                    ref1 = find_shot1_image(out_dir, target2.number)
+                    if ref1 is None:
+                        logger.error(
+                            "[#{}] frame {} shot_02: нет PNG shot_01 — skip",
+                            project.id, target2.number,
+                        )
+                        attrs = dict(target2.attrs or {})
+                        attrs[SHOT2_STATUS_ATTR] = "failed"
+                        target2.attrs = attrs
+                        await session.flush()
+                        continue
+                    await _generate_and_send(
+                        session, bot, outsee, gpt, project, target2, out_dir,
+                        shot=2,
+                        shot1_reference=ref1,
+                    )
+                    continue
+                if await _all_shot2_done(session, project.id):
                     break
-
-                # 4) иначе ждём пока пользователь нажмёт кнопку в TG
                 await sleep_cancellable(3.0, project.id)
         except StepCancelledError as e:
             consume_stop(project.id)
@@ -499,6 +541,71 @@ async def _all_frames_have_image_or_failed(
     return True
 
 
+async def _init_shot2_queue(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+    out_dir: Path,
+    xlsx_path: Path,
+) -> int:
+    """Подготовить очередь shot_02 из xlsx → ``frame.attrs``."""
+    by_num = read_shot2_columns(xlsx_path)
+    queued = 0
+    for fr in frames:
+        info = by_num.get(fr.number)
+        attrs = dict(fr.attrs or {})
+        if info is None or not info.has_shot2:
+            if SHOT2_PROMPT_ATTR in attrs or SHOT2_STATUS_ATTR in attrs:
+                attrs.pop(SHOT2_PROMPT_ATTR, None)
+                attrs.pop(SHOT2_STATUS_ATTR, None)
+                fr.attrs = attrs
+            continue
+        attrs[SHOT2_PROMPT_ATTR] = info.prompt
+        if disk_has_shot2_image(out_dir, fr.number):
+            attrs[SHOT2_STATUS_ATTR] = "image_generated"
+        else:
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+            queued += 1
+        fr.attrs = attrs
+    await session.flush()
+    return queued
+
+
+async def _next_shot2_frame_to_process(
+    session: AsyncSession, project_id: int
+) -> Frame | None:
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    for fr in frames:
+        attrs = fr.attrs or {}
+        if attrs.get(SHOT2_STATUS_ATTR) == "image_prompt_ready":
+            return fr
+    return None
+
+
+async def _all_shot2_done(session: AsyncSession, project_id: int) -> bool:
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    for fr in frames:
+        attrs = fr.attrs or {}
+        if not attrs.get(SHOT2_PROMPT_ATTR):
+            continue
+        st = attrs.get(SHOT2_STATUS_ATTR)
+        if st not in ("image_generated", "image_approved", "failed", "skipped"):
+            return False
+    return True
+
+
 async def _apply_pending_regens(session: AsyncSession, project_id: int) -> None:
     """Находит HITL-решения regenerate/edit_prompt, которые ещё не
     «потреблены», возвращает соответствующие кадры в image_prompt_ready
@@ -555,9 +662,27 @@ async def _generate_and_send(
     project: Project,
     frame: Frame,
     out_dir: Path,
+    *,
+    shot: int = 1,
+    shot1_reference: Path | None = None,
 ) -> None:
     """Один прогон outsee → сохранение артефакта → HITL-карточка."""
     raise_if_cancelled(project.id)
+    is_shot2 = shot == 2
+    attrs = dict(frame.attrs or {})
+    if is_shot2:
+        prompt_text = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        if not prompt_text:
+            logger.warning(
+                "[#{}] frame {} shot_02: пустой промт — skip",
+                project.id, frame.number,
+            )
+            attrs[SHOT2_STATUS_ATTR] = "skipped"
+            frame.attrs = attrs
+            await session.flush()
+            return
+    else:
+        prompt_text = (frame.image_prompt or "").strip()
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
@@ -571,7 +696,8 @@ async def _generate_and_send(
         )
     ).scalar_one_or_none()
     use_regen_button = (
-        last_hitl is not None
+        not is_shot2
+        and last_hitl is not None
         and last_hitl.decision is HITLDecision.regenerate
     )
 
@@ -586,12 +712,18 @@ async def _generate_and_send(
 
     gen_id = uuid.uuid4().hex
     short_uuid = gen_id[:8]
-    file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
-    prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
+    if is_shot2:
+        file_path = out_dir / f"frame_{frame.number:03d}_s2_{short_uuid}.png"
+        prompt_id_prefix = build_gen_id_prefix(
+            project.id, frame.number, short_uuid
+        ) + "-S2"
+    else:
+        file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
+        prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
 
     from app.generation_options import OUTSEE_PROMPT_MAX_CHARS, prepend_gen_id
 
-    full_prompt_len = len(prepend_gen_id(frame.image_prompt or "", prompt_id_prefix))
+    full_prompt_len = len(prepend_gen_id(prompt_text, prompt_id_prefix))
     if full_prompt_len > OUTSEE_PROMPT_MAX_CHARS:
         logger.warning(
             "[#{}] frame {}: image_prompt {} симв > outsee {} — "
@@ -619,9 +751,10 @@ async def _generate_and_send(
         project.image_generator, project.image_quality
     )
     logger.info(
-        "[#{}] frame {} attempt {} gen_id={}: outsee {}",
+        "[#{}] frame {} shot_{} attempt {} gen_id={}: outsee {}",
         project.id,
         frame.number,
+        shot,
         attempt_number,
         gen_id[:8],
         "regenerate" if use_regen_button else "generate",
@@ -638,11 +771,11 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Загружаем рефы (персонаж + предмет) из xlsx R38/R39 для этого кадра.
-    # Передаются в outsee как 1-2 reference_image. На regenerate (если
-    # кнопка «Повторить» используется) рефы не пересабмитятся — outsee
-    # внутри регенерации работает на основе предыдущего state.
-    refs: list[Path] = _load_refs_for_frame(project, frame.number)
+    # Референсы: shot_02 — всегда PNG shot_01 той же колонки; shot_01 — персонажи/предметы из xlsx.
+    if is_shot2:
+        refs: list[Path] = [shot1_reference] if shot1_reference else []
+    else:
+        refs = _load_refs_for_frame(project, frame.number)
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",
@@ -666,7 +799,7 @@ async def _generate_and_send(
                 )
                 result = await generate_image_with_retries(
                     outsee, gpt,
-                    prompt=frame.image_prompt,
+                    prompt=prompt_text,
                     out_path=file_path,
                     max_attempts_per_prompt=3,
                     gpt_rewrite=True,
@@ -685,7 +818,7 @@ async def _generate_and_send(
             # GPT-rewrite промта (убирает триггеры модерации) + ещё 3 попытки.
             result = await generate_image_with_retries(
                 outsee, gpt,
-                prompt=frame.image_prompt,
+                prompt=prompt_text,
                 out_path=file_path,
                 max_attempts_per_prompt=3,
                 gpt_rewrite=True,
@@ -713,6 +846,10 @@ async def _generate_and_send(
             gen_id[:8],
         )
         frame.status = FrameStatus.failed
+        if is_shot2:
+            attrs = dict(frame.attrs or {})
+            attrs[SHOT2_STATUS_ATTR] = "failed"
+            frame.attrs = attrs
         try:
             sheet.write_frame(
                 frame.number,
@@ -743,27 +880,47 @@ async def _generate_and_send(
         kind=ArtifactKind.scene_image,
         uuid=uuid.uuid4().hex,
         path=str(result.file_path),
-        meta={"gen_id": gen_id, "raw_url": result.raw_url or ""},
+        meta={
+            "gen_id": gen_id,
+            "raw_url": result.raw_url or "",
+            "shot": shot,
+        },
     )
     session.add(art)
-    frame.status = FrameStatus.image_generated
+    if is_shot2:
+        attrs = dict(frame.attrs or {})
+        attrs[SHOT2_STATUS_ATTR] = "image_generated"
+        frame.attrs = attrs
+    else:
+        frame.status = FrameStatus.image_generated
     await session.flush()
 
     try:
-        sheet.write_frame(
-            frame.number,
-            image_path=str(result.file_path),
-            image_url=result.raw_url,
-            frame_status=frame.status.value,
-        )
+        if not is_shot2:
+            sheet.write_frame(
+                frame.number,
+                image_path=str(result.file_path),
+                image_url=result.raw_url,
+                frame_status=frame.status.value,
+            )
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(image_path) failed: {}", project.id, e)
 
+    shot_label = f" (shot_0{shot})" if is_shot2 else ""
     caption = (
         f"{prompt_id_prefix}\n"
-        f"Кадр #{frame.number} / P{project.id}. Попытка {attempt_number}.\n"
+        f"Кадр #{frame.number}{shot_label} / P{project.id}. Попытка {attempt_number}.\n"
         f"{(frame.voiceover_text or '')[:600]}"
     )
+    payload = {
+        "step": "image",
+        "frame_id": frame.id,
+        "attempt": attempt_number,
+        "gen_id": gen_id,
+        "prompt_id_prefix": prompt_id_prefix,
+        "photo_path": str(result.file_path),
+        "shot": shot,
+    }
     await send_hitl_photo(
         bot,
         session,
@@ -771,14 +928,7 @@ async def _generate_and_send(
         kind=HITLKind.approve_images,
         photo_path=str(result.file_path),
         caption=caption,
-        payload={
-            "step": "image",
-            "frame_id": frame.id,
-            "attempt": attempt_number,
-            "gen_id": gen_id,
-            "prompt_id_prefix": prompt_id_prefix,
-            "photo_path": str(result.file_path),
-        },
+        payload=payload,
         frame_id=frame.id,
         allow_edit=True,
     )

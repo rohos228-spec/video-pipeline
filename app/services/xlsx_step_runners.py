@@ -12,9 +12,10 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project, ProjectStatus
+from app.models import Frame, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import xlsx_gpt_flow as xgf
 from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
@@ -462,6 +463,38 @@ async def sync_after_img_pr(
             "[#{}] sync_after_img_pr: image_prompt из xlsx для кадров {}",
             project.id,
             applied,
+        )
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_STATUS_ATTR,
+        read_shot2_columns,
+    )
+
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    by_num = read_shot2_columns(xlsx_path)
+    shot2_n = 0
+    for fr in frames:
+        info = by_num.get(fr.number)
+        if info is None or not info.has_shot2:
+            continue
+        attrs = dict(fr.attrs or {})
+        attrs[SHOT2_PROMPT_ATTR] = info.prompt
+        if SHOT2_STATUS_ATTR not in attrs:
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        fr.attrs = attrs
+        shot2_n += 1
+    if shot2_n:
+        await session.flush()
+        logger.info(
+            "[#{}] sync_after_img_pr: shot_02 промты для {} кадров",
+            project.id,
+            shot2_n,
         )
 
 
