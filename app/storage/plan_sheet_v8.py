@@ -131,6 +131,63 @@ def write_plan_image_prompt(
         return False
 
 
+def merge_gpt_image_prompt_rows_into_project(
+    project_xlsx: Path,
+    gpt_xlsx: Path,
+) -> tuple[int, int]:
+    """Скопировать R45/R46 из ответа GPT в ``project.xlsx``, enrich не трогать.
+
+    img_pr раньше подменял весь файл — ChatGPT часто возвращал только промты,
+    и строки 2–44 (enrich) обнулялись.
+    """
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    project_xlsx = Path(project_xlsx)
+    gpt_xlsx = Path(gpt_xlsx)
+    if not project_xlsx.is_file() or not gpt_xlsx.is_file():
+        return 0, 0
+    n45 = n46 = 0
+    try:
+        with _file_lock(project_xlsx):
+            wb_gpt = load_workbook(filename=str(gpt_xlsx), data_only=True)
+            wb_proj = load_workbook(filename=str(project_xlsx))
+            try:
+                ws_g = _resolve_plan_sheet(wb_gpt)
+                ws_p = _resolve_plan_sheet(wb_proj)
+                if ws_g is None or ws_p is None:
+                    return 0, 0
+                max_col = max(ws_g.max_column or 0, ws_p.max_column or 0)
+                if max_col < 3:
+                    return 0, 0
+                for col in range(3, max_col + 1):
+                    p45 = (_cell_text(ws_g, ROW_IMAGE_PROMPT_V8, col) or "").strip()
+                    p46 = (
+                        _cell_text(ws_g, ROW_IMAGE_PROMPT_2_V8, col) or ""
+                    ).strip()
+                    if p45:
+                        ws_p.cell(row=ROW_IMAGE_PROMPT_V8, column=col, value=p45)
+                        n45 += 1
+                    if p46:
+                        ws_p.cell(
+                            row=ROW_IMAGE_PROMPT_2_V8, column=col, value=p46
+                        )
+                        n46 += 1
+                if n45 or n46:
+                    wb_proj.save(project_xlsx)
+            finally:
+                wb_gpt.close()
+                wb_proj.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "merge_gpt_image_prompt_rows_into_project {} <- {}: {}",
+            project_xlsx,
+            gpt_xlsx,
+            e,
+        )
+        return 0, 0
+    return n45, n46
+
+
 def write_plan_image_prompts_bulk(
     project: Project,
     prompts_by_frame: dict[int, str],

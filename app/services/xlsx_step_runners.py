@@ -419,7 +419,18 @@ async def run_img_pr_xlsx(
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
 
     backup = backup_to_old(proj_xlsx)
-    replace_with(proj_xlsx, downloaded)
+    from app.storage.plan_sheet_v8 import merge_gpt_image_prompt_rows_into_project
+
+    n45, n46 = merge_gpt_image_prompt_rows_into_project(proj_xlsx, downloaded)
+    if n45 == 0:
+        raise RuntimeError(
+            "GPT не заполнил строку 45 (промты картинок) — project.xlsx не изменён"
+        )
+    logger.info(
+        "img_pr_xlsx: в project.xlsx слиты R45={} R46={} (enrich сохранён)",
+        n45,
+        n46,
+    )
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=downloaded,
