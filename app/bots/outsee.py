@@ -36,6 +36,11 @@ def _outsee_queue_mode() -> bool:
     return bool(getattr(settings, "outsee_queue_mode", True))
 
 
+# Сколько последних (верхних) thumb'ов в галерее перебираем по [ID: …].
+# Outsee рендерит новые сверху — slice(0, N) = N самых свежих.
+_GALLERY_ID_SCAN_LIMIT = 10
+
+
 # Порядок попыток — первый сработавший используется
 PROMPT_INPUT_SELECTORS = [
     "textarea[placeholder*='prompt' i]",
@@ -800,9 +805,9 @@ def _raise_outsee_failure(
     )
 
 
-# Минимум «настоящей» картинки из nano-banana — она всегда тяжелее 50 KB
-# (обычно 300 KB – 2 MB). Логотипы/аватары/иконки outsee ≤ 10 KB.
-_MIN_IMAGE_BYTES = 50_000
+# Минимум «настоящей» картинки из nano-banana — обычно 300 KB – 5 MB.
+# Thumb/preview outsee ~50–100 KB; placeholder/skeleton ещё меньше.
+_MIN_IMAGE_BYTES = 200_000
 
 # Magic-байты файловых форматов, которые реально может вернуть nano-banana.
 # Используется в `_validate_downloaded_image` для отсева HTML-страниц,
@@ -846,6 +851,20 @@ def _validate_downloaded_image(
                 "err": f"{type(e).__name__}: {e}",
             },
         ) from e
+
+    if _is_outsee_thumb_url(img_url):
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeImageError(
+            "outsee image: скачан thumb вместо full PNG — не принимаем",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "size_bytes": size,
+            },
+        )
 
     if size < _MIN_IMAGE_BYTES:
         try:  # noqa: SIM105
@@ -1770,7 +1789,8 @@ class OutseeBot:
             if queue_mode:
                 logger.info(
                     "outsee.generate_image: queue-mode — ждём одну новую "
-                    "картинку (без галереи/ID), gen_id={}",
+                    "картинку (ID={}), gen_id={}",
+                    "да" if prompt_id_prefix else "нет",
                     gen_id[:8],
                 )
             try:
@@ -1783,7 +1803,7 @@ class OutseeBot:
                     net_events=net_events,
                     gen_id=gen_id,
                     pre_rejected_text=pre_rejected_text,
-                    prompt_id_prefix=None if queue_mode else prompt_id_prefix,
+                    prompt_id_prefix=prompt_id_prefix,
                     project_id=project_id,
                     queue_mode=queue_mode,
                 )
@@ -1817,16 +1837,13 @@ class OutseeBot:
         # Если prompt_id_prefix не передан (legacy / recon-mode) —
         # фолбэк на старую URL-выкачку.
         try:
-            if _outsee_queue_mode():
-                await _download_via_queue_result(
+            if prompt_id_prefix:
+                await self._verify_img_url_matches_prompt_id(
                     page,
-                    img_url=img_url,
-                    out_path=out_path,
+                    img_url,
+                    prompt_id_prefix,
                     gen_id=gen_id,
-                    net_events=net_events,
-                    project_id=project_id,
                 )
-            elif prompt_id_prefix:
                 await _download_via_card_click(
                     page,
                     prompt_id_prefix=prompt_id_prefix,
@@ -1834,6 +1851,15 @@ class OutseeBot:
                     project_id=project_id,
                     img_url=img_url,
                     net_events=net_events,
+                )
+            elif _outsee_queue_mode():
+                await _download_via_queue_result(
+                    page,
+                    img_url=img_url,
+                    out_path=out_path,
+                    gen_id=gen_id,
+                    net_events=net_events,
+                    project_id=project_id,
                 )
             else:
                 await _download_via_context(
@@ -2731,115 +2757,31 @@ class OutseeBot:
         id_token: str,
         *,
         max_levels: int = 12,
+        limit: int = _GALLERY_ID_SCAN_LIMIT,
     ) -> str | None:
-        """Ищет в DOM «карточку», в которой видимый текст содержит `id_token`,
-        и возвращает src ближайшей к этому тексту `<img>`, удовлетворяющей
-        проверкам (загружена, naturalWidth >= 200).
+        """Ищет src среди последних `limit` больших thumb'ов галереи."""
+        return await find_img_src_by_prompt_id_in_gallery(
+            page,
+            id_token,
+            limit=limit,
+            max_levels=max_levels,
+        )
 
-        Пытается несколько токенов в порядке убывания строгости:
-          1) полный `[ID: P1-HERO1-V1-xxxxxxxx]` (как в промте);
-          2) то же без квадратных скобок и `ID:` — `P1-HERO1-V1-xxxxxxxx`
-             (на случай если outsee экранирует `[` `]` или вставляет
-             zero-width-чары между ними);
-          3) только 8-hex-tail (`xxxxxxxx`) — он глобально уникальный
-             (uuid.hex[:8]), и точно не подменится outsee'ем.
-
-        Используется для строгой верификации: outsee показывает в карточке
-        результата начало промта, и так как мы кладём `[ID: P1-HERO1-V1-…]`
-        первой строкой каждого промта, у НАС всегда есть однозначный
-        идентификатор для сопоставления «картинка ↔ моя генерация».
-        Это отсекает любые старые/чужие фото из истории outsee.
-        """
-        # Готовим набор токенов для матчинга — от самого строгого
-        # к самому либеральному. Cильные первыми, чтобы не подхватить
-        # 8-hex-чужого uuid'а если случайно их два совпало.
-        tokens: list[str] = [id_token]
-        # Полное содержимое скобок: `P1-HERO1-V1-xxxxxxxx`.
-        m = re.search(r"\[ID:\s*([A-Za-z0-9_-]+)\s*\]", id_token)
-        if m:
-            inner = m.group(1)
-            if inner not in tokens:
-                tokens.append(inner)
-        # 8-hex-tail. uuid.uuid4().hex[:8] всегда даёт ровно 8 hex-символов.
-        m2 = re.search(r"-([0-9a-fA-F]{8})\]?$", id_token)
-        if m2:
-            tail = m2.group(1)
-            if tail and tail not in tokens:
-                tokens.append(tail)
-
-        js = """
-        ([tokens, maxLevels]) => {
-            // Хелпер: содержит ли элемент токен в видимом тексте
-            // ИЛИ в .value, если это textarea/input.
-            const hasToken = (el, idToken) => {
-                if (!el) return false;
-                const t = (el.innerText || el.textContent || '');
-                if (t.includes(idToken)) return true;
-                const tag = el.tagName && el.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    const v = el.value || '';
-                    if (v.includes(idToken)) return true;
-                }
-                return false;
-            };
-            for (const idToken of tokens) {
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    if (!el || !el.children) continue;
-                    if (el === document.body || el === document.documentElement) continue;
-                    if (!hasToken(el, idToken)) continue;
-                    // Спускаемся к самому мелкому уровню, где нашёлся idToken,
-                    // чтобы не схватить весь main с галереей.
-                    let smallest = el;
-                    for (const child of el.children) {
-                        if (hasToken(child, idToken)) {
-                            smallest = null;
-                            break;
-                        }
-                    }
-                    // Также проверяем «спрятанные» textarea/input внутри
-                    // (если у el есть descendant textarea с нашим токеном,
-                    // спустимся к нему).
-                    if (smallest) {
-                        const deepInputs = el.querySelectorAll('textarea, input');
-                        for (const di of deepInputs) {
-                            if (di === el) continue;
-                            const v = di.value || '';
-                            if (v.includes(idToken)) {
-                                smallest = null;
-                                break;
-                            }
-                        }
-                    }
-                    if (!smallest) continue;
-                    // Поднимаемся вверх до уровня, где есть <img>.
-                    let cur = smallest;
-                    for (let i = 0; i < maxLevels && cur; i++) {
-                        const imgs = cur.querySelectorAll('img');
-                        for (const img of imgs) {
-                            if (!img.src) continue;
-                            if (img.src.startsWith('data:')) continue;
-                            if (!img.complete) continue;
-                            if (!img.naturalWidth || img.naturalWidth < 200) continue;
-                            return img.src;
-                        }
-                        cur = cur.parentElement;
-                    }
-                }
-            }
-            return null;
-        }
-        """
-        try:
-            res = await page.evaluate(js, [tokens, max_levels])
-            if isinstance(res, str) and res:
-                return res
-            return None
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "_find_img_by_prompt_id: ошибка JS-поиска: {}", e
-            )
-            return None
+    async def _verify_img_url_matches_prompt_id(
+        self,
+        page: Page,
+        img_url: str,
+        prompt_id_prefix: str,
+        *,
+        gen_id: str | None = None,
+    ) -> None:
+        """Перед скачиванием: URL = карточка с нашим [ID] (≤10 последних thumb)."""
+        await verify_img_url_matches_prompt_id_in_gallery(
+            page,
+            img_url,
+            prompt_id_prefix,
+            gen_id=gen_id,
+        )
 
     async def _count_id_tokens_in_page(
         self, page: Page, tokens: list[str]
@@ -3118,9 +3060,6 @@ class OutseeBot:
 
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
-        if queue_mode:
-            prompt_id_prefix = None
-
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
             now = asyncio.get_event_loop().time()
@@ -3268,16 +3207,24 @@ class OutseeBot:
                     clean.sort(key=_url_download_priority)
                     chosen = clean[0]
                     if not prompt_id_prefix:
-                        logger.info(
-                            "_wait_image_url_strict: новая <img> в DOM за "
-                            "{:.0f} сек: {} (всего новых: {})",
-                            elapsed,
-                            chosen[:140],
-                            len(clean),
-                        )
-                        return _resolve_best_download_url(
-                            chosen, net_events=net_events, extra_urls=clean
-                        )
+                        if len(clean) > 1 and not net_events:
+                            logger.warning(
+                                "_wait_image_url_strict: {} новых <img> без "
+                                "net_events и без [ID] — ждём однозначный "
+                                "результат (не берём из галереи)",
+                                len(clean),
+                            )
+                        elif net_events or len(clean) == 1:
+                            logger.info(
+                                "_wait_image_url_strict: новая <img> в DOM за "
+                                "{:.0f} сек: {} (всего новых: {})",
+                                elapsed,
+                                chosen[:140],
+                                len(clean),
+                            )
+                            return _resolve_best_download_url(
+                                chosen, net_events=net_events, extra_urls=clean
+                            )
                     else:
                         # С ID-верификацией — запоминаем как fallback,
                         # но click-verify всё равно сработает (или net_events).
@@ -3299,69 +3246,22 @@ class OutseeBot:
             # до таймаута и уходит в retry вместо download-v3 (10 картинок).
             # Как в TG-боте: после Generate ждём «ген готова» → скачивание C.
             _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF = 6.0
-            if (
-                prompt_id_prefix
-                and fallback_candidate is not None
-                and _strip_url_query(fallback_candidate)
-                not in rejected_candidates
-            ):
-                # С prompt_id_prefix НЕ выходим только по net_events:
-                # URL приходит раньше, чем thumbs в галерее — download-v3
-                # не находит картинки для клика (как в hero-flow).
+            if prompt_id_prefix and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF:
                 gen_idle = await self._generate_button_enabled(page)
-                if gen_idle and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF:
-                    logger.info(
-                        "_wait_image_url_strict: gen завершена (gen_idle), "
-                        "переход к download-v3 — перебор 10 картинок "
-                        "(source={}, {:.0f} сек, url={})",
-                        fallback_source,
-                        elapsed,
-                        fallback_candidate[:120],
+                if gen_idle:
+                    by_id = await self._find_img_by_prompt_id(
+                        page, prompt_id_prefix
                     )
-                    return _resolve_best_download_url(
-                        fallback_candidate,
-                        net_events=net_events,
-                    )
-
-            if (
-                prompt_id_prefix
-                and elapsed >= _MIN_SEC_BEFORE_DOWNLOAD_HANDOFF
-                and await self._generate_button_enabled(page)
-            ):
-                idle_srcs = await self._completed_new_imgs(
-                    page, baseline_all_srcs
-                )
-                if idle_srcs:
-                    idle_clean = [
-                        u
-                        for u in idle_srcs
-                        if not any(
-                            m in u.lower() for m in _UI_ASSET_MARKERS
-                        )
-                        and not any(
-                            m in u.lower() for m in _INPUT_REF_MARKERS
-                        )
-                    ]
-                    if net_events:
-                        idle_clean = [
-                            u for u in idle_clean
-                            if _url_is_fresh(u, net_events)
-                        ]
-                    elif not net_events:
-                        pass  # доверяем DOM
-                    if idle_clean:
-                        idle_clean.sort(key=_url_download_priority)
-                        best_idle = idle_clean[0]
+                    if by_id:
                         logger.info(
-                            "_wait_image_url_strict: gen_idle, новые img в "
-                            "DOM — handoff download-v3 за {:.0f} сек: {}",
+                            "_wait_image_url_strict: [ID] в {} последних "
+                            "thumb за {:.0f} сек: {}",
+                            _GALLERY_ID_SCAN_LIMIT,
                             elapsed,
-                            best_idle[:120],
+                            by_id[:120],
                         )
                         return _resolve_best_download_url(
-                            best_idle,
-                            net_events=net_events,
-                            extra_urls=idle_clean,
+                            by_id, net_events=net_events
                         )
 
             # 3) diagnostic
@@ -3407,26 +3307,19 @@ class OutseeBot:
         if prompt_id_prefix:
             ctx["prompt_id_prefix"] = prompt_id_prefix
             ctx["id_diag"] = await self._diag_id_in_page(page, prompt_id_prefix)
-            # Таймаут wait, но Generate снова активен и в DOM есть картинки —
-            # как в TG-боте: всё равно пробуем download-v3 (10 кликов по ID).
-            if await self._generate_button_enabled(page):
-                handoff_srcs = await self._completed_new_imgs(
-                    page, baseline_all_srcs
+            ctx["gallery_id_scan_limit"] = _GALLERY_ID_SCAN_LIMIT
+            by_id = await self._find_img_by_prompt_id(page, prompt_id_prefix)
+            if by_id:
+                logger.warning(
+                    "_wait_image_url_strict: timeout {:.0f}с, но [ID] найден "
+                    "в {} последних thumb — handoff: {}",
+                    timeout,
+                    _GALLERY_ID_SCAN_LIMIT,
+                    by_id[:120],
                 )
-                if handoff_srcs:
-                    handoff_srcs.sort(key=_url_download_priority)
-                    chosen = handoff_srcs[0]
-                    logger.warning(
-                        "_wait_image_url_strict: timeout {:.0f}с, но gen_idle "
-                        "и есть новые img — handoff в download-v3: {}",
-                        timeout,
-                        chosen[:120],
-                    )
-                    return _resolve_best_download_url(
-                        chosen,
-                        net_events=net_events,
-                        extra_urls=handoff_srcs,
-                    )
+                return _resolve_best_download_url(
+                    by_id, net_events=net_events
+                )
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
             context=ctx,
@@ -4281,7 +4174,8 @@ class OutseeBot:
             if queue_mode:
                 logger.info(
                     "outsee.generate_video: queue-mode — ждём один новый "
-                    "ролик (без галереи/ID), gen_id={}",
+                    "ролик (ID={}), gen_id={}",
+                    "да" if prompt_id_prefix else "нет",
                     gen_id[:8],
                 )
 
@@ -4303,7 +4197,7 @@ class OutseeBot:
                         gen_id=gen_id,
                         baseline_failure_texts=baseline_failure_texts,
                         pre_rejected_text=pre_rejected_text,
-                        prompt_id_prefix=None if queue_mode else prompt_id_prefix,
+                        prompt_id_prefix=prompt_id_prefix,
                         project_id=project_id,
                         queue_mode=queue_mode,
                         rejected_video_urls=rejected_video_urls,
@@ -4688,9 +4582,6 @@ class OutseeBot:
 
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
-        if queue_mode:
-            prompt_id_prefix = None
-
         failure_baseline = baseline_failure_texts or frozenset()
         if pre_rejected_text and not failure_baseline:
             failure_baseline = frozenset(
@@ -4943,6 +4834,122 @@ def _prompt_id_search_tokens(prompt_id_prefix: str) -> list[str]:
 
 def _count_tokens_in_text(text: str, tokens: list[str]) -> int:
     return sum(text.count(tok) for tok in tokens if tok)
+
+
+async def _recent_big_gallery_img_srcs(
+    page: Page, *, limit: int = _GALLERY_ID_SCAN_LIMIT
+) -> list[str]:
+    """Первые `limit` больших thumb'ов в DOM (outsee: новейшие сверху)."""
+    try:
+        srcs = await page.evaluate(
+            """(limit) => {
+                const out = [];
+                for (const img of document.querySelectorAll('img')) {
+                    const r = img.getBoundingClientRect();
+                    if (r.width >= 180 && r.height >= 180 && img.src) {
+                        out.push(img.src);
+                    }
+                }
+                return out.slice(0, limit);
+            }""",
+            limit,
+        )
+        return [s for s in (srcs or []) if isinstance(s, str) and s]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def find_img_src_by_prompt_id_in_gallery(
+    page: Page,
+    id_token: str,
+    *,
+    limit: int = _GALLERY_ID_SCAN_LIMIT,
+    max_levels: int = 12,
+) -> str | None:
+    """Ищет `<img src>` с нашим `[ID: …]` только среди `limit` верхних thumb."""
+    tokens = _prompt_id_search_tokens(id_token)
+    js = """
+    ([tokens, maxLevels, limit]) => {
+        const hasToken = (el, idToken) => {
+            if (!el) return false;
+            const t = (el.innerText || el.textContent || '');
+            if (t.includes(idToken)) return true;
+            const tag = el.tagName && el.tagName.toLowerCase();
+            if (tag === 'textarea' || tag === 'input') {
+                const v = el.value || '';
+                if (v.includes(idToken)) return true;
+            }
+            return false;
+        };
+        const bigImgs = [];
+        for (const img of document.querySelectorAll('img')) {
+            const r = img.getBoundingClientRect();
+            if (r.width >= 180 && r.height >= 180 && img.src) {
+                bigImgs.push(img);
+            }
+        }
+        for (const img of bigImgs.slice(0, limit)) {
+            let cur = img;
+            for (let i = 0; i < maxLevels && cur; i++) {
+                for (const idToken of tokens) {
+                    if (hasToken(cur, idToken)) {
+                        if (!img.src || img.src.startsWith('data:')) break;
+                        if (!img.complete) break;
+                        if (!img.naturalWidth || img.naturalWidth < 200) break;
+                        return img.src;
+                    }
+                }
+                cur = cur.parentElement;
+            }
+        }
+        return null;
+    }
+    """
+    try:
+        res = await page.evaluate(js, [tokens, max_levels, limit])
+        if isinstance(res, str) and res:
+            return res
+        return None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("find_img_src_by_prompt_id_in_gallery: {}", e)
+        return None
+
+
+async def verify_img_url_matches_prompt_id_in_gallery(
+    page: Page,
+    img_url: str,
+    prompt_id_prefix: str,
+    *,
+    gen_id: str | None = None,
+    limit: int = _GALLERY_ID_SCAN_LIMIT,
+) -> None:
+    """Скачивание только если URL совпадает с [ID] в ≤limit последних thumb."""
+    by_id = await find_img_src_by_prompt_id_in_gallery(
+        page, prompt_id_prefix, limit=limit
+    )
+    if not by_id:
+        raise OutseeImageError(
+            "outsee image: [ID] не найден в {} последних thumb — "
+            "скачивание отменено".format(limit),
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "img_url": img_url[:200],
+                "gen_id": gen_id,
+                "gallery_id_scan_limit": limit,
+            },
+        )
+    if _outsee_image_stable_key(by_id) != _outsee_image_stable_key(img_url):
+        raise OutseeImageError(
+            "outsee image: URL не совпадает с карточкой [ID] "
+            "(проверено {} последних thumb)".format(limit),
+            context={
+                "prompt_id_prefix": prompt_id_prefix,
+                "expected_url": by_id[:200],
+                "got_url": img_url[:200],
+                "gen_id": gen_id,
+                "gallery_id_scan_limit": limit,
+            },
+        )
 
 
 def _verify_prompt_length_before_send(full_prompt: str, *, where: str) -> None:
@@ -5459,7 +5466,7 @@ async def _download_via_video_card_click(
         card = await _find_card_by_clicking_videos(
             page,
             prompt_id_prefix=prompt_id_prefix,
-            limit=10,
+            limit=_GALLERY_ID_SCAN_LIMIT,
             project_id=project_id,
         )
         if card is not None:
@@ -5634,7 +5641,7 @@ async def _find_card_by_clicking_images(
     page: Page,
     *,
     prompt_id_prefix: str,
-    limit: int = 10,
+    limit: int = _GALLERY_ID_SCAN_LIMIT,
     project_id: int | None = None,
     img_url: str | None = None,
 ):
@@ -5655,31 +5662,14 @@ async def _find_card_by_clicking_images(
     """
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
-    tokens = _prompt_id_search_tokens(prompt_id_prefix)
-
-    # Получаем список больших картинок (визуальный bbox >= 200x200).
-    try:
-        srcs: list[str] = await page.evaluate(
-            """() => {
-                const out = [];
-                for (const img of document.querySelectorAll('img')) {
-                    const r = img.getBoundingClientRect();
-                    if (r.width >= 180 && r.height >= 180 && img.src) {
-                        out.push(img.src);
-                    }
-                }
-                return out;
-            }"""
-        )
-    except Exception:  # noqa: BLE001
-        return None
-
+    srcs = await _recent_big_gallery_img_srcs(page, limit=limit)
     if not srcs:
         return None
 
     logger.info(
-        "_find_card_by_clicking_images: пробую перебрать {} больших картинок",
-        min(len(srcs), limit),
+        "_find_card_by_clicking_images: перебор {} последних thumb (max {})",
+        len(srcs),
+        limit,
     )
 
     for idx, src in enumerate(srcs[:limit]):
@@ -5786,6 +5776,12 @@ async def _download_via_context_candidates(
     )
     last_err: Exception | None = None
     for u in candidates:
+        if _is_outsee_thumb_url(u):
+            logger.warning(
+                "_download_via_context_candidates: пропуск thumb {}",
+                u[:100],
+            )
+            continue
         try:
             await _download_via_context(
                 page, u, out_path, project_id=project_id
@@ -6128,6 +6124,11 @@ async def _download_via_card_click(
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if img_url:
+        await verify_img_url_matches_prompt_id_in_gallery(
+            page, img_url, prompt_id_prefix
+        )
+
     # Быстрый путь: full PNG из net_events / DOM / guess от thumb (оба CDN).
     if img_url:
         dom_full = await _find_full_png_in_dom(
@@ -6222,7 +6223,7 @@ async def _download_via_card_click(
         card = await _find_card_by_clicking_images(
             page,
             prompt_id_prefix=prompt_id_prefix,
-            limit=10,
+            limit=_GALLERY_ID_SCAN_LIMIT,
             project_id=project_id,
             img_url=img_url,
         )

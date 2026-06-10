@@ -421,6 +421,14 @@ def has_override(project: Project, step_code: str) -> bool:
     return get_override(project, step_code) is not None
 
 
+def get_display_text(project: Project, step_code: str, **ctx) -> str:
+    """Текст для редактора в UI — без автоблока параметров plan/script/split."""
+    override = get_override(project, step_code)
+    if override is not None:
+        return override
+    return build_default_text(project, step_code, **ctx)
+
+
 def get_effective_text(project: Project, step_code: str, **ctx) -> str:
     """Возвращает текст, который реально пойдёт в GPT.
 
@@ -431,8 +439,7 @@ def get_effective_text(project: Project, step_code: str, **ctx) -> str:
     """
     from app.services.node_step_params import append_step_params_to_gpt_text
 
-    override = get_override(project, step_code)
-    body = override if override is not None else build_default_text(project, step_code, **ctx)
+    body = get_display_text(project, step_code, **ctx)
     if step_code in ("plan", "script", "split"):
         return append_step_params_to_gpt_text(project, step_code, body)
     return body

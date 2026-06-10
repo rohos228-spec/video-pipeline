@@ -205,6 +205,7 @@ function VoiceoverWideView({
   const textItem = snapshot.items.find((i) => i.kind === "text");
   const fileItem = snapshot.items.find((i) => i.downloadUrl);
   const [text, setText] = useState(textItem?.content ?? "");
+  const [dirty, setDirty] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const fileText = useQuery({
@@ -214,19 +215,23 @@ function VoiceoverWideView({
       if (!res.ok) throw new Error(await res.text());
       return res.text();
     },
-    enabled: Boolean(fileItem?.downloadUrl) && !textItem?.content,
+    enabled: Boolean(fileItem?.downloadUrl) && !textItem?.content && !dirty,
   });
 
   useEffect(() => {
+    if (dirty) return;
     if (textItem?.content) setText(textItem.content);
     else if (fileText.data) setText(fileText.data);
-  }, [textItem?.content, fileText.data]);
+  }, [textItem?.content, fileText.data, dirty]);
 
   const save = useMutation({
     mutationFn: (body: string) => api.patchProject(projectId, { script_text: body }),
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      const saved = (updated.script_text ?? text).trim();
+      setText(saved);
+      setDirty(false);
+      qc.setQueryData(["project", projectId], updated);
       toast.success("Текст сохранён");
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -274,7 +279,10 @@ function VoiceoverWideView({
       </div>
       <Textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          setDirty(true);
+        }}
         className="min-h-[65vh] flex-1 resize-none font-mono text-sm leading-relaxed"
         placeholder="Закадровый текст…"
       />

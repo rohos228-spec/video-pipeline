@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.services.content_locks import is_ui_locked
 from app.storage.project_sheet import (
     ROW_FRAME_LOGIC,
     ROW_HEADER,
@@ -83,6 +84,8 @@ async def reload_from_xlsx(
                 continue
             field = _GENERAL_LABEL_TO_FIELD.get(label)
             if field is None:
+                continue
+            if is_ui_locked(project, field):
                 continue
             current = getattr(project, field, None)
             if value != (current or None):

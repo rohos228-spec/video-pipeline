@@ -17,7 +17,7 @@ from app.services.artifact_recovery import (
     recover_audio_from_disk,
     recover_scene_videos_from_disk,
 )
-from app.services.scan_frames import _disk_has_frame_image
+from app.services.scan_frames import disk_has_valid_frame_image
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 
 
@@ -147,7 +147,7 @@ async def validate_after_images(
     scenes = project.data_dir / "scenes"
     have: set[int] = set()
     for n in numbers:
-        if _disk_has_frame_image(scenes, n):
+        if disk_has_valid_frame_image(scenes, n):
             have.add(n)
     target = numbers if numbers else list(range(1, expected + 1))
     missing = sorted(set(target) - have)

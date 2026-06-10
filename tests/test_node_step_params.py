@@ -66,6 +66,15 @@ def test_get_effective_text_appends_params() -> None:
     assert "840" in text
 
 
+def test_get_display_text_skips_params_block() -> None:
+    p = Project(topic="test topic")
+    p.meta = {"node_step_params": {"plan": {"duration_seconds": 60}}}
+    text = gtb.get_display_text(p, "plan")
+    assert "Тема ролика" in text
+    assert "---" not in text
+    assert "840" not in text
+
+
 def test_append_preserves_override_body() -> None:
     p = Project(topic="t")
     p.gpt_text_overrides = {"plan": "Мой текст"}

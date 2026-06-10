@@ -5,6 +5,8 @@ from __future__ import annotations
 from app.bots.chatgpt import (
     attachment_health_is_ok,
     attachment_name_visible_in_text,
+    composer_text_already_present,
+    composer_text_is_duplicated,
     find_attachment_failure_phrases,
     format_attachment_health_error,
 )
@@ -71,3 +73,20 @@ def test_one_file_missing_other_visible() -> None:
     text = "prompt_script.txt\nUpload failed"
     assert attachment_name_visible_in_text("prompt_script.txt", text)
     assert not attachment_name_visible_in_text("project.xlsx", text)
+
+
+def test_composer_text_already_present_exact() -> None:
+    prompt = "Сделай промты для кадров по xlsx"
+    assert composer_text_already_present(prompt, prompt)
+
+
+def test_composer_text_already_present_prefix() -> None:
+    prompt = "A" * 100
+    assert composer_text_already_present(prompt, prompt + "\n")
+
+
+def test_composer_text_not_present_when_duplicated() -> None:
+    prompt = "Hello world prompt for image generation step"
+    doubled = prompt + prompt
+    assert not composer_text_already_present(prompt, doubled)
+    assert composer_text_is_duplicated(prompt, doubled)

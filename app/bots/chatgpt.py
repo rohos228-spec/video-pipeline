@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v82"
+CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v83"
 
 _ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
@@ -39,6 +39,7 @@ ATTACH_UPLOAD_POLL_SEC = 5.0
 ATTACH_SETTLE_SEC = 5.0
 ATTACH_SETTLE_POLL_SEC = 0.5
 ATTACH_GUARD_MAX_REPAIR = 3
+ATTACH_WAIT_MAX_REPAIR = 3
 # Одна фаза поиска кнопки скачивания (не весь download_timeout).
 DOWNLOAD_PHASE_TIMEOUT_SEC = 60.0
 TEXT_REPLY_DOWNLOAD_SUFFIXES = frozenset({".txt", ".md"})
@@ -64,6 +65,36 @@ ATTACHMENT_FAILURE_PHRASES: tuple[str, ...] = (
 
 # ChatGPT при повторном drop одного имени добавляет суффикс: frame_001.png → frame_001(3).png
 _ATTACHMENT_DEDUP_SUFFIX = re.compile(r"\(\d+\)")
+
+
+def composer_text_already_present(expected: str, draft: str) -> bool:
+    """Текст промта уже в композере (не дублирован)."""
+    exp = (expected or "").strip()
+    dr = (draft or "").strip()
+    if not exp:
+        return True
+    if not dr:
+        return False
+    if dr == exp:
+        return True
+    if len(dr) >= len(exp) * 1.6:
+        return False
+    head = exp[: min(50, len(exp))]
+    if dr.startswith(head) and len(dr) <= len(exp) + 40:
+        return True
+    return False
+
+
+def composer_text_is_duplicated(expected: str, draft: str) -> bool:
+    """Промт вставлен дважды (append вместо replace)."""
+    exp = (expected or "").strip()
+    dr = (draft or "").strip()
+    if not exp or not dr:
+        return False
+    if len(dr) < len(exp) * 1.6:
+        return False
+    head = exp[: min(80, len(exp))]
+    return dr.count(head) >= 2 or dr.startswith(head + head[: min(40, len(head))])
 
 
 def attachment_name_visible_in_text(expected_filename: str, composer_text: str) -> bool:
@@ -417,11 +448,30 @@ class ChatGPTBot:
         deadline = asyncio.get_event_loop().time() + timeout
         started = asyncio.get_event_loop().time()
         last_log = 0.0
+        repairs_during_wait = 0
         while asyncio.get_event_loop().time() < deadline:
             if guard_file_paths:
                 health = await self._composer_attachment_health(guard_file_paths)
                 if not attachment_health_is_ok(health):
                     detail = format_attachment_health_error(health)
+                    if repairs_during_wait < ATTACH_WAIT_MAX_REPAIR:
+                        repairs_during_wait += 1
+                        logger.warning(
+                            "ChatGPT: вложения деградировали во время ожидания Send "
+                            "({}) — repair {}/{}",
+                            detail,
+                            repairs_during_wait,
+                            ATTACH_WAIT_MAX_REPAIR,
+                        )
+                        try:
+                            await self._guard_attachments_before_send(guard_file_paths)
+                        except RuntimeError as repair_err:
+                            logger.warning(
+                                "ChatGPT: repair во время ожидания Send не помог: {}",
+                                repair_err,
+                            )
+                        await asyncio.sleep(1.0)
+                        continue
                     raise RuntimeError(
                         "ChatGPT: вложения деградировали пока ждали Send — "
                         f"{detail}"
@@ -542,36 +592,55 @@ class ChatGPTBot:
             timeout=verify_timeout,
         )
 
-    async def _fill_composer_text(self, page: Page, text: str, input_sel: str) -> None:
-        """Ввод текста в ProseMirror / textarea (как в раннем боте + insertText)."""
-        locator = page.locator(input_sel).first
-        await locator.click()
-        await locator.focus()
+    async def _set_composer_text_replace(
+        self, page: Page, text: str, input_sel: str
+    ) -> None:
+        """Заменить текст композера (не append) — insertText дублирует при ретраях."""
         stripped = (text or "").strip()
         if not stripped:
             return
-        if len(stripped) > 8000:
-            await page.evaluate(
-                """([sel, t]) => {
-                    const el = document.querySelector(sel);
-                    if (!el) return;
-                    if (el.tagName === "TEXTAREA") {
-                        el.focus();
-                        el.value = t;
-                        el.dispatchEvent(new Event("input", { bubbles: true }));
-                    } else {
-                        el.focus();
-                        el.innerText = t;
-                        el.dispatchEvent(
-                            new InputEvent("input", { bubbles: true, data: t })
-                        );
-                    }
-                }""",
-                [input_sel, stripped],
-            )
-        else:
-            await page.keyboard.insert_text(stripped)
+        locator = page.locator(input_sel).first
+        await locator.click()
+        await locator.focus()
+        await page.evaluate(
+            """([sel, t]) => {
+                const el = document.querySelector(sel);
+                if (!el) return;
+                if (el.tagName === "TEXTAREA") {
+                    el.focus();
+                    el.value = t;
+                    el.dispatchEvent(new Event("input", { bubbles: true }));
+                } else {
+                    el.focus();
+                    el.innerText = t;
+                    el.dispatchEvent(
+                        new InputEvent("input", { bubbles: true, data: t })
+                    );
+                }
+            }""",
+            [input_sel, stripped],
+        )
         await asyncio.sleep(0.6)
+
+    async def _fill_composer_text(self, page: Page, text: str, input_sel: str) -> None:
+        """Ввод текста в ProseMirror / textarea (replace, без дублирования)."""
+        stripped = (text or "").strip()
+        if not stripped:
+            return
+        draft = await self._composer_draft_text()
+        if composer_text_already_present(stripped, draft):
+            logger.info(
+                "ChatGPT: текст уже в композере ({} симв.), пропускаю ввод",
+                len(draft),
+            )
+            return
+        if composer_text_is_duplicated(stripped, draft):
+            logger.warning(
+                "ChatGPT: дубликат текста в композере ({} vs {} симв.) — заменяю",
+                len(draft),
+                len(stripped),
+            )
+        await self._set_composer_text_replace(page, stripped, input_sel)
 
     async def _click_send(
         self, *, guard_file_paths: list[Path] | None = None
@@ -697,6 +766,7 @@ class ChatGPTBot:
         *,
         clear_first: bool = True,
         guard_file_paths: list[Path] | None = None,
+        composer_text: str | None = None,
     ) -> None:
         page = await self._page_ready()
         await self._dismiss_no_auth_modal(page)
@@ -714,9 +784,12 @@ class ChatGPTBot:
                 await page.keyboard.press("Delete")
             except Exception:  # noqa: BLE001
                 pass
-        stripped = (text or "").strip()
-        if stripped:
-            await self._fill_composer_text(page, stripped, input_sel)
+        effective = (
+            (composer_text if composer_text is not None else text) or ""
+        ).strip()
+        if effective:
+            await self._fill_composer_text(page, effective, input_sel)
+        stripped = effective
         if not clear_first:
             n_att = await self._count_attachment_previews()
             logger.info(
@@ -774,7 +847,11 @@ class ChatGPTBot:
                 if stripped:
                     input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
                     if input_sel:
-                        await self._fill_composer_text(page, stripped, input_sel)
+                        draft = await self._composer_draft_text()
+                        if not composer_text_already_present(stripped, draft):
+                            await self._fill_composer_text(
+                                page, stripped, input_sel
+                            )
         if last_err is not None:
             raise last_err
 
@@ -1701,20 +1778,33 @@ class ChatGPTBot:
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         abort_if_cancelled(project_id)
+        stripped = (prompt or "").strip()
+
+        # Сначала текст, потом файлы: ввод после attach часто сбрасывает xlsx/txt.
+        if stripped:
+            page = await self._page_ready()
+            await self._dismiss_no_auth_modal(page)
+            input_sel = await _first_matching(page, INPUT_SELECTORS, timeout=30)
+            if not input_sel:
+                raise RuntimeError("ChatGPT: не найден input для промта")
+            await self._fill_composer_text(page, stripped, input_sel)
+            logger.info(
+                "ChatGPT: текст в композере ({} симв.), прикрепляю {} файлов",
+                len(stripped),
+                len(file_paths),
+            )
+        else:
+            logger.info("ChatGPT: без текста — прикрепляю {} файлов", len(file_paths))
+
         await self._attach_files(file_paths)
         abort_if_cancelled(project_id)
 
-        logger.info(
-            "ChatGPT: {} файлов в композере, ввожу текст ({} симв.)",
-            len(file_paths),
-            len(prompt),
-        )
-
-        if (prompt or "").strip():
+        if stripped:
             await self._send_prompt(
-                prompt,
+                "",
                 clear_first=False,
                 guard_file_paths=file_paths,
+                composer_text=stripped,
             )
         else:
             await self._click_send(guard_file_paths=file_paths)

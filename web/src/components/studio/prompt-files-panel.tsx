@@ -119,9 +119,13 @@ export function PromptFilesPanel({
     mutationFn: () => api.savePromptFile(stepCode, selectedName!, draft),
     onSuccess: () => {
       toast.success(`Сохранено: ${selectedName}.md`);
+      setDraft(draft);
       setDirty(false);
+      qc.setQueryData(["prompt-file", cacheKey, selectedName], {
+        name: selectedName,
+        content: draft,
+      });
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
-      qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, selectedName] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),

@@ -23,6 +23,8 @@ Wrapper-коды:
 
 from __future__ import annotations
 
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,35 @@ from app.services.project_state import compute_actual_status
 
 # ---------------------------------------------------------------------------
 # Внутренние «wipe»-функции — каждая чистит выход одного логического шага.
+
+_BACKUP_ON_WIPE_KINDS = frozenset(
+    {ArtifactKind.hero_reference, ArtifactKind.item_reference}
+)
+
+
+def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | None:
+    """Копия рефа в data/.../old/characters|items/ перед удалением."""
+    if not path.is_file():
+        return None
+    if "characters" in path.parts:
+        sub = "characters"
+    elif "items" in path.parts:
+        sub = "items"
+    else:
+        sub = "refs"
+    dest_dir = project.data_dir / "old" / sub
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    dest = dest_dir / f"{ts}_{path.name}"
+    shutil.copy2(path, dest)
+    logger.info(
+        "[#{}] reset_step: backup {} -> {}",
+        project.id,
+        path.name,
+        dest,
+    )
+    return dest
+
 
 async def _wipe_artifacts_by_kind(
     session: AsyncSession,
@@ -62,6 +93,8 @@ async def _wipe_artifacts_by_kind(
             p = Path(a.path)
             if p.exists():
                 try:
+                    if a.kind in _BACKUP_ON_WIPE_KINDS:
+                        _backup_artifact_file_before_wipe(project, p)
                     p.unlink()
                     files_deleted += 1
                 except Exception as e:  # noqa: BLE001

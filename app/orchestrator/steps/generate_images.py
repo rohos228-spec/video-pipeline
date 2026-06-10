@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from pathlib import Path
 
@@ -60,7 +61,12 @@ from app.services.plan_shot2 import (
     find_shot1_image,
     read_shot2_columns,
 )
-from app.services.scan_frames import _disk_has_frame_image
+from app.services.scan_frames import (
+    disk_has_valid_frame_image,
+    frame_needs_shot1_image,
+    is_valid_scene_image,
+    newest_frame_image_path,
+)
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import (
     StepCancelledError,
@@ -79,13 +85,38 @@ _XLSX_SHEET_PLAN = "план"
 # блок), и если юзер вписал в row=8 — рефы не подгружались. Теперь
 # читаем ВСЕ три строки и сливаем (с dedupe сохраняя порядок).
 _XLSX_ROWS_PERSONS = (8, 23, 38)   # «персонажи» — id c01..c05
-_XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id predmet1+
+_XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id i01 / predmet1
+
+_REF_ID_RE = re.compile(r"^(c\d+|i\d+|predmet\d+)$", re.IGNORECASE)
+
+
+def normalize_ref_id(token: str) -> str | None:
+    """Нормализует id из ячейки «план» (c02:, I01 → c02/i01). Мусор отбрасывает."""
+    t = (token or "").strip().lower()
+    t = t.rstrip(":;,.)]}»\"'")
+    if not t or not _REF_ID_RE.match(t):
+        return None
+    return t
+
+
+def ref_id_file_aliases(ref_id: str) -> list[str]:
+    """Варианты имён файлов: i01 ↔ predmet1 (новый/старый лист «Предметы»)."""
+    rid = normalize_ref_id(ref_id)
+    if not rid:
+        return []
+    aliases: list[str] = [rid]
+    if rid.startswith("i") and rid[1:].isdigit():
+        aliases.append(f"predmet{int(rid[1:])}")
+    elif rid.startswith("predmet") and rid[7:].isdigit():
+        n = int(rid[7:])
+        aliases.append(f"i{n:02d}")
+    return list(dict.fromkeys(aliases))
 
 
 def _parse_ref_ids(cell_value: object) -> list[str]:
     """Парсит строку из xlsx-ячейки в список ID. Поддерживает разделители:
     запятая, пробел, точка с запятой, знак «+». Пустые токены и whitespace
-    игнорируются. Регистр приводим к lower-case (id хранится как c01/predmet1).
+    игнорируются. Регистр приводим к lower-case (id хранится как c01/i01).
     """
     if cell_value is None:
         return []
@@ -97,10 +128,21 @@ def _parse_ref_ids(cell_value: object) -> list[str]:
         s = s.replace(ch, ",")
     out: list[str] = []
     for tok in s.split(","):
-        t = tok.strip().lower()
-        if t:
-            out.append(t)
+        norm = normalize_ref_id(tok)
+        if norm:
+            out.append(norm)
     return out
+
+
+def _resolve_plan_sheet(wb):  # noqa: ANN001
+    """Лист «план» (v8), без учёта регистра."""
+    if _XLSX_SHEET_PLAN in wb.sheetnames:
+        return wb[_XLSX_SHEET_PLAN]
+    low = _XLSX_SHEET_PLAN.casefold()
+    for name in wb.sheetnames:
+        if name.casefold() == low:
+            return wb[name]
+    return None
 
 
 def _find_ref_file(base_dir: Path, ref_id: str) -> Path | None:
@@ -122,6 +164,73 @@ def _find_ref_file(base_dir: Path, ref_id: str) -> Path | None:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def _find_ref_file_any(base_dir: Path, ref_id: str) -> Path | None:
+    """Ищет файл по id и синонимам (i01 / predmet1)."""
+    for alias in ref_id_file_aliases(ref_id):
+        found = _find_ref_file(base_dir, alias)
+        if found is not None:
+            return found
+    return None
+
+
+async def _artifact_ref_path(
+    session: AsyncSession | None,
+    project_id: int,
+    ref_id: str,
+    *,
+    kind: str,
+) -> Path | None:
+    """Fallback: hero_reference / item_reference из БД, если файл не в папке."""
+    if session is None:
+        return None
+    from sqlalchemy import desc
+
+    aliases = set(ref_id_file_aliases(ref_id))
+    if not aliases:
+        return None
+    if kind == "character":
+        kind_filter = ArtifactKind.hero_reference
+    elif kind == "item":
+        kind_filter = ArtifactKind.item_reference
+    else:
+        return None
+    rows = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.kind == kind_filter,
+            )
+            .order_by(desc(Artifact.id))
+        )
+    ).scalars().all()
+    for art in rows:
+        meta = art.meta or {}
+        candidates: set[str] = set()
+        for key in ("excel_id", "item_id"):
+            raw = meta.get(key)
+            if raw:
+                norm = normalize_ref_id(str(raw))
+                if norm:
+                    candidates.add(norm)
+        if kind == "item":
+            idx = meta.get("item_index")
+            if isinstance(idx, int) and idx > 0:
+                candidates.add(f"predmet{idx}")
+                candidates.add(f"i{idx:02d}")
+        if kind == "character":
+            hero_idx = meta.get("hero_index")
+            if isinstance(hero_idx, int) and hero_idx > 0:
+                candidates.add(f"c{hero_idx:02d}")
+        if not candidates & aliases:
+            continue
+        if art.path:
+            path = Path(art.path)
+            if path.is_file():
+                return path
+    return None
 
 
 def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
@@ -146,8 +255,10 @@ def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _load_refs_for_frame(
-    project: Project, frame_number: int
+async def _load_refs_for_frame(
+    session: AsyncSession | None,
+    project: Project,
+    frame_number: int,
 ) -> list[Path]:
     """Читает xlsx-ячейки R38 (персонажи) и R39 (предметы) для столбца
     кадра frame_number (1-based, column 2+frame_number в openpyxl, т.к.
@@ -167,8 +278,8 @@ def _load_refs_for_frame(
         try:
             from openpyxl import load_workbook  # ленивый импорт
             wb = load_workbook(xlsx_path, data_only=True, read_only=True)
-            if _XLSX_SHEET_PLAN in wb.sheetnames:
-                ws = wb[_XLSX_SHEET_PLAN]
+            ws = _resolve_plan_sheet(wb)
+            if ws is not None:
                 # В v8 столбцы кадров — с 3 (1=label, 2=зарезервировано).
                 col = frame_number + 2
 
@@ -206,7 +317,13 @@ def _load_refs_for_frame(
 
     # Персонажи — берём первый успешно найденный.
     for pid in persons_ids:
-        f = _find_ref_file(chars_dir, pid) or _hero_legacy_ref(project.data_dir, pid)
+        f = (
+            _find_ref_file_any(chars_dir, pid)
+            or _hero_legacy_ref(project.data_dir, pid)
+            or await _artifact_ref_path(
+                session, project.id, pid, kind="character"
+            )
+        )
         if f is not None:
             refs.append(f)
             logger.info(
@@ -216,13 +333,17 @@ def _load_refs_for_frame(
             break
         else:
             logger.warning(
-                "[#{}] frame {} ref персонаж '{}' не найден в {}",
+                "[#{}] frame {} ref персонаж '{}' не найден "
+                "(папка {}, артефактов hero_reference нет) — "
+                "запусти шаг «Персонажи» или положи cNN.png в characters/",
                 project.id, frame_number, pid, chars_dir,
             )
 
     # Предметы — берём первый успешно найденный.
     for iid in items_ids:
-        f = _find_ref_file(items_dir, iid)
+        f = _find_ref_file_any(
+            items_dir, iid
+        ) or await _artifact_ref_path(session, project.id, iid, kind="item")
         if f is not None:
             refs.append(f)
             logger.info(
@@ -232,7 +353,9 @@ def _load_refs_for_frame(
             break
         else:
             logger.warning(
-                "[#{}] frame {} ref предмет '{}' не найден в {}",
+                "[#{}] frame {} ref предмет '{}' не найден "
+                "(папка {}, артефактов item_reference нет) — "
+                "запусти шаг «Предметы» или положи iNN.png / predmetN.png в items/",
                 project.id, frame_number, iid, items_dir,
             )
 
@@ -372,20 +495,39 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
-    # Очередь: только кадры без файла на диске. Уже существующие
-    # frame_NNN_*.png не трогаем (доделка недостающих, а не с нуля).
+    # Очередь: источник истины — валидный PNG на диске, не статус в БД.
+    # Иначе image_generated без файла / без outsee → шаг «завершён», кадры
+    # так и не генерировались.
+    queued = 0
     for fr in frames:
-        if fr.status in (
-            FrameStatus.image_approved,
-            FrameStatus.failed,
-            FrameStatus.image_generated,
-        ):
+        if disk_has_valid_frame_image(out_dir, fr.number):
+            if fr.status not in (
+                FrameStatus.image_approved,
+                FrameStatus.image_generated,
+            ):
+                fr.status = FrameStatus.image_generated
             continue
-        if _disk_has_frame_image(out_dir, fr.number):
-            fr.status = FrameStatus.image_generated
+        bad = newest_frame_image_path(out_dir, fr.number)
+        if bad is not None and not is_valid_scene_image(bad):
+            logger.warning(
+                "[#{}] frame {}: на диске невалидная картинка {} ({} B) — "
+                "в outsee",
+                project.id,
+                fr.number,
+                bad.name,
+                bad.stat().st_size,
+            )
+        if not frame_needs_shot1_image(fr, out_dir):
             continue
         fr.status = FrameStatus.image_prompt_ready
+        queued += 1
     await session.flush()
+    logger.info(
+        "[#{}] generate_images: в очередь outsee — {} кадров (scenes={})",
+        project.id,
+        queued,
+        out_dir,
+    )
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -401,14 +543,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
                 if phase == "shot1":
                     await _apply_pending_regens(session, project.id)
-                    target = await _next_frame_to_process(session, project.id)
+                    target = await _next_frame_to_process(
+                        session, project.id, out_dir
+                    )
                     if target is not None:
                         await _generate_and_send(
                             session, bot, outsee, gpt, project, target, out_dir,
                             shot=1,
                         )
                         continue
-                    if await _all_frames_have_image_or_failed(session, project.id):
+                    if await _all_frames_have_image_or_failed(
+                        session, project.id, out_dir
+                    ):
                         xlsx_path = project.data_dir / "project.xlsx"
                         shot2_queued = await _init_shot2_queue(
                             session, project, frames, out_dir, xlsx_path
@@ -425,6 +571,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             project.id,
                         )
                         break
+                    pending = await _pending_shot1_numbers(
+                        session, project.id, out_dir
+                    )
+                    if pending:
+                        logger.warning(
+                            "[#{}] generate_images: нет image_prompt_ready, "
+                            "но {} кадров без PNG — жду: {}{}",
+                            project.id,
+                            len(pending),
+                            pending[:8],
+                            "…" if len(pending) > 8 else "",
+                        )
                     await sleep_cancellable(3.0, project.id)
                     continue
 
@@ -501,10 +659,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _pending_shot1_numbers(
+    session: AsyncSession, project_id: int, out_dir: Path
+) -> list[int]:
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    return [fr.number for fr in frames if frame_needs_shot1_image(fr, out_dir)]
+
+
 async def _next_frame_to_process(
-    session: AsyncSession, project_id: int
+    session: AsyncSession, project_id: int, out_dir: Path
 ) -> Frame | None:
-    """Ищет первый кадр в статусе image_prompt_ready — т.е. «готов к outsee»."""
+    """Следующий кадр для outsee: промт есть, валидного PNG на диске нет."""
     frames = (
         await session.execute(
             select(Frame)
@@ -513,17 +684,18 @@ async def _next_frame_to_process(
         )
     ).scalars().all()
     for fr in frames:
-        if fr.status == FrameStatus.image_prompt_ready:
-            return fr
+        if not frame_needs_shot1_image(fr, out_dir):
+            continue
+        if fr.status is not FrameStatus.image_prompt_ready:
+            fr.status = FrameStatus.image_prompt_ready
+        return fr
     return None
 
 
 async def _all_frames_have_image_or_failed(
-    session: AsyncSession, project_id: int
+    session: AsyncSession, project_id: int, out_dir: Path
 ) -> bool:
-    """True если у каждого кадра картинка сгенерирована/одобрена или статус
-    failed. В ручном режиме мы не ждём явного approve, но если пользователь
-    нажал ✅ — это тоже считается."""
+    """True когда у каждого кадра с промтом есть валидный PNG или failed."""
     frames = (
         await session.execute(
             select(Frame)
@@ -532,12 +704,15 @@ async def _all_frames_have_image_or_failed(
         )
     ).scalars().all()
     for fr in frames:
-        if fr.status not in (
-            FrameStatus.image_approved,
-            FrameStatus.image_generated,
-            FrameStatus.failed,
-        ):
-            return False
+        if not (fr.image_prompt or "").strip():
+            continue
+        if fr.status is FrameStatus.failed:
+            continue
+        if fr.status is FrameStatus.image_approved:
+            continue
+        if disk_has_valid_frame_image(out_dir, fr.number):
+            continue
+        return False
     return True
 
 
@@ -775,7 +950,7 @@ async def _generate_and_send(
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
-        refs = _load_refs_for_frame(project, frame.number)
+        refs = await _load_refs_for_frame(session, project, frame.number)
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

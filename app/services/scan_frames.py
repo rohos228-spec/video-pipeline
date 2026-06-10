@@ -19,15 +19,67 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project
 
+# Реальные outsee 2K PNG обычно 300 KB–5 MB; thumb/preview ~50–100 KB.
+_MIN_SCENE_IMAGE_BYTES = 200_000
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_RIFF_MAGIC = b"RIFF"
+_WEBP_TAG = b"WEBP"
+
+
+def newest_frame_image_path(scenes_dir: Path, frame_number: int) -> Path | None:
+    """Самый свежий PNG shot_01 для кадра (без ``_s2_`` в имени)."""
+    if not scenes_dir.is_dir():
+        return None
+    candidates = [
+        p
+        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.png")
+        if "_s2_" not in p.name
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def is_valid_scene_image(path: Path) -> bool:
+    """Настоящая сцена: достаточный размер и magic PNG/JPEG/WebP."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size < _MIN_SCENE_IMAGE_BYTES:
+        return False
+    try:
+        with path.open("rb") as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    is_png = head.startswith(_PNG_MAGIC)
+    is_jpeg = head.startswith(_JPEG_MAGIC)
+    is_webp = head[:4] == _RIFF_MAGIC and head[8:12] == _WEBP_TAG
+    return is_png or is_jpeg or is_webp
+
+
+def disk_has_valid_frame_image(scenes_dir: Path, frame_number: int) -> bool:
+    path = newest_frame_image_path(scenes_dir, frame_number)
+    return path is not None and is_valid_scene_image(path)
+
+
+def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
+    """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске."""
+    if not (fr.image_prompt or "").strip():
+        return False
+    if fr.status is FrameStatus.image_approved:
+        return False
+    if fr.status is FrameStatus.failed:
+        return False
+    return not disk_has_valid_frame_image(scenes_dir, fr.number)
+
 
 def _disk_has_frame_image(scenes_dir: Path, frame_number: int) -> bool:
     """Есть ли на диске картинка для кадра. Формат имени —
     `frame_<NNN>_<uuid8>.png` (см. generate_images.py:551)."""
-    if not scenes_dir.exists():
-        return False
-    pattern = f"frame_{frame_number:03d}_*.png"
-    # glob возвращает generator; any() короткозамыкается на первом hit.
-    return any(scenes_dir.glob(pattern))
+    return newest_frame_image_path(scenes_dir, frame_number) is not None
 
 
 async def scan_missing_frames(
@@ -56,7 +108,7 @@ async def scan_missing_frames(
         if not (fr.image_prompt or "").strip():
             continue
         total_with_prompt += 1
-        if not _disk_has_frame_image(scenes_dir, fr.number):
+        if not disk_has_valid_frame_image(scenes_dir, fr.number):
             missing.append(fr.number)
     logger.info(
         "[#{}] scan_missing_frames: всего кадров={}, с image_prompt={}, "
@@ -87,7 +139,7 @@ async def sync_frames_with_disk_images(
             FrameStatus.failed,
         ):
             continue
-        if not _disk_has_frame_image(scenes_dir, fr.number):
+        if not disk_has_valid_frame_image(scenes_dir, fr.number):
             continue
         fr.status = FrameStatus.image_generated
         changed += 1

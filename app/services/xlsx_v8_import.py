@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.services.content_locks import is_ui_locked
 
 # --- константы под v8-шаблон ---------------------------------------------
 SHEET_GENERAL_V8 = "Общий план"
@@ -307,24 +308,30 @@ async def import_v8_xlsx(
     blocks = _read_voiceover_blocks(wb)
     if blocks:
         new_script = " ".join(blocks)
-        if keep_fields:
-            if not project.script_text:
-                project.script_text = new_script
-                summary["project_fields_changed"].append("script_text")
-                logger.info(
-                    "[#{}] xlsx-v8→DB: script_text заполнен из блоков "
-                    "({} симв, {} блоков)",
-                    project.id, len(new_script), len(blocks),
-                )
+        if not is_ui_locked(project, "script_text"):
+            if keep_fields:
+                if not project.script_text:
+                    project.script_text = new_script
+                    summary["project_fields_changed"].append("script_text")
+                    logger.info(
+                        "[#{}] xlsx-v8→DB: script_text заполнен из блоков "
+                        "({} симв, {} блоков)",
+                        project.id, len(new_script), len(blocks),
+                    )
+            else:
+                if project.script_text != new_script:
+                    project.script_text = new_script
+                    summary["project_fields_changed"].append("script_text")
+                    logger.info(
+                        "[#{}] xlsx-v8→DB: script_text обновлён ({} симв, "
+                        "{} блоков)",
+                        project.id, len(new_script), len(blocks),
+                    )
         else:
-            if project.script_text != new_script:
-                project.script_text = new_script
-                summary["project_fields_changed"].append("script_text")
-                logger.info(
-                    "[#{}] xlsx-v8→DB: script_text обновлён ({} симв, "
-                    "{} блоков)",
-                    project.id, len(new_script), len(blocks),
-                )
+            logger.info(
+                "[#{}] xlsx-v8→DB: script_text пропущен (заблокирован UI)",
+                project.id,
+            )
 
         # Frame'ы — создаём недостающие, прицепляем поля из v8 (image_prompt,
         # animation_prompt, duration). Это единственный путь для v8-проектов

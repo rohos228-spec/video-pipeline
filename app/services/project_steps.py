@@ -59,6 +59,16 @@ async def start_step(
             "Остановите ⏹ или дождитесь завершения."
         )
     clear_stop(project.id)
+    from app.services.step_failure_policy import clear_failure_backoff_for_manual_start
+
+    if clear_failure_backoff_for_manual_start(
+        project, running_key=step.running_status.value
+    ):
+        logger.info(
+            "[#{}] start_step {}: снята пауза после ошибок (ручной запуск)",
+            project.id,
+            step_code,
+        )
 
     proj_xlsx = project.data_dir / "project.xlsx"
     if proj_xlsx.exists():

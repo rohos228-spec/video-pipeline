@@ -100,7 +100,7 @@ async def get_project_gpt_text(
     supported = gtb.is_supported(step_code)
     ctx = await _gpt_text_context(session, project, step_code)
     try:
-        text = gtb.get_effective_text(project, step_code, **ctx) if supported else ""
+        text = gtb.get_display_text(project, step_code, **ctx) if supported else ""
     except ValueError:
         text = ""
         supported = False
@@ -133,7 +133,7 @@ async def save_project_gpt_text(
     ctx = await _gpt_text_context(session, project, step_code)
     return {
         "step_code": step_code,
-        "text": gtb.get_effective_text(project, step_code, **ctx),
+        "text": gtb.get_display_text(project, step_code, **ctx),
         "supported": True,
         "is_override": gtb.has_override(project, step_code),
     }
@@ -197,7 +197,7 @@ async def reset_project_gpt_text(
     await session.commit()
     ctx = await _gpt_text_context(session, project, step_code)
     supported = gtb.is_supported(step_code)
-    text = gtb.get_effective_text(project, step_code, **ctx) if supported else ""
+    text = gtb.get_display_text(project, step_code, **ctx) if supported else ""
     return {
         "step_code": step_code,
         "text": text,

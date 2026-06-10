@@ -48,6 +48,11 @@ def _save_failure_state(project: Project, fs: dict[str, Any]) -> None:
     project.meta = meta
 
 
+def failure_sleep_until(project: Project) -> str | None:
+    until = _failure_state(project).get("sleep_until")
+    return str(until) if until else None
+
+
 def is_sleeping(project: Project) -> bool:
     fs = _failure_state(project)
     until = fs.get("sleep_until")
@@ -59,6 +64,24 @@ def is_sleeping(project: Project) -> bool:
         return False
     if datetime.now(timezone.utc) >= dt:
         return False
+    return True
+
+
+def clear_failure_backoff_for_manual_start(project: Project, *, running_key: str) -> bool:
+    """Ручной запуск шага — снять sleep и счётчик fails для этого running-статуса."""
+    fs = _failure_state(project)
+    if not fs:
+        return False
+    changed = False
+    if fs.pop("sleep_until", None) is not None:
+        changed = True
+    totals: dict[str, int] = dict(fs.get("total_fails") or {})
+    if totals.pop(running_key, None) is not None:
+        changed = True
+        fs["total_fails"] = totals
+    if not changed:
+        return False
+    _save_failure_state(project, fs)
     return True
 
 

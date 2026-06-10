@@ -47,3 +47,27 @@ def test_collect_candidates_full_first() -> None:
         thumb, net_events=[(0.0, thumb), (1.0, full)]
     )
     assert cands[0] == full
+
+
+def test_validate_rejects_thumb_download() -> None:
+    from pathlib import Path
+    import tempfile
+
+    from app.bots.outsee import OutseeImageError, _validate_downloaded_image
+
+    thumb_url = (
+        "https://storage.yandexcloud.net/outseehistory/generated/3787/157627/"
+        "outsee-157627-1780991092050_thumb.jpg?sig=1"
+    )
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"x" * 80_000)
+        path = Path(f.name)
+    try:
+        try:
+            _validate_downloaded_image(path, gen_id="abc", img_url=thumb_url)
+        except OutseeImageError as e:
+            assert "thumb" in str(e).lower()
+        else:
+            raise AssertionError("expected OutseeImageError for thumb URL")
+    finally:
+        path.unlink(missing_ok=True)

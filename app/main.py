@@ -342,6 +342,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     )
 
                     if is_sleeping(p):
+                        from app.services.step_failure_policy import failure_sleep_until
+
+                        logger.info(
+                            "worker: #{} {} — пауза после ошибок до {}, пропуск тика",
+                            p.id,
+                            p.status.value,
+                            failure_sleep_until(p),
+                        )
                         await maybe_resume_after_sleep(s, p)
                         if is_sleeping(p):
                             continue

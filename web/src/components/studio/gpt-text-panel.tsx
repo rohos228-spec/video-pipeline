@@ -40,11 +40,11 @@ export function GptTextPanel({
 
   const save = useMutation({
     mutationFn: () => api.saveProjectGptText(projectId, stepCode, draft),
-    onSuccess: () => {
-      toast.success("Текст для GPT сохранён");
+    onSuccess: (r) => {
+      setDraft(r.text);
       setDirty(false);
-      qc.invalidateQueries({ queryKey: ["gpt-text", projectId, stepCode] });
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.setQueryData(["gpt-text", projectId, stepCode], r);
+      toast.success("Текст для GPT сохранён");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -71,9 +71,8 @@ export function GptTextPanel({
     onSuccess: (r) => {
       setDraft(r.text);
       setDirty(false);
+      qc.setQueryData(["gpt-text", projectId, stepCode], r);
       toast.success("Сброшено к автоматическому тексту");
-      qc.invalidateQueries({ queryKey: ["gpt-text", projectId, stepCode] });
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

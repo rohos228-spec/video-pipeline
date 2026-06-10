@@ -210,11 +210,19 @@ async def patch_project(
     }
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.services.chatgpt_xlsx import save_voiceover_text
+    from app.services.content_locks import lock_ui_field
+
     for k, v in payload.items():
         if k in ALLOWED:
             setattr(p, k, v)
             if k in ("meta", "prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
+    if "script_text" in payload:
+        text = (payload.get("script_text") or "").strip()
+        save_voiceover_text(p, p.data_dir / "voiceover.txt", text)
+        lock_ui_field(p, "script_text")
+        flag_modified(p, "meta")
     p.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(p)

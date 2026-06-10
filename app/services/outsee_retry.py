@@ -42,6 +42,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+
+# Если ChatGPT завис на сжатии — не блокировать остальные 80+ кадров.
+_GPT_COMPRESS_OUTER_TIMEOUT_S = 180.0
 from typing import Any
 
 from loguru import logger
@@ -103,8 +106,26 @@ async def _compress_prompt_for_outsee(
                 f"Сожми ещё сильнее, сохрани суть. Верни ТОЛЬКО текст.\n\n"
                 f"Прошлый промт:\n\n{last}"
             )
+        logger.info(
+            "outsee_retry: GPT-сжатие attempt {}/{} — жду ответ ChatGPT "
+            "(промт {} симв, лимит {})",
+            attempt,
+            3,
+            len(ask),
+            max_body,
+        )
         try:
-            reply = await gpt.ask_fresh(ask, timeout=600, project_id=project_id)
+            reply = await asyncio.wait_for(
+                gpt.ask_fresh(ask, timeout=600, project_id=project_id),
+                timeout=_GPT_COMPRESS_OUTER_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "outsee_retry: GPT-сжатие таймаут {:.0f}с — кадр failed, "
+                "воркер идёт к следующему",
+                _GPT_COMPRESS_OUTER_TIMEOUT_S,
+            )
+            return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "outsee_retry: GPT-сжатие упало ({}: {})", type(e).__name__, e
