@@ -62,7 +62,7 @@ def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
     if not xlsx_path.is_file():
         return out
     try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        wb = load_workbook(filename=str(xlsx_path), data_only=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("read_shot2_columns: openpyxl {}: {}", xlsx_path, e)
         return out
@@ -70,8 +70,11 @@ def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
         ws = _resolve_plan_sheet(wb)
         if ws is None:
             return out
+        max_col = ws.max_column or 0
+        if max_col < 3:
+            return out
         frame_no = 0
-        for col in range(3, ws.max_column + 1):
+        for col in range(3, max_col + 1):
             voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
             if voice is None:
                 continue
