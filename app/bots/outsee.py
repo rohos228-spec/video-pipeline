@@ -1676,34 +1676,28 @@ class OutseeBot:
             # input, иначе берёт ЛЮБОЙ input[type=file] в DOM и бьёт
             # set_input_files в него (по Playwright он работает на скрытых тоже).
             if reference_image is not None:
-                # Поддержка single Path и list[Path]: для шага 8 «Картинки»
-                # передаётся [персонаж.png, предмет.png] (до 2 ref). Для
-                # старого hero-flow — один Path.
                 refs: list[Path] = (
                     [reference_image]
                     if isinstance(reference_image, Path)
                     else list(reference_image)
                 )
-                for ref_idx, ref_path in enumerate(refs, start=1):
-                    if not ref_path.exists():
-                        logger.warning(
-                            "outsee.generate_image: reference_image #{} {} "
-                            "не найден на диске",
-                            ref_idx, ref_path,
-                        )
-                        continue
-                    attached = await self._attach_ref_image_robust(
-                        page, ref_path,
-                        where=f"generate_image[ref{ref_idx}]",
-                        project_id=project_id,
+                missing = [p for p in refs if not p.exists()]
+                for ref_path in missing:
+                    logger.warning(
+                        "outsee.generate_image: reference {} не найден на диске",
+                        ref_path,
                     )
-                    if not attached:
-                        h, p = await _dump_page(
-                            page, f"ref_input_notfound_{ref_idx}"
-                        )
-                        for x in (h, p):
-                            if x:
-                                dumps.append(x)
+                attached_n = await self._attach_reference_images_robust(
+                    page,
+                    [p for p in refs if p.exists()],
+                    where="generate_image",
+                    project_id=project_id,
+                )
+                if attached_n < len(refs) - len(missing):
+                    h, p = await _dump_page(page, "ref_input_notfound")
+                    for x in (h, p):
+                        if x:
+                            dumps.append(x)
 
             # 3) кнопка generate
             gen_sel = await _first_visible(
@@ -3325,43 +3319,15 @@ class OutseeBot:
             context=ctx,
         )
 
-    async def _attach_ref_image_robust(
+    async def _clear_reference_upload_slots(
         self,
         page: Page,
-        image_path: Path,
         *,
         where: str,
         project_id: int | None = None,
-        prefer_first: bool = False,
-    ) -> bool:
-        """Робастная загрузка референсной картинки в input[type=file]
-        на странице outsee.io.
-
-        Перед загрузкой ОЧИЩАЕМ ВСЕ input[type=file] (set_input_files([])
-        каждому), чтобы не получить «стэкинг» референсов: в outsee
-        страница может переиспользоваться между генерациями (`reuse=True`),
-        и старый прикреплённый файл в input может остаться. Если на v=3
-        мы просто кинем set_input_files на last input, а в first input
-        ещё лежит файл от v=2 — outsee может прикрепить ОБА. См.
-        пользовательский баг «3-я генерация прикрепляет реф снова».
-
-        Порядок попыток:
-          1) clear all: set_input_files([]) на каждый input[type=file] в DOM.
-          2) Видимый input[type=file] (через _first_visible) — редко бывает,
-             но пусть будет. Быстрый path.
-          3) ЛЮБОЙ input[type=file] в DOM (вкл. скрытый). Playwright
-             `set_input_files` работает на скрытых input'ах тоже —
-             он не требует видимости. Для image ref — ПОСЛЕДНИЙ input;
-             для video start_frame — ПЕРВЫЙ (левый/начальный кадр;
-             последний на странице veo — конечный кадр).
-
-        Возвращает True в случае успеха. False — если input вообще не
-        нашлся в DOM или set_input_files упал. Свои dump'ы НЕ снимает —
-        это решает вызывающий (у него список `dumps`).
-        """
-        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
-
-        abort_if_cancelled(project_id)
+    ) -> None:
+        """Снимает превью и очищает все input[type=file] перед новой пачкой рефов."""
+        from app.services.step_cancel import sleep_cancellable
 
         # 0а) Кликаем крестики на превью референсных изображений в UI outsee.
         # set_input_files([]) очищает значение input, но outsee не убирает
@@ -3449,33 +3415,132 @@ class OutseeBot:
             if cleared > 0:
                 logger.info(
                     "outsee.{}: очищено {}/{} input[type=file] перед "
-                    "загрузкой нового референса",
+                    "загрузкой референсов",
                     where, cleared, n_clear,
                 )
 
-        # 1) видимый input[type=file] (короткий таймаут — в outsee он почти
-        # всегда скрыт, ожидать видимость долго нет смысла).
-        file_sel = await _first_visible(
-            page, FILE_UPLOAD_SELECTORS, timeout_ms=2_000, project_id=project_id
+    async def _attach_reference_images_robust(
+        self,
+        page: Page,
+        image_paths: list[Path],
+        *,
+        where: str,
+        project_id: int | None = None,
+    ) -> int:
+        """До 2 референсов: очистка один раз, затем слоты без затирания."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
+        paths = [p for p in image_paths if p.exists()]
+        if not paths:
+            return 0
+
+        await self._clear_reference_upload_slots(
+            page, where=where, project_id=project_id
         )
-        if file_sel:
+
+        try:
+            base = page.locator("input[type='file']")
+            count = await base.count()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.{}: input[type=file].count() упал: {}", where, e
+            )
+            count = 0
+        if count <= 0:
+            logger.warning(
+                "outsee.{}: нет input[type=file] для {} реф(ов)",
+                where, len(paths),
+            )
+            return 0
+
+        if len(paths) >= 2 and count == 1:
             try:
-                await page.locator(file_sel).first.set_input_files(
-                    str(image_path)
-                )
+                await base.first.set_input_files([str(p) for p in paths])
                 logger.info(
-                    "outsee.{}: reference {} загружен в видимый input ({})",
-                    where, image_path.name, file_sel,
+                    "outsee.{}: {} референсов в один input (multi-file): {}",
+                    where,
+                    len(paths),
+                    [p.name for p in paths],
                 )
                 await sleep_cancellable(1.0, project_id)
-                return True
+                return len(paths)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "outsee.{}: видимый input set_input_files упал: {}",
-                    where, e,
+                    "outsee.{}: multi-file в один input не сработал ({}), "
+                    "пробую по слотам",
+                    where,
+                    e,
                 )
 
-        # 2) Скрытый/свёрнутый input. set_input_files работает без видимости.
+        attached = 0
+        for i, ref_path in enumerate(paths):
+            slot = i if count > i else count - 1
+            ok = await self._attach_ref_image_robust(
+                page,
+                ref_path,
+                where=f"{where}[{i + 1}/{len(paths)}]",
+                project_id=project_id,
+                clear_before=False,
+                input_index=slot,
+            )
+            if ok:
+                attached += 1
+
+        logger.info(
+            "outsee.{}: прикреплено {}/{} референсов",
+            where,
+            attached,
+            len(paths),
+        )
+        return attached
+
+    async def _attach_ref_image_robust(
+        self,
+        page: Page,
+        image_path: Path,
+        *,
+        where: str,
+        project_id: int | None = None,
+        prefer_first: bool = False,
+        clear_before: bool = True,
+        input_index: int | None = None,
+    ) -> bool:
+        """Робастная загрузка одного референса в input[type=file] на outsee.io.
+
+        Для нескольких рефов используйте `_attach_reference_images_robust` —
+        иначе повторная очистка input'ов затирает предыдущий файл.
+        """
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        abort_if_cancelled(project_id)
+
+        if clear_before:
+            await self._clear_reference_upload_slots(
+                page, where=where, project_id=project_id
+            )
+
+        if input_index is None:
+            file_sel = await _first_visible(
+                page, FILE_UPLOAD_SELECTORS, timeout_ms=2_000, project_id=project_id
+            )
+            if file_sel:
+                try:
+                    await page.locator(file_sel).first.set_input_files(
+                        str(image_path)
+                    )
+                    logger.info(
+                        "outsee.{}: reference {} загружен в видимый input ({})",
+                        where, image_path.name, file_sel,
+                    )
+                    await sleep_cancellable(1.0, project_id)
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "outsee.{}: видимый input set_input_files упал: {}",
+                        where, e,
+                    )
+
         try:
             base = page.locator("input[type='file']")
             count = await base.count()
@@ -3492,14 +3557,21 @@ class OutseeBot:
                 where, image_path.name,
             )
             return False
-        pick_first = prefer_first or "start_frame" in where
-        target = base.first if pick_first else base.last
-        slot_label = "first" if pick_first else "last"
+
+        if input_index is not None:
+            slot = min(max(input_index, 0), count - 1)
+            target = base.nth(slot)
+            slot_label = f"index={slot}"
+        else:
+            pick_first = prefer_first or "start_frame" in where
+            target = base.first if pick_first else base.last
+            slot_label = "first" if pick_first else "last"
+
         try:
             await target.set_input_files(str(image_path))
             logger.info(
                 "outsee.{}: reference {} загружен в скрытый input "
-                "(input[type=file] count={}, взят {})",
+                "(input[type=file] count={}, слот {})",
                 where, image_path.name, count, slot_label,
             )
             await sleep_cancellable(1.0, project_id)
