@@ -569,6 +569,34 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json() as Promise<PromptFileInfo>;
   },
+  listPromptFileHistory: (stepCode: string, name: string) =>
+    http<PromptVersionInfo[]>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/history`,
+    ),
+  getPromptFileHistory: (stepCode: string, name: string, versionId: string) =>
+    http<PromptVersionContent>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/history/${encodeURIComponent(versionId)}/content`,
+    ),
+  renamePromptFile: (stepCode: string, name: string, newName: string) =>
+    http<PromptFileInfo>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/rename`,
+      { method: "PATCH", body: JSON.stringify({ new_name: newName }) },
+    ),
+  renamePromptVersionLabel: (
+    stepCode: string,
+    name: string,
+    versionId: string,
+    label: string,
+  ) =>
+    http<PromptVersionInfo>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/history/${encodeURIComponent(versionId)}`,
+      { method: "PATCH", body: JSON.stringify({ label }) },
+    ),
+  restorePromptFileVersion: (stepCode: string, name: string, versionId: string) =>
+    http<PromptFileContent>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/history/${encodeURIComponent(versionId)}/restore`,
+      { method: "POST" },
+    ),
 };
 
 export interface PromptFileInfo {
@@ -585,6 +613,21 @@ export interface PromptFileContent {
   content: string;
   size: number;
   modified: number;
+}
+
+export interface PromptVersionInfo {
+  id: string;
+  label: string;
+  saved_at: number;
+  size: number;
+}
+
+export interface PromptVersionContent {
+  id: string;
+  label: string;
+  content: string;
+  saved_at: number;
+  size: number;
 }
 
 /**

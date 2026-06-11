@@ -12,6 +12,14 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.services.prompt_history import (
+    list_prompt_versions,
+    read_prompt_version,
+    rename_prompt_file,
+    rename_prompt_version_label,
+    restore_prompt_version,
+    write_prompt_with_history,
+)
 from app.services.prompt_library import (
     DEFAULT_NAME,
     STEP_FOLDERS,
@@ -21,7 +29,6 @@ from app.services.prompt_library import (
     prompt_path,
     read_prompt,
     step_dir,
-    write_prompt,
 )
 
 router = APIRouter(prefix="/prompt-files", tags=["prompt-files"])
@@ -45,6 +52,29 @@ class PromptFileContent(BaseModel):
 
 class PromptFileSavePayload(BaseModel):
     content: str
+
+
+class PromptVersionInfo(BaseModel):
+    id: str
+    label: str
+    saved_at: float
+    size: int
+
+
+class PromptVersionContent(BaseModel):
+    id: str
+    label: str
+    content: str
+    saved_at: float
+    size: int
+
+
+class PromptRenamePayload(BaseModel):
+    new_name: str
+
+
+class PromptVersionLabelPayload(BaseModel):
+    label: str
 
 
 def _ensure_step(step_code: str) -> None:
@@ -120,7 +150,7 @@ async def save_prompt_file(
 ) -> PromptFileContent:
     _ensure_step(step_code)
     _ensure_name(name)
-    write_prompt(step_code, name, payload.content)
+    write_prompt_with_history(step_code, name, payload.content)
     p = prompt_path(step_code, name)
     stat = p.stat()
     return PromptFileContent(
@@ -145,6 +175,101 @@ async def delete_prompt_file(step_code: str, name: str) -> dict[str, bool]:
     if not removed:
         raise HTTPException(status_code=404, detail="prompt file not found")
     return {"removed": True}
+
+
+@router.get("/{step_code}/{name}/history", response_model=list[PromptVersionInfo])
+async def list_prompt_file_history(step_code: str, name: str) -> list[PromptVersionInfo]:
+    _ensure_step(step_code)
+    _ensure_name(name)
+    return [PromptVersionInfo(**row) for row in list_prompt_versions(step_code, name)]
+
+
+@router.get("/{step_code}/{name}/history/{version_id}/content", response_model=PromptVersionContent)
+async def get_prompt_file_history_content(
+    step_code: str, name: str, version_id: str
+) -> PromptVersionContent:
+    _ensure_step(step_code)
+    _ensure_name(name)
+    try:
+        content = read_prompt_version(step_code, name, version_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    meta = next((v for v in list_prompt_versions(step_code, name) if v["id"] == version_id), None)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="version not found")
+    return PromptVersionContent(
+        id=version_id,
+        label=str(meta["label"]),
+        content=content,
+        saved_at=float(meta["saved_at"]),
+        size=len(content.encode("utf-8")),
+    )
+
+
+@router.patch("/{step_code}/{name}/history/{version_id}", response_model=PromptVersionInfo)
+async def rename_prompt_file_history_label(
+    step_code: str, name: str, version_id: str, payload: PromptVersionLabelPayload
+) -> PromptVersionInfo:
+    _ensure_step(step_code)
+    _ensure_name(name)
+    try:
+        row = rename_prompt_version_label(step_code, name, version_id, payload.label.strip())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return PromptVersionInfo(**row)
+
+
+@router.post("/{step_code}/{name}/history/{version_id}/restore")
+async def restore_prompt_file_history(
+    step_code: str, name: str, version_id: str
+) -> PromptFileContent:
+    _ensure_step(step_code)
+    _ensure_name(name)
+    try:
+        content = restore_prompt_version(step_code, name, version_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = prompt_path(step_code, name)
+    stat = p.stat()
+    return PromptFileContent(
+        name=name,
+        filename=f"{name}.md",
+        content=content,
+        size=stat.st_size,
+        modified=stat.st_mtime,
+    )
+
+
+@router.patch("/{step_code}/{name}/rename", response_model=PromptFileInfo)
+async def rename_prompt_file_route(
+    step_code: str, name: str, payload: PromptRenamePayload
+) -> PromptFileInfo:
+    _ensure_step(step_code)
+    _ensure_name(name)
+    new_name = payload.new_name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_name required")
+    try:
+        final = rename_prompt_file(step_code, name, new_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = prompt_path(step_code, final)
+    stat = p.stat()
+    return PromptFileInfo(
+        name=final,
+        filename=f"{final}.md",
+        size=stat.st_size,
+        modified=stat.st_mtime,
+        is_default=(final == DEFAULT_NAME),
+    )
 
 
 @router.post("/{step_code}/upload", response_model=PromptFileInfo)
@@ -181,7 +306,7 @@ async def upload_prompt_file(
         text = blob.decode("utf-8")
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail="file must be utf-8 text") from e
-    write_prompt(step_code, raw_name, text)
+    write_prompt_with_history(step_code, raw_name, text)
     p = prompt_path(step_code, raw_name)
     stat = p.stat()
     return PromptFileInfo(

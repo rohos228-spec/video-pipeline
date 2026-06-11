@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
-$script:StudioUpdateBranch = "devin/windows-installer"
-$script:StudioUpdateCoreId = "studio-update-core-v5"
+$script:StudioUpdateBranch = "fix/text-save-persistence-v153"
+$script:StudioUpdateCoreId = "studio-update-core-v7"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)

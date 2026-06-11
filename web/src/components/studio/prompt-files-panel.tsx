@@ -3,27 +3,44 @@
 /**
  * Файловый браузер для папки `prompts/<step>/` ноды.
  *
- * Что показывает:
- * - список .md-файлов из соответствующей шагу папки (real-time,
- *   refetchInterval 2 сек);
- * - выбранный файл — превью + редактирование контента;
- * - кнопки: ⇩ скачать (для всех файлов), ⤴ загрузить новый .md,
- *   💾 сохранить, 🗑 удалить (default удалять нельзя).
- *
- * Привязка папки выводится в шапке как `prompts/<folder>`.
+ * Слева — список .md; у каждого промта справа кнопка «История» с выпадашкой версий.
+ * Справа — редактор, сохранение (старая версия → .history), переименование файла.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, FileText, Loader2, RefreshCw, Save, Trash2, Upload } from "lucide-react";
+import {
+  Download,
+  FileText,
+  History,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import { api, type PromptFileInfo } from "@/lib/api";
+import { api, type PromptFileInfo, type PromptVersionInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 2000;
+
+function toastError(e: unknown) {
+  toast.error(errorMessageFromUnknown(e));
+}
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} Б`;
@@ -52,22 +69,23 @@ export function PromptFilesPanel({
   activeVariant,
   onActivateVariant,
   activating = false,
+  onPromptRenamed,
 }: {
   stepCode: string;
   folderHint?: string;
-  /** Уникальный id слота — изолирует кэш редактора между промтами одного шага. */
   slotId?: string;
-  /** Предпочитаемый .md (имя без расширения) для этого слота. */
   preferredFile?: string;
   activeVariant?: string;
   onActivateVariant?: (variant: string) => void;
   activating?: boolean;
+  onPromptRenamed?: (oldName: string, newName: string) => void;
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [draft, setDraft] = useState<string>("");
   const [dirty, setDirty] = useState(false);
+  const [previewVersion, setPreviewVersion] = useState<PromptVersionInfo | null>(null);
 
   const cacheKey = slotId ? `${stepCode}::${slotId}` : stepCode;
 
@@ -78,7 +96,6 @@ export function PromptFilesPanel({
     refetchInterval: POLL_INTERVAL_MS,
   });
 
-  // Автовыбор первого файла, если ничего не выбрано / выбранный удалён.
   useEffect(() => {
     const list = files.data ?? [];
     if (list.length === 0) {
@@ -98,37 +115,112 @@ export function PromptFilesPanel({
     queryKey: ["prompt-file", cacheKey, selectedName],
     queryFn: () => api.getPromptFile(stepCode, selectedName!),
     enabled: Boolean(stepCode) && Boolean(selectedName),
-    // Файл может меняться извне (юзер правит .md в редакторе) —
-    // тоже опрашиваем, но только когда нет несохранённых правок.
     refetchInterval: () => (dirty ? false : POLL_INTERVAL_MS),
   });
 
   useEffect(() => {
     if (!content.data) return;
-    // Не затираем то, что юзер уже редактирует.
     if (dirty) return;
     setDraft(content.data.content);
   }, [content.data, dirty]);
 
-  // При смене выбранного файла сбрасываем грязный флаг.
   useEffect(() => {
     setDirty(false);
+    setPreviewVersion(null);
   }, [selectedName, slotId, stepCode]);
 
   const save = useMutation({
     mutationFn: () => api.savePromptFile(stepCode, selectedName!, draft),
     onSuccess: () => {
-      toast.success(`Сохранено: ${selectedName}.md`);
-      setDraft(draft);
+      toast.success(`Сохранено: ${selectedName}.md (старая версия в истории)`);
       setDirty(false);
-      qc.setQueryData(["prompt-file", cacheKey, selectedName], {
-        name: selectedName,
-        content: draft,
-      });
+      setPreviewVersion(null);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, selectedName] });
+      qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+    onError: toastError,
+  });
+
+  const renamePrompt = useMutation({
+    mutationFn: (newName: string) =>
+      api.renamePromptFile(stepCode, selectedName!, newName),
+    onSuccess: (info) => {
+      const old = selectedName!;
+      toast.success(`Промт переименован: ${old} → ${info.name}`);
+      setSelectedName(info.name);
+      onPromptRenamed?.(old, info.name);
+      qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
+    },
+    onError: toastError,
+  });
+
+  const renameVersionLabel = useMutation({
+    mutationFn: ({
+      fileName,
+      versionId,
+      label,
+    }: {
+      fileName: string;
+      versionId: string;
+      label: string;
+    }) => api.renamePromptVersionLabel(stepCode, fileName, versionId, label),
+    onSuccess: (_, { fileName }) => {
+      toast.success("Название версии обновлено");
+      qc.invalidateQueries({
+        queryKey: ["prompt-file-history", cacheKey, fileName],
+      });
+    },
+    onError: toastError,
+  });
+
+  const restoreVersion = useMutation({
+    mutationFn: ({
+      fileName,
+      versionId,
+    }: {
+      fileName: string;
+      versionId: string;
+    }) => api.restorePromptFileVersion(stepCode, fileName, versionId),
+    onSuccess: (data, { fileName }) => {
+      toast.success("Версия восстановлена");
+      if (fileName === selectedName) {
+        setDraft(data.content);
+        setDirty(false);
+        setPreviewVersion(null);
+        qc.invalidateQueries({ queryKey: ["prompt-file", cacheKey, selectedName] });
+      }
+      qc.invalidateQueries({
+        queryKey: ["prompt-file-history", cacheKey, fileName],
+      });
+      qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+    },
+    onError: toastError,
+  });
+
+  const loadVersionPreview = useMutation({
+    mutationFn: ({
+      fileName,
+      versionId,
+    }: {
+      fileName: string;
+      versionId: string;
+    }) => api.getPromptFileHistory(stepCode, fileName, versionId),
+    onSuccess: (data, { fileName }) => {
+      if (fileName !== selectedName) setSelectedName(fileName);
+      setDraft(data.content);
+      setDirty(false);
+      setPreviewVersion({
+        id: data.id,
+        label: data.label,
+        saved_at: data.saved_at,
+        size: data.size,
+      });
+    },
+    onError: toastError,
   });
 
   const remove = useMutation({
@@ -139,7 +231,7 @@ export function PromptFilesPanel({
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+    onError: toastError,
   });
 
   const upload = useMutation({
@@ -150,7 +242,7 @@ export function PromptFilesPanel({
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+    onError: toastError,
   });
 
   const fileList = files.data ?? [];
@@ -213,14 +305,13 @@ export function PromptFilesPanel({
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) upload.mutate(f);
-              // сбрасываем — иначе повторная загрузка того же файла не сработает.
               e.target.value = "";
             }}
           />
         </div>
       </header>
 
-      <div className="grid gap-3 md:grid-cols-[160px,1fr]">
+      <div className="grid gap-3 md:grid-cols-[180px,1fr]">
         <ul className="flex max-h-[260px] flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/5 bg-black/20 p-1">
           {fileList.length === 0 && (
             <li className="px-2 py-2 text-[10px] text-muted-foreground">
@@ -228,12 +319,12 @@ export function PromptFilesPanel({
             </li>
           )}
           {fileList.map((f) => (
-            <li key={f.name}>
+            <li key={f.name} className="flex items-stretch gap-0.5">
               <button
                 type="button"
                 onClick={() => setSelectedName(f.name)}
                 className={cn(
-                  "flex w-full items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[10px] transition-colors",
+                  "flex min-w-0 flex-1 items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[10px] transition-colors",
                   selectedName === f.name
                     ? "bg-primary/20 text-foreground"
                     : activeVariant === f.name
@@ -261,12 +352,69 @@ export function PromptFilesPanel({
                   </span>
                 </span>
               </button>
+              <PromptFileRowHistory
+                stepCode={stepCode}
+                cacheKey={cacheKey}
+                fileName={f.name}
+                isActive={selectedName === f.name}
+                onSelectFile={() => setSelectedName(f.name)}
+                onPreview={(v) =>
+                  loadVersionPreview.mutate({ fileName: f.name, versionId: v.id })
+                }
+                onRestore={(v) => {
+                  if (
+                    !confirm(
+                      `Восстановить версию «${v.label}» для ${f.name}.md? Текущий текст уйдёт в историю.`,
+                    )
+                  ) {
+                    return;
+                  }
+                  restoreVersion.mutate({ fileName: f.name, versionId: v.id });
+                }}
+                onRenameLabel={(v) => {
+                  const next = window.prompt("Название версии:", v.label);
+                  if (next == null) return;
+                  const label = next.trim();
+                  if (!label || label === v.label) return;
+                  renameVersionLabel.mutate({
+                    fileName: f.name,
+                    versionId: v.id,
+                    label,
+                  });
+                }}
+              />
             </li>
           ))}
         </ul>
 
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 px-2 text-[10px]"
+              disabled={!selectedName || selectedName === "default" || renamePrompt.isPending}
+              title={
+                selectedName === "default"
+                  ? "default переименовывать нельзя"
+                  : "Переименовать файл промта"
+              }
+              onClick={() => {
+                if (!selectedName || selectedName === "default") return;
+                const next = window.prompt("Новое имя промта (без .md):", selectedName);
+                if (next == null) return;
+                const name = next.trim();
+                if (!name || name === selectedName) return;
+                renamePrompt.mutate(name);
+              }}
+            >
+              {renamePrompt.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Pencil className="h-3 w-3" />
+              )}
+              Имя
+            </Button>
             <PromptActionButton
               label="Скачать"
               icon={Download}
@@ -331,11 +479,48 @@ export function PromptFilesPanel({
             </Button>
           </div>
 
+          {previewVersion ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-100">
+              <span>
+                Просмотр версии: <strong>{previewVersion.label}</strong>
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => {
+                    setPreviewVersion(null);
+                    if (content.data) setDraft(content.data.content);
+                  }}
+                >
+                  К текущему
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 gap-1 px-2 text-[10px]"
+                  disabled={restoreVersion.isPending || !selectedName}
+                  onClick={() =>
+                    restoreVersion.mutate({
+                      fileName: selectedName!,
+                      versionId: previewVersion.id,
+                    })
+                  }
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Восстановить
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           <Textarea
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
               setDirty(true);
+              setPreviewVersion(null);
             }}
             rows={12}
             className="font-mono text-[10px] leading-relaxed"
@@ -349,6 +534,124 @@ export function PromptFilesPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function PromptFileRowHistory({
+  stepCode,
+  cacheKey,
+  fileName,
+  isActive,
+  onSelectFile,
+  onPreview,
+  onRestore,
+  onRenameLabel,
+}: {
+  stepCode: string;
+  cacheKey: string;
+  fileName: string;
+  isActive: boolean;
+  onSelectFile: () => void;
+  onPreview: (v: PromptVersionInfo) => void;
+  onRestore: (v: PromptVersionInfo) => void;
+  onRenameLabel: (v: PromptVersionInfo) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const history = useQuery({
+    queryKey: ["prompt-file-history", cacheKey, fileName],
+    queryFn: () => api.listPromptFileHistory(stepCode, fileName),
+    enabled: open || isActive,
+    staleTime: 5_000,
+  });
+
+  const versions = history.data ?? [];
+
+  return (
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) onSelectFile();
+      }}
+      modal={false}
+    >
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex shrink-0 items-center gap-0.5 rounded-md border border-white/10 px-1.5 py-1 text-[9px] text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground",
+            open && "bg-white/10 text-foreground",
+          )}
+          title={`История сохранений: ${fileName}.md`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {history.isLoading ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <History className="h-3 w-3" />
+          )}
+          {versions.length > 0 ? versions.length : ""}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        side="right"
+        className="max-h-72 w-72 overflow-y-auto"
+      >
+        <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+          {fileName}.md — старые версии
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {versions.length === 0 ? (
+          <DropdownMenuItem disabled className="text-[10px]">
+            {history.isLoading
+              ? "Загрузка…"
+              : "Пока пусто — сохраните промт один раз"}
+          </DropdownMenuItem>
+        ) : (
+          versions.map((v) => (
+            <DropdownMenuItem
+              key={v.id}
+              className="flex flex-col items-start gap-1 py-2 text-[10px]"
+              onSelect={(e) => {
+                e.preventDefault();
+                onPreview(v);
+                setOpen(false);
+              }}
+            >
+              <span className="font-medium leading-tight">{v.label}</span>
+              <span className="text-muted-foreground">
+                {formatBytes(v.size)} · {formatModified(v.saved_at)}
+              </span>
+              <span className="flex gap-1 pt-0.5">
+                <button
+                  type="button"
+                  className="rounded border border-white/10 px-1.5 py-0.5 hover:bg-white/10"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRenameLabel(v);
+                  }}
+                >
+                  ✎ имя
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-emerald-200 hover:bg-emerald-500/10"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRestore(v);
+                    setOpen(false);
+                  }}
+                >
+                  ↩ восстановить
+                </button>
+              </span>
+            </DropdownMenuItem>
+          ))
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

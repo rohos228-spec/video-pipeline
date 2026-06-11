@@ -8,7 +8,7 @@ if not exist pyproject.toml (
     exit /b 1
 )
 
-set "BR=devin/windows-installer"
+set "BR=fix/text-save-persistence-v153"
 echo.
 echo ============================================
 echo   FORCE UPDATE  %CD%
