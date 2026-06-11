@@ -86,6 +86,7 @@ _XLSX_SHEET_PLAN = "план"
 # читаем ВСЕ три строки и сливаем (с dedupe сохраняя порядок).
 _XLSX_ROWS_PERSONS = (8, 23, 38)   # «персонажи» — id c01..c05
 _XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id i01 / predmet1
+_OUTSEE_MAX_REFS = 2  # лимит Outsee на одну генерацию картинки
 
 _REF_ID_RE = re.compile(r"^(c\d+|i\d+|predmet\d+)$", re.IGNORECASE)
 
@@ -255,18 +256,71 @@ def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
+async def _collect_ref_paths(
+    session: AsyncSession | None,
+    project: Project,
+    ref_ids: list[str],
+    *,
+    kind: str,
+    base_dir: Path,
+    frame_number: int,
+    max_count: int,
+) -> list[Path]:
+    """Резолвит id из xlsx в файлы. До max_count штук, порядок как в ячейке."""
+    if max_count <= 0:
+        return []
+    refs: list[Path] = []
+    for rid in ref_ids:
+        if len(refs) >= max_count:
+            break
+        if kind == "character":
+            found = (
+                _find_ref_file_any(base_dir, rid)
+                or _hero_legacy_ref(project.data_dir, rid)
+                or await _artifact_ref_path(
+                    session, project.id, rid, kind="character"
+                )
+            )
+            label = "персонаж"
+            missing_hint = (
+                "запусти шаг «Персонажи» или положи cNN.png в characters/"
+            )
+        elif kind == "item":
+            found = _find_ref_file_any(
+                base_dir, rid
+            ) or await _artifact_ref_path(session, project.id, rid, kind="item")
+            label = "предмет"
+            missing_hint = (
+                "запусти шаг «Предметы» или положи iNN.png / predmetN.png в items/"
+            )
+        else:
+            continue
+        if found is not None:
+            refs.append(found)
+            logger.info(
+                "[#{}] frame {} ref {} '{}' → {}",
+                project.id, frame_number, label, rid, found,
+            )
+        else:
+            logger.warning(
+                "[#{}] frame {} ref {} '{}' не найден "
+                "(папка {}) — {}",
+                project.id, frame_number, label, rid, base_dir, missing_hint,
+            )
+    return refs
+
+
 async def _load_refs_for_frame(
     session: AsyncSession | None,
     project: Project,
     frame_number: int,
 ) -> list[Path]:
-    """Читает xlsx-ячейки R38 (персонажи) и R39 (предметы) для столбца
-    кадра frame_number (1-based, column 2+frame_number в openpyxl, т.к.
-    колонки 1-2 — заголовки).
+    """Читает xlsx-ячейки «персонажи» / «предметы» для столбца кадра.
 
-    Возвращает список Path рефов (до 2 шт — outsee ограничение):
-    первый — персонаж (если найден), второй — предмет. Если ячейка пуста
-    или файлы не найдены — соответствующий ref не добавляется.
+    Outsee — максимум 2 рефа на генерацию. Порядок заполнения слотов:
+      1) персонажи из ячейки (c01, c02 через запятую — до 2 найденных);
+      2) предметы — в оставшиеся слоты;
+      3) постоянный продукт массового — если остался свободный слот.
     """
     refs: list[Path] = []
     xlsx_path = (
@@ -315,49 +369,31 @@ async def _load_refs_for_frame(
     chars_dir = project.data_dir / "characters"
     items_dir = project.data_dir / "items"
 
-    # Персонажи — берём первый успешно найденный.
-    for pid in persons_ids:
-        f = (
-            _find_ref_file_any(chars_dir, pid)
-            or _hero_legacy_ref(project.data_dir, pid)
-            or await _artifact_ref_path(
-                session, project.id, pid, kind="character"
+    refs.extend(
+        await _collect_ref_paths(
+            session,
+            project,
+            persons_ids,
+            kind="character",
+            base_dir=chars_dir,
+            frame_number=frame_number,
+            max_count=_OUTSEE_MAX_REFS,
+        )
+    )
+
+    slots_left = _OUTSEE_MAX_REFS - len(refs)
+    if slots_left > 0:
+        refs.extend(
+            await _collect_ref_paths(
+                session,
+                project,
+                items_ids,
+                kind="item",
+                base_dir=items_dir,
+                frame_number=frame_number,
+                max_count=slots_left,
             )
         )
-        if f is not None:
-            refs.append(f)
-            logger.info(
-                "[#{}] frame {} ref персонаж '{}' → {}",
-                project.id, frame_number, pid, f,
-            )
-            break
-        else:
-            logger.warning(
-                "[#{}] frame {} ref персонаж '{}' не найден "
-                "(папка {}, артефактов hero_reference нет) — "
-                "запусти шаг «Персонажи» или положи cNN.png в characters/",
-                project.id, frame_number, pid, chars_dir,
-            )
-
-    # Предметы — берём первый успешно найденный.
-    for iid in items_ids:
-        f = _find_ref_file_any(
-            items_dir, iid
-        ) or await _artifact_ref_path(session, project.id, iid, kind="item")
-        if f is not None:
-            refs.append(f)
-            logger.info(
-                "[#{}] frame {} ref предмет '{}' → {}",
-                project.id, frame_number, iid, f,
-            )
-            break
-        else:
-            logger.warning(
-                "[#{}] frame {} ref предмет '{}' не найден "
-                "(папка {}, артефактов item_reference нет) — "
-                "запусти шаг «Предметы» или положи iNN.png / predmetN.png в items/",
-                project.id, frame_number, iid, items_dir,
-            )
 
     # Постоянный продукт массового (если есть). Подставляем как
     # дополнительный ref, если в кадре остался свободный слот (< 2 рефов).
@@ -380,14 +416,14 @@ async def _load_refs_for_frame(
                 "[#{}] frame {}: продукт-референс {} не найден на диске",
                 project.id, frame_number, prod_ref_path,
             )
-    elif prod_ref_path and len(refs) >= 2:
+    elif prod_ref_path and len(refs) >= _OUTSEE_MAX_REFS:
         logger.warning(
-            "[#{}] frame {}: у кадра уже 2 ref'а (char+item), продукт-референс "
+            "[#{}] frame {}: у кадра уже {} ref'ов, продукт-референс "
             "не помещается — Outsee лимит. Кадр уйдёт без продукта.",
-            project.id, frame_number,
+            project.id, frame_number, _OUTSEE_MAX_REFS,
         )
 
-    return refs[:2]  # outsee лимит — 2 рефа на генерацию
+    return refs[:_OUTSEE_MAX_REFS]
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
