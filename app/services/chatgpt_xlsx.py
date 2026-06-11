@@ -257,6 +257,7 @@ async def ask_with_prompt_files(
         attachments,
         timeout=timeout,
         project_id=project_id,
+        expect_file_download=True,
     )
 
 

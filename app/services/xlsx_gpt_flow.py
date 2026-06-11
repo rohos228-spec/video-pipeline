@@ -90,6 +90,7 @@ async def telegram_style_ask_and_download(
             attachments,
             timeout=ask_timeout,
             project_id=project_id,
+            expect_file_download=True,
         )
         logger.info("xlsx-gpt-flow: GPT reply len={}", len(reply or ""))
         target = Path(download_path)

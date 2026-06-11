@@ -27,7 +27,7 @@ CHATGPT_URL = "https://chatgpt.com/"
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
-CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v83"
+CHATGPT_ATTACH_LOGIC_ID = "attach-guard-v84-download-fast"
 
 _ANIM_PR_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _ANIM_PR_DOC_SUFFIXES = frozenset({".md", ".txt", ".pdf"})
@@ -40,8 +40,17 @@ ATTACH_SETTLE_SEC = 5.0
 ATTACH_SETTLE_POLL_SEC = 0.5
 ATTACH_GUARD_MAX_REPAIR = 3
 ATTACH_WAIT_MAX_REPAIR = 3
-# Одна фаза поиска кнопки скачивания (не весь download_timeout).
-DOWNLOAD_PHASE_TIMEOUT_SEC = 60.0
+# После исчезновения Stop — короткая пауза перед чтением DOM.
+POST_STOP_SETTLE_SEC = 0.4
+# Стабилизация текста ответа (только ask без файла на скачивание).
+REPLY_STABILIZE_SEC = 6.0
+# ask_with_files + expect_file_download: ждём карточку файла, не 6с текста.
+REPLY_STABILIZE_FILE_SEC = 1.5
+DOWNLOAD_FILE_CARD_WAIT_SEC = 20.0
+FILE_CARD_POST_READY_SEC = 0.3
+# Фазы поиска кнопки/карточки скачивания (не весь download_timeout).
+DOWNLOAD_PHASE_TIMEOUT_SEC = 15.0
+DOWNLOAD_PHASE_RETRY_SEC = 20.0
 TEXT_REPLY_DOWNLOAD_SUFFIXES = frozenset({".txt", ".md"})
 
 # Фразы ошибок загрузки в композере (EN/RU).
@@ -925,7 +934,7 @@ class ChatGPTBot:
                 except Exception:  # noqa: BLE001
                     continue
             if not still_generating:
-                await sleep_cancellable(1.5, project_id)
+                await sleep_cancellable(POST_STOP_SETTLE_SEC, project_id)
                 return
             await sleep_cancellable(0.5, project_id)
         raise TimeoutError("ChatGPT: таймаут ожидания ответа")
@@ -1766,6 +1775,80 @@ class ChatGPTBot:
         """
         return await self.ask_with_files(prompt, [file_path], timeout=timeout)
 
+    async def _wait_reply_after_generation(
+        self,
+        *,
+        timeout: float,
+        project_id: int | None,
+        expect_file_download: bool,
+    ) -> str:
+        """После Stop: fast-path для xlsx/файла или стабилизация текста."""
+        from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+        page = await self._page_ready()
+        if expect_file_download:
+            card_sel = await _first_matching(
+                page,
+                FILE_CARD_SELECTORS,
+                timeout=min(DOWNLOAD_FILE_CARD_WAIT_SEC, timeout * 0.15),
+            )
+            if card_sel:
+                await sleep_cancellable(FILE_CARD_POST_READY_SEC, project_id)
+                reply = await self._read_last_reply()
+                logger.info(
+                    "ChatGPT (file reply): карточка файла готова (fast-path), len={}",
+                    len(reply),
+                )
+                return reply
+            logger.info(
+                "ChatGPT (file reply): карточка не появилась — короткая стабилизация текста"
+            )
+            stabilize_target = REPLY_STABILIZE_FILE_SEC
+            min_stable_len = 0
+        else:
+            stabilize_target = REPLY_STABILIZE_SEC
+            min_stable_len = 50
+
+        last_text = ""
+        stable_for = 0.0
+        deadline = asyncio.get_event_loop().time() + min(120.0, timeout * 0.25)
+        while asyncio.get_event_loop().time() < deadline:
+            abort_if_cancelled(project_id)
+            await sleep_cancellable(0.5, project_id)
+            text = await self._read_last_reply()
+            still_generating = False
+            for sel in STOP_BUTTON_SELECTORS:
+                try:
+                    if await page.locator(sel).count() > 0:
+                        still_generating = True
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if still_generating:
+                stable_for = 0.0
+                last_text = text
+                continue
+            if expect_file_download:
+                card_sel = await _first_matching(page, FILE_CARD_SELECTORS, timeout=0.05)
+                if card_sel:
+                    await sleep_cancellable(FILE_CARD_POST_READY_SEC, project_id)
+                    reply = await self._read_last_reply()
+                    logger.info(
+                        "ChatGPT (file reply): карточка появилась при стабилизации, len={}",
+                        len(reply),
+                    )
+                    return reply
+            if text == last_text and len(text) >= min_stable_len:
+                stable_for += 0.5
+                if stable_for >= stabilize_target:
+                    break
+            else:
+                stable_for = 0.0
+                last_text = text
+        reply = await self._read_last_reply()
+        logger.info("ChatGPT (file reply) len={}", len(reply))
+        return reply
+
     async def ask_with_files(
         self,
         prompt: str,
@@ -1773,6 +1856,7 @@ class ChatGPTBot:
         *,
         timeout: float = 1800,
         project_id: int | None = None,
+        expect_file_download: bool = False,
     ) -> str:
         """Прикрепляет файлы, вводит сопр. текст в композер и отправляет."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
@@ -1810,39 +1894,11 @@ class ChatGPTBot:
             await self._click_send(guard_file_paths=file_paths)
 
         await self._wait_until_done(timeout=timeout, project_id=project_id)
-
-        # Ждём стабилизации текста (как в обычном ask), но не строго — Code
-        # Interpreter иногда генерирует файл и сразу отдаёт короткий текст.
-        page = await self._page_ready()
-        last_text = ""
-        stable_for = 0.0
-        deadline = asyncio.get_event_loop().time() + 120.0
-        while asyncio.get_event_loop().time() < deadline:
-            abort_if_cancelled(project_id)
-            await sleep_cancellable(1.0, project_id)
-            text = await self._read_last_reply()
-            still_generating = False
-            for sel in STOP_BUTTON_SELECTORS:
-                try:
-                    if await page.locator(sel).count() > 0:
-                        still_generating = True
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-            if still_generating:
-                stable_for = 0.0
-                last_text = text
-                continue
-            if text == last_text and len(text) > 0:
-                stable_for += 1.0
-                if stable_for >= 6.0:
-                    break
-            else:
-                stable_for = 0.0
-                last_text = text
-        reply = await self._read_last_reply()
-        logger.info("ChatGPT (file reply) len={}", len(reply))
-        return reply
+        return await self._wait_reply_after_generation(
+            timeout=timeout,
+            project_id=project_id,
+            expect_file_download=expect_file_download,
+        )
 
     async def ask_anim_pr_initial(
         self,
@@ -2094,7 +2150,9 @@ class ChatGPTBot:
         page = await self._page_ready()
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        phase_timeout = min(DOWNLOAD_PHASE_TIMEOUT_SEC, max(30.0, timeout * 0.1))
+        phase_timeout = min(
+            DOWNLOAD_PHASE_TIMEOUT_SEC, max(10.0, timeout * 0.02)
+        )
 
         download = await self._try_download_via_file_card(
             page, timeout=phase_timeout
@@ -2135,10 +2193,11 @@ class ChatGPTBot:
             return target_path
 
         await self._hover_file_cards()
-        download = await self._try_download_via_file_card(page, timeout=20.0)
+        retry_timeout = min(DOWNLOAD_PHASE_RETRY_SEC, max(12.0, timeout * 0.03))
+        download = await self._try_download_via_file_card(page, timeout=retry_timeout)
         if download is None:
             download = await self._try_download_via_selectors(
-                page, DOWNLOAD_LINK_SELECTORS, timeout=phase_timeout
+                page, DOWNLOAD_LINK_SELECTORS, timeout=retry_timeout
             )
         if download is not None:
             size = await self._save_download_to_path(download, target_path)

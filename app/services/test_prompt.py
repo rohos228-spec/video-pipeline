@@ -132,7 +132,9 @@ async def _gpt_get_new_prompt(
         gpt = ChatGPTBot(bs)
         await gpt.new_conversation()
         if attachments:
-            await gpt.ask_with_files(user_message, attachments, timeout=900)
+            await gpt.ask_with_files(
+                user_message, attachments, timeout=900, expect_file_download=True
+            )
         else:
             await gpt.ask(user_message, timeout=900)
         # Скачиваем сгенерированный .txt из ответа.
