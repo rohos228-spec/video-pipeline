@@ -33,7 +33,11 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.hitl import send_hitl_text
-from app.services.artifact_recovery import recover_scene_videos_from_disk
+from app.services.artifact_recovery import (
+    recover_scene_images_from_disk,
+    recover_scene_videos_from_disk,
+)
+from app.services.scan_frames import is_valid_scene_image, newest_frame_image_path
 from app.services.outsee_retry import generate_video_with_retries
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
@@ -60,6 +64,23 @@ async def _scene_video_file_on_disk(
     return path if path.is_file() else None
 
 
+def resolve_scene_image_path(
+    *,
+    artifact_path: str | None,
+    scenes_dir: Path,
+    frame_number: int,
+) -> Path | None:
+    """Стартовый кадр для outsee: артефакт из БД или актуальный frame_NNN_*.png на диске."""
+    if artifact_path:
+        path = Path(artifact_path)
+        if path.is_file():
+            return path
+    disk = newest_frame_image_path(scenes_dir, frame_number)
+    if disk is not None and is_valid_scene_image(disk):
+        return disk
+    return None
+
+
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
     """Не гонять outsee, если клип уже есть или кадр финально одобрен."""
     if fr.status in (FrameStatus.video_approved, FrameStatus.done):
@@ -74,6 +95,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] generate_videos starting", project.id)
 
+    img_recovered = await recover_scene_images_from_disk(session, project)
+    if img_recovered:
+        logger.info(
+            "[#{}] generate_videos: scene_image с диска для кадров {}",
+            project.id,
+            img_recovered[:40],
+        )
+
     recovered = await recover_scene_videos_from_disk(session, project)
     if recovered:
         logger.info(
@@ -81,6 +110,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
             recovered,
         )
+
+    scenes_dir = project.data_dir / "scenes"
 
     frames = (
         await session.execute(
@@ -159,7 +190,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         .limit(1)
                     )
                 ).scalar_one_or_none()
-                start_frame_path: Path | None = Path(img.path) if img else None
+                start_frame_path = resolve_scene_image_path(
+                    artifact_path=img.path if img else None,
+                    scenes_dir=scenes_dir,
+                    frame_number=fr.number,
+                )
+                if start_frame_path is None:
+                    raise RuntimeError(
+                        f"у кадра {fr.number} нет картинки на диске "
+                        f"(БД: {img.path if img else '—'})"
+                    )
+                if img is None or Path(img.path) != start_frame_path:
+                    logger.warning(
+                        "[#{}] frame {}: стартовый кадр с диска {} "
+                        "(артефакт БД: {})",
+                        project.id,
+                        fr.number,
+                        start_frame_path.name,
+                        Path(img.path).name if img and img.path else "—",
+                    )
 
                 short_uuid = uuid.uuid4().hex[:8]
                 file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"

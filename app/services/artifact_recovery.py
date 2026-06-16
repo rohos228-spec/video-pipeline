@@ -23,6 +23,7 @@ from app.models import (
 )
 
 _CLIP_RE = re.compile(r"^clip_(\d{3})_", re.I)
+_FRAME_IMG_RE = re.compile(r"^frame_(\d{3})_", re.I)
 _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
 
 
@@ -92,6 +93,133 @@ async def recover_scene_videos_from_disk(
             recovered,
         )
     return recovered
+
+
+async def recover_scene_images_from_disk(
+    session: AsyncSession, project: Project
+) -> list[int]:
+    """Привязать frame_NNN_*.png из scenes/ к Frame как scene_image."""
+    from app.services.scan_frames import is_valid_scene_image, newest_frame_image_path
+
+    scenes_dir = project.data_dir / "scenes"
+    if not scenes_dir.is_dir():
+        return []
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    recovered: list[int] = []
+    for fr in frames:
+        path = newest_frame_image_path(scenes_dir, fr.number)
+        if path is None or not is_valid_scene_image(path):
+            continue
+        existing = (
+            await session.execute(
+                select(Artifact)
+                .where(
+                    Artifact.project_id == project.id,
+                    Artifact.frame_id == fr.id,
+                    Artifact.kind == ArtifactKind.scene_image,
+                )
+                .order_by(Artifact.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None and Path(existing.path).is_file():
+            if fr.status is FrameStatus.image_prompt_ready:
+                fr.status = FrameStatus.image_generated
+            continue
+        session.add(
+            Artifact(
+                project_id=project.id,
+                frame_id=fr.id,
+                kind=ArtifactKind.scene_image,
+                uuid=uuid.uuid4().hex,
+                path=str(path.resolve()),
+            )
+        )
+        if fr.status in (FrameStatus.image_prompt_ready, FrameStatus.planned):
+            fr.status = FrameStatus.image_generated
+        recovered.append(fr.number)
+    if recovered:
+        await session.flush()
+        logger.info(
+            "[#{}] artifact_recovery: scene_image с диска для кадров {}",
+            project.id,
+            recovered[:40],
+        )
+    return recovered
+
+
+def restore_scene_images_from_old(project: Project) -> dict[str, int]:
+    """Скопировать frame_*.png из old/scenes/<timestamp>/ обратно в scenes/."""
+    scenes_dir = project.data_dir / "scenes"
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+    old_root = project.data_dir / "old" / "scenes"
+    if not old_root.is_dir():
+        return {"restored": 0, "skipped_existing": 0, "backup_dirs": 0}
+
+    best_by_frame: dict[int, Path] = {}
+    backup_dirs = 0
+    for batch_dir in sorted(old_root.iterdir()):
+        if not batch_dir.is_dir():
+            continue
+        backup_dirs += 1
+        for src in batch_dir.glob("frame_*.png"):
+            m = _FRAME_IMG_RE.match(src.name)
+            if not m:
+                continue
+            num = int(m.group(1))
+            prev = best_by_frame.get(num)
+            if prev is None or src.stat().st_mtime > prev.stat().st_mtime:
+                best_by_frame[num] = src
+
+    restored = 0
+    skipped = 0
+    for num, src in sorted(best_by_frame.items()):
+        existing = list(scenes_dir.glob(f"frame_{num:03d}_*.png"))
+        if existing:
+            newest = max(existing, key=lambda p: p.stat().st_mtime)
+            if newest.stat().st_size >= src.stat().st_size:
+                skipped += 1
+                continue
+        dest = scenes_dir / src.name
+        if dest.exists():
+            skipped += 1
+            continue
+        shutil.copy2(src, dest)
+        restored += 1
+
+    if restored:
+        logger.info(
+            "[#{}] artifact_recovery: restored {} scene png from old/scenes ({} batches)",
+            project.id,
+            restored,
+            backup_dirs,
+        )
+    return {
+        "restored": restored,
+        "skipped_existing": skipped,
+        "backup_dirs": backup_dirs,
+    }
+
+
+async def recover_scene_images_full(
+    session: AsyncSession, project: Project
+) -> dict[str, int | list[int]]:
+    """old/scenes → scenes/ → артефакты БД → статусы кадров."""
+    from app.services.scan_frames import sync_frames_with_disk_images
+
+    old_stats = restore_scene_images_from_old(project)
+    recovered = await recover_scene_images_from_disk(session, project)
+    synced = await sync_frames_with_disk_images(session, project)
+    return {
+        **old_stats,
+        "artifacts_registered": len(recovered),
+        "frames_synced": synced,
+        "frame_numbers": recovered,
+    }
 
 
 async def recover_audio_from_disk(

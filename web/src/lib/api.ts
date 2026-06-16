@@ -72,12 +72,18 @@ export interface ProjectAsset {
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string | object) {
-    super(formatApiError(detail));
+    super(formatApiError(detail, status));
     this.name = "ApiError";
   }
 }
 
-export function formatApiError(detail: string | object): string {
+export function formatApiError(
+  detail: string | object,
+  status?: number,
+): string {
+  if (status === 405) {
+    return "API устарел (Method not allowed) — закройте Studio и запустите RUN-STUDIO.ps1 после git pull / UPDATE";
+  }
   if (typeof detail === "string") {
     try {
       const parsed = JSON.parse(detail) as { detail?: unknown };

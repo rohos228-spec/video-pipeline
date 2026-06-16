@@ -228,6 +228,38 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
     return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
+def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
+    """Копия scenes/*.png в data/.../old/scenes/<timestamp>/ перед удалением."""
+    if not scenes_dir.is_dir():
+        return 0
+    pngs = list(scenes_dir.glob("*.png"))
+    if not pngs:
+        return 0
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    dest_dir = project.data_dir / "old" / "scenes" / ts
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for src in pngs:
+        try:
+            shutil.copy2(src, dest_dir / src.name)
+            copied += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] reset_step: backup scene {} failed: {}",
+                project.id,
+                src.name,
+                e,
+            )
+    if copied:
+        logger.info(
+            "[#{}] reset_step: backup {} scene png → {}",
+            project.id,
+            copied,
+            dest_dir,
+        )
+    return copied
+
+
 async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 7 «Картинки»:
       - удалить scene_image артефакты + файлы
@@ -235,11 +267,12 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
       - сбросить frame.status в image_prompt_ready (или planned, если
         промт пропал) и снять fail_reason из attrs.
     """
+    scenes_dir = project.data_dir / "scenes"
+    backed_up = _backup_scenes_before_wipe(project, scenes_dir)
     art_stats = await _wipe_artifacts_by_kind(
         session, project, ArtifactKind.scene_image
     )
     # дочистим .png в scenes/, если что-то осталось
-    scenes_dir = project.data_dir / "scenes"
     extra_files = 0
     if scenes_dir.exists():
         for p in scenes_dir.glob("*.png"):
@@ -278,6 +311,7 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
             fr.attrs = attrs
     return {
         **art_stats,
+        "scenes_backed_up": backed_up,
         "extra_files": extra_files,
         "frames_reset": frames_reset,
     }

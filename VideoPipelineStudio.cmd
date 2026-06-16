@@ -2,7 +2,7 @@
 REM GUI launcher (buttons). Console update: UPDATE-STUDIO.cmd
 cd /d "%~dp0"
 
-set "BR=devin/windows-installer"
+set "BR=fix/text-save-persistence-v153"
 where git >nul 2>&1
 if not errorlevel 1 (
     git fetch origin %BR% 2>nul

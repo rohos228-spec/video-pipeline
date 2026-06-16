@@ -150,3 +150,23 @@ async def test_studio_version_endpoint(client) -> None:
     data = r.json()
     assert "build" in data
     assert "ui_stale" in data
+
+
+@pytest.mark.asyncio
+async def test_finish_missing_images_post(client, tmp_path, monkeypatch) -> None:
+    """POST /finish/images — не 405/500 (регрессия «Method not allowed»)."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    c, pid, factory = client
+    async with factory() as session:
+        p = await session.get(Project, pid)
+        scenes = p.data_dir / "scenes"
+        scenes.mkdir(parents=True, exist_ok=True)
+
+    r = await c.post(f"/api/projects/{pid}/finish/images")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "images"
+    assert "project" in body
+    assert body["project"]["id"] == pid

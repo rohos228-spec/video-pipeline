@@ -9,7 +9,17 @@ from app.bots.chatgpt import (
     composer_text_is_duplicated,
     find_attachment_failure_phrases,
     format_attachment_health_error,
+    ChatGPTBot,
 )
+
+
+def test_count_attachment_previews_js_no_invalid_css_selectors() -> None:
+    """Регрессия v159: в evaluate нельзя div.group/attachment — слэш ломает querySelectorAll."""
+    import inspect
+
+    src = inspect.getsource(ChatGPTBot._count_attachment_previews)
+    assert "group/attachment" not in src
+    assert "vpComposer" not in src
 
 
 def test_find_attachment_failure_phrases_english() -> None:

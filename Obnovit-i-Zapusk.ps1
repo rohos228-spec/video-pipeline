@@ -11,7 +11,7 @@ param(
     [switch]$RestartOnly,
     [switch]$SkipBuild,
     [switch]$NoBrowser,
-    [string]$GitBranch = "devin/windows-installer"
+    [string]$GitBranch = "fix/text-save-persistence-v153"
 )
 
 function Invoke-GitStep {

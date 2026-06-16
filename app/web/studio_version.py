@@ -17,7 +17,8 @@ def _parse_version_file() -> tuple[int, str, str, str]:
     attach_expected = ""
     orchestrator_expected = ""
     if path.is_file():
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        raw = path.read_text(encoding="utf-8-sig").strip()
+        lines = raw.splitlines()
         if lines:
             try:
                 build = int(lines[0].strip())

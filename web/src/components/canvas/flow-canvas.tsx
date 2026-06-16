@@ -1307,21 +1307,30 @@ function RunOverlay({
         <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuItem
             disabled={finishBusy !== null}
-            onClick={() => void handleFinishImages()}
+            onSelect={(e) => {
+              e.preventDefault();
+              void handleFinishImages();
+            }}
           >
             <ImageIcon className="mr-2 h-4 w-4" />
             Доделка картинок
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={finishBusy !== null}
-            onClick={() => void handleFinishVideos()}
+            onSelect={(e) => {
+              e.preventDefault();
+              void handleFinishVideos();
+            }}
           >
             <Video className="mr-2 h-4 w-4" />
             Доделка видео
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={finishBusy !== null}
-            onClick={() => void handleFinishAnimationPrompts()}
+            onSelect={(e) => {
+              e.preventDefault();
+              void handleFinishAnimationPrompts();
+            }}
           >
             <Film className="mr-2 h-4 w-4" />
             Доделка промтов анимации

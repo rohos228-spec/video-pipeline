@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ── Общие ──
@@ -40,6 +40,29 @@ class ProjectSummary(_ORM):
 
 
 class ProjectDetail(ProjectSummary):
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_null_collections(cls, data: Any) -> Any:
+        """SQLite/ORM часто отдаёт NULL вместо []/{} — иначе model_validate падает."""
+        from app.models import Project
+
+        if isinstance(data, Project):
+            data = {col.key: getattr(data, col.key) for col in data.__table__.columns}
+        if isinstance(data, dict):
+            for key in (
+                "hero_descriptions",
+                "hero_variations",
+                "hero_variation_modifiers",
+                "item_descriptions",
+                "item_variations",
+            ):
+                if data.get(key) is None:
+                    data[key] = []
+            for key in ("prompt_overrides", "gpt_text_overrides", "meta"):
+                if data.get(key) is None:
+                    data[key] = {}
+        return data
+
     general_plan: str | None = None
     script_text: str | None = None
     hero_description: str | None = None

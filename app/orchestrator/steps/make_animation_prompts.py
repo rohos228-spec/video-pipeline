@@ -43,15 +43,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             fr.voiceover_text = vo
 
     pending = apg.collect_batch_items(project, frames)
-    already_done = sum(1 for fr in frames if (fr.animation_prompt or "").strip())
+    already_done, xlsx_filled, with_image = apg.count_animation_prompt_stats(
+        project, frames
+    )
     if not pending:
+        from app.services.project_state import compute_actual_status
+
+        project.status = await compute_actual_status(session, project)
         logger.info(
-            "[#{}] make_animation_prompts: nothing to do (synced={}, already={})",
+            "[#{}] make_animation_prompts: nothing to do (synced={}, "
+            "plan R48={}, картинок на диске={}) → status={}",
             project.id,
             synced,
-            already_done,
+            xlsx_filled,
+            with_image,
+            project.status.value,
         )
-        project.status = ProjectStatus.animation_prompts_ready
         await session.flush()
         return
 

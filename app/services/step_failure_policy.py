@@ -24,8 +24,9 @@ from app.telegram.menu import step_by_running_status
 
 FAILS_PER_CYCLE = 3
 
-# При ошибке — не reset_step (не стирать прогресс), только sync xlsx + restart.
-_SOFT_RETRY_STEP_CODES = frozenset({"anim_pr"})
+# При ошибке — не reset_step (не стирать прогресс), только sync + restart.
+# img/video: CDP/Outsee сбой не должен удалять уже сгенерированные файлы.
+_SOFT_RETRY_STEP_CODES = frozenset({"anim_pr", "img", "video"})
 MAX_CYCLES = 3
 MAX_TOTAL_FAILS = FAILS_PER_CYCLE * MAX_CYCLES  # 9
 SLEEP_MINUTES = 30
@@ -97,6 +98,49 @@ def clear_sleep_if_expired(project: Project) -> bool:
     return True
 
 
+async def _soft_retry_without_wipe(
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+) -> None:
+    """Повтор шага без reset_step / wipe — сохраняем файлы на диске."""
+    if step_code == "anim_pr":
+        from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
+
+        try:
+            synced = await sync_animation_prompts_from_xlsx(session, project)
+            logger.info(
+                "[#{}] soft retry {}: synced {} animation_prompt из xlsx (без reset)",
+                project.id,
+                step_code,
+                synced,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] sync_animation_prompts_from_xlsx on fail: {}",
+                project.id,
+                e,
+            )
+    elif step_code == "img":
+        from app.services.scan_frames import sync_frames_with_disk_images
+
+        synced = await sync_frames_with_disk_images(session, project)
+        logger.info(
+            "[#{}] soft retry img: {} кадров уже на диске (без wipe)",
+            project.id,
+            synced,
+        )
+    elif step_code == "video":
+        from app.services.artifact_recovery import recover_scene_videos_from_disk
+
+        recovered = await recover_scene_videos_from_disk(session, project)
+        logger.info(
+            "[#{}] soft retry video: {} clip на диске (без wipe)",
+            project.id,
+            len(recovered),
+        )
+
+
 async def record_step_failure(
     session: AsyncSession,
     project: Project,
@@ -123,22 +167,7 @@ async def record_step_failure(
     fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1
 
     if step_code in _SOFT_RETRY_STEP_CODES:
-        from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
-
-        try:
-            synced = await sync_animation_prompts_from_xlsx(session, project)
-            logger.info(
-                "[#{}] soft retry {}: synced {} animation_prompt из xlsx (без reset)",
-                project.id,
-                step_code,
-                synced,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] sync_animation_prompts_from_xlsx on fail: {}",
-                project.id,
-                e,
-            )
+        await _soft_retry_without_wipe(session, project, step_code)
     else:
         try:
             await reset_step(session, project, step_code)
@@ -179,17 +208,22 @@ async def record_step_failure(
         return "sleep"
 
     _save_failure_state(project, fs)
-    try:
-        await start_step(session, project, step_code)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] start_step {} after fail {}/{}: {}",
-            project.id,
-            step_code,
-            total,
-            MAX_TOTAL_FAILS,
-            e,
-        )
+    if step_code in _SOFT_RETRY_STEP_CODES:
+        # Не вызываем start_step — он чистит выход шага (wipe картинок/видео).
+        if step is not None:
+            project.status = step.running_status
+    else:
+        try:
+            await start_step(session, project, step_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] start_step {} after fail {}/{}: {}",
+                project.id,
+                step_code,
+                total,
+                MAX_TOTAL_FAILS,
+                e,
+            )
     await session.flush()
     logger.warning(
         "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), step reset+restart: {}",

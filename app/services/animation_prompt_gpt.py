@@ -133,10 +133,41 @@ def build_batch_message(items: list[FrameImageBatchItem]) -> str:
     return "\n".join(parts).strip()
 
 
+def _plan_xlsx_exists(project: Project) -> bool:
+    return (project.data_dir / "project.xlsx").is_file()
+
+
+def animation_prompt_in_plan_xlsx(project: Project, frame_number: int) -> str:
+    """Промт анимации из plan R48 (пустая строка, если ячейки нет)."""
+    if not _plan_xlsx_exists(project):
+        return ""
+    cells = read_plan_animation_prompt_cells(project, [frame_number])
+    return (cells[0][1] if cells else "").strip()
+
+
+def has_animation_prompt_for_frame(project: Project, frame: Frame) -> bool:
+    """Готов ли промт: plan R48 в xlsx — источник истины, если project.xlsx есть."""
+    if _plan_xlsx_exists(project):
+        return len(animation_prompt_in_plan_xlsx(project, frame.number)) >= MIN_ANIM_PROMPT_LEN
+    return len((frame.animation_prompt or "").strip()) >= MIN_ANIM_PROMPT_LEN
+
+
+_VIDEO_DONE_STATUSES = frozenset(
+    {
+        FrameStatus.video_generated,
+        FrameStatus.video_approved,
+        FrameStatus.done,
+    }
+)
+
+
 async def sync_animation_prompts_from_xlsx(
     session: AsyncSession, project: Project
 ) -> int:
-    """Лист «план» R48 → Frame.animation_prompt (источник истины при догонке)."""
+    """Лист «план» R48 ↔ Frame.animation_prompt.
+
+    Пустая ячейка в xlsx → сброс устаревшего промта в БД (кроме кадров с видео).
+    """
     frames = (
         await session.execute(
             select(Frame)
@@ -149,24 +180,34 @@ async def sync_animation_prompts_from_xlsx(
     cells = read_plan_animation_prompt_cells(project, [f.number for f in frames])
     by_num = dict(cells)
     changed = 0
+    xlsx_exists = _plan_xlsx_exists(project)
     for fr in frames:
         text = (by_num.get(fr.number) or "").strip()
         if len(text) < MIN_ANIM_PROMPT_LEN:
+            if (
+                xlsx_exists
+                and fr.animation_prompt
+                and fr.status not in _VIDEO_DONE_STATUSES
+            ):
+                fr.animation_prompt = None
+                if fr.status is FrameStatus.animation_prompt_ready:
+                    fr.status = (
+                        FrameStatus.image_generated
+                        if scene_image_path(project, fr.number)
+                        else FrameStatus.image_prompt_ready
+                    )
+                changed += 1
             continue
         if text == (fr.animation_prompt or "").strip():
             continue
         fr.animation_prompt = text
-        if fr.status not in (
-            FrameStatus.video_approved,
-            FrameStatus.video_generated,
-            FrameStatus.done,
-        ):
+        if fr.status not in _VIDEO_DONE_STATUSES:
             fr.status = FrameStatus.animation_prompt_ready
         changed += 1
     if changed:
         await session.flush()
         logger.info(
-            "[#{}] sync_animation_prompts_from_xlsx: {} кадров из plan R48 → БД",
+            "[#{}] sync_animation_prompts_from_xlsx: {} кадров синхронизировано с plan R48",
             project.id,
             changed,
         )
@@ -176,10 +217,10 @@ async def sync_animation_prompts_from_xlsx(
 def scan_missing_animation_prompts(
     project: Project, frames: list[Frame]
 ) -> list[int]:
-    """Кадры с картинкой на диске, но без animation_prompt в БД."""
+    """Кадры с картинкой на диске, но без animation_prompt в plan R48 / БД."""
     missing: list[int] = []
     for fr in frames:
-        if (fr.animation_prompt or "").strip():
+        if has_animation_prompt_for_frame(project, fr):
             continue
         if scene_image_path(project, fr.number) is None:
             continue
@@ -187,14 +228,32 @@ def scan_missing_animation_prompts(
     return missing
 
 
+def count_animation_prompt_stats(
+    project: Project, frames: list[Frame]
+) -> tuple[int, int, int]:
+    """(готово по xlsx/БД, заполнено в plan R48, кадров с картинкой на диске)."""
+    ready = sum(1 for fr in frames if has_animation_prompt_for_frame(project, fr))
+    xlsx_filled = 0
+    if _plan_xlsx_exists(project):
+        nums = [f.number for f in frames]
+        cells = dict(read_plan_animation_prompt_cells(project, nums))
+        xlsx_filled = sum(
+            1 for n in nums if len((cells.get(n) or "").strip()) >= MIN_ANIM_PROMPT_LEN
+        )
+    with_image = sum(
+        1 for fr in frames if scene_image_path(project, fr.number) is not None
+    )
+    return ready, xlsx_filled, with_image
+
+
 def collect_batch_items(
     project: Project,
     frames: list[Frame],
 ) -> list[FrameImageBatchItem]:
-    """Кадры с картинкой на диске и без animation_prompt."""
+    """Кадры с картинкой на диске и без animation_prompt (plan R48)."""
     out: list[FrameImageBatchItem] = []
     for fr in frames:
-        if (fr.animation_prompt or "").strip():
+        if has_animation_prompt_for_frame(project, fr):
             continue
         img = scene_image_path(project, fr.number)
         if img is None:

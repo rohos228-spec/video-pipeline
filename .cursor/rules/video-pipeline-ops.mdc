@@ -1,0 +1,39 @@
+---
+description: video-pipeline Studio — критичный контекст, не спрашивать у пользователя
+alwaysApply: true
+---
+
+# video-pipeline — операционный контекст
+
+## Запуск и обновление
+- Studio: `powershell -ExecutionPolicy Bypass -File .\RUN-STUDIO.ps1` → http://127.0.0.1:8765
+- Локальный код без git reset: `.\apply-local.ps1 -SkipBuild`, затем `.\stop-backend.cmd` + `.\run-backend.ps1 -NoPause`
+- **НЕ** использовать `FORCE-UPDATE.cmd` / `VideoPipelineStudio.cmd` — делают `git reset --hard` и сносят незакоммиченные фиксы
+- Мягкое обновление: `Obnovit-i-Zapusk.ps1` / `OBNOVIT-I-ZAPUSK.cmd`
+- Ветка: `fix/text-save-persistence-v153`; много фиксов только локально (не в git) — перед reset проверить `git status`
+
+## ChatGPT attach (`app/bots/chatgpt.py`)
+- Счёт вложений — **inline** `page.evaluate` в `_count_attachment_previews` / `_attachments_upload_state`
+- **Запрещено** в evaluate: `div.group/attachment`, `vpComposer*`, `_COMPOSER_ATTACHMENT_DOM_JS`, `_composer_page_eval_js` — ломает `querySelectorAll`
+- `div.group\\/attachment` допустим только в Playwright-локаторах (`FILE_PREVIEW_SELECTORS`), не в evaluate
+- После правок `chatgpt.py` — обязательно перезапуск бэкенда
+- Успех attach в логе: `ChatGPT: drag-drop batch — [...]` и `все файлы видны`
+
+## anim_pr
+- Источник правды для пропуска/генерации: **колонка R48 в project.xlsx**, не stale DB
+- `animation_prompt_gpt.py`: `sync_animation_prompts_from_xlsx`, `scan_missing_animation_prompts`
+- Soft retry без wipe: `step_failure_policy._SOFT_RETRY_STEP_CODES` включает `anim_pr`, `img`, `video`
+- Пауза после ошибок (30 мин): снимается ручным `POST /api/projects/{id}/steps/anim_pr/run` или кнопкой в Studio
+
+## Сбои шагов
+- `reset_step` для `img` раньше удалял все PNG — теперь backup в `old/scenes/<timestamp>/`
+- При CDP timeout на img/video/anim_pr — soft retry, не wipe
+
+## Активный проект (типично)
+- #13 slug `nicshe` — anim_pr / доделка картинок; логи: `data/backend.log`, `data/backend-*.log`
+
+## Диагностика (делать самому, не переспрашивать)
+1. `git status` / `git diff` — что не закоммичено
+2. Хвост `data/backend-*.log` — последний PID из run-backend
+3. `pytest tests/test_chatgpt_attachment_guard.py tests/test_animation_prompt_gpt.py -q`
+4. API: `POST http://127.0.0.1:8765/api/projects/13/steps/anim_pr/run`

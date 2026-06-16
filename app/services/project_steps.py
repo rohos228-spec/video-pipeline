@@ -58,6 +58,46 @@ async def start_step(
             f"сейчас выполняется «{other_title}» ({project.status.value}). "
             "Остановите ⏹ или дождитесь завершения."
         )
+
+    if step_code == "anim_pr":
+        from sqlalchemy import select
+
+        from app.models import Frame
+        from app.services.animation_prompt_gpt import (
+            count_animation_prompt_stats,
+            scan_missing_animation_prompts,
+            sync_animation_prompts_from_xlsx,
+        )
+
+        synced = await sync_animation_prompts_from_xlsx(session, project)
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+        missing = scan_missing_animation_prompts(project, frames)
+        if not missing:
+            from app.services.project_state import compute_actual_status
+
+            ready, xlsx_filled, with_image = count_animation_prompt_stats(
+                project, frames
+            )
+            project.status = await compute_actual_status(session, project)
+            project.updated_at = datetime.utcnow()
+            await session.flush()
+            logger.info(
+                "[#{}] start_step anim_pr: пропуск — нечего генерировать "
+                "(synced={}, plan R48={}, картинок={}, status={})",
+                project.id,
+                synced,
+                xlsx_filled,
+                with_image,
+                project.status.value,
+            )
+            return project.status
+
     clear_stop(project.id)
     from app.services.step_failure_policy import clear_failure_backoff_for_manual_start
 

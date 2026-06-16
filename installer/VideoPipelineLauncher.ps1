@@ -4,7 +4,7 @@
 
 $script:LAUNCHER_UPDATE_ID = "launcher-ps51-core-v84"
 # Единственная ветка, с которой кнопка * Update + Start синхронизирует проект.
-$script:StudioUpdateBranch = "devin/windows-installer"
+$script:StudioUpdateBranch = "fix/text-save-persistence-v153"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
