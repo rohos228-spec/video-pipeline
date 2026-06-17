@@ -69,6 +69,30 @@ def _nonempty_item_descriptions(project: Project) -> list[str]:
     return [d.strip() for d in raw if isinstance(d, str) and d.strip()]
 
 
+def _nonempty_hero_descriptions(project: Project) -> list[str]:
+    raw = project.hero_descriptions or []
+    return [d.strip() for d in raw if isinstance(d, str) and d.strip()]
+
+
+def _hero_step_required(project: Project) -> bool:
+    """Нужен ли шаг персонажей (не путать с hero_count=0 в xlsx-flow)."""
+    if project.hero_mode == "no_hero":
+        return False
+    if (project.hero_count or 0) > 0:
+        return True
+    if _nonempty_hero_descriptions(project):
+        return True
+    if (project.hero_description or "").strip():
+        return True
+    if _excel_hero_expected_count(project) > 0:
+        return True
+    return False
+
+
+def _items_step_required(project: Project) -> bool:
+    return len(_nonempty_item_descriptions(project)) > 0
+
+
 def _enrich_ready_from_meta(project: Project) -> ProjectStatus | None:
     """Максимальный enrich_*_ready по ``meta.enrich_completed_slots``."""
     meta = project.meta if isinstance(project.meta, dict) else {}
@@ -229,16 +253,23 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     if fr_total == 0:
         return ProjectStatus.script_ready
     # frames ✓
-    skip_hero = project.hero_mode == "no_hero" or (project.hero_count or 0) == 0
-    if not skip_hero and hero_arts == 0 and not has_hero_descr:
-        # Нет ни сгенерированных hero-картинок, ни описания — шаг 4 не
-        # проходил. Стоп на frames_ready.
-        return ProjectStatus.frames_ready
-    # hero ✓ (минимум описание есть; если артефактов нет — шаг 4 ещё
-    # запустится). Логика консервативная: считаем шаг 4 пройденным
-    # только при наличии hero_arts.
-    if not skip_hero and hero_arts == 0:
-        return ProjectStatus.frames_ready
+    hero_required = _hero_step_required(project)
+    if hero_required:
+        n_excel = _excel_hero_expected_count(project)
+        if hero_arts == 0 and not has_hero_descr:
+            if n_excel > 0:
+                n_excel_done = await _count_excel_hero_artifacts(session, pid)
+                if n_excel_done == 0:
+                    return ProjectStatus.frames_ready
+                if n_excel_done < n_excel:
+                    return ProjectStatus.hero_ready
+            return ProjectStatus.frames_ready
+        if hero_arts == 0:
+            if n_excel > 0:
+                n_excel_done = await _count_excel_hero_artifacts(session, pid)
+                if n_excel_done < n_excel:
+                    return ProjectStatus.hero_ready
+            return ProjectStatus.frames_ready
     # Excel-hero / items / enrich — только пока нет image_prompt на всех кадрах.
     # Иначе recompute откатывал image_prompts_ready → hero_ready при частичном hero.
     if fr_with_img_prompt < fr_total:
@@ -246,15 +277,20 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         enrich_st = _enrich_ready_from_meta(project)
         if enrich_st is not None:
             return enrich_st
-        n_excel = _excel_hero_expected_count(project)
-        if n_excel > 0:
-            n_excel_done = await _count_excel_hero_artifacts(session, pid)
-            if n_excel_done < n_excel:
+        if hero_required:
+            n_excel = _excel_hero_expected_count(project)
+            if n_excel > 0:
+                n_excel_done = await _count_excel_hero_artifacts(session, pid)
+                if n_excel_done < n_excel:
+                    return ProjectStatus.hero_ready
+        if _items_step_required(project):
+            item_descs = _nonempty_item_descriptions(project)
+            if item_arts < len(item_descs):
                 return ProjectStatus.hero_ready
-        item_descs = _nonempty_item_descriptions(project)
-        if item_descs and item_arts < len(item_descs):
+            return ProjectStatus.items_ready
+        if hero_required:
             return ProjectStatus.hero_ready
-        return ProjectStatus.items_ready
+        return ProjectStatus.frames_ready
     # image_prompts ✓
     if scene_image_arts < fr_total:
         return ProjectStatus.image_prompts_ready

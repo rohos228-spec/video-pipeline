@@ -31,6 +31,31 @@ def test_excel_ref_deps_batch_uses_generated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_compute_actual_status_no_hero_no_items_stays_frames_ready() -> None:
+    """hero_count=0 без excel — не прыгать сразу на items_ready."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    p = Project(id=1, topic="t", slug="t", hero_mode="auto", hero_count=0)
+    p.general_plan = "plan"
+    p.script_text = "script"
+    session = AsyncMock()
+    call_count = {"n": 0}
+
+    async def mock_execute(stmt):
+        call_count["n"] += 1
+        m = MagicMock()
+        if call_count["n"] == 1:
+            m.scalar_one.return_value = 5  # fr_total
+        else:
+            m.scalar_one.return_value = 0
+        return m
+
+    session.execute = mock_execute
+    st = await compute_actual_status(session, p)
+    assert st is ProjectStatus.frames_ready
+
+
+@pytest.mark.asyncio
 async def test_compute_actual_status_partial_excel_hero() -> None:
     from unittest.mock import AsyncMock, MagicMock
 

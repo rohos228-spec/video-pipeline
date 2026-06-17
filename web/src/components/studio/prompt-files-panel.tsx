@@ -561,10 +561,11 @@ function PromptFileRowHistory({
   const history = useQuery({
     queryKey: ["prompt-file-history", cacheKey, fileName],
     queryFn: () => api.listPromptFileHistory(stepCode, fileName),
-    enabled: open || isActive,
-    staleTime: 5_000,
+    enabled: true,
+    staleTime: 30_000,
   });
 
+  const versionCount = history.data?.length ?? 0;
   const versions = history.data ?? [];
 
   return (
@@ -586,12 +587,12 @@ function PromptFileRowHistory({
           title={`История сохранений: ${fileName}.md`}
           onClick={(e) => e.stopPropagation()}
         >
-          {history.isLoading ? (
+          {history.isLoading && versionCount === 0 ? (
             <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
             <History className="h-3 w-3" />
           )}
-          {versions.length > 0 ? versions.length : ""}
+          <span className="min-w-[1ch] tabular-nums">{versionCount}</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -603,7 +604,7 @@ function PromptFileRowHistory({
           {fileName}.md — старые версии
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {versions.length === 0 ? (
+        {versionCount === 0 ? (
           <DropdownMenuItem disabled className="text-[10px]">
             {history.isLoading
               ? "Загрузка…"
