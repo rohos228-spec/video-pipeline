@@ -130,12 +130,6 @@ async def recover_audio_from_disk(
     if full_path is None:
         return False
 
-    clip_meta: list[dict] = []
-    for mp3 in sorted(audio_dir.glob("frame_*.mp3")):
-        m = _FRAME_MP3_RE.match(mp3.name)
-        if m:
-            clip_meta.append({"frame_number": int(m.group(1)), "path": str(mp3)})
-
     session.add(
         Artifact(
             project_id=project.id,
@@ -143,19 +137,16 @@ async def recover_audio_from_disk(
             uuid=uuid.uuid4().hex,
             path=str(full_path.resolve()),
             meta={
-                "mode": "per_frame",
+                "mode": "full_voice",
                 "recovered_from_disk": True,
-                "clip_count": len(clip_meta),
-                "clips": clip_meta,
             },
         )
     )
     await session.flush()
     logger.info(
-        "[#{}] artifact_recovery: audio ← {} ({} frame mp3)",
+        "[#{}] artifact_recovery: audio ← {} (full_voice)",
         project.id,
         full_path.name,
-        len(clip_meta),
     )
     return True
 

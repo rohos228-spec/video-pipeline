@@ -20,6 +20,8 @@ export type AudioStepParams = {
 export type AssembleStepParams = {
   /** По умолчанию true — прожиг ASS в финальный mp4 */
   subtitles_enabled?: boolean | null;
+  /** По умолчанию true — после music_ready отправить bundle на hub для монтажа */
+  send_to_main_pc?: boolean | null;
 };
 
 export type NodeStepParamsMeta = {
