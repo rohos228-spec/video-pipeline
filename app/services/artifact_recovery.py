@@ -21,8 +21,10 @@ from app.models import (
     HITLRequest,
     Project,
 )
+from app.services.frame_audio import find_voice_full_on_disk
 
 _CLIP_RE = re.compile(r"^clip_(\d{3})_", re.I)
+_CLIP_S2_RE = re.compile(r"^clip_(\d{3})_s2_", re.I)
 _FRAME_IMG_RE = re.compile(r"^frame_(\d{3})_", re.I)
 _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
 
@@ -30,7 +32,7 @@ _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
 async def recover_scene_videos_from_disk(
     session: AsyncSession, project: Project
 ) -> list[int]:
-    """Привязать clip_XXX_*.mp4 из data/.../videos/ к Frame как scene_video."""
+    """Привязать clip_XXX_*.mp4 и clip_XXX_s2_*.mp4 из videos/ к Frame."""
     videos_dir = project.data_dir / "videos"
     if not videos_dir.is_dir():
         return []
@@ -41,28 +43,45 @@ async def recover_scene_videos_from_disk(
     ).scalars().all()
     by_number = {f.number: f for f in frames}
     recovered: list[int] = []
-    for path in sorted(videos_dir.glob("clip_*.mp4")):
-        m = _CLIP_RE.match(path.name)
-        if not m:
-            continue
-        num = int(m.group(1))
-        fr = by_number.get(num)
-        if fr is None:
-            continue
-        existing = (
+
+    async def _has_video_artifact(frame_id: int, shot: int) -> bool:
+        arts = (
             await session.execute(
                 select(Artifact)
                 .where(
                     Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
+                    Artifact.frame_id == frame_id,
                     Artifact.kind == ArtifactKind.scene_video,
                 )
                 .order_by(Artifact.id.desc())
-                .limit(1)
             )
-        ).scalar_one_or_none()
-        if existing is not None and Path(existing.path).is_file():
-            if fr.status not in (
+        ).scalars().all()
+        for art in arts:
+            if not art.path or not Path(art.path).is_file():
+                continue
+            meta_shot = (art.meta or {}).get("shot", 1)
+            path_shot = 2 if "_s2_" in Path(art.path).name else 1
+            effective = meta_shot if meta_shot in (1, 2) else path_shot
+            if effective == shot:
+                return True
+        return False
+
+    for path in sorted(videos_dir.glob("clip_*.mp4")):
+        m2 = _CLIP_S2_RE.match(path.name)
+        if m2:
+            num = int(m2.group(1))
+            shot = 2
+        else:
+            m = _CLIP_RE.match(path.name)
+            if not m or "_s2_" in path.name:
+                continue
+            num = int(m.group(1))
+            shot = 1
+        fr = by_number.get(num)
+        if fr is None:
+            continue
+        if await _has_video_artifact(fr.id, shot):
+            if shot == 1 and fr.status not in (
                 FrameStatus.video_generated,
                 FrameStatus.video_approved,
                 FrameStatus.done,
@@ -76,9 +95,10 @@ async def recover_scene_videos_from_disk(
                 kind=ArtifactKind.scene_video,
                 uuid=uuid.uuid4().hex,
                 path=str(path.resolve()),
+                meta={"shot": shot},
             )
         )
-        if fr.status not in (
+        if shot == 1 and fr.status not in (
             FrameStatus.video_generated,
             FrameStatus.video_approved,
             FrameStatus.done,
@@ -225,7 +245,11 @@ async def recover_scene_images_full(
 async def recover_audio_from_disk(
     session: AsyncSession, project: Project
 ) -> bool:
-    """Зарегистрировать voice_full_*.mp3 как ArtifactKind.audio, если записи нет."""
+    """Зарегистрировать готовую озвучку на диске как ArtifactKind.audio."""
+    full_path = find_voice_full_on_disk(project.data_dir)
+    if full_path is None:
+        return False
+
     existing = (
         await session.execute(
             select(Artifact)
@@ -237,27 +261,12 @@ async def recover_audio_from_disk(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if existing is not None and Path(existing.path).is_file():
-        return False
+    if existing is not None and existing.path:
+        ep = Path(existing.path)
+        if ep.is_file() and ep.resolve() == full_path.resolve():
+            return False
 
     audio_dir = project.data_dir / "audio"
-    if not audio_dir.is_dir():
-        return False
-
-    candidates = sorted(
-        audio_dir.glob("voice_full_*.mp3"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        legacy = audio_dir / "voice_full.mp3"
-        if legacy.is_file():
-            candidates = [legacy]
-
-    full_path = next((p for p in candidates if p.is_file()), None)
-    if full_path is None:
-        return False
-
     clip_meta: list[dict] = []
     for mp3 in sorted(audio_dir.glob("frame_*.mp3")):
         m = _FRAME_MP3_RE.match(mp3.name)
@@ -291,7 +300,7 @@ async def recover_audio_from_disk(
 async def recover_whisper_from_disk(
     session: AsyncSession, project: Project
 ) -> bool:
-    """Подхватить последний words_*.json в audio/, если артефакта нет."""
+    """Подхватить words_*.json; обновить запись, если путь в БД битый."""
     existing = (
         await session.execute(
             select(Artifact)
@@ -303,7 +312,7 @@ async def recover_whisper_from_disk(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if existing is not None and Path(existing.path).is_file():
+    if existing is not None and existing.path and Path(existing.path).is_file():
         return False
 
     audio_dir = project.data_dir / "audio"
@@ -314,15 +323,27 @@ async def recover_whisper_from_disk(
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    if not candidates:
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
         return False
-    path = candidates[0]
+
+    resolved = str(path.resolve())
+    if existing is not None:
+        existing.path = resolved
+        await session.flush()
+        logger.info(
+            "[#{}] artifact_recovery: whisper_words обновлён ← {} (старый путь отсутствовал)",
+            project.id,
+            path.name,
+        )
+        return True
+
     session.add(
         Artifact(
             project_id=project.id,
             kind=ArtifactKind.whisper_words,
             uuid=uuid.uuid4().hex,
-            path=str(path.resolve()),
+            path=resolved,
         )
     )
     await session.flush()
@@ -330,10 +351,131 @@ async def recover_whisper_from_disk(
     return True
 
 
+async def ensure_whisper_words(
+    session: AsyncSession,
+    project: Project,
+    audio_path: Path,
+    *,
+    whisper_model: str,
+) -> list:
+    """Загрузить words.json; при отсутствии — Whisper по voice и сохранить артефакт."""
+    import asyncio
+
+    from app.services.media_probe import probe_duration
+    from app.services.whisper import (
+        dump_words_json,
+        load_words_json,
+        transcribe_words,
+        whisper_available,
+    )
+
+    await recover_whisper_from_disk(session, project)
+
+    whisper_art = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.whisper_words,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if whisper_art is not None and whisper_art.path:
+        wp = Path(whisper_art.path)
+        if wp.is_file():
+            return load_words_json(wp)
+
+    if not audio_path.is_file():
+        return []
+    if not whisper_available():
+        return []
+
+    logger.info(
+        "[#{}] ensure_whisper_words: words.json нет — whisper по {}",
+        project.id,
+        audio_path.name,
+    )
+    duration = await probe_duration(audio_path)
+    words = await asyncio.to_thread(
+        transcribe_words,
+        audio_path,
+        model_name=whisper_model,
+        language="ru",
+        beam_size=1 if duration > 300 else 5,
+    )
+    audio_dir = project.data_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
+    dump_words_json(words, words_path)
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid=uuid.uuid4().hex,
+            path=str(words_path.resolve()),
+        )
+    )
+    await session.flush()
+    logger.info(
+        "[#{}] ensure_whisper_words: сохранён {} ({} слов)",
+        project.id,
+        words_path.name,
+        len(words),
+    )
+    return words
+
+
+async def recover_music_from_disk(
+    session: AsyncSession, project: Project
+) -> bool:
+    """Зарегистрировать music/*.mp3 как ArtifactKind.music, если записи нет."""
+    existing = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.music,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None and existing.path and Path(existing.path).is_file():
+        return False
+
+    music_dir = project.data_dir / "music"
+    if not music_dir.is_dir():
+        return False
+    candidates = sorted(
+        music_dir.glob("*.mp3"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        return False
+
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.music,
+            uuid=uuid.uuid4().hex,
+            path=str(path.resolve()),
+            meta={"recovered_from_disk": True},
+        )
+    )
+    await session.flush()
+    logger.info("[#{}] artifact_recovery: music ← {}", project.id, path.name)
+    return True
+
+
 async def recover_before_assemble(session: AsyncSession, project: Project) -> None:
     await recover_scene_videos_from_disk(session, project)
     await recover_audio_from_disk(session, project)
     await recover_whisper_from_disk(session, project)
+    await recover_music_from_disk(session, project)
 
 
 _CHAR_ID_RE = re.compile(r"^(c\d+)\.png$", re.I)

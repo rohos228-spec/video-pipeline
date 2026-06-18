@@ -76,21 +76,18 @@ export function HitlBanner({ projectId }: { projectId: number }) {
   };
 
   return (
-    <div className="pointer-events-none absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-2">
+    <div className="pointer-events-none absolute right-3 top-3 z-[5] max-w-[min(100%,14rem)]">
       <button
         type="button"
-        className="pointer-events-auto group flex items-center gap-2.5 rounded-full border border-warning/50 bg-warning/15 px-4 py-2 text-xs font-medium text-warning shadow-md backdrop-blur-sm transition-all hover:scale-[1.02] hover:border-warning/80 hover:bg-warning/25"
+        className="pointer-events-auto flex max-w-full items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-[10px] font-medium leading-tight text-warning shadow-sm backdrop-blur-sm transition-colors hover:bg-warning/20"
         onClick={() => openModal(first.id)}
+        title="Открыть проверку"
       >
-        <span className="inline-flex h-2 w-2 rounded-full bg-warning" />
-        <AlertTriangle className="h-3.5 w-3.5" />
-        <span>
-          Нужно одобрение: {HITL_TITLES[first.kind] ?? first.kind}
-          {items.length > 1 && (
-            <span className="ml-1 opacity-80">
-              ({1} из {items.length})
-            </span>
-          )}
+        <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
+        <AlertTriangle className="h-3 w-3 shrink-0" />
+        <span className="truncate">
+          Одобрение: {HITL_TITLES[first.kind] ?? first.kind}
+          {items.length > 1 ? ` (${items.length})` : ""}
         </span>
       </button>
     </div>

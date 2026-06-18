@@ -17,7 +17,17 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.generation_options import is_skippable_empty_prompt
 from app.models import Frame, FrameStatus, Project
+from app.services.plan_shot2 import (
+    SHOT2_PROMPT_ATTR,
+    SHOT2_STATUS_ATTR,
+    SHOT2_VIDEO_PROMPT_ATTR,
+    MIN_SHOT2_VIDEO_PROMPT_LEN,
+    disk_has_shot2_video,
+    find_shot2_image,
+    read_shot2_columns,
+)
 
 # Реальные outsee 2K PNG обычно 300 KB–5 MB; thumb/preview ~50–100 KB.
 _MIN_SCENE_IMAGE_BYTES = 200_000
@@ -65,9 +75,14 @@ def disk_has_valid_frame_image(scenes_dir: Path, frame_number: int) -> bool:
     return path is not None and is_valid_scene_image(path)
 
 
+def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
+    path = find_shot2_image(scenes_dir, frame_number)
+    return path is not None and is_valid_scene_image(path)
+
+
 def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
     """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске."""
-    if not (fr.image_prompt or "").strip():
+    if is_skippable_empty_prompt(fr.image_prompt or ""):
         return False
     if fr.status is FrameStatus.image_approved:
         return False
@@ -105,7 +120,7 @@ async def scan_missing_frames(
     missing: list[int] = []
     total_with_prompt = 0
     for fr in frames:
-        if not (fr.image_prompt or "").strip():
+        if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         total_with_prompt += 1
         if not disk_has_valid_frame_image(scenes_dir, fr.number):
@@ -114,6 +129,42 @@ async def scan_missing_frames(
         "[#{}] scan_missing_frames: всего кадров={}, с image_prompt={}, "
         "недостающих={}, scenes_dir={}",
         project.id, len(frames), total_with_prompt, len(missing), scenes_dir,
+    )
+    return missing
+
+
+async def scan_missing_shot2_frames(
+    session: AsyncSession, project: Project
+) -> list[int]:
+    """Кадры с промтом shot_02 в xlsx, но без ``frame_NNN_s2_*.png`` на диске."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    xlsx_path = project.data_dir / "project.xlsx"
+    by_num = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    scenes_dir = project.data_dir / "scenes"
+    missing: list[int] = []
+    expected = 0
+    for fr in frames:
+        info = by_num.get(fr.number)
+        if info is None or not info.has_shot2:
+            continue
+        if not disk_has_valid_frame_image(scenes_dir, fr.number):
+            continue
+        expected += 1
+        if not disk_has_valid_shot2_image(scenes_dir, fr.number):
+            missing.append(fr.number)
+    logger.info(
+        "[#{}] scan_missing_shot2_frames: shot_02 ожидается={}, "
+        "без PNG на диске={}, scenes_dir={}",
+        project.id,
+        expected,
+        len(missing),
+        scenes_dir,
     )
     return missing
 
@@ -176,7 +227,7 @@ async def reset_frames_to_image_prompt_ready(
     ).scalars().all()
     changed = 0
     for fr in rows:
-        if not (fr.image_prompt or "").strip():
+        if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         fr.status = FrameStatus.image_prompt_ready
         attrs = dict(fr.attrs or {})
@@ -188,17 +239,63 @@ async def reset_frames_to_image_prompt_ready(
     return changed
 
 
-def _disk_has_frame_video(videos_dir: Path, frame_number: int) -> bool:
-    """`clip_<NNN>_*.mp4` в data/.../videos/ (см. generate_videos.py)."""
+async def reset_shot2_to_prompt_ready(
+    session: AsyncSession, project: Project, numbers: list[int]
+) -> int:
+    """Поставить shot_02 в очередь: ``shot2_status=image_prompt_ready``."""
+    if not numbers:
+        return 0
+    xlsx_path = project.data_dir / "project.xlsx"
+    by_num = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    rows = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .where(Frame.number.in_(numbers))
+        )
+    ).scalars().all()
+    scenes_dir = project.data_dir / "scenes"
+    changed = 0
+    for fr in rows:
+        info = by_num.get(fr.number)
+        if info is None or not info.has_shot2:
+            continue
+        if not disk_has_valid_frame_image(scenes_dir, fr.number):
+            continue
+        attrs = dict(fr.attrs or {})
+        attrs[SHOT2_PROMPT_ATTR] = info.prompt
+        attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        fr.attrs = attrs
+        changed += 1
+    await session.flush()
+    return changed
+
+
+def _disk_has_frame_video_shot1(videos_dir: Path, frame_number: int) -> bool:
+    """``clip_<NNN>_*.mp4`` без ``_s2_`` в имени."""
     if not videos_dir.exists():
         return False
-    return any(videos_dir.glob(f"clip_{frame_number:03d}_*.mp4"))
+    return any(
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+        if "_s2_" not in p.name
+    )
 
 
-async def scan_missing_videos(
+def _shot2_video_prompt(project: Project, fr: Frame) -> str:
+    from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
+
+    prompt = animation_prompt_shot2_in_plan_xlsx(project, fr.number)
+    if len(prompt) >= MIN_SHOT2_VIDEO_PROMPT_LEN:
+        return prompt
+    attrs = fr.attrs or {}
+    return (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+
+
+async def scan_missing_videos_shot1(
     session: AsyncSession, project: Project
 ) -> list[int]:
-    """Кадры с animation_prompt и картинкой, но без clip_XXX_*.mp4 на диске."""
+    """Кадры с animation_prompt и PNG shot_01, но без clip_<NNN>_*.mp4 (не s2)."""
     frames = (
         await session.execute(
             select(Frame)
@@ -212,19 +309,105 @@ async def scan_missing_videos(
     for fr in frames:
         if not (fr.animation_prompt or "").strip():
             continue
-        if not _disk_has_frame_image(scenes_dir, fr.number):
+        if not disk_has_valid_frame_image(scenes_dir, fr.number):
             continue
-        if not _disk_has_frame_video(videos_dir, fr.number):
+        if not _disk_has_frame_video_shot1(videos_dir, fr.number):
             missing.append(fr.number)
     logger.info(
-        "[#{}] scan_missing_videos: кадров с anim_prompt+картинкой={}, "
-        "без clip на диске={}, videos_dir={}",
+        "[#{}] scan_missing_videos_shot1: без clip shot_01={}, videos_dir={}",
         project.id,
-        sum(1 for f in frames if (f.animation_prompt or "").strip()),
         len(missing),
         videos_dir,
     )
     return missing
+
+
+async def scan_missing_shot2_videos(
+    session: AsyncSession, project: Project
+) -> list[int]:
+    """shot_02: PNG + промт R64 + clip shot_01 есть, ``clip_*_s2_*.mp4`` нет."""
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    xlsx_path = project.data_dir / "project.xlsx"
+    by_num = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    videos_dir = project.data_dir / "videos"
+    scenes_dir = project.data_dir / "scenes"
+    missing: list[int] = []
+    expected = 0
+    for fr in frames:
+        info = by_num.get(fr.number)
+        if info is None or not info.has_shot2:
+            continue
+        if not disk_has_valid_shot2_image(scenes_dir, fr.number):
+            continue
+        if len(_shot2_video_prompt(project, fr)) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+            continue
+        expected += 1
+        if not _disk_has_frame_video_shot1(videos_dir, fr.number):
+            continue
+        if not disk_has_shot2_video(videos_dir, fr.number):
+            missing.append(fr.number)
+    logger.info(
+        "[#{}] scan_missing_shot2_videos: shot_02 ожидается={}, "
+        "без clip s2={}, videos_dir={}",
+        project.id,
+        expected,
+        len(missing),
+        videos_dir,
+    )
+    return missing
+
+
+async def scan_missing_videos(
+    session: AsyncSession, project: Project
+) -> list[int]:
+    """Объединённый список кадров без clip shot_01 и/или shot_02."""
+    s1 = await scan_missing_videos_shot1(session, project)
+    s2 = await scan_missing_shot2_videos(session, project)
+    return sorted(set(s1) | set(s2))
+
+
+async def reset_shot2_for_video_regen(
+    session: AsyncSession, project: Project, numbers: list[int]
+) -> int:
+    """Пометить shot_02 видео для догонки (generate_videos фаза shot_02)."""
+    if not numbers:
+        return 0
+    from app.services.plan_shot2 import SHOT2_VIDEO_STATUS_ATTR
+
+    xlsx_path = project.data_dir / "project.xlsx"
+    by_num = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    rows = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .where(Frame.number.in_(numbers))
+        )
+    ).scalars().all()
+    videos_dir = project.data_dir / "videos"
+    scenes_dir = project.data_dir / "scenes"
+    changed = 0
+    for fr in rows:
+        info = by_num.get(fr.number)
+        if info is None or not info.has_shot2:
+            continue
+        if not disk_has_valid_shot2_image(scenes_dir, fr.number):
+            continue
+        if len(_shot2_video_prompt(project, fr)) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+            continue
+        if not _disk_has_frame_video_shot1(videos_dir, fr.number):
+            continue
+        attrs = dict(fr.attrs or {})
+        attrs[SHOT2_VIDEO_STATUS_ATTR] = "video_prompt_ready"
+        fr.attrs = attrs
+        changed += 1
+    await session.flush()
+    return changed
 
 
 async def reset_frames_for_video_regen(
@@ -244,7 +427,7 @@ async def reset_frames_for_video_regen(
     for fr in rows:
         if not (fr.animation_prompt or "").strip():
             continue
-        if not _disk_has_frame_image(project.data_dir / "scenes", fr.number):
+        if not disk_has_valid_frame_image(project.data_dir / "scenes", fr.number):
             continue
         if fr.status in (FrameStatus.video_approved, FrameStatus.done):
             continue

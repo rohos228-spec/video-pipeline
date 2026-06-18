@@ -1958,7 +1958,7 @@ class ChatGPTBot:
                     f"anim_pr batch: только картинки, не {fp.name}"
                 )
         logger.info(
-            "anim_pr ФАЗА 2: {} фото + текст ({} симв.) — мастер-файл не прикрепляем",
+            "anim_pr ФАЗА 2: {} влож. + текст ({} симв.) — мастер-файл не прикрепляем",
             len(image_paths),
             len((prompt or "").strip()),
         )

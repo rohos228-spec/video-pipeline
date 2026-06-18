@@ -37,8 +37,9 @@ SHEET_PLAN_V8 = "план"
 # поля одного кадра. См. templates/project_template_v8.xlsx (column A):
 ROW_IMAGE_PROMPT_V8 = 45  # «промт для картинки 1»
 # R46/R47 — резервные «картинка 2/3» (модель пока одну хранит, см. Frame.image_prompt)
-ROW_VIDEO_PROMPT_V8 = 48  # «промт для видео»
+ROW_VIDEO_PROMPT_V8 = 48  # «промт для видео» (shot_01)
 ROW_VOICEOVER_V8 = 49     # «закадровый текст»
+ROW_VIDEO_PROMPT_2_V8 = 64  # «промт для видео 2» (shot_02)
 ROW_DURATION_V8 = 50      # «Время на кадр»
 
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).

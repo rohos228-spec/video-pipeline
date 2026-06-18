@@ -14,6 +14,7 @@ from typing import Any
 from loguru import logger
 from openpyxl import load_workbook
 
+from app.generation_options import is_skippable_empty_prompt
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
     ROW_VOICEOVER_V8,
@@ -22,11 +23,15 @@ from app.services.xlsx_v8_import import (
 )
 
 ROW_IMAGE_PROMPT_2_V8 = 46
+ROW_VIDEO_PROMPT_2_V8 = 64  # промт для видео shot_02 (аналог R48 для shot_01)
 ROW_SHOT2_ID_SHOT_V8 = 18
 ROW_SHOT2_ACTION_V8 = 29
 
 SHOT2_PROMPT_ATTR = "image_prompt_shot2"
 SHOT2_STATUS_ATTR = "shot2_status"
+SHOT2_VIDEO_PROMPT_ATTR = "animation_prompt_shot2"
+SHOT2_VIDEO_STATUS_ATTR = "shot2_video_status"
+MIN_SHOT2_VIDEO_PROMPT_LEN = 10
 
 
 @dataclass(frozen=True)
@@ -85,10 +90,12 @@ def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
             if has and not prompt_2 and block:
                 action = (_cell_text(ws, ROW_SHOT2_ACTION_V8, col) or "").strip()
                 prompt_2 = action
+            if is_skippable_empty_prompt(prompt_2):
+                prompt_2 = ""
             out[frame_no] = Shot2ColumnInfo(
                 frame_number=frame_no,
                 prompt=prompt_2,
-                has_shot2=has and bool(prompt_2),
+                has_shot2=bool(prompt_2),
             )
     finally:
         wb.close()
@@ -103,6 +110,27 @@ def disk_has_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
     if not scenes_dir.is_dir():
         return False
     return any(scenes_dir.glob(shot2_file_pattern(frame_number)))
+
+
+def find_shot2_image(scenes_dir: Path, frame_number: int) -> Path | None:
+    """Последний PNG shot_02 (``frame_NNN_s2_*.png``)."""
+    if not scenes_dir.is_dir():
+        return None
+    candidates = list(scenes_dir.glob(shot2_file_pattern(frame_number)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def shot2_video_file_pattern(frame_number: int) -> str:
+    return f"clip_{frame_number:03d}_s2_*.mp4"
+
+
+def disk_has_shot2_video(videos_dir: Path, frame_number: int) -> bool:
+    if not videos_dir.is_dir():
+        return False
+    return any(videos_dir.glob(shot2_video_file_pattern(frame_number)))
 
 
 def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:

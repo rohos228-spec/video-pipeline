@@ -4821,11 +4821,7 @@ async def on_img_fill_missing(cb: CallbackQuery) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
     pid = int((cb.data or "").split(":")[1])
-    from app.services.scan_frames import (
-        reset_frames_to_image_prompt_ready,
-        scan_missing_frames,
-        sync_frames_with_disk_images,
-    )
+    from app.services.finish_missing import trigger_finish_missing_images
 
     async with session_scope() as s:
         project = (
@@ -4834,39 +4830,34 @@ async def on_img_fill_missing(cb: CallbackQuery) -> None:
         if project is None:
             await cb.answer("Проект не найден", show_alert=True)
             return
-        missing = await scan_missing_frames(s, project)
-        if not missing:
+        info = await trigger_finish_missing_images(s, project)
+        if not info.get("missing"):
             await cb.answer()
             await cb.message.answer(
                 "✅ <b>Все кадры на месте.</b>\n"
-                "В <code>scenes/</code> есть <code>frame_NNN_*.png</code> "
-                "для всех кадров с image_prompt. Генерировать нечего."
-                "\n\nЕсли это не то, что ожидалось — проверь, что в xlsx "
-                "(R45) реально проставлены image_prompt'ы и они подтянулись "
-                "в БД (можно нажать «🔄 Перечитать xlsx» в меню проекта).",
+                "В <code>scenes/</code> есть PNG для shot_01 и shot_02 "
+                "(где есть промт). Генерировать нечего.",
                 parse_mode="HTML",
             )
             return
 
-        already_running = project.status is ProjectStatus.generating_images
-        await sync_frames_with_disk_images(s, project)
-        changed = await reset_frames_to_image_prompt_ready(s, project, missing)
-        if not already_running:
-            project.status = ProjectStatus.generating_images
+        already_running = info.get("already_running", False)
+        changed = info.get("queued", 0)
+        missing = info["missing"]
         topic = project.topic
         slug = project.slug
+        await s.commit()
 
-    # Список номеров в TG: чтобы не упереться в лимит сообщения,
-    # показываем первые 30, остальные — счётчиком.
     head = ", ".join(str(n) for n in missing[:30])
     if len(missing) > 30:
         head += f", … +{len(missing) - 30}"
+    detail = info.get("message", "")
     if already_running:
         await cb.answer(f"Добавил {changed} в текущую очередь")
         await cb.message.answer(
             f"⏳ <b>Шаг 7 уже идёт.</b>\n"
-            f"Добавил <b>{changed}</b> кадров в очередь "
-            f"(image_prompt_ready):\n<code>{head}</code>",
+            f"Добавил <b>{changed}</b> кадров в очередь:\n"
+            f"<code>{head}</code>\n\n{detail}",
             parse_mode="HTML",
         )
     else:
@@ -4874,10 +4865,10 @@ async def on_img_fill_missing(cb: CallbackQuery) -> None:
         await cb.message.answer(
             f"🔍 <b>Шаг 7. Добить недостающие.</b>\n"
             f"Проект #{pid} «{topic}» (slug: <code>{slug}</code>)\n\n"
-            f"Кадров без .png на диске: <b>{changed}</b>.\n"
+            f"Кадров без PNG: <b>{changed}</b>.\n"
             f"Номера: <code>{head}</code>\n\n"
-            "Воркер подхватит за ~60 сек, сгенерит только эти кадры. "
-            "Остальные (image_generated/image_approved) останутся как есть.",
+            f"{detail}\n\n"
+            "Воркер подхватит за ~60 сек.",
             parse_mode="HTML",
         )
 

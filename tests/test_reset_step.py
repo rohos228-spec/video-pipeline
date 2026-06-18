@@ -253,7 +253,7 @@ async def test_reset_img_pr_cascades_to_img_and_below(
     # все файлы удалены
     assert not img_p.exists()
     assert not vid_p.exists()
-    assert not aud_p.exists()
+    assert aud_p.exists()  # озвучка на диске не удаляется при reset
     assert not fin_p.exists()
 
 
@@ -368,6 +368,40 @@ async def test_reset_returns_error_for_unknown_step(session):
     p = await _mkproject(session)
     summary = await reset_step(session, p, "definitely_not_a_real_step")
     assert "error" in summary
+
+
+@pytest.mark.asyncio
+async def test_reset_audio_does_not_wipe_music(session, tmp_path: Path):
+    """Сброс audio не должен удалять music (независимый шаг)."""
+    p = await _mkproject(session)
+    aud_p = tmp_path / "voice.mp3"
+    aud_p.write_bytes(b"audio")
+    mus_p = tmp_path / "music" / "track.mp3"
+    mus_p.parent.mkdir(parents=True)
+    mus_p.write_bytes(b"music")
+    await _mkart(session, p, ArtifactKind.audio, path=str(aud_p))
+    await _mkart(session, p, ArtifactKind.music, path=str(mus_p))
+    fin_p = tmp_path / "final.mp4"
+    fin_p.write_bytes(b"fin")
+    await _mkart(session, p, ArtifactKind.final_video, path=str(fin_p))
+    p.status = ProjectStatus.assembled
+    await session.flush()
+
+    summary = await reset_step(session, p, "audio")
+
+    assert "music" not in summary
+    assert mus_p.exists()
+    music_left = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == p.id,
+                Artifact.kind == ArtifactKind.music,
+            )
+        )
+    ).scalars().all()
+    assert len(music_left) == 1
+    assert "audio" in summary
+    assert not aud_p.exists() or "audio" in summary
 
 
 @pytest.mark.asyncio

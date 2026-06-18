@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -304,8 +305,10 @@ def render_settings_for_gpt(
 
 # ---- Уникальный ID перед промтом -------------------------------------------
 
-# Лимит textarea outsee.io (hero-flow уже проверяет; frames/items — через outsee).
-OUTSEE_PROMPT_MAX_CHARS = 5000
+# Outsee.io: лимит textarea (полный промт: `[ID: …]` + текст).
+OUTSEE_PROMPT_MAX_CHARS = 4900
+# Целевой лимит тела промта без ID-строки — запас под prepend_gen_id (~25 симв).
+OUTSEE_PROMPT_TARGET_BODY_CHARS = 4877
 
 def build_gen_id_prefix(
     project_id: int, frame_number: int | None, short_uuid: str
@@ -321,7 +324,76 @@ def build_gen_id_prefix(
     return f"[ID: P{project_id}-{kind}-{short_uuid}]"
 
 
+_PROMPT_ID_LINE_RE = re.compile(r"^\s*\[ID:\s*[^\]]+\]\s*$", re.IGNORECASE)
+
+# Заглушки из шаблонов GPT / xlsx — не отправлять в outsee.
+_EMPTY_PROMPT_MARKERS: tuple[str, ...] = (
+    "нет исходных данных",
+)
+
+# Shot_02: обязательная фраза без содержания сцены — не генерация.
+_SHOT2_PREFIX_ONLY = (
+    "на основе референса, запрещено делать идентичную иллюстрацию "
+    "без смены положения камеры",
+    "на основе референса, запрещено делать идентичную иллюстрацию "
+    "без смены положения",
+)
+
+
+def _normalize_prompt_ws(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def is_skippable_empty_prompt(prompt: str) -> bool:
+    """True — промт пустой или заглушка; в outsee не отправляем."""
+    body = strip_prompt_id_lines((prompt or "").strip())
+    if not body:
+        return True
+    low = body.lower()
+    if any(marker in low for marker in _EMPTY_PROMPT_MARKERS):
+        return True
+    norm = _normalize_prompt_ws(body)
+    for prefix in _SHOT2_PREFIX_ONLY:
+        pnorm = _normalize_prompt_ws(prefix)
+        if norm == pnorm:
+            return True
+        if norm.startswith(pnorm):
+            rest = norm[len(pnorm) :].strip(" ,.;:-")
+            if not rest:
+                return True
+            if any(marker in rest for marker in _EMPTY_PROMPT_MARKERS):
+                return True
+            if rest.startswith("кадр ") and "prompt_" in rest:
+                return True
+    if re.fullmatch(
+        r"(кадр\s*\d+\s*/\s*prompt_\d+\s*:?\s*)+",
+        low,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def strip_prompt_id_lines(prompt: str) -> str:
+    """Убирает строки `[ID: …]` из тела промта.
+
+    ID всегда добавляет `prepend_gen_id` один раз. Без этого GPT-rewrite
+    тащит `[ID: …]` из текста ошибки outsee → в textarea два ID с разными
+    хвостами uuid.
+    """
+    if not prompt:
+        return ""
+    kept = [
+        ln
+        for ln in prompt.splitlines()
+        if not _PROMPT_ID_LINE_RE.match(ln)
+    ]
+    return "\n".join(kept).strip()
+
+
 def prepend_gen_id(prompt: str, gen_id_prefix: str) -> str:
     """Ставит gen_id_prefix на первую строку промта (перед оригинальным текстом)."""
-    prompt = (prompt or "").lstrip()
-    return f"{gen_id_prefix}\n\n{prompt}"
+    body = strip_prompt_id_lines(prompt or "")
+    if not body:
+        return gen_id_prefix
+    return f"{gen_id_prefix}\n\n{body}"

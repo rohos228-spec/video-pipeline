@@ -2,11 +2,15 @@
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Loader2, PenLine } from "lucide-react";
+import { CheckCircle2, Loader2, PenLine, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
-import type { HITLDTO } from "@/lib/types";
+import {
+  frameVisualHitlDecision,
+  listPendingVisualHitl,
+  type VisualHitlKind,
+} from "@/lib/hitl-visual-bulk";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -29,15 +33,15 @@ export function MediaFrameGallery({
   kind,
   items,
   showApproveButtons = false,
-  hitl,
-  onFrameApproved,
+  visualKind = "approve_images",
+  onFrameDecided,
 }: {
   projectId: number;
   kind: "images" | "videos";
   items: MediaFrameItem[];
   showApproveButtons?: boolean;
-  hitl?: HITLDTO | null;
-  onFrameApproved?: () => void;
+  visualKind?: VisualHitlKind;
+  onFrameDecided?: () => void;
 }) {
   const qc = useQueryClient();
   const [editFrame, setEditFrame] = useState<number | null>(null);
@@ -64,37 +68,21 @@ export function MediaFrameGallery({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const approveFrame = useMutation({
-    mutationFn: async (frameId: number) => {
-      await api.patchFrame(projectId, frameId, { status: "image_approved" });
-      const hitls = await api.listProjectHitl(projectId);
-      const pending = hitls.find(
-        (h) =>
-          h.frame_id === frameId &&
-          h.decision === "pending" &&
-          h.kind === "approve_images",
-      );
-      if (pending) {
-        await api.submitHitlDecision(pending.id, { decision: "approve" });
-      }
-    },
+  const frameDecision = useMutation({
+    mutationFn: ({
+      frameId,
+      decision,
+    }: {
+      frameId: number;
+      decision: "approve" | "reject";
+    }) => frameVisualHitlDecision(projectId, frameId, visualKind, decision),
     onSuccess: async () => {
       qc.invalidateQueries({ queryKey: ["media-review", projectId, kind] });
       qc.invalidateQueries({ queryKey: ["hitl", projectId] });
-      onFrameApproved?.();
-
-      if (hitl && kind === "images") {
-        const media = await api.listMediaReview(projectId, "images");
-        const withPreview = media.filter((f) => f.preview_url);
-        const allApproved =
-          withPreview.length > 0 &&
-          withPreview.every((f) => f.status === "image_approved");
-        if (allApproved && hitl.decision === "pending") {
-          await api.submitHitlDecision(hitl.id, { decision: "approve" });
-          qc.invalidateQueries({ queryKey: ["hitl", projectId] });
-          toast.success("Все картинки одобрены — пайплайн продолжит работу");
-          onFrameApproved?.();
-        }
+      onFrameDecided?.();
+      const pending = await listPendingVisualHitl(projectId, visualKind);
+      if (pending.length === 0) {
+        toast.success("Все кадры проверены — пайплайн может продолжить работу");
       }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -114,7 +102,9 @@ export function MediaFrameGallery({
       style={{ gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))` }}
     >
       {items.map((frame) => {
-        const approved = frame.status === "image_approved";
+        const approved =
+          frame.status === "image_approved" || frame.status === "video_approved";
+        const rejected = frame.status === "failed";
         return (
           <div
             key={frame.frame_id}
@@ -172,19 +162,47 @@ export function MediaFrameGallery({
               )}
             </div>
             {showApproveButtons && kind === "images" && (
-              <div className="border-t border-border p-1.5">
+              <div className="flex gap-1 border-t border-border p-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className={cn(
+                    "h-7 flex-1 text-[10px] text-destructive hover:text-destructive",
+                    rejected && "border-destructive/40 bg-destructive/10",
+                  )}
+                  disabled={frameDecision.isPending || rejected}
+                  onClick={() =>
+                    frameDecision.mutate({
+                      frameId: frame.frame_id,
+                      decision: "reject",
+                    })
+                  }
+                >
+                  {frameDecision.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <XCircle className="h-3 w-3" />
+                  )}
+                  {rejected ? "Отклонено" : "Отклонить"}
+                </Button>
                 <Button
                   type="button"
                   size="sm"
                   className={cn(
-                    "h-7 w-full text-[10px]",
+                    "h-7 flex-1 text-[10px]",
                     approved && "bg-success/20 text-success hover:bg-success/30",
                   )}
                   variant={approved ? "outline" : "default"}
-                  disabled={approveFrame.isPending || approved}
-                  onClick={() => approveFrame.mutate(frame.frame_id)}
+                  disabled={frameDecision.isPending || approved}
+                  onClick={() =>
+                    frameDecision.mutate({
+                      frameId: frame.frame_id,
+                      decision: "approve",
+                    })
+                  }
                 >
-                  {approveFrame.isPending ? (
+                  {frameDecision.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     <CheckCircle2 className="h-3 w-3" />

@@ -44,6 +44,7 @@ from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
+    OUTSEE_PROMPT_MAX_CHARS,
     resolve_image_quality_slug,
 )
 from app.models import (
@@ -539,18 +540,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 hero_template, brief=user_brief, hero_style=hero_style_content,
             )
             last_reply = ""
-            OUTSEE_PROMPT_MAX = 5000
             for attempt in range(1, 4):
                 ask = hero_ask
                 if (
                     attempt > 1
                     and last_reply
-                    and len(last_reply) > OUTSEE_PROMPT_MAX
+                    and len(last_reply) > OUTSEE_PROMPT_MAX_CHARS
                 ):
                     ask = (
                         f"Прошлый ответ был {len(last_reply)} символов — это "
-                        f"больше лимита {OUTSEE_PROMPT_MAX}. Сожми его до "
-                        f"≤{OUTSEE_PROMPT_MAX} символов: убери повторы, "
+                        f"больше лимита {OUTSEE_PROMPT_MAX_CHARS}. Сожми его до "
+                        f"≤{OUTSEE_PROMPT_MAX_CHARS} символов: убери повторы, "
                         "объедини похожие пункты, оставь самое важное. "
                         "Структуру (turnaround sheet) сохрани. Верни ТОЛЬКО "
                         "новый сокращённый промт, без пояснений.\n\n"
@@ -574,12 +574,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                     continue
                 hero_prompt = last_reply.strip()
-                if len(hero_prompt) <= OUTSEE_PROMPT_MAX:
+                if len(hero_prompt) <= OUTSEE_PROMPT_MAX_CHARS:
                     break
                 logger.warning(
                     "[#{}] hero ChatGPT вернул {} симв (лимит {}), "
                     "прошу сжать",
-                    project.id, len(hero_prompt), OUTSEE_PROMPT_MAX,
+                    project.id, len(hero_prompt), OUTSEE_PROMPT_MAX_CHARS,
                 )
             if not hero_prompt:
                 raise RuntimeError(
@@ -587,11 +587,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     f"попыток. Последний ответ ({len(last_reply)} симв): "
                     f"{last_reply[:200]!r}"
                 )
-            if len(hero_prompt) > OUTSEE_PROMPT_MAX:
+            if len(hero_prompt) > OUTSEE_PROMPT_MAX_CHARS:
                 logger.warning(
                     "[#{}] hero prompt всё ещё длиннее лимита: {} > {} — "
                     "отправляю как есть, outsee может не принять",
-                    project.id, len(hero_prompt), OUTSEE_PROMPT_MAX,
+                    project.id, len(hero_prompt), OUTSEE_PROMPT_MAX_CHARS,
                 )
 
         # 2) Сборка финального prompt_text.
@@ -1045,7 +1045,6 @@ async def _generate_one_excel_character(
             hero_ask = gtb.render_hero_text(
                 hero_template, brief=brief, hero_style=hero_style_content,
             )
-            OUTSEE_PROMPT_MAX = 5000
             last_reply = ""
             prompt_text = ""
             for attempt in range(1, 4):
@@ -1053,12 +1052,12 @@ async def _generate_one_excel_character(
                 if (
                     attempt > 1
                     and last_reply
-                    and len(last_reply) > OUTSEE_PROMPT_MAX
+                    and len(last_reply) > OUTSEE_PROMPT_MAX_CHARS
                 ):
                     ask = (
                         f"Прошлый ответ был {len(last_reply)} символов — "
-                        f"больше лимита {OUTSEE_PROMPT_MAX}. Сожми до "
-                        f"≤{OUTSEE_PROMPT_MAX} символов: убери повторы, "
+                        f"больше лимита {OUTSEE_PROMPT_MAX_CHARS}. Сожми до "
+                        f"≤{OUTSEE_PROMPT_MAX_CHARS} символов: убери повторы, "
                         "оставь самое важное. Структуру сохрани. Верни "
                         "ТОЛЬКО новый текст промта.\n\n"
                         "Прошлый промт:\n\n" + last_reply
@@ -1072,7 +1071,7 @@ async def _generate_one_excel_character(
                 if not last_reply or len(last_reply) < 100:
                     continue
                 prompt_text = last_reply.strip()
-                if len(prompt_text) <= OUTSEE_PROMPT_MAX:
+                if len(prompt_text) <= OUTSEE_PROMPT_MAX_CHARS:
                     break
             if not prompt_text:
                 raise RuntimeError(

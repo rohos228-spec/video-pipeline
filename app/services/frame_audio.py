@@ -19,6 +19,69 @@ from app.services.whisper import WordTS, transcribe_words, transcribe_words_many
 
 FRAME_AUDIO_PREFIX = "frame_"
 
+_VOICE_EXTENSIONS = frozenset({".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"})
+
+_USER_VOICE_BASENAMES = frozenset({
+    "voice_full",
+    "voice",
+    "voiceover",
+    "ozvuchka",
+})
+
+
+def _is_user_voice_file(path: Path) -> bool:
+    """Готовая полная озвучка (не frame_NNN и не words_*.json)."""
+    if not path.is_file():
+        return False
+    ext = path.suffix.lower()
+    if ext not in _VOICE_EXTENSIONS:
+        return False
+    stem = path.stem.lower()
+    if stem.startswith(FRAME_AUDIO_PREFIX) or stem.startswith("words_"):
+        return False
+    if stem.startswith("voice_full_"):
+        return True
+    return stem in _USER_VOICE_BASENAMES
+
+
+def is_protected_voice_or_music_file(path: Path) -> bool:
+    """Пользовательские озвучка/музыка — никогда не удалять с диска."""
+    if _is_user_voice_file(path):
+        return True
+    if not path.is_file():
+        return False
+    name = path.name.lower()
+    if name.startswith("bgm.") or name.startswith("music_"):
+        return True
+    if path.parent.name == "music" and path.suffix.lower() in _VOICE_EXTENSIONS:
+        return True
+    if path.parent.name == "audio" and path.suffix.lower() in _VOICE_EXTENSIONS:
+        if path.stem.lower().startswith("words_"):
+            return False
+        if path.stem.lower().startswith(FRAME_AUDIO_PREFIX):
+            return False
+        return True
+    return False
+
+
+def find_voice_full_on_disk(data_dir: Path) -> Path | None:
+    """Готовая озвучка на диске (без 11Labs): audio/voice*.{mp3,wav,...} или в корне."""
+    if not data_dir.is_dir():
+        return None
+    candidates: list[Path] = []
+    audio_dir = data_dir / "audio"
+    if audio_dir.is_dir():
+        for path in audio_dir.iterdir():
+            if _is_user_voice_file(path):
+                candidates.append(path)
+    for path in data_dir.iterdir():
+        if _is_user_voice_file(path):
+            candidates.append(path)
+    if not candidates:
+        return None
+    unique = list({p.resolve(): p for p in candidates}.values())
+    chosen = max(unique, key=lambda p: p.stat().st_mtime)
+    return chosen
 
 @dataclass
 class FrameAudioClip:
@@ -189,6 +252,12 @@ async def build_assembly_timeline(
     """
     master = await probe_duration(voice_full_path)
 
+    if per_frame_tts and not has_all_frame_audio(audio_dir, frame_numbers):
+        logger.warning(
+            "per_frame в meta, но frame_*.mp3 нет — таймлайн по voice_full + Whisper"
+        )
+        per_frame_tts = False
+
     if per_frame_tts and has_all_frame_audio(audio_dir, frame_numbers):
         clips = await load_frame_clips_from_disk(audio_dir, frame_numbers)
         raw_sum = sum(c.duration for c in clips)
@@ -225,20 +294,6 @@ async def build_assembly_timeline(
             "Сбросьте «Аудио» и перезапустите для per-frame озвучки."
         )
 
-    if per_frame_tts:
-        missing = [
-            n
-            for n in frame_numbers
-            if not frame_audio_path(audio_dir, n).is_file()
-        ]
-        if missing:
-            sample = ", ".join(f"frame_{n:03d}.mp3" for n in missing[:5])
-            extra = f" (+{len(missing) - 5})" if len(missing) > 5 else ""
-            raise FileNotFoundError(
-                f"нет {sample}{extra} — перезапустите шаг «Аудио» "
-                f"(per-frame TTS, кадры в сборке: {frame_numbers})"
-            )
-
     if not cells or not words:
         raise FileNotFoundError(
             "нет таймкодов Whisper (words.json) — перезапустите шаг «Аудио» "
@@ -270,10 +325,16 @@ def _voiceover_cells_for_frames(
     frames: list[Frame],
     cells: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
-    """Ячейки R49; если пусто — режем полный voiceover локально."""
+    """Ячейки R49; если пусто — voiceover.txt, БД, локальный split."""
     out = [(n, (t or "").strip()) for n, t in cells]
     if any(t for _, t in out):
         return out
+    db_cells = [
+        (fr.number, (fr.voiceover_text or "").strip())
+        for fr in frames
+    ]
+    if any(t for _, t in db_cells):
+        return db_cells
     full = resolve_full_voiceover_text(project)
     if not full:
         return out
@@ -285,6 +346,32 @@ def _voiceover_cells_for_frames(
     return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
 
 
+def frame_clips_equal_duration(
+    frames: list[Frame],
+    master: float,
+    voice_full_path: Path,
+) -> list[FrameAudioClip]:
+    """Равные доли mp3 по кадрам, когда нет текста для align."""
+    if not frames:
+        return []
+    n = len(frames)
+    step = master / n
+    clips: list[FrameAudioClip] = []
+    pos = 0.0
+    for i, fr in enumerate(frames):
+        end = master if i == n - 1 else pos + step
+        clips.append(FrameAudioClip(
+            frame_number=fr.number,
+            path=voice_full_path,
+            text="",
+            start_ts=round(pos, 3),
+            end_ts=round(end, 3),
+            duration=round(end - pos, 3),
+        ))
+        pos = end
+    return clips
+
+
 async def _extract_mp3_segment(
     src: Path,
     out_path: Path,
@@ -293,15 +380,19 @@ async def _extract_mp3_segment(
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     dur = max(0.05, end_ts - start_ts)
-    await _run_ffmpeg([
+    cmd = [
         "ffmpeg", "-y",
         "-ss", f"{start_ts:.3f}",
         "-t", f"{dur:.3f}",
         "-i", str(src),
-        "-c", "copy",
-        str(out_path),
-    ])
-
+    ]
+    # wav/m4a → mp3: stream copy невозможен, нужен encode.
+    if src.suffix.lower() == ".mp3" and out_path.suffix.lower() == ".mp3":
+        cmd.extend(["-c", "copy"])
+    else:
+        cmd.extend(["-vn", "-c:a", "libmp3lame", "-q:a", "2"])
+    cmd.append(str(out_path))
+    await _run_ffmpeg(cmd)
 
 async def synthesize_per_frame_audio(
     el: ElevenLabsBot,
@@ -316,6 +407,7 @@ async def synthesize_per_frame_audio(
 ) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
     """Озвучка: весь voiceover одним запросом в 11Labs, тайминги — Whisper."""
     audio_dir.mkdir(parents=True, exist_ok=True)
+    # Только frame_NNN.mp3 от прошлого 11Labs — не трогаем voice_full/voice*.wav
     delete_frame_audio_files(audio_dir)
 
     full_text = resolve_full_voiceover_text(project)
@@ -365,6 +457,70 @@ async def synthesize_per_frame_audio(
         )
         clip.path = seg_path
 
+    return clips, full_path, words
+
+
+async def align_existing_voice_full(
+    project: Project,
+    frames: list[Frame],
+    cells: list[tuple[int, str]],
+    voice_path: Path,
+    audio_dir: Path,
+    *,
+    whisper_model: str,
+    language: str = "ru",
+) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
+    """Whisper + таймкоды кадров по готовому mp3 — без 11Labs."""
+    voice_path = voice_path.resolve()
+    if not voice_path.is_file():
+        raise FileNotFoundError(f"озвучка не найдена: {voice_path}")
+
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    master = await probe_duration(voice_path)
+    logger.info(
+        "[#{}] align_existing_voice_full: whisper по {:.2f}s файлу …",
+        project.id,
+        master,
+    )
+    words = await asyncio.to_thread(
+        transcribe_words,
+        voice_path,
+        model_name=whisper_model,
+        language=language,
+        beam_size=1 if master > 300 else 5,
+    )
+    aligned_cells = _voiceover_cells_for_frames(project, frames, cells)
+    if any(t for _, t in aligned_cells):
+        clips = frame_clips_from_whisper(aligned_cells, words, master, voice_path)
+    else:
+        logger.warning(
+            "[#{}] align_existing_voice_full: нет текста R49/voiceover — "
+            "таймкоды кадров поровну по {:.2f}s",
+            project.id,
+            master,
+        )
+        clips = frame_clips_equal_duration(frames, master, voice_path)
+
+    # Для импорта готового voice_full нарезка frame_NNN.mp3 не нужна — сборка
+    # идёт по voice_full + words.json (mode=disk_whisper).
+    for clip in clips:
+        clip.path = voice_path
+
+    if voice_path.parent == audio_dir:
+        full_path = voice_path
+    else:
+        full_path = audio_dir / f"voice_full_{uuid.uuid4().hex[:8]}{voice_path.suffix.lower()}"
+        if full_path.resolve() != voice_path.resolve():
+            full_path.write_bytes(voice_path.read_bytes())
+
+    logger.info(
+        "[#{}] align_existing_voice_full: {} → {:.2f}s, {} words, {} clips",
+        project.id,
+        voice_path.name,
+        master,
+        len(words),
+        len(clips),
+    )
     return clips, full_path, words
 
 

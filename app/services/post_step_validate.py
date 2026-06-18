@@ -288,31 +288,15 @@ async def mark_music_for_regen(session: AsyncSession, project: Project) -> None:
         )
     ).scalars().all()
     for a in arts:
-        if a.path:
-            try:
-                Path(a.path).unlink(missing_ok=True)
-            except OSError:
-                pass
         await session.delete(a)
-    music_dir = project.data_dir / "music"
-    if music_dir.is_dir():
-        for p in music_dir.glob("*.mp3"):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
     await session.flush()
-    logger.warning("[#{}] post_validate: music regen queued", project.id)
+    logger.warning(
+        "[#{}] post_validate: music regen queued (файлы в music/ сохранены)",
+        project.id,
+    )
 
 
 async def mark_audio_for_regen(session: AsyncSession, project: Project) -> None:
-    audio_dir = project.data_dir / "audio"
-    if audio_dir.is_dir():
-        for p in audio_dir.glob("*.mp3"):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
     await session.execute(
         delete(Artifact).where(
             Artifact.project_id == project.id,
@@ -320,7 +304,10 @@ async def mark_audio_for_regen(session: AsyncSession, project: Project) -> None:
         )
     )
     await session.flush()
-    logger.warning("[#{}] post_validate: audio regen queued", project.id)
+    logger.warning(
+        "[#{}] post_validate: audio regen queued (файлы в audio/ сохранены)",
+        project.id,
+    )
 
 
 async def finalize_or_retry(

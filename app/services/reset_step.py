@@ -73,6 +73,25 @@ def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | No
     return dest
 
 
+async def _wipe_artifacts_db_only(
+    session: AsyncSession,
+    project: Project,
+    *kinds: ArtifactKind,
+) -> dict[str, int]:
+    """Снять артефакты из БД без удаления файлов на диске."""
+    arts = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project.id,
+                Artifact.kind.in_(kinds),
+            )
+        )
+    ).scalars().all()
+    for a in arts:
+        await session.delete(a)
+    return {"artifacts": len(arts), "files": 0}
+
+
 async def _wipe_artifacts_by_kind(
     session: AsyncSession,
     project: Project,
@@ -92,16 +111,25 @@ async def _wipe_artifacts_by_kind(
         if a.path:
             p = Path(a.path)
             if p.exists():
-                try:
-                    if a.kind in _BACKUP_ON_WIPE_KINDS:
-                        _backup_artifact_file_before_wipe(project, p)
-                    p.unlink()
-                    files_deleted += 1
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[#{}] reset_step: не смог удалить файл {}: {}",
-                        project.id, p, e,
+                from app.services.frame_audio import is_protected_voice_or_music_file
+
+                if is_protected_voice_or_music_file(p):
+                    logger.info(
+                        "[#{}] reset_step: файл сохранён (protected): {}",
+                        project.id,
+                        p.name,
                     )
+                else:
+                    try:
+                        if a.kind in _BACKUP_ON_WIPE_KINDS:
+                            _backup_artifact_file_before_wipe(project, p)
+                        p.unlink()
+                        files_deleted += 1
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "[#{}] reset_step: не смог удалить файл {}: {}",
+                            project.id, p, e,
+                        )
         await session.delete(a)
     return {"artifacts": len(arts), "files": files_deleted}
 
@@ -384,52 +412,30 @@ async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _wipe_audio(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага 10 «Аудио»: audio + whisper_words + frame_NNN.mp3."""
-    from app.services.frame_audio import delete_frame_audio_files
-
-    stats = await _wipe_artifacts_by_kind(
+    """Сброс шага «Аудио»: только БД, файлы в audio/ не трогаем."""
+    return await _wipe_artifacts_db_only(
         session,
         project,
         ArtifactKind.audio,
         ArtifactKind.whisper_words,
     )
-    frame_deleted = delete_frame_audio_files(project.data_dir / "audio")
-    if frame_deleted:
-        stats["frame_clips"] = frame_deleted
-    return stats
 
 
 async def _wipe_music(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага «Музыка»: music артефакты + файлы в music/."""
-    arts = (
-        await session.execute(
-            select(Artifact).where(
-                Artifact.project_id == project.id,
-                Artifact.kind == ArtifactKind.music,
-            )
-        )
-    ).scalars().all()
-    files_deleted = 0
-    for a in arts:
-        if a.path:
-            p = Path(a.path)
-            if p.exists():
-                try:
-                    p.unlink()
-                    files_deleted += 1
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[#{}] reset_step.music: {}", project.id, e)
-        await session.delete(a)
-    music_dir = project.data_dir / "music"
-    extra = 0
-    if music_dir.is_dir():
-        for p in music_dir.glob("*.mp3"):
-            try:
-                p.unlink()
-                extra += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[#{}] reset_step.music dir: {}", project.id, e)
-    return {"artifacts": len(arts), "files": files_deleted + extra}
+    """Сброс шага «Музыка»: только БД, music/ не трогаем."""
+    return await _wipe_artifacts_db_only(
+        session,
+        project,
+        ArtifactKind.music,
+    )
+
+
+async def _preserve_user_media_on_rerun(
+    session: AsyncSession, project: Project
+) -> dict[str, Any]:
+    """Повтор audio/music — файлы пользователя на диске не удаляем."""
+    _ = session, project
+    return {"files_preserved": True}
 
 
 async def _wipe_assemble(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -473,6 +479,13 @@ _WRAPPER_TO_CODES: dict[str, list[str]] = {
     "enrich":  ["enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"],
 }
 
+# При явном reset_step: шаги, которые не сносим как downstream.
+# Музыка независима от озвучки — сброс audio не должен удалять music/.
+_RESET_SKIP_DOWNSTREAM: dict[str, frozenset[str]] = {
+    "audio": frozenset({"music"}),
+    "video": frozenset({"music"}),
+}
+
 
 def _resolve_start_index(step_code: str) -> int | None:
     """Найти стартовый индекс каскада в _PIPELINE_RESET_LEVELS для step_code.
@@ -505,6 +518,8 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 # «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "anim_pr": _resume_anim_pr_from_xlsx,
+    "audio": _preserve_user_media_on_rerun,
+    "music": _preserve_user_media_on_rerun,
 }
 
 
@@ -574,9 +589,12 @@ async def reset_step(
 
     summary: dict[str, Any] = {}
     steps_wiped: list[str] = []
+    skip = _RESET_SKIP_DOWNSTREAM.get(step_code, frozenset())
     # Идём с самого глубокого downstream к самому верхнему шагу — это
     # делает каскад FK-безопасным (если бы у нас были не-CASCADE'ные FK).
     for key, handler in reversed(_PIPELINE_RESET_LEVELS[start_idx:]):
+        if key in skip:
+            continue
         try:
             details = await handler(session, project)
             if details:

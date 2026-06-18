@@ -6,8 +6,10 @@ from app.models import Project
 from app.services import gpt_text_builder as gtb
 from app.services.node_step_params import (
     append_step_params_to_gpt_text,
+    assemble_bgm_level_from_meta,
     build_step_params_block,
     duration_seconds_for_step,
+    post_voiceover_tail_seconds_for_project,
     subtitles_enabled_for_project,
 )
 
@@ -94,3 +96,21 @@ def test_subtitles_enabled_off() -> None:
     p = Project(topic="t")
     p.meta = {"node_step_params": {"assemble": {"subtitles_enabled": False}}}
     assert subtitles_enabled_for_project(p) is False
+
+
+def test_post_voiceover_tail_default_zero() -> None:
+    p = Project(topic="t")
+    p.meta = {}
+    assert post_voiceover_tail_seconds_for_project(p) == 0.0
+
+
+def test_post_voiceover_tail_from_assemble_params() -> None:
+    p = Project(topic="t")
+    p.meta = {"node_step_params": {"assemble": {"post_voiceover_tail_seconds": 5}}}
+    assert post_voiceover_tail_seconds_for_project(p) == 5.0
+
+
+def test_assemble_bgm_level_from_meta() -> None:
+    assert assemble_bgm_level_from_meta({}) is None
+    meta = {"node_step_params": {"assemble": {"bgm_level": 42}}}
+    assert assemble_bgm_level_from_meta(meta) == 42

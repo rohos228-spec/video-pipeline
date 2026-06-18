@@ -20,7 +20,18 @@ export type AudioStepParams = {
 export type AssembleStepParams = {
   /** По умолчанию true — прожиг ASS в финальный mp4 */
   subtitles_enabled?: boolean | null;
+  /** Секунды видео после конца озвучки (заморозка последнего кадра) */
+  post_voiceover_tail_seconds?: number | null;
+  /** Громкость BGM 0..100 (как в resolve_bgm) */
+  bgm_level?: number | null;
 };
+
+/** Подпись дБ для UI: 100% = 0 дБ, 0% = −∞ (линейная шкала 0..100). */
+export function bgmLevelToDb(level: number): string {
+  if (level <= 0) return "−∞ дБ";
+  const db = 20 * Math.log10(level / 100);
+  return `${db.toFixed(1)} дБ`;
+}
 
 export type NodeStepParamsMeta = {
   plan?: PlanScriptStepParams;

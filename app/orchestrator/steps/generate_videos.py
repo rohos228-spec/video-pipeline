@@ -38,15 +38,27 @@ from app.services.artifact_recovery import (
     recover_scene_videos_from_disk,
 )
 from app.services.scan_frames import is_valid_scene_image, newest_frame_image_path
+from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
+from app.services.plan_shot2 import (
+    MIN_SHOT2_VIDEO_PROMPT_LEN,
+    SHOT2_VIDEO_PROMPT_ATTR,
+    disk_has_shot2_video,
+    find_shot2_image,
+    read_shot2_columns,
+)
 from app.services.outsee_retry import generate_video_with_retries
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
 
 async def _scene_video_file_on_disk(
-    session: AsyncSession, project_id: int, frame_id: int
+    session: AsyncSession,
+    project_id: int,
+    frame_id: int,
+    *,
+    shot: int = 1,
 ) -> Path | None:
-    """Последний scene_video артефакт кадра, если файл реально есть на диске."""
-    art = (
+    """scene_video shot_01 или shot_02 (meta.shot / ``_s2_`` в имени файла)."""
+    arts = (
         await session.execute(
             select(Artifact)
             .where(
@@ -55,13 +67,20 @@ async def _scene_video_file_on_disk(
                 Artifact.kind == ArtifactKind.scene_video,
             )
             .order_by(Artifact.id.desc())
-            .limit(1)
         )
-    ).scalar_one_or_none()
-    if art is None or not art.path:
-        return None
-    path = Path(art.path)
-    return path if path.is_file() else None
+    ).scalars().all()
+    for art in arts:
+        if not art.path:
+            continue
+        path = Path(art.path)
+        if not path.is_file():
+            continue
+        meta_shot = (art.meta or {}).get("shot", 1)
+        path_shot = 2 if "_s2_" in path.name else 1
+        effective = meta_shot if meta_shot in (1, 2) else path_shot
+        if effective == shot:
+            return path
+    return None
 
 
 def resolve_scene_image_path(
@@ -144,6 +163,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         skipped = 0
         generated = 0
+        shot2_generated = 0
+        shot2_skipped = 0
         session_clip_paths: list[Path] = []
         try:
             for fr in frames:
@@ -259,6 +280,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         kind=ArtifactKind.scene_video,
                         uuid=uuid.uuid4().hex,
                         path=str(result.file_path),
+                        meta={"shot": 1},
                     )
                 )
                 fr.status = FrameStatus.video_generated
@@ -292,12 +314,113 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 pass
             raise
 
+        shot2_generated = 0
+        shot2_skipped = 0
+        xlsx_path = project.data_dir / "project.xlsx"
+        shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+        try:
+            for fr in frames:
+                raise_if_cancelled(project.id)
+                info = shot2_by.get(fr.number)
+                if info is None or not info.has_shot2:
+                    continue
+                if disk_has_shot2_video(out_dir, fr.number):
+                    shot2_skipped += 1
+                    continue
+                s2_img = find_shot2_image(scenes_dir, fr.number)
+                if s2_img is None:
+                    logger.warning(
+                        "[#{}] frame {} shot_02 video: нет PNG shot_02 — skip",
+                        project.id,
+                        fr.number,
+                    )
+                    continue
+                prompt2 = animation_prompt_shot2_in_plan_xlsx(project, fr.number)
+                if len(prompt2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+                    attrs = fr.attrs or {}
+                    prompt2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+                if len(prompt2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+                    logger.warning(
+                        "[#{}] frame {} shot_02 video: нет промта plan R64 — skip",
+                        project.id,
+                        fr.number,
+                    )
+                    continue
+                shot1_clip = await _scene_video_file_on_disk(
+                    session, project.id, fr.id, shot=1
+                )
+                if shot1_clip is None:
+                    logger.warning(
+                        "[#{}] frame {} shot_02 video: нет clip shot_01 — skip",
+                        project.id,
+                        fr.number,
+                    )
+                    continue
+
+                short_uuid = uuid.uuid4().hex[:8]
+                file_path = out_dir / f"clip_{fr.number:03d}_s2_{short_uuid}.mp4"
+                prompt_id_prefix = build_gen_id_prefix(
+                    project.id, fr.number, short_uuid
+                )
+                video_relax = project.video_relax is not False
+                result2 = await generate_video_with_retries(
+                    outsee,
+                    gpt,
+                    prompt=prompt2,
+                    out_path=file_path,
+                    max_attempts_per_prompt=3,
+                    gpt_rewrite=True,
+                    project_id=project.id,
+                    start_frame=s2_img,
+                    aspect_ratio=aspect_slug,
+                    timeout=1200,
+                    model_slug=video_model_slug,
+                    resolution=video_res_slug,
+                    relax=video_relax,
+                    prompt_id_prefix=prompt_id_prefix,
+                    duplicate_check_paths=session_clip_paths,
+                )
+                session.add(
+                    Artifact(
+                        project_id=project.id,
+                        frame_id=fr.id,
+                        kind=ArtifactKind.scene_video,
+                        uuid=uuid.uuid4().hex,
+                        path=str(result2.file_path),
+                        meta={"shot": 2},
+                    )
+                )
+                await session.flush()
+                shot2_generated += 1
+                session_clip_paths.append(Path(result2.file_path))
+                logger.info(
+                    "[#{}] frame {} shot_02 video: {}",
+                    project.id,
+                    fr.number,
+                    result2.file_path,
+                )
+        except StepCancelledError as e:
+            consume_stop(project.id)
+            logger.info(
+                "[#{}] generate_videos shot_02: {} — выхожу",
+                project.id,
+                e,
+            )
+            try:
+                await session.refresh(project)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        except asyncio.CancelledError:
+            raise
+
     logger.info(
-        "[#{}] generate_videos done loop: frames={} generated={} skipped={}",
+        "[#{}] generate_videos done: shot_01 gen={} skip={}; shot_02 gen={} skip={}",
         project.id,
-        len(frames),
         generated,
         skipped,
+        shot2_generated,
+        shot2_skipped,
     )
     if not frames:
         logger.warning("[#{}] generate_videos: нет кадров — split не делали?", project.id)

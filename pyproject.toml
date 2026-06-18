@@ -15,6 +15,7 @@ dependencies = [
   "jinja2>=3.1,<4",
   "loguru>=0.7,<1",
   "openpyxl>=3.1,<4",
+  "pillow>=10.0,<12",
   "playwright>=1.48,<2",
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.6,<3",

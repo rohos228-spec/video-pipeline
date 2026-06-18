@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Save } from "lucide-react";
+import { Loader2, Save, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
@@ -19,6 +19,7 @@ import {
   effectiveDurationSeconds,
   readNodeStepParams,
   withNodeStepParams,
+  bgmLevelToDb,
   type AssembleStepParams,
   type AudioStepParams,
   type NodeStepParamsMeta,
@@ -188,26 +189,114 @@ function AudioFields({
   );
 }
 
+function StepperControl({
+  label,
+  description,
+  value,
+  min,
+  max,
+  step,
+  valueLabel,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  description?: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  valueLabel: string;
+  disabled?: boolean;
+  onChange: (next: number) => void;
+}) {
+  const dec = () => onChange(Math.max(min, value - step));
+  const inc = () => onChange(Math.min(max, value + step));
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-foreground">{label}</span>
+      {description ? (
+        <span className="text-xs text-muted-foreground">{description}</span>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          disabled={disabled || value <= min}
+          onClick={dec}
+          aria-label="Уменьшить"
+        >
+          <ChevronDown className="h-4 w-4" />
+        </Button>
+        <span className="min-w-[7rem] text-center font-mono text-sm text-foreground">
+          {valueLabel}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          disabled={disabled || value >= max}
+          onClick={inc}
+          aria-label="Увеличить"
+        >
+          <ChevronUp className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function AssembleFields({
   params,
+  metaRecord,
   onSave,
   saving,
 }: {
   params: NodeStepParamsMeta;
+  metaRecord: Record<string, unknown>;
   onSave: (patch: AssembleStepParams) => void;
   saving: boolean;
 }) {
   const subsOn = params.assemble?.subtitles_enabled !== false;
+  const tailSaved = params.assemble?.post_voiceover_tail_seconds ?? 0;
+  const bgmFromMeta =
+    typeof metaRecord.bgm_level === "number" ? Math.round(metaRecord.bgm_level) : 35;
+  const bgmSaved = params.assemble?.bgm_level ?? bgmFromMeta;
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
       <div>
         <h3 className="text-sm font-semibold text-foreground">Сборка FFmpeg</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Субтитры (одно слово по Whisper) прожигаются в финальный mp4. Выключите, если нужен ролик
-          только с озвучкой и картинкой.
+          Субтитры, хвост видео после озвучки и громкость фона из папки music/.
         </p>
       </div>
+      <StepperControl
+        label="Время видео после окончания озвучки"
+        description="Секунды: последний кадр держится после конца голоса; музыка продолжается."
+        value={tailSaved}
+        min={0}
+        max={120}
+        step={1}
+        valueLabel={`${tailSaved} с`}
+        disabled={saving}
+        onChange={(next) => onSave({ post_voiceover_tail_seconds: next })}
+      />
+      <StepperControl
+        label="Громкость фоновой музыки"
+        description="Файл bgm.mp3 в music/. 100% = 0 дБ на шкале слайдера."
+        value={bgmSaved}
+        min={0}
+        max={100}
+        step={5}
+        valueLabel={`${bgmSaved} · ${bgmLevelToDb(bgmSaved)}`}
+        disabled={saving}
+        onChange={(next) => onSave({ bgm_level: next })}
+      />
       <button
         type="button"
         disabled={saving}
@@ -400,7 +489,12 @@ export function NodeStepParamsPanel({
         <AudioFields params={params} onSave={persist} saving={save.isPending} />
       ) : null}
       {step === "assemble" ? (
-        <AssembleFields params={params} onSave={persist} saving={save.isPending} />
+        <AssembleFields
+          params={params}
+          metaRecord={metaRecord}
+          onSave={persist}
+          saving={save.isPending}
+        />
       ) : null}
     </div>
   );

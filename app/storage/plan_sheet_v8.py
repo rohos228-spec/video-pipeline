@@ -13,11 +13,13 @@ from openpyxl import load_workbook
 from app.models import Project
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
     _cell_text,
     _resolve_plan_sheet,
 )
+from app.services.plan_shot2 import MIN_SHOT2_VIDEO_PROMPT_LEN
 
 SHEET_PLAN_V8 = "план"
 from app.storage.project_sheet import _file_lock
@@ -231,6 +233,83 @@ def write_plan_image_prompts_bulk(
             written,
         )
     return written
+
+
+def read_plan_animation_prompt_shot2_cells(
+    project: Project,
+    frame_numbers: list[int],
+) -> list[tuple[int, str]]:
+    """Промт видео shot_02 — строка 64 листа «план» (v8)."""
+    if not frame_numbers:
+        return []
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return [(n, "") for n in frame_numbers]
+
+    out: dict[int, str] = dict.fromkeys(frame_numbers, "")
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = _resolve_plan_sheet(wb)
+            if ws is not None:
+                for frame_number in frame_numbers:
+                    col = plan_frame_column(frame_number)
+                    text = _cell_text(ws, ROW_VIDEO_PROMPT_2_V8, col)
+                    out[frame_number] = (text or "").strip()
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] read_plan_animation_prompt_shot2_cells failed: {}",
+            project.id,
+            e,
+        )
+    return [(n, out[n]) for n in frame_numbers]
+
+
+def write_plan_animation_prompt_shot2(
+    project: Project,
+    frame_number: int,
+    animation_prompt: str,
+) -> bool:
+    """Пишет промт видео shot_02 в строку 64 листа «план»."""
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        logger.warning(
+            "[#{}] write_plan_animation_prompt_shot2: нет {}",
+            project.id,
+            path,
+        )
+        return False
+    col = plan_frame_column(frame_number)
+    text = (animation_prompt or "").strip()
+    if len(text) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+        return False
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return False
+            ws.cell(row=ROW_VIDEO_PROMPT_2_V8, column=col, value=text)
+            wb.save(path)
+            wb.close()
+        logger.info(
+            "[#{}] plan R{} col {} ← animation_prompt shot_02 ({} симв.)",
+            project.id,
+            ROW_VIDEO_PROMPT_2_V8,
+            col,
+            len(text),
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] write_plan_animation_prompt_shot2 frame {} failed: {}",
+            project.id,
+            frame_number,
+            e,
+        )
+        return False
 
 
 def write_plan_animation_prompt(

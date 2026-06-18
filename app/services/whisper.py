@@ -42,19 +42,33 @@ def transcribe_words(
     if not whisper_available():
         raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
     from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
+    import time
 
     logger.info("whisper: loading model '{}' ...", model_name)
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    logger.info("whisper: transcribing {} (vad_filter={})", audio_path, vad_filter)
-    segments, _info = model.transcribe(
+    logger.info(
+        "whisper: transcribing {} (vad_filter={}, beam={}) — на CPU это может занять "
+        "несколько минут для длинного файла",
+        audio_path.name,
+        vad_filter,
+        beam_size,
+    )
+    segments, info = model.transcribe(
         str(audio_path),
         language=language,
         beam_size=beam_size,
         word_timestamps=True,
         vad_filter=vad_filter,
     )
+    duration_hint = float(getattr(info, "duration", 0.0) or 0.0)
+    if duration_hint > 0:
+        logger.info("whisper: длительность аудио {:.1f}s", duration_hint)
+
     words: list[WordTS] = []
+    last_log = time.monotonic()
+    seg_count = 0
     for seg in segments:
+        seg_count += 1
         for w in seg.words or []:
             words.append(WordTS(
                 word=w.word.strip(),
@@ -62,7 +76,16 @@ def transcribe_words(
                 end=float(w.end),
                 prob=float(getattr(w, "probability", 0.0)),
             ))
-    logger.info("whisper: got {} words", len(words))
+        now = time.monotonic()
+        if now - last_log >= 30.0:
+            logger.info(
+                "whisper: … {} сегм., {} слов, до {:.0f}s аудио",
+                seg_count,
+                len(words),
+                float(seg.end),
+            )
+            last_log = now
+    logger.info("whisper: got {} words ({} segments)", len(words), seg_count)
     return words
 
 

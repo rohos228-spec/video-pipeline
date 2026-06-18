@@ -33,13 +33,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
-from app.bots.outsee import OutseeBot, OutseeImageError
+from app.bots.outsee import (
+    OutseeBot,
+    OutseeContentRejectedError,
+    OutseeImageError,
+    outsee_error_kind,
+    outsee_error_kind_label,
+)
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
+    OUTSEE_PROMPT_MAX_CHARS,
     build_gen_id_prefix,
+    is_skippable_empty_prompt,
+    prepend_gen_id,
     resolve_image_quality_slug,
 )
 from app.models import (
@@ -740,7 +749,7 @@ async def _all_frames_have_image_or_failed(
         )
     ).scalars().all()
     for fr in frames:
-        if not (fr.image_prompt or "").strip():
+        if not is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         if fr.status is FrameStatus.failed:
             continue
@@ -794,8 +803,15 @@ async def _next_shot2_frame_to_process(
     ).scalars().all()
     for fr in frames:
         attrs = fr.attrs or {}
-        if attrs.get(SHOT2_STATUS_ATTR) == "image_prompt_ready":
-            return fr
+        if attrs.get(SHOT2_STATUS_ATTR) != "image_prompt_ready":
+            continue
+        if is_skippable_empty_prompt(attrs.get(SHOT2_PROMPT_ATTR) or ""):
+            skip_attrs = dict(attrs)
+            skip_attrs[SHOT2_STATUS_ATTR] = "skipped"
+            fr.attrs = skip_attrs
+            await session.flush()
+            continue
+        return fr
     return None
 
 
@@ -809,7 +825,8 @@ async def _all_shot2_done(session: AsyncSession, project_id: int) -> bool:
     ).scalars().all()
     for fr in frames:
         attrs = fr.attrs or {}
-        if not attrs.get(SHOT2_PROMPT_ATTR):
+        prompt = attrs.get(SHOT2_PROMPT_ATTR) or ""
+        if not prompt or is_skippable_empty_prompt(prompt):
             continue
         st = attrs.get(SHOT2_STATUS_ATTR)
         if st not in ("image_generated", "image_approved", "failed", "skipped"):
@@ -883,17 +900,20 @@ async def _generate_and_send(
     attrs = dict(frame.attrs or {})
     if is_shot2:
         prompt_text = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
-        if not prompt_text:
-            logger.warning(
-                "[#{}] frame {} shot_02: пустой промт — skip",
-                project.id, frame.number,
-            )
-            attrs[SHOT2_STATUS_ATTR] = "skipped"
-            frame.attrs = attrs
-            await session.flush()
-            return
     else:
         prompt_text = (frame.image_prompt or "").strip()
+    if is_skippable_empty_prompt(prompt_text):
+        logger.warning(
+            "[#{}] frame {} shot_{}: пустой промт — skip",
+            project.id,
+            frame.number,
+            f"{shot:02d}" if is_shot2 else "01",
+        )
+        if is_shot2:
+            attrs[SHOT2_STATUS_ATTR] = "skipped"
+            frame.attrs = attrs
+        await session.flush()
+        return
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
@@ -931,8 +951,6 @@ async def _generate_and_send(
     else:
         file_path = out_dir / f"frame_{frame.number:03d}_{short_uuid}.png"
         prompt_id_prefix = build_gen_id_prefix(project.id, frame.number, short_uuid)
-
-    from app.generation_options import OUTSEE_PROMPT_MAX_CHARS, prepend_gen_id
 
     full_prompt_len = len(prepend_gen_id(prompt_text, prompt_id_prefix))
     if full_prompt_len > OUTSEE_PROMPT_MAX_CHARS:
@@ -1071,13 +1089,21 @@ async def _generate_and_send(
             pass
         await session.flush()
         try:
+            kind = outsee_error_kind_label(outsee_error_kind(e))
+            if isinstance(e, OutseeContentRejectedError):
+                head = (
+                    f"🚫 Кадр #{frame.number} проекта #{project.id}: "
+                    f"outsee отклонил промт (модерация). "
+                    f"6 попыток + GPT-rewrite не помогли.\n\n"
+                )
+            else:
+                head = (
+                    f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
+                    f"картинку поймать не удалось ({kind}).\n\n"
+                )
             await bot.send_message(
                 settings.telegram_owner_chat_id,
-                (
-                    f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
-                    f"картинку поймать не удалось.\n\n"
-                    f"<pre>{_html_escape(e.format_text())}</pre>"
-                )[:3800],
+                (head + f"<pre>{_html_escape(e.format_text())}</pre>")[:3800],
                 parse_mode="HTML",
             )
         except Exception:  # noqa: BLE001

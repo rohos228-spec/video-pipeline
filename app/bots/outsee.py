@@ -678,6 +678,10 @@ class OutseeContentRejectedError(OutseeImageError):
     существующий error-handling в caller'ах продолжит работать без правок."""
 
 
+class OutseePromptTooLongError(OutseeImageError):
+    """Промт длиннее лимита outsee или обрезан textarea — GPT-сжатие, не rewrite."""
+
+
 class OutseeDownloadError(OutseeImageError):
     """URL ролика уже есть, скачивание не удалось — не нужен новый Generate."""
 
@@ -687,12 +691,33 @@ class OutseeDuplicateVideoError(OutseeImageError):
 
 
 # Маркеры видимых плашек ошибок outsee (см. `_detect_outsee_failure`).
+_OUTSEE_LENGTH_MARKERS: tuple[str, ...] = (
+    "слишком длин",
+    "too long",
+    "too many character",
+    "превышает",
+    "maximum length",
+    "max length",
+    "максимум символ",
+    "лимит символ",
+    "character limit",
+    "prompt is too",
+    "промт слишком",
+)
 _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "контент отклон",
     "content reject",
     "не прошёл модер",
+    "не прошел модер",
     "содержит запрещ",
+    "запрещён",
+    "запрещен",
     "forbidden word",
+    "текстовый запрос содержит",
+    "некорректный текстовый",
+    "нарушает правила",
+    "policy violation",
+    "moderation",
 )
 _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "ошибка генера",
@@ -711,15 +736,78 @@ _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
 
 
 def _outsee_failure_kind(text: str) -> str:
-    """`moderation` | `generation` | `unknown` (видимая плашка без точного класса)."""
+    """`moderation` | `length` | `generation` | `unknown`."""
     low = text.lower()
+    # Модерация важнее: outsee явно пишет «запрещённое» — не путаем с длиной.
     for m in _OUTSEE_MODERATION_MARKERS:
         if m in low:
             return "moderation"
+    for m in _OUTSEE_LENGTH_MARKERS:
+        if m in low:
+            return "length"
     for m in _OUTSEE_GENERATION_ERROR_MARKERS:
         if m in low:
             return "generation"
     return "unknown"
+
+
+def outsee_error_is_moderation(err: OutseeImageError) -> bool:
+    """True если outsee отклонил промт по модерации (не длина, не busy)."""
+    if isinstance(err, OutseeContentRejectedError):
+        return True
+    ctx = err.context or {}
+    if ctx.get("kind") == "moderation" or ctx.get("ui_kind") == "moderation":
+        return True
+    failure = str(ctx.get("failure") or "")
+    if failure and _outsee_failure_kind(failure) == "moderation":
+        return True
+    if _outsee_failure_kind(err.reason or "") == "moderation":
+        return True
+    return False
+
+
+def outsee_error_kind(err: OutseeImageError) -> str:
+    """Класс ошибки для логов/TG: length | moderation | prompt_fill | generation | other."""
+    if isinstance(err, OutseePromptTooLongError):
+        return "length"
+    if isinstance(err, OutseeContentRejectedError):
+        return "moderation"
+    ctx = err.context or {}
+    if ctx.get("error_kind") in (
+        "length",
+        "moderation",
+        "generation",
+        "prompt_fill",
+    ):
+        return str(ctx["error_kind"])
+    reason = (err.reason or "").lower()
+    if any(
+        m in reason
+        for m in (
+            "лимит outsee",
+            "промт обрезан",
+            "не удалось сжать",
+            "gpt недоступен для сжатия",
+        )
+    ):
+        return "length"
+    if any(m in reason for m in ("не попал в поле", "id промта не найден")):
+        return "prompt_fill"
+    if ctx.get("kind") == "moderation":
+        return "moderation"
+    if ctx.get("kind") == "generation":
+        return "generation"
+    return "other"
+
+
+def outsee_error_kind_label(kind: str) -> str:
+    return {
+        "length": "лимит символов",
+        "moderation": "модерация",
+        "prompt_fill": "промт не попал в поле",
+        "generation": "ошибка генерации",
+        "other": "ошибка outsee",
+    }.get(kind, kind)
 
 
 def _normalize_outsee_failure_text(text: str) -> str:
@@ -729,9 +817,54 @@ def _normalize_outsee_failure_text(text: str) -> str:
 _MAX_ACTIVE_FAILURE_CHARS = 260
 
 
-def _outsee_failure_text_is_noise(text: str) -> bool:
-    """Карточки истории outsee (сайдбар): «ОшибкаVeo…[ID: P12-F146…]» — не live-плашка."""
+def _prompt_id_core_token(prompt_id_prefix: str | None) -> str | None:
+    """P17-F90-dda7487c из `[ID: P17-F90-dda7487c r1a2]`."""
+    if not prompt_id_prefix:
+        return None
+    m = re.search(r"P\d+-F\d+-[a-f0-9]+", prompt_id_prefix, re.I)
+    return m.group(0) if m else None
+
+
+def _failure_text_matches_prompt_id(
+    text: str, prompt_id_prefix: str | None
+) -> bool:
+    """Ошибка относится к ЭТОЙ генерации, а не к чужой карточке в очереди."""
+    core = _prompt_id_core_token(prompt_id_prefix)
+    if not core:
+        return True
+    low = text.lower()
+    if core.lower() in low:
+        return True
+    return f"[id: {core.lower()}" in low or f"[id:{core.lower()}" in low
+
+
+def _normalize_pre_failure_baseline(
+    text: str | None,
+    *,
+    prompt_id_prefix: str | None = None,
+) -> str | None:
+    """Игнорируем мусор «Ошибка» (6 симв) до клика Generate — иначе
+    живую модерацию в queue не считаем новой."""
+    if not text:
+        return None
     t = " ".join(text.split()).strip()
+    if not t:
+        return None
+    if _outsee_failure_kind(t) == "moderation":
+        if not _failure_text_matches_prompt_id(t, prompt_id_prefix):
+            return None
+        return t
+    norm = _normalize_outsee_failure_text(t)
+    if norm in ("ошибка", "error") or len(t) < 12:
+        return None
+    return t
+
+
+def _outsee_failure_text_is_noise(text: str) -> bool:
+    """Карточки истории outsee (Veo+ID) — не live-плашка. Модерацию не режем."""
+    t = " ".join(text.split()).strip()
+    if _outsee_failure_kind(t) == "moderation":
+        return False
     if len(t) > _MAX_ACTIVE_FAILURE_CHARS:
         return True
     if re.search(r"\[ID:\s*P\d+-F\d+", t, re.I) and re.search(r"veo", t, re.I):
@@ -749,9 +882,15 @@ def _outsee_failure_is_stale(
     elapsed: float,
     stale_non_result_sec: float = 15.0,
     gen_idle: bool = False,
+    queue_mode: bool = False,
+    prompt_id_prefix: str | None = None,
 ) -> bool:
     """Плашка от прошлой генерации / другого кадра — не ронять текущую."""
     if _outsee_failure_text_is_noise(ftext):
+        return True
+    if queue_mode and prompt_id_prefix and not _failure_text_matches_prompt_id(
+        ftext, prompt_id_prefix
+    ):
         return True
     kind = _outsee_failure_kind(ftext)
     # Generate уже завершился, ролика нет — «Контент отклонён» в результате
@@ -760,14 +899,21 @@ def _outsee_failure_is_stale(
         in_result
         and gen_idle
         and elapsed >= 20.0
-        and kind in ("moderation", "generation")
+        and kind in ("moderation", "generation", "length")
     ):
         return False
     if _normalize_outsee_failure_text(ftext) in baseline_failure_texts:
         return True
     # Плашка вне блока результата при активной генерации — шум из сайдбара.
     if not in_result:
-        if not gen_idle or elapsed < stale_non_result_sec:
+        min_sidebar_sec = stale_non_result_sec
+        if (
+            queue_mode
+            and prompt_id_prefix
+            and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
+        ):
+            min_sidebar_sec = 4.0
+        if not gen_idle or elapsed < min_sidebar_sec:
             return True
         norm = _normalize_outsee_failure_text(ftext)
         if norm in ("ошибка", "error"):
@@ -785,18 +931,35 @@ def _raise_outsee_failure(
     gen_id: str,
     elapsed: float,
     in_result: bool,
+    prompt_len: int | None = None,
 ) -> None:
-    kind = _outsee_failure_kind(text)
-    ctx = {
+    from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
+
+    ui_kind = _outsee_failure_kind(text)
+    kind = ui_kind
+    ctx: dict[str, object] = {
         "gen_id": gen_id,
         "failure": text[:200],
         "elapsed_sec": round(elapsed, 1),
         "in_result_panel": in_result,
         "kind": kind,
+        "ui_kind": ui_kind,
+        "error_kind": kind,
     }
+    if prompt_len is not None:
+        ctx["prompt_len"] = prompt_len
+        ctx["limit"] = OUTSEE_PROMPT_MAX_CHARS
+    if kind == "length":
+        n = prompt_len if prompt_len is not None else 0
+        raise OutseePromptTooLongError(
+            f"outsee: промт {n} симв — лимит outsee {OUTSEE_PROMPT_MAX_CHARS}",
+            context=ctx,
+        )
     if kind == "moderation":
+        detail = (text or "").strip().replace("\n", " ")[:120]
         raise OutseeContentRejectedError(
-            "outsee image: контент отклонён модерацией",
+            f"outsee image: контент отклонён модерацией"
+            + (f" ({detail})" if detail else ""),
             context=ctx,
         )
     raise OutseeImageError(
@@ -1755,7 +1918,15 @@ class OutseeBot:
             # попытки в history/result — передаём в wait, чтобы не путать
             # с НОВОЙ ошибкой, но повтор той же плашки в result-панели после
             # клика всё равно считаем свежим сбоем.
-            pre_rejected_text = await self._outsee_failure_text(page)
+            pre_hit = await self._detect_outsee_failure(
+                page,
+                queue_mode=_outsee_queue_mode(),
+                prompt_id_prefix=prompt_id_prefix,
+            )
+            pre_rejected_text = _normalize_pre_failure_baseline(
+                str(pre_hit["text"]) if pre_hit else None,
+                prompt_id_prefix=prompt_id_prefix,
+            )
             if pre_rejected_text:
                 logger.info(
                     "outsee.generate_image: pre-click failure_text"
@@ -1800,8 +1971,9 @@ class OutseeBot:
                     prompt_id_prefix=prompt_id_prefix,
                     project_id=project_id,
                     queue_mode=queue_mode,
+                    prompt_len=len(prompt),
                 )
-            except OutseeContentRejectedError as e:
+            except (OutseeContentRejectedError, OutseePromptTooLongError) as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
                 # покажет, см. требование «не слать дампы при ошибках
                 # генерации»). Просто пробрасываем дальше — retry-обёртка
@@ -1986,7 +2158,14 @@ class OutseeBot:
                         )
                     except Exception:  # noqa: BLE001
                         pass
-                    pre_rejected_text = await self._outsee_failure_text(page)
+                    pre_hit = await self._detect_outsee_failure(
+                        page,
+                        queue_mode=_outsee_queue_mode(),
+                        prompt_id_prefix=None,
+                    )
+                    pre_rejected_text = _normalize_pre_failure_baseline(
+                        str(pre_hit["text"]) if pre_hit else None,
+                    )
                     click_ts = _time.monotonic()
                     net_events.clear()
                     await await_with_cancel(
@@ -3001,6 +3180,7 @@ class OutseeBot:
         prompt_id_prefix: str | None = None,
         project_id: int | None = None,
         queue_mode: bool = False,
+        prompt_len: int | None = None,
     ) -> str:
         """Жёсткое ожидание свежей картинки.
 
@@ -3054,6 +3234,13 @@ class OutseeBot:
 
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
+        failure_baseline = frozenset()
+        if pre_rejected_text:
+            failure_baseline = frozenset(
+                {_normalize_outsee_failure_text(pre_rejected_text)}
+            )
+        stale_logged: set[str] = set()
+
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
             now = asyncio.get_event_loop().time()
@@ -3061,20 +3248,35 @@ class OutseeBot:
 
             # 0) Fail-fast: ошибка генерации / модерация (до ожидания img).
             if elapsed >= 1.5:
-                failure = await self._detect_outsee_failure(page)
+                failure = await self._detect_outsee_failure(
+                    page,
+                    queue_mode=queue_mode,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
                 if failure:
                     ftext = failure["text"]
                     in_result = bool(failure.get("in_result"))
                     gen_idle = await self._generate_button_enabled(page)
-                    # Не считаем ошибку «новой» только из-за gen_idle:
-                    # плашка из сайдбара/композера (in_result=False) иначе
-                    # рвёт успешную генерацию и уводит в retry без download-v3.
-                    is_new = (
-                        in_result
-                        or not pre_rejected_text
-                        or ftext != pre_rejected_text
-                    )
-                    if is_new:
+                    if _outsee_failure_is_stale(
+                        ftext,
+                        baseline_failure_texts=failure_baseline,
+                        in_result=in_result,
+                        elapsed=elapsed,
+                        gen_idle=gen_idle,
+                        queue_mode=queue_mode,
+                        prompt_id_prefix=prompt_id_prefix,
+                    ):
+                        stale_key = _normalize_outsee_failure_text(ftext)[:80]
+                        if stale_key not in stale_logged:
+                            stale_logged.add(stale_key)
+                            logger.debug(
+                                "_wait_image_url_strict: игнорирую stale "
+                                "плашку (in_result={}, gen_idle={}): {}",
+                                in_result,
+                                gen_idle,
+                                ftext[:80],
+                            )
+                    else:
                         logger.info(
                             "_wait_image_url_strict: ошибка outsee за "
                             "{:.0f} сек (in_result={}, gen_idle={}, "
@@ -3090,6 +3292,7 @@ class OutseeBot:
                             gen_id=gen_id,
                             elapsed=elapsed,
                             in_result=in_result,
+                            prompt_len=prompt_len,
                         )
 
             # 1) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
@@ -3618,20 +3821,35 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _detect_outsee_failure(self, page: Page) -> dict[str, object] | None:
+    async def _detect_outsee_failure(
+        self,
+        page: Page,
+        *,
+        queue_mode: bool = False,
+        prompt_id_prefix: str | None = None,
+    ) -> dict[str, object] | None:
         """Видимая плашка ошибки outsee: модерация или сбой генерации.
 
-        Сначала ищет в блоке «Результат генерации» (`in_result=True`),
-        затем по всей странице. Возвращает `{text, in_result}` или None.
+        В queue-mode ошибка часто в левой очереди внутри длинной карточки
+        (промт + «запрещённое») — ищем маркеры и в коротких, и в длинных блоках.
         """
         mod_js = list(_OUTSEE_MODERATION_MARKERS)
         gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        id_token = ""
+        if prompt_id_prefix:
+            m = re.search(r"P\d+-F\d+-[a-f0-9]+", prompt_id_prefix, re.I)
+            if m:
+                id_token = m.group(0)
+            elif len(prompt_id_prefix) >= 8:
+                id_token = prompt_id_prefix.strip()[:40]
         try:
             raw = await page.evaluate(
-                """(markers) => {
-                    const moderation = markers.moderation;
-                    const generation = markers.generation;
+                """(args) => {
+                    const moderation = args.moderation;
+                    const generation = args.generation;
                     const triggers = moderation.concat(generation);
+                    const queueMode = !!args.queue_mode;
+                    const idToken = (args.id_token || '').trim();
 
                     function isTrulyVisible(el) {
                         const cs = window.getComputedStyle(el);
@@ -3662,11 +3880,22 @@ class OutseeBot:
                         return false;
                     }
 
-                    function isHistoryNoise(t) {
-                        if (!t || t.length > 280) return true;
+                    function isVeoHistoryNoise(t) {
+                        if (!t) return true;
                         if (/\\[ID:\\s*P\\d+-F\\d+/i.test(t) && /veo/i.test(t)) return true;
                         if (/^Ошибка\\s*Veo/i.test(t)) return true;
                         return false;
+                    }
+
+                    function extractSnippet(text) {
+                        if (!text || !matchText(text) || isVeoHistoryNoise(text)) return null;
+                        const lines = text.split(/[\\n\\r]+/);
+                        for (const line of lines) {
+                            const l = line.trim();
+                            if (l.length < 8) continue;
+                            if (matchText(l)) return l.slice(0, 320);
+                        }
+                        return text.trim().slice(0, 320);
                     }
 
                     function isInHistorySidebar(el) {
@@ -3675,22 +3904,36 @@ class OutseeBot:
                             && r.width < window.innerWidth * 0.5;
                     }
 
-                    function scanRoot(root, inResult) {
+                    function idMatches(text) {
+                        if (!idToken || idToken.length < 6) return true;
+                        const frame = idToken.match(/P\\d+-F\\d+-[a-f0-9]+/i);
+                        if (!frame) return text.includes(idToken);
+                        const core = frame[0];
+                        const all = text.match(/P\\d+-F\\d+-[a-f0-9]+/gi) || [];
+                        const uniq = [...new Set(all.map((s) => s.toLowerCase()))];
+                        if (uniq.length > 1) return false;
+                        return text.includes('[ID: ' + core)
+                            || text.includes('[ID:' + core);
+                    }
+
+                    function scanRoot(root, inResult, opts) {
+                        const scanSidebar = opts && opts.scanSidebar;
                         if (!root) return null;
                         let best = null;
                         let bestLen = Infinity;
                         for (const el of root.querySelectorAll('*')) {
                             const tag = (el.tagName || '').toLowerCase();
                             if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
-                            const t = (el.textContent || '').trim();
-                            if (!t || t.length > 1000) continue;
-                            if (isHistoryNoise(t)) continue;
-                            if (!inResult && isInHistorySidebar(el)) continue;
-                            if (!matchText(t)) continue;
                             if (!isTrulyVisible(el)) continue;
-                            if (t.length < bestLen) {
-                                best = { text: t.slice(0, 300), in_result: inResult };
-                                bestLen = t.length;
+                            if (!scanSidebar && !inResult && isInHistorySidebar(el)) continue;
+                            const raw = (el.textContent || '').trim();
+                            if (!raw || raw.length < 8) continue;
+                            if (!idMatches(raw)) continue;
+                            const snippet = extractSnippet(raw);
+                            if (!snippet) continue;
+                            if (snippet.length < bestLen) {
+                                best = { text: snippet, in_result: inResult };
+                                bestLen = snippet.length;
                             }
                         }
                         return best;
@@ -3718,12 +3961,21 @@ class OutseeBot:
 
                     const resultRoot = findResultRoot();
                     if (resultRoot) {
-                        const inPanel = scanRoot(resultRoot, true);
+                        const inPanel = scanRoot(resultRoot, true, { scanSidebar: false });
                         if (inPanel) return inPanel;
                     }
-                    return scanRoot(document.body, false);
+                    if (queueMode) {
+                        const inQueue = scanRoot(document.body, false, { scanSidebar: true });
+                        if (inQueue) return inQueue;
+                    }
+                    return scanRoot(document.body, false, { scanSidebar: false });
                 }""",
-                {"moderation": mod_js, "generation": gen_js},
+                {
+                    "moderation": mod_js,
+                    "generation": gen_js,
+                    "queue_mode": queue_mode,
+                    "id_token": id_token,
+                },
             )
             if isinstance(raw, dict) and raw.get("text"):
                 text = str(raw["text"]).strip()
@@ -4219,7 +4471,15 @@ class OutseeBot:
             baseline_failure_texts = await self._collect_outsee_failure_texts(
                 page, exclude_moderation=True
             )
-            pre_rejected_text = await self._outsee_failure_text(page)
+            pre_hit = await self._detect_outsee_failure(
+                page,
+                queue_mode=_outsee_queue_mode(),
+                prompt_id_prefix=prompt_id_prefix,
+            )
+            pre_rejected_text = _normalize_pre_failure_baseline(
+                str(pre_hit["text"]) if pre_hit else None,
+                prompt_id_prefix=prompt_id_prefix,
+            )
             if baseline_failure_texts:
                 logger.info(
                     "outsee.generate_video: pre-click failure baseline "
@@ -4273,8 +4533,9 @@ class OutseeBot:
                         project_id=project_id,
                         queue_mode=queue_mode,
                         rejected_video_urls=rejected_video_urls,
+                        prompt_len=len(prompt),
                     )
-                except OutseeContentRejectedError as e:
+                except (OutseeContentRejectedError, OutseePromptTooLongError) as e:
                     e.dumps = list(dumps)
                     raise
                 except OutseeImageError as e:
@@ -4640,6 +4901,7 @@ class OutseeBot:
         project_id: int | None = None,
         queue_mode: bool = False,
         rejected_video_urls: set[str] | None = None,
+        prompt_len: int | None = None,
     ) -> str:
         """Жёсткое ожидание свежего ролика — зеркало _wait_image_url_strict."""
         start = asyncio.get_event_loop().time()
@@ -4766,7 +5028,11 @@ class OutseeBot:
                         return chosen_idle
 
             if elapsed >= 1.5:
-                failure = await self._detect_outsee_failure(page)
+                failure = await self._detect_outsee_failure(
+                    page,
+                    queue_mode=queue_mode,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
                 if failure:
                     ftext = str(failure["text"])
                     in_result = bool(failure.get("in_result"))
@@ -4777,6 +5043,8 @@ class OutseeBot:
                         in_result=in_result,
                         elapsed=elapsed,
                         gen_idle=gen_idle,
+                        queue_mode=queue_mode,
+                        prompt_id_prefix=prompt_id_prefix,
                     ):
                         stale_key = _normalize_outsee_failure_text(ftext)[:80]
                         if stale_key not in stale_logged:
@@ -4801,6 +5069,7 @@ class OutseeBot:
                             gen_id=gen_id,
                             elapsed=elapsed,
                             in_result=in_result,
+                            prompt_len=prompt_len,
                         )
 
             if elapsed - last_log > 15:
@@ -5030,7 +5299,7 @@ def _verify_prompt_length_before_send(full_prompt: str, *, where: str) -> None:
 
     n = len(full_prompt)
     if n > OUTSEE_PROMPT_MAX_CHARS:
-        raise OutseeImageError(
+        raise OutseePromptTooLongError(
             f"outsee: промт {n} симв — лимит outsee {OUTSEE_PROMPT_MAX_CHARS}. "
             "Сожмите image_prompt (шаг «Промты картинок») или дождитесь "
             "GPT-сжатия в retry.",
@@ -5038,6 +5307,7 @@ def _verify_prompt_length_before_send(full_prompt: str, *, where: str) -> None:
                 "where": where,
                 "prompt_len": n,
                 "limit": OUTSEE_PROMPT_MAX_CHARS,
+                "error_kind": "length",
             },
         )
 
@@ -5098,12 +5368,13 @@ async def _verify_composer_prompt_filled(
             )
     ref_len = min(exp_len, OUTSEE_PROMPT_MAX_CHARS)
     if ref_len >= 200 and len(actual) < int(ref_len * 0.85):
-        raise OutseeImageError(
+        raise OutseePromptTooLongError(
             f"outsee: промт обрезан outsee ({len(actual)} из {exp_len} симв)",
             context={
                 "where": where,
                 "actual_len": len(actual),
                 "expected_len": exp_len,
+                "error_kind": "length",
             },
         )
 

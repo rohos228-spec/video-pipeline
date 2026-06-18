@@ -109,6 +109,18 @@ async def _resolve_assembly_target_size(clips: list[ClipSpec]) -> tuple[int, int
     return target_w, target_h
 
 
+async def _extend_video_tail(src: Path, dst: Path, tail_seconds: float) -> None:
+    """Держим последний кадр ещё tail_seconds (видео после озвучки)."""
+    await _run([
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-vf", f"tpad=stop_mode=clone:stop_duration={tail_seconds:.3f}",
+        "-an",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
+        str(dst),
+    ])
+
+
 async def assemble(
     clips: list[ClipSpec],
     audio_path: Path,
@@ -116,6 +128,7 @@ async def assemble(
     *,
     subtitles_ass: Path | None = None,
     max_duration: float | None = None,
+    tail_seconds: float = 0.0,
     bgm: BgmConfig | None = None,
 ) -> Path:
     if not clips:
@@ -159,16 +172,36 @@ async def assemble(
             str(concat_mp4),
         ])
 
+        tail = max(0.0, float(tail_seconds or 0.0))
+        if tail > 0:
+            extended = tmp_dir / "concat_extended.mp4"
+            await _extend_video_tail(concat_mp4, extended, tail)
+            concat_mp4 = extended
+            logger.info("assembly: +{:.2f}s видео после озвучки (clone last frame)", tail)
+
+        output_duration = max_duration
+        if output_duration is not None and tail > 0:
+            output_duration = output_duration + tail
+
         with_audio = tmp_dir / "with_audio.mp4"
         mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
 
         if bgm is not None and bgm.path.is_file():
             bgm_gain = max(bgm.level, 0.0) * 0.50
-            trim = f"atrim=0:{max_duration:.3f}," if max_duration is not None else ""
-            filter_complex = (
-                f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
-                f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
-            )
+            if output_duration is not None and tail > 0:
+                dur = f"{output_duration:.3f}"
+                filter_complex = (
+                    f"[1:a]apad=whole_dur={dur}[vo];"
+                    f"[2:a]volume={bgm_gain:.4f},atrim=0:{dur},asetpts=PTS-STARTPTS[bgm];"
+                    f"[vo][bgm]amix=inputs=2:duration=longest:"
+                    f"dropout_transition=2:normalize=0[aout]"
+                )
+            else:
+                trim = f"atrim=0:{output_duration:.3f}," if output_duration is not None else ""
+                filter_complex = (
+                    f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
+                    f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
+                )
             mux_cmd.extend([
                 "-stream_loop", "-1",
                 "-i", str(bgm.path),
@@ -181,9 +214,11 @@ async def assemble(
             if bgm is not None:
                 logger.warning("assembly: BGM path missing, voice only: {}", bgm.path)
 
-        mux_cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"])
-        if max_duration is not None:
-            mux_cmd.extend(["-t", f"{max_duration:.3f}"])
+        mux_cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
+        if tail <= 0:
+            mux_cmd.extend(["-shortest"])
+        if output_duration is not None:
+            mux_cmd.extend(["-t", f"{output_duration:.3f}"])
         mux_cmd.append(str(with_audio))
         await _run(mux_cmd)
 
@@ -198,16 +233,19 @@ async def assemble(
                 "-vf", subtitles_vf_arg(),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
                 "-c:a", "copy",
-                "-shortest",
             ]
-            if max_duration is not None:
-                burn_cmd.extend(["-t", f"{max_duration:.3f}"])
+            if tail <= 0:
+                burn_cmd.append("-shortest")
+            if output_duration is not None:
+                burn_cmd.extend(["-t", f"{output_duration:.3f}"])
             burn_cmd.append(str(out_path))
             await _run(burn_cmd, cwd=tmp_dir)
         else:
-            copy_cmd = ["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy", "-shortest"]
-            if max_duration is not None:
-                copy_cmd.extend(["-t", f"{max_duration:.3f}"])
+            copy_cmd = ["ffmpeg", "-y", "-i", str(with_audio), "-c", "copy"]
+            if tail <= 0:
+                copy_cmd.append("-shortest")
+            if output_duration is not None:
+                copy_cmd.extend(["-t", f"{output_duration:.3f}"])
             copy_cmd.append(str(out_path))
             await _run(copy_cmd)
 

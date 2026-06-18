@@ -1,12 +1,12 @@
 """Политика отказов шага.
 
 Схема (на один running-шаг):
-  - каждый fail → reset_step (обнуление, не «полный провал»);
+  - каждый fail → soft retry (файлы на диске не трогаем);
   - глобальный счётчик total_fails: 1…9;
   - каждые 3 fail (3, 6) → сон 30 мин, затем новый цикл;
   - на 9-м fail (3 цикла × 3 попытки) → paused + следующий в gen_queue.
 
-Итого до abandon: до 9 reset-попыток на шаге.
+Явный сброс шага — только через UI (reset_step), не при ошибках.
 """
 
 from __future__ import annotations
@@ -18,15 +18,9 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
-from app.services.project_steps import start_step
-from app.services.reset_step import reset_step
 from app.telegram.menu import step_by_running_status
 
 FAILS_PER_CYCLE = 3
-
-# При ошибке — не reset_step (не стирать прогресс), только sync + restart.
-# img/video: CDP/Outsee сбой не должен удалять уже сгенерированные файлы.
-_SOFT_RETRY_STEP_CODES = frozenset({"anim_pr", "img", "video"})
 MAX_CYCLES = 3
 MAX_TOTAL_FAILS = FAILS_PER_CYCLE * MAX_CYCLES  # 9
 SLEEP_MINUTES = 30
@@ -104,7 +98,36 @@ async def _soft_retry_without_wipe(
     step_code: str,
 ) -> None:
     """Повтор шага без reset_step / wipe — сохраняем файлы на диске."""
-    if step_code == "anim_pr":
+    if step_code == "audio":
+        from app.services.artifact_recovery import recover_before_assemble
+
+        await recover_before_assemble(session, project)
+        logger.info(
+            "[#{}] soft retry audio: подхват озвучки/whisper с диска (без wipe)",
+            project.id,
+        )
+    elif step_code == "music":
+        from app.services.artifact_recovery import recover_music_from_disk
+
+        if await recover_music_from_disk(session, project):
+            logger.info(
+                "[#{}] soft retry music: music артефакт восстановлен с диска",
+                project.id,
+            )
+        else:
+            logger.info(
+                "[#{}] soft retry music: без wipe, повтор генерации",
+                project.id,
+            )
+    elif step_code == "assemble":
+        from app.services.artifact_recovery import recover_before_assemble
+
+        await recover_before_assemble(session, project)
+        logger.info(
+            "[#{}] soft retry assemble: подхват артефактов с диска (без wipe)",
+            project.id,
+        )
+    elif step_code == "anim_pr":
         from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
 
         try:
@@ -139,6 +162,12 @@ async def _soft_retry_without_wipe(
             project.id,
             len(recovered),
         )
+    else:
+        logger.info(
+            "[#{}] soft retry {}: без wipe, только restart",
+            project.id,
+            step_code,
+        )
 
 
 async def record_step_failure(
@@ -166,13 +195,7 @@ async def record_step_failure(
     cycle = (total - 1) // FAILS_PER_CYCLE + 1
     fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1
 
-    if step_code in _SOFT_RETRY_STEP_CODES:
-        await _soft_retry_without_wipe(session, project, step_code)
-    else:
-        try:
-            await reset_step(session, project, step_code)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[#{}] reset_step {} failed: {}", project.id, step_code, e)
+    await _soft_retry_without_wipe(session, project, step_code)
 
     if total >= MAX_TOTAL_FAILS:
         fs["abandoned_at"] = datetime.now(timezone.utc).isoformat()
@@ -208,25 +231,12 @@ async def record_step_failure(
         return "sleep"
 
     _save_failure_state(project, fs)
-    if step_code in _SOFT_RETRY_STEP_CODES:
-        # Не вызываем start_step — он чистит выход шага (wipe картинок/видео).
-        if step is not None:
-            project.status = step.running_status
-    else:
-        try:
-            await start_step(session, project, step_code)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] start_step {} after fail {}/{}: {}",
-                project.id,
-                step_code,
-                total,
-                MAX_TOTAL_FAILS,
-                e,
-            )
+    # Не вызываем start_step / reset_step — они удаляют файлы на диске.
+    if step is not None:
+        project.status = step.running_status
     await session.flush()
     logger.warning(
-        "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), step reset+restart: {}",
+        "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), soft retry без wipe: {}",
         project.id,
         total,
         MAX_TOTAL_FAILS,
@@ -270,7 +280,8 @@ async def maybe_resume_after_sleep(
     step = step_by_running_status(running)
     if step is None:
         return False
-    await start_step(session, project, step.code)
+    await _soft_retry_without_wipe(session, project, step.code)
+    project.status = step.running_status
     await session.flush()
-    logger.info("[#{}] resumed after sleep → {}", project.id, step.code)
+    logger.info("[#{}] resumed after sleep → {} (без wipe)", project.id, step.code)
     return True

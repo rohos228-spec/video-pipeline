@@ -42,6 +42,7 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
+from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
 from app.services.prompt_library import (
     STEP_HUMAN_NAMES,
     get_project_prompt,
@@ -263,10 +264,11 @@ def _build_hero_default(project: Project) -> str:
         "описывает визуальный стиль (рендер, освещение, lens, цвет). "
         "Эти инструкции должны быть отражены в финальном промте — "
         "никакого «default» style; используем именно этот блок.\n\n"
-        "ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ 5000 "
-        "символов (включая пробелы). Если получается длиннее — "
-        "сожми описание, убери дубликаты, оставь только самое "
-        "важное. Главное чтобы влезло в 5000.\n\n"
+        f"ЛИМИТ: финальный промт должен быть НЕ ДЛИННЕЕ "
+        f"{OUTSEE_PROMPT_MAX_CHARS} символов (включая пробелы). "
+        f"Если получается длиннее — сожми описание, убери дубликаты, "
+        f"оставь только самое важное. Главное чтобы влезло в "
+        f"{OUTSEE_PROMPT_MAX_CHARS}.\n\n"
         "Шаблон:\n\n"
         + hero_master
         + "\n\n---\n\nVisual style (применять обязательно):\n"

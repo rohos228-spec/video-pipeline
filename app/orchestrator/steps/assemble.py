@@ -18,19 +18,60 @@ from app.models import (
     Project,
     ProjectStatus,
 )
-from app.services.artifact_recovery import recover_before_assemble
+from app.services.artifact_recovery import ensure_whisper_words, recover_before_assemble
 from app.services.assembly import ClipSpec, assemble, make_simple_ass
-from app.services.step_data_guard import can_enter_running
-from app.services.media_probe import probe_video_size
 from app.services.bgm import resolve_bgm
-from app.services.frame_audio import build_assembly_timeline
+from app.services.frame_audio import (
+    _voiceover_cells_for_frames,
+    build_assembly_timeline,
+    has_all_frame_audio,
+)
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
+from app.services.media_probe import probe_video_size
+from app.services.step_data_guard import can_enter_running
 from app.services.subtitles import build_subtitle_cues_from_cells
-from app.services.whisper import WordTS, load_words_json, transcribe_words, whisper_available
-from app.services.node_step_params import subtitles_enabled_for_project
+from app.services.whisper import WordTS, transcribe_words, whisper_available
+from app.services.node_step_params import (
+    post_voiceover_tail_seconds_for_project,
+    subtitles_enabled_for_project,
+)
 from app.settings import settings
+from app.services.shot2_timeline import build_assembly_clip_specs
+from app.services.plan_shot2 import read_shot2_columns
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
+
+
+async def _scene_video_path(
+    session: AsyncSession,
+    project_id: int,
+    frame_id: int,
+    *,
+    shot: int = 1,
+) -> Path | None:
+    arts = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.frame_id == frame_id,
+                Artifact.kind == ArtifactKind.scene_video,
+            )
+            .order_by(Artifact.id.desc())
+        )
+    ).scalars().all()
+    for art in arts:
+        if not art.path:
+            continue
+        path = Path(art.path)
+        if not path.is_file():
+            continue
+        meta_shot = (art.meta or {}).get("shot", 1)
+        path_shot = 2 if "_s2_" in path.name else 1
+        effective = meta_shot if meta_shot in (1, 2) else path_shot
+        if effective == shot:
+            return path
+    return None
 
 
 def _scale_whisper_words(words: list[WordTS], factor: float) -> list[WordTS]:
@@ -121,7 +162,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError(f"файл озвучки не найден: {audio_path}")
     audio_dir = project.data_dir / "audio"
     frame_numbers = [fr.number for fr in frames]
-    per_frame_tts = (audio.meta or {}).get("mode") == "per_frame"
+    audio_meta = audio.meta or {}
+    per_frame_tts = (
+        audio_meta.get("mode") == "per_frame"
+        and audio_meta.get("source") != "disk_whisper"
+        and has_all_frame_audio(audio_dir, frame_numbers)
+    )
+    disk_whisper = audio_meta.get("mode") == "disk_whisper" or (
+        audio_meta.get("source") == "disk_whisper"
+    )
     subs_enabled = subtitles_enabled_for_project(project)
 
     whisper_art = (
@@ -135,12 +184,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             .limit(1)
         )
     ).scalar_one_or_none()
-    words: list[WordTS] = []
-    if whisper_art is not None:
-        words = load_words_json(Path(whisper_art.path))
+    words: list[WordTS] = await ensure_whisper_words(
+        session,
+        project,
+        audio_path,
+        whisper_model=settings.whisper_model,
+    )
 
     if subs_enabled and settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
-        if whisper_available():
+        if whisper_available() and not disk_whisper:
             logger.info("[#{}] assemble: re-whisper voice_full для субтитров (без TTS)", project.id)
             words = transcribe_words(
                 audio_path,
@@ -165,10 +217,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if subs_enabled and not words:
         raise RuntimeError("Whisper не вернул слова для субтитров")
 
-    cells = read_plan_voiceover_cells(project, frame_numbers)
+    cells = _voiceover_cells_for_frames(
+        project,
+        frames_all,
+        read_plan_voiceover_cells(project, frame_numbers),
+    )
+    frame_set = set(frame_numbers)
+    cells = [(n, t) for n, t in cells if n in frame_set]
     if not any(text.strip() for _, text in cells):
         raise RuntimeError(
-            "нет текста на листе «план» (строка 49) — одна ячейка = одно видео"
+            "нет текста для субтитров (строка 49 / voiceover.txt / БД кадров)"
         )
 
     try:
@@ -251,31 +309,39 @@ async def _assemble_body(
         for c in audio_clips
     ]
 
-    clips: list[ClipSpec] = []
+    shot1_paths: dict[int, Path] = {}
+    shot2_paths: dict[int, Path | None] = {}
+    xlsx_path = project.data_dir / "project.xlsx"
+    shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     for fr in frames:
-        video_art = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_video,
-                )
-                .order_by(Artifact.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if video_art is None or not Path(video_art.path).is_file():
-            raise RuntimeError(f"нет клипа для кадра {fr.number}")
-        duration = duration_by_frame.get(fr.number)
-        if duration is None:
-            raise RuntimeError(
-                f"нет таймлайна аудио для кадра {fr.number} — перезапустите «Аудио»"
-            )
-        clips.append(ClipSpec(src=Path(video_art.path), duration=duration))
+        p1 = await _scene_video_path(session, project.id, fr.id, shot=1)
+        if p1 is None:
+            raise RuntimeError(f"нет клипа shot_01 для кадра {fr.number}")
+        shot1_paths[fr.number] = p1
+        info = shot2_by.get(fr.number)
+        p2 = None
+        if info is not None and info.has_shot2:
+            p2 = await _scene_video_path(session, project.id, fr.id, shot=2)
+            if p2 is None:
+                videos_dir = project.data_dir / "videos"
+                from app.services.plan_shot2 import disk_has_shot2_video
+
+                if disk_has_shot2_video(videos_dir, fr.number):
+                    for path in sorted(
+                        videos_dir.glob(f"clip_{fr.number:03d}_s2_*.mp4"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    ):
+                        p2 = path
+                        break
+        shot2_paths[fr.number] = p2
         fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)
-        fr.duration_seconds = duration
+        fr.duration_seconds = duration_by_frame[fr.number]
+
+    clips = build_assembly_clip_specs(
+        frames, shot1_paths, shot2_paths, duration_by_frame
+    )
 
     subs_path: Path | None = None
     if subs_enabled:
@@ -304,12 +370,14 @@ async def _assemble_body(
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
     bgm = resolve_bgm(project)
+    tail_seconds = post_voiceover_tail_seconds_for_project(project)
     await assemble(
         clips,
         audio_path,
         out_path,
         subtitles_ass=subs_path,
         max_duration=audio_duration,
+        tail_seconds=tail_seconds,
         bgm=bgm,
     )
     await session.flush()

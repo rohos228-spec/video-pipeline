@@ -35,6 +35,8 @@ def test_build_batch_message_has_id_and_voiceover() -> None:
     msg = build_batch_message([item])
     assert "ID изображения: [ID: P9-F3-deadbeef]" in msg
     assert "Закадровый текст: Hello" in msg
+    assert "лента" in msg
+    assert "Позиция 1" in msg
 
 
 @pytest_asyncio.fixture

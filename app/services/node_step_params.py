@@ -95,6 +95,43 @@ def subtitles_enabled_for_project(project: Project) -> bool:
     return True
 
 
+def _parse_nonneg_seconds(value: object, *, default: float = 0.0) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(120.0, n))
+
+
+def post_voiceover_tail_seconds_for_project(project: Project) -> float:
+    """Секунды видео после конца озвучки (заморозка последнего кадра)."""
+    val = _step_bucket(project, "assemble").get("post_voiceover_tail_seconds")
+    return _parse_nonneg_seconds(val)
+
+
+def assemble_bgm_level_from_meta(meta: dict) -> int | None:
+    """0..100 из node_step_params.assemble.bgm_level."""
+    nsp = meta.get("node_step_params")
+    if not isinstance(nsp, dict):
+        return None
+    assemble = nsp.get("assemble")
+    if not isinstance(assemble, dict):
+        return None
+    val = assemble.get("bgm_level")
+    if val is None or val == "":
+        return None
+    try:
+        return max(0, min(100, int(val)))
+    except (TypeError, ValueError):
+        return None
+
+
+def assemble_bgm_level_for_project(project: Project) -> int | None:
+    return assemble_bgm_level_from_meta(getattr(project, "meta", None) or {})
+
+
 def append_step_params_to_gpt_text(
     project: Project, step_code: str, base_text: str
 ) -> str:

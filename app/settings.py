@@ -60,6 +60,10 @@ class Settings(BaseSettings):
 
     # Whisper — large-v3 точнее по словам; первый прогон дольше
     whisper_model: str = Field("large-v3", alias="WHISPER_MODEL")
+    # Без файла в audio/ — ошибка, а не 11Labs (импорт озвучки с диска)
+    audio_use_elevenlabs_fallback: bool = Field(
+        False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
+    )
 
     # Background music — auto if bgm.mp3 / music.mp3 found in project folder
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")

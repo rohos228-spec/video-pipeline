@@ -31,6 +31,11 @@ def _meta_bool(meta: dict, key: str) -> bool | None:
 
 
 def _meta_level(meta: dict) -> int:
+    from app.services.node_step_params import assemble_bgm_level_from_meta
+
+    level = assemble_bgm_level_from_meta(meta)
+    if level is not None:
+        return level
     for key in ("bgm_level", "mass_bgm_level"):
         if key in meta:
             try:
