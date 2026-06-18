@@ -33,6 +33,8 @@ from app.web.routers import (
     runs as runs_router,
     sidebar_layout as sidebar_layout_router,
     workflows as workflows_router,
+    fleet as fleet_router,
+    auth as auth_router,
 )
 from app.web.settings_default import seed_default_workflow
 
@@ -64,10 +66,40 @@ async def _lifespan(app: FastAPI):
     from app.services.pipeline_worker import ensure_pipeline_worker_started
     from app.telegram.noop_bot import get_worker_bot
 
+    from app.settings import settings
+
+    live_log_path = settings.data_dir / "studio-live.log"
+    live_log_path.parent.mkdir(parents=True, exist_ok=True)
+    live_log_sink = logger.add(
+        str(live_log_path),
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function} | {message}",
+        level="DEBUG",
+        enqueue=True,
+        rotation="30 MB",
+        retention=2,
+    )
+    logger.info("studio live log → {}", live_log_path)
+
     ensure_pipeline_worker_started(get_worker_bot(None))
     logger.info("web lifespan: pipeline worker ensured (same process as API)")
 
-    yield
+    try:
+        from app.fleet.agent_loop import start_fleet_agent
+        from app.fleet.montage_queue import start_montage_queue_loop
+        from app.fleet.pull_loop import start_fleet_pull_loop
+        from app.fleet.self_node import ensure_self_fleet_node
+
+        await ensure_self_fleet_node()
+        start_fleet_agent()
+        start_fleet_pull_loop()
+        start_montage_queue_loop()
+    except Exception:  # noqa: BLE001
+        logger.exception("fleet init failed (non-fatal)")
+
+    try:
+        yield
+    finally:
+        logger.remove(live_log_sink)
 
 
 def create_app() -> FastAPI:
@@ -102,6 +134,8 @@ def create_app() -> FastAPI:
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
+    app.include_router(fleet_router.router, prefix=API_PREFIX)
+    app.include_router(auth_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

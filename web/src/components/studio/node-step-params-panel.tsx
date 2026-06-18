@@ -266,6 +266,7 @@ function AssembleFields({
   const bgmFromMeta =
     typeof metaRecord.bgm_level === "number" ? Math.round(metaRecord.bgm_level) : 35;
   const bgmSaved = params.assemble?.bgm_level ?? bgmFromMeta;
+  const sendToMain = params.assemble?.send_to_main_pc !== false;
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
@@ -297,6 +298,37 @@ function AssembleFields({
         disabled={saving}
         onChange={(next) => onSave({ bgm_level: next })}
       />
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onSave({ send_to_main_pc: !sendToMain })}
+        className={cn(
+          "flex w-full items-start justify-between gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+          sendToMain ? "border-primary/40 bg-primary/10" : "border-border/60 hover:bg-accent/40",
+        )}
+      >
+        <span className="flex flex-col">
+          <span className="text-sm font-medium text-foreground">Отправить на основной ПК</span>
+          <span className="text-xs text-muted-foreground">
+            {sendToMain
+              ? "После музыки проект уйдёт на hub для ASR и FFmpeg"
+              : "Монтаж локально на этой станции"}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+            sendToMain ? "bg-primary" : "bg-muted",
+          )}
+        >
+          <span
+            className={cn(
+              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              sendToMain && "translate-x-4",
+            )}
+          />
+        </span>
+      </button>
       <button
         type="button"
         disabled={saving}

@@ -58,12 +58,36 @@ class Settings(BaseSettings):
     # Явный путь к .xlsx-шаблону для новых project.xlsx (иначе — newest v8 в templates/)
     project_xlsx_template: Path | None = Field(None, alias="PROJECT_XLSX_TEMPLATE")
 
-    # Whisper — large-v3 точнее по словам; первый прогон дольше
+    # ASR — на ПК монтажа: nvidia (NeMo Parakeet) или whisper fallback
+    asr_backend: str = Field("nvidia", alias="ASR_BACKEND")
     whisper_model: str = Field("large-v3", alias="WHISPER_MODEL")
+    whisper_device: str = Field("cuda", alias="WHISPER_DEVICE")
+    whisper_compute_type: str = Field("float16", alias="WHISPER_COMPUTE_TYPE")
+    nvidia_asr_model: str = Field(
+        "nvidia/parakeet-tdt-0.6b-v2", alias="NVIDIA_ASR_MODEL"
+    )
     # Без файла в audio/ — ошибка, а не 11Labs (импорт озвучки с диска)
     audio_use_elevenlabs_fallback: bool = Field(
         False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
+
+    # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
+    fleet_enabled: bool = Field(True, alias="FLEET_ENABLED")
+    fleet_role: str = Field("hub", alias="FLEET_ROLE")
+    fleet_hub_url: str = Field("http://127.0.0.1:8765", alias="FLEET_HUB_URL")
+    fleet_agent_token: str = Field("", alias="FLEET_AGENT_TOKEN")
+    fleet_node_name: str = Field("", alias="FLEET_NODE_NAME")
+    fleet_is_main: bool = Field(True, alias="FLEET_IS_MAIN")
+    fleet_montage_hub: bool = Field(True, alias="FLEET_MONTAGE_HUB")
+    fleet_hub_is_worker: bool = Field(True, alias="FLEET_HUB_IS_WORKER")
+    fleet_auto_pull: bool = Field(True, alias="FLEET_AUTO_PULL")
+    fleet_montage_max_parallel: int = Field(1, alias="FLEET_MONTAGE_MAX_PARALLEL")
+    # Tailscale URL этого ПК для agents (например http://100.x.x.x:8765)
+    fleet_public_url: str = Field("", alias="FLEET_PUBLIC_URL")
+
+    # Web auth (fleet + удалённое управление)
+    web_auth_user: str = Field("", alias="WEB_AUTH_USER")
+    web_auth_password: str = Field("", alias="WEB_AUTH_PASSWORD")
 
     # Background music — auto if bgm.mp3 / music.mp3 found in project folder
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
@@ -92,6 +116,34 @@ class Settings(BaseSettings):
         if self.bgm_path is not None:
             object.__setattr__(self, "bgm_path", resolve_project_path(self.bgm_path))
         return self
+
+    @property
+    def fleet_local_web_url(self) -> str:
+        """Локальный URL API (heartbeat hub+worker на этом же ПК)."""
+        host = self.web_host
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        return f"http://{host}:{self.web_port}"
+
+    @property
+    def fleet_agent_base_url(self) -> str:
+        """URL, который agent сообщает hub (Tailscale или локальный)."""
+        if self.fleet_public_url.strip():
+            return self.fleet_public_url.strip().rstrip("/")
+        return self.fleet_local_web_url
+
+    @property
+    def fleet_heartbeat_hub_url(self) -> str:
+        """Куда слать heartbeat: hub на этой машине → localhost, иначе FLEET_HUB_URL."""
+        role = (self.fleet_role or "hub").strip().lower()
+        if role == "hub":
+            return self.fleet_local_web_url
+        hub = (self.fleet_hub_url or "").strip().rstrip("/")
+        return hub or self.fleet_local_web_url
+
+    @property
+    def web_auth_enabled(self) -> bool:
+        return bool(self.web_auth_user.strip() and self.web_auth_password)
 
     @property
     def telegram_active(self) -> bool:

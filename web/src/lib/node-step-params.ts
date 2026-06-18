@@ -24,6 +24,8 @@ export type AssembleStepParams = {
   post_voiceover_tail_seconds?: number | null;
   /** Громкость BGM 0..100 (как в resolve_bgm) */
   bgm_level?: number | null;
+  /** По умолчанию true — после music_ready отправить bundle на hub для монтажа */
+  send_to_main_pc?: boolean | null;
 };
 
 /** Подпись дБ для UI: 100% = 0 дБ, 0% = −∞ (линейная шкала 0..100). */

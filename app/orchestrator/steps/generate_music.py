@@ -18,6 +18,7 @@ from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services import gpt_text_builder as gtb
+from app.settings import settings
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -105,3 +106,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.music_ready
     await session.flush()
     logger.info("[#{}] generate_music done → {}", project.id, music_path.name)
+
+    if settings.fleet_enabled and (settings.fleet_role or "").lower() == "agent":
+        from app.fleet.montage_queue import maybe_mark_for_fleet_montage
+
+        await maybe_mark_for_fleet_montage(session, project)
+    elif settings.fleet_enabled and settings.fleet_montage_hub:
+        from app.fleet.montage_queue import maybe_mark_for_fleet_montage
+
+        await maybe_mark_for_fleet_montage(session, project)

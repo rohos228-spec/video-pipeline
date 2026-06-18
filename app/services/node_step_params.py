@@ -87,6 +87,14 @@ def build_step_params_block(project: Project, step_code: str) -> str:
     return ""
 
 
+def send_to_main_pc_for_project(project: Project) -> bool:
+    """Отправка на главный ПК для монтажа (meta.node_step_params.assemble.send_to_main_pc)."""
+    val = _step_bucket(project, "assemble").get("send_to_main_pc")
+    if val is False:
+        return False
+    return True
+
+
 def subtitles_enabled_for_project(project: Project) -> bool:
     """Субтитры при сборке: meta.node_step_params.assemble.subtitles_enabled (по умолчанию вкл.)."""
     val = _step_bucket(project, "assemble").get("subtitles_enabled")

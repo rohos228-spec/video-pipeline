@@ -280,19 +280,16 @@ async def recover_audio_from_disk(
             uuid=uuid.uuid4().hex,
             path=str(full_path.resolve()),
             meta={
-                "mode": "per_frame",
+                "mode": "full_voice",
                 "recovered_from_disk": True,
-                "clip_count": len(clip_meta),
-                "clips": clip_meta,
             },
         )
     )
     await session.flush()
     logger.info(
-        "[#{}] artifact_recovery: audio ← {} ({} frame mp3)",
+        "[#{}] artifact_recovery: audio ← {} (full_voice)",
         project.id,
         full_path.name,
-        len(clip_meta),
     )
     return True
 
