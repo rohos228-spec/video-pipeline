@@ -204,11 +204,15 @@ async def validate_after_audio(
                 missing.append(n)
     voice_full = list(audio_dir.glob("voice_full_*.mp3")) if audio_dir.is_dir() else []
     msgs: list[str] = []
-    if missing:
-        msgs.append(f"нет frame_*.mp3: {missing}")
     if not voice_full:
         msgs.append("нет voice_full_*.mp3")
-    ok = not missing and bool(voice_full)
+    # full_voice: один voice_full, frame_*.mp3 не нужны (ASR на монтаже)
+    if voice_full:
+        ok = True
+    else:
+        if missing:
+            msgs.append(f"нет frame_*.mp3: {missing}")
+        ok = not missing
     return ValidationResult(
         ok=ok,
         expected_frames=expected,

@@ -30,7 +30,12 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                 logger.warning("advance_project_job: проект #{} не найден", project_id)
                 return AdvanceJobResult(project_id, "", None)
             prev = project.status.value
-            await advance_project(session, project, bot)
+            try:
+                await advance_project(session, project, bot)
+            except Exception:
+                if project.status.value != prev:
+                    await session.commit()
+                raise
             new = project.status.value
             if new != prev:
                 logger.debug(

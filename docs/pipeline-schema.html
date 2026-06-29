@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>video-pipeline — схема</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1d27;
+      --border: #2a2f3d;
+      --text: #e8eaef;
+      --muted: #9aa3b5;
+      --accent: #5b8def;
+      --ok: #2d6a4f;
+      --warn: #8a6d2f;
+      --purple: #7c6bcf;
+      --green: #3d8f6e;
+      --orange: #c47a3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 1.5rem; margin: 8px 0; }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #243049;
+      color: #9ec5ff;
+      margin-bottom: 8px;
+    }
+    .sub { color: var(--muted); font-size: 0.92rem; margin-bottom: 20px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+    .tab {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .tab.active { border-color: var(--accent); background: #243049; color: #cfe0ff; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .callout {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      background: var(--panel);
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 0.88rem;
+    }
+    .callout strong { display: block; margin-bottom: 4px; }
+    .flow { overflow-x: auto; margin: 12px 0 20px; }
+    .node {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 0 auto 6px;
+      max-width: 340px;
+      position: relative;
+    }
+    .node::after {
+      content: "↓";
+      position: absolute;
+      left: 50%;
+      bottom: -14px;
+      transform: translateX(-50%);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .node:last-child::after { display: none; }
+    .node.ok { border-color: #3d6b52; background: #152419; }
+    .node.warn { border-color: #6b5a2a; background: #221c12; }
+    .node.info { border-color: #3a5080; background: #151c2a; }
+    .node.gate {
+      border-style: dashed;
+      max-width: 220px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+      padding: 6px 10px;
+    }
+    .node h3 { margin: 0 0 4px; font-size: 0.9rem; }
+    .node p { margin: 0; font-size: 0.78rem; color: var(--muted); }
+    .phase {
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin: 18px 0 8px;
+      padding-left: 4px;
+      border-left: 2px solid var(--border);
+    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .card h4 { margin: 0 0 8px; font-size: 0.85rem; }
+    .card p, .card li { font-size: 0.82rem; color: var(--muted); }
+    ul { margin: 0; padding-left: 18px; }
+    .tag {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #243049;
+      color: #9ec5ff;
+      margin-right: 4px;
+    }
+    .tag.mag { background: #1a3328; color: #8fd4b0; }
+    .tag.gpt { background: #1a2840; color: #9ec5ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">video-pipeline</span>
+    <h1>Pipeline + GPT + Excel</h1>
+    <p class="sub">
+      Magnific — картинки, видео, Suno audio. Центр данных — <code>project.xlsx</code>.
+      Worker ~5с: running → *_ready → [GPT Verdict] → next.
+    </p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="pipeline">Пайплайн</button>
+      <button class="tab" data-tab="verdict">GPT Verdict</button>
+      <button class="tab" data-tab="excel1">Excel 1</button>
+      <button class="tab" data-tab="excel2">Excel 2</button>
+      <button class="tab" data-tab="excel3">Excel 3</button>
+    </div>
+
+    <!-- PIPELINE -->
+    <section id="pipeline" class="panel active">
+      <div class="phase">Старт</div>
+      <div class="flow"><div class="node"><h3>Тема</h3><p>Studio · new → Project в БД</p></div></div>
+
+      <div class="phase">Текст</div>
+      <div class="flow">
+        <div class="node"><h3>План</h3><p><span class="tag gpt">GPT</span> planning → plan_ready · лист «план»</p></div>
+        <div class="node gate">GPT Verdict → plan_ready</div>
+        <div class="node"><h3>Сценарий</h3><p><span class="tag gpt">GPT</span> scripting → script_ready · voiceover.txt</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Разбивка</h3><p><span class="tag gpt">GPT</span> splitting → frames_ready · строка 49, кадры</p></div>
+        <div class="node gate">GPT Verdict</div>
+      </div>
+
+      <div class="phase">Референсы</div>
+      <div class="flow">
+        <div class="node"><h3>Hero</h3><p><span class="tag mag">Magnific</span> generating_hero → hero_ready</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Items</h3><p><span class="tag mag">Magnific</span> generating_items → items_ready</p></div>
+        <div class="node gate">GPT Verdict</div>
+      </div>
+
+      <div class="phase">Excel — доп. работа</div>
+      <div class="flow">
+        <div class="node"><h3>Excel 1</h3><p><span class="tag gpt">GPT</span> enriching_1 → enrich_1_ready · правила V7, «план»</p></div>
+        <div class="node gate">GPT Verdict (check_plan)</div>
+        <div class="node"><h3>Excel 2</h3><p><span class="tag gpt">GPT</span> enriching_2 → enrich_2_ready · персонажи + ID в сценах</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Excel 3</h3><p><span class="tag gpt">GPT</span> enriching_3 → enrich_3_ready · герой c01</p></div>
+        <div class="node gate">GPT Verdict</div>
+      </div>
+
+      <div class="phase">Медиа</div>
+      <div class="flow">
+        <div class="node"><h3>Img prompts</h3><p><span class="tag gpt">GPT</span> → image_prompts_ready</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Картинки</h3><p><span class="tag mag">Magnific</span> → images_ready</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Anim prompts</h3><p><span class="tag gpt">GPT</span> → animation_prompts_ready</p></div>
+        <div class="node gate">GPT Verdict</div>
+        <div class="node"><h3>Видео</h3><p><span class="tag mag">Magnific</span> → videos_ready · clip_*.mp4</p></div>
+        <div class="node gate">GPT Verdict</div>
+      </div>
+
+      <div class="phase">Звук</div>
+      <div class="flow">
+        <div class="node"><h3>Аудио</h3><p>11Labs · voice_full.wav · hub: recover с диска</p></div>
+        <div class="node"><h3>Музыка</h3><p>Suno via Magnific · agent → bundle на hub</p></div>
+      </div>
+
+      <div class="phase">Финал</div>
+      <div class="flow">
+        <div class="node"><h3>Сборка</h3><p>NeMo CUDA ASR → FFmpeg · final/*.mp4 · только hub</p></div>
+        <div class="node"><h3>Publish</h3><p>MoreLogin → соцсети</p></div>
+      </div>
+    </section>
+
+    <!-- VERDICT -->
+    <section id="verdict" class="panel">
+      <div class="callout">
+        <strong>Когда срабатывает</strong>
+        После *_ready, если <code>auto_mode</code> + <code>ai_control</code>.
+        Шаблон: <code>prompts/check_*</code> или Studio (<code>meta.gpt_verdict_templates</code>).
+      </div>
+      <div class="flow">
+        <div class="node"><h3>Шаг завершён</h3><p>status → *_ready</p></div>
+        <div class="node"><h3>Worker: maybe_auto_advance</h3><p>каждые ~5 сек</p></div>
+        <div class="node"><h3>ai_control?</h3><p>meta.ai_control + auto_mode</p></div>
+        <div class="node ok"><h3>Нет ai_control</h3><p>auto_mode → сразу next *ing</p></div>
+        <div class="node info"><h3>Да → GPT Verdict</h3><p>prompts/check_* или Studio шаблон</p></div>
+        <div class="node"><h3>Новый чат ChatGPT</h3><p>вложения: xlsx / voiceover / PNG</p></div>
+        <div class="node"><h3>parse_gpt_verdict</h3><p>regex «Вердикт: …»</p></div>
+        <div class="node ok"><h3>Одобрено</h3><p>HITL approve → advance_after_gpt_verdict → next running</p></div>
+        <div class="node warn"><h3>Не одобрено</h3><p>fix_text из ответа GPT</p></div>
+        <div class="node"><h3>Скачать fix-файл</h3><p>xlsx или voiceover.txt из ответа</p></div>
+        <div class="node"><h3>validate_xlsx + backup</h3><p>sync_project_xlsx → БД</p></div>
+        <div class="node warn"><h3>fix_applied → advance</h3><p>или retry до 3 раундов</p></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h4>Вложения</h4><ul>
+          <li>plan, split, enrich_1–5, img_pr, anim_pr → xlsx</li>
+          <li>script → xlsx + voiceover.txt</li>
+          <li>hero, items, images → xlsx + PNG</li>
+        </ul></div>
+        <div class="card"><h4>Формат ответа GPT</h4><p>
+          <code>Вердикт: Одобрено</code><br>
+          или <code>Вердикт: Не одобрено: &lt;правки&gt;</code>
+        </p></div>
+      </div>
+    </section>
+
+    <!-- EXCEL 1 -->
+    <section id="excel1" class="panel">
+      <div class="callout">
+        <strong>Excel 1 — качество листа «план»</strong>
+        <code>enrich_xlsx.py</code> slot=1 · <code>enriching_1</code> → <code>enrich_1_ready</code><br>
+        Промт: <code>prompts/05a_enrich_1/Правило_заполнения_таблицы_V7</code>
+      </div>
+      <div class="flow">
+        <div class="node"><h3>enriching_1</h3><p>start_step / Worker</p></div>
+        <div class="node"><h3>ensure project.xlsx</h3><p>data/videos/&lt;slug&gt;/</p></div>
+        <div class="node"><h3>Мастер-промт + xlsx</h3><p>новый чат ChatGPT, upload [prompt.md, xlsx]</p></div>
+        <div class="node warn"><h3>Retry ≤ 3</h3><p>если GPT не приложил xlsx</p></div>
+        <div class="node"><h3>sync_project_xlsx</h3><p>«план» + кадры → БД</p></div>
+        <div class="node ok"><h3>enrich_1_ready</h3><p>→ GPT Verdict → Excel 2</p></div>
+      </div>
+      <div class="card"><h4>Что заполняет GPT</h4><ul>
+        <li>Лист «план»: качество сцен по правилам V7</li>
+        <li>Запрет синонимичных сцен (±10 соседей)</li>
+        <li>Запрет повтора в строках 52, 54–63</li>
+        <li>Строка 49 — закадровый блок / герой сцены</li>
+      </ul></div>
+    </section>
+
+    <!-- EXCEL 2 -->
+    <section id="excel2" class="panel">
+      <div class="callout">
+        <strong>Excel 2 — все персонажи + ID в сценах</strong>
+        Промт: <code>prompts/05b_enrich_2/агент по созданию персонажей</code>
+      </div>
+      <div class="flow">
+        <div class="node"><h3>enriching_2</h3><p>после enrich_1_ready (+ Verdict)</p></div>
+        <div class="node"><h3>Round-trip xlsx</h3><p>тот же цикл: upload → xlsx в ответе → sync</p></div>
+        <div class="node ok"><h3>enrich_2_ready</h3><p>→ GPT Verdict → Excel 3</p></div>
+      </div>
+      <div class="card"><h4>Что заполняет GPT</h4><ul>
+        <li>Читает строку 49 листа «план»</li>
+        <li>Главный герой + вариации</li>
+        <li>Персонажи с &gt;2 появлениями → лист «Персонажи»</li>
+        <li>ID c01, c02… — имя, внешность, одежда, характер</li>
+        <li>ID персонажей проставляются в сцены на «план»</li>
+        <li>Не переписывает сценарий — только таблица</li>
+      </ul></div>
+    </section>
+
+    <!-- EXCEL 3 -->
+    <section id="excel3" class="panel">
+      <div class="callout">
+        <strong>Excel 3 — главный герой c01</strong>
+        Промт: <code>prompts/05c_enrich_3/default.md</code>
+      </div>
+      <div class="flow">
+        <div class="node"><h3>enriching_3</h3><p>после enrich_2_ready (+ Verdict)</p></div>
+        <div class="node"><h3>Round-trip xlsx</h3><p>сброс meta.excel_hero → Hero перечитает «Персонажи»</p></div>
+        <div class="node ok"><h3>enrich_3_ready</h3><p>→ img_pr (генерация промтов картинок)</p></div>
+      </div>
+      <div class="card"><h4>Что заполняет GPT</h4><ul>
+        <li>Только «Персонажи» + строка 49 «план»</li>
+        <li>Один главный герой → столбец c01</li>
+        <li>Строки 1,3,4,5,6,7: id, имя, внешность, одежда, роль, правила</li>
+        <li>Вид персонажа строго по сценарию (не «все коты»)</li>
+      </ul></div>
+    </section>
+  </div>
+
+  <script>
+    document.querySelectorAll(".tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      });
+    });
+  </script>
+</body>
+</html>

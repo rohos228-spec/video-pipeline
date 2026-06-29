@@ -10,7 +10,7 @@ function readStudioVersionLabel(): string {
   const file = path.join(configDir, "STUDIO_VERSION");
   try {
     const lines = fs.readFileSync(file, "utf8").trim().split(/\r?\n/);
-    const build = lines[0]?.trim() || "0";
+    const build = (lines[0]?.trim() || "0").replace(/^\uFEFF/, "");
     const sha = (lines[1]?.trim() || "dev").slice(0, 7);
     return sha && sha !== "dev" ? `v${build} · ${sha}` : `v${build}`;
   } catch {

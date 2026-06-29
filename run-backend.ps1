@@ -1,4 +1,4 @@
-﻿# Запуск бэкенда из корня репозитория
+# Запуск бэкенда из корня репозитория
 # RUN_BACKEND_ID=session-log-v3  (UTF-8 console + log)
 # powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
 
@@ -81,8 +81,25 @@ if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
 }
 
 $env:TELEGRAM_ENABLED = "false"
-$env:WEB_HOST = "127.0.0.1"
+# WEB_HOST из .env (воркер: 0.0.0.0 для доступа hub по LAN/Tailscale)
+$webHost = "127.0.0.1"
+$envPath = Join-Path $Root ".env"
+if (Test-Path $envPath) {
+    $m = Select-String -Path $envPath -Pattern '^\s*WEB_HOST=(.+)$' | Select-Object -Last 1
+    if ($m -and $m.Matches.Groups[1].Value.Trim()) {
+        $webHost = $m.Matches.Groups[1].Value.Trim()
+    }
+    $fleetOn = Select-String -Path $envPath -Pattern '^\s*FLEET_ENABLED=(.+)$' | Select-Object -Last 1
+    if ($fleetOn -and ($fleetOn.Matches.Groups[1].Value.Trim() -imatch '^(1|true|yes)$')) {
+        if ($webHost -in @('127.0.0.1', 'localhost', '::1')) {
+            $webHost = '0.0.0.0'
+            Write-Host "    fleet: WEB_HOST auto -> 0.0.0.0" -ForegroundColor DarkYellow
+        }
+    }
+}
+$env:WEB_HOST = $webHost
 $env:WEB_PORT = "8765"
+Write-Host "    WEB_HOST=$webHost" -ForegroundColor DarkGray
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
 

@@ -688,6 +688,112 @@ async def replace_hero_image(
     }
 
 
+_push_hub_tasks: set[int] = set()
+
+
+@router.post("/{project_id}/fleet/cancel-transfer")
+async def cancel_fleet_transfer_ui(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """⏹ Прервать push/pull bundle (крестик на окне передачи)."""
+    from app.fleet.transfer_state import cancel_fleet_transfer
+    from app.services.project_control import _set_user_stop_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    cancelled = await cancel_fleet_transfer(project_id)
+    meta = dict(p.meta or {})
+    meta["fleet_transfer_aborted"] = True
+    p.meta = meta
+    _set_user_stop_meta(p)
+    src = meta.get("fleet_source_project_id")
+    if src is not None:
+        try:
+            cancelled = await cancel_fleet_transfer(int(src)) or cancelled
+        except (TypeError, ValueError):
+            pass
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"fleet_transfer_cancelled": True},
+    )
+    return {"ok": True, "cancelled": cancelled, "project_id": project_id}
+
+
+@router.post("/{project_id}/fleet/push-to-hub")
+async def fleet_push_to_hub_ui(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """UI: отправить bundle на hub (NucBox). Фоновая задача — прогресс на канвасе."""
+    import asyncio
+
+    if (settings.fleet_role or "hub").strip().lower() != "agent":
+        raise HTTPException(status_code=400, detail="push-to-hub только на agent (NucBox)")
+    p = _project_or_404(await session.get(Project, project_id))
+    if project_id in _push_hub_tasks:
+        return {
+            "ok": True,
+            "started": False,
+            "message": "Уже отправляется — смотри полоску внизу канваса",
+        }
+
+    from app.fleet.push_to_hub import push_project_bundle_to_hub
+    from app.fleet.transfer_state import (
+        FleetTransferCancelled,
+        allow_transfer_start,
+        register_transfer_task,
+        update_fleet_transfer,
+    )
+
+    meta = dict(p.meta or {})
+    meta.pop("user_stop", None)
+    meta.pop("fleet_transfer_aborted", None)
+    p.meta = meta
+    await session.flush()
+
+    allow_transfer_start(project_id)
+    _push_hub_tasks.add(project_id)
+
+    async def _bg() -> None:
+        try:
+            await push_project_bundle_to_hub(project_id)
+        except FleetTransferCancelled:
+            logger.info("[#{}] push-to-hub cancelled by user", project_id)
+        except asyncio.CancelledError:
+            logger.info("[#{}] push-to-hub task cancelled", project_id)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if "cancelled" not in str(exc).lower():
+                await update_fleet_transfer(
+                    project_id,
+                    phase="error",
+                    direction="to_hub",
+                    percent=0,
+                    message=str(exc)[:200],
+                    status="error",
+                    force=True,
+                )
+        finally:
+            _push_hub_tasks.discard(project_id)
+
+    task = asyncio.create_task(_bg())
+    register_transfer_task(project_id, task)
+    await update_fleet_transfer(
+        project_id,
+        phase="packing",
+        direction="to_hub",
+        percent=0,
+        message="Отправка на hub…",
+        target=(settings.fleet_hub_url or "").strip(),
+        force=True,
+    )
+    return {
+        "ok": True,
+        "started": True,
+        "message": "Отправка запущена — полоска прогресса внизу канваса",
+    }
+
+
 def _rel_path(path: str | None) -> str:
     if not path:
         return ""

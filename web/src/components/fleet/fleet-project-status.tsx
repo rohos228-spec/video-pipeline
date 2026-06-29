@@ -50,6 +50,7 @@ export function FleetProjectRow({
   montageQueuePosition,
   onOpen,
   onMontage,
+  montageBusy,
 }: {
   slug: string;
   topic?: string | null;
@@ -59,6 +60,7 @@ export function FleetProjectRow({
   montageQueuePosition?: number | null;
   onOpen: () => void;
   onMontage?: () => void;
+  montageBusy?: boolean;
 }) {
   const running = isProjectRunningStatus(status);
   const showMontageBtn = montageReady && !montageQueued && onMontage;
@@ -99,10 +101,11 @@ export function FleetProjectRow({
           {showMontageBtn ? (
             <button
               type="button"
+              disabled={montageBusy}
               onClick={onMontage}
-              className="rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] hover:bg-muted"
+              className="rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] hover:bg-muted disabled:opacity-50"
             >
-              На монтаж
+              {montageBusy ? "…" : "На монтаж"}
             </button>
           ) : null}
         </div>

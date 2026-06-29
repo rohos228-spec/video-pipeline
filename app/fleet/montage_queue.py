@@ -143,7 +143,29 @@ async def process_montage_queue(session) -> int:
     queued.sort(key=lambda p: _parse_ts((p.meta or {}).get(META_ENQUEUED_AT)))
 
     started = 0
+    kicked: list[int] = []
     for project in queued[:slots]:
+        from app.services.step_data_guard import can_enter_running
+
+        ok, reason, rollback = await can_enter_running(
+            session, project, ProjectStatus.assembling
+        )
+        if not ok:
+            meta = dict(project.meta or {})
+            meta["montage_blocked"] = reason
+            meta.pop(META_ENQUEUED, None)
+            project.meta = meta
+            # Не откатывать в generating_* — иначе hub сам запустит TTS/видео.
+            project.status = ProjectStatus.music_ready
+            await session.flush()
+            logger.error(
+                "montage queue: #{} {} blocked — {} (stay music_ready)",
+                project.id,
+                project.slug,
+                reason,
+            )
+            continue
+
         meta = dict(project.meta or {})
         meta.pop(META_ENQUEUED, None)
         meta["montage_queue_started_at"] = datetime.now(timezone.utc).isoformat()
@@ -151,8 +173,24 @@ async def process_montage_queue(session) -> int:
         project.status = ProjectStatus.assembling
         await session.flush()
         logger.info("montage queue: assembling {} (#{})", project.slug, project.id)
+        kicked.append(project.id)
         started += 1
+    if kicked:
+        schedule_assemble_advance(kicked)
     return started
+
+
+def schedule_assemble_advance(project_ids: int | list[int]) -> None:
+    """Не ждать worker tick (~5 с) — сразу запустить assemble."""
+    ids = [project_ids] if isinstance(project_ids, int) else list(project_ids)
+    if not ids:
+        return
+    from app.services.advance_runner import advance_project_job
+    from app.telegram.noop_bot import get_worker_bot
+
+    bot = get_worker_bot(None)
+    for pid in ids:
+        asyncio.create_task(advance_project_job(pid, bot))
 
 
 async def _montage_queue_loop() -> None:

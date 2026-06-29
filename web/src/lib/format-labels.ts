@@ -23,6 +23,8 @@ const PROJECT_STATUS: Partial<Record<ProjectStatus, string>> = {
   animation_prompts_ready: "промты анимации готовы",
   generating_videos: "видео",
   videos_ready: "видео готово",
+  generating_music: "музыка",
+  music_ready: "музыка готова",
   generating_audio: "озвучка",
   audio_ready: "озвучка готова",
   assembling: "сборка",

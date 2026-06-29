@@ -15,12 +15,42 @@ from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
 
+def _set_user_stop_meta(project: Project) -> None:
+    meta = dict(project.meta or {})
+    meta["user_stop"] = True
+    if mass_parent_id(project) is not None:
+        meta["mass_lane_user_stop"] = True
+        logger.info(
+            "[#{}] STOP: mass lane paused (mass_lane_user_stop) until manual start",
+            project.id,
+        )
+    project.meta = meta
+    logger.info(
+        "[#{}] STOP: auto_advance paused (user_stop) until manual step start",
+        project.id,
+    )
+
+
 async def stop_project_running(
     session: AsyncSession, project: Project
 ) -> dict[str, str | bool | list[str] | None]:
     """⏹ Остановить текущий шаг — та же логика, что `on_project_stop_running` в боте."""
+    from app.fleet.transfer_state import cancel_fleet_transfer
+
     request_stop(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
+
+    meta = dict(project.meta or {})
+    src_pid = meta.get("fleet_source_project_id")
+    transfer_stopped = await cancel_fleet_transfer(project.id)
+    if src_pid is not None:
+        try:
+            transfer_stopped = await cancel_fleet_transfer(int(src_pid)) or transfer_stopped
+        except (TypeError, ValueError):
+            pass
+    if transfer_stopped:
+        meta["fleet_transfer_aborted"] = True
+        project.meta = meta
 
     ok = False
     stopped_kind: str | None = None
@@ -53,19 +83,7 @@ async def stop_project_running(
         project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
         clear_stop(project.id)
-        meta = dict(project.meta or {})
-        meta["user_stop"] = True
-        if mass_parent_id(project) is not None:
-            meta["mass_lane_user_stop"] = True
-            logger.info(
-                "[#{}] STOP: mass lane paused (mass_lane_user_stop) until manual start",
-                project.id,
-            )
-        project.meta = meta
-        logger.info(
-            "[#{}] STOP: auto_advance paused (user_stop) until manual step start",
-            project.id,
-        )
+        _set_user_stop_meta(project)
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
             project.id,
@@ -79,15 +97,61 @@ async def stop_project_running(
     elif xlsx_stopped:
         ok = True
         stopped_kind = "xlsx"
-        meta = dict(project.meta or {})
-        meta["user_stop"] = True
-        project.meta = meta
+        _set_user_stop_meta(project)
         project.updated_at = datetime.utcnow()
         msg = (
             f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
         )
     else:
-        msg = f"Нет активных шагов (статус: {project.status.value})."
+        from app.orchestrator.auto_advance import TRANSITIONS
+
+        auto_ready = (
+            getattr(project, "auto_mode", False)
+            and project.status in TRANSITIONS
+        )
+        gen_active = is_generation_active(project.id) or is_stop_requested(
+            project.id
+        )
+        if auto_ready or gen_active:
+            ok = True
+            stopped_kind = "auto_pipeline" if auto_ready else "background"
+            _set_user_stop_meta(project)
+            project.updated_at = datetime.utcnow()
+            clear_stop(project.id)
+            if auto_ready:
+                msg = (
+                    f"остановлено автопродвижение (статус: {project.status.value})"
+                )
+            else:
+                msg = (
+                    f"остановлена фоновая задача (статус: {project.status.value})"
+                )
+            logger.info(
+                "[#{}] STOP: {} (auto_ready={}, gen_active={})",
+                project.id,
+                stopped_kind,
+                auto_ready,
+                gen_active,
+            )
+        else:
+            clear_stop(project.id)
+            if transfer_stopped:
+                ok = True
+                stopped_kind = "fleet_transfer"
+                _set_user_stop_meta(project)
+                project.updated_at = datetime.utcnow()
+                msg = "⏹ Остановлена передача bundle"
+                logger.info("[#{}] STOP: fleet transfer cancelled", project.id)
+            else:
+                msg = f"Нет активных шагов (статус: {project.status.value})."
+
+    if transfer_stopped and not ok:
+        ok = True
+        stopped_kind = "fleet_transfer"
+        _set_user_stop_meta(project)
+        project.updated_at = datetime.utcnow()
+        msg = "⏹ Остановлена передача bundle"
+        logger.info("[#{}] STOP: fleet transfer cancelled (during other stop)", project.id)
 
     if ok:
         await session.flush()

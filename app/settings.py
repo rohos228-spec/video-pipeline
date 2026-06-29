@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.project_root import find_project_root, resolve_project_path
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Browser — только Chrome из Start-Chrome.cmd (профиль .vp_browser_data, :29229)
     browser_cdp_url: str = Field("http://127.0.0.1:29229", alias="BROWSER_CDP_URL")
     browser_cdp_connect_timeout_ms: int = Field(
-        45_000, alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
+        20_000, alias="BROWSER_CDP_CONNECT_TIMEOUT_MS"
     )
     # При зависании connect_over_cdp после ws connected — перезапуск Chrome (Win)
     browser_cdp_auto_recover: bool = Field(True, alias="BROWSER_CDP_AUTO_RECOVER")
@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
+    # REST API (предпочтительно — без Chrome/CDP и гео-банов UI)
+    elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
+    elevenlabs_api_model: str = Field(
+        "eleven_multilingual_v2", alias="ELEVENLABS_API_MODEL"
+    )
+    # Опционально: http/socks5 прокси только для API (EU/US), если ключ режут по IP
+    elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
+    # Второй URL — когда у провайдера другой порт/протокол (переключение вручную в Lab)
+    elevenlabs_proxy_alt_url: str | None = Field(None, alias="ELEVENLABS_PROXY_ALT_URL")
+    # Отдельный HTTP proxy для upload клона (SOCKS часто режет multipart на Windows)
+    elevenlabs_upload_proxy_url: str | None = Field(None, alias="ELEVENLABS_UPLOAD_PROXY_URL")
 
     # MoreLogin / социалки
     morelogin_profile_id: str | None = Field(None, alias="MORELOGIN_PROFILE_ID")
@@ -64,7 +75,12 @@ class Settings(BaseSettings):
     whisper_device: str = Field("cuda", alias="WHISPER_DEVICE")
     whisper_compute_type: str = Field("float16", alias="WHISPER_COMPUTE_TYPE")
     nvidia_asr_model: str = Field(
-        "nvidia/parakeet-tdt-0.6b-v2", alias="NVIDIA_ASR_MODEL"
+        "nvidia/stt_ru_fastconformer_hybrid_large_pc",
+        alias="NVIDIA_ASR_MODEL",
+    )
+    # Без файла в audio/ — ошибка, а не 11Labs (импорт озвучки с диска)
+    audio_use_elevenlabs_fallback: bool = Field(
+        False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
 
     # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
@@ -76,7 +92,7 @@ class Settings(BaseSettings):
     fleet_is_main: bool = Field(True, alias="FLEET_IS_MAIN")
     fleet_montage_hub: bool = Field(True, alias="FLEET_MONTAGE_HUB")
     fleet_hub_is_worker: bool = Field(True, alias="FLEET_HUB_IS_WORKER")
-    fleet_auto_pull: bool = Field(True, alias="FLEET_AUTO_PULL")
+    fleet_auto_pull: bool = Field(False, alias="FLEET_AUTO_PULL")
     fleet_montage_max_parallel: int = Field(1, alias="FLEET_MONTAGE_MAX_PARALLEL")
     # Tailscale URL этого ПК для agents (например http://100.x.x.x:8765)
     fleet_public_url: str = Field("", alias="FLEET_PUBLIC_URL")
@@ -89,6 +105,8 @@ class Settings(BaseSettings):
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
     bgm_default_level: int = Field(35, alias="BGM_DEFAULT_LEVEL")  # 0..100
     bgm_path: Path | None = Field(None, alias="BGM_PATH")
+    assembly_voice_gain: float = Field(1.0, alias="ASSEMBLY_VOICE_GAIN")
+    assembly_bgm_mix_ratio: float = Field(0.35, alias="ASSEMBLY_BGM_MIX_RATIO")
 
     # Subtitles — одно слово; опережение озвучки (Whisper системно отстаёт ~0.2–0.3 с)
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
@@ -104,6 +122,35 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
+
+    @field_validator(
+        "telegram_enabled",
+        "browser_cdp_auto_recover",
+        "outsee_queue_mode",
+        "social_publish_enabled",
+        "audio_use_elevenlabs_fallback",
+        "fleet_enabled",
+        "fleet_is_main",
+        "fleet_montage_hub",
+        "fleet_hub_is_worker",
+        "fleet_auto_pull",
+        "bgm_default_enabled",
+        "subtitle_rewhisper_on_assemble",
+        "hitl_auto_approve",
+        "web_enabled",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_bool(cls, v: object) -> object:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "1", "yes", "on"):
+                return True
+            if s in ("false", "0", "no", "off", ""):
+                return False
+        return v
 
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":

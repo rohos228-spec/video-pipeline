@@ -24,6 +24,36 @@ from app.models import (
 
 _CLIP_RE = re.compile(r"^clip_(\d{3})_", re.I)
 _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
+_VOICE_FULL_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
+
+
+def find_voice_full_on_disk(audio_dir: Path) -> Path | None:
+    """voice_full на диске: mp3, wav, … (не frame_*)."""
+    if not audio_dir.is_dir():
+        return None
+    candidates: list[Path] = []
+    for ext in _VOICE_FULL_EXTS:
+        candidates.extend(p for p in audio_dir.glob(f"voice_full_*{ext}") if p.is_file())
+        legacy = audio_dir / f"voice_full{ext}"
+        if legacy.is_file():
+            candidates.append(legacy)
+    if not candidates:
+        for ext in _VOICE_FULL_EXTS:
+            for p in audio_dir.glob(f"*{ext}"):
+                if p.is_file() and not p.name.lower().startswith("frame_"):
+                    if ".asr_mono." in p.name.lower():
+                        continue
+                    candidates.append(p)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_size)
+
+
+_S2_IN_NAME = re.compile(r"(^|_)s2(_|$)", re.I)
+
+
+def _is_shot2_clip_name(name: str) -> bool:
+    return bool(_S2_IN_NAME.search(name))
 
 
 async def recover_scene_videos_from_disk(
@@ -47,6 +77,8 @@ async def recover_scene_videos_from_disk(
         num = int(m.group(1))
         fr = by_number.get(num)
         if fr is None:
+            continue
+        if _is_shot2_clip_name(path.name):
             continue
         existing = (
             await session.execute(
@@ -97,7 +129,10 @@ async def recover_scene_videos_from_disk(
 async def recover_audio_from_disk(
     session: AsyncSession, project: Project
 ) -> bool:
-    """Зарегистрировать voice_full_*.mp3 как ArtifactKind.audio, если записи нет."""
+    """Зарегистрировать voice_full (mp3/wav/…) как ArtifactKind.audio."""
+    audio_dir = project.data_dir / "audio"
+    full_path = find_voice_full_on_disk(audio_dir)
+
     existing = (
         await session.execute(
             select(Artifact)
@@ -109,25 +144,60 @@ async def recover_audio_from_disk(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if existing is not None and Path(existing.path).is_file():
-        return False
+    if existing is not None:
+        if Path(existing.path).is_file():
+            return False
+        if full_path is not None:
+            existing.path = str(full_path.resolve())
+            meta = dict(existing.meta or {})
+            meta.update({"mode": "full_voice", "recovered_from_disk": True})
+            existing.meta = meta
+            await session.flush()
+            logger.info(
+                "[#{}] artifact_recovery: audio ← {} (stale row fixed)",
+                project.id,
+                full_path.name,
+            )
+            return True
 
-    audio_dir = project.data_dir / "audio"
     if not audio_dir.is_dir():
         return False
 
-    candidates = sorted(
-        audio_dir.glob("voice_full_*.mp3"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        legacy = audio_dir / "voice_full.mp3"
-        if legacy.is_file():
-            candidates = [legacy]
-
-    full_path = next((p for p in candidates if p.is_file()), None)
     if full_path is None:
+        from app.services.frame_audio import FRAME_AUDIO_PREFIX, frame_audio_path
+
+        frame_rows = (
+            await session.execute(
+                select(Frame.number).where(
+                    Frame.project_id == project.id,
+                    Frame.voiceover_text.isnot(None),
+                    Frame.voiceover_text != "",
+                )
+            )
+        ).scalars().all()
+        frame_nums = sorted(int(n) for n in frame_rows)
+        if frame_nums and all(frame_audio_path(audio_dir, n).is_file() for n in frame_nums):
+            full_path = frame_audio_path(audio_dir, frame_nums[0])
+            session.add(
+                Artifact(
+                    project_id=project.id,
+                    kind=ArtifactKind.audio,
+                    uuid=uuid.uuid4().hex,
+                    path=str(full_path.resolve()),
+                    meta={
+                        "mode": "per_frame",
+                        "recovered_from_disk": True,
+                        "frame_count": len(frame_nums),
+                    },
+                )
+            )
+            await session.flush()
+            logger.info(
+                "[#{}] artifact_recovery: audio per_frame ({} clips)",
+                project.id,
+                len(frame_nums),
+            )
+            return True
         return False
 
     session.add(
@@ -166,8 +236,16 @@ async def recover_whisper_from_disk(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if existing is not None and Path(existing.path).is_file():
-        return False
+    if existing is not None:
+        if Path(existing.path).is_file():
+            return False
+        logger.warning(
+            "[#{}] artifact_recovery: stale whisper_words (нет файла {}) — удаляем запись",
+            project.id,
+            existing.path,
+        )
+        await session.delete(existing)
+        await session.flush()
 
     audio_dir = project.data_dir / "audio"
     if not audio_dir.is_dir():
@@ -195,8 +273,45 @@ async def recover_whisper_from_disk(
 
 async def recover_before_assemble(session: AsyncSession, project: Project) -> None:
     await recover_scene_videos_from_disk(session, project)
-    await recover_audio_from_disk(session, project)
+    if not await recover_audio_from_disk(session, project):
+        await ensure_fleet_montage_voice(session, project)
     await recover_whisper_from_disk(session, project)
+
+
+async def ensure_fleet_montage_voice(session: AsyncSession, project: Project) -> bool:
+    """Fleet hub: voiceover.txt → local TTS, если нет voice_full на диске."""
+    from app.fleet.montage_handoff import is_fleet_hub_montage
+
+    if not is_fleet_hub_montage(project):
+        return False
+    if await recover_audio_from_disk(session, project):
+        return True
+    if find_voice_full_on_disk(project.data_dir / "audio") is not None:
+        return await recover_audio_from_disk(session, project)
+    vo = project.data_dir / "voiceover.txt"
+    if not vo.is_file() and not (project.script_text or "").strip():
+        return False
+    try:
+        from app.services.local_tts import synthesize_local_voice_for_montage
+
+        path = await synthesize_local_voice_for_montage(
+            project, project.data_dir / "audio"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] ensure_fleet_montage_voice: {}", project.id, exc)
+        return False
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.audio,
+            uuid=uuid.uuid4().hex,
+            path=str(path.resolve()),
+            meta={"mode": "full_voice", "source": "local_tts", "fleet_montage": True},
+        )
+    )
+    await session.flush()
+    logger.info("[#{}] ensure_fleet_montage_voice: {}", project.id, path.name)
+    return True
 
 
 _CHAR_ID_RE = re.compile(r"^(c\d+)\.png$", re.I)

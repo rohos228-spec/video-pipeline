@@ -1,6 +1,29 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
-$script:StudioUpdateBranch = "fix/text-save-persistence-v153"
-$script:StudioUpdateCoreId = "studio-update-core-v7"
+$script:StudioUpdateBranch = "feature/fleet-montage-queue-v161"
+$script:StudioUpdateCoreId = "studio-update-core-v8"
+
+function Resolve-StudioUpdateBranch {
+    param([string]$Root)
+    $manifest = Join-Path $Root "fleet\manifest.json"
+    if (Test-Path -LiteralPath $manifest) {
+        try {
+            $j = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.git_branch) {
+                return [string]$j.git_branch
+            }
+        } catch { }
+    }
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $cur = (git -C $Root branch --show-current 2>$null)
+        if ($cur) { return $cur.Trim() }
+    }
+    return $script:StudioUpdateBranch
+}
+
+function Set-StudioUpdateBranchFromRoot {
+    param([string]$Root)
+    $script:StudioUpdateBranch = Resolve-StudioUpdateBranch -Root $Root
+}
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -50,6 +73,7 @@ function Restore-StudioWebUiFromGit {
 
 function Invoke-StudioGit {
     param([string]$Root)
+    Set-StudioUpdateBranchFromRoot -Root $Root
     Write-StudioLog "> git pull ($($script:StudioUpdateBranch))" "Cyan"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-StudioLog "FAIL: git not found" "Red"

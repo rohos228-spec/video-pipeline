@@ -353,6 +353,15 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         await maybe_resume_after_sleep(s, p)
                         if is_sleeping(p):
                             continue
+                    if p.status is ProjectStatus.assembling:
+                        from app.services.montage_coexist import montage_lane_owned_by
+
+                        if montage_lane_owned_by(p.id):
+                            logger.debug(
+                                "worker: montage #{} — уже идёт (direct script / другой процесс)",
+                                p.id,
+                            )
+                            continue
                     key = (p.id, p.status.value)
                     prev_status_value = p.status.value
                     project_id = p.id
@@ -406,6 +415,10 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         fail_counts.pop(key, None)
                     except Exception as e:  # noqa: BLE001
                         logger.exception("advance_project failed for #{}", p.id)
+                        try:
+                            await s.refresh(p)
+                        except Exception:  # noqa: BLE001
+                            pass
                         prev = fail_counts.get(key, 0)
                         fail_counts[key] = prev + 1
                         try:
@@ -596,6 +609,12 @@ async def main() -> None:
             if callable(reconfigure):
                 with contextlib.suppress(Exception):
                     reconfigure(encoding="utf-8", errors="replace")
+
+    from app.fleet.network_setup import prepare_fleet_network
+
+    effective_web_host = prepare_fleet_network()
+    if effective_web_host and effective_web_host != settings.web_host:
+        object.__setattr__(settings, "web_host", effective_web_host)
 
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",

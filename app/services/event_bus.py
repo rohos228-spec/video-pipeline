@@ -164,3 +164,17 @@ async def publish_hitl_event(
     await get_bus().publish(f"hitl.{project_id}", evt)
     await get_bus().publish(f"projects.{project_id}", evt)
     await get_bus().publish("global", evt)
+
+
+async def publish_fleet_transfer_event(
+    project_id: int,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    evt = {
+        "type": "fleet_transfer",
+        "project_id": project_id,
+        **(payload or {}),
+    }
+    await get_bus().publish(f"projects.{project_id}", evt)
+    await get_bus().publish("global", evt)

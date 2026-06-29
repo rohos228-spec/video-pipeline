@@ -303,6 +303,41 @@ async def _extract_mp3_segment(
     ])
 
 
+async def synthesize_full_voice_only(
+    el: ElevenLabsBot,
+    *,
+    project: Project,
+    audio_dir: Path,
+    clip_timeout: float = 180.0,
+) -> Path:
+    """11Labs → один voice_full.mp3. Без frame_*.mp3 и без ASR (метки — на ПК монтажа)."""
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    delete_frame_audio_files(audio_dir)
+
+    full_text = resolve_full_voiceover_text(project)
+    if len(full_text) < 50:
+        raise RuntimeError(
+            "нет voiceover.txt / script_text — сначала шаг «Закадровый текст»"
+        )
+
+    full_path = audio_dir / f"voice_full_{uuid.uuid4().hex[:8]}.mp3"
+    tts_timeout = max(clip_timeout, 600.0)
+    logger.info(
+        "[#{}] frame_audio: full voice ({} симв.) → {} [no ASR]",
+        project.id,
+        len(full_text),
+        full_path.name,
+    )
+    voice_id = resolve_elevenlabs_voice_id(project)
+    await el.tts(
+        full_text,
+        full_path,
+        timeout=tts_timeout,
+        voice_id=voice_id,
+    )
+    return full_path
+
+
 async def synthesize_per_frame_audio(
     el: ElevenLabsBot,
     *,

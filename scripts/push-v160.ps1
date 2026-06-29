@@ -191,7 +191,9 @@ $msgFile = Join-Path $env:TEMP ("v160-commit-" + [guid]::NewGuid().ToString("n")
     "History dropdown beside each .md; auto-archive on save; rename/restore versions."
     ""
     "Base: v159 ($BaseCommit)."
-) | Set-Content -LiteralPath $msgFile -Encoding UTF8
+) -join "`n" | ForEach-Object {
+    [System.IO.File]::WriteAllText($msgFile, $_, (New-Object System.Text.UTF8Encoding $false))
+}
 try {
     Invoke-Git commit -F $msgFile
 } finally {
@@ -199,8 +201,9 @@ try {
 }
 
 $sha = (git.exe rev-parse --short HEAD).Trim()
-@([string]$build, $sha, $attach, $orch) -join "`n" | Set-Content -LiteralPath $vf -Encoding UTF8 -NoNewline
-Add-Content -LiteralPath $vf -Value "" -Encoding UTF8
+$versionText = (@([string]$build, $sha, $attach, $orch) -join "`n") + "`n"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($vf, $versionText, $utf8NoBom)
 Invoke-Git add web/STUDIO_VERSION web/out
 Invoke-Git commit --amend --no-edit
 

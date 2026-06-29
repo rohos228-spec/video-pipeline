@@ -613,3 +613,34 @@ class NodeRun(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
     run: Mapped[WorkflowRun] = relationship(back_populates="node_runs")
+
+
+class FleetNodeStatus(str, enum.Enum):
+    online = "online"
+    offline = "offline"
+    busy = "busy"
+    error = "error"
+
+
+class FleetNode(Base):
+    """Удалённая или локальная станция в сети video-pipeline."""
+
+    __tablename__ = "fleet_nodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    base_url: Mapped[str] = mapped_column(String(300))
+    token: Mapped[str] = mapped_column(String(200), default="")
+    is_main: Mapped[bool] = mapped_column(default=False)
+    role: Mapped[str] = mapped_column(String(20), default="agent")
+    status: Mapped[FleetNodeStatus] = mapped_column(
+        Enum(FleetNodeStatus, name="fleet_node_status"),
+        default=FleetNodeStatus.offline,
+        index=True,
+    )
+    last_seen: Mapped[datetime | None] = mapped_column(default=None)
+    hostname: Mapped[str | None] = mapped_column(String(200), default=None)
+    pipeline_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)

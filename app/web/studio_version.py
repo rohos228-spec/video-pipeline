@@ -17,10 +17,11 @@ def _parse_version_file() -> tuple[int, str, str, str]:
     attach_expected = ""
     orchestrator_expected = ""
     if path.is_file():
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        # utf-8-sig: PowerShell Set-Content -Encoding UTF8 writes BOM; int("\ufeff160") fails -> v0
+        lines = path.read_text(encoding="utf-8-sig").strip().splitlines()
         if lines:
             try:
-                build = int(lines[0].strip())
+                build = int(lines[0].strip().lstrip("\ufeff"))
             except ValueError:
                 build = 0
         if len(lines) > 1 and lines[1].strip():

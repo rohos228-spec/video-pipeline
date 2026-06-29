@@ -98,5 +98,24 @@ def test_frame_clips_from_whisper_fills_master_duration(tmp_path: Path) -> None:
     clips = frame_clips_from_whisper(cells, words, master=10.0, voice_full_path=voice)
     assert len(clips) == 2
     assert clips[0].start_ts == 0.0
+    assert abs(clips[0].duration - 2.0) < 0.01
+    assert abs(clips[1].start_ts - 2.0) < 0.01
     assert clips[-1].end_ts == 10.0
     assert abs(sum(c.duration for c in clips) - 10.0) < 0.01
+
+
+def test_map_frames_syncs_to_next_cell_speech_start() -> None:
+    from app.services.mapper import map_frames
+
+    cells = [(1, "один два"), (2, "три четыре")]
+    words = [
+        WordTS("один", 0.0, 0.8, 1.0),
+        WordTS("два", 0.85, 1.6, 1.0),
+        WordTS("три", 2.0, 2.7, 1.0),
+        WordTS("четыре", 2.75, 3.5, 1.0),
+    ]
+    timings = map_frames(cells, words, audio_duration=10.0)
+    assert abs(timings[0].start_ts - 0.0) < 0.01
+    assert abs(timings[0].duration - 2.0) < 0.01
+    assert abs(timings[1].start_ts - 2.0) < 0.01
+    assert timings[-1].end_ts == 10.0

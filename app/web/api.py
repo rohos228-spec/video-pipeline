@@ -34,6 +34,7 @@ from app.web.routers import (
     sidebar_layout as sidebar_layout_router,
     workflows as workflows_router,
     fleet as fleet_router,
+    elevenlabs as elevenlabs_router,
     auth as auth_router,
 )
 from app.web.settings_default import seed_default_workflow
@@ -83,14 +84,36 @@ async def _lifespan(app: FastAPI):
     ensure_pipeline_worker_started(get_worker_bot(None))
     logger.info("web lifespan: pipeline worker ensured (same process as API)")
 
+    async def _elevenlabs_startup_probe() -> None:
+        if not (settings.elevenlabs_api_key or "").strip():
+            return
+        if not (settings.elevenlabs_proxy_url or "").strip():
+            return
+        try:
+            from app.services.elevenlabs_api import connect_by_ip
+
+            result = await connect_by_ip()
+            logger.info(
+                "elevenlabs startup probe ok: {} voices via {}",
+                result.get("voice_count"),
+                (result.get("proxy") or "direct").split("@")[-1],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("elevenlabs startup probe failed: {}", exc)
+
+    asyncio.create_task(_elevenlabs_startup_probe())
+
     try:
         from app.fleet.agent_loop import start_fleet_agent
+        from app.fleet.hub_probe import ensure_manifest_workers, start_fleet_hub_probe_loop
         from app.fleet.montage_queue import start_montage_queue_loop
         from app.fleet.pull_loop import start_fleet_pull_loop
         from app.fleet.self_node import ensure_self_fleet_node
 
         await ensure_self_fleet_node()
+        await ensure_manifest_workers()
         start_fleet_agent()
+        start_fleet_hub_probe_loop()
         start_fleet_pull_loop()
         start_montage_queue_loop()
     except Exception:  # noqa: BLE001
@@ -135,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
     app.include_router(fleet_router.router, prefix=API_PREFIX)
+    app.include_router(elevenlabs_router.router, prefix=API_PREFIX)
     app.include_router(auth_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])

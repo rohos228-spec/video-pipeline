@@ -16,6 +16,106 @@ from app.services.subtitles import build_subtitle_cues_from_cells
 from app.services.whisper import WordTS
 
 
+def test_sequential_spans_keep_late_frame_on_asr_time() -> None:
+    from app.services.mapper import build_absolute_asr_timeline, build_frame_word_spans_sequential
+
+    cells = [(1, "aaa bbb"), (2, "ccc ddd"), (3, "eee fff")]
+    words = [
+        WordTS("aaa", 0.0, 0.5, 1.0),
+        WordTS("bbb", 0.55, 1.0, 1.0),
+        WordTS("ccc", 10.0, 10.5, 1.0),
+        WordTS("ddd", 10.55, 11.0, 1.0),
+        WordTS("eee", 20.0, 20.5, 1.0),
+        WordTS("fff", 20.55, 21.0, 1.0),
+    ]
+    spans = build_frame_word_spans_sequential(cells, words)
+    timings = build_absolute_asr_timeline(spans, words, 30.0)
+    assert abs(timings[0].start_ts - 0.0) < 0.01
+    assert abs(timings[0].end_ts - 10.0) < 0.01
+    assert abs(timings[1].end_ts - 20.0) < 0.01
+    assert abs(timings[2].start_ts - 20.0) < 0.01
+    assert abs(timings[2].end_ts - 30.0) < 0.01
+
+
+def test_forward_match_avoids_hundred_second_clip() -> None:
+    from app.services.mapper import build_absolute_asr_timeline, build_frame_word_spans_sequential
+
+    cells = [
+        (1, "один два три"),
+        (2, "четыре пять шесть"),
+    ]
+    words = [
+        WordTS("один", 0.0, 0.4, 1.0),
+        WordTS("два", 0.5, 0.9, 1.0),
+        WordTS("три", 1.0, 1.4, 1.0),
+        WordTS("шум", 2.0, 2.2, 1.0),
+        WordTS("четыре", 130.0, 130.4, 1.0),
+        WordTS("пять", 130.5, 130.9, 1.0),
+        WordTS("шесть", 131.0, 131.4, 1.0),
+    ]
+    spans = build_frame_word_spans_sequential(cells, words)
+    timings = build_absolute_asr_timeline(spans, words, 140.0)
+    assert timings[0].duration < 10.0
+    assert timings[1].start_ts > timings[0].end_ts - 0.05
+    assert all(t.duration > 0 for t in timings)
+
+
+def test_timeline_no_negative_when_next_start_collides() -> None:
+    from app.services.mapper import build_absolute_asr_timeline, build_frame_word_spans_sequential
+
+    cells = [(i, "слово") for i in range(1, 10)]
+    words = [WordTS("слово", 100.0, 101.76, 1.0)] + [
+        WordTS(f"x{i}", 100.0 + i * 0.01, 100.0 + i * 0.01 + 0.01, 1.0)
+        for i in range(1, 30)
+    ]
+    spans = build_frame_word_spans_sequential(cells, words)
+    timings = build_absolute_asr_timeline(spans, words, 120.0)
+    assert all(t.duration > 0 for t in timings)
+    assert abs(timings[-1].end_ts - 120.0) < 0.02
+
+
+def test_absolute_timeline_uses_next_cell_start() -> None:
+    from app.services.mapper import build_absolute_asr_timeline, build_frame_word_spans_sequential
+
+    cells = [(1, "один два"), (2, "три четыре")]
+    words = [
+        WordTS("один", 0.0, 0.8, 1.0),
+        WordTS("два", 0.85, 1.6, 1.0),
+        WordTS("три", 2.0, 2.7, 1.0),
+        WordTS("четыре", 2.75, 3.5, 1.0),
+    ]
+    spans = build_frame_word_spans_sequential(cells, words)
+    timings = build_absolute_asr_timeline(spans, words, 10.0)
+    assert abs(timings[0].start_ts - 0.0) < 0.01
+    assert abs(timings[0].duration - 2.0) < 0.01
+    assert abs(timings[1].start_ts - 2.0) < 0.01
+    assert abs(timings[-1].end_ts - 10.0) < 0.01
+
+
+def test_absolute_timeline_never_negative_on_long_project() -> None:
+    from app.services.mapper import build_absolute_asr_timeline, build_frame_word_spans_sequential
+
+    cells = [(i, f"word{i}") for i in range(1, 145)]
+    words = [
+        WordTS(f"w{i}", i * 3.8, i * 3.8 + 0.5, 1.0)
+        for i in range(400)
+    ]
+    spans = build_frame_word_spans_sequential(cells, words)
+    timings = build_absolute_asr_timeline(spans, words, 551.7)
+    assert len(timings) == 144
+    assert all(t.duration > 0 for t in timings)
+    assert abs(timings[-1].end_ts - 551.7) < 0.02
+    assert abs(sum(t.duration for t in timings) - 551.7) < 0.02
+
+
+def test_normalize_contiguous_no_negative_with_many_frames() -> None:
+    raw = [FrameTiming(i, 0.0, 0.0, 0.5 + (i % 7) * 0.1) for i in range(1, 145)]
+    out = normalize_contiguous(raw, audio_duration=551.7)
+    assert len(out) == 144
+    assert all(t.duration > 0 for t in out)
+    assert abs(out[-1].end_ts - 551.7) < 0.02
+
+
 def test_normalize_contiguous_fills_full_audio_and_no_gaps() -> None:
     raw = [
         FrameTiming(1, 0.0, 2.0, 2.0),

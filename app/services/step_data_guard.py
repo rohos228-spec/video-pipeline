@@ -67,6 +67,10 @@ async def can_enter_running(
     if target not in _NO_FRAMES_REQUIRED:
         need_frames = await _frames_with_voiceover(session, project)
         if need_frames == 0:
+            if target is ProjectStatus.assembling:
+                music = await _count_kind(session, project.id, ArtifactKind.music)
+                if music > 0:
+                    return False, "нет кадров с voiceover", ProjectStatus.music_ready
             actual = await compute_actual_status(session, project)
             return False, "нет кадров с voiceover", actual
 
@@ -123,7 +127,14 @@ async def can_enter_running(
             )
         ).scalar_one_or_none()
         if audio is None or not Path(audio.path).is_file():
-            return False, "нет артефакта аудио", ProjectStatus.generating_audio
+            from app.fleet.montage_handoff import is_fleet_hub_montage
+
+            rollback = (
+                ProjectStatus.music_ready
+                if is_fleet_hub_montage(project)
+                else ProjectStatus.generating_audio
+            )
+            return False, "нет артефакта аудио", rollback
         return True, "", None
 
     return True, "", None

@@ -110,6 +110,82 @@ async def record_step_failure(
     running = project.status
     step = step_by_running_status(running)
     step_code = step.code if step else running.value
+    err_msg = str(error)
+    meta = _meta(project)
+    from app.fleet.montage_handoff import is_fleet_hub_montage
+
+    async def _abandon_no_retry(*, blocked_key: str, log_msg: str) -> str:
+        fs = _failure_state(project)
+        fs["last_error"] = f"{type(error).__name__}: {error}"
+        fs["non_retryable"] = True
+        meta[blocked_key] = err_msg
+        meta.pop("montage_queue_enqueued", None)
+        project.meta = meta
+        project.status = ProjectStatus.paused
+        _save_failure_state(project, fs)
+        await session.flush()
+        logger.error("[#{}] {}", project.id, log_msg)
+        return "abandon"
+
+    if running is ProjectStatus.paused or step is None:
+        fs = _failure_state(project)
+        fs["last_error"] = f"{type(error).__name__}: {error}"
+        fs["non_retryable"] = True
+        if is_fleet_hub_montage(project) and "montage_blocked" not in meta:
+            meta["montage_blocked"] = err_msg
+            project.meta = meta
+        _save_failure_state(project, fs)
+        await session.flush()
+        logger.info(
+            "[#{}] failure on {} — paused, no reset/retry",
+            project.id,
+            running.value,
+        )
+        return "abandon"
+
+    if is_fleet_hub_montage(project) and (
+        running is ProjectStatus.generating_audio
+        or "fleet import" in err_msg
+        or "не генерируем через 11Labs" in err_msg
+    ):
+        return await _abandon_no_retry(
+            blocked_key="montage_blocked",
+            log_msg=f"fleet audio blocked — paused (no reset): {err_msg}",
+        )
+
+    # Сборка без данных — retry бессмысленен (reset+start_step = бесконечный цикл).
+    if (
+        "сборка невозможна" in err_msg
+        or (
+            running is ProjectStatus.assembling
+            and "не удалось прочитать текст кадров" in err_msg
+        )
+        or (
+            running is ProjectStatus.assembling
+            and "монтаж только по Excel" in err_msg
+        )
+        or (
+            running is ProjectStatus.assembling
+            and "нет кадров с voiceover" in err_msg
+        )
+    ):
+        fs = _failure_state(project)
+        fs["last_error"] = f"{type(error).__name__}: {error}"
+        fs["non_retryable"] = True
+        meta = _meta(project)
+        meta["assemble_blocked"] = err_msg
+        meta.pop("montage_queue_enqueued", None)
+        project.meta = meta
+        project.status = ProjectStatus.paused
+        _save_failure_state(project, fs)
+        await session.flush()
+        logger.error(
+            "[#{}] assemble blocked — paused (no auto-retry): {}",
+            project.id,
+            err_msg,
+        )
+        return "abandon"
+
     fs = _failure_state(project)
     key = running.value
 

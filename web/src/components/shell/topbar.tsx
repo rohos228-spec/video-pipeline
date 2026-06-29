@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity } from "lucide-react";
+import { Sparkles, Activity, Network, AudioWaveform } from "lucide-react";
+import type { AppTab } from "@/lib/app-tabs";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -20,7 +21,15 @@ export function useUi(): UiState {
   return ctx;
 }
 
-export function Topbar({ children }: { children?: React.ReactNode }) {
+export function Topbar({
+  children,
+  activeTab = "studio",
+  onTabChange,
+}: {
+  children?: React.ReactNode;
+  activeTab?: AppTab;
+  onTabChange?: (tab: AppTab) => void;
+}) {
   const [logsOpen, setLogsOpen] = useState(false);
   const [framesOpen, setFramesOpen] = useState(false);
   const [framesProjectId, setFramesProjectId] = useState<number | null>(null);
@@ -49,6 +58,32 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant={activeTab === "studio" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => onTabChange?.("studio")}
+            className="gap-2 text-xs"
+          >
+            Studio
+          </Button>
+          <Button
+            variant={activeTab === "fleet" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => onTabChange?.("fleet")}
+            className="gap-2 text-xs"
+          >
+            <Network className="h-3.5 w-3.5" />
+            Сеть
+          </Button>
+          <Button
+            variant={activeTab === "elevenlabs" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => onTabChange?.("elevenlabs")}
+            className="gap-2 text-xs"
+          >
+            <AudioWaveform className="h-3.5 w-3.5" />
+            11Labs
+          </Button>
           <Button
             variant="ghost"
             size="sm"

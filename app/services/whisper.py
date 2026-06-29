@@ -1,4 +1,4 @@
-"""faster-whisper: транскрибация озвучки в список слов с таймкодами."""
+"""ASR: word-level таймкоды (whisper / NVIDIA Parakeet через app.services.asr)."""
 
 from __future__ import annotations
 
@@ -18,15 +18,13 @@ class WordTS:
 
 
 def whisper_available() -> bool:
-    try:
-        import faster_whisper  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    from app.services.asr.engine import asr_available
+
+    return asr_available()
 
 
 _WHISPER_INSTALL_HINT = (
-    'pip install -e ".[whisper]"   # или: pip install "faster-whisper>=1.0"'
+    'pip install -e ".[whisper]"   # или NVIDIA: pip install -e ".[nvidia-asr]"'
 )
 
 
@@ -39,31 +37,15 @@ def transcribe_words(
     vad_filter: bool = False,
 ) -> list[WordTS]:
     """Word-level таймкоды; vad_filter=False — сохраняет паузы между словами."""
-    if not whisper_available():
-        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
-    from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
+    from app.services.asr.engine import transcribe_words as _transcribe
 
-    logger.info("whisper: loading model '{}' ...", model_name)
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    logger.info("whisper: transcribing {} (vad_filter={})", audio_path, vad_filter)
-    segments, _info = model.transcribe(
-        str(audio_path),
+    return _transcribe(
+        audio_path,
+        model_name=model_name,
         language=language,
         beam_size=beam_size,
-        word_timestamps=True,
         vad_filter=vad_filter,
     )
-    words: list[WordTS] = []
-    for seg in segments:
-        for w in seg.words or []:
-            words.append(WordTS(
-                word=w.word.strip(),
-                start=float(w.start),
-                end=float(w.end),
-                prob=float(getattr(w, "probability", 0.0)),
-            ))
-    logger.info("whisper: got {} words", len(words))
-    return words
 
 
 def transcribe_words_many(
@@ -74,36 +56,16 @@ def transcribe_words_many(
     beam_size: int = 5,
     vad_filter: bool = False,
 ) -> list[list[WordTS]]:
-    """Whisper для нескольких файлов — модель грузится один раз."""
-    if not audio_paths:
-        return []
-    if not whisper_available():
-        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
-    from faster_whisper import WhisperModel
+    """ASR для нескольких файлов — модель грузится один раз."""
+    from app.services.asr.engine import transcribe_words_many as _transcribe_many
 
-    logger.info("whisper: loading model '{}' for {} clips ...", model_name, len(audio_paths))
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    out: list[list[WordTS]] = []
-    for audio_path in audio_paths:
-        logger.info("whisper: transcribing {}", audio_path)
-        segments, _info = model.transcribe(
-            str(audio_path),
-            language=language,
-            beam_size=beam_size,
-            word_timestamps=True,
-            vad_filter=vad_filter,
-        )
-        words: list[WordTS] = []
-        for seg in segments:
-            for w in seg.words or []:
-                words.append(WordTS(
-                    word=w.word.strip(),
-                    start=float(w.start),
-                    end=float(w.end),
-                    prob=float(getattr(w, "probability", 0.0)),
-                ))
-        out.append(words)
-    return out
+    return _transcribe_many(
+        audio_paths,
+        model_name=model_name,
+        language=language,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
+    )
 
 
 def dump_words_json(

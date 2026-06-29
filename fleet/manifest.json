@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "updated_at": null,
+  "hub": {
+    "computer_name": "AI-CREATORPC",
+    "node_name": "AI-CREATORPC",
+    "tailscale_ip": "100.72.202.35",
+    "studio_url": "http://100.72.202.35:8765",
+    "note": "Run scripts/setup-hub-tailscale.ps1 after Tailscale login on hub"
+  },
+  "workers": [
+    {
+      "name": "nucbox-m6ultra",
+      "tailscale_ip": "100.100.240.106",
+      "studio_url": "http://100.100.240.106:8765"
+    }
+  ],
+  "worker_defaults": {
+    "studio_port": 8765,
+    "web_host": "0.0.0.0",
+    "asr_backend": "whisper",
+    "fleet_role": "agent",
+    "fleet_montage_hub": false,
+    "fleet_auto_pull": false
+  },
+  "git_branch": "feature/fleet-montage-queue-v161"
+}

@@ -3,11 +3,20 @@
 import { Sparkles } from "lucide-react";
 import { Topbar } from "./topbar";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+import type { AppTab } from "@/lib/app-tabs";
+
+export function AppShell({
+  children,
+  activeTab,
+  onTabChange,
+}: {
+  children: React.ReactNode;
+  activeTab?: AppTab;
+  onTabChange?: (tab: AppTab) => void;
+}) {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
-      {/* Topbar держит UiContext + модалки; children — sidebar/canvas/inspector */}
-      <Topbar>{children}</Topbar>
+      <Topbar activeTab={activeTab} onTabChange={onTabChange}>{children}</Topbar>
     </div>
   );
 }

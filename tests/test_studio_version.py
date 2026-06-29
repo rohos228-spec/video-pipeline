@@ -25,6 +25,15 @@ def test_read_studio_version_from_file(tmp_path: Path, monkeypatch) -> None:
     assert data["pipeline_ok"] is True
 
 
+def test_read_studio_version_strips_utf8_bom(tmp_path: Path, monkeypatch) -> None:
+    vf = tmp_path / "STUDIO_VERSION"
+    vf.write_bytes("\xef\xbb\xbf160\n0defe31\n\n\n".encode("utf-8"))
+    monkeypatch.setattr("app.web.studio_version._version_file", lambda: vf)
+    data = read_studio_version()
+    assert data["build"] == 160
+    assert data["label"] == "v160 · 0defe31"
+
+
 def test_ui_stale_when_out_old(tmp_path: Path, monkeypatch) -> None:
     vf = tmp_path / "STUDIO_VERSION"
     vf.write_text("99\ndeadbeef\n\n\n", encoding="utf-8")

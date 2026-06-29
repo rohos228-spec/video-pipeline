@@ -121,6 +121,16 @@ async def start_step(
             step_code,
             e,
         )
+    if step_code == "assemble":
+        from app.services.step_data_guard import can_enter_running
+
+        ok, reason, rollback = await can_enter_running(
+            session, project, ProjectStatus.assembling
+        )
+        if not ok:
+            project.status = rollback or ProjectStatus.music_ready
+            await session.flush()
+            raise ValueError(f"сборка невозможна: {reason}")
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

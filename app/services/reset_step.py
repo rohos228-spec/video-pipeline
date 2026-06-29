@@ -538,6 +538,20 @@ async def reset_step(
     if start_idx is None:
         return {"error": f"unknown step: {step_code}"}
 
+    from app.fleet.montage_handoff import is_fleet_hub_montage
+
+    if is_fleet_hub_montage(project) and step_code in ("audio", "music", "assemble"):
+        logger.warning(
+            "[#{}] reset_step({}) skipped — fleet hub montage (не стираем файлы)",
+            project.id,
+            step_code,
+        )
+        return {
+            "skipped": True,
+            "reason": "fleet_hub_montage",
+            "__steps_wiped": [],
+        }
+
     summary: dict[str, Any] = {}
     steps_wiped: list[str] = []
     # Идём с самого глубокого downstream к самому верхнему шагу — это
