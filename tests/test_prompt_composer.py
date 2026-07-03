@@ -215,3 +215,56 @@ def test_step_block_categories_empty_for_enrich_steps() -> None:
 
 def test_step_block_categories_unknown_step_returns_empty() -> None:
     assert pc.step_block_categories("no_such_step") == []
+
+
+# ── parse_step_template_blocks / write_step_template_blocks (block editor) ──
+
+
+@pytest.mark.parametrize("step_id", ALL_STEP_TEMPLATES)
+def test_parse_step_template_blocks_matches_header_regex(step_id: str) -> None:
+    text = pc._read_template(step_id)  # noqa: SLF001
+    expected = HEADER_RE.findall(text)
+    parsed = pc.parse_step_template_blocks(step_id)
+    assert [str(b["number"]) for b in parsed] == [n for n, _ in expected]
+    assert [b["title"] for b in parsed] == [t for _, t in expected]
+
+
+def test_write_step_template_blocks_round_trip(tmp_path, monkeypatch) -> None:
+    steps_root = tmp_path / "steps"
+    (steps_root / "99_test").mkdir(parents=True)
+    (steps_root / "99_test" / "template.md").write_text(
+        "# Шаг 99 — Тест\n\n## 1. ТЕХНИЧЕСКАЯ ЧАСТЬ\n\nстарый текст\n\n"
+        "## 2. РОЛЬ\n\nстарая роль\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pc, "STEPS_ROOT", steps_root)
+
+    blocks = pc.parse_step_template_blocks("99_test")
+    assert len(blocks) == 2
+    assert blocks[0]["title"] == "ТЕХНИЧЕСКАЯ ЧАСТЬ"
+    assert blocks[0]["body"] == "старый текст"
+
+    blocks[1]["body"] = "новая роль с {{VAR:X}}"
+    new_text = pc.write_step_template_blocks("99_test", blocks)
+
+    assert new_text.startswith("# Шаг 99 — Тест\n\n")
+    assert "## 1. ТЕХНИЧЕСКАЯ ЧАСТЬ" in new_text
+    assert "новая роль с {{VAR:X}}" in new_text
+
+    reparsed = pc.parse_step_template_blocks("99_test")
+    assert reparsed[1]["body"] == "новая роль с {{VAR:X}}"
+
+
+def test_write_step_template_blocks_preserves_h1_without_reading_twice(tmp_path, monkeypatch) -> None:
+    steps_root = tmp_path / "steps"
+    (steps_root / "99_new").mkdir(parents=True)
+    monkeypatch.setattr(pc, "STEPS_ROOT", steps_root)
+
+    # Файла ещё нет — H1 не сохранится (нечего сохранять), но запись не падает.
+    blocks = [
+        {"number": 1, "title": "ТЕХНИЧЕСКАЯ ЧАСТЬ", "body": "тест"},
+        {"number": 2, "title": "РОЛЬ", "body": "тест роли"},
+    ]
+    text = pc.write_step_template_blocks("99_new", blocks)
+    assert "## 1. ТЕХНИЧЕСКАЯ ЧАСТЬ" in text
+    assert "## 2. РОЛЬ" in text

@@ -20,7 +20,9 @@ from app.services.prompt_composer import (
     list_style_presets,
     load_style_preset,
     merge_project_prompt_config,
+    parse_step_template_blocks,
     step_block_categories,
+    write_step_template_blocks,
 )
 from app.services.prompt_library import list_prompts as list_variants
 from app.web.deps import get_session
@@ -50,6 +52,16 @@ class PromptOverridesPatch(BaseModel):
 
 class GptTextPatch(BaseModel):
     text: str = ""
+
+
+class StepBlockDTO(BaseModel):
+    number: int
+    title: str
+    body: str
+
+
+class StepTemplatePatch(BaseModel):
+    blocks: list[StepBlockDTO]
 
 
 async def _gpt_text_context(session: AsyncSession, project: Project, step_code: str) -> dict:
@@ -167,6 +179,41 @@ async def get_catalog() -> dict[str, Any]:
         "node_type_to_step": NODE_TYPE_TO_STEP,
         "style_presets": list_style_presets(),
     }
+
+
+@router.get("/step-template/{step_id}")
+async def get_step_template(step_id: str) -> dict[str, Any]:
+    """Блочное представление `steps/<id>/template.md` для визуального
+    редактора в Studio UI (карточки 1..N вместо одного текстового поля)."""
+    if step_id not in list_step_templates():
+        raise HTTPException(status_code=404, detail=f"step template not found: {step_id}")
+    return {"step_id": step_id, "blocks": parse_step_template_blocks(step_id)}
+
+
+@router.put("/step-template/{step_id}")
+async def save_step_template(step_id: str, payload: StepTemplatePatch) -> dict[str, Any]:
+    """Пересобирает `steps/<id>/template.md` из отредактированных блоков.
+
+    Валидация намеренно мягкая (не блокирует сохранение полностью), но
+    требует 5-7 блоков и технический блок первым — это инвариант, на
+    который опирается `docs/PROMPTS_BLOCKS.md` и структурные тесты."""
+    if step_id not in list_step_templates():
+        raise HTTPException(status_code=404, detail=f"step template not found: {step_id}")
+    if not (5 <= len(payload.blocks) <= 7):
+        raise HTTPException(
+            status_code=400,
+            detail=f"template must have 5-7 blocks, got {len(payload.blocks)}",
+        )
+    numbers = sorted(b.number for b in payload.blocks)
+    if numbers != list(range(1, len(payload.blocks) + 1)):
+        raise HTTPException(status_code=400, detail="blocks must be numbered 1..N without gaps")
+    first = next(b for b in payload.blocks if b.number == 1)
+    if "ТЕХНИЧЕСКАЯ ЧАСТЬ" not in first.title.strip().upper():
+        raise HTTPException(
+            status_code=400, detail="block 1 must stay «ТЕХНИЧЕСКАЯ ЧАСТЬ» (technical block)"
+        )
+    write_step_template_blocks(step_id, [b.model_dump() for b in payload.blocks])
+    return {"step_id": step_id, "blocks": parse_step_template_blocks(step_id)}
 
 
 @router.get("/styles/{preset_id}")

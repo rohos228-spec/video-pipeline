@@ -95,30 +95,53 @@ prompts/
 
 ## 5. UI Studio
 
-Студия ноды (правая панель) → вкладка **«Промты GPT»**:
+Студия ноды (правая панель) → вкладка **«Промты GPT»**. Сверху вниз для
+шагов, у которых есть `steps/<id>/template.md` (сейчас — все 12 нод):
 
-- **«Файлы промтов»** (`prompt-files-panel.tsx`) — выбор/редактирование
-  `.md`-варианта мастер-промта на диске (legacy-слой).
-- **«Блоки промта — вес и содержимое»** (`blocks-weight-panel.tsx`, новое) —
-  показывается только если у ноды есть `steps/<id>/template.md` **и** этот
-  шаблон реально использует хотя бы одну категорию `{{BLOCK:}}`
-  (`GET /api/prompt-studio/catalog` → `step_block_categories[step_id]`).
-  Для каждой такой категории — выбор файла из библиотеки **или** свой
-  текст, плюс слайдер веса 0–1. Сохраняется сразу в
-  `project.prompt_overrides.blocks` — то самое поле, которое реально
-  читает `compose_step()` (без промежуточных слоёв, которые не доходят до
-  сборки промта).
-- Категории, которых нет в шаблоне шага, никогда не показываются — так
-  невозможно настроить параметр, который ни на что не влияет.
+1. **`BlocksV2Toggle`** (`blocks-v2-toggle.tsx`) — переключатель
+   `prompt_overrides.use_blocks_v2` **на уровне проекта**. Это не
+   косметика: `get_project_prompt()` / `compose_step()` используют
+   `steps/<id>/template.md` только если этот флаг включён (или задан
+   непустой `prompt_overrides.blocks`) — иначе используется старый файл
+   `prompts/<step>/default.md`, и всё, что редактируется ниже, ни на что
+   не влияет. Тумблер всегда виден рядом с редактором, чтобы это не было
+   скрытым сюрпризом.
+2. **`StepBlocksEditor`** (`step-blocks-editor.tsx`) — сам блочный
+   редактор: каждый `## N. ЗАГОЛОВОК` из `steps/<id>/template.md`
+   рендерится отдельной карточкой (не одно текстовое поле на весь файл).
+   Технический блок 1 визуально выделен (рамка/бейдж), сохранение — через
+   `GET/PUT /api/prompt-studio/step-template/{step_id}`, который
+   разбирает/пересобирает файл (`parse_step_template_blocks()` /
+   `write_step_template_blocks()`). Сервер отклоняет сохранение, если
+   блоков не 5–7 или если блок 1 перестал быть «ТЕХНИЧЕСКАЯ ЧАСТЬ».
+3. **`BlocksWeightPanel`** (`blocks-weight-panel.tsx`) — редактор
+   значений категорий `{{BLOCK:cat}}`, которые встречаются внутри
+   карточек выше: выбор файла из библиотеки **или** свой текст, плюс
+   слайдер веса 0–1 (см. §4). Показывает только категории, которые
+   шаблон реально использует (`catalog.step_block_categories[step_id]`).
+   Сохраняется прямо в `project.prompt_overrides.blocks`.
+4. **`<details>` «Legacy: старые файлы промтов»** (свёрнуто по умолчанию)
+   — старая панель `prompt-files-panel.tsx`, редактирование
+   `prompts/<step>/*.md`. Работает, только если тумблер (п.1) выключен.
+
+Категории/шаги, которых нет в каталоге, никогда не показываются — так
+невозможно настроить параметр, который ни на что не влияет.
 
 ## 6. API
 
 - `GET /api/prompt-studio/catalog` — `block_categories`,
   `step_block_categories` (категории по каждому шагу), `steps`,
   `node_type_to_step`, `style_presets`.
+- `GET /api/prompt-studio/step-template/{step_id}` — блоки
+  `steps/<id>/template.md` как `[{number, title, body}, ...]` для
+  визуального редактора.
+- `PUT /api/prompt-studio/step-template/{step_id}` — сохранить
+  отредактированные блоки; 400, если блоков не 5–7 или блок 1 не
+  «ТЕХНИЧЕСКАЯ ЧАСТЬ»; 404, если такого шаблона нет.
 - `POST /api/prompt-studio/compose` — превью сборки (без сохранения).
 - `PATCH /api/prompt-studio/projects/{id}/prompt-config` — сохранить
-  `blocks` / `vars` / `style_profile` в `prompt_overrides` проекта.
+  `blocks` / `vars` / `style_profile` / `use_blocks_v2` в
+  `prompt_overrides` проекта.
 - `GET/PUT/DELETE /api/prompt-studio/projects/{id}/gpt-text/{step_code}` —
   сопроводительный текст в чат (отдельно от мастер-промта, см. `chatgpt_xlsx.py`).
 

@@ -20,6 +20,12 @@ import type {
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
 
+export interface StepTemplateBlock {
+  number: number;
+  title: string;
+  body: string;
+}
+
 async function http<T>(
   path: string,
   options: RequestInit = {}
@@ -229,6 +235,16 @@ export const api = {
     http<{ prompt_overrides: Record<string, unknown> }>(
       `/api/prompt-studio/projects/${projectId}/prompt-config`,
       { method: "PATCH", body: JSON.stringify(body) }
+    ),
+  // Блочный редактор шаблона шага (steps/<id>/template.md, карточки 1..N).
+  getStepTemplate: (stepId: string) =>
+    http<{ step_id: string; blocks: StepTemplateBlock[] }>(
+      `/api/prompt-studio/step-template/${stepId}`
+    ),
+  saveStepTemplate: (stepId: string, blocks: StepTemplateBlock[]) =>
+    http<{ step_id: string; blocks: StepTemplateBlock[] }>(
+      `/api/prompt-studio/step-template/${stepId}`,
+      { method: "PUT", body: JSON.stringify({ blocks }) }
     ),
   getProjectGptText: (projectId: number, stepCode: string) =>
     http<{

@@ -35,6 +35,8 @@ STYLES_ROOT = PROMPTS_ROOT / "styles"
 
 BLOCK_RE = re.compile(r"\{\{BLOCK:([a-z0-9_]+)\}\}")
 VAR_RE = re.compile(r"\{\{VAR:([A-Z0-9_]+)\}\}")
+STEP_BLOCK_HEADER_RE = re.compile(r"^## (\d+)\.\s+(.+?)\s*$", re.MULTILINE)
+STEP_H1_RE = re.compile(r"^(#\s+[^\n]+)\n")
 
 # Значение блока в prompt_overrides.blocks[cat]: либо просто имя файла
 # (legacy), либо объект {name?, text?, weight?}.
@@ -140,6 +142,52 @@ def list_step_templates() -> list[str]:
     return sorted(
         d.name for d in STEPS_ROOT.iterdir() if d.is_dir() and (d / "template.md").is_file()
     )
+
+
+def parse_step_template_blocks(step_id: str) -> list[dict[str, Any]]:
+    """Разбирает `steps/<id>/template.md` на список смысловых блоков
+    `## N. ЗАГОЛОВОК` для визуального блочного редактора в Studio UI.
+
+    Возвращает `[{"number": 1, "title": "ТЕХНИЧЕСКАЯ ЧАСТЬ", "body": "..."}, ...]`
+    в порядке следования в файле."""
+    text = _read_template(step_id)
+    matches = list(STEP_BLOCK_HEADER_RE.finditer(text))
+    blocks: list[dict[str, Any]] = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        blocks.append(
+            {
+                "number": int(m.group(1)),
+                "title": m.group(2).strip(),
+                "body": text[start:end].strip("\n"),
+            }
+        )
+    return blocks
+
+
+def write_step_template_blocks(step_id: str, blocks: list[dict[str, Any]]) -> str:
+    """Пересобирает `steps/<id>/template.md` из списка блоков (обратная
+    операция к `parse_step_template_blocks`). Сохраняет заголовок `# ...`
+    первой строки файла (если он был), если явно не задан в блоках.
+
+    `step_id` должен быть уже существующим шаблоном (проверяется на
+    роутере через `list_step_templates()`, чтобы исключить path traversal)."""
+    path = STEPS_ROOT / step_id / "template.md"
+    h1 = ""
+    if path.is_file():
+        m0 = STEP_H1_RE.match(path.read_text(encoding="utf-8"))
+        if m0:
+            h1 = m0.group(1) + "\n\n"
+    parts = [h1]
+    for b in sorted(blocks, key=lambda b: int(b["number"])):
+        title = str(b["title"]).strip()
+        body = str(b["body"]).strip()
+        parts.append(f"## {int(b['number'])}. {title}\n\n{body}\n\n")
+    new_text = "".join(parts).rstrip("\n") + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text, encoding="utf-8")
+    return new_text
 
 
 def step_block_categories(step_id: str) -> list[str]:
