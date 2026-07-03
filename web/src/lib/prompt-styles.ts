@@ -1,13 +1,7 @@
-/** Стили привязаны к конкретному промту конкретной ноды (meta.prompt_styles). */
-
-import type { NodePromptSlot } from "./node-prompts";
-
-export interface CustomStylePreset {
-  id: string;
-  label: string;
-  blocks: Record<string, string>;
-  vars?: Record<string, string | number>;
-}
+/**
+ * Значение категории блока `{{BLOCK:cat}}` в `project.prompt_overrides.blocks`
+ * (см. app/services/prompt_composer.py и docs/PROMPTS_BLOCKS.md).
+ */
 
 /**
  * Значение одной категории блока:
@@ -17,41 +11,6 @@ export interface CustomStylePreset {
  *    вместо файла (может содержать {{VAR:...}} — подставится как обычно).
  */
 export type BlockSelection = string | { name?: string; text?: string; weight?: number };
-
-export interface PromptStyleConfig {
-  style_preset?: string;
-  blocks?: Record<string, BlockSelection>;
-  custom_styles?: CustomStylePreset[];
-}
-
-export type PromptStylesMeta = Record<string, Record<string, PromptStyleConfig>>;
-
-export function slotSupportsStyles(slot: NodePromptSlot | null | undefined): boolean {
-  if (!slot) return false;
-  return slot.kind === "gpt" || slot.kind === "blocks" || slot.kind === "text";
-}
-
-export function getPromptStyle(
-  meta: Record<string, unknown> | undefined,
-  nodeKey: string,
-  slotId: string,
-): PromptStyleConfig {
-  const all = (meta?.prompt_styles || {}) as PromptStylesMeta;
-  return all[nodeKey]?.[slotId] ?? {};
-}
-
-export function setPromptStyleInMeta(
-  meta: Record<string, unknown>,
-  nodeKey: string,
-  slotId: string,
-  patch: Partial<PromptStyleConfig>,
-): Record<string, unknown> {
-  const all = { ...((meta.prompt_styles || {}) as PromptStylesMeta) };
-  const node = { ...(all[nodeKey] || {}) };
-  node[slotId] = { ...(node[slotId] || {}), ...patch };
-  all[nodeKey] = node;
-  return { ...meta, prompt_styles: all };
-}
 
 /** Имя выбранного файла блока (пусто, если категория задана свободным текстом). */
 export function blockName(sel: BlockSelection | undefined): string {
