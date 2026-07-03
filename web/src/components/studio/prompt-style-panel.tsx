@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { humanizeSlug, formatStylePresetLabel } from "@/lib/format-labels";
 import type { NodePromptSlot } from "@/lib/node-prompts";
 import {
+  blockName,
   type CustomStylePreset,
   type PromptStyleConfig,
   slotSupportsStyles,
@@ -33,6 +34,12 @@ export function PromptStylePanel({
   const blocks = config.blocks ?? {};
   const customStyles = config.custom_styles ?? [];
   const activePreset = config.style_preset ?? "";
+  // Пресеты (built-in и custom) исторически хранят только имена файлов
+  // блоков (без веса/своего текста) — берём срез текущего выбора как
+  // простые строки для сохранения в такой пресет.
+  const blockNames: Record<string, string> = Object.fromEntries(
+    Object.entries(blocks).map(([cat, sel]) => [cat, blockName(sel)]),
+  );
 
   const allPresets = useMemo(() => {
     const builtIn = catalogPresets.map((p) => ({
@@ -75,7 +82,7 @@ export function PromptStylePanel({
     onChange({
       ...config,
       style_preset: id,
-      custom_styles: [...customStyles, { id, label: name, blocks: { ...blocks } }],
+      custom_styles: [...customStyles, { id, label: name, blocks: { ...blockNames } }],
     });
     setNewStyleName("");
     setShowAdd(false);
@@ -162,7 +169,7 @@ export function PromptStylePanel({
                 <label className="text-[10px] text-muted-foreground">{humanizeSlug(cat)}</label>
                 <select
                   className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                  value={blocks[cat] ?? ""}
+                  value={blockName(blocks[cat])}
                   onChange={(e) => onChange({ ...config, blocks: { ...blocks, [cat]: e.target.value } })}
                 >
                   <option value="">— по умолчанию —</option>

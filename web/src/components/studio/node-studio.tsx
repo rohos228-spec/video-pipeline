@@ -48,6 +48,7 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
+import { BlocksWeightPanel } from "@/components/studio/blocks-weight-panel";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
@@ -103,6 +104,13 @@ export function NodeStudio({
     queryFn: () => api.listArtifacts({ project_id: projectId! }),
     enabled: open && projectId != null,
   });
+  const promptCatalog = useQuery({
+    queryKey: ["prompt-studio-catalog"],
+    queryFn: () => api.promptStudioCatalog(),
+    enabled: open,
+    staleTime: 5 * 60_000,
+  });
+  const blocksV2StepId = promptCatalog.data?.node_type_to_step[nodeType];
 
   const allSlots = useMemo(() => {
     if (promptSlotsProp?.length) return resolvePromptSlots(nodeType, promptSlotsProp);
@@ -445,20 +453,30 @@ export function NodeStudio({
                       field="image_prompt"
                     />
                   ) : showFilesPanel && activeStepCode ? (
-                    <PromptFilesPanel
-                      key={`files-${nodeKey}-${activeSlot?.id}-${activeStepCode}`}
-                      stepCode={activeStepCode}
-                      slotId={activeSlot?.id}
-                      preferredFile={preferredFile}
-                      folderHint={
-                        activeSlot?.stepCode && activeSlot.stepCode !== stepCode
-                          ? activeSlot.stepCode
-                          : (promptPaths.legacyDir ?? activeStepCode)
-                      }
-                      activeVariant={activeVariant}
-                      onActivateVariant={(variant) => activateVariant.mutate(variant)}
-                      activating={activateVariant.isPending}
-                    />
+                    <div className="flex flex-col gap-4">
+                      <PromptFilesPanel
+                        key={`files-${nodeKey}-${activeSlot?.id}-${activeStepCode}`}
+                        stepCode={activeStepCode}
+                        slotId={activeSlot?.id}
+                        preferredFile={preferredFile}
+                        folderHint={
+                          activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                            ? activeSlot.stepCode
+                            : (promptPaths.legacyDir ?? activeStepCode)
+                        }
+                        activeVariant={activeVariant}
+                        onActivateVariant={(variant) => activateVariant.mutate(variant)}
+                        activating={activateVariant.isPending}
+                      />
+                      {projectId != null && blocksV2StepId && (
+                        <BlocksWeightPanel
+                          key={`blocks-${nodeKey}-${blocksV2StepId}`}
+                          projectId={projectId}
+                          stepId={blocksV2StepId}
+                          promptOverrides={promptOverrides}
+                        />
+                      )}
+                    </div>
                   ) : showBlocksPanel ? (
                     <p className="text-sm text-muted-foreground">
                       Генерация через outsee.io в Chrome. Промты кадров — слот

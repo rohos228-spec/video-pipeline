@@ -18,6 +18,7 @@ import type {
   WorkflowRunDetail,
   WorkflowSummary,
 } from "./types";
+import type { BlockSelection } from "./prompt-styles";
 
 async function http<T>(
   path: string,
@@ -199,6 +200,7 @@ export const api = {
     http<{
       block_categories: Record<string, string[]>;
       steps: string[];
+      step_block_categories: Record<string, string[]>;
       node_type_to_step: Record<string, string>;
       style_presets: { id: string; label: string; description?: string }[];
     }>(`/api/prompt-studio/catalog`),
@@ -206,11 +208,11 @@ export const api = {
     node_type?: string;
     step_id?: string;
     project_id?: number;
-    blocks?: Record<string, string>;
+    blocks?: Record<string, BlockSelection>;
     vars?: Record<string, string | number>;
     style_preset?: string;
   }) =>
-    http<{ text: string; blocks: Record<string, string>; vars: Record<string, string> }>(
+    http<{ text: string; blocks: Record<string, BlockSelection>; vars: Record<string, string> }>(
       `/api/prompt-studio/compose`,
       { method: "POST", body: JSON.stringify(body) }
     ),
@@ -218,7 +220,7 @@ export const api = {
     projectId: number,
     body: {
       style_profile?: string;
-      blocks?: Record<string, string>;
+      blocks?: Record<string, BlockSelection>;
       vars?: Record<string, string | number>;
       use_blocks_v2?: boolean;
       legacy?: Record<string, string>;
