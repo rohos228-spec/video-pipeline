@@ -6,10 +6,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.services import gpt_text_builder as gtb
 from app.services.prompt_composer import (
+    NODE_TYPE_TO_STEP,
     compose_for_node_type,
     compose_step,
     list_block_categories,
@@ -17,12 +20,10 @@ from app.services.prompt_composer import (
     list_style_presets,
     load_style_preset,
     merge_project_prompt_config,
-    NODE_TYPE_TO_STEP,
+    step_block_categories,
 )
 from app.services.prompt_library import list_prompts as list_variants
-from app.services import gpt_text_builder as gtb
 from app.web.deps import get_session
-from sqlalchemy import select
 
 router = APIRouter(prefix="/prompt-studio", tags=["prompt-studio"])
 
@@ -31,14 +32,16 @@ class ComposeRequest(BaseModel):
     node_type: str | None = None
     step_id: str | None = None
     project_id: int | None = None
-    blocks: dict[str, str] | None = None
+    # Значение категории: либо имя файла (str, legacy), либо
+    # {"name"?: str, "text"?: str, "weight"?: float 0..1}.
+    blocks: dict[str, Any] | None = None
     vars: dict[str, Any] | None = None
     style_preset: str | None = None
 
 
 class PromptOverridesPatch(BaseModel):
     style_profile: str | None = None
-    blocks: dict[str, str] | None = None
+    blocks: dict[str, Any] | None = None
     vars: dict[str, Any] | None = None
     use_blocks_v2: bool | None = None
     # legacy string overrides сохраняем
@@ -153,9 +156,14 @@ async def reset_project_gpt_text(
 
 @router.get("/catalog")
 async def get_catalog() -> dict[str, Any]:
+    steps = list_step_templates()
     return {
         "block_categories": list_block_categories(),
-        "steps": list_step_templates(),
+        "steps": steps,
+        # Какие {{BLOCK:cat}} реально встречаются в шаблоне каждого шага —
+        # чтобы UI не предлагал редактировать категории, которые для этого
+        # шага ни на что не влияют.
+        "step_block_categories": {s: step_block_categories(s) for s in steps},
         "node_type_to_step": NODE_TYPE_TO_STEP,
         "style_presets": list_style_presets(),
     }
@@ -184,7 +192,7 @@ async def get_step_variants(step_code: str) -> list[str]:
 async def compose_preview(
     payload: ComposeRequest,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if payload.style_preset:
         overrides["style_profile"] = payload.style_preset
