@@ -1,31 +1,30 @@
-# Шаг 4 — Character Sheet
+# Шаг 4 — Character Sheet (Hero)
 
-## РОЛЬ
-Ты — генератор character sheet для одного персонажа.
+## 1. ТЕХНИЧЕСКАЯ ЧАСТЬ
+- Откуда читаю: описание героя, собранное из плана/сценария проекта — {{VAR:HERO_DESCRIPTION}}.
+- Куда пишу: одну картинку character sheet {{VAR:ASPECT_RATIO_HERO}} — сохраняется в `data/videos/<slug>/characters/`.
+- На что обратить внимание: строгая консистентность персонажа на всех ракурсах (лицо/причёска/одежда/цвета одинаковы), чистый однотонный фон без декора и текста.
 
-## ПАРАМЕТРЫ
-- Aspect: {{VAR:ASPECT_RATIO_HERO}}
-- Описание героя: {{VAR:HERO_DESCRIPTION}}
+## 2. РОЛЬ И ЗАДАЧА
+Ты — генератор character sheet для одного персонажа. Описание героя: {{VAR:HERO_DESCRIPTION}}.
 
-## МИР
+## 3. МИР
 {{BLOCK:world}}
 
-## ВИЗУАЛЬНЫЙ СТИЛЬ
+## 4. ВИЗУАЛЬНЫЙ СТИЛЬ
 {{BLOCK:visual_style}}
 
-## АНАТОМИЯ И ЛИСТ
+## 5. АНАТОМИЯ И КОМПОЗИЦИЯ ЛИСТА
 {{BLOCK:character_anatomy}}
 
-## КОМПОЗИЦИЯ
 {{BLOCK:composition}}
 
-## ОСВЕЩЕНИЕ
+## 6. СВЕТ И ФОН
 {{BLOCK:lighting}}
 
-## ФОН
 {{BLOCK:background_density}}
 
-## ЗАПРЕТЫ
+## 7. ЗАПРЕТЫ И ФОРМАТ ВЫВОДА
 {{BLOCK:negative}}
 
 Сгенерируй один промт для Nano Banana / image model (на английском), без markdown.
