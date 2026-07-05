@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LibraryConfig, LibraryEvent, LibraryItem, LibraryVersion, Project
@@ -540,18 +541,26 @@ async def import_existing_prompts(session: AsyncSession) -> dict[str, int]:
         kind = classify_prompt_rel_path(rel)
         file_path = (Path("prompts") / rel).as_posix()
         key = file_path
-        _item, _version, changed = await create_or_update_item(
-            session,
-            kind=kind,
-            key=key,
-            title=title_from_path(rel),
-            file_path=file_path,
-            content=text,
-            message="import from prompts/",
-            author="system",
-            source="startup_import",
-            meta={"repo_path": str(src.relative_to(REPO_ROOT).as_posix())},
-        )
+        try:
+            async with session.begin_nested():
+                _item, _version, changed = await create_or_update_item(
+                    session,
+                    kind=kind,
+                    key=key,
+                    title=title_from_path(rel),
+                    file_path=file_path,
+                    content=text,
+                    message="import from prompts/",
+                    author="system",
+                    source="startup_import",
+                    meta={"repo_path": str(src.relative_to(REPO_ROOT).as_posix())},
+                )
+        except IntegrityError:
+            # Startup may run more than one importer in quick succession
+            # (preflight/API lifespan/worker). If another transaction wins the
+            # unique key race, leave the existing item intact and continue.
+            counts["skipped"] += 1
+            continue
         counts["seen"] += 1
         if changed:
             counts["versions"] += 1
