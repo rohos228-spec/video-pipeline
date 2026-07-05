@@ -1,0 +1,109 @@
+{
+  "compose_step_id": "01_plan",
+  "label": "План ролика",
+  "presets": {
+    "custom_1": {
+      "label": "custom_1",
+      "aliases": [
+        "custom_1",
+        "reworked_custom_1_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта custom_1.md",
+      "blocks": {
+        "plan_role": "shorts_planner",
+        "plan_structure": "viral_60s_timeline",
+        "plan_voice_tone": "human_clear_pitch",
+        "forbidden_phrases": "ai_cliches_ru",
+        "plan_output_contract": "xlsx_plan_timing",
+        "plan_self_check": "plan_quality_gate"
+      },
+      "extra_blocks": {
+        "plan_source_full": "custom_1_full"
+      }
+    },
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "plan_role": "shorts_planner",
+        "plan_structure": "viral_60s_timeline",
+        "plan_voice_tone": "human_clear_pitch",
+        "forbidden_phrases": "ai_cliches_ru",
+        "plan_output_contract": "xlsx_plan_timing",
+        "plan_self_check": "plan_quality_gate"
+      },
+      "extra_blocks": {
+        "plan_source_full": "default_full"
+      }
+    },
+    "plan_long_rolik": {
+      "label": "plan_long_rolik",
+      "aliases": [
+        "plan_long_rolik",
+        "reworked_plan_long_rolik_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта plan_long_rolik.md",
+      "blocks": {
+        "plan_role": "shorts_planner",
+        "plan_structure": "viral_60s_timeline",
+        "plan_voice_tone": "human_clear_pitch",
+        "forbidden_phrases": "ai_cliches_ru",
+        "plan_output_contract": "xlsx_plan_timing",
+        "plan_self_check": "plan_quality_gate"
+      },
+      "extra_blocks": {
+        "plan_source_full": "plan_long_rolik_full"
+      }
+    },
+    "zinser_12_05": {
+      "label": "Зинсер 12.05",
+      "aliases": [
+        "Зинсер 12.05",
+        "reworked_zinser_12_05_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта Зинсер 12.05.md",
+      "blocks": {
+        "plan_role": "shorts_planner",
+        "plan_structure": "viral_60s_timeline",
+        "plan_voice_tone": "human_clear_pitch",
+        "forbidden_phrases": "ai_cliches_ru",
+        "plan_output_contract": "xlsx_plan_timing",
+        "plan_self_check": "plan_quality_gate"
+      },
+      "extra_blocks": {
+        "plan_source_full": "zinser_12_05_full"
+      }
+    },
+    "plan_11_05": {
+      "label": "план 11.05",
+      "aliases": [
+        "план 11.05",
+        "reworked_plan_11_05_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта план 11.05.md",
+      "blocks": {
+        "plan_role": "shorts_planner",
+        "plan_structure": "viral_60s_timeline",
+        "plan_voice_tone": "human_clear_pitch",
+        "forbidden_phrases": "ai_cliches_ru",
+        "plan_output_contract": "xlsx_plan_timing",
+        "plan_self_check": "plan_quality_gate"
+      },
+      "extra_blocks": {
+        "plan_source_full": "plan_11_05_full"
+      },
+      "omit_slots": []
+    }
+  },
+  "preset_order": [
+    "custom_1",
+    "default",
+    "plan_long_rolik",
+    "zinser_12_05",
+    "plan_11_05"
+  ]
+}

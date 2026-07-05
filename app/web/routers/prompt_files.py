@@ -8,10 +8,14 @@ real-time: список вариантов, чтение/запись/удале
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import local_library as lib
 from app.services.prompt_history import (
     list_prompt_versions,
     read_prompt_version,
@@ -30,6 +34,7 @@ from app.services.prompt_library import (
     read_prompt,
     step_dir,
 )
+from app.web.deps import get_session
 
 router = APIRouter(prefix="/prompt-files", tags=["prompt-files"])
 
@@ -90,6 +95,10 @@ def _ensure_name(name: str) -> None:
         raise HTTPException(status_code=400, detail=f"invalid prompt name: {name!r}")
 
 
+def _library_prompt_path(step_code: str, name: str) -> str:
+    return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
+
+
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
 async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
     """Список .md-файлов в `prompts/<step>/`."""
@@ -146,11 +155,29 @@ async def download_prompt_file(step_code: str, name: str) -> FileResponse:
 
 @router.put("/{step_code}/{name}", response_model=PromptFileContent)
 async def save_prompt_file(
-    step_code: str, name: str, payload: PromptFileSavePayload
+    step_code: str,
+    name: str,
+    payload: PromptFileSavePayload,
+    session: AsyncSession = Depends(get_session),
 ) -> PromptFileContent:
     _ensure_step(step_code)
     _ensure_name(name)
     write_prompt_with_history(step_code, name, payload.content)
+    file_path = _library_prompt_path(step_code, name)
+    await lib.create_or_update_item(
+        session,
+        kind="prompt",
+        key=file_path,
+        title=name,
+        file_path=file_path,
+        content=payload.content,
+        message=f"save prompt file {step_code}/{name}",
+        author="studio",
+        source="prompt_files",
+        meta={"step_code": step_code, "name": name},
+        force_version=True,
+    )
+    await session.commit()
     p = prompt_path(step_code, name)
     stat = p.stat()
     return PromptFileContent(
@@ -163,17 +190,30 @@ async def save_prompt_file(
 
 
 @router.delete("/{step_code}/{name}")
-async def delete_prompt_file(step_code: str, name: str) -> dict[str, bool]:
+async def delete_prompt_file(
+    step_code: str,
+    name: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
     _ensure_step(step_code)
     _ensure_name(name)
     if name == DEFAULT_NAME:
         raise HTTPException(status_code=400, detail="default удалять нельзя")
+    file_path = _library_prompt_path(step_code, name)
+    item = await lib.get_item_by_key(session, "prompt", file_path)
     try:
         removed = delete_prompt(step_code, name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not removed:
         raise HTTPException(status_code=404, detail="prompt file not found")
+    await lib.log_event(
+        session,
+        "deleted",
+        item=item,
+        payload={"step_code": step_code, "name": name, "file_path": file_path},
+    )
+    await session.commit()
     return {"removed": True}
 
 
@@ -277,6 +317,7 @@ async def upload_prompt_file(
     step_code: str,
     file: UploadFile = File(...),
     name: str | None = None,
+    session: AsyncSession = Depends(get_session),
 ) -> PromptFileInfo:
     """Загрузить .md-файл в папку шага.
 
@@ -307,6 +348,21 @@ async def upload_prompt_file(
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=400, detail="file must be utf-8 text") from e
     write_prompt_with_history(step_code, raw_name, text)
+    file_path = _library_prompt_path(step_code, raw_name)
+    await lib.create_or_update_item(
+        session,
+        kind="prompt",
+        key=file_path,
+        title=raw_name,
+        file_path=file_path,
+        content=text,
+        message=f"upload prompt file {step_code}/{raw_name}",
+        author="studio",
+        source="prompt_files_upload",
+        meta={"step_code": step_code, "name": raw_name},
+        force_version=True,
+    )
+    await session.commit()
     p = prompt_path(step_code, raw_name)
     stat = p.stat()
     return PromptFileInfo(

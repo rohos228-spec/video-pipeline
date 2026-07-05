@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -21,20 +21,51 @@ from loguru import logger
 from app.services.event_bus import get_bus
 from app.web.routers import (
     artifacts as artifacts_router,
-    config_presets as config_presets_router,
-    frames as frames_router,
-    generation_options as generation_options_router,
-    hitl as hitl_router,
-    project_ops as project_ops_router,
-    projects as projects_router,
-    prompt_files as prompt_files_router,
-    prompt_studio as prompt_studio_router,
-    prompts as prompts_router,
-    runs as runs_router,
-    sidebar_layout as sidebar_layout_router,
-    workflows as workflows_router,
-    fleet as fleet_router,
+)
+from app.web.routers import (
     auth as auth_router,
+)
+from app.web.routers import (
+    config_presets as config_presets_router,
+)
+from app.web.routers import (
+    fleet as fleet_router,
+)
+from app.web.routers import (
+    frames as frames_router,
+)
+from app.web.routers import (
+    generation_options as generation_options_router,
+)
+from app.web.routers import (
+    hitl as hitl_router,
+)
+from app.web.routers import (
+    library as library_router,
+)
+from app.web.routers import (
+    project_ops as project_ops_router,
+)
+from app.web.routers import (
+    projects as projects_router,
+)
+from app.web.routers import (
+    prompt_files as prompt_files_router,
+)
+from app.web.routers import (
+    prompt_studio as prompt_studio_router,
+)
+from app.web.routers import (
+    prompts as prompts_router,
+)
+from app.web.routers import (
+    runs as runs_router,
+)
+from app.web.routers import (
+    sidebar_layout as sidebar_layout_router,
+)
+from app.web.routers import (
+    workflows as workflows_router,
 )
 from app.web.settings_default import seed_default_workflow
 
@@ -59,14 +90,33 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
+        from app.db import session_scope
+        from app.services.local_library import ensure_library_dirs, import_existing_prompts
+
+        ensure_library_dirs()
+        async with session_scope() as s:
+            info = await import_existing_prompts(s)
+            logger.info("web lifespan: local library import {}", info)
+    except Exception:  # noqa: BLE001
+        logger.exception("local library import failed (non-fatal)")
+    try:
         await seed_default_workflow()
     except Exception:  # noqa: BLE001
         logger.exception("seed_default_workflow failed (non-fatal)")
 
-    from app.services.pipeline_worker import ensure_pipeline_worker_started
-    from app.telegram.noop_bot import get_worker_bot
+    try:
+        from app.db import session_scope
+        from app.services.startup_guard import block_pipeline_autorun_on_startup
 
+        async with session_scope() as s:
+            guard_stats = await block_pipeline_autorun_on_startup(s)
+            logger.warning("web lifespan startup autorun guard: {}", guard_stats)
+    except Exception:  # noqa: BLE001
+        logger.exception("startup autorun guard failed (non-fatal)")
+
+    from app.services.pipeline_worker import ensure_pipeline_worker_started
     from app.settings import settings
+    from app.telegram.noop_bot import get_worker_bot
 
     live_log_path = settings.data_dir / "studio-live.log"
     live_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)
+    app.include_router(library_router.router, prefix=API_PREFIX)
     app.include_router(hitl_router.router, prefix=API_PREFIX)
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
@@ -188,10 +239,8 @@ def create_app() -> FastAPI:
             return
         except Exception:  # noqa: BLE001
             logger.exception("ws channel={} crashed", channel)
-            try:
+            with suppress(Exception):
                 await ws.close(code=1011)
-            except Exception:  # noqa: BLE001
-                pass
 
     # ── Health ──
     @app.get(f"{API_PREFIX}/health")

@@ -640,3 +640,107 @@ class NodeRun(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
     run: Mapped[WorkflowRun] = relationship(back_populates="node_runs")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Локальная библиотека промтов / блоков / конфигураций
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class LibraryItem(Base):
+    """Единица локальной библиотеки."""
+
+    __tablename__ = "library_items"
+    __table_args__ = (UniqueConstraint("kind", "key", name="uq_library_item_kind_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    key: Mapped[str] = mapped_column(String(300), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    file_path: Mapped[str] = mapped_column(Text)
+    active_version: Mapped[int] = mapped_column(default=1)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    versions: Mapped[list[LibraryVersion]] = relationship(
+        back_populates="item", cascade="all,delete-orphan"
+    )
+    events: Mapped[list[LibraryEvent]] = relationship(
+        back_populates="item", cascade="all,delete-orphan"
+    )
+
+
+class LibraryVersion(Base):
+    """Одна версия содержимого LibraryItem."""
+
+    __tablename__ = "library_versions"
+    __table_args__ = (UniqueConstraint("item_id", "version", name="uq_library_version_item"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("library_items.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(index=True)
+    content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    message: Mapped[str | None] = mapped_column(Text, default=None)
+    author: Mapped[str | None] = mapped_column(String(120), default=None)
+    source: Mapped[str | None] = mapped_column(String(120), default=None)
+    file_path: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+    item: Mapped[LibraryItem] = relationship(back_populates="versions")
+
+
+class LibraryEvent(Base):
+    """Аудит действий с локальной библиотекой."""
+
+    __tablename__ = "library_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_items.id", ondelete="SET NULL"), default=None, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+    item: Mapped[LibraryItem | None] = relationship(back_populates="events")
+
+
+class LibraryConfig(Base):
+    """Сохранённая конфигурация проекта: blocks/vars/gpt_text/workflow."""
+
+    __tablename__ = "library_configs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(240), index=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), default=None, index=True
+    )
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+
+class WorkflowVersion(Base):
+    """История изменения Workflow.nodes/edges."""
+
+    __tablename__ = "workflow_versions"
+    __table_args__ = (UniqueConstraint("workflow_id", "version", name="uq_workflow_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(index=True)
+    name: Mapped[str | None] = mapped_column(String(200), default=None)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    nodes: Mapped[list] = mapped_column(JSON, default=list)
+    edges: Mapped[list] = mapped_column(JSON, default=list)
+    message: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)

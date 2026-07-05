@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { ProjectSidebar } from "@/components/sidebar/project-sidebar";
 import { Inspector } from "@/components/inspector/inspector";
@@ -14,6 +14,12 @@ export default function HomePage() {
   const [studioOpen, setStudioOpen] = useState(false);
 
   useGlobalEvents();
+
+  useEffect(() => {
+    const openSidebar = () => setSidebarCollapsed(false);
+    window.addEventListener("studio-open-projects-sidebar", openSidebar);
+    return () => window.removeEventListener("studio-open-projects-sidebar", openSidebar);
+  }, []);
 
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);

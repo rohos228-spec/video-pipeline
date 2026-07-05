@@ -21,6 +21,63 @@ import type {
   WorkflowRunDetail,
   WorkflowSummary,
 } from "./types";
+import type { BlockSelection } from "./prompt-styles";
+
+export interface StepTemplateBlock {
+  number: number;
+  title: string;
+  body: string;
+}
+
+export interface LibraryItemDTO {
+  id: number;
+  kind: string;
+  key: string;
+  title: string;
+  file_path: string;
+  active_version: number;
+  content_hash: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LibraryItemDetailDTO extends LibraryItemDTO {
+  content: string;
+}
+
+export interface LibraryVersionDTO {
+  id: number;
+  item_id: number;
+  version: number;
+  content_hash: string;
+  message?: string | null;
+  author?: string | null;
+  source?: string | null;
+  file_path: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface BlockActivityEntry {
+  id: number;
+  event_type: string;
+  category?: string | null;
+  block_id?: string | null;
+  path?: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface LibraryConfigDTO {
+  id: number;
+  name: string;
+  project_id?: number | null;
+  snapshot: Record<string, unknown>;
+  content_hash: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+}
 
 async function http<T>(
   path: string,
@@ -239,19 +296,58 @@ export const api = {
   promptStudioCatalog: () =>
     http<{
       block_categories: Record<string, string[]>;
+      blocks?: {
+        category: string;
+        id: string;
+        label: string;
+        preview: string;
+        body: string;
+      }[];
       steps: string[];
+      step_block_categories: Record<string, string[]>;
       node_type_to_step: Record<string, string>;
       style_presets: { id: string; label: string; description?: string }[];
     }>(`/api/prompt-studio/catalog`),
+  promptStudioStepMeta: (stepId: string) =>
+    http<{ step_id: string; block_categories: string[]; vars: string[] }>(
+      `/api/prompt-studio/steps/${stepId}/meta`,
+    ),
+  promptStudioStepPresets: (stepCode: string) =>
+    http<import("@/lib/prompt-builder/prompt-presets").StepPresetsFile>(
+      `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}`,
+    ),
+  patchStepPreset: (
+    stepCode: string,
+    presetId: string,
+    body: { label?: string; description?: string; blocks?: Record<string, string | null> },
+  ) =>
+    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+      `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  createStepPreset: (
+    stepCode: string,
+    presetId: string,
+    body: { label?: string; description?: string; blocks?: Record<string, string | null> },
+  ) =>
+    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+      `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteStepPreset: (stepCode: string, presetId: string) =>
+    http<{ step_code: string; id: string; deleted: boolean }>(
+      `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
+      { method: "DELETE" },
+    ),
   composePrompt: (body: {
     node_type?: string;
     step_id?: string;
     project_id?: number;
-    blocks?: Record<string, string>;
+    blocks?: Record<string, BlockSelection>;
     vars?: Record<string, string | number>;
     style_preset?: string;
   }) =>
-    http<{ text: string; blocks: Record<string, string>; vars: Record<string, string> }>(
+    http<{ text: string; blocks: Record<string, BlockSelection>; vars: Record<string, string> }>(
       `/api/prompt-studio/compose`,
       { method: "POST", body: JSON.stringify(body) }
     ),
@@ -259,7 +355,7 @@ export const api = {
     projectId: number,
     body: {
       style_profile?: string;
-      blocks?: Record<string, string>;
+      blocks?: Record<string, BlockSelection>;
       vars?: Record<string, string | number>;
       use_blocks_v2?: boolean;
       legacy?: Record<string, string>;
@@ -268,6 +364,16 @@ export const api = {
     http<{ prompt_overrides: Record<string, unknown> }>(
       `/api/prompt-studio/projects/${projectId}/prompt-config`,
       { method: "PATCH", body: JSON.stringify(body) }
+    ),
+  // Блочный редактор шаблона шага (steps/<id>/template.md, карточки 1..N).
+  getStepTemplate: (stepId: string) =>
+    http<{ step_id: string; blocks: StepTemplateBlock[] }>(
+      `/api/prompt-studio/step-template/${stepId}`
+    ),
+  saveStepTemplate: (stepId: string, blocks: StepTemplateBlock[]) =>
+    http<{ step_id: string; blocks: StepTemplateBlock[] }>(
+      `/api/prompt-studio/step-template/${stepId}`,
+      { method: "PUT", body: JSON.stringify({ blocks }) }
     ),
   getProjectGptText: (projectId: number, stepCode: string) =>
     http<{
@@ -286,6 +392,70 @@ export const api = {
     http<{ step_code: string; text: string; supported: boolean; is_override: boolean }>(
       `/api/prompt-studio/projects/${projectId}/gpt-text/${stepCode}`,
       { method: "DELETE" }
+    ),
+  promptStudioSyncBlocks: () =>
+    http<{
+      categories: number;
+      blocks_total: number;
+      discovered: { category: string; block_id: string }[];
+      discovered_count: number;
+    }>(`/api/prompt-studio/blocks/sync`, { method: "POST" }),
+  promptStudioBlockActivity: (params?: { limit?: number; category?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.category) q.set("category", params.category);
+    const qs = q.toString();
+    return http<BlockActivityEntry[]>(
+      `/api/prompt-studio/block-activity${qs ? `?${qs}` : ""}`,
+    );
+  },
+  promptStudioLogBlockActivity: (body: {
+    event_type: "block_selected" | "block_viewed";
+    category: string;
+    block_id: string;
+    project_id?: number;
+    step_id?: string;
+    step_code?: string;
+    prompt_variant?: string | null;
+  }) =>
+    http<{ ok: boolean }>(`/api/prompt-studio/block-activity`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getPromptBlock: (category: string, blockId: string) =>
+    http<{ category: string; id: string; body: string }>(
+      `/api/prompt-studio/blocks/${encodeURIComponent(category)}/${encodeURIComponent(blockId)}`,
+    ),
+  savePromptBlock: (
+    category: string,
+    blockId: string,
+    body: { content: string; message?: string },
+  ) =>
+    http<{ category: string; id: string; label: string; version: number; library_item_id: number }>(
+      `/api/prompt-studio/blocks/${encodeURIComponent(category)}/${encodeURIComponent(blockId)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  createPromptBlock: (
+    category: string,
+    body: { block_id: string; content?: string; message?: string },
+  ) =>
+    http<{ category: string; id: string; label: string; version: number; library_item_id: number }>(
+      `/api/prompt-studio/blocks/${encodeURIComponent(category)}`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deletePromptBlock: (category: string, blockId: string) =>
+    http<{ category: string; id: string; deleted: boolean }>(
+      `/api/prompt-studio/blocks/${encodeURIComponent(category)}/${encodeURIComponent(blockId)}`,
+      { method: "DELETE" },
+    ),
+  renamePromptBlock: (
+    category: string,
+    blockId: string,
+    body: { new_block_id: string; message?: string },
+  ) =>
+    http<{ category: string; id: string; renamed_from?: string; label: string }>(
+      `/api/prompt-studio/blocks/${encodeURIComponent(category)}/${encodeURIComponent(blockId)}/rename`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
   saveGptTextAsTemplate: (
     projectId: number,
@@ -603,6 +773,69 @@ export const api = {
       `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/history/${encodeURIComponent(versionId)}/restore`,
       { method: "POST" },
     ),
+
+  // ── Local library (data/library + SQLite versions) ────────────────
+  listLibraryItems: (params?: { kind?: string; q?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.kind) q.set("kind", params.kind);
+    if (params?.q) q.set("q", params.q);
+    const qs = q.toString();
+    return http<LibraryItemDTO[]>(`/api/library/items${qs ? `?${qs}` : ""}`);
+  },
+  getLibraryItem: (id: number) =>
+    http<LibraryItemDetailDTO>(`/api/library/items/${id}`),
+  createLibraryItem: (body: {
+    kind: string;
+    key?: string;
+    title?: string;
+    file_path?: string;
+    content: string;
+    message?: string;
+    meta?: Record<string, unknown>;
+  }) =>
+    http<LibraryItemDetailDTO>(`/api/library/items`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateLibraryItem: (
+    id: number,
+    body: { title?: string; content: string; message?: string; meta?: Record<string, unknown> },
+  ) =>
+    http<LibraryItemDetailDTO>(`/api/library/items/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  listLibraryVersions: (id: number) =>
+    http<LibraryVersionDTO[]>(`/api/library/items/${id}/versions`),
+  restoreLibraryVersion: (id: number, version: number) =>
+    http<LibraryItemDetailDTO>(`/api/library/items/${id}/restore/${version}`, {
+      method: "POST",
+    }),
+  downloadLibraryItemUrl: (id: number) => `/api/library/items/${id}/download`,
+  saveLibraryConfig: (body: {
+    name?: string;
+    project_id?: number;
+    snapshot?: Record<string, unknown>;
+  }) =>
+    http<LibraryConfigDTO>(`/api/library/configs/save`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  savePromptBundle: (body: {
+    project_id?: number;
+    step_id?: string;
+    step_code?: string;
+    node_type?: string;
+    source_name?: string;
+    title?: string;
+    source_prompt?: string;
+    processed_prompt?: string;
+    blocks?: { kind: string; label: string; body: string }[];
+  }) =>
+    http<{ ok: boolean; items: Record<string, unknown> }>(`/api/library/prompt-bundles/save`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export interface PromptFileInfo {

@@ -18,7 +18,7 @@ import contextlib
 from loguru import logger
 
 from app.db import engine
-from app.models import Base, ProjectStatus
+from app.models import Base, Project, ProjectStatus
 from app.prompts_loader import sync_prompts_from_files
 from app.settings import settings
 from app.telegram.bot import build_bot, dp
@@ -258,7 +258,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         unregister_advance_task,
     )
 
-    MAX_FAIL = 3
     # (project_id, status.value) -> кол-во подряд неудач на этом шаге
     fail_counts: dict[tuple[int, str], int] = {}
 
@@ -365,10 +364,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         clear_failure_on_success(p, ProjectStatus(prev_status_value))
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
-                            try:
+                            with contextlib.suppress(Exception):
                                 await s.refresh(p)
-                            except Exception:  # noqa: BLE001
-                                pass
                             try:
                                 from app.services.gen_queue import (
                                     is_timeline_complete,
@@ -577,6 +574,13 @@ async def _await_background_tasks(tasks: list[asyncio.Task]) -> None:
 async def _startup_maintenance() -> None:
     """Тяжёлая инициализация в фоне — не блокирует /api/health."""
     try:
+        from app.db import session_scope
+        from app.services.local_library import ensure_library_dirs, import_existing_prompts
+
+        ensure_library_dirs()
+        async with session_scope() as s:
+            info = await import_existing_prompts(s)
+            logger.info("local library import: {}", info)
         await _backfill_from_disk()
         await _recompute_all_projects()
         await sync_prompts_from_files()
@@ -603,6 +607,13 @@ async def main() -> None:
         settings.db_url,
     )
     await _init_db()
+
+    from app.db import session_scope
+    from app.services.startup_guard import block_pipeline_autorun_on_startup
+
+    async with session_scope() as s:
+        guard_stats = await block_pipeline_autorun_on_startup(s)
+        logger.warning("startup autorun guard: {}", guard_stats)
 
     # Backfill/recompute могут занимать 30–60+ сек на большой БД.
     # Поднимаем HTTP сразу после init_db, чтобы Launcher не ждал таймаут.

@@ -261,6 +261,42 @@ body {
     inset 0 1px 0 hsl(0 0% 100% / 0.04);
 }
 
+.neural-node-glow {
+  box-shadow:
+    0 0 0 1px hsl(263 55% 62% / 0.08),
+    0 8px 40px hsl(0 0% 0% / 0.5),
+    inset 0 1px 0 hsl(0 0% 100% / 0.06);
+}
+
+.neural-canvas-bg {
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 20%, hsl(263 40% 14% / 0.45), transparent 55%),
+    radial-gradient(ellipse 60% 50% at 90% 80%, hsl(220 45% 12% / 0.35), transparent 50%),
+    hsl(var(--background));
+}
+
+.react-flow.neural-flow .react-flow__edge-path {
+  stroke: hsl(263 45% 55% / 0.38);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 3px hsl(263 55% 62% / 0.25));
+}
+
+.react-flow.neural-flow .react-flow__edge.animated path {
+  stroke-dasharray: 4 6;
+  animation: neural-edge-flow 1.8s linear infinite;
+}
+
+@keyframes neural-edge-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.react-flow.neural-flow .react-flow__connection-path {
+  stroke: hsl(263 55% 62% / 0.5);
+  stroke-width: 1.5;
+}
+
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: hsl(var(--primary));
   stroke-width: 2;

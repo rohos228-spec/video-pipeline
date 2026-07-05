@@ -3,6 +3,7 @@
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
+import { nodeSupportsBlocksV2 } from "./prompt-builder/step-compose-map";
 
 export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
 
@@ -187,7 +188,29 @@ export function mergePromptSlotsWithDefaults(
     slots.find((s) => s.kind === "excel") ??
     defaults.find((s) => s.kind === "excel");
 
-  return excel ? [excel, ...merged] : merged;
+  return ensureBlocksPromptSlot(nodeType, excel ? [excel, ...merged] : merged);
+}
+
+/** Слот «Конструктор промта» для нод с блочной сборкой v2. */
+export function ensureBlocksPromptSlot(
+  nodeType: string,
+  slots: NodePromptSlot[],
+): NodePromptSlot[] {
+  if (!nodeSupportsBlocksV2(nodeType)) return slots;
+  if (slots.some((s) => s.kind === "blocks")) return slots;
+  const slot: NodePromptSlot = {
+    id: "blocks_builder",
+    title: "Конструктор промта",
+    kind: "blocks",
+    stepCode: stepCodeForNodeType(nodeType),
+  };
+  const excelIdx = slots.findIndex((s) => s.kind === "excel");
+  if (excelIdx >= 0) {
+    const next = [...slots];
+    next.splice(excelIdx + 1, 0, slot);
+    return next;
+  }
+  return [slot, ...slots];
 }
 
 /** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
@@ -197,11 +220,14 @@ export function resolvePromptSlots(
 ): NodePromptSlot[] {
   const raw = slots?.length
     ? mergePromptSlotsWithDefaults(nodeType, [...slots])
-    : [...defaultPromptSlots(nodeType)];
+    : ensureBlocksPromptSlot(nodeType, [...defaultPromptSlots(nodeType)]);
   const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel" && s.id !== "verdict");
 
   if (!nodeTypeRequiresExcel(nodeType)) {
-    return raw.filter((s) => s.kind !== "text");
+    return ensureBlocksPromptSlot(
+      nodeType,
+      raw.filter((s) => s.kind !== "text"),
+    );
   }
 
   const excel =
@@ -209,7 +235,7 @@ export function resolvePromptSlots(
     defaultPromptSlots(nodeType).find((s) => s.kind === "excel") ??
     excelSlotForNodeType(nodeType);
 
-  return [excel, ...rest];
+  return ensureBlocksPromptSlot(nodeType, [excel, ...rest]);
 }
 
 /** Промты в горизонтальной схеме меню V (без «текста для GPT»). */

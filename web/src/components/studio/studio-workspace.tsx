@@ -30,6 +30,7 @@ import {
   type NodeResultContext,
 } from "@/lib/node-result-resolver";
 import { NodeResultPanel } from "@/components/canvas/node-result-panel";
+import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
 
 export function StudioWorkspace({
   projectId,
@@ -72,6 +73,11 @@ export function StudioWorkspace({
   const [aiReview, setAiReview] = useState<{ nodeKey: string; nodeType: string } | null>(
     null,
   );
+  const [promptBuilderCtx, setPromptBuilderCtx] = useState<{
+    nodeKey: string;
+    nodeType: string;
+    stepCode: string;
+  } | null>(null);
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
@@ -101,6 +107,7 @@ export function StudioWorkspace({
     setHitlModalId(null);
     setResultPanel(null);
     setAiReview(null);
+    setPromptBuilderCtx(null);
   }, [projectId]);
 
   const closeStudio = useCallback(() => {
@@ -157,6 +164,21 @@ export function StudioWorkspace({
     window.addEventListener("canvas-open-hitl-modal", onOpen);
     return () => window.removeEventListener("canvas-open-hitl-modal", onOpen);
   }, []);
+
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const d = (ev as CustomEvent<{ nodeKey: string; nodeType: string; stepCode?: string }>).detail;
+      if (!projectId || !d?.nodeKey || !d?.nodeType) return;
+      onSelectNode(d.nodeKey);
+      setPromptBuilderCtx({
+        nodeKey: d.nodeKey,
+        nodeType: d.nodeType,
+        stepCode: d.stepCode ?? stepCodeForNodeType(d.nodeType) ?? "plan",
+      });
+    };
+    window.addEventListener("studio-open-prompt-builder", onOpen);
+    return () => window.removeEventListener("studio-open-prompt-builder", onOpen);
+  }, [projectId, onSelectNode]);
 
   // Слушаем событие "открыть AI-диалог для ноды" (диспатчится из
   // pipeline-node.tsx, когда юзер кликает на фиолетовый кружок справа
@@ -326,6 +348,15 @@ export function StudioWorkspace({
       getPromptSlots,
       getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
+        if (slot.kind === "blocks" && projectId != null) {
+          onSelectNode(nodeKey);
+          setPromptBuilderCtx({
+            nodeKey,
+            nodeType,
+            stepCode: slot.stepCode ?? stepCodeForNodeType(nodeType) ?? "plan",
+          });
+          return;
+        }
         openStudioForNode(nodeKey, nodeType, slot);
       },
       onOpenGptText: (nodeKey: string, nodeType: string) => {
@@ -621,6 +652,19 @@ export function StudioWorkspace({
             : []
         }
       />
+      {projectId != null && promptBuilderCtx && (
+        <PromptBuilderStudio
+          fullscreen
+          projectId={projectId}
+          nodeType={promptBuilderCtx.nodeType}
+          stepCode={promptBuilderCtx.stepCode}
+          onClose={() => setPromptBuilderCtx(null)}
+          onOpenProjects={() => {
+            setPromptBuilderCtx(null);
+            window.dispatchEvent(new CustomEvent("studio-open-projects-sidebar"));
+          }}
+        />
+      )}
       {projectId && aiCtx && (
         <AiNodeDialog
           open={aiOpen}

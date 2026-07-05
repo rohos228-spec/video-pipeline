@@ -6,28 +6,52 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.services import gpt_text_builder as gtb
+from app.services.prompt_blocks import (
+    create_block,
+    delete_block,
+    list_block_activity,
+    log_block_event,
+    read_block_file,
+    rename_block,
+    save_block,
+    sync_blocks_catalog,
+)
 from app.services.prompt_composer import (
+    NODE_TYPE_TO_STEP,
     compose_for_node_type,
     compose_step,
+    list_block_catalog,
     list_block_categories,
     list_step_templates,
     list_style_presets,
     load_style_preset,
     merge_project_prompt_config,
-    NODE_TYPE_TO_STEP,
+    parse_step_template_blocks,
+    step_block_categories,
+    write_step_template_blocks,
 )
 from app.services.prompt_library import (
     DEFAULT_NAME,
     is_valid_prompt_name,
-    list_prompts as list_variants,
     write_prompt,
 )
-from app.services import gpt_text_builder as gtb
+from app.services.prompt_library import (
+    list_prompts as list_variants,
+)
+from app.services.prompt_step_presets import (
+    create_step_preset,
+    delete_step_preset,
+    list_step_preset_steps,
+    load_step_presets,
+    resolve_prompt_preset,
+    update_step_preset,
+)
 from app.web.deps import get_session
-from sqlalchemy import select
 
 router = APIRouter(prefix="/prompt-studio", tags=["prompt-studio"])
 
@@ -36,14 +60,16 @@ class ComposeRequest(BaseModel):
     node_type: str | None = None
     step_id: str | None = None
     project_id: int | None = None
-    blocks: dict[str, str] | None = None
+    # Значение категории: либо имя файла (str, legacy), либо
+    # {"name"?: str, "text"?: str, "weight"?: float 0..1}.
+    blocks: dict[str, Any] | None = None
     vars: dict[str, Any] | None = None
     style_preset: str | None = None
 
 
 class PromptOverridesPatch(BaseModel):
     style_profile: str | None = None
-    blocks: dict[str, str] | None = None
+    blocks: dict[str, Any] | None = None
     vars: dict[str, Any] | None = None
     use_blocks_v2: bool | None = None
     # legacy string overrides сохраняем
@@ -57,6 +83,48 @@ class GptTextPatch(BaseModel):
 class GptTextSaveTemplatePayload(BaseModel):
     name: str
     text: str | None = None
+
+
+class StepBlockDTO(BaseModel):
+    number: int
+    title: str
+    body: str
+
+
+class StepTemplatePatch(BaseModel):
+    blocks: list[StepBlockDTO]
+
+
+class BlockActivityPayload(BaseModel):
+    event_type: str = Field(..., pattern="^(block_selected|block_viewed)$")
+    category: str
+    block_id: str
+    project_id: int | None = None
+    step_id: str | None = None
+    step_code: str | None = None
+    prompt_variant: str | None = None
+
+
+class BlockSavePayload(BaseModel):
+    content: str
+    message: str | None = None
+
+
+class BlockCreatePayload(BaseModel):
+    block_id: str = Field(..., min_length=1, max_length=80)
+    content: str = ""
+    message: str | None = None
+
+
+class BlockRenamePayload(BaseModel):
+    new_block_id: str = Field(..., min_length=1, max_length=80)
+    message: str | None = None
+
+
+class StepPresetPatch(BaseModel):
+    label: str | None = None
+    description: str | None = None
+    blocks: dict[str, str | None] | None = None
 
 
 async def _gpt_text_context(session: AsyncSession, project: Project, step_code: str) -> dict:
@@ -206,14 +274,273 @@ async def reset_project_gpt_text(
     }
 
 
+@router.post("/blocks/sync")
+async def sync_blocks(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    result = await sync_blocks_catalog(session)
+    await session.commit()
+    return result
+
+
+@router.get("/block-activity")
+async def get_block_activity(
+    session: AsyncSession = Depends(get_session),
+    limit: int = 80,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    return await list_block_activity(session, limit=limit, category=category)
+
+
+@router.post("/block-activity")
+async def post_block_activity(
+    payload: BlockActivityPayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    try:
+        await log_block_event(
+            session,
+            payload.event_type,
+            category=payload.category,
+            block_id=payload.block_id,
+            extra={
+                "project_id": payload.project_id,
+                "step_id": payload.step_id,
+                "step_code": payload.step_code,
+                "prompt_variant": payload.prompt_variant,
+            },
+        )
+        await session.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.get("/blocks/{category}/{block_id}")
+async def get_block_file(category: str, block_id: str) -> dict[str, Any]:
+    try:
+        body = read_block_file(category, block_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"category": category, "id": block_id, "body": body}
+
+
+@router.put("/blocks/{category}/{block_id}")
+async def put_block_file(
+    category: str,
+    block_id: str,
+    payload: BlockSavePayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        result = await save_block(
+            session,
+            category,
+            block_id,
+            payload.content,
+            message=payload.message,
+        )
+        await session.commit()
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/blocks/{category}")
+async def post_block_file(
+    category: str,
+    payload: BlockCreatePayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        result = await create_block(
+            session,
+            category,
+            payload.block_id,
+            payload.content,
+            message=payload.message,
+        )
+        await session.commit()
+        return result
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.delete("/blocks/{category}/{block_id}")
+async def delete_block_file(
+    category: str,
+    block_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        result = await delete_block(session, category, block_id)
+        await session.commit()
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/blocks/{category}/{block_id}/rename")
+async def rename_block_file(
+    category: str,
+    block_id: str,
+    payload: BlockRenamePayload,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        result = await rename_block(
+            session,
+            category,
+            block_id,
+            payload.new_block_id,
+            message=payload.message,
+        )
+        await session.commit()
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/catalog")
 async def get_catalog() -> dict[str, Any]:
+    steps = list_step_templates()
     return {
         "block_categories": list_block_categories(),
-        "steps": list_step_templates(),
+        "blocks": list_block_catalog(),
+        "steps": steps,
+        # Какие {{BLOCK:cat}} реально встречаются в шаблоне каждого шага —
+        # чтобы UI не предлагал редактировать категории, которые для этого
+        # шага ни на что не влияют.
+        "step_block_categories": {s: step_block_categories(s) for s in steps},
         "node_type_to_step": NODE_TYPE_TO_STEP,
         "style_presets": list_style_presets(),
+        "step_preset_steps": list_step_preset_steps(),
     }
+
+
+@router.get("/step-presets/{step_code}")
+async def get_step_presets(step_code: str) -> dict[str, Any]:
+    data = load_step_presets(step_code)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"no presets for step: {step_code}")
+    return data
+
+
+@router.get("/step-presets/{step_code}/resolve/{prompt_name}")
+async def resolve_step_preset(step_code: str, prompt_name: str) -> dict[str, Any]:
+    preset = resolve_prompt_preset(step_code, prompt_name)
+    if preset is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no preset for {step_code}/{prompt_name}",
+        )
+    return preset
+
+
+@router.patch("/step-presets/{step_code}/presets/{preset_id}")
+async def patch_step_preset(
+    step_code: str,
+    preset_id: str,
+    payload: StepPresetPatch,
+) -> dict[str, Any]:
+    try:
+        return update_step_preset(
+            step_code,
+            preset_id,
+            label=payload.label,
+            description=payload.description,
+            blocks=payload.blocks,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/step-presets/{step_code}/presets/{preset_id}")
+async def create_step_preset_route(
+    step_code: str,
+    preset_id: str,
+    payload: StepPresetPatch,
+) -> dict[str, Any]:
+    try:
+        return create_step_preset(
+            step_code,
+            preset_id,
+            label=payload.label,
+            description=payload.description,
+            blocks=payload.blocks,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.delete("/step-presets/{step_code}/presets/{preset_id}")
+async def delete_step_preset_route(step_code: str, preset_id: str) -> dict[str, Any]:
+    try:
+        return delete_step_preset(step_code, preset_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/steps/{step_id}/meta")
+async def get_step_meta(step_id: str) -> dict[str, Any]:
+    if step_id not in list_step_templates():
+        raise HTTPException(status_code=404, detail=f"step template not found: {step_id}")
+    return {
+        "step_id": step_id,
+        "block_categories": step_block_categories(step_id),
+        "vars": [],
+    }
+
+
+@router.get("/step-template/{step_id}")
+async def get_step_template(step_id: str) -> dict[str, Any]:
+    """Блочное представление `steps/<id>/template.md` для визуального
+    редактора в Studio UI (карточки 1..N вместо одного текстового поля)."""
+    if step_id not in list_step_templates():
+        raise HTTPException(status_code=404, detail=f"step template not found: {step_id}")
+    return {"step_id": step_id, "blocks": parse_step_template_blocks(step_id)}
+
+
+@router.put("/step-template/{step_id}")
+async def save_step_template(step_id: str, payload: StepTemplatePatch) -> dict[str, Any]:
+    """Пересобирает `steps/<id>/template.md` из отредактированных блоков.
+
+    Валидация намеренно мягкая (не блокирует сохранение полностью), но
+    требует 5-7 блоков и технический блок первым — это инвариант, на
+    который опирается `docs/PROMPTS_BLOCKS.md` и структурные тесты."""
+    if step_id not in list_step_templates():
+        raise HTTPException(status_code=404, detail=f"step template not found: {step_id}")
+    if not (5 <= len(payload.blocks) <= 7):
+        raise HTTPException(
+            status_code=400,
+            detail=f"template must have 5-7 blocks, got {len(payload.blocks)}",
+        )
+    numbers = sorted(b.number for b in payload.blocks)
+    if numbers != list(range(1, len(payload.blocks) + 1)):
+        raise HTTPException(status_code=400, detail="blocks must be numbered 1..N without gaps")
+    first = next(b for b in payload.blocks if b.number == 1)
+    if "ТЕХНИЧЕСКАЯ ЧАСТЬ" not in first.title.strip().upper():
+        raise HTTPException(
+            status_code=400, detail="block 1 must stay «ТЕХНИЧЕСКАЯ ЧАСТЬ» (technical block)"
+        )
+    write_step_template_blocks(step_id, [b.model_dump() for b in payload.blocks])
+    return {"step_id": step_id, "blocks": parse_step_template_blocks(step_id)}
 
 
 @router.get("/styles/{preset_id}")
@@ -239,7 +566,7 @@ async def get_step_variants(step_code: str) -> list[str]:
 async def compose_preview(
     payload: ComposeRequest,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if payload.style_preset:
         overrides["style_profile"] = payload.style_preset

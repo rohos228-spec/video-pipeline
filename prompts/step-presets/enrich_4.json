@@ -1,0 +1,28 @@
+{
+  "step_code": "enrich_4",
+  "compose_step_id": "05d_enrich_4",
+  "label": "Excel #4",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "default_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default"
+  ]
+}

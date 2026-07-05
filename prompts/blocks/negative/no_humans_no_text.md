@@ -1,2 +1,3 @@
-Запрещено: люди, human characters, text, logos, watermarks, UI overlays, photorealism,
-environment backgrounds (если не указано иное), crowd, extra characters not in scene brief.
+Запрещено: люди, human characters, human faces, human crowd, text, speech bubbles, words,
+logos, watermarks, UI overlays, 3d render, blur, low detail, photorealism,
+duplicate characters, floating objects in realistic scenes, surreal elements in realistic scenes.
