@@ -2678,8 +2678,13 @@
 }
 
 .pb-category-rail-card-active {
-  border-color: hsl(43 40% 48% / 0.55);
-  box-shadow: 0 0 0 1px hsl(43 56% 58% / 0.12);
+  border-color: hsl(0 0% 100% / 0.16);
+  box-shadow: 0 0 0 1px hsl(0 0% 100% / 0.05);
+}
+
+.pb-category-rail-card-preset-hover {
+  border-color: hsl(200 55% 55% / 0.42);
+  box-shadow: 0 0 0 1px hsl(200 55% 55% / 0.12);
 }
 
 .pb-category-rail-card-just-assigned {
@@ -2743,7 +2748,7 @@
 }
 
 .pb-category-prompt-row-menu-open {
-  border-color: hsl(43 40% 48% / 0.45);
+  border-color: hsl(0 0% 100% / 0.18);
   background: hsl(0 0% 100% / 0.04);
 }
 
@@ -2822,8 +2827,15 @@
 }
 
 .pb-category-prompt-row-active {
-  background: hsl(43 28% 14% / 0.35);
-  box-shadow: inset 0 0 0 1px hsl(43 56% 58% / 0.18);
+  border-color: hsl(0 0% 100% / 0.12);
+  background: hsl(0 0% 100% / 0.035);
+  box-shadow: none;
+}
+
+.pb-category-prompt-row-preset-hover {
+  border-color: hsl(200 55% 55% / 0.5);
+  background: hsl(200 35% 13% / 0.45);
+  box-shadow: inset 0 0 0 1px hsl(200 55% 55% / 0.2);
 }
 
 .pb-category-prompt-row-applied-flash {
@@ -3296,8 +3308,8 @@
 
 .pb-slot-group-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 9px;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .pb-slot-kind-group {
@@ -3310,7 +3322,30 @@
   gap: 6px;
 }
 
+.pb-slot-grid-center .pb-slot-card-compact {
+  min-height: 58px;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+}
+
+.pb-slot-grid-center .pb-slot-card-label,
+.pb-slot-grid-center .pb-slot-card-value {
+  min-width: 0;
+}
+
+.pb-slot-grid-center .pb-slot-card-label {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
 @media (max-width: 720px) {
+  .pb-slot-group-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .pb-neural-canvas-v3 .pb-slot-grid.pb-slot-grid-center {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
@@ -3332,8 +3367,8 @@
 }
 
 .pb-slot-card-compact {
-  min-height: 52px;
-  padding: 6px 8px;
+  min-height: 74px;
+  padding: 9px 11px;
 }
 
 .pb-slot-grid-compact {
@@ -3377,14 +3412,14 @@
 
 .pb-slot-card {
   display: flex;
-  min-height: 52px;
+  min-height: 74px;
   flex-direction: column;
   align-items: stretch;
-  gap: 3px;
-  border-radius: 8px;
+  gap: 5px;
+  border-radius: 10px;
   border: 1px solid hsl(0 0% 100% / 0.08);
   background: hsl(240 10% 8% / 0.72);
-  padding: 6px 7px;
+  padding: 9px 10px;
   text-align: left;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
@@ -3396,11 +3431,11 @@
 }
 
 .pb-slot-card-category-title {
-  margin: 0 0 3px 2px;
+  margin: 0 0 5px 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3448,15 +3483,15 @@
 }
 
 .pb-slot-card-label {
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1.25;
   color: var(--pb-text-muted);
 }
 
 .pb-slot-card-value {
-  font-size: 7px;
-  line-height: 1.35;
+  font-size: 8px;
+  line-height: 1.4;
   color: var(--pb-text-dim);
   word-break: break-word;
 }

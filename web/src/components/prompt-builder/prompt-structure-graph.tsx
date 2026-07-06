@@ -19,7 +19,7 @@ import {
 } from "@/lib/prompt-builder/prompt-presets";
 import {
   blockVariantsForKind,
-  categoryKindIdsForRail,
+  categoryKindIdsForStep,
   mergeFullCatalogBlocks,
   railBlockDisplay,
 } from "@/lib/prompt-builder/category-rail-blocks";
@@ -228,6 +228,7 @@ export function PromptStructureGraph({
   stepBlockCategories?: Record<string, string[]>;
 }) {
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
+  const [hoveredPrompt, setHoveredPrompt] = useState<string | null>(null);
   const [selectedKind, setSelectedKind] = useState<string | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{
@@ -262,6 +263,10 @@ export function PromptStructureGraph({
 
   const scheduleHoverPromptClear = useCallback(() => {
     cancelHoverPromptClear();
+    hoverPromptHideTimer.current = setTimeout(() => {
+      setHoveredPrompt(null);
+      hoverPromptHideTimer.current = null;
+    }, 120);
   }, [cancelHoverPromptClear]);
 
   const logBlockActivity = (
@@ -372,7 +377,7 @@ export function PromptStructureGraph({
 
   useEffect(() => () => cancelHoverPromptClear(), [cancelHoverPromptClear]);
 
-  const displayPromptId = selectedPrompt;
+  const displayPromptId = hoveredPrompt ?? selectedPrompt;
   const displayPreset = useMemo(
     () =>
       displayPromptId ? resolvePromptPreset(stepPresets ?? undefined, displayPromptId) : null,
@@ -395,6 +400,25 @@ export function PromptStructureGraph({
     return typeof bid === "string" && bid ? bid : null;
   };
 
+  const hoveredPresetBlockKeys = useMemo(() => {
+    if (!hoveredPrompt) return new Set<string>();
+    const preset = resolvePromptPreset(stepPresets ?? undefined, hoveredPrompt);
+    if (!preset) return new Set<string>();
+    const omit = new Set(preset.omit_slots ?? []);
+    const keys = new Set<string>();
+    for (const [kind, blockId] of Object.entries(preset.blocks ?? {})) {
+      if (!omit.has(kind) && typeof blockId === "string" && blockId) {
+        keys.add(`${kind}:${blockId}`);
+      }
+    }
+    for (const [kind, blockId] of Object.entries(preset.extra_blocks ?? {})) {
+      if (typeof blockId === "string" && blockId) {
+        keys.add(`${kind}:${blockId}`);
+      }
+    }
+    return keys;
+  }, [hoveredPrompt, stepPresets]);
+
   const blockRowForKind = (kind: string, blockId: string): BlockRow =>
     fullCatalogBlocks.find((b) => b.id === blockId && b.kind === kind) ??
     blocks.find((b) => b.id === blockId && b.kind === kind) ?? {
@@ -416,33 +440,80 @@ export function PromptStructureGraph({
 
   const centerSlotEntries = useMemo(() => {
     const metas = new Map(
-      [...categoryKinds, ...categoryMetaFor(allSlots.map((slot) => slot.kind))].map((m) => [
-        m.id,
-        m,
-      ]),
+      [
+        ...categoryKinds,
+        ...categoryMetaFor([
+          ...allSlots.map((slot) => slot.kind),
+          ...Object.keys(displayPreset?.blocks ?? {}),
+          ...Object.keys(displayPreset?.extra_blocks ?? {}),
+        ]),
+      ].map((m) => [m.id, m]),
     );
-    return allSlots
-      .map((slot) => {
-        if (isSlotEmpty(selection.slots, slot)) return null;
-        const blockId = resolveSlotBlockId(selection.slots, slot);
-        if (!blockId) return null;
-        const block = blockRowForKind(slot.kind, blockId);
-        return {
-          slot,
-          kindMeta: metas.get(slot.kind) ?? categoryMetaFor([slot.kind])[0]!,
-          blockId,
-          block,
-          removable: slot.slotId.startsWith("extra_"),
-        };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry != null)
-      .sort((a, b) => {
-        const at = a.kindMeta.tier ?? 99;
-        const bt = b.kindMeta.tier ?? 99;
-        if (at !== bt) return at - bt;
-        return allSlots.indexOf(a.slot) - allSlots.indexOf(b.slot);
+
+    const slotOrder = new Map(allSlots.map((slot, index) => [slot.slotId, index]));
+    const entries: {
+      slot: PromptSlot;
+      kindMeta: BlockKindMeta;
+      blockId: string;
+      block: BlockRow;
+      removable: boolean;
+    }[] = [];
+    const usedKeys = new Set<string>();
+
+    const pushEntry = (slot: PromptSlot, blockId: string, removable: boolean) => {
+      if (!blockId) return;
+      const key = `${slot.kind}:${blockId}`;
+      if (usedKeys.has(key)) return;
+      usedKeys.add(key);
+      const block = blockRowForKind(slot.kind, blockId);
+      entries.push({
+        slot,
+        kindMeta: metas.get(slot.kind) ?? categoryMetaFor([slot.kind])[0]!,
+        blockId,
+        block,
+        removable,
       });
-  }, [allSlots, categoryKinds, fullCatalogBlocks, blocks, selection.slots]);
+    };
+
+    if (displayPreset) {
+      const omit = new Set(displayPreset.omit_slots ?? []);
+      for (const slot of allSlots) {
+        if (omit.has(slot.kind)) continue;
+        const blockId = displayPreset.blocks?.[slot.kind];
+        if (typeof blockId === "string" && blockId) {
+          pushEntry(slot, blockId, slot.slotId.startsWith("extra_"));
+        }
+      }
+      for (const [kind, blockId] of Object.entries(displayPreset.extra_blocks ?? {})) {
+        if (typeof blockId !== "string" || !blockId) continue;
+        const slot =
+          allSlots.find((s) => s.kind === kind) ?? {
+            slotId: `preset_extra_${kind}`,
+            kind,
+            required: false,
+            defaultBlockId: blockId,
+          };
+        pushEntry(slot, blockId, true);
+      }
+    } else {
+      for (const slot of allSlots) {
+        if (isSlotEmpty(selection.slots, slot)) continue;
+        const blockId = resolveSlotBlockId(selection.slots, slot);
+        if (!blockId) continue;
+        pushEntry(slot, blockId, slot.slotId.startsWith("extra_"));
+      }
+    }
+
+    return entries.sort((a, b) => {
+      const at = a.kindMeta.tier ?? 99;
+      const bt = b.kindMeta.tier ?? 99;
+      if (at !== bt) return at - bt;
+      const ai = slotOrder.get(a.slot.slotId) ?? 999;
+      const bi = slotOrder.get(b.slot.slotId) ?? 999;
+      if (ai !== bi) return ai - bi;
+      return a.blockId.localeCompare(b.blockId, "ru");
+    });
+  }, [allSlots, categoryKinds, displayPreset, fullCatalogBlocks, blocks, selection.slots]);
 
   const centerBlockIdsByKind = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -485,9 +556,15 @@ export function PromptStructureGraph({
   const centerHighlightBlockId = selectedKind ? centerBlockIdForKind(selectedKind) : null;
 
   const railCategoryKinds = useMemo(() => {
-    const ids = categoryKindIdsForRail(composeStepId, stepBlockCategories, categoryKinds);
+    const ids = categoryKindIdsForStep(
+      composeStepId,
+      stepBlockCategories,
+      categoryKinds,
+      stepPresets,
+      allSlots,
+    );
     return categoryMetaFor(ids);
-  }, [categoryKinds, composeStepId, stepBlockCategories]);
+  }, [allSlots, categoryKinds, composeStepId, stepBlockCategories, stepPresets]);
 
   const categoriesRail = useMemo(() => {
     const tierGroups = groupCategoriesByTier(sortCategoriesByTier(railCategoryKinds));
@@ -727,7 +804,10 @@ export function PromptStructureGraph({
                           active && "pb-source-prompt-active",
                           applied && "pb-source-prompt-applied",
                         )}
-                        onMouseEnter={() => cancelHoverPromptClear()}
+                        onMouseEnter={() => {
+                          cancelHoverPromptClear();
+                          setHoveredPrompt(tile.id);
+                        }}
                         onMouseLeave={scheduleHoverPromptClear}
                         onContextMenu={(e) => openPromptContextMenu(e, tile)}
                         onClick={() => {
@@ -880,19 +960,12 @@ export function PromptStructureGraph({
                                   }}
                                   title={kind.description ?? kind.label}
                                 >
-                                  <span className="pb-slot-card-label">{kind.label}</span>
-                                  <span className="pb-slot-card-value">
-                                    {block ? (
-                                      <>
-                                        <span className="block truncate">{block.id}</span>
-                                        {isPreviewing && previewOpen && (
-                                          <span className="pb-block-applied-tag mt-0.5">просмотр</span>
-                                        )}
-                                      </>
-                                    ) : (
-                                      "не задан"
-                                    )}
+                                  <span className="pb-slot-card-label">
+                                    {block ? block.label || block.id : "не задан"}
                                   </span>
+                                  {isPreviewing && previewOpen && (
+                                    <span className="pb-block-applied-tag mt-0.5">просмотр</span>
+                                  )}
                                 </button>
                                 {displayId && removable && (
                                   <button
@@ -938,12 +1011,17 @@ export function PromptStructureGraph({
                 categoriesRail.map((group) => (
                   <div key={group.tier} className="pb-category-tier-group">
                     <p className="pb-category-tier-label">{group.tierLabel}</p>
-                    {group.categories.map((cat) => (
+                    {group.categories.map((cat) => {
+                      const hasHoveredPromptBlocks = cat.blockVariants.some((block) =>
+                        hoveredPresetBlockKeys.has(`${cat.kind}:${block.id}`),
+                      );
+                      return (
                         <div
                           key={cat.kind}
                           className={cn(
                             "pb-category-rail-card",
                             cat.isSelectedKind && "pb-category-rail-card-active",
+                            hasHoveredPromptBlocks && "pb-category-rail-card-preset-hover",
                             assignFlash?.kind === cat.kind && "pb-category-rail-card-just-assigned",
                             dropRejectedKind === cat.kind && "pb-category-rail-card-drop-rejected",
                           )}
@@ -980,6 +1058,9 @@ export function PromptStructureGraph({
                               {cat.blockVariants.map((block) => {
                                 const isInCenter =
                                   centerBlockIdsByKind.get(cat.kind)?.has(block.id) ?? false;
+                                const isInHoveredPrompt = hoveredPresetBlockKeys.has(
+                                  `${cat.kind}:${block.id}`,
+                                );
                                 const justAssigned =
                                   assignFlash?.kind === cat.kind &&
                                   assignFlash.blockId === block.id;
@@ -1002,6 +1083,7 @@ export function PromptStructureGraph({
                                       className={cn(
                                         "pb-category-prompt-row",
                                         isInCenter && "pb-category-prompt-row-active",
+                                        isInHoveredPrompt && "pb-category-prompt-row-preset-hover",
                                         justAssigned && "pb-category-prompt-row-applied-flash",
                                         isPreviewing && "pb-category-prompt-row-previewing",
                                         isRowSelected && "pb-category-prompt-row-menu-open",
@@ -1064,7 +1146,8 @@ export function PromptStructureGraph({
                             </div>
                           </div>
                         </div>
-                      ))}
+                      );
+                    })}
                   </div>
                 ))
               )}

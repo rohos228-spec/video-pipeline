@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LibraryConfig, LibraryEvent, LibraryItem, LibraryVersion, Project
@@ -555,10 +555,11 @@ async def import_existing_prompts(session: AsyncSession) -> dict[str, int]:
                     source="startup_import",
                     meta={"repo_path": str(src.relative_to(REPO_ROOT).as_posix())},
                 )
-        except IntegrityError:
+        except (IntegrityError, OperationalError):
             # Startup may run more than one importer in quick succession
             # (preflight/API lifespan/worker). If another transaction wins the
-            # unique key race, leave the existing item intact and continue.
+            # unique key race or SQLite is briefly locked, leave the existing
+            # item intact and continue. Prompt files remain available on disk.
             counts["skipped"] += 1
             continue
         counts["seen"] += 1

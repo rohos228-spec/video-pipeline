@@ -92,6 +92,7 @@ export function categoryKindIdsForStep(
   if (stepPresets?.presets) {
     for (const preset of Object.values(stepPresets.presets)) {
       for (const k of Object.keys(preset.blocks ?? {})) ids.add(k);
+      for (const k of Object.keys(preset.extra_blocks ?? {})) ids.add(k);
       for (const o of preset.omit_slots ?? []) {
         if (typeof o === "string") ids.add(o);
       }

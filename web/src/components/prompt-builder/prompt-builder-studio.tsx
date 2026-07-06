@@ -47,6 +47,7 @@ import {
   computeProjectCellUsage,
   getCellsForBlock,
 } from "@/lib/prompt-builder/excel-cells";
+import { categoryKindIdsForStep } from "@/lib/prompt-builder/category-rail-blocks";
 import { agentForBlock } from "@/lib/prompt-builder/agents-catalog";
 import type {
   BlockKind,
@@ -1490,8 +1491,15 @@ export function PromptBuilderStudio({
   };
 
   const variantsCategoryKinds = (() => {
-    const ids = new Set(categoryKinds.map((k) => k.id));
-    for (const slot of extraSlots) ids.add(slot.kind);
+    const ids = new Set(
+      categoryKindIdsForStep(
+        composeStepId ?? undefined,
+        stepBlockCategories,
+        categoryKinds,
+        stepPresetsData,
+        allSlots,
+      ),
+    );
     if (allCatalogBlockRows.some((b) => b.kind === FREE_BLOCK_CATEGORY)) {
       ids.add(FREE_BLOCK_CATEGORY);
     }

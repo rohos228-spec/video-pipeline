@@ -28,6 +28,8 @@ from typing import Any
 
 from loguru import logger
 
+from app.services.local_library import current_prompts_root, use_local_library_prompts
+
 PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
 BLOCKS_ROOT = PROMPTS_ROOT / "blocks"
 STEPS_ROOT = PROMPTS_ROOT / "steps"
@@ -87,6 +89,52 @@ DEFAULT_BLOCKS: dict[str, str] = {
     "forbidden_phrases": "ai_cliches_ru",
     "narrative_structure": "shorts_hook_insight",
     "character_anatomy": "anthro_cat_sheet",
+    "script_role": "voiceover_author",
+    "source_policy": "xlsx_general_plan_only",
+    "script_mode_selector": "universal_modes",
+    "script_domain_skills": "biography_history_science_process_object",
+    "script_narrative_structure": "short_voiceover_arc",
+    "script_continuity_rules": "smooth_voiceover_flow",
+    "script_voice_tone": "human_documentary_voice",
+    "script_anti_gpt_patterns": "zinser_filter",
+    "script_output_contract": "voiceover_txt_60s",
+    "script_self_check": "voiceover_quality_gate",
+    "script_segmentation_rules": "long_cells_110_140",
+    "script_source_full": "scenario_agent_full",
+    "img_input_rules": "one_cell_one_prompt",
+    "img_scene_interpretation": "realism_and_abstract_five_ways",
+    "img_hero_policy": "hero_reference_strict",
+    "img_diversity_rules": "scene_variety",
+    "img_context_logic": "source_only_no_invention",
+    "img_composition_discipline": "trash_polka_foreground_v25",
+    "img_prop_text_rules": "blank_papers_default",
+    "img_output_contract": "xlsx_dash_separated",
+    "img_self_check": "pre_output_gate",
+    "img_source_full": "default_full",
+    "plan_role": "shorts_planner",
+    "plan_structure": "viral_60s_timeline",
+    "plan_voice_tone": "human_clear_pitch",
+    "plan_output_contract": "xlsx_plan_timing",
+    "plan_self_check": "plan_quality_gate",
+    "split_role": "voiceover_segmenter",
+    "split_rules": "microthought_cells",
+    "split_output_contract": "xlsx_row49",
+    "split_self_check": "no_broken_words_gate",
+    "enrich_role": "xlsx_editor",
+    "enrich_edit_rules": "sheet_safe_edits",
+    "enrich_source_policy": "xlsx_task_only",
+    "enrich_output_contract": "return_full_xlsx",
+    "enrich_self_check": "no_structure_damage_gate",
+    "anim_motion_layers": "three_plane_motion",
+    "anim_output_contract": "veo_single_prompt",
+    "anim_negative": "no_style_shift",
+    "plan_source_full": "default_full",
+    "split_source_full": "default_full",
+    "hero_source_full": "default_full",
+    "hero_style_source_full": "default_full",
+    "items_source_full": "default_full",
+    "enrich_source_full": "default_full",
+    "anim_source_full": "default_full",
 }
 
 DEFAULT_VARS: dict[str, str | int] = {
@@ -122,18 +170,61 @@ WEIGHT_LABELS: tuple[tuple[float, str], ...] = (
     (0.0, "[фоновый акцент, второстепенно] "),
 )
 
+LEGACY_BLOCK_ALIASES: dict[str, str] = {
+    # Old projects/tests used `voice_tone`; the script constructor now has a
+    # script-specific category, but the legacy override must still affect it.
+    "script_voice_tone": "voice_tone",
+    "plan_structure": "narrative_structure",
+    "plan_voice_tone": "voice_tone",
+}
+
+
+def _prompt_roots() -> list[Path]:
+    """Local library first, repo prompts as fallback."""
+    local = current_prompts_root()
+    roots: list[Path] = []
+    for configured in (STEPS_ROOT.parent, BLOCKS_ROOT.parent, STYLES_ROOT.parent):
+        if configured != PROMPTS_ROOT and configured not in roots:
+            roots.append(configured)
+    if use_local_library_prompts() and local.is_dir():
+        roots.append(local)
+    if PROMPTS_ROOT not in roots:
+        roots.append(PROMPTS_ROOT)
+    return roots
+
+
+def _first_existing(*parts: str) -> Path | None:
+    for root in _prompt_roots():
+        path = root.joinpath(*parts)
+        if path.exists():
+            return path
+    return None
+
+
+def _block_entry_for_category(
+    category: str, blocks: dict[str, BlockValue]
+) -> BlockValue | None:
+    entry = blocks.get(category)
+    legacy_category = LEGACY_BLOCK_ALIASES.get(category)
+    if legacy_category:
+        legacy_entry = blocks.get(legacy_category)
+        if legacy_entry is not None and legacy_entry != DEFAULT_BLOCKS.get(legacy_category):
+            return legacy_entry
+    return entry
+
 
 def list_block_categories() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
-    blocks_root = PROMPTS_ROOT / "blocks"
-    if not blocks_root.is_dir():
-        return out
-    for cat_dir in sorted(blocks_root.iterdir()):
-        if not cat_dir.is_dir():
+    for root in reversed(_prompt_roots()):
+        blocks_root = root / "blocks"
+        if not blocks_root.is_dir():
             continue
-        out[cat_dir.name] = sorted(
-            p.stem for p in cat_dir.glob("*.md") if p.is_file()
-        )
+        for cat_dir in sorted(blocks_root.iterdir()):
+            if not cat_dir.is_dir():
+                continue
+            names = set(out.get(cat_dir.name, []))
+            names.update(p.stem for p in cat_dir.glob("*.md") if p.is_file())
+            out[cat_dir.name] = sorted(names)
     return out
 
 
@@ -148,12 +239,11 @@ def _block_label(body: str, block_id: str) -> str:
 
 
 def list_block_catalog() -> list[dict[str, Any]]:
-    """All block files with body, for Prompt Builder UI."""
+    """All block files with body — for Prompt Builder UI."""
     items: list[dict[str, Any]] = []
-    blocks_root = PROMPTS_ROOT / "blocks"
     for category, names in list_block_categories().items():
         for name in names:
-            path = blocks_root / category / f"{name}.md"
+            path = _first_existing("blocks", category, f"{name}.md")
             if not path.is_file():
                 continue
             body = path.read_text(encoding="utf-8")
@@ -170,11 +260,15 @@ def list_block_catalog() -> list[dict[str, Any]]:
 
 
 def list_step_templates() -> list[str]:
-    if not STEPS_ROOT.is_dir():
-        return []
-    return sorted(
-        d.name for d in STEPS_ROOT.iterdir() if d.is_dir() and (d / "template.md").is_file()
-    )
+    names: set[str] = set()
+    for root in _prompt_roots():
+        steps_root = root / "steps"
+        if not steps_root.is_dir():
+            continue
+        names.update(
+            d.name for d in steps_root.iterdir() if d.is_dir() and (d / "template.md").is_file()
+        )
+    return sorted(names)
 
 
 def parse_step_template_blocks(step_id: str) -> list[dict[str, Any]]:
@@ -206,10 +300,14 @@ def write_step_template_blocks(step_id: str, blocks: list[dict[str, Any]]) -> st
 
     `step_id` должен быть уже существующим шаблоном (проверяется на
     роутере через `list_step_templates()`, чтобы исключить path traversal)."""
-    path = STEPS_ROOT / step_id / "template.md"
+    if STEPS_ROOT.parent != PROMPTS_ROOT or not use_local_library_prompts():
+        path = STEPS_ROOT / step_id / "template.md"
+    else:
+        path = current_prompts_root() / "steps" / step_id / "template.md"
     h1 = ""
-    if path.is_file():
-        m0 = STEP_H1_RE.match(path.read_text(encoding="utf-8"))
+    existing = _first_existing("steps", step_id, "template.md")
+    if existing is not None and existing.is_file():
+        m0 = STEP_H1_RE.match(existing.read_text(encoding="utf-8"))
         if m0:
             h1 = m0.group(1) + "\n\n"
     parts = [h1]
@@ -238,9 +336,18 @@ def step_block_categories(step_id: str) -> list[str]:
 
 def list_style_presets() -> list[dict[str, Any]]:
     presets: list[dict[str, Any]] = []
-    if not STYLES_ROOT.is_dir():
-        return presets
-    for p in sorted(STYLES_ROOT.glob("*.json")):
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for root in _prompt_roots():
+        styles_root = root / "styles"
+        if not styles_root.is_dir():
+            continue
+        for p in sorted(styles_root.glob("*.json")):
+            if p.stem in seen:
+                continue
+            seen.add(p.stem)
+            paths.append(p)
+    for p in paths:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             data["id"] = p.stem
@@ -251,8 +358,8 @@ def list_style_presets() -> list[dict[str, Any]]:
 
 
 def load_style_preset(preset_id: str) -> dict[str, Any]:
-    path = STYLES_ROOT / f"{preset_id}.json"
-    if not path.is_file():
+    path = _first_existing("styles", f"{preset_id}.json")
+    if path is None or not path.is_file():
         raise FileNotFoundError(f"style preset not found: {preset_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
     data["id"] = preset_id
@@ -260,17 +367,39 @@ def load_style_preset(preset_id: str) -> dict[str, Any]:
 
 
 def _read_block(category: str, name: str) -> str:
-    path = PROMPTS_ROOT / "blocks" / category / f"{name}.md"
-    if not path.is_file():
+    path = _first_existing("blocks", category, f"{name}.md")
+    if path is None or not path.is_file():
         raise FileNotFoundError(f"block not found: {category}/{name}")
     return path.read_text(encoding="utf-8").strip()
 
 
 def _read_template(step_id: str) -> str:
-    path = STEPS_ROOT / step_id / "template.md"
-    if not path.is_file():
+    path = _first_existing("steps", step_id, "template.md")
+    if path is None or not path.is_file():
         raise FileNotFoundError(f"step template not found: {step_id}")
     return path.read_text(encoding="utf-8")
+
+
+def read_step_template(step_id: str) -> str:
+    return _read_template(step_id)
+
+
+def compose_step_sections(
+    step_id: str,
+    blocks: dict[str, BlockValue],
+) -> list[dict[str, str]]:
+    """Resolved block sections for storage/inspection of the final prompt."""
+    sections: list[dict[str, str]] = []
+    for category in step_block_categories(step_id):
+        content, weight = resolve_block_value(category, _block_entry_for_category(category, blocks))
+        sections.append(
+            {
+                "kind": category,
+                "label": category.replace("_", " "),
+                "body": f"{_weight_prefix(weight)}{content}" if weight < 0.999 else content,
+            }
+        )
+    return sections
 
 
 def clamp_weight(value: Any, default: float = 1.0) -> float:
@@ -354,6 +483,10 @@ def merge_project_prompt_config(
         except FileNotFoundError:
             logger.warning("style preset {} not found", preset_id)
 
+    from app.services.prompt_step_presets import apply_prompt_presets_from_overrides
+
+    apply_prompt_presets_from_overrides(po, blocks, vars_)
+
     if isinstance(po.get("blocks"), dict):
         for k, v in po["blocks"].items():
             # Значение может быть строкой (legacy) либо объектом {name/text/weight}.
@@ -379,7 +512,7 @@ def compose_step(
 
     def repl_block(m: re.Match[str]) -> str:
         cat = m.group(1)
-        content, weight = resolve_block_value(cat, blocks.get(cat))
+        content, weight = resolve_block_value(cat, _block_entry_for_category(cat, blocks))
         prefix = _weight_prefix(weight)
         return f"{prefix}{content}" if prefix else content
 

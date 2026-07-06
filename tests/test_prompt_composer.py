@@ -206,11 +206,18 @@ def test_step_block_categories_matches_placeholders_in_template() -> None:
     assert set(pc.step_block_categories("01_plan")) == expected
 
 
-def test_step_block_categories_empty_for_enrich_steps() -> None:
-    # enrich-шаблоны намеренно не используют категории {{BLOCK:}} — их
-    # содержимое полностью произвольное (см. docs/PROMPTS_BLOCKS.md §2).
+def test_step_block_categories_for_enrich_steps() -> None:
+    # enrich-шаблоны теперь тоже структурированы: произвольной остаётся
+    # только задача слота через {{VAR:ENRICH_N_TASK}}.
+    expected = {
+        "enrich_role",
+        "enrich_edit_rules",
+        "enrich_source_policy",
+        "enrich_output_contract",
+        "enrich_self_check",
+    }
     for step_id in ("05a_enrich_1", "05b_enrich_2", "05c_enrich_3", "05d_enrich_4", "05e_enrich_5"):
-        assert pc.step_block_categories(step_id) == []
+        assert set(pc.step_block_categories(step_id)) == expected
 
 
 def test_step_block_categories_unknown_step_returns_empty() -> None:
