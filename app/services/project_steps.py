@@ -161,6 +161,33 @@ async def start_step(
             step_code,
             e,
         )
+
+    if step_code == "assemble":
+        from app.fleet.montage_handoff import defer_assemble_to_hub
+        from app.services.node_step_params import send_to_main_pc_for_project
+        from app.fleet.transfer_state import allow_transfer_start
+
+        meta = dict(project.meta or {})
+        if send_to_main_pc_for_project(project):
+            allow_transfer_start(project.id)
+            meta.pop("fleet_transfer_aborted", None)
+            project.meta = meta
+            if await defer_assemble_to_hub(
+                session, project, reason="start_step assemble"
+            ):
+                project.updated_at = datetime.utcnow()
+                await session.flush()
+                return project.status
+        else:
+            for key in (
+                "fleet_montage_deferred",
+                "montage_ready",
+                "montage_ready_at",
+                "fleet_montage_defer_reason",
+            ):
+                meta.pop(key, None)
+            project.meta = meta
+
     project.status = step.running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

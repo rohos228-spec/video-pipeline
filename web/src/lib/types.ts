@@ -242,6 +242,22 @@ export interface ArtifactDTO {
   created_at: string;
 }
 
+/** Прогресс push/pull bundle между agent и hub. */
+export interface FleetTransferState {
+  project_id: number;
+  job?: string;
+  phase: string;
+  direction?: string;
+  percent?: number;
+  sent_mb?: number;
+  total_mb?: number;
+  message?: string;
+  source_node?: string;
+  target?: string;
+  slug?: string;
+  status: "active" | "done" | "error";
+}
+
 /**
  * Шейп событий из WebSocket (publish_node_event / publish_project_event / ...).
  */

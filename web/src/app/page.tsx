@@ -1,19 +1,33 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/shell/app-shell";
 import { ProjectSidebar } from "@/components/sidebar/project-sidebar";
 import { Inspector } from "@/components/inspector/inspector";
 import { StudioWorkspace } from "@/components/studio/studio-workspace";
+import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
+import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { useGlobalEvents } from "@/hooks/use-bus";
+import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
+import { api } from "@/lib/api";
+import { fleetPushToHub } from "@/lib/fleet-api";
 
 export default function HomePage() {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
+  const [fleetOpen, setFleetOpen] = useState(false);
+  const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
+
+  useEffect(() => {
+    const openFleet = () => setFleetOpen(true);
+    window.addEventListener("studio-open-fleet", openFleet);
+    return () => window.removeEventListener("studio-open-fleet", openFleet);
+  }, []);
 
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);
@@ -40,7 +54,49 @@ export default function HomePage() {
             studioOpen={studioOpen}
             onStudioOpenChange={setStudioOpen}
           />
+          <FleetTransferBanner
+            transfer={transfer}
+            onPushToHub={
+              (transfer?.project_id ?? selectedProjectId) != null
+                ? async () => {
+                    const pid = transfer?.project_id ?? selectedProjectId!;
+                    window.dispatchEvent(
+                      new CustomEvent(FLEET_TRANSFER_PUSH_START, {
+                        detail: optimisticPushTransfer(pid, transfer?.slug),
+                      }),
+                    );
+                    const res = await fleetPushToHub(pid);
+                    if ("started" in res && res.started) {
+                      toast.message("Отправка идёт — смотри полоску внизу");
+                      return;
+                    }
+                    toast.success(
+                      res.size_mb
+                        ? `Отправлено на главный ПК (${res.size_mb} MB)`
+                        : "Отправлено на главный ПК",
+                    );
+                  }
+                : undefined
+            }
+            onCancelTransfer={
+              (transfer?.project_id ?? selectedProjectId) != null
+                ? async () => {
+                    await api.stopProject(transfer?.project_id ?? selectedProjectId!);
+                  }
+                : undefined
+            }
+            onDismiss={dismiss}
+          />
         </main>
+        <FleetPanelSheet
+          open={fleetOpen}
+          onOpenChange={setFleetOpen}
+          onOpenProject={(projectId) => {
+            setSelectedProjectId(projectId);
+            setSelectedNodeKey(null);
+            setStudioOpen(false);
+          }}
+        />
         <Inspector
           projectId={selectedProjectId}
           selectedNodeKey={selectedNodeKey}

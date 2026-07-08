@@ -178,8 +178,19 @@ async def record_step_failure(
 ) -> str:
     """Обработать ошибку advance_project.
 
-    Returns: retry | sleep | abandon
+    Returns: retry | sleep | abandon | stopped
     """
+    meta = _meta(project)
+    if meta.get("user_stop"):
+        logger.info(
+            "[#{}] fail on {} ignored — user_stop ({}: {})",
+            project.id,
+            project.status.value,
+            type(error).__name__,
+            error,
+        )
+        return "stopped"
+
     running = project.status
     step = step_by_running_status(running)
     step_code = step.code if step else running.value

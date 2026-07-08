@@ -7,6 +7,7 @@ from app.bots.outsee import (
     OutseeImageError,
     OutseePromptTooLongError,
     _failure_text_matches_prompt_id,
+    _normalize_outsee_failure_text,
     _normalize_pre_failure_baseline,
     _outsee_failure_is_stale,
     _raise_outsee_failure,
@@ -120,7 +121,7 @@ def test_queue_sidebar_moderation_stale_until_gen_idle_and_min_elapsed() -> None
         text,
         baseline_failure_texts=frozenset(),
         in_result=False,
-        elapsed=2.0,
+        elapsed=0.5,
         gen_idle=True,
         queue_mode=True,
         prompt_id_prefix=prefix,
@@ -129,8 +130,22 @@ def test_queue_sidebar_moderation_stale_until_gen_idle_and_min_elapsed() -> None
         text,
         baseline_failure_texts=frozenset(),
         in_result=False,
-        elapsed=6.0,
+        elapsed=2.0,
         gen_idle=True,
         queue_mode=True,
         prompt_id_prefix=prefix,
+    )
+
+
+def test_moderation_in_result_fails_immediately_even_in_baseline() -> None:
+    text = "Контент отклонён модерацией"
+    baseline = frozenset({_normalize_outsee_failure_text(text)})
+    assert not _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=baseline,
+        in_result=True,
+        elapsed=2.0,
+        gen_idle=True,
+        queue_mode=False,
+        prompt_id_prefix="[ID: P13-F73-abc]",
     )

@@ -72,6 +72,13 @@ export async function fleetPullProject(nodeId: number, projectId: number) {
   });
 }
 
+export async function fleetPushToHub(projectId: number) {
+  return fleetFetch<{ ok: boolean; started?: boolean; size_mb?: number }>(
+    `/api/fleet/local/projects/${projectId}/push-to-hub`,
+    { method: "POST" },
+  );
+}
+
 export async function fleetSyncNode(nodeId: number) {
   return fleetFetch(`/api/fleet/nodes/${nodeId}/sync`, { method: "POST" });
 }

@@ -114,7 +114,7 @@ async def recover_chrome_cdp(*, force: bool = False) -> bool:
     )
 
     script = (
-        f"& '{ps1}'; "
+        f". '{ps1}'; "
         "Stop-VpChromeProcesses | Out-Null; "
         "Start-Sleep -Seconds 2; "
         "$d = Get-VpBrowserUserDataDir; "

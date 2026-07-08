@@ -77,6 +77,12 @@ async def trigger_finish_missing_images(
     if not already and queued:
         project.status = ProjectStatus.generating_images
     _wake_worker_for_finish(project, ProjectStatus.generating_images)
+    meta = dict(project.meta or {})
+    if meta.pop("user_stop", None) is not None:
+        project.meta = meta
+        from loguru import logger
+
+        logger.info("[#{}] finish_missing images: cleared user_stop", project.id)
     parts: list[str] = []
     if missing_shot1:
         head1 = ", ".join(str(n) for n in missing_shot1[:20])
@@ -211,6 +217,12 @@ async def trigger_finish_missing_videos(
     if not already and queued:
         project.status = ProjectStatus.generating_videos
     _wake_worker_for_finish(project, ProjectStatus.generating_videos)
+    meta = dict(project.meta or {})
+    if meta.pop("user_stop", None) is not None:
+        project.meta = meta
+        from loguru import logger
+
+        logger.info("[#{}] finish_missing videos: cleared user_stop", project.id)
     parts: list[str] = []
     if missing_shot1:
         head1 = ", ".join(str(n) for n in missing_shot1[:20])

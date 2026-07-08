@@ -893,13 +893,23 @@ def _outsee_failure_is_stale(
     ):
         return True
     kind = _outsee_failure_kind(ftext)
-    # Generate уже завершился, ролика нет — «Контент отклонён» в результате
-    # это провал ТЕКУЩЕЙ попытки, даже если такая же плашка была до клика.
+    # Moderation после Generate — немедленный fail, даже если та же плашка в baseline.
+    if kind == "moderation" and gen_idle:
+        if in_result:
+            return False
+        if (
+            queue_mode
+            and prompt_id_prefix
+            and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
+            and elapsed >= 1.0
+        ):
+            return False
+    # Прочие ошибки в блоке результата после завершения Generate.
     if (
         in_result
         and gen_idle
-        and elapsed >= 20.0
-        and kind in ("moderation", "generation", "length")
+        and kind in ("generation", "length")
+        and elapsed >= 3.0
     ):
         return False
     if _normalize_outsee_failure_text(ftext) in baseline_failure_texts:
@@ -912,7 +922,7 @@ def _outsee_failure_is_stale(
             and prompt_id_prefix
             and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
         ):
-            min_sidebar_sec = 4.0
+            min_sidebar_sec = 1.0 if kind == "moderation" else 4.0
         if not gen_idle or elapsed < min_sidebar_sec:
             return True
         norm = _normalize_outsee_failure_text(ftext)
@@ -2004,20 +2014,42 @@ class OutseeBot:
         # фолбэк на старую URL-выкачку.
         try:
             if prompt_id_prefix:
-                await self._verify_img_url_matches_prompt_id(
-                    page,
-                    img_url,
-                    prompt_id_prefix,
-                    gen_id=gen_id,
-                )
-                await _download_via_card_click(
-                    page,
-                    prompt_id_prefix=prompt_id_prefix,
-                    out_path=out_path,
-                    project_id=project_id,
-                    img_url=img_url,
-                    net_events=net_events,
-                )
+                try:
+                    await self._verify_img_url_matches_prompt_id(
+                        page,
+                        img_url,
+                        prompt_id_prefix,
+                        gen_id=gen_id,
+                    )
+                    await _download_via_card_click(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                        out_path=out_path,
+                        project_id=project_id,
+                        img_url=img_url,
+                        net_events=net_events,
+                    )
+                except OutseeImageError as verify_err:
+                    # Handoff из _wait_image_url_strict: картинка уже в
+                    # «Результат генерации», но [ID] не виден в 10 thumb
+                    # галереи — card-click не найдёт карточку. Качаем по URL.
+                    if "не найден в" in verify_err.reason and "thumb" in verify_err.reason:
+                        logger.warning(
+                            "outsee.generate_image: [ID] нет в gallery "
+                            "thumb после wait-handoff — queue URL download "
+                            "(gen_id={})",
+                            gen_id,
+                        )
+                        await _download_via_queue_result(
+                            page,
+                            img_url=img_url,
+                            out_path=out_path,
+                            gen_id=gen_id,
+                            net_events=net_events,
+                            project_id=project_id,
+                        )
+                    else:
+                        raise
             elif _outsee_queue_mode():
                 await _download_via_queue_result(
                     page,
@@ -3460,6 +3492,25 @@ class OutseeBot:
                         return _resolve_best_download_url(
                             by_id, net_events=net_events
                         )
+                    if (
+                        fallback_candidate is not None
+                        and _strip_url_query(fallback_candidate)
+                        not in rejected_candidates
+                        and (
+                            (not net_events)
+                            or _url_is_fresh(fallback_candidate, net_events)
+                        )
+                    ):
+                        logger.info(
+                            "_wait_image_url_strict: gen завершена, handoff "
+                            "fallback (source={}, {:.0f} сек): {}",
+                            fallback_source,
+                            elapsed,
+                            fallback_candidate[:120],
+                        )
+                        return _resolve_best_download_url(
+                            fallback_candidate, net_events=net_events
+                        )
 
             # 3) diagnostic
             if elapsed - last_log > 15:
@@ -3516,6 +3567,25 @@ class OutseeBot:
                 )
                 return _resolve_best_download_url(
                     by_id, net_events=net_events
+                )
+            if (
+                fallback_candidate is not None
+                and _strip_url_query(fallback_candidate)
+                not in rejected_candidates
+                and await self._generate_button_enabled(page)
+                and (
+                    (not net_events)
+                    or _url_is_fresh(fallback_candidate, net_events)
+                )
+            ):
+                logger.warning(
+                    "_wait_image_url_strict: timeout {:.0f}с, но gen_idle "
+                    "и есть fallback — handoff: {}",
+                    timeout,
+                    fallback_candidate[:120],
+                )
+                return _resolve_best_download_url(
+                    fallback_candidate, net_events=net_events
                 )
         raise OutseeImageError(
             f"outsee image: результат не появился за {int(timeout)} сек",
@@ -4516,7 +4586,7 @@ class OutseeBot:
             dup_refs: list[Path] = list(duplicate_check_paths or [])
             rejected_video_urls: set[str] = set()
             video_url: str | None = None
-            pick_timeout = max(90.0, timeout / max(_VIDEO_PICK_ATTEMPTS, 1))
+            pick_timeout = min(180.0, max(60.0, timeout / max(_VIDEO_PICK_ATTEMPTS, 1)))
 
             for pick_attempt in range(1, _VIDEO_PICK_ATTEMPTS + 1):
                 abort_if_cancelled(project_id)
@@ -4928,6 +4998,52 @@ class OutseeBot:
             now = asyncio.get_event_loop().time()
             elapsed = now - start
 
+            # Fail-fast: модерация / ошибка генерации — до поиска URL в DOM.
+            if elapsed >= 0.8:
+                failure = await self._detect_outsee_failure(
+                    page,
+                    queue_mode=queue_mode,
+                    prompt_id_prefix=prompt_id_prefix,
+                )
+                if failure:
+                    ftext = str(failure["text"])
+                    in_result = bool(failure.get("in_result"))
+                    gen_idle = await self._generate_button_enabled(page)
+                    if _outsee_failure_is_stale(
+                        ftext,
+                        baseline_failure_texts=failure_baseline,
+                        in_result=in_result,
+                        elapsed=elapsed,
+                        gen_idle=gen_idle,
+                        queue_mode=queue_mode,
+                        prompt_id_prefix=prompt_id_prefix,
+                    ):
+                        stale_key = _normalize_outsee_failure_text(ftext)[:80]
+                        if stale_key not in stale_logged:
+                            stale_logged.add(stale_key)
+                            logger.debug(
+                                "_wait_video_url_strict: игнорирую stale "
+                                "плашку (in_result={}): {}",
+                                in_result,
+                                ftext[:80],
+                            )
+                    else:
+                        logger.info(
+                            "_wait_video_url_strict: ошибка outsee за {:.0f} сек "
+                            "(in_result={}, kind={}): {}",
+                            elapsed,
+                            in_result,
+                            _outsee_failure_kind(ftext),
+                            ftext[:120],
+                        )
+                        _raise_outsee_failure(
+                            text=ftext,
+                            gen_id=gen_id,
+                            elapsed=elapsed,
+                            in_result=in_result,
+                            prompt_len=prompt_len,
+                        )
+
             if prompt_id_prefix:
                 by_id = await self._find_video_by_prompt_id(
                     page, prompt_id_prefix
@@ -5027,51 +5143,6 @@ class OutseeBot:
                         )
                         return chosen_idle
 
-            if elapsed >= 1.5:
-                failure = await self._detect_outsee_failure(
-                    page,
-                    queue_mode=queue_mode,
-                    prompt_id_prefix=prompt_id_prefix,
-                )
-                if failure:
-                    ftext = str(failure["text"])
-                    in_result = bool(failure.get("in_result"))
-                    gen_idle = await self._generate_button_enabled(page)
-                    if _outsee_failure_is_stale(
-                        ftext,
-                        baseline_failure_texts=failure_baseline,
-                        in_result=in_result,
-                        elapsed=elapsed,
-                        gen_idle=gen_idle,
-                        queue_mode=queue_mode,
-                        prompt_id_prefix=prompt_id_prefix,
-                    ):
-                        stale_key = _normalize_outsee_failure_text(ftext)[:80]
-                        if stale_key not in stale_logged:
-                            stale_logged.add(stale_key)
-                            logger.debug(
-                                "_wait_video_url_strict: игнорирую stale "
-                                "плашку (in_result={}): {}",
-                                in_result,
-                                ftext[:80],
-                            )
-                    else:
-                        logger.info(
-                            "_wait_video_url_strict: ошибка outsee за {:.0f} сек "
-                            "(in_result={}, kind={}): {}",
-                            elapsed,
-                            in_result,
-                            _outsee_failure_kind(ftext),
-                            ftext[:120],
-                        )
-                        _raise_outsee_failure(
-                            text=ftext,
-                            gen_id=gen_id,
-                            elapsed=elapsed,
-                            in_result=in_result,
-                            prompt_len=prompt_len,
-                        )
-
             if elapsed - last_log > 15:
                 last_log = elapsed
                 urls = await self._all_video_urls_on_page(page)
@@ -5087,7 +5158,7 @@ class OutseeBot:
                     ),
                 )
 
-            await sleep_cancellable(1.0, project_id)
+            await sleep_cancellable(0.5, project_id)
 
         ctx: dict[str, Any] = {
             "gen_id": gen_id,

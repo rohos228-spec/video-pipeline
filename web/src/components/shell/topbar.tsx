@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity } from "lucide-react";
+import { Sparkles, Activity, Network } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -62,6 +62,16 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           >
             <Sparkles className="h-3.5 w-3.5" />
             Промты
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => window.dispatchEvent(new CustomEvent("studio-open-fleet"))}
+            className="gap-2 text-xs"
+            title="Станции Tailscale и очередь монтажа"
+          >
+            <Network className="h-3.5 w-3.5" />
+            Сеть
           </Button>
           <Button
             variant="ghost"

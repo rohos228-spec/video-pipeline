@@ -695,18 +695,30 @@ async def generate_video_with_retries(
             except OutseeImageError as e:
                 last_err = e
                 err_kind = _retry_err_label(e)
-                logger.warning(
-                    "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
-                    round_label, attempt, max_attempts_per_prompt,
-                    err_kind,
-                    attempt_kwargs.get("prompt_id_prefix") or "—",
-                    e.reason,
-                )
+                if isinstance(e, OutseeContentRejectedError):
+                    logger.warning(
+                        "outsee.generate_video [{}] МОДЕРАЦИЯ outsee "
+                        "попытка {}/{} (id={}): {}",
+                        round_label,
+                        attempt,
+                        max_attempts_per_prompt,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                        e.reason,
+                    )
+                else:
+                    logger.warning(
+                        "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
+                        round_label, attempt, max_attempts_per_prompt,
+                        err_kind,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                        e.reason,
+                    )
                 prefix = (
                     attempt_kwargs.get("prompt_id_prefix")
                     if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
                     else None
                 )
+                moderation_rewrite_failed = False
                 if (
                     gpt is not None
                     and attempt < max_attempts_per_prompt
@@ -732,6 +744,15 @@ async def generate_video_with_retries(
                             len(fixed),
                         )
                         current_prompt = fixed
+                    elif isinstance(e, OutseeContentRejectedError):
+                        moderation_rewrite_failed = True
+                        logger.warning(
+                            "outsee.generate_video [{}]: модерация — GPT не "
+                            "переписал промт, не повторяю тот же текст",
+                            round_label,
+                        )
+                if moderation_rewrite_failed:
+                    break
                 if attempt < max_attempts_per_prompt:
                     await sleep_cancellable(2.0, project_id)
 

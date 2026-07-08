@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Save, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Save, ChevronDown, ChevronUp, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
@@ -27,6 +27,8 @@ import {
   type SplitStepParams,
 } from "@/lib/node-step-params";
 import { cn } from "@/lib/utils";
+import { fleetPushToHub } from "@/lib/fleet-api";
+import { isMontageHandoffPending } from "@/lib/montage-handoff";
 
 function NumField({
   label,
@@ -251,16 +253,20 @@ function StepperControl({
 }
 
 function AssembleFields({
+  projectId,
   params,
   metaRecord,
   onSave,
   saving,
 }: {
+  projectId: number;
   params: NodeStepParamsMeta;
   metaRecord: Record<string, unknown>;
   onSave: (patch: AssembleStepParams) => void;
   saving: boolean;
 }) {
+  const [pushing, setPushing] = useState(false);
+  const handoffPending = isMontageHandoffPending({ meta: metaRecord });
   const subsOn = params.assemble?.subtitles_enabled !== false;
   const tailSaved = params.assemble?.post_voiceover_tail_seconds ?? 0;
   const bgmFromMeta =
@@ -276,6 +282,39 @@ function AssembleFields({
           Субтитры, хвост видео после озвучки и громкость фона из папки music/.
         </p>
       </div>
+      {handoffPending ? (
+        <div className="rounded-lg border border-primary/50 bg-primary/10 p-3">
+          <p className="mb-2 text-xs leading-relaxed text-foreground/90">
+            Музыка и клипы готовы. Монтаж будет на <strong>главном ПК</strong> — сначала
+            отправьте файлы.
+          </p>
+          <Button
+            type="button"
+            className="h-9 w-full gap-2 text-xs"
+            disabled={pushing || saving}
+            onClick={() => {
+              setPushing(true);
+              void fleetPushToHub(projectId)
+                .then((res) =>
+                  toast.success(
+                    res.size_mb
+                      ? `Отправлено на главный ПК (${res.size_mb} MB)`
+                      : "Отправлено на главный ПК",
+                  ),
+                )
+                .catch((e) => toast.error(errorMessageFromUnknown(e)))
+                .finally(() => setPushing(false));
+            }}
+          >
+            {pushing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            Отправить на главный ПК
+          </Button>
+        </div>
+      ) : null}
       <StepperControl
         label="Время видео после окончания озвучки"
         description="Секунды: последний кадр держится после конца голоса; музыка продолжается."
@@ -522,6 +561,7 @@ export function NodeStepParamsPanel({
       ) : null}
       {step === "assemble" ? (
         <AssembleFields
+          projectId={projectId}
           params={params}
           metaRecord={metaRecord}
           onSave={persist}

@@ -587,6 +587,27 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or candidate)
         if nxt is None:
             return
+        if nxt is ProjectStatus.assembling:
+            from app.fleet.montage_handoff import (
+                defer_assemble_to_hub,
+                should_defer_assemble_to_hub,
+            )
+            from app.fleet.transfer_state import allow_transfer_start
+
+            if should_defer_assemble_to_hub(project):
+                handoff_meta = dict(project.meta or {})
+                allow_transfer_start(project.id)
+                handoff_meta.pop("fleet_transfer_aborted", None)
+                project.meta = handoff_meta
+                if await defer_assemble_to_hub(
+                    session, project, reason="auto_advance music_ready"
+                ):
+                    _reset_retry_count(project, transition.ready_status)
+                    await session.flush()
+                    await _hide_hitl_buttons_with_badge(
+                        bot, hitl, badge or "✅ Авто-одобрено → hub"
+                    )
+                    return
         project.status = nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
@@ -802,6 +823,11 @@ async def maybe_auto_advance(
 
     meta = getattr(project, "meta", None) or {}
     if meta.get("user_stop"):
+        return False
+
+    from app.fleet.montage_handoff import is_montage_deferred_to_hub
+
+    if is_montage_deferred_to_hub(project):
         return False
 
     if hitl is not None and hitl.decision is HITLDecision.regenerate:

@@ -43,6 +43,7 @@ from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     disk_has_shot2_video,
+    find_shot1_video,
     find_shot2_image,
     read_shot2_columns,
 )
@@ -170,9 +171,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             for fr in frames:
                 # ⏹ Остановить — проверка между кадрами.
                 raise_if_cancelled(project.id)
-                clip_path = await _scene_video_file_on_disk(
-                    session, project.id, fr.id
-                )
+                clip_path = find_shot1_video(out_dir, fr.number)
+                if clip_path is None:
+                    clip_path = await _scene_video_file_on_disk(
+                        session, project.id, fr.id
+                    )
                 has_video = clip_path is not None
                 if _skip_frame_video_generation(fr, has_video):
                     skipped += 1
@@ -217,10 +220,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     frame_number=fr.number,
                 )
                 if start_frame_path is None:
-                    raise RuntimeError(
-                        f"у кадра {fr.number} нет картинки на диске "
-                        f"(БД: {img.path if img else '—'})"
+                    skipped += 1
+                    logger.warning(
+                        "[#{}] frame {} skip video — нет PNG shot_01 на диске "
+                        "(БД: {}, status={})",
+                        project.id,
+                        fr.number,
+                        img.path if img else "—",
+                        fr.status.value,
                     )
+                    continue
                 if img is None or Path(img.path) != start_frame_path:
                     logger.warning(
                         "[#{}] frame {}: стартовый кадр с диска {} "
@@ -346,9 +355,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         fr.number,
                     )
                     continue
-                shot1_clip = await _scene_video_file_on_disk(
-                    session, project.id, fr.id, shot=1
-                )
+                shot1_clip = find_shot1_video(out_dir, fr.number)
+                if shot1_clip is None:
+                    shot1_clip = await _scene_video_file_on_disk(
+                        session, project.id, fr.id, shot=1
+                    )
                 if shot1_clip is None:
                     logger.warning(
                         "[#{}] frame {} shot_02 video: нет clip shot_01 — skip",

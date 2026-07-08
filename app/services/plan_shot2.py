@@ -127,6 +127,29 @@ def shot2_video_file_pattern(frame_number: int) -> str:
     return f"clip_{frame_number:03d}_s2_*.mp4"
 
 
+def shot1_video_file_pattern(frame_number: int) -> str:
+    return f"clip_{frame_number:03d}_*.mp4"
+
+
+def find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
+    """Последний clip shot_01 (``clip_NNN_*.mp4`` без ``_s2_``)."""
+    if not videos_dir.is_dir():
+        return None
+    candidates = [
+        p
+        for p in videos_dir.glob(shot1_video_file_pattern(frame_number))
+        if "_s2_" not in p.name and p.is_file()
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def disk_has_shot1_video(videos_dir: Path, frame_number: int) -> bool:
+    return find_shot1_video(videos_dir, frame_number) is not None
+
+
 def disk_has_shot2_video(videos_dir: Path, frame_number: int) -> bool:
     if not videos_dir.is_dir():
         return False

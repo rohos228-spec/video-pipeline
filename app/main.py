@@ -312,6 +312,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
                 for p in projects:
+                    if (p.meta or {}).get("user_stop"):
+                        continue
                     if is_stop_requested(p.id):
                         from app.services.project_control import stop_project_running
 
@@ -399,6 +401,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 )
                     except (StepCancelledError, asyncio.CancelledError):
                         # ⏹ Остановить — task.cancel() или кооперативный выход.
+                        from app.services.step_cancel import consume_stop
+
+                        consume_stop(project_id)
                         logger.info(
                             "[#{}] advance_project cancelled by user (⏹)",
                             project_id,

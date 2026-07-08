@@ -19,7 +19,7 @@ async def _heartbeat_once() -> None:
     role = (settings.fleet_role or "hub").strip().lower()
     if role != "agent":
         return
-    hub = (settings.fleet_hub_url or "").strip().rstrip("/")
+    hub = (settings.fleet_heartbeat_hub_url or "").strip().rstrip("/")
     if not hub:
         return
     body = {
@@ -35,7 +35,7 @@ async def _heartbeat_once() -> None:
     except FleetAgentError as exc:
         logger.debug("fleet agent heartbeat failed: {}", exc)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("fleet agent heartbeat error: {}", exc)
+        logger.warning("fleet agent heartbeat error (hub={}): {}", hub, exc)
 
 
 async def _agent_loop() -> None:

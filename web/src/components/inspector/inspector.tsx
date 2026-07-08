@@ -12,6 +12,7 @@ import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { ProjectSettingsPanel } from "@/components/inspector/project-settings";
 import { TopicEditor } from "@/components/inspector/topic-editor";
+import { MontageHandoffCard } from "@/components/fleet/montage-handoff-card";
 import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
@@ -35,6 +36,9 @@ export function Inspector({
     refetchInterval: 6000,
   });
 
+  const showProject = projectId != null && project.data;
+  const showHandoff = showProject && !selectedNodeKey;
+
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card/20">
       <div className="flex h-10 items-center gap-2 border-b border-border px-4">
@@ -54,6 +58,9 @@ export function Inspector({
               Выбери проект слева, чтобы увидеть детали.
             </p>
           )}
+          {showProject && selectedNodeKey ? (
+            <MontageHandoffCard project={project.data!} />
+          ) : null}
           {selectedNodeKey && (
             <div className="flex flex-col gap-3">
               <NodeInspector nodeKey={selectedNodeKey} projectId={projectId} />
@@ -64,7 +71,7 @@ export function Inspector({
               )}
             </div>
           )}
-          {projectId != null && !selectedNodeKey && project.data && (
+          {showHandoff && project.data && (
             <div className="flex flex-col gap-4">
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Тема</div>
@@ -81,6 +88,7 @@ export function Inspector({
               <Row label="Главный герой">{formatHeroMode(project.data.hero_mode)}</Row>
               <Row label="Создан">{formatRelativeTime(project.data.created_at)}</Row>
               <Row label="Обновлён">{formatRelativeTime(project.data.updated_at)}</Row>
+              <MontageHandoffCard project={project.data} />
               <ProjectSettingsPanel project={project.data} />
               {project.data.general_plan && (
                 <div>

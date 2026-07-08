@@ -364,6 +364,37 @@ async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_video_preserves_clips(session, tmp_path: Path):
+    """Повторный запуск video: clip_*.mp4 на диске не удаляются."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        animation_prompt="anim",
+        status=FrameStatus.video_generated,
+    )
+    videos_dir = tmp_path / "videos"
+    videos_dir.mkdir(parents=True)
+    clip = videos_dir / "clip_001_deadbeef.mp4"
+    clip.write_bytes(b"mp4-bytes-here-xx")
+    await _mkart(
+        session,
+        p,
+        ArtifactKind.scene_video,
+        path=str(clip),
+        frame_id=fr.id,
+    )
+    p.status = ProjectStatus.videos_ready
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "video")
+    assert "video" in summary
+    assert clip.exists()
+    assert clip.read_bytes() == b"mp4-bytes-here-xx"
+
+
+@pytest.mark.asyncio
 async def test_reset_returns_error_for_unknown_step(session):
     p = await _mkproject(session)
     summary = await reset_step(session, p, "definitely_not_a_real_step")

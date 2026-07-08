@@ -121,6 +121,21 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             return
 
         if status is ProjectStatus.assembling:
+            from app.fleet.montage_handoff import (
+                defer_assemble_to_hub,
+                should_defer_assemble_to_hub,
+            )
+            from app.fleet.transfer_state import allow_transfer_start
+
+            if should_defer_assemble_to_hub(project):
+                meta = dict(project.meta or {})
+                allow_transfer_start(project.id)
+                meta.pop("fleet_transfer_aborted", None)
+                project.meta = meta
+                if await defer_assemble_to_hub(
+                    session, project, reason="pipeline assembling guard"
+                ):
+                    return
             await assemble.run(session, project, bot)
             return
 

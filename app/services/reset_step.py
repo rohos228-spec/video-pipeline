@@ -353,6 +353,22 @@ async def _resume_anim_pr_from_xlsx(session: AsyncSession, project: Project) -> 
     return {"synced_from_xlsx": synced}
 
 
+async def _resume_images_from_disk(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Повтор img — PNG в scenes/ не трогаем, только синхрон БД с диском."""
+    from app.services.scan_frames import sync_frames_with_disk_images
+
+    synced = await sync_frames_with_disk_images(session, project)
+    return {"synced_on_disk": synced, "files_preserved": True}
+
+
+async def _resume_video_from_disk(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Повтор video — clip_*.mp4 не удаляем, подхват с диска в БД."""
+    from app.services.artifact_recovery import recover_scene_videos_from_disk
+
+    recovered = await recover_scene_videos_from_disk(session, project)
+    return {"recovered_from_disk": len(recovered), "files_preserved": True}
+
+
 async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 8 «Промты анимации»: animation_prompt + статус кадра."""
     frames = (
@@ -373,9 +389,42 @@ async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, An
     return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
+def _backup_videos_before_wipe(project: Project, videos_dir: Path) -> int:
+    """Переместить clip_*.mp4 в old/videos/<timestamp>/ (не unlink)."""
+    if not videos_dir.is_dir():
+        return 0
+    clips = list(videos_dir.glob("clip_*.mp4"))
+    if not clips:
+        return 0
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    dest_dir = project.data_dir / "old" / "videos" / ts
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for src in clips:
+        try:
+            shutil.move(str(src), str(dest_dir / src.name))
+            moved += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] reset_step: backup video {} failed: {}",
+                project.id,
+                src.name,
+                e,
+            )
+    if moved:
+        logger.info(
+            "[#{}] reset_step: backup {} clip → {}",
+            project.id,
+            moved,
+            dest_dir,
+        )
+    return moved
+
+
 async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага 9 «Видео»: scene_video артефакты + файлы. Также
-    сбрасываем frame.status video_* → animation_prompt_ready."""
+    """Сброс шага 9 «Видео»: только БД + перенос файлов в old/videos/."""
+    videos_dir = project.data_dir / "videos"
+    backed_up = _backup_videos_before_wipe(project, videos_dir)
     arts = (
         await session.execute(
             select(Artifact).where(
@@ -385,7 +434,7 @@ async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any
         )
     ).scalars().all()
     frame_ids_with_video = {a.frame_id for a in arts if a.frame_id is not None}
-    art_stats = await _wipe_artifacts_by_kind(
+    art_stats = await _wipe_artifacts_db_only(
         session, project, ArtifactKind.scene_video
     )
     frames = (
@@ -408,7 +457,7 @@ async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any
             else FrameStatus.image_approved
         )
         frames_reset += 1
-    return {**art_stats, "frames_reset": frames_reset}
+    return {**art_stats, "clips_backed_up": backed_up, "frames_reset": frames_reset}
 
 
 async def _wipe_audio(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -518,6 +567,8 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 # «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "anim_pr": _resume_anim_pr_from_xlsx,
+    "img": _resume_images_from_disk,
+    "video": _resume_video_from_disk,
     "audio": _preserve_user_media_on_rerun,
     "music": _preserve_user_media_on_rerun,
 }

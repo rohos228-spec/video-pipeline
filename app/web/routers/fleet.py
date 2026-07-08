@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, AsyncIterator
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -51,7 +51,9 @@ def _pipeline_root() -> Path:
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 
-def _check_agent_token(authorization: str | None) -> None:
+def _check_agent_token(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
     expected = (settings.fleet_agent_token or "").strip()
     if not expected:
         return
@@ -462,6 +464,45 @@ async def pull_project_to_main(
             await process_montage_queue(session)
         await session.commit()
         return {"ok": True, "project_id": project.id, "slug": project.slug, "queued": queued}
+
+
+@router.post("/import-bundle")
+async def import_bundle(
+    file: UploadFile = File(...),
+    run_assemble: str = Form("false"),
+    source_node: str = Form(""),
+    source_project_id: str = Form(""),
+    _auth: AgentAuth = None,
+) -> dict:
+    """Hub: принять bundle с agent (push-to-hub)."""
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="empty bundle")
+
+    do_assemble = run_assemble.strip().lower() in {"true", "1", "yes"}
+    async with session_scope() as session:
+        project = await bundle_svc.import_project_bundle(
+            session, blob, run_assemble=do_assemble
+        )
+        meta = dict(project.meta or {})
+        if source_node.strip():
+            meta["fleet_source_node"] = source_node.strip()
+        if source_project_id.strip().isdigit():
+            meta["fleet_source_project_id"] = int(source_project_id.strip())
+        project.meta = meta
+        queued = False
+        if do_assemble and settings.fleet_montage_hub:
+            queued = await enqueue_for_montage(
+                session, project, source_node=source_node.strip() or None
+            )
+            await process_montage_queue(session)
+        await session.commit()
+        return {
+            "ok": True,
+            "project_id": project.id,
+            "slug": project.slug,
+            "queued": queued,
+        }
 
 
 # ── Local agent endpoints (на каждой станции) ────────────────────────────────
@@ -944,6 +985,91 @@ async def local_export_bundle(project_id: int, _auth: AgentAuth = None):
         media_type="application/gzip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/transfers/active")
+async def fleet_transfers_active(_user: AuthDep = None) -> dict:
+    from app.fleet.montage_handoff import is_montage_handoff_pending
+    from app.fleet.transfer_state import is_transfer_blocked, list_active_transfers
+
+    seen: set[int] = set()
+    transfers: list[dict] = []
+    for rec in list_active_transfers():
+        pid = int(rec.get("project_id") or 0)
+        if pid:
+            seen.add(pid)
+        transfers.append(rec)
+
+    role = (settings.fleet_role or "hub").strip().lower()
+    if settings.fleet_enabled and role == "agent":
+        async with session_scope() as session:
+            rows = (
+                await session.execute(
+                    select(Project).order_by(Project.updated_at.desc()).limit(50)
+                )
+            ).scalars().all()
+            for project in rows:
+                if project.id in seen or is_transfer_blocked(project.id):
+                    continue
+                if not is_montage_handoff_pending(project):
+                    continue
+                if (project.meta or {}).get("fleet_handoff_complete"):
+                    continue
+                transfers.append(
+                    {
+                        "project_id": project.id,
+                        "job": "handoff",
+                        "phase": "waiting",
+                        "direction": "to_hub",
+                        "percent": 0,
+                        "sent_mb": 0,
+                        "total_mb": 0,
+                        "message": "Нажми «Отправить на главный ПК» — авто-отправки нет",
+                        "source_node": settings.fleet_node_name or "",
+                        "target": (settings.fleet_hub_url or "").strip(),
+                        "slug": project.slug,
+                        "status": "active",
+                    }
+                )
+    return {"transfers": transfers}
+
+
+@router.post("/local/projects/{project_id}/push-to-hub")
+async def local_push_to_hub(project_id: int, _user: AuthDep = None) -> dict:
+    import asyncio
+
+    from app.fleet.push_to_hub import push_project_bundle_to_hub
+    from app.fleet.transfer_state import (
+        FleetTransferCancelled,
+        allow_transfer_start,
+        register_transfer_task,
+    )
+
+    if (settings.fleet_role or "hub").strip().lower() != "agent":
+        raise HTTPException(status_code=400, detail="push-to-hub только на agent (NucBox)")
+    if not (settings.fleet_hub_url or "").strip():
+        raise HTTPException(status_code=400, detail="FLEET_HUB_URL пуст")
+
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"project #{project_id} not found")
+
+    allow_transfer_start(project_id)
+
+    async def _run() -> None:
+        try:
+            await push_project_bundle_to_hub(project_id)
+        except FleetTransferCancelled:
+            pass
+        except Exception:
+            from loguru import logger
+
+            logger.exception("[#{}] push-to-hub background failed", project_id)
+
+    task = asyncio.create_task(_run(), name=f"push-to-hub-{project_id}")
+    register_transfer_task(project_id, task)
+    return {"ok": True, "started": True, "project_id": project_id}
 
 
 @router.get("/config")

@@ -60,6 +60,48 @@ async def test_prepare_prompt_compresses_when_over_limit(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_video_rewrite_after_moderation_stops_duplicate_retries(
+    monkeypatch,
+) -> None:
+    """Модерация видео: без GPT-rewrite не гоняем 3× тот же промт."""
+    attempts: list[str] = []
+
+    class FakeOutsee:
+        async def generate_video(self, prompt: str, out_path, **kwargs):
+            attempts.append(prompt)
+            raise OutseeContentRejectedError(
+                "outsee image: контент отклонён модерацией",
+                context={"kind": "moderation"},
+            )
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            return ask
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    async def fake_fix(gpt, current_prompt, e, *, prefix=None, project_id=None):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "_fix_prompt_after_outsee_error", fake_fix)
+
+    with pytest.raises(OutseeContentRejectedError):
+        await mod.generate_video_with_retries(
+            FakeOutsee(),
+            FakeGpt(),
+            prompt="original bad prompt " * 20,
+            out_path=__import__("pathlib").Path("out.mp4"),
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=1,
+        )
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
 async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
     monkeypatch,
 ) -> None:

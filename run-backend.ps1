@@ -80,9 +80,20 @@ if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
     Write-Host "WARNING: web/out/index.html missing - Launcher button 6 Build Web UI" -ForegroundColor Yellow
 }
 
+function Get-DotEnvValue([string]$Key, [string]$Default) {
+    $envPath = Join-Path $Root ".env"
+    if (-not (Test-Path $envPath)) { return $Default }
+    foreach ($line in Get-Content -LiteralPath $envPath -Encoding UTF8) {
+        if ($line -match "^\s*$Key=(.+)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return $Default
+}
+
 $env:TELEGRAM_ENABLED = "false"
-$env:WEB_HOST = "127.0.0.1"
-$env:WEB_PORT = "8765"
+$env:WEB_HOST = Get-DotEnvValue "WEB_HOST" "127.0.0.1"
+$env:WEB_PORT = Get-DotEnvValue "WEB_PORT" "8765"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
 
@@ -107,7 +118,7 @@ Write-BackendLogLine "preflight create_app OK"
 
 Write-Host ""
 Write-Host ">>> DO NOT CLOSE THIS WINDOW while Studio is open <<<" -ForegroundColor Yellow
-Write-Host "    Wait for: Uvicorn running on http://127.0.0.1:8765" -ForegroundColor Yellow
+Write-Host "    Wait for: Uvicorn running on http://$($env:WEB_HOST):$($env:WEB_PORT)" -ForegroundColor Yellow
 Write-Host ""
 
 $exitCode = 0

@@ -53,6 +53,8 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
             await s.execute(select(Project).where(Project.status.in_(ACTIVE_STATUSES)))
         ).scalars().all()
         for p in projects:
+            if (p.meta or {}).get("user_stop"):
+                continue
             if is_stop_requested(p.id):
                 from app.services.project_control import stop_project_running
 
