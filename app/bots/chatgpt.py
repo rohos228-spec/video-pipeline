@@ -281,6 +281,39 @@ FILE_CARD_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} span[data-state] > button.behavior-btn",
     f"{ASSISTANT_LAST_PREFIX} button.behavior-btn",
 ]
+# UI 2026-Q2: клик по файлу открывает превью таблицы справа; скачивание —
+# кнопка Download/Скачать в правом верхнем углу панели (не в чате).
+FILE_PREVIEW_PANEL_SELECTORS = [
+    "[data-testid='file-viewer']",
+    "[data-testid*='spreadsheet-viewer']",
+    "[data-testid*='artifact-viewer']",
+    "[data-testid*='file-preview-panel']",
+    "aside:has(button[aria-label*='Download'])",
+    "aside:has(button[aria-label*='Скачать'])",
+    "[role='complementary']:has(button[aria-label])",
+    "div:has-text('Библиотека /'):has(button[aria-label])",
+    "div:has-text('.xlsx'):has(button[aria-label*='ownload'])",
+    "div:has-text('.xlsx'):has(button[aria-label*='качать'])",
+]
+FILE_PREVIEW_DOWNLOAD_SELECTORS = [
+    "header button[aria-label='Download']",
+    "header button[aria-label='Скачать']",
+    "header button[data-testid*='download']",
+    "[role='toolbar'] button[aria-label='Download']",
+    "[role='toolbar'] button[aria-label='Скачать']",
+    "[role='toolbar'] button[aria-label*='Download']",
+    "[role='toolbar'] button[aria-label*='Скачать']",
+    "button[aria-label='Download']",
+    "button[aria-label='Скачать']",
+    "button[aria-label*='Download']",
+    "button[aria-label*='Скачать']",
+    "a[download]",
+    *[
+        f"button:has(use[href$='#{h}'])"
+        for h in DOWNLOAD_SPRITE_HASHES
+    ],
+]
+FILE_PREVIEW_OPEN_WAIT_SEC = 1.2
 
 # Селекторы (несколько вариантов — берём первый, который нашёлся).
 INPUT_SELECTORS = [
@@ -2072,6 +2105,77 @@ class ChatGPTBot:
             )
         return False
 
+    async def _side_preview_panel_locator(self, page: Page) -> Any | None:
+        """Правая панель превью xlsx после клика по файлу в чате."""
+        panel_sel = await _first_matching(
+            page, FILE_PREVIEW_PANEL_SELECTORS, timeout=8.0
+        )
+        if panel_sel is None:
+            return None
+        loc = page.locator(panel_sel)
+        if await loc.count() == 0:
+            return None
+        return loc.last
+
+    async def _download_from_side_preview_panel(
+        self,
+        page: Page,
+        target_path: Path,
+    ) -> bool:
+        """Скачать из правой панели превью (кнопка Download сверху справа)."""
+        panel = await self._side_preview_panel_locator(page)
+        if panel is None:
+            logger.info("ChatGPT: панель превью файла не найдена")
+            return False
+        logger.info("ChatGPT: панель превью открыта — ищем кнопку скачивания")
+        for sel in FILE_PREVIEW_DOWNLOAD_SELECTORS:
+            buttons = panel.locator(sel)
+            count = await buttons.count()
+            if count == 0:
+                continue
+            for idx in range(count):
+                btn = buttons.nth(idx)
+                aria = (await btn.get_attribute("aria-label")) or sel
+                if await self._click_and_save_file(
+                    page,
+                    btn,
+                    target_path,
+                    label=f"preview-panel:{aria}",
+                ):
+                    return True
+        return False
+
+    async def _click_file_then_download(
+        self,
+        page: Page,
+        locator: Any,
+        target_path: Path,
+        *,
+        label: str = "",
+    ) -> bool:
+        """Прямое скачивание или UI с превью справа (2026-Q2)."""
+        if await self._click_and_save_file(
+            page, locator, target_path, label=label or "file-btn"
+        ):
+            return True
+        try:
+            await locator.click(timeout=5_000)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "ChatGPT: клик по файлу для превью не удался ({}): {}",
+                label,
+                exc,
+            )
+            return False
+        await asyncio.sleep(FILE_PREVIEW_OPEN_WAIT_SEC)
+        if await self._download_from_side_preview_panel(page, target_path):
+            return True
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     async def _try_download_aria_file_buttons(
         self,
         page: Page,
@@ -2099,7 +2203,7 @@ class ChatGPTBot:
                             aria.lower().endswith(ext) for ext in _FILE_EXTENSIONS
                         ):
                             continue
-                    if await self._click_and_save_file(
+                    if await self._click_file_then_download(
                         page,
                         btn,
                         target_path,
@@ -2110,9 +2214,13 @@ class ChatGPTBot:
         return False
 
     async def _try_download_via_file_card(
-        self, page: Page, *, timeout: float = 60,
-    ) -> Download | None:
-        """Пробует скачать файл, кликнув по карточке файла (behavior-btn)."""
+        self,
+        page: Page,
+        target_path: Path,
+        *,
+        timeout: float = 60,
+    ) -> bool:
+        """Скачать файл кликом по карточке (behavior-btn) или панели превью справа."""
         card_sel = await _first_matching(
             page, FILE_CARD_SELECTORS, timeout=timeout,
         )
@@ -2122,7 +2230,7 @@ class ChatGPTBot:
                 "не найдена за {} сек",
                 timeout,
             )
-            return None
+            return False
 
         loc = page.locator(card_sel)
         count = await loc.count()
@@ -2139,24 +2247,14 @@ class ChatGPTBot:
                 idx,
                 aria[:60],
             )
-            try:
-                async with page.expect_download(timeout=20_000) as dl_info:
-                    await btn.click(timeout=5_000)
-                dl: Download = await dl_info.value
-                logger.info(
-                    "ChatGPT: download triggered via file card ({}), filename={}",
-                    card_sel,
-                    dl.suggested_filename,
-                )
-                return dl
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "ChatGPT: клик по карточке ({}, idx={}) не вызвал download: {}",
-                    card_sel,
-                    idx,
-                    exc,
-                )
-        return None
+            if await self._click_file_then_download(
+                page,
+                btn,
+                target_path,
+                label=aria or card_sel,
+            ):
+                return True
+        return False
 
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
@@ -2304,16 +2402,13 @@ class ChatGPTBot:
         ):
             return target_path
 
-        download = await self._try_download_via_file_card(
-            page, timeout=phase_timeout
-        )
-        if download is not None:
-            size = await self._save_download_to_path(download, target_path)
+        if await self._try_download_via_file_card(
+            page, target_path, timeout=phase_timeout
+        ):
+            size = target_path.stat().st_size if target_path.exists() else -1
             logger.info(
-                "ChatGPT: файл скачан (behavior-btn) как {} "
-                "(исходное имя {}, размер {} байт)",
+                "ChatGPT: файл скачан (behavior-btn / превью) как {} ({} байт)",
                 target_path,
-                download.suggested_filename,
                 size,
             )
             if size < 1024:
@@ -2344,15 +2439,25 @@ class ChatGPTBot:
 
         await self._hover_file_cards()
         retry_timeout = min(DOWNLOAD_PHASE_RETRY_SEC, max(12.0, timeout * 0.03))
-        download = await self._try_download_via_file_card(page, timeout=retry_timeout)
-        if download is None:
-            download = await self._try_download_via_selectors(
-                page, DOWNLOAD_LINK_SELECTORS, timeout=retry_timeout
+        if await self._try_download_via_file_card(
+            page, target_path, timeout=retry_timeout
+        ):
+            size = target_path.stat().st_size if target_path.exists() else -1
+            logger.info(
+                "ChatGPT: файл скачан после hover как {} ({} байт)",
+                target_path,
+                size,
             )
+            return target_path
+        if await self._download_from_side_preview_panel(page, target_path):
+            return target_path
+        download = await self._try_download_via_selectors(
+            page, DOWNLOAD_LINK_SELECTORS, timeout=retry_timeout
+        )
         if download is not None:
             size = await self._save_download_to_path(download, target_path)
             logger.info(
-                "ChatGPT: файл скачан после hover как {} ({} байт)",
+                "ChatGPT: файл скачан после hover (селектор) как {} ({} байт)",
                 target_path,
                 size,
             )

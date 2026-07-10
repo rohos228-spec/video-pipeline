@@ -1,8 +1,13 @@
-"""ChatGPT download: reply-text fallback for voiceover .txt."""
+"""ChatGPT download: reply-text fallback and side-preview selectors."""
 
 from __future__ import annotations
 
-from app.bots.chatgpt import _response_looks_like_file, reply_text_usable_as_download
+from app.bots.chatgpt import (
+    FILE_PREVIEW_DOWNLOAD_SELECTORS,
+    FILE_PREVIEW_PANEL_SELECTORS,
+    _response_looks_like_file,
+    reply_text_usable_as_download,
+)
 
 
 class _FakeResp:
@@ -28,3 +33,14 @@ def test_reply_text_usable_min_length() -> None:
     assert reply_text_usable_as_download("x" * 10)
     assert not reply_text_usable_as_download("short")
     assert not reply_text_usable_as_download("   ")
+
+
+def test_file_preview_panel_selectors_include_library_path() -> None:
+    joined = " ".join(FILE_PREVIEW_PANEL_SELECTORS)
+    assert "Библиотека" in joined
+
+
+def test_file_preview_download_selectors_cover_toolbar() -> None:
+    joined = " ".join(FILE_PREVIEW_DOWNLOAD_SELECTORS).lower()
+    assert "download" in joined or "скачать" in joined
+    assert "header" in joined or "toolbar" in joined
