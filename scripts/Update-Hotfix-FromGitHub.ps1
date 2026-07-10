@@ -84,7 +84,7 @@ $markers = @{
     "app\services\sidebar_layout.py"  = "_normalize_gen_queue"
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
-    "app\hotfix_build.py"             = "hotfix-20260710-stop-queue-xlsx-v2"
+    "app\hotfix_build.py"             = "hotfix-20260710-strict-queue-v3"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {
@@ -119,8 +119,8 @@ if (Test-Path $stop) {
 Write-Host ""
 Write-Host "Done. Restart Studio (run-backend.ps1 or VideoPipelineStudio.cmd)." -ForegroundColor Green
 Write-Host "Expected logs after fix:" -ForegroundColor DarkGray
-Write-Host "  startup: hotfix=hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
-Write-Host "  GET /api/studio-version -> pipeline_hotfix: hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
+Write-Host "  startup: hotfix=hotfix-20260710-strict-queue-v3" -ForegroundColor DarkGray
+Write-Host "  GET /api/studio-version -> pipeline_hotfix: hotfix-20260710-strict-queue-v3" -ForegroundColor DarkGray
 Write-Host "  plan xlsx: extra GPT sheets stripped -> exact template layout" -ForegroundColor DarkGray
 Write-Host "  script txt: plain-label / api-variants -> voiceover.txt (~10s)" -ForegroundColor DarkGray
 Write-Host "  STOP: user_stop aktiv — worker/auto_advance/gen_queue blocked" -ForegroundColor DarkGray

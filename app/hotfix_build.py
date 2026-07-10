@@ -1,6 +1,6 @@
 """Идентификатор пакета hotfix — виден в логах и /api/studio-version."""
 
-PIPELINE_HOTFIX_ID = "hotfix-20260710-stop-queue-xlsx-v2"
+PIPELINE_HOTFIX_ID = "hotfix-20260710-strict-queue-v3"
 
 # Маркеры для scripts/Update-Hotfix-FromGitHub.ps1 (проверка после скачивания).
 HOTFIX_MARKERS: dict[str, str] = {

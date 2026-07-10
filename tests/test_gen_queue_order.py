@@ -67,9 +67,17 @@ async def test_blocks_later_while_earlier_at_script_ready_target_audio(
 async def test_allows_later_when_earlier_queue_run_complete(
     session: AsyncSession,
 ) -> None:
-    await _add(
+    p7 = await _add(
         session, 7, status=ProjectStatus.script_ready, until="script"
     )
+    p7.meta = {
+        **(p7.meta or {}),
+        "gen_queue_run": {
+            **((p7.meta or {}).get("gen_queue_run") or {}),
+            "complete": True,
+        },
+    }
+    await session.flush()
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
     assert await gen_queue_blocks_project(session, 8) is None
 
@@ -106,16 +114,33 @@ async def test_gen_queue_normalize_sorts_by_project_id(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_skips_paused_starts_next(
+async def test_gen_queue_tick_waits_on_paused_does_not_skip(
     session: AsyncSession,
 ) -> None:
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.new, until="script")
     started = await gen_queue_tick(session)
-    assert started == 1
+    assert started == 0
     p8 = await session.get(Project, 8)
     assert p8 is not None
-    assert p8.status is ProjectStatus.planning
+    assert p8.status is ProjectStatus.new
+
+
+@pytest.mark.asyncio
+async def test_blocks_later_while_earlier_slot_open_even_if_middle_at_target(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1 ещё в работе — #4 не стартует, даже если #2/#3 уже на цели."""
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [1, 2, 3, 4],
+    )
+    await _add(session, 1, status=ProjectStatus.planning, until="script")
+    await _add(session, 2, status=ProjectStatus.script_ready, until="script")
+    await _add(session, 3, status=ProjectStatus.script_ready, until="script")
+    await _add(session, 4, status=ProjectStatus.new, until="script")
+    assert await gen_queue_blocks_project(session, 4) == 1
 
 
 @pytest.mark.asyncio
