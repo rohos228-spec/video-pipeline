@@ -2185,7 +2185,7 @@ class ChatGPTBot:
                     if (pr.left < window.innerWidth * 0.28) continue;
 
                     const headerBtns = [];
-                    for (const btn of panel.querySelectorAll('button')) {
+                    for (const btn of panel.querySelectorAll('button, [role="button"]')) {
                         const br = btn.getBoundingClientRect();
                         if (br.width < 8 || br.height < 8) continue;
                         if (br.top - pr.top > headerStrip) continue;
@@ -2193,12 +2193,13 @@ class ChatGPTBot:
                         if (isZoom(btn)) continue;
                         const al = btn.getAttribute('aria-label') || '';
                         const title = btn.getAttribute('title') || '';
-                        if (isClose(al) || isClose(title)) continue;
+                        const tip = btn.getAttribute('data-tooltip') || '';
+                        if (isClose(al) || isClose(title) || isClose(tip)) continue;
                         headerBtns.push({
                             btn,
                             left: br.left,
                             right: br.right,
-                            al,
+                            al: al || title || tip,
                             title,
                             hasSvg: !!btn.querySelector('svg'),
                         });
@@ -2246,7 +2247,7 @@ class ChatGPTBot:
             meta.get("h"),
             (meta.get("al") or "")[:40],
         )
-        loc = page.locator("button[data-vp-preview-download='1']").last
+        loc = page.locator("[data-vp-preview-download='1']").last
         if await loc.count() > 0:
             return loc
         return None
@@ -2263,7 +2264,12 @@ class ChatGPTBot:
             return False
         logger.info("ChatGPT: панель превью открыта — ищем кнопку ↓ в header")
 
-        download_btn = await self._locate_preview_header_download_button(page)
+        download_btn = None
+        for attempt in range(12):
+            download_btn = await self._locate_preview_header_download_button(page)
+            if download_btn is not None:
+                break
+            await asyncio.sleep(0.5)
         if download_btn is not None:
             try:
                 await download_btn.hover(timeout=2_000)
