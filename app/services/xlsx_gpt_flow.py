@@ -16,6 +16,7 @@ from loguru import logger
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.services.xlsx_versioning import (
+    normalize_xlsx_to_reference_layout,
     replace_with_backup,
     validate_xlsx,
 )
@@ -111,7 +112,14 @@ async def telegram_style_ask_and_download(
         )
 
     if validate_xlsx_download:
+        ref_xlsx = next(
+            (p for p in attachments if p.suffix.lower() == ".xlsx"),
+            None,
+        )
         err = validate_xlsx(dl_path)
+        if err is not None and ref_xlsx is not None:
+            if normalize_xlsx_to_reference_layout(dl_path, ref_xlsx):
+                err = validate_xlsx(dl_path)
         if err is not None:
             if dl_path != target and dl_path.exists():
                 dl_path.unlink()

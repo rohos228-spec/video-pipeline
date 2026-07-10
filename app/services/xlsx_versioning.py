@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -105,7 +106,7 @@ def _allowed_sheet_layouts() -> list[frozenset[str]]:
 
 
 def validate_xlsx_sheets(path: Path) -> str | None:
-    """Листы должны содержать хотя бы один известный шаблон (лишние листы GPT — ок)."""
+    """Имена и количество листов должны совпадать с одним из шаблонов."""
     try:
         actual = frozenset(_workbook_sheet_names(path))
     except Exception as e:  # noqa: BLE001
@@ -113,7 +114,7 @@ def validate_xlsx_sheets(path: Path) -> str | None:
     if not actual:
         return f"{_XLSX_FORMAT_ERROR_PREFIX}: в файле нет листов"
     for expected in _allowed_sheet_layouts():
-        if expected.issubset(actual):
+        if actual == expected:
             return None
     actual_str = ", ".join(sorted(actual))
     expected_hint = " | ".join(
@@ -121,8 +122,91 @@ def validate_xlsx_sheets(path: Path) -> str | None:
     )
     return (
         f"{_XLSX_FORMAT_ERROR_PREFIX}: листы [{actual_str}] "
-        f"не содержат ни один шаблон (нужны: {expected_hint})"
+        f"не совпадают с шаблоном (ожидалось: {expected_hint})"
     )
+
+
+def _resolve_workbook_sheet(wb: Any, name: str) -> Any | None:
+    if name in wb.sheetnames:
+        return wb[name]
+    low = name.casefold()
+    for sheet_name in wb.sheetnames:
+        if sheet_name.casefold() == low:
+            return wb[sheet_name]
+    return None
+
+
+def normalize_xlsx_to_reference_layout(source: Path, reference: Path) -> bool:
+    """Убрать лишние листы GPT: оставить layout reference, значения — из source.
+
+    Возвращает True, если файл перезаписан (были лишние листы или другой порядок).
+    """
+    source = Path(source)
+    reference = Path(reference)
+    if not source.is_file() or not reference.is_file():
+        return False
+
+    try:
+        ref_names = _workbook_sheet_names(reference)
+        src_names = _workbook_sheet_names(source)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("xlsx_versioning: normalize skip (read sheets): {}", e)
+        return False
+
+    if not ref_names:
+        return False
+
+    expected = frozenset(ref_names)
+    actual = frozenset(src_names)
+    if not expected.issubset(actual):
+        return False
+    if src_names == ref_names:
+        return False
+
+    from openpyxl import load_workbook  # noqa: PLC0415
+
+    tmp = source.with_name(f"{source.stem}.norm{source.suffix}")
+    try:
+        shutil.copy2(reference, tmp)
+        src_wb = load_workbook(source, data_only=False)
+        dst_wb = load_workbook(tmp)
+        try:
+            for ref_name in ref_names:
+                src_ws = _resolve_workbook_sheet(src_wb, ref_name)
+                dst_ws = _resolve_workbook_sheet(dst_wb, ref_name)
+                if src_ws is None or dst_ws is None:
+                    continue
+                for row in src_ws.iter_rows():
+                    for cell in row:
+                        if cell.value is not None:
+                            dst_ws.cell(
+                                row=cell.row,
+                                column=cell.column,
+                                value=cell.value,
+                            )
+            dst_wb.save(tmp)
+        finally:
+            src_wb.close()
+            dst_wb.close()
+
+        shutil.move(str(tmp), str(source))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("xlsx_versioning: normalize failed {}: {}", source, e)
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return False
+
+    dropped = sorted(actual - expected)
+    logger.info(
+        "xlsx_versioning: normalized {} → {} лист(ов) reference, убрано: {}",
+        source.name,
+        len(ref_names),
+        dropped or "reorder",
+    )
+    return True
 
 
 def validate_xlsx(path: Path) -> str | None:
