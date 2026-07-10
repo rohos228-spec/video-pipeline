@@ -13,6 +13,7 @@ from app.services.artifact_recovery import (
     recover_audio_from_disk,
     recover_scene_videos_from_disk,
 )
+from app.services.plan_validation import is_meaningful_general_plan
 from app.services.project_state import compute_actual_status, is_running_status
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 from app.telegram.menu import status_order
@@ -55,6 +56,16 @@ async def _frames_with_voiceover(session: AsyncSession, project: Project) -> int
     ).scalar_one()
 
 
+async def ready_status_confirmed_by_data(
+    session: AsyncSession,
+    project: Project,
+    ready_status: ProjectStatus,
+) -> bool:
+    """True если данные в БД подтверждают *_ready (не шаблон/заглушка)."""
+    actual = await compute_actual_status(session, project)
+    return status_order(actual) >= status_order(ready_status)
+
+
 async def can_enter_running(
     session: AsyncSession,
     project: Project,
@@ -64,6 +75,24 @@ async def can_enter_running(
 
     Возвращает (ok, reason, suggested_status при ok=False).
     """
+    if target is ProjectStatus.scripting:
+        if not is_meaningful_general_plan(project.general_plan):
+            return False, "сценарий не готов (нет general_plan)", ProjectStatus.new
+
+    if target is ProjectStatus.splitting:
+        if not (project.script_text or "").strip():
+            voice = project.data_dir / "voiceover.txt"
+            if not voice.is_file() or voice.stat().st_size < 50:
+                actual = await compute_actual_status(session, project)
+                return False, "закадровый текст не готов", actual
+
+    if target in (
+        ProjectStatus.planning,
+        ProjectStatus.scripting,
+        ProjectStatus.splitting,
+    ):
+        return True, "", None
+
     if target not in _NO_FRAMES_REQUIRED:
         need_frames = await _frames_with_voiceover(session, project)
         if need_frames == 0:
@@ -133,6 +162,10 @@ async def clamp_status_to_data(
     session: AsyncSession, project: Project
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        return None
     # Running-шаги не трогаем (как recompute_status): иначе при устаревшем
     # объекте в сессии после advance в другой сессии откатываем scripting→
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.

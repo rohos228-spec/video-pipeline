@@ -10,15 +10,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.services.mass_factory import mass_parent_id
 from app.services.project_state import is_running_status
+from app.services.gen_queue_run import is_user_stopped
 from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
 
+def _set_user_stop_gate(project: Project) -> None:
+    """Железный STOP: блок worker + auto_advance до ручного ▶."""
+    meta = dict(project.meta or {})
+    meta["user_stop"] = True
+    if mass_parent_id(project) is not None:
+        meta["mass_lane_user_stop"] = True
+        logger.info(
+            "[#{}] STOP: mass_lane_user_stop до ручного запуска",
+            project.id,
+        )
+    project.meta = meta
+
+
 async def stop_project_running(
     session: AsyncSession, project: Project
 ) -> dict[str, str | bool | list[str] | None]:
-    """⏹ Остановить текущий шаг — та же логика, что `on_project_stop_running` в боте."""
+    """⏹ STOP: откат running-шага и/или блок автопродвижения (user_stop)."""
     request_stop(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
 
@@ -27,6 +41,7 @@ async def stop_project_running(
     step_title: str | None = None
     rollback_from: str | None = None
     rollback_to_val: str | None = None
+    msg = ""
 
     if is_running_status(project.status):
         ok = True
@@ -50,22 +65,9 @@ async def stop_project_running(
                 project.id,
                 chain_to,
             )
-        project.updated_at = datetime.utcnow()
         step_title = step.title if step is not None else cur.value
         clear_stop(project.id)
-        meta = dict(project.meta or {})
-        meta["user_stop"] = True
-        if mass_parent_id(project) is not None:
-            meta["mass_lane_user_stop"] = True
-            logger.info(
-                "[#{}] STOP: mass lane paused (mass_lane_user_stop) until manual start",
-                project.id,
-            )
-        project.meta = meta
-        logger.info(
-            "[#{}] STOP: auto_advance paused (user_stop) until manual step start",
-            project.id,
-        )
+        msg = f"остановлен шаг «{step_title}» → {rollback_to.value}"
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
             project.id,
@@ -73,25 +75,25 @@ async def stop_project_running(
             rollback_to.value,
             project.auto_mode,
         )
-        msg = (
-            f"остановлен шаг «{step_title}» → {rollback_to.value}"
-        )
     elif xlsx_stopped:
         ok = True
         stopped_kind = "xlsx"
-        meta = dict(project.meta or {})
-        meta["user_stop"] = True
-        project.meta = meta
-        project.updated_at = datetime.utcnow()
-        msg = (
-            f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
-        )
+        msg = f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
     else:
-        msg = f"Нет активных шагов (статус: {project.status.value})."
+        ok = True
+        stopped_kind = "gate"
+        msg = (
+            f"автопродвижение остановлено (статус: {project.status.value})"
+        )
 
-    if ok:
-        await session.flush()
+    _set_user_stop_gate(project)
+    project.updated_at = datetime.utcnow()
+    await session.flush()
 
+    logger.info(
+        "[#{}] STOP: user_stop активен — воркер/auto_advance/gen_queue заблокированы до ▶",
+        project.id,
+    )
     still_active = is_generation_active(project.id)
     return {
         "ok": ok,

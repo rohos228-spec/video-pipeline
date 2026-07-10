@@ -16,6 +16,7 @@ from loguru import logger
 from app.bots.browser import browser_session
 from app.bots.chatgpt import ChatGPTBot
 from app.services.xlsx_versioning import (
+    normalize_xlsx_to_reference_layout,
     replace_with_backup,
     validate_xlsx,
 )
@@ -68,6 +69,7 @@ async def telegram_style_ask_and_download(
     download_timeout: float = XLSX_GPT_TIMEOUT_S,
     project_id: int | None = None,
     validate_xlsx_download: bool = False,
+    allow_reply_text_fallback: bool = False,
 ) -> str:
     """Как bot _run_plan_xlsx / _run_split_xlsx: ask → download в одной сессии."""
     for fp in attachments:
@@ -106,10 +108,18 @@ async def telegram_style_ask_and_download(
             dl_path,
             timeout=download_timeout,
             fallback_text=reply,
+            allow_reply_text_fallback=allow_reply_text_fallback,
         )
 
     if validate_xlsx_download:
+        ref_xlsx = next(
+            (p for p in attachments if p.suffix.lower() == ".xlsx"),
+            None,
+        )
         err = validate_xlsx(dl_path)
+        if err is not None and ref_xlsx is not None:
+            if normalize_xlsx_to_reference_layout(dl_path, ref_xlsx):
+                err = validate_xlsx(dl_path)
         if err is not None:
             if dl_path != target and dl_path.exists():
                 dl_path.unlink()
@@ -136,8 +146,9 @@ async def run_under_xlsx_lock(
     step: str,
     fn: Callable[[], Awaitable[T]],
 ) -> T:
-    """Per-(project, step) lock — как bot._run_xlsx_with_lock."""
+    """Per-project GPT lock + per-step active marker (для ⏹ / is_generation_active)."""
     from app.services.xlsx_flow_locks import (
+        project_gpt_lock,
         register_xlsx_flow_task,
         unregister_xlsx_flow_task,
         xlsx_flow_active_set,
@@ -145,12 +156,13 @@ async def run_under_xlsx_lock(
 
     active = xlsx_flow_active_set()
     key = (project_id, step)
-    active.add(key)
     task = asyncio.current_task()
-    if task is not None:
-        register_xlsx_flow_task(project_id, step, task)
-    try:
-        return await fn()
-    finally:
-        active.discard(key)
-        unregister_xlsx_flow_task(project_id, step)
+    async with project_gpt_lock(project_id):
+        active.add(key)
+        if task is not None:
+            register_xlsx_flow_task(project_id, step, task)
+        try:
+            return await fn()
+        finally:
+            active.discard(key)
+            unregister_xlsx_flow_task(project_id, step)

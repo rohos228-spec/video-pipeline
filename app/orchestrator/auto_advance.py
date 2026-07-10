@@ -42,11 +42,12 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.project_state import compute_actual_status
 from app.services.disabled_nodes import skip_disabled_running, skip_disabled_running_async
-from app.services.step_data_guard import can_enter_running, clamp_status_to_data
+from app.services.step_data_guard import can_enter_running, clamp_status_to_data, ready_status_confirmed_by_data
 from app.services.auto_review import ReviewResult
 from app.settings import settings
-from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
+from app.telegram.menu import STEPS, enabled_enrich_slots, status_order, step_by_running_status
 
 # (single-mass parity #4) Гранулярность визуального ревью.
 #
@@ -527,6 +528,23 @@ async def _apply_approve(
     badge: str | None = None,
 ) -> None:
     """Эмулируем клик `approve` пользователем в TG."""
+    from app.services.gen_queue_run import is_user_stopped, should_hold_queue_auto_advance
+
+    meta = getattr(project, "meta", None) or {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        logger.info(
+            "auto_advance: #{} blocked _apply_approve (user_stop)",
+            project.id,
+        )
+        return
+    if should_hold_queue_auto_advance(project):
+        logger.info(
+            "auto_advance: #{} blocked _apply_approve (gen_queue target hold, status={})",
+            project.id,
+            project.status.value,
+        )
+        return
+
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.approved
 
@@ -792,16 +810,99 @@ async def maybe_auto_advance(
         await session.refresh(project)
     except Exception:  # noqa: BLE001
         pass
+
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        logger.debug(
+            "auto_advance: #{} {} — user_stop, пропуск",
+            project.id,
+            project.status.value,
+        )
+        return False
+
     await clamp_status_to_data(session, project)
     status = project.status
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать
 
+    meta = getattr(project, "meta", None) or {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        logger.debug(
+            "auto_advance: #{} {} — user_stop, пропуск",
+            project.id,
+            status.value,
+        )
+        return False
+
+    from app.services.gen_queue import (
+        gen_queue_blocks_project,
+        on_project_timeline_maybe_advance_queue,
+    )
+    from app.services.sidebar_layout import get_gen_queue
+    from app.services.gen_queue_run import (
+        is_gen_queue_run_complete,
+        mark_gen_queue_run_complete,
+        ready_status_is_queue_target,
+        should_hold_queue_auto_advance,
+    )
+
+    if should_hold_queue_auto_advance(project):
+        if not is_gen_queue_run_complete(project):
+            await mark_gen_queue_run_complete(session, project)
+        if ready_status_is_queue_target(project, status):
+            await on_project_timeline_maybe_advance_queue(session, project)
+            logger.info(
+                "auto_advance: #{} {} → gen_queue target reached, holding",
+                project.id,
+                status.value,
+            )
+        else:
+            logger.warning(
+                "auto_advance: #{} {} — gen_queue target passed, holding (no further advance)",
+                project.id,
+                status.value,
+            )
+        return True
+
+    queue_blocker = await gen_queue_blocks_project(session, project.id)
+    if queue_blocker is not None:
+        logger.info(
+            "auto_advance: #{} {} — ждём очередь {} (блокирует #{})",
+            project.id,
+            status.value,
+            get_gen_queue(),
+            queue_blocker,
+        )
+        return False
+
+    from app.services.step_cancel import is_generation_active
+
+    if is_generation_active(project.id):
+        logger.debug(
+            "auto_advance: #{} {} — шаг ещё выполняется, пропуск",
+            project.id,
+            status.value,
+        )
+        return False
+
+    if not await ready_status_confirmed_by_data(session, project, status):
+        actual = await compute_actual_status(session, project)
+        if status_order(actual) < status_order(status):
+            project.status = actual
+            await session.flush()
+            logger.warning(
+                "auto_advance: #{} {} → {} (данные не подтверждают ready)",
+                project.id,
+                status.value,
+                actual.value,
+            )
+        return False
+
     transition = TRANSITIONS[status]
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
-    meta = getattr(project, "meta", None) or {}
-    if meta.get("user_stop"):
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
         return False
 
     if hitl is not None and hitl.decision is HITLDecision.regenerate:

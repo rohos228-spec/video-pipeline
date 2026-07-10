@@ -68,6 +68,7 @@ def _normalize_gen_queue(raw: list[Any]) -> list[int]:
             continue
         seen.add(pid)
         out.append(pid)
+    out.sort()
     return out
 
 

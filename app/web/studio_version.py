@@ -87,6 +87,7 @@ def read_studio_version() -> dict[str, str | int | bool]:
     ui_stale = ui_baked_build > 0 and ui_baked_build != build
 
     from app.bots.chatgpt import CHATGPT_ATTACH_LOGIC_ID
+    from app.hotfix_build import PIPELINE_HOTFIX_ID
     from app.services.xlsx_step_runners import XLSX_STEP_RUNNERS_ID
 
     backend_attach = CHATGPT_ATTACH_LOGIC_ID
@@ -113,6 +114,7 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "backend_orchestrator": backend_orchestrator,
         "orchestrator_ok": orchestrator_ok,
         "pipeline_ok": attach_ok and orchestrator_ok,
+        "pipeline_hotfix": PIPELINE_HOTFIX_ID,
     }
 
 

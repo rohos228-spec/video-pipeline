@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
 from app.services.content_locks import is_ui_locked
+from app.services.plan_validation import is_meaningful_general_plan
 
 # --- константы под v8-шаблон ---------------------------------------------
 SHEET_GENERAL_V8 = "Общий план"
@@ -287,7 +288,7 @@ async def import_v8_xlsx(
 
     # --- general_plan ---
     new_plan = _read_general_plan(wb)
-    if new_plan:
+    if new_plan and is_meaningful_general_plan(new_plan):
         if keep_fields:
             if not project.general_plan:
                 project.general_plan = new_plan

@@ -333,8 +333,11 @@ class WorkflowGraph:
                     out[nid] = NodeRunStatus.pending
                 continue
             if is_config_node_type(typ):
-                topic_ok = bool((project.topic or "").strip())
-                out[nid] = NodeRunStatus.done if topic_ok else NodeRunStatus.pending
+                if status is ProjectStatus.new:
+                    out[nid] = NodeRunStatus.pending
+                else:
+                    topic_ok = bool((project.topic or "").strip())
+                    out[nid] = NodeRunStatus.done if topic_ok else NodeRunStatus.pending
                 continue
             if is_work_node_type(typ):
                 if typ == active_type:

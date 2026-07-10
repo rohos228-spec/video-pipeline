@@ -33,6 +33,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.plan_validation import is_meaningful_general_plan
 
 # Промежуточные «running» статусы — их при перевычислении не учитываем
 # (не зафиксированы в БД). Если статус сейчас `generating_X` — мы вернём
@@ -157,7 +158,7 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     «контрольные точки» (ready / new / assembled / published).
     """
     pid = project.id
-    has_plan = bool(project.general_plan)
+    has_plan = is_meaningful_general_plan(project.general_plan)
     has_script = bool(project.script_text)
     has_hero_descr = bool(project.hero_description)
 
@@ -339,19 +340,34 @@ async def recompute_status(
         # legacy, _init_db уже сбросил в `new`, но защитимся тут тоже.
         return old, old, False
 
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        return old, old, False
+
     new = await compute_actual_status(session, project)
     from app.telegram.menu import status_order as _ord
 
-    # Завершённые шаги не откатываем recompute'ом (только явный reset_step).
+    # Откат разрешён, если текущий *_ready не подтверждён данными (ложный plan_ready).
     if _ord(new) < _ord(old):
-        logger.debug(
-            "[#{}] {}: keep {} (computed {} — no downgrade)",
+        from app.services.step_data_guard import ready_status_confirmed_by_data
+
+        if await ready_status_confirmed_by_data(session, project, old):
+            logger.debug(
+                "[#{}] {}: keep {} (computed {} — no downgrade)",
+                project.id,
+                log_prefix,
+                old.value,
+                new.value,
+            )
+            return old, old, False
+        logger.warning(
+            "[#{}] {}: {} → {} (статус опережал данные — откат)",
             project.id,
             log_prefix,
             old.value,
             new.value,
         )
-        return old, old, False
 
     if old == new:
         return old, new, False

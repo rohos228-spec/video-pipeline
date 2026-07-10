@@ -17,6 +17,7 @@ const RUNNING_PROJECT_STATUSES: ReadonlySet<ProjectStatus> = new Set([
   "generating_animation_prompts",
   "generating_videos",
   "generating_audio",
+  "generating_music",
   "assembling",
   "publishing",
 ]);

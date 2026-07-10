@@ -37,3 +37,4 @@ async def test_stop_running_preserves_auto_mode(session: AsyncSession) -> None:
     assert info["stopped_kind"] == "running"
     assert p.auto_mode is True
     assert p.status is ProjectStatus.enrich_2_ready
+    assert (p.meta or {}).get("user_stop") is True

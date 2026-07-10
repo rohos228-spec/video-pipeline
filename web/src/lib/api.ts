@@ -217,6 +217,21 @@ export const api = {
       `/api/sidebar-layout/gen-queue/toggle`,
       { method: "POST", body: JSON.stringify({ project_id: projectId }) },
     ),
+  enqueueGenQueue: (body: {
+    project_id: number;
+    mode: "full" | "until_node";
+    target_node_key?: string;
+    target_node_type?: string;
+  }) =>
+    http<{
+      gen_queue: number[];
+      gen_queue_positions: Record<number, number>;
+      position: number | null;
+      gen_queue_run?: Record<string, unknown> | null;
+    }>(`/api/sidebar-layout/gen-queue/enqueue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   listStepCatalog: () =>
     http<{ code: string; label: string; running_status: string; ready_status: string }[]>(
       `/api/projects/steps/catalog`

@@ -1,5 +1,6 @@
 import { api, type ProjectAsset } from "@/lib/api";
 import type { ArtifactDTO, FrameDTO, NodeRunStatus, ProjectDetail } from "@/lib/types";
+import { MIN_GENERAL_PLAN_CHARS } from "@/lib/node-run-status";
 import { isEnrichNode } from "@/lib/node-prompts";
 import {
   pickGeneralPlanSheet,
@@ -52,6 +53,12 @@ export interface NodeResultContext {
   frames: FrameDTO[];
   mediaImages: ProjectAsset[];
   mediaVideos: ProjectAsset[];
+}
+
+function meaningfulGeneralPlan(project: ProjectDetail | null | undefined): string | null {
+  const text = project?.general_plan?.trim();
+  if (!text || text.length < MIN_GENERAL_PLAN_CHARS) return null;
+  return text;
 }
 
 function filterArtifacts(list: ArtifactDTO[], nodeType: string): ArtifactDTO[] {
@@ -201,7 +208,8 @@ function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResult
 
     case "plan":
     case "hitl_gate": {
-      if (projectHasXlsx(ctx.assets)) {
+      const planText = meaningfulGeneralPlan(project);
+      if (planText && projectHasXlsx(ctx.assets)) {
         return {
           hasResult: true,
           itemCount: 1,
@@ -211,10 +219,9 @@ function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResult
           viewMode: "xlsx_general_plan",
         };
       }
-      const text = project?.general_plan?.trim();
-      if (text) {
+      if (planText) {
         return ready(
-          [{ id: "general_plan", label: "Сценарий", kind: "text", content: text }],
+          [{ id: "general_plan", label: "Сценарий", kind: "text", content: planText }],
           "Текст плана готов",
           "text",
           "xlsx_general_plan",

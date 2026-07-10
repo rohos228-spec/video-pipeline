@@ -1,0 +1,129 @@
+# Скачать исправления с GitHub без git pull (PowerShell 5.1, ASCII).
+# Запуск из корня репозитория:
+#   powershell -ExecutionPolicy Bypass -File scripts\Update-Hotfix-FromGitHub.ps1
+#
+# Ветка с фиксами: cursor/restore-legacy-prompts-fc98 (PR #89)
+
+$ErrorActionPreference = "Stop"
+
+$Branch = "cursor/restore-legacy-prompts-fc98"
+$Repo = "rohos228-spec/video-pipeline"
+$BaseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
+
+$Files = @(
+    "app/hotfix_build.py",
+    "app/bots/chatgpt.py",
+    "app/services/xlsx_versioning.py",
+    "app/services/xlsx_gpt_flow.py",
+    "app/services/xlsx_step_runners.py",
+    "app/services/step_failure_policy.py",
+    "app/services/gen_queue.py",
+    "app/services/gen_queue_run.py",
+    "app/services/sidebar_layout.py",
+    "app/orchestrator/auto_advance.py",
+    "app/main.py",
+    "app/services/run_sync.py",
+    "app/services/project_state.py",
+    "app/services/project_control.py",
+    "app/services/step_data_guard.py",
+    "app/services/plan_validation.py",
+    "web/src/lib/node-run-status.ts"
+)
+
+function Get-RepoRoot {
+    param([string]$Start)
+    $dir = $Start
+    for ($i = 0; $i -lt 12; $i++) {
+        if (Test-Path (Join-Path $dir "pyproject.toml")) {
+            return (Resolve-Path -LiteralPath $dir).Path
+        }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $null
+}
+
+$Root = Get-RepoRoot -Start $PSScriptRoot
+if (-not $Root) {
+    $Root = Get-RepoRoot -Start (Get-Location).Path
+}
+if (-not $Root) {
+    Write-Host "ERROR: pyproject.toml not found" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "=== Hotfix update ($Branch) ===" -ForegroundColor Cyan
+Write-Host "Repo: $Root" -ForegroundColor DarkGray
+
+$ok = 0
+$fail = 0
+foreach ($rel in $Files) {
+    $dest = Join-Path $Root ($rel -replace "/", "\")
+    $parent = Split-Path -Parent $dest
+    if (-not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $url = "$BaseUrl/$rel"
+    Write-Host "> $rel" -ForegroundColor Gray
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+        $ok++
+    } catch {
+        Write-Host "  FAIL: $_" -ForegroundColor Red
+        $fail++
+    }
+}
+
+Write-Host ""
+Write-Host "Downloaded: $ok  Failed: $fail" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Yellow" })
+
+# Verify hotfix markers landed on disk
+$markers = @{
+    "app\services\project_control.py" = "_set_user_stop_gate"
+    "app\services\sidebar_layout.py"  = "_normalize_gen_queue"
+    "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
+    "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
+    "app\hotfix_build.py"             = "hotfix-20260710-stop-queue-xlsx-v2"
+}
+$missing = 0
+foreach ($rel in $markers.Keys) {
+    $path = Join-Path $Root $rel
+    if (-not (Test-Path $path)) {
+        Write-Host "MISSING FILE: $rel" -ForegroundColor Red
+        $missing++
+        continue
+    }
+    $hit = Select-String -Path $path -Pattern $markers[$rel] -Quiet -ErrorAction SilentlyContinue
+    if (-not $hit) {
+        Write-Host "MARKER NOT FOUND in $rel : $($markers[$rel])" -ForegroundColor Red
+        $missing++
+    }
+}
+if ($missing -eq 0) {
+    Write-Host "Hotfix markers OK (v2 stop+queue+xlsx)" -ForegroundColor Green
+} else {
+    Write-Host "Hotfix verify FAILED: $missing problem(s)" -ForegroundColor Red
+}
+
+# Clear stale bytecode
+Get-ChildItem -Path (Join-Path $Root "app") -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+$stop = Join-Path $Root "scripts\stop-backend.ps1"
+if (Test-Path $stop) {
+    Write-Host "> stop backend" -ForegroundColor Cyan
+    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $stop -Quiet 2>$null
+}
+
+Write-Host ""
+Write-Host "Done. Restart Studio (run-backend.ps1 or VideoPipelineStudio.cmd)." -ForegroundColor Green
+Write-Host "Expected logs after fix:" -ForegroundColor DarkGray
+Write-Host "  startup: hotfix=hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
+Write-Host "  GET /api/studio-version -> pipeline_hotfix: hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
+Write-Host "  plan xlsx: extra GPT sheets stripped -> exact template layout" -ForegroundColor DarkGray
+Write-Host "  script txt: plain-label / api-variants -> voiceover.txt (~10s)" -ForegroundColor DarkGray
+Write-Host "  STOP: user_stop aktiv — worker/auto_advance/gen_queue blocked" -ForegroundColor DarkGray
+Write-Host "  queue: gen_queue tick: poryadok [1, 2, 3, 4]" -ForegroundColor DarkGray
+
+exit $(if ($fail -eq 0 -and $missing -eq 0) { 0 } else { 1 })

@@ -24,6 +24,24 @@ FAILS_PER_CYCLE = 3
 MAX_CYCLES = 3
 MAX_TOTAL_FAILS = FAILS_PER_CYCLE * MAX_CYCLES  # 9
 SLEEP_MINUTES = 30
+# Лишние листы GPT / hotfix normalize — не морозить на полчаса.
+XLSX_SHEET_FORMAT_SLEEP_MINUTES = 2
+
+
+def sleep_minutes_for_error(error: Exception) -> int:
+    msg = str(error)
+    if "скачанный xlsx невалиден" in msg and "листы" in msg:
+        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    conn_markers = (
+        "Cannot connect to host",
+        "ClientConnectorError",
+        "CDP не доступен",
+        "29229",
+        "connect call failed",
+    )
+    if any(m in msg for m in conn_markers):
+        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    return SLEEP_MINUTES
 
 
 def _meta(project: Project) -> dict[str, Any]:
@@ -213,7 +231,8 @@ async def record_step_failure(
         return "abandon"
 
     if total % FAILS_PER_CYCLE == 0:
-        until = datetime.now(timezone.utc) + timedelta(minutes=SLEEP_MINUTES)
+        sleep_min = sleep_minutes_for_error(error)
+        until = datetime.now(timezone.utc) + timedelta(minutes=sleep_min)
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // FAILS_PER_CYCLE
         _save_failure_state(project, fs)
@@ -221,7 +240,7 @@ async def record_step_failure(
         logger.warning(
             "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{})",
             project.id,
-            SLEEP_MINUTES,
+            sleep_min,
             total,
             MAX_TOTAL_FAILS,
             key,

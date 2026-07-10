@@ -22,7 +22,7 @@ from app.services.sidebar_layout import (
 from app.services.event_bus import publish_project_event
 from app.services.project_state import recompute_status
 from app.services.project_steps import list_step_codes, start_step
-from app.services.run_sync import ensure_run_for_project, _get_default_workflow_id
+from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.web.deps import get_session
 from app.web.project_dto import project_to_detail, project_to_summary
@@ -68,6 +68,8 @@ async def list_projects(
     queue_pos = layout.get("gen_queue_positions") or {}
     out: list[ProjectSummary] = []
     for p in rows:
+        if mass_parent_id(p) is None:
+            await recompute_status(session, p, log_prefix="recompute(list)")
         if mass_parent_id(p) is not None:
             out.append(project_to_summary(p))
             continue
@@ -85,6 +87,7 @@ async def list_projects(
                 gen_queue_position=queue_pos.get(p.id),
             )
         )
+    await session.commit()
     return out
 
 
@@ -155,9 +158,13 @@ async def create_project(
     if wf_id is not None:
         try:
             await ensure_run_for_project(p.id, wf_id)
+            await sync_run_for_project(p.id)
         except Exception:
             pass
-    return p
+    await recompute_status(session, p, log_prefix="recompute(create)")
+    await session.commit()
+    await session.refresh(p)
+    return project_to_detail(p)
 
 
 @router.post("/{project_id}/ensure-run")

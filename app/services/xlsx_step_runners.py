@@ -18,7 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import xlsx_gpt_flow as xgf
-from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
+from app.services.xlsx_versioning import (
+    backup_to_old,
+    normalize_xlsx_to_reference_layout,
+    replace_with,
+    validate_xlsx,
+)
 from app.services.voiceover_split_local import (
     parse_dash_separated_blocks,
     split_voiceover_locally,
@@ -28,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v73"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v74-normalize"
 
 
 def _apply_split_fallback(
@@ -207,6 +212,9 @@ async def run_plan_xlsx(
     reply = await xgf.run_under_xlsx_lock(project.id, "plan", _gpt)
 
     validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        if normalize_xlsx_to_reference_layout(downloaded, proj_xlsx):
+            validation_err = validate_xlsx(downloaded)
     if validation_err is not None:
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
 
@@ -443,8 +451,10 @@ async def sync_after_plan(
     session: AsyncSession, project: Project, xlsx_path: Path
 ) -> None:
     await cx.sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
+    from app.services.plan_validation import is_meaningful_general_plan
+
     plan_text = (project.general_plan or "").strip()
-    if len(plan_text) < 200:
+    if not is_meaningful_general_plan(plan_text):
         raise RuntimeError(
             "ChatGPT вернул пустой/слишком короткий план после xlsx-sync"
         )
