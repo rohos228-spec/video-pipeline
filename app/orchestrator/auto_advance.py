@@ -804,6 +804,19 @@ async def maybe_auto_advance(
     if meta.get("user_stop"):
         return False
 
+    from app.services.gen_queue import on_project_timeline_maybe_advance_queue
+    from app.services.gen_queue_run import mark_gen_queue_run_complete, ready_status_is_queue_target
+
+    if ready_status_is_queue_target(project, status):
+        await mark_gen_queue_run_complete(session, project)
+        await on_project_timeline_maybe_advance_queue(session, project)
+        logger.info(
+            "auto_advance: #{} {} → gen_queue target reached, holding",
+            project.id,
+            status.value,
+        )
+        return True
+
     if hitl is not None and hitl.decision is HITLDecision.regenerate:
         await _apply_regen(
             session,

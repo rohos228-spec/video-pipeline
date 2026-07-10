@@ -11,6 +11,7 @@ from app.orchestrator.auto_advance import TRANSITIONS
 from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
 from app.services.mass_factory import mass_parent_id
 from app.services.project_steps import start_step
+from app.services.gen_queue_run import is_gen_queue_timeline_complete
 from app.services.sidebar_layout import get_gen_queue
 from app.telegram.menu import step_by_code
 
@@ -38,6 +39,8 @@ GEN_QUEUE_BUSY_STATUSES = [
 
 async def is_timeline_complete(session: AsyncSession, project: Project) -> bool:
     """True если последний шаг таймлайна завершён и следующего нет."""
+    if is_gen_queue_timeline_complete(project):
+        return True
     status = project.status
     if status is ProjectStatus.published:
         return True

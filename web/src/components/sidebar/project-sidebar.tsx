@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
 import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
+import { GenQueueDialog } from "@/components/sidebar/gen-queue-dialog";
 import { SidebarResizeHandle } from "@/components/sidebar/sidebar-resize-handle";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 
@@ -59,6 +60,7 @@ export function ProjectSidebar({
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+  const [queueDialogProject, setQueueDialogProject] = useState<ProjectSummary | null>(null);
   const { width: sidebarWidth, setWidth: setSidebarWidth, minWidth, maxWidth } =
     useSidebarWidth();
 
@@ -125,9 +127,21 @@ export function ProjectSidebar({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
+      toast.success("Проект снят с очереди");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
+
+  const handleQueueClick = useCallback(
+    (project: ProjectSummary) => {
+      if (project.gen_queue_position != null) {
+        queueToggleMutation.mutate(project.id);
+        return;
+      }
+      setQueueDialogProject(project);
+    },
+    [queueToggleMutation],
+  );
 
   const { roots, childrenByParent } = useMemo(() => {
     const list = projects.data ?? [];
@@ -325,7 +339,7 @@ export function ProjectSidebar({
               compact={opts?.compact}
               draggable={opts?.draggable}
               queuePosition={p.gen_queue_position ?? null}
-              onToggleQueue={() => queueToggleMutation.mutate(p.id)}
+              onToggleQueue={() => handleQueueClick(p)}
               onSelect={() => onSelect(p.id)}
               onDelete={() => deleteMutation.mutate(p.id)}
             />
@@ -342,7 +356,7 @@ export function ProjectSidebar({
                   compact
                   badge={`#${c.mass_lane_position ?? "?"}`}
                   queuePosition={c.gen_queue_position ?? null}
-                  onToggleQueue={() => queueToggleMutation.mutate(c.id)}
+                  onToggleQueue={() => handleQueueClick(c)}
                   onSelect={() => onSelect(c.id)}
                   onDelete={() => deleteMutation.mutate(c.id)}
                 />
@@ -706,6 +720,13 @@ export function ProjectSidebar({
           )}
         </div>
       </ScrollArea>
+      <GenQueueDialog
+        open={queueDialogProject != null}
+        onOpenChange={(o) => {
+          if (!o) setQueueDialogProject(null);
+        }}
+        project={queueDialogProject}
+      />
     </aside>
   );
 }

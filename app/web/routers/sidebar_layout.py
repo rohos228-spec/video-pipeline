@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.db import session_scope
+from app.models import Project
 from app.services import sidebar_layout as layout_svc
+from app.services.gen_queue_run import clear_gen_queue_run, set_gen_queue_run
+from sqlalchemy import select
 
 router = APIRouter(prefix="/sidebar-layout", tags=["sidebar-layout"])
 
@@ -31,6 +37,13 @@ class LayoutUpdate(BaseModel):
 
 class GenQueueToggle(BaseModel):
     project_id: int
+
+
+class GenQueueEnqueue(BaseModel):
+    project_id: int
+    mode: Literal["full", "until_node"] = "full"
+    target_node_key: str | None = None
+    target_node_type: str | None = None
 
 
 @router.get("")
@@ -99,10 +112,68 @@ async def delete_folder(folder_id: str) -> dict:
 
 @router.post("/gen-queue/toggle")
 async def toggle_gen_queue(body: GenQueueToggle) -> dict:
-    queue = layout_svc.toggle_gen_queue(body.project_id)
+    async with session_scope() as session:
+        project = (
+            await session.execute(select(Project).where(Project.id == body.project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        queue = layout_svc.get_gen_queue()
+        if body.project_id in queue:
+            queue = layout_svc.toggle_gen_queue(body.project_id)
+            await clear_gen_queue_run(session, project)
+            await session.commit()
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="use POST /gen-queue/enqueue to add with run target",
+            )
     positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
     return {
         "gen_queue": queue,
         "gen_queue_positions": positions,
         "position": positions.get(body.project_id),
+    }
+
+
+@router.post("/gen-queue/enqueue")
+async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
+    async with session_scope() as session:
+        project = (
+            await session.execute(select(Project).where(Project.id == body.project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        if not project.auto_mode:
+            raise HTTPException(
+                status_code=400,
+                detail="Включите auto_mode (режим ИИ) для проекта перед добавлением в очередь",
+            )
+        try:
+            await set_gen_queue_run(
+                session,
+                project,
+                mode=body.mode,
+                target_node_key=body.target_node_key,
+                target_node_type=body.target_node_type,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        run_meta = (
+            dict(project.meta.get("gen_queue_run"))
+            if isinstance(project.meta, dict) and isinstance(project.meta.get("gen_queue_run"), dict)
+            else None
+        )
+        queue = layout_svc.get_gen_queue()
+        if body.project_id not in queue:
+            queue = layout_svc.toggle_gen_queue(body.project_id)
+        else:
+            queue = layout_svc.get_gen_queue()
+        await session.commit()
+    positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
+    return {
+        "gen_queue": queue,
+        "gen_queue_positions": positions,
+        "position": positions.get(body.project_id),
+        "gen_queue_run": run_meta,
     }
