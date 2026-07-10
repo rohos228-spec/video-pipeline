@@ -798,6 +798,18 @@ async def maybe_auto_advance(
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать
 
+    from app.services.gen_queue import gen_queue_blocks_project
+
+    queue_blocker = await gen_queue_blocks_project(session, project.id)
+    if queue_blocker is not None:
+        logger.info(
+            "auto_advance: #{} {} — ждём очередь, блокирует #{}",
+            project.id,
+            status.value,
+            queue_blocker,
+        )
+        return False
+
     from app.services.step_cancel import is_generation_active
 
     if is_generation_active(project.id):

@@ -98,6 +98,32 @@ async def gen_queue_busy_project(session: AsyncSession) -> int | None:
     return None
 
 
+async def gen_queue_incomplete_earlier(
+    session: AsyncSession, project_id: int
+) -> int | None:
+    """Первый более ранний проект в очереди, чей прогон ещё не завершён."""
+    queue = get_gen_queue()
+    if not queue or project_id not in queue:
+        return None
+    pos = queue.index(project_id)
+    for pid in queue[:pos]:
+        project = await _load_project(session, pid)
+        if project is None or mass_parent_id(project) is not None:
+            continue
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        if meta.get("user_stop"):
+            continue
+        if await is_timeline_complete(session, project):
+            continue
+        return project.id
+    return None
+
+
+async def gen_queue_blocks_project(session: AsyncSession, project_id: int) -> int | None:
+    """Если проект в очереди — ID блокирующего предшественника или None."""
+    return await gen_queue_incomplete_earlier(session, project_id)
+
+
 async def gen_queue_tick(session: AsyncSession) -> int:
     """Запустить следующий проект в очереди, если текущий завершил таймлайн."""
     queue = get_gen_queue()
@@ -116,9 +142,15 @@ async def gen_queue_tick(session: AsyncSession) -> int:
             continue
         if await is_timeline_complete(session, project):
             continue
+        # Первый незавершённый в очереди — только он может стартовать.
         if project.status is ProjectStatus.new:
             if not project.auto_mode:
-                continue
+                logger.info(
+                    "gen_queue: #{} ждёт auto_mode (позиция {})",
+                    project.id,
+                    idx + 1,
+                )
+                return 0
             await start_step(session, project, "plan")
             await session.flush()
             logger.info(
@@ -127,10 +159,13 @@ async def gen_queue_tick(session: AsyncSession) -> int:
                 idx + 1,
             )
             return 1
-        if project.status in TRANSITIONS and project.auto_mode:
-            continue
-        if project.status in GEN_QUEUE_BUSY_STATUSES:
-            return 0
+        logger.info(
+            "gen_queue: ждём #{} (позиция {}, status={})",
+            project.id,
+            idx + 1,
+            project.status.value,
+        )
+        return 0
     return 0
 
 

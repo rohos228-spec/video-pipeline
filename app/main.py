@@ -333,6 +333,17 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    from app.services.gen_queue import gen_queue_blocks_project
+
+                    queue_blocker = await gen_queue_blocks_project(s, p.id)
+                    if queue_blocker is not None:
+                        logger.debug(
+                            "worker: #{} {} — ждём очередь, блокирует #{}",
+                            p.id,
+                            p.status.value,
+                            queue_blocker,
+                        )
+                        continue
                     from app.services.step_failure_policy import (
                         clear_failure_on_success,
                         is_sleeping,
