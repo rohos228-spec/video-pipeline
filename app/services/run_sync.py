@@ -230,6 +230,9 @@ async def sync_run_for_project(project_id: int) -> None:
             return
 
         actual = await compute_actual_status(s, project)
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+            actual = project.status
         if (
             not is_running_status(project.status)
             and project.status != actual

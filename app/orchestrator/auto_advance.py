@@ -528,6 +528,23 @@ async def _apply_approve(
     badge: str | None = None,
 ) -> None:
     """Эмулируем клик `approve` пользователем в TG."""
+    from app.services.gen_queue_run import is_user_stopped, should_hold_queue_auto_advance
+
+    meta = getattr(project, "meta", None) or {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        logger.info(
+            "auto_advance: #{} blocked _apply_approve (user_stop)",
+            project.id,
+        )
+        return
+    if should_hold_queue_auto_advance(project):
+        logger.info(
+            "auto_advance: #{} blocked _apply_approve (gen_queue target hold, status={})",
+            project.id,
+            project.status.value,
+        )
+        return
+
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.approved
 
@@ -798,7 +815,43 @@ async def maybe_auto_advance(
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать
 
-    from app.services.gen_queue import gen_queue_blocks_project
+    meta = getattr(project, "meta", None) or {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        logger.debug(
+            "auto_advance: #{} {} — user_stop, пропуск",
+            project.id,
+            status.value,
+        )
+        return False
+
+    from app.services.gen_queue import (
+        gen_queue_blocks_project,
+        on_project_timeline_maybe_advance_queue,
+    )
+    from app.services.gen_queue_run import (
+        is_gen_queue_run_complete,
+        mark_gen_queue_run_complete,
+        ready_status_is_queue_target,
+        should_hold_queue_auto_advance,
+    )
+
+    if should_hold_queue_auto_advance(project):
+        if not is_gen_queue_run_complete(project):
+            await mark_gen_queue_run_complete(session, project)
+        if ready_status_is_queue_target(project, status):
+            await on_project_timeline_maybe_advance_queue(session, project)
+            logger.info(
+                "auto_advance: #{} {} → gen_queue target reached, holding",
+                project.id,
+                status.value,
+            )
+        else:
+            logger.warning(
+                "auto_advance: #{} {} — gen_queue target passed, holding (no further advance)",
+                project.id,
+                status.value,
+            )
+        return True
 
     queue_blocker = await gen_queue_blocks_project(session, project.id)
     if queue_blocker is not None:
@@ -836,22 +889,8 @@ async def maybe_auto_advance(
     transition = TRANSITIONS[status]
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
-    meta = getattr(project, "meta", None) or {}
-    if meta.get("user_stop"):
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
         return False
-
-    from app.services.gen_queue import on_project_timeline_maybe_advance_queue
-    from app.services.gen_queue_run import mark_gen_queue_run_complete, ready_status_is_queue_target
-
-    if ready_status_is_queue_target(project, status):
-        await mark_gen_queue_run_complete(session, project)
-        await on_project_timeline_maybe_advance_queue(session, project)
-        logger.info(
-            "auto_advance: #{} {} → gen_queue target reached, holding",
-            project.id,
-            status.value,
-        )
-        return True
 
     if hitl is not None and hitl.decision is HITLDecision.regenerate:
         await _apply_regen(

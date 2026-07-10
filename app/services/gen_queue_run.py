@@ -111,6 +111,22 @@ def ready_status_is_queue_target(
     return NODE_TYPE_TO_READY.get(target) == ready_status
 
 
+def should_hold_queue_auto_advance(project: Project) -> bool:
+    """Блокировать auto_advance: цель until_node уже достигнута или пройдена."""
+    if gen_queue_run_mode(project) != "until_node":
+        return False
+    target = target_node_type(project)
+    if not target:
+        return False
+    return status_at_or_past_target(project, target)
+
+
+def is_user_stopped(project: Project) -> bool:
+    """⏹ Пользователь остановил проект — никакого auto/run до ручного start_step."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    return bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
+
+
 async def set_gen_queue_run(
     session: AsyncSession,
     project: Project,

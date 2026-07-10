@@ -311,6 +311,25 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
                 for p in projects:
+                    from app.services.gen_queue_run import (
+                        is_user_stopped,
+                        should_hold_queue_auto_advance,
+                    )
+
+                    if is_user_stopped(p):
+                        logger.debug(
+                            "worker: #{} {} — user_stop, пропуск тика",
+                            p.id,
+                            p.status.value,
+                        )
+                        continue
+                    if should_hold_queue_auto_advance(p):
+                        logger.debug(
+                            "worker: #{} {} — gen_queue target reached/passed, пропуск тика",
+                            p.id,
+                            p.status.value,
+                        )
+                        continue
                     if is_stop_requested(p.id):
                         from app.services.project_control import stop_project_running
 
@@ -485,6 +504,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             continue
                         if is_generation_active(ap.id):
                             continue
+                        from app.services.gen_queue_run import is_user_stopped
+
+                        if is_user_stopped(ap):
+                            logger.debug(
+                                "auto_advance tick: #{} — user_stop, пропуск",
+                                ap.id,
+                            )
+                            continue
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)
@@ -493,10 +520,11 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 "auto_advance failed for #{}", ap.id
                             )
                             continue
+                        if advanced:
+                            await s.commit()
                         if advanced and ap.status.value != prev:
                             new_status = ap.status.value
                             project_id = ap.id
-                            await s.commit()
                             try:
                                 from app.services.gen_queue import (
                                     on_project_timeline_maybe_advance_queue,

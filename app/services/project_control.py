@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.services.mass_factory import mass_parent_id
 from app.services.project_state import is_running_status
+from app.services.gen_queue_run import is_user_stopped
 from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
@@ -93,6 +94,11 @@ async def stop_project_running(
         await session.flush()
 
     still_active = is_generation_active(project.id)
+    if ok and is_user_stopped(project):
+        logger.info(
+            "[#{}] STOP: user_stop активен — воркер/auto_advance заблокированы до ▶",
+            project.id,
+        )
     return {
         "ok": ok,
         "message": msg,

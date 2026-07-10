@@ -340,6 +340,11 @@ async def recompute_status(
         # legacy, _init_db уже сбросил в `new`, но защитимся тут тоже.
         return old, old, False
 
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        return old, old, False
+
     new = await compute_actual_status(session, project)
     from app.telegram.menu import status_order as _ord
 
