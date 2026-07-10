@@ -17,6 +17,7 @@ $Files = @(
     "app/services/xlsx_step_runners.py",
     "app/services/step_failure_policy.py",
     "app/services/gen_queue.py",
+    "app/services/gen_queue.py",
     "app/services/gen_queue_run.py",
     "app/orchestrator/auto_advance.py",
     "app/main.py",

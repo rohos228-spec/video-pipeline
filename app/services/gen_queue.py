@@ -113,6 +113,8 @@ async def gen_queue_incomplete_earlier(
         meta = project.meta if isinstance(project.meta, dict) else {}
         if meta.get("user_stop"):
             continue
+        if project.status is ProjectStatus.paused:
+            continue
         if await is_timeline_complete(session, project):
             continue
         return project.id
@@ -139,6 +141,8 @@ async def gen_queue_tick(session: AsyncSession) -> int:
             continue
         meta = project.meta if isinstance(project.meta, dict) else {}
         if meta.get("user_stop"):
+            continue
+        if project.status is ProjectStatus.paused:
             continue
         if await is_timeline_complete(session, project):
             continue
@@ -185,26 +189,42 @@ async def on_project_timeline_maybe_advance_queue(
         return 0
     if await gen_queue_busy_project(session) is not None:
         return 0
-    next_id = queue[pos + 1]
-    nxt = await _load_project(session, next_id)
-    if nxt is None or mass_parent_id(nxt) is not None:
-        return 0
-    meta = nxt.meta if isinstance(nxt.meta, dict) else {}
-    if meta.get("user_stop"):
-        return 0
-    if nxt.status is not ProjectStatus.new:
-        return 0
-    if not nxt.auto_mode:
-        return 0
-    step = step_by_code("plan")
-    if step is None:
-        return 0
-    await start_step(session, nxt, "plan")
-    await session.flush()
-    logger.info(
-        "gen_queue: #{} timeline complete → started #{} (queue position {})",
-        project.id,
-        nxt.id,
-        pos + 2,
-    )
-    return 1
+    for next_id in queue[pos + 1 :]:
+        nxt = await _load_project(session, next_id)
+        if nxt is None or mass_parent_id(nxt) is not None:
+            continue
+        meta = nxt.meta if isinstance(nxt.meta, dict) else {}
+        if meta.get("user_stop"):
+            continue
+        if nxt.status is ProjectStatus.paused:
+            continue
+        if await is_timeline_complete(session, nxt):
+            continue
+        if nxt.status is not ProjectStatus.new:
+            logger.info(
+                "gen_queue: #{} timeline complete → ждём #{} (status={})",
+                project.id,
+                nxt.id,
+                nxt.status.value,
+            )
+            return 0
+        if not nxt.auto_mode:
+            logger.info(
+                "gen_queue: #{} timeline complete → #{} ждёт auto_mode",
+                project.id,
+                nxt.id,
+            )
+            return 0
+        step = step_by_code("plan")
+        if step is None:
+            return 0
+        await start_step(session, nxt, "plan")
+        await session.flush()
+        logger.info(
+            "gen_queue: #{} timeline complete → started #{} (queue position {})",
+            project.id,
+            nxt.id,
+            queue.index(nxt.id) + 1,
+        )
+        return 1
+    return 0

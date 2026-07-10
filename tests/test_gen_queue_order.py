@@ -75,13 +75,25 @@ async def test_allows_later_when_earlier_queue_run_complete(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_waits_on_paused_earlier(
+async def test_blocks_later_not_blocked_by_paused_earlier(
+    session: AsyncSession,
+) -> None:
+    await _add(session, 7, status=ProjectStatus.paused, until="script")
+    await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
+    assert await gen_queue_blocks_project(session, 8) is None
+
+
+@pytest.mark.asyncio
+async def test_gen_queue_tick_skips_paused_starts_next(
     session: AsyncSession,
 ) -> None:
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.new, until="script")
     started = await gen_queue_tick(session)
-    assert started == 0
+    assert started == 1
+    p8 = await session.get(Project, 8)
+    assert p8 is not None
+    assert p8.status is ProjectStatus.planning
 
 
 @pytest.mark.asyncio
