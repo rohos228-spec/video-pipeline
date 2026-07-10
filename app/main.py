@@ -691,14 +691,15 @@ async def main() -> None:
         tasks.insert(0, polling_task)
     logger.info("background worker started")
     try:
-        from app.bots.chatgpt import CHATGPT_ATTACH_LOGIC_ID
+        from app.hotfix_build import PIPELINE_HOTFIX_ID
         from app.web.studio_version import read_studio_version
 
         sv = read_studio_version()
         logger.info(
-            "Studio UI {} | ChatGPT attach={} | backend_ok={}",
+            "Studio UI {} | hotfix={} | ChatGPT attach={} | backend_ok={}",
             sv.get("label"),
-            CHATGPT_ATTACH_LOGIC_ID,
+            PIPELINE_HOTFIX_ID,
+            sv.get("backend_attach"),
             sv.get("backend_ok"),
         )
         if sv.get("backend_ok") is False:

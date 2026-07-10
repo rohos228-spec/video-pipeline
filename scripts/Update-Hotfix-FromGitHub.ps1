@@ -11,6 +11,7 @@ $Repo = "rohos228-spec/video-pipeline"
 $BaseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
 
 $Files = @(
+    "app/hotfix_build.py",
     "app/bots/chatgpt.py",
     "app/services/xlsx_versioning.py",
     "app/services/xlsx_gpt_flow.py",
@@ -77,6 +78,34 @@ foreach ($rel in $Files) {
 Write-Host ""
 Write-Host "Downloaded: $ok  Failed: $fail" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Yellow" })
 
+# Verify hotfix markers landed on disk
+$markers = @{
+    "app\services\project_control.py" = "_set_user_stop_gate"
+    "app\services\sidebar_layout.py"  = "_normalize_gen_queue"
+    "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
+    "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
+    "app\hotfix_build.py"             = "hotfix-20260710-stop-queue-xlsx-v2"
+}
+$missing = 0
+foreach ($rel in $markers.Keys) {
+    $path = Join-Path $Root $rel
+    if (-not (Test-Path $path)) {
+        Write-Host "MISSING FILE: $rel" -ForegroundColor Red
+        $missing++
+        continue
+    }
+    $hit = Select-String -Path $path -Pattern $markers[$rel] -Quiet -ErrorAction SilentlyContinue
+    if (-not $hit) {
+        Write-Host "MARKER NOT FOUND in $rel : $($markers[$rel])" -ForegroundColor Red
+        $missing++
+    }
+}
+if ($missing -eq 0) {
+    Write-Host "Hotfix markers OK (v2 stop+queue+xlsx)" -ForegroundColor Green
+} else {
+    Write-Host "Hotfix verify FAILED: $missing problem(s)" -ForegroundColor Red
+}
+
 # Clear stale bytecode
 Get-ChildItem -Path (Join-Path $Root "app") -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -90,8 +119,11 @@ if (Test-Path $stop) {
 Write-Host ""
 Write-Host "Done. Restart Studio (run-backend.ps1 or VideoPipelineStudio.cmd)." -ForegroundColor Green
 Write-Host "Expected logs after fix:" -ForegroundColor DarkGray
+Write-Host "  startup: hotfix=hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
+Write-Host "  GET /api/studio-version -> pipeline_hotfix: hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
 Write-Host "  plan xlsx: extra GPT sheets stripped -> exact template layout" -ForegroundColor DarkGray
 Write-Host "  script txt: plain-label / api-variants -> voiceover.txt (~10s)" -ForegroundColor DarkGray
-Write-Host "  queue: auto_advance #N plan_ready - zhdem ochered, blokiruet #M" -ForegroundColor DarkGray
+Write-Host "  STOP: user_stop aktiv — worker/auto_advance/gen_queue blocked" -ForegroundColor DarkGray
+Write-Host "  queue: gen_queue tick: poryadok [1, 2, 3, 4]" -ForegroundColor DarkGray
 
-exit $(if ($fail -eq 0) { 0 } else { 1 })
+exit $(if ($fail -eq 0 -and $missing -eq 0) { 0 } else { 1 })

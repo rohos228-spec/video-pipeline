@@ -32,6 +32,15 @@ def sleep_minutes_for_error(error: Exception) -> int:
     msg = str(error)
     if "скачанный xlsx невалиден" in msg and "листы" in msg:
         return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    conn_markers = (
+        "Cannot connect to host",
+        "ClientConnectorError",
+        "CDP не доступен",
+        "29229",
+        "connect call failed",
+    )
+    if any(m in msg for m in conn_markers):
+        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
     return SLEEP_MINUTES
 
 
