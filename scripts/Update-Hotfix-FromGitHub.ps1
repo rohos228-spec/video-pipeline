@@ -12,6 +12,7 @@ $BaseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
 
 $Files = @(
     "app/bots/chatgpt.py",
+    "app/services/xlsx_versioning.py",
     "app/services/gen_queue.py",
     "app/services/gen_queue_run.py",
     "app/orchestrator/auto_advance.py",
@@ -85,7 +86,7 @@ if (Test-Path $stop) {
 Write-Host ""
 Write-Host "Done. Restart Studio (run-backend.ps1 or VideoPipelineStudio.cmd)." -ForegroundColor Green
 Write-Host "Expected logs after fix:" -ForegroundColor DarkGray
-Write-Host "  plan xlsx: global-label, al=Skachat -> plan.xlsx" -ForegroundColor DarkGray
+Write-Host "  plan xlsx: global-label, al=Skachat -> plan.xlsx (extra GPT sheets OK)" -ForegroundColor DarkGray
 Write-Host "  script txt: plain-label / api-variants -> voiceover.txt (~10s)" -ForegroundColor DarkGray
 Write-Host "  queue: auto_advance #N plan_ready - zhdem ochered, blokiruet #M" -ForegroundColor DarkGray
 

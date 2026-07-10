@@ -105,7 +105,7 @@ def _allowed_sheet_layouts() -> list[frozenset[str]]:
 
 
 def validate_xlsx_sheets(path: Path) -> str | None:
-    """Имена и количество листов должны совпадать с одним из шаблонов."""
+    """Листы должны содержать хотя бы один известный шаблон (лишние листы GPT — ок)."""
     try:
         actual = frozenset(_workbook_sheet_names(path))
     except Exception as e:  # noqa: BLE001
@@ -113,7 +113,7 @@ def validate_xlsx_sheets(path: Path) -> str | None:
     if not actual:
         return f"{_XLSX_FORMAT_ERROR_PREFIX}: в файле нет листов"
     for expected in _allowed_sheet_layouts():
-        if actual == expected:
+        if expected.issubset(actual):
             return None
     actual_str = ", ".join(sorted(actual))
     expected_hint = " | ".join(
@@ -121,7 +121,7 @@ def validate_xlsx_sheets(path: Path) -> str | None:
     )
     return (
         f"{_XLSX_FORMAT_ERROR_PREFIX}: листы [{actual_str}] "
-        f"не совпадают с шаблоном (ожидалось: {expected_hint})"
+        f"не содержат ни один шаблон (нужны: {expected_hint})"
     )
 
 

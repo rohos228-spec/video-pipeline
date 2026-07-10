@@ -43,3 +43,21 @@ def test_validate_xlsx_sheets_accepts_v7_layout(tmp_path: Path) -> None:
     wb.create_sheet(SHEET_GENERAL)
     wb.save(p)
     assert validate_xlsx_sheets(p) is None
+
+
+def test_validate_xlsx_sheets_accepts_v8_with_extra_gpt_sheets(
+    tmp_path: Path,
+) -> None:
+    """GPT часто добавляет исследовательские листы — ядро v8 должно проходить."""
+    p = tmp_path / "gpt_plan.xlsx"
+    wb = Workbook()
+    wb.active.title = SHEET_PLAN_V8
+    wb.create_sheet(SHEET_GENERAL_V8)
+    wb.create_sheet("Персонажи")
+    wb.create_sheet("Предметы")
+    wb.create_sheet("Фоны")
+    wb.create_sheet("Исследовательская база")
+    wb.create_sheet("Минутные задачи")
+    wb.save(p)
+    assert validate_xlsx_sheets(p) is None
+    assert validate_xlsx(p) is None

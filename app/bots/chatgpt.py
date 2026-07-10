@@ -334,6 +334,11 @@ _PREVIEW_DOWNLOAD_FIND_JS = """
         const t = (s || '').toLowerCase();
         return t.includes('close') || t.includes('закры');
     };
+    const isEdit = (s) => {
+        const t = (s || '').toLowerCase();
+        return t.includes('редактир') || t.includes('edit message')
+            || (t.includes('edit') && !t.includes('credit'));
+    };
 
     const candidates = [];
     for (const btn of document.querySelectorAll('button, [role="button"]')) {
@@ -348,6 +353,7 @@ _PREVIEW_DOWNLOAD_FIND_JS = """
         const al = btn.getAttribute('aria-label') || '';
         const title = btn.getAttribute('title') || '';
         if (isClose(al) || isClose(title)) continue;
+        if (isEdit(al) || isEdit(title)) continue;
         candidates.push({
             btn,
             right: br.right,
@@ -362,18 +368,20 @@ _PREVIEW_DOWNLOAD_FIND_JS = """
         });
     }
 
-    for (const c of candidates) {
-        if (c.isDl) {
-            c.btn.setAttribute('data-vp-preview-download', '1');
-            return {
-                found: true,
-                via: 'global-label',
-                al: c.al || c.title,
-                w: c.w,
-                h: c.h,
-                n: candidates.length,
-            };
-        }
+    const dlLabeled = candidates
+        .filter((c) => c.isDl)
+        .sort((a, b) => b.right - a.right);
+    if (dlLabeled.length > 0) {
+        const dl = dlLabeled[0];
+        dl.btn.setAttribute('data-vp-preview-download', '1');
+        return {
+            found: true,
+            via: 'global-label',
+            al: dl.al || dl.title,
+            w: dl.w,
+            h: dl.h,
+            n: candidates.length,
+        };
     }
 
     const icons = candidates
@@ -2307,6 +2315,13 @@ class ChatGPTBot:
                 return True
         return False
 
+    async def _force_locator_click(self, locator: Any, *, timeout: int = 5_000) -> None:
+        """Playwright click; при перехвате pointer-events — нативный JS click."""
+        try:
+            await locator.click(timeout=timeout)
+        except Exception:
+            await locator.evaluate("el => el.click()")
+
     async def _click_and_save_file(
         self,
         page: Page,
@@ -2322,7 +2337,7 @@ class ChatGPTBot:
 
         try:
             async with page.expect_download(timeout=20_000) as dl_info:
-                await locator.click(timeout=5_000)
+                await self._force_locator_click(locator)
             dl: Download = await dl_info.value
             size = await self._save_download_to_path(dl, target_path)
             logger.info(
@@ -2343,7 +2358,7 @@ class ChatGPTBot:
             async with page.expect_response(
                 _response_looks_like_file, timeout=20_000
             ) as resp_info:
-                await locator.click(timeout=5_000)
+                await self._force_locator_click(locator)
             resp = await resp_info.value
             body = await resp.body()
             if len(body) < min_size:
@@ -2444,6 +2459,14 @@ class ChatGPTBot:
                         n,
                         (meta or {}).get("sample"),
                     )
+                continue
+            al_raw = (meta.get("al") or "").lower()
+            if "редактир" in al_raw or "edit message" in al_raw:
+                logger.debug(
+                    "ChatGPT: пропуск toolbar-кнопки (edit) на {}: {}",
+                    getattr(pg, "url", "?")[:60],
+                    meta.get("al"),
+                )
                 continue
             logger.info(
                 "ChatGPT: кнопка ↓ toolbar превью на {} ({}, {}x{}px, al={}, n={})",
