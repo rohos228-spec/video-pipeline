@@ -313,7 +313,8 @@ FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX = 56
 FILE_PREVIEW_HEADER_STRIP_PX = 80
 FILE_PREVIEW_OPEN_WAIT_SEC = 2.0
 FILE_PREVIEW_DOWNLOAD_POLL_SEC = 25.0
-# JS: глобальный поиск кнопки ↓ в toolbar превью (вне чата, правая верхняя зона).
+PLAIN_FILE_DOWNLOAD_POLL_SEC = 8.0
+# JS: глобальный поиск кнопки ↓ в toolbar превью xlsx (вне чата, правая верхняя зона).
 _PREVIEW_DOWNLOAD_FIND_JS = """
 ([maxPx]) => {
     document.querySelectorAll('[data-vp-preview-download]').forEach((el) => {
@@ -402,6 +403,64 @@ _PREVIEW_DOWNLOAD_FIND_JS = """
             top: Math.round(c.top),
         })),
     };
+}
+"""
+# JS: кнопка ↓ для .txt — превью текста (без 100%, панель шире/ниже).
+_PLAIN_FILE_DOWNLOAD_FIND_JS = """
+([maxPx]) => {
+    document.querySelectorAll('[data-vp-preview-download]').forEach((el) => {
+        el.removeAttribute('data-vp-preview-download');
+    });
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const inChat = (el) => !!el.closest(
+        "[data-message-author-role='assistant'], "
+        + "[data-message-author-role='user'], main form, nav"
+    );
+    const isDownload = (s) => {
+        const t = (s || '').toLowerCase().trim();
+        return t.includes('download') || t.includes('скач');
+    };
+    const isClose = (s) => {
+        const t = (s || '').toLowerCase();
+        return t.includes('close') || t.includes('закры');
+    };
+
+    const candidates = [];
+    for (const btn of document.querySelectorAll('button, [role="button"]')) {
+        if (inChat(btn)) continue;
+        const br = btn.getBoundingClientRect();
+        if (br.width < 14 || br.height < 14) continue;
+        if (br.width > maxPx || br.height > maxPx) continue;
+        if (br.left < vw * 0.28) continue;
+        if (br.top > vh * 0.78) continue;
+        const text = (btn.textContent || '').trim();
+        if (text.includes('%')) continue;
+        const al = btn.getAttribute('aria-label') || '';
+        const title = btn.getAttribute('title') || '';
+        if (isClose(al) || isClose(title)) continue;
+        candidates.push({
+            btn,
+            right: br.right,
+            al,
+            title,
+            hasSvg: !!btn.querySelector('svg'),
+            isDl: isDownload(al) || isDownload(title),
+        });
+    }
+    for (const c of candidates) {
+        if (c.isDl) {
+            c.btn.setAttribute('data-vp-preview-download', '1');
+            return { found: true, via: 'plain-label', al: c.al || c.title, n: candidates.length };
+        }
+    }
+    const icons = candidates.filter((c) => c.hasSvg).sort((a, b) => b.right - a.right);
+    if (icons.length >= 1) {
+        const dl = icons.length >= 2 ? icons[1] : icons[0];
+        dl.btn.setAttribute('data-vp-preview-download', '1');
+        return { found: true, via: 'plain-icon', al: dl.al || 'icon', n: candidates.length };
+    }
+    return { found: false, n: candidates.length };
 }
 """
 _PREVIEW_TOOLBAR_VISIBLE_JS = """
@@ -503,6 +562,41 @@ async def _first_matching(page: Page, selectors: list[str], *, timeout: float = 
 
 
 _FILE_EXTENSIONS = (".xlsx", ".xls", ".txt", ".csv", ".json", ".md")
+_SPREADSHEET_SUFFIXES = (".xlsx", ".xls", ".csv")
+_PLAIN_FILE_SUFFIXES = (".txt", ".md", ".json")
+
+
+def _min_download_bytes(target_path: Path) -> int:
+    if target_path.suffix.lower() in _PLAIN_FILE_SUFFIXES:
+        return 200
+    return 512
+
+
+def _uses_spreadsheet_preview(target_path: Path, label: str = "") -> bool:
+    name = (label or target_path.name).lower()
+    return any(name.endswith(ext) for ext in _SPREADSHEET_SUFFIXES)
+
+
+def _backend_file_url_variants(url: str) -> list[str]:
+    """ChatGPT /simple отдаёт превью (~300 байт); полный файл — /download или без /simple."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(u: str) -> None:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+
+    add(url)
+    if "/simple" in url:
+        add(url.replace("/simple", "/download"))
+        base, _, qs = url.partition("?")
+        if base.endswith("/simple"):
+            add(base[: -len("/simple")] + "/download" + (f"?{qs}" if qs else ""))
+            add(base[: -len("/simple")] + (f"?{qs}" if qs else ""))
+    if "/files/" in url and "/download" not in url:
+        add(url.split("?")[0].rstrip("/") + "/download")
+    return out
 
 
 def _response_looks_like_file(resp: Any) -> bool:
@@ -526,6 +620,9 @@ def _response_looks_like_file(resp: Any) -> bool:
         if any(ext in url for ext in _FILE_EXTENSIONS):
             return True
         if "/files/" in url or "sandbox" in url or "file-" in url:
+            return True
+        # /simple — метаданные превью, не файл; обработаем через variants.
+        if "/simple" in url:
             return True
     except Exception:  # noqa: BLE001
         return False
@@ -2159,6 +2256,57 @@ class ChatGPTBot:
             project_id=project_id,
         )
 
+    async def _fetch_url_to_path(
+        self,
+        page: Page,
+        url: str,
+        target_path: Path,
+        *,
+        min_size: int,
+        label: str = "",
+    ) -> bool:
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            resp = await page.request.get(url, timeout=30_000)
+            if not resp.ok:
+                return False
+            body = await resp.body()
+            if len(body) < min_size:
+                return False
+            target_path.write_bytes(body)
+            logger.info(
+                "ChatGPT: fetch {} → {} ({} байт, url={})",
+                label or "api",
+                target_path.name,
+                len(body),
+                url[:120],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ChatGPT: fetch {} failed: {}", url[:80], exc)
+            return False
+
+    async def _save_backend_file_variants(
+        self,
+        page: Page,
+        api_url: str,
+        target_path: Path,
+        *,
+        min_size: int,
+        label: str = "",
+    ) -> bool:
+        for variant in _backend_file_url_variants(api_url):
+            if await self._fetch_url_to_path(
+                page,
+                variant,
+                target_path,
+                min_size=min_size,
+                label=f"{label or 'api'}:{variant[-40:]}",
+            ):
+                return True
+        return False
+
     async def _click_and_save_file(
         self,
         page: Page,
@@ -2170,6 +2318,7 @@ class ChatGPTBot:
         """Клик по кнопке файла: expect_download, иначе перехват HTTP-ответа."""
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        min_size = _min_download_bytes(target_path)
 
         try:
             async with page.expect_download(timeout=20_000) as dl_info:
@@ -2182,7 +2331,7 @@ class ChatGPTBot:
                 target_path.name,
                 size,
             )
-            return size >= 512
+            return size >= min_size
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "ChatGPT: download event не сработал ({}): {}",
@@ -2197,12 +2346,21 @@ class ChatGPTBot:
                 await locator.click(timeout=5_000)
             resp = await resp_info.value
             body = await resp.body()
-            if len(body) < 512:
+            if len(body) < min_size:
                 logger.warning(
                     "ChatGPT: HTTP-ответ слишком мал ({} байт) url={}",
                     len(body),
                     resp.url,
                 )
+                if "/backend-api/files/" in resp.url:
+                    if await self._save_backend_file_variants(
+                        page,
+                        resp.url,
+                        target_path,
+                        min_size=min_size,
+                        label=label or "api-variants",
+                    ):
+                        return True
                 return False
             target_path.write_bytes(body)
             logger.info(
@@ -2347,7 +2505,66 @@ class ChatGPTBot:
             label="preview-toolbar-download",
         )
 
-    async def _click_file_then_download(
+    async def _locate_plain_file_download_button(
+        self,
+        page: Page | None = None,
+    ) -> tuple[Any | None, Page | None]:
+        """Кнопка ↓ для .txt превью (без 100% zoom)."""
+        scan = [page] if page is not None else await self._all_browser_pages()
+        for pg in scan:
+            if pg is None:
+                continue
+            try:
+                meta = await pg.evaluate(
+                    _PLAIN_FILE_DOWNLOAD_FIND_JS,
+                    [FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX],
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if not meta or not meta.get("found"):
+                continue
+            logger.info(
+                "ChatGPT: кнопка ↓ txt-превью на {} ({}, al={})",
+                getattr(pg, "url", "?")[:60],
+                meta.get("via"),
+                (meta.get("al") or "")[:40],
+            )
+            loc = pg.locator("[data-vp-preview-download='1']").last
+            if await loc.count() > 0:
+                return loc, pg
+        return None, None
+
+    async def _download_plain_file_preview(
+        self,
+        page: Page,
+        target_path: Path,
+    ) -> bool:
+        """Скачать .txt/.md: toolbar превью или API /download."""
+        for finder in (
+            self._locate_global_preview_download_button,
+            self._locate_plain_file_download_button,
+        ):
+            download_btn, dl_page = await finder(page)
+            if download_btn is None or dl_page is None:
+                continue
+            try:
+                await dl_page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await download_btn.hover(timeout=1_500)
+            except Exception:  # noqa: BLE001
+                pass
+            if await self._click_and_save_file(
+                dl_page,
+                download_btn,
+                target_path,
+                label="plain-preview-download",
+            ):
+                return True
+        return False
+
+    async def _click_plain_file_then_download(
         self,
         page: Page,
         locator: Any,
@@ -2355,7 +2572,71 @@ class ChatGPTBot:
         *,
         label: str = "",
     ) -> bool:
-        """Один клик по файлу в чате → ждём toolbar → кнопка ↓ (без повторных кликов)."""
+        """.txt/.md: без ожидания xlsx-превью — API /download или кнопка ↓ сразу."""
+        tag = label or "file-btn"
+        min_size = _min_download_bytes(target_path)
+        try:
+            await locator.scroll_into_view_if_needed(timeout=4_000)
+        except Exception:  # noqa: BLE001
+            pass
+
+        captured: list[str] = []
+
+        def _on_response(resp: Any) -> None:
+            try:
+                u = resp.url or ""
+                if "/backend-api/files/" in u:
+                    captured.append(u)
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("response", _on_response)
+        try:
+            await locator.click(timeout=5_000)
+            logger.info("ChatGPT: клик по .txt в чате ({})", tag)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ChatGPT: клик .txt не удался ({}): {}", tag, exc)
+            page.remove_listener("response", _on_response)
+            return False
+        await asyncio.sleep(0.6)
+        page.remove_listener("response", _on_response)
+
+        for api_url in captured:
+            if await self._save_backend_file_variants(
+                page,
+                api_url,
+                target_path,
+                min_size=min_size,
+                label=f"{tag}-api",
+            ):
+                return True
+
+        deadline = asyncio.get_event_loop().time() + PLAIN_FILE_DOWNLOAD_POLL_SEC
+        while asyncio.get_event_loop().time() < deadline:
+            if await self._download_plain_file_preview(page, target_path):
+                return True
+            await asyncio.sleep(0.35)
+
+        logger.info(
+            "ChatGPT: .txt не скачан за {}с ({})",
+            PLAIN_FILE_DOWNLOAD_POLL_SEC,
+            tag,
+        )
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    async def _click_spreadsheet_file_then_download(
+        self,
+        page: Page,
+        locator: Any,
+        target_path: Path,
+        *,
+        label: str = "",
+    ) -> bool:
+        """.xlsx: превью таблицы справа → кнопка ↓ в toolbar."""
         tag = label or "file-btn"
         preview_open = await self._preview_toolbar_visible(page)
         if not preview_open:
@@ -2380,10 +2661,12 @@ class ChatGPTBot:
             if await self._preview_toolbar_visible(page):
                 if await self._download_from_side_preview_panel(page, target_path):
                     return True
+            elif await self._download_from_side_preview_panel(page, target_path):
+                return True
             await asyncio.sleep(0.5)
 
         logger.info(
-            "ChatGPT: toolbar превью / кнопка ↓ не найдены за {}с ({})",
+            "ChatGPT: toolbar xlsx / кнопка ↓ не найдены за {}с ({})",
             FILE_PREVIEW_DOWNLOAD_POLL_SEC,
             tag,
         )
@@ -2396,6 +2679,24 @@ class ChatGPTBot:
         except Exception:  # noqa: BLE001
             pass
         return False
+
+    async def _click_file_then_download(
+        self,
+        page: Page,
+        locator: Any,
+        target_path: Path,
+        *,
+        label: str = "",
+    ) -> bool:
+        """Скачивание по типу файла: .txt быстро, .xlsx через превью таблицы."""
+        tag = label or target_path.name
+        if _uses_spreadsheet_preview(target_path, tag):
+            return await self._click_spreadsheet_file_then_download(
+                page, locator, target_path, label=tag
+            )
+        return await self._click_plain_file_then_download(
+            page, locator, target_path, label=tag
+        )
 
     async def _try_download_aria_file_buttons(
         self,
@@ -2601,26 +2902,31 @@ class ChatGPTBot:
         )
 
         aria_timeout = min(120.0, max(45.0, timeout * 0.06))
+        is_plain = not _uses_spreadsheet_preview(target_path)
         if await self._try_download_aria_file_buttons(
             page, target_path, timeout=aria_timeout
         ):
             return target_path
 
-        if await self._try_download_via_file_card(
-            page, target_path, timeout=phase_timeout
-        ):
-            size = target_path.stat().st_size if target_path.exists() else -1
-            logger.info(
-                "ChatGPT: файл скачан (behavior-btn / превью) как {} ({} байт)",
-                target_path,
-                size,
-            )
-            if size < 1024:
-                logger.warning(
-                    "ChatGPT: размер подозрительно мал ({} байт).", size
+        if is_plain:
+            if await self._download_plain_file_preview(page, target_path):
+                return target_path
+        else:
+            if await self._try_download_via_file_card(
+                page, target_path, timeout=phase_timeout
+            ):
+                size = target_path.stat().st_size if target_path.exists() else -1
+                logger.info(
+                    "ChatGPT: файл скачан (behavior-btn / превью) как {} ({} байт)",
+                    target_path,
+                    size,
                 )
-                await self._dump_last_assistant_html()
-            return target_path
+                if size < 1024:
+                    logger.warning(
+                        "ChatGPT: размер подозрительно мал ({} байт).", size
+                    )
+                    await self._dump_last_assistant_html()
+                return target_path
 
         download = await self._try_download_via_selectors(
             page, DOWNLOAD_LINK_SELECTORS, timeout=phase_timeout
@@ -2633,13 +2939,20 @@ class ChatGPTBot:
                 download.suggested_filename,
                 size,
             )
-            if size < 1024:
+            if size < 1024 and not is_plain:
                 logger.warning(
                     "ChatGPT: размер скачанного файла подозрительно мал ({} байт).",
                     size,
                 )
                 await self._dump_last_assistant_html()
             return target_path
+
+        if is_plain:
+            await self._dump_last_assistant_html()
+            raise RuntimeError(
+                "ChatGPT: ссылка на скачивание не найдена в ответе (.txt). "
+                "Полный outerHTML последнего ответа залогирован."
+            )
 
         await self._hover_file_cards()
         retry_timeout = min(DOWNLOAD_PHASE_RETRY_SEC, max(12.0, timeout * 0.03))

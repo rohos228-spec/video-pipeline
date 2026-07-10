@@ -5,12 +5,16 @@ from __future__ import annotations
 from app.bots.chatgpt import (
     FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX,
     FILE_PREVIEW_DOWNLOAD_POLL_SEC,
+    PLAIN_FILE_DOWNLOAD_POLL_SEC,
     FILE_PREVIEW_PANEL_SELECTORS,
     _PREVIEW_DOWNLOAD_FIND_JS,
-    _PREVIEW_TOOLBAR_VISIBLE_JS,
+    _PLAIN_FILE_DOWNLOAD_FIND_JS,
+    _backend_file_url_variants,
     _response_looks_like_file,
+    _uses_spreadsheet_preview,
     reply_text_usable_as_download,
 )
+from pathlib import Path
 
 
 class _FakeResp:
@@ -44,15 +48,22 @@ def test_file_preview_panel_selectors_are_narrow() -> None:
     assert "Библиотека" not in joined
 
 
-def test_preview_download_js_uses_global_right_toolbar() -> None:
-    assert "data-vp-preview-download" in _PREVIEW_DOWNLOAD_FIND_JS
-    assert "vw * 0.40" in _PREVIEW_DOWNLOAD_FIND_JS
-    assert "global-penultimate" in _PREVIEW_DOWNLOAD_FIND_JS
-    assert "inChat" in _PREVIEW_DOWNLOAD_FIND_JS
-    assert FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX <= 64
-    assert FILE_PREVIEW_DOWNLOAD_POLL_SEC >= 20
+def test_plain_file_poll_shorter_than_xlsx() -> None:
+    assert PLAIN_FILE_DOWNLOAD_POLL_SEC < FILE_PREVIEW_DOWNLOAD_POLL_SEC
+    assert "plain-label" in _PLAIN_FILE_DOWNLOAD_FIND_JS
 
 
-def test_preview_toolbar_visible_js_checks_zoom_on_right() -> None:
-    assert "100%" in _PREVIEW_TOOLBAR_VISIBLE_JS or "%" in _PREVIEW_TOOLBAR_VISIBLE_JS
-    assert "vw * 0.38" in _PREVIEW_TOOLBAR_VISIBLE_JS
+def test_backend_file_url_variants_simple_to_download() -> None:
+    url = (
+        "https://chatgpt.com/backend-api/files/file_abc/simple"
+        "?conversation_id=x"
+    )
+    variants = _backend_file_url_variants(url)
+    assert any("/download" in v for v in variants)
+    assert any("/simple" not in v or "/download" in v for v in variants)
+
+
+def test_uses_spreadsheet_preview_only_xlsx() -> None:
+    assert _uses_spreadsheet_preview(Path("a.xlsx"))
+    assert not _uses_spreadsheet_preview(Path("voiceover.txt"))
+    assert not _uses_spreadsheet_preview(Path("x.txt"), "voiceover_mysticism_6300.txt")
