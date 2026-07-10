@@ -810,6 +810,17 @@ async def maybe_auto_advance(
         await session.refresh(project)
     except Exception:  # noqa: BLE001
         pass
+
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        logger.debug(
+            "auto_advance: #{} {} — user_stop, пропуск",
+            project.id,
+            project.status.value,
+        )
+        return False
+
     await clamp_status_to_data(session, project)
     status = project.status
     if status not in TRANSITIONS:

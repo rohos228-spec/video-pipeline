@@ -162,6 +162,10 @@ async def clamp_status_to_data(
     session: AsyncSession, project: Project
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        return None
     # Running-шаги не трогаем (как recompute_status): иначе при устаревшем
     # объекте в сессии после advance в другой сессии откатываем scripting→
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.

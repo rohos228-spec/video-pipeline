@@ -84,6 +84,19 @@ async def test_blocks_later_not_blocked_by_paused_earlier(
 
 
 @pytest.mark.asyncio
+async def test_user_stop_blocks_later_in_queue(
+    session: AsyncSession,
+) -> None:
+    await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
+    p7 = await session.get(Project, 7)
+    assert p7 is not None
+    p7.meta = {**(p7.meta or {}), "user_stop": True}
+    await session.flush()
+    await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
+    assert await gen_queue_blocks_project(session, 8) == 7
+
+
+@pytest.mark.asyncio
 async def test_gen_queue_normalize_sorts_by_project_id(
     monkeypatch,
 ) -> None:

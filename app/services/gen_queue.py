@@ -111,8 +111,14 @@ async def gen_queue_incomplete_earlier(
         if project is None or mass_parent_id(project) is not None:
             continue
         meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("user_stop"):
-            continue
+        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+            logger.debug(
+                "gen_queue: #{} блокирует очередь (user_stop)",
+                project.id,
+            )
+            return project.id
+        if project.status is ProjectStatus.paused:
+            return project.id
         if await is_timeline_complete(session, project):
             continue
         return project.id
@@ -140,8 +146,13 @@ async def gen_queue_tick(session: AsyncSession) -> int:
         if project is None or mass_parent_id(project) is not None:
             continue
         meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("user_stop"):
-            continue
+        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+            logger.info(
+                "gen_queue: ждём #{} (позиция {}, user_stop)",
+                project.id,
+                idx + 1,
+            )
+            return 0
         if project.status is ProjectStatus.paused:
             continue
         if await is_timeline_complete(session, project):
@@ -194,7 +205,12 @@ async def on_project_timeline_maybe_advance_queue(
         if nxt is None or mass_parent_id(nxt) is not None:
             continue
         meta = nxt.meta if isinstance(nxt.meta, dict) else {}
-        if meta.get("user_stop"):
+        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+            logger.info(
+                "gen_queue: #{} timeline complete → #{} user_stop, пропуск",
+                project.id,
+                nxt.id,
+            )
             continue
         if nxt.status is ProjectStatus.paused:
             continue
