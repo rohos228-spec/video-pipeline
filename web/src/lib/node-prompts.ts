@@ -3,6 +3,8 @@
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
+import { nodeSupportsBlocksV2 } from "./prompt-builder/step-compose-map";
+
 export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
 
 export interface NodePromptSlot {
@@ -189,12 +191,26 @@ export function mergePromptSlotsWithDefaults(
   return ensureBlocksPromptSlot(nodeType, excel ? [excel, ...merged] : merged);
 }
 
-/** Убирает устаревший слот «Конструктор промта» (blocks v2) из списка. */
+/** Слот «Конструктор промта» для нод с блочной сборкой v2. */
 export function ensureBlocksPromptSlot(
-  _nodeType: string,
+  nodeType: string,
   slots: NodePromptSlot[],
 ): NodePromptSlot[] {
-  return slots.filter((s) => s.kind !== "blocks" && s.id !== "blocks_builder");
+  if (!nodeSupportsBlocksV2(nodeType)) return slots;
+  if (slots.some((s) => s.kind === "blocks")) return slots;
+  const slot: NodePromptSlot = {
+    id: "blocks_builder",
+    title: "Конструктор промта",
+    kind: "blocks",
+    stepCode: stepCodeForNodeType(nodeType),
+  };
+  const excelIdx = slots.findIndex((s) => s.kind === "excel");
+  if (excelIdx >= 0) {
+    const next = [...slots];
+    next.splice(excelIdx + 1, 0, slot);
+    return next;
+  }
+  return [slot, ...slots];
 }
 
 /** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
