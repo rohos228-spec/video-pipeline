@@ -2,8 +2,12 @@ import type { NodeRunStatus, ProjectStatus } from "@/lib/types";
 import { isProjectRunningStatus } from "@/lib/project-running";
 import type { WorkflowDetail } from "@/lib/types";
 
-/** Порядок рабочих нод — как NODE_TYPE_ORDER на бэкенде (без topic). */
+/** Минимальная длина general_plan — как sync_after_plan / plan_validation на бэкенде. */
+export const MIN_GENERAL_PLAN_CHARS = 200;
+
+/** Порядок рабочих нод — как NODE_TYPE_ORDER на бэкенде (run_sync.py). */
 const NODE_TYPE_ORDER: readonly string[] = [
+  "topic",
   "plan",
   "script",
   "split",
@@ -116,6 +120,12 @@ export function reconcileNodeRunStatus(
 ): NodeRunStatus {
   const fromCheckpoint = statusFromCheckpoint(nodeType, projectStatus, runStatus);
   if (fromCheckpoint != null) return fromCheckpoint;
+
+  // failed / paused / ещё не загрузился project — не доверяем устаревшему done в NodeRun.
+  if (runStatus === "done") {
+    const inferred = inferNodeStatusFromProject(nodeType, projectStatus);
+    if (inferred !== "done") return inferred;
+  }
 
   if (runStatus !== "running") return runStatus;
   if (isProjectRunningStatus(projectStatus)) return runStatus;

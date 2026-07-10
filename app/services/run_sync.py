@@ -71,6 +71,8 @@ STATUS_TO_NODE: dict[ProjectStatus, tuple[str, NodeRunStatus]] = {
     ProjectStatus.videos_ready: ("videos", NodeRunStatus.done),
     ProjectStatus.generating_audio: ("audio", NodeRunStatus.running),
     ProjectStatus.audio_ready: ("audio", NodeRunStatus.done),
+    ProjectStatus.generating_music: ("music", NodeRunStatus.running),
+    ProjectStatus.music_ready: ("music", NodeRunStatus.done),
     ProjectStatus.assembling: ("assemble", NodeRunStatus.running),
     ProjectStatus.assembled: ("assemble", NodeRunStatus.done),
     ProjectStatus.publishing: ("publish", NodeRunStatus.running),
@@ -95,6 +97,7 @@ NODE_TYPE_ORDER: list[str] = [
     "animation_prompts",
     "videos",
     "audio",
+    "music",
     "assemble",
     "publish",
 ]

@@ -33,6 +33,7 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.plan_validation import is_meaningful_general_plan
 
 # Промежуточные «running» статусы — их при перевычислении не учитываем
 # (не зафиксированы в БД). Если статус сейчас `generating_X` — мы вернём
@@ -157,7 +158,7 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     «контрольные точки» (ready / new / assembled / published).
     """
     pid = project.id
-    has_plan = bool(project.general_plan)
+    has_plan = is_meaningful_general_plan(project.general_plan)
     has_script = bool(project.script_text)
     has_hero_descr = bool(project.hero_description)
 
