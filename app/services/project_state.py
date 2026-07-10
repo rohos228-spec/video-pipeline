@@ -343,16 +343,26 @@ async def recompute_status(
     new = await compute_actual_status(session, project)
     from app.telegram.menu import status_order as _ord
 
-    # Завершённые шаги не откатываем recompute'ом (только явный reset_step).
+    # Откат разрешён, если текущий *_ready не подтверждён данными (ложный plan_ready).
     if _ord(new) < _ord(old):
-        logger.debug(
-            "[#{}] {}: keep {} (computed {} — no downgrade)",
+        from app.services.step_data_guard import ready_status_confirmed_by_data
+
+        if await ready_status_confirmed_by_data(session, project, old):
+            logger.debug(
+                "[#{}] {}: keep {} (computed {} — no downgrade)",
+                project.id,
+                log_prefix,
+                old.value,
+                new.value,
+            )
+            return old, old, False
+        logger.warning(
+            "[#{}] {}: {} → {} (статус опережал данные — откат)",
             project.id,
             log_prefix,
             old.value,
             new.value,
         )
-        return old, old, False
 
     if old == new:
         return old, new, False

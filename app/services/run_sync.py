@@ -152,7 +152,7 @@ from app.orchestrator.node_registry import (
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
 )
-from app.services.project_state import is_running_status
+from app.services.project_state import compute_actual_status, is_running_status
 from app.services.disabled_nodes import disabled_node_types
 
 
@@ -168,6 +168,11 @@ def _derived_node_states(
     придёт через event-bus, когда воркер реально создаст HITLRequest.
     """
     disabled_types = disabled_types or set()
+    if current_status is ProjectStatus.new:
+        return {
+            typ: NodeRunStatus.skipped if typ in disabled_types else NodeRunStatus.pending
+            for typ in NODE_TYPE_ORDER
+        }
     if current_status not in STATUS_TO_NODE:
         return {}
     target_type, target_state = STATUS_TO_NODE[current_status]
@@ -223,6 +228,27 @@ async def sync_run_for_project(project_id: int) -> None:
         ).scalar_one_or_none()
         if run is None:
             return
+
+        actual = await compute_actual_status(s, project)
+        if (
+            not is_running_status(project.status)
+            and project.status != actual
+            and actual is not None
+        ):
+            from app.telegram.menu import status_order as _ord
+
+            if _ord(actual) < _ord(project.status):
+                from app.services.step_data_guard import ready_status_confirmed_by_data
+
+                if not await ready_status_confirmed_by_data(s, project, project.status):
+                    logger.warning(
+                        "run_sync: #{} status {} → {} перед синхронизацией нод",
+                        project_id,
+                        project.status.value,
+                        actual.value,
+                    )
+                    project.status = actual
+                    await s.flush()
 
         derived = _derived_node_states(
             project.status,

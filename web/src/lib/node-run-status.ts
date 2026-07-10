@@ -72,23 +72,12 @@ const STATUS_TO_NODE: Record<
   published: { type: "publish", state: "done" },
 };
 
-function checkpointIndices(projectStatus: ProjectStatus | string | null | undefined): {
-  nodeIdx: number;
-  targetIdx: number;
-  checkpoint: (typeof STATUS_TO_NODE)[string] | undefined;
-} {
-  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
-  const nodeIdx = -1;
-  const targetIdx = checkpoint ? NODE_TYPE_ORDER.indexOf(checkpoint.type) : -1;
-  return { nodeIdx, targetIdx, checkpoint };
-}
-
 function statusFromCheckpoint(
   nodeType: string,
   projectStatus: ProjectStatus | string | null | undefined,
   runStatus?: NodeRunStatus,
 ): NodeRunStatus | null {
-  const { checkpoint } = checkpointIndices(projectStatus);
+  const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
   if (!checkpoint) return null;
 
   const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
@@ -110,38 +99,37 @@ function statusFromCheckpoint(
 }
 
 /**
- * NodeRun в БД ещё `running`, а проект уже ушёл в *_ready — раньше UI показывал «Ожидание».
- * По чекпоинту Project.status выводим done для завершённых шагов.
+ * Статус ноды на канвасе — в первую очередь NodeRun из БД.
+ * Чекпоинт Project.status НЕ повышает pending → done (только понижает ложное done).
  */
 export function reconcileNodeRunStatus(
   nodeType: string,
   runStatus: NodeRunStatus,
   projectStatus: ProjectStatus | string | null | undefined,
 ): NodeRunStatus {
-  const fromCheckpoint = statusFromCheckpoint(nodeType, projectStatus, runStatus);
-  if (fromCheckpoint != null) return fromCheckpoint;
+  const cp = statusFromCheckpoint(nodeType, projectStatus, runStatus);
 
-  // failed / paused / ещё не загрузился project — не доверяем устаревшему done в NodeRun.
-  if (runStatus === "done") {
-    const inferred = inferNodeStatusFromProject(nodeType, projectStatus);
-    if (inferred !== "done") return inferred;
+  if (runStatus === "done" || runStatus === "waiting_hitl") {
+    if (cp === "pending" || cp === "failed" || cp === "skipped") {
+      return cp;
+    }
+    return runStatus;
   }
 
-  if (runStatus !== "running") return runStatus;
-  if (isProjectRunningStatus(projectStatus)) return runStatus;
+  if (runStatus === "running") {
+    if (cp != null) return cp;
+    if (!isProjectRunningStatus(projectStatus)) return "pending";
+    return runStatus;
+  }
+
   return runStatus;
 }
 
-/**
- * Статус ноды на канвасе, если в run ещё нет node_run (refetch / новый run).
- * Берём чекпоинт из Project.status, чтобы не мигать в «Ожидание».
- */
+/** Без node_run в ответе API — всегда «ожидание», не выводим из Project.status. */
 export function inferNodeStatusFromProject(
-  nodeType: string,
-  projectStatus: ProjectStatus | string | null | undefined,
+  _nodeType: string,
+  _projectStatus: ProjectStatus | string | null | undefined,
 ): NodeRunStatus {
-  const fromCheckpoint = statusFromCheckpoint(nodeType, projectStatus);
-  if (fromCheckpoint != null) return fromCheckpoint;
   return "pending";
 }
 
