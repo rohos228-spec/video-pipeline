@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from app.bots.chatgpt import (
+    FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX,
     FILE_PREVIEW_DOWNLOAD_SELECTORS,
+    FILE_PREVIEW_HEADER_SELECTORS,
     FILE_PREVIEW_PANEL_SELECTORS,
     _response_looks_like_file,
     reply_text_usable_as_download,
@@ -35,12 +37,14 @@ def test_reply_text_usable_min_length() -> None:
     assert not reply_text_usable_as_download("   ")
 
 
-def test_file_preview_panel_selectors_include_library_path() -> None:
+def test_file_preview_panel_selectors_are_narrow() -> None:
     joined = " ".join(FILE_PREVIEW_PANEL_SELECTORS)
-    assert "Библиотека" in joined
+    assert "aside:has" not in joined
+    assert "Библиотека" not in joined
 
 
-def test_file_preview_download_selectors_cover_toolbar() -> None:
+def test_file_preview_download_selectors_header_scoped_only() -> None:
     joined = " ".join(FILE_PREVIEW_DOWNLOAD_SELECTORS).lower()
     assert "download" in joined or "скачать" in joined
-    assert "header" in joined or "toolbar" in joined
+    assert FILE_PREVIEW_HEADER_SELECTORS
+    assert FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX <= 64

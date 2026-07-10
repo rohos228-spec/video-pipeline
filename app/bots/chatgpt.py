@@ -282,38 +282,36 @@ FILE_CARD_SELECTORS = [
     f"{ASSISTANT_LAST_PREFIX} button.behavior-btn",
 ]
 # UI 2026-Q2: клик по файлу открывает превью таблицы справа; скачивание —
-# кнопка Download/Скачать в правом верхнем углу панели (не в чате).
+# маленькая иконка ↓ «Скачать» в header панели (между «100%» и «X»), не тело таблицы.
 FILE_PREVIEW_PANEL_SELECTORS = [
     "[data-testid='file-viewer']",
     "[data-testid*='spreadsheet-viewer']",
     "[data-testid*='artifact-viewer']",
     "[data-testid*='file-preview-panel']",
-    "aside:has(button[aria-label*='Download'])",
-    "aside:has(button[aria-label*='Скачать'])",
-    "[role='complementary']:has(button[aria-label])",
-    "div:has-text('Библиотека /'):has(button[aria-label])",
-    "div:has-text('.xlsx'):has(button[aria-label*='ownload'])",
-    "div:has-text('.xlsx'):has(button[aria-label*='качать'])",
+]
+# Только header/toolbar панели — никогда не искать кнопку по всему окну превью.
+FILE_PREVIEW_HEADER_SELECTORS = [
+    "header",
+    "[role='toolbar']",
+    "div:has(button):has-text('%')",
 ]
 FILE_PREVIEW_DOWNLOAD_SELECTORS = [
-    "header button[aria-label='Download']",
-    "header button[aria-label='Скачать']",
-    "header button[data-testid*='download']",
-    "[role='toolbar'] button[aria-label='Download']",
-    "[role='toolbar'] button[aria-label='Скачать']",
-    "[role='toolbar'] button[aria-label*='Download']",
-    "[role='toolbar'] button[aria-label*='Скачать']",
-    "button[aria-label='Download']",
     "button[aria-label='Скачать']",
-    "button[aria-label*='Download']",
+    "button[aria-label='Download']",
+    "button[title='Скачать']",
+    "button[title='Download']",
     "button[aria-label*='Скачать']",
-    "a[download]",
+    "button[aria-label*='Download']",
+    "button[data-testid*='download']",
     *[
         f"button:has(use[href$='#{h}'])"
         for h in DOWNLOAD_SPRITE_HASHES
     ],
 ]
-FILE_PREVIEW_OPEN_WAIT_SEC = 1.2
+# Макс. размер кнопки ↓ в header (иконка ~32–40px; не кликать по телу таблицы).
+FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX = 56
+FILE_PREVIEW_HEADER_STRIP_PX = 80
+FILE_PREVIEW_OPEN_WAIT_SEC = 2.0
 
 # Селекторы (несколько вариантов — берём первый, который нашёлся).
 INPUT_SELECTORS = [
@@ -2106,41 +2104,208 @@ class ChatGPTBot:
         return False
 
     async def _side_preview_panel_locator(self, page: Page) -> Any | None:
-        """Правая панель превью xlsx после клика по файлу в чате."""
+        """Правая панель превью xlsx (узкий селектор, без всего aside/окна)."""
         panel_sel = await _first_matching(
             page, FILE_PREVIEW_PANEL_SELECTORS, timeout=8.0
         )
-        if panel_sel is None:
+        if panel_sel is not None:
+            loc = page.locator(panel_sel)
+            if await loc.count() > 0:
+                return loc.last
+
+        # Fallback: крупная панель справа (split-view).
+        marked = await page.evaluate(
+            """() => {
+                document
+                    .querySelectorAll('[data-vp-preview-panel]')
+                    .forEach((el) => el.removeAttribute('data-vp-preview-panel'));
+                const minW = window.innerWidth * 0.38;
+                let best = null;
+                let bestArea = 0;
+                const nodes = document.querySelectorAll(
+                    "[data-testid='file-viewer'], [data-testid*='spreadsheet'], "
+                    + "[data-testid*='artifact-viewer'], aside, [role='complementary']"
+                );
+                for (const el of nodes) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < minW || r.height < 240) continue;
+                    if (r.left < window.innerWidth * 0.3) continue;
+                    const area = r.width * r.height;
+                    if (area > bestArea) {
+                        bestArea = area;
+                        best = el;
+                    }
+                }
+                if (!best) return false;
+                best.setAttribute('data-vp-preview-panel', '1');
+                return true;
+            }"""
+        )
+        if marked:
+            loc = page.locator("[data-vp-preview-panel='1']")
+            if await loc.count() > 0:
+                return loc.first
+        return None
+
+    async def _preview_header_locator(self, panel: Any) -> Any | None:
+        """Верхняя полоска панели (имя файла, 100%, ↓, X) — не grid таблицы."""
+        for sel in FILE_PREVIEW_HEADER_SELECTORS:
+            header = panel.locator(sel).first
+            if await header.count() > 0:
+                return header
+        return panel
+
+    async def _locate_preview_header_download_button(self, page: Page) -> Any | None:
+        """Маленькая кнопка ↓ «Скачать» в header (между zoom и close)."""
+        meta = await page.evaluate(
+            """([maxPx, headerStrip]) => {
+                document
+                    .querySelectorAll('[data-vp-preview-download]')
+                    .forEach((el) => el.removeAttribute('data-vp-preview-download'));
+                const isDownload = (s) => {
+                    const t = (s || '').toLowerCase().trim();
+                    return t === 'download' || t === 'скачать'
+                        || t.includes('download') || t.includes('скач');
+                };
+                const isClose = (s) => {
+                    const t = (s || '').toLowerCase();
+                    return t.includes('close') || t.includes('закры');
+                };
+                const isZoom = (btn) => (btn.textContent || '').includes('%');
+
+                const panels = [
+                    ...document.querySelectorAll(
+                        "[data-testid='file-viewer'], [data-testid*='spreadsheet'], "
+                        + "[data-testid*='artifact-viewer'], aside, [role='complementary']"
+                    ),
+                ];
+                for (const panel of panels) {
+                    const pr = panel.getBoundingClientRect();
+                    if (pr.width < window.innerWidth * 0.35 || pr.height < 200) continue;
+                    if (pr.left < window.innerWidth * 0.28) continue;
+
+                    const headerBtns = [];
+                    for (const btn of panel.querySelectorAll('button')) {
+                        const br = btn.getBoundingClientRect();
+                        if (br.width < 8 || br.height < 8) continue;
+                        if (br.top - pr.top > headerStrip) continue;
+                        if (br.width > maxPx || br.height > maxPx) continue;
+                        if (isZoom(btn)) continue;
+                        const al = btn.getAttribute('aria-label') || '';
+                        const title = btn.getAttribute('title') || '';
+                        if (isClose(al) || isClose(title)) continue;
+                        headerBtns.push({
+                            btn,
+                            left: br.left,
+                            right: br.right,
+                            al,
+                            title,
+                            hasSvg: !!btn.querySelector('svg'),
+                        });
+                    }
+                    if (!headerBtns.length) continue;
+
+                    for (const x of headerBtns) {
+                        if (isDownload(x.al) || isDownload(x.title)) {
+                            x.btn.setAttribute('data-vp-preview-download', '1');
+                            return {
+                                found: true,
+                                via: 'label',
+                                al: x.al || x.title,
+                                w: Math.round(x.btn.getBoundingClientRect().width),
+                                h: Math.round(x.btn.getBoundingClientRect().height),
+                            };
+                        }
+                    }
+
+                    const icons = headerBtns
+                        .filter((x) => x.hasSvg)
+                        .sort((a, b) => a.left - b.left);
+                    if (icons.length >= 2) {
+                        const dl = icons[icons.length - 2];
+                        dl.btn.setAttribute('data-vp-preview-download', '1');
+                        return {
+                            found: true,
+                            via: 'penultimate-icon',
+                            al: dl.al || dl.title || 'icon',
+                            w: Math.round(dl.btn.getBoundingClientRect().width),
+                            h: Math.round(dl.btn.getBoundingClientRect().height),
+                        };
+                    }
+                }
+                return { found: false };
+            }""",
+            [FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX, FILE_PREVIEW_HEADER_STRIP_PX],
+        )
+        if not meta or not meta.get("found"):
             return None
-        loc = page.locator(panel_sel)
-        if await loc.count() == 0:
-            return None
-        return loc.last
+        logger.info(
+            "ChatGPT: кнопка ↓ в header панели ({}, {}x{}px, al={})",
+            meta.get("via"),
+            meta.get("w"),
+            meta.get("h"),
+            (meta.get("al") or "")[:40],
+        )
+        loc = page.locator("button[data-vp-preview-download='1']").last
+        if await loc.count() > 0:
+            return loc
+        return None
 
     async def _download_from_side_preview_panel(
         self,
         page: Page,
         target_path: Path,
     ) -> bool:
-        """Скачать из правой панели превью (кнопка Download сверху справа)."""
+        """Скачать из правой панели: только маленькая кнопка ↓ в header."""
         panel = await self._side_preview_panel_locator(page)
         if panel is None:
             logger.info("ChatGPT: панель превью файла не найдена")
             return False
-        logger.info("ChatGPT: панель превью открыта — ищем кнопку скачивания")
+        logger.info("ChatGPT: панель превью открыта — ищем кнопку ↓ в header")
+
+        download_btn = await self._locate_preview_header_download_button(page)
+        if download_btn is not None:
+            try:
+                await download_btn.hover(timeout=2_000)
+            except Exception:  # noqa: BLE001
+                pass
+            if await self._click_and_save_file(
+                page,
+                download_btn,
+                target_path,
+                label="preview-header-download",
+            ):
+                return True
+
+        header = await self._preview_header_locator(panel)
         for sel in FILE_PREVIEW_DOWNLOAD_SELECTORS:
-            buttons = panel.locator(sel)
+            buttons = header.locator(sel)
             count = await buttons.count()
-            if count == 0:
-                continue
             for idx in range(count):
                 btn = buttons.nth(idx)
+                try:
+                    box = await btn.bounding_box()
+                except Exception:  # noqa: BLE001
+                    continue
+                if not box:
+                    continue
+                if (
+                    box["width"] > FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX
+                    or box["height"] > FILE_PREVIEW_DOWNLOAD_BTN_MAX_PX
+                ):
+                    logger.debug(
+                        "ChatGPT: пропускаем крупный элемент {} ({}x{}px)",
+                        sel,
+                        round(box["width"]),
+                        round(box["height"]),
+                    )
+                    continue
                 aria = (await btn.get_attribute("aria-label")) or sel
                 if await self._click_and_save_file(
                     page,
                     btn,
                     target_path,
-                    label=f"preview-panel:{aria}",
+                    label=f"preview-header:{aria}",
                 ):
                     return True
         return False
@@ -2153,11 +2318,7 @@ class ChatGPTBot:
         *,
         label: str = "",
     ) -> bool:
-        """Прямое скачивание или UI с превью справа (2026-Q2)."""
-        if await self._click_and_save_file(
-            page, locator, target_path, label=label or "file-btn"
-        ):
-            return True
+        """Открыть превью одним кликом → кнопка ↓ в header (не по всему окну)."""
         try:
             await locator.click(timeout=5_000)
         except Exception as exc:  # noqa: BLE001
@@ -2169,6 +2330,11 @@ class ChatGPTBot:
             return False
         await asyncio.sleep(FILE_PREVIEW_OPEN_WAIT_SEC)
         if await self._download_from_side_preview_panel(page, target_path):
+            return True
+        # Старый UI: прямое скачивание из чата без панели справа.
+        if await self._click_and_save_file(
+            page, locator, target_path, label=label or "file-btn-legacy"
+        ):
             return True
         try:
             await page.keyboard.press("Escape")
