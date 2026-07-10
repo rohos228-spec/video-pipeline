@@ -18,7 +18,7 @@ $Files = @(
     "app/main.py",
     "app/services/run_sync.py",
     "app/services/project_state.py",
-    "app/services/gen_queue_run.py",
+    "app/services/project_control.py",
     "app/services/step_data_guard.py",
     "app/services/plan_validation.py",
     "web/src/lib/node-run-status.ts"
