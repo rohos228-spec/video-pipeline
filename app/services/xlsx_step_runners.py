@@ -18,7 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import xlsx_gpt_flow as xgf
-from app.services.xlsx_versioning import backup_to_old, replace_with, validate_xlsx
+from app.services.xlsx_versioning import (
+    backup_to_old,
+    normalize_xlsx_to_reference_layout,
+    replace_with,
+    validate_xlsx,
+)
 from app.services.voiceover_split_local import (
     parse_dash_separated_blocks,
     split_voiceover_locally,
@@ -207,6 +212,9 @@ async def run_plan_xlsx(
     reply = await xgf.run_under_xlsx_lock(project.id, "plan", _gpt)
 
     validation_err = validate_xlsx(downloaded)
+    if validation_err is not None:
+        if normalize_xlsx_to_reference_layout(downloaded, proj_xlsx):
+            validation_err = validate_xlsx(downloaded)
     if validation_err is not None:
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
 

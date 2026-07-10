@@ -66,3 +66,4 @@ def test_backend_file_url_variants_simple_to_download() -> None:
 def test_preview_download_js_excludes_edit_buttons() -> None:
     assert "isEdit" in _PREVIEW_DOWNLOAD_FIND_JS
     assert "редактир" in _PREVIEW_DOWNLOAD_FIND_JS
+    assert "global-penultimate" not in _PREVIEW_DOWNLOAD_FIND_JS

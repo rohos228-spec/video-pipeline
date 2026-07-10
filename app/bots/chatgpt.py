@@ -387,18 +387,6 @@ _PREVIEW_DOWNLOAD_FIND_JS = """
     const icons = candidates
         .filter((c) => c.hasSvg)
         .sort((a, b) => b.right - a.right);
-    if (icons.length >= 2) {
-        const dl = icons[1];
-        dl.btn.setAttribute('data-vp-preview-download', '1');
-        return {
-            found: true,
-            via: 'global-penultimate',
-            al: dl.al || dl.title || 'icon',
-            w: dl.w,
-            h: dl.h,
-            n: candidates.length,
-        };
-    }
 
     return {
         found: false,
@@ -2459,6 +2447,13 @@ class ChatGPTBot:
                         n,
                         (meta or {}).get("sample"),
                     )
+                continue
+            if meta.get("via") != "global-label":
+                logger.debug(
+                    "ChatGPT: пропуск toolbar без label Скачать на {}: {}",
+                    getattr(pg, "url", "?")[:60],
+                    meta.get("via"),
+                )
                 continue
             al_raw = (meta.get("al") or "").lower()
             if "редактир" in al_raw or "edit message" in al_raw:

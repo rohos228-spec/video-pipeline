@@ -14,6 +14,8 @@ $Files = @(
     "app/bots/chatgpt.py",
     "app/services/xlsx_versioning.py",
     "app/services/xlsx_gpt_flow.py",
+    "app/services/xlsx_step_runners.py",
+    "app/services/step_failure_policy.py",
     "app/services/gen_queue.py",
     "app/services/gen_queue_run.py",
     "app/orchestrator/auto_advance.py",

@@ -5,8 +5,11 @@ from app.services.step_failure_policy import (
     FAILS_PER_CYCLE,
     MAX_CYCLES,
     MAX_TOTAL_FAILS,
+    SLEEP_MINUTES,
+    XLSX_SHEET_FORMAT_SLEEP_MINUTES,
     clear_failure_backoff_for_manual_start,
     is_sleeping,
+    sleep_minutes_for_error,
 )
 
 
@@ -52,3 +55,12 @@ def test_manual_start_clears_sleep_and_fail_counter() -> None:
     )
     assert not is_sleeping(p)
     assert p.meta["step_failure"]["total_fails"] == {"splitting": 1}
+
+
+def test_sleep_minutes_shorter_for_xlsx_sheet_mismatch() -> None:
+    err = RuntimeError(
+        "скачанный xlsx невалиден: ошибка формата эксель таблицы: листы [a] "
+        "не совпадают с шаблоном"
+    )
+    assert sleep_minutes_for_error(err) == XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    assert sleep_minutes_for_error(RuntimeError("other")) == SLEEP_MINUTES
