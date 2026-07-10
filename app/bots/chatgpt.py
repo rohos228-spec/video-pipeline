@@ -2281,6 +2281,7 @@ class ChatGPTBot:
         *,
         timeout: float = 1800,
         fallback_text: str | None = None,
+        allow_reply_text_fallback: bool = False,
     ) -> Path:
         """Из последнего ответа ассистента скачивает файл в `target_path`.
 
@@ -2288,16 +2289,16 @@ class ChatGPTBot:
           1. Клик по карточке файла (behavior-btn).
           2. Селекторы Download в ответе ассистента.
           3. Hover/click по карточке → повтор 1–2.
-          4. Для .txt/.md — текст ответа GPT (fallback_text или read_last_reply).
+          4. Для .txt/.md — текст ответа GPT только если allow_reply_text_fallback.
         """
         page = await self._page_ready()
         target_path = Path(target_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         phase_timeout = min(
-            DOWNLOAD_PHASE_TIMEOUT_SEC, max(10.0, timeout * 0.02)
+            DOWNLOAD_PHASE_TIMEOUT_SEC, max(60.0, timeout * 0.05)
         )
 
-        aria_timeout = min(60.0, max(25.0, timeout * 0.03))
+        aria_timeout = min(120.0, max(45.0, timeout * 0.06))
         if await self._try_download_aria_file_buttons(
             page, target_path, timeout=aria_timeout
         ):
@@ -2363,11 +2364,12 @@ class ChatGPTBot:
             return target_path
 
         suffix = target_path.suffix.lower()
-        if suffix in TEXT_REPLY_DOWNLOAD_SUFFIXES:
+        if allow_reply_text_fallback and suffix in TEXT_REPLY_DOWNLOAD_SUFFIXES:
+            min_len = 500 if suffix == ".txt" else 10
             reply_text = (fallback_text or "").strip()
-            if not reply_text_usable_as_download(reply_text):
+            if not reply_text_usable_as_download(reply_text, min_len=min_len):
                 reply_text = await self._read_last_reply()
-            if reply_text_usable_as_download(reply_text):
+            if reply_text_usable_as_download(reply_text, min_len=min_len):
                 return await self._save_reply_text_as_file(
                     target_path,
                     reply_text,

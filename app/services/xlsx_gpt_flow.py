@@ -68,6 +68,7 @@ async def telegram_style_ask_and_download(
     download_timeout: float = XLSX_GPT_TIMEOUT_S,
     project_id: int | None = None,
     validate_xlsx_download: bool = False,
+    allow_reply_text_fallback: bool = False,
 ) -> str:
     """Как bot _run_plan_xlsx / _run_split_xlsx: ask → download в одной сессии."""
     for fp in attachments:
@@ -106,6 +107,7 @@ async def telegram_style_ask_and_download(
             dl_path,
             timeout=download_timeout,
             fallback_text=reply,
+            allow_reply_text_fallback=allow_reply_text_fallback,
         )
 
     if validate_xlsx_download:
@@ -136,8 +138,9 @@ async def run_under_xlsx_lock(
     step: str,
     fn: Callable[[], Awaitable[T]],
 ) -> T:
-    """Per-(project, step) lock — как bot._run_xlsx_with_lock."""
+    """Per-project GPT lock + per-step active marker (для ⏹ / is_generation_active)."""
     from app.services.xlsx_flow_locks import (
+        project_gpt_lock,
         register_xlsx_flow_task,
         unregister_xlsx_flow_task,
         xlsx_flow_active_set,
@@ -145,12 +148,13 @@ async def run_under_xlsx_lock(
 
     active = xlsx_flow_active_set()
     key = (project_id, step)
-    active.add(key)
     task = asyncio.current_task()
-    if task is not None:
-        register_xlsx_flow_task(project_id, step, task)
-    try:
-        return await fn()
-    finally:
-        active.discard(key)
-        unregister_xlsx_flow_task(project_id, step)
+    async with project_gpt_lock(project_id):
+        active.add(key)
+        if task is not None:
+            register_xlsx_flow_task(project_id, step, task)
+        try:
+            return await fn()
+        finally:
+            active.discard(key)
+            unregister_xlsx_flow_task(project_id, step)

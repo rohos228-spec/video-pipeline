@@ -42,11 +42,12 @@ from app.models import (
     Project,
     ProjectStatus,
 )
+from app.services.project_state import compute_actual_status
 from app.services.disabled_nodes import skip_disabled_running, skip_disabled_running_async
-from app.services.step_data_guard import can_enter_running, clamp_status_to_data
+from app.services.step_data_guard import can_enter_running, clamp_status_to_data, ready_status_confirmed_by_data
 from app.services.auto_review import ReviewResult
 from app.settings import settings
-from app.telegram.menu import STEPS, enabled_enrich_slots, step_by_running_status
+from app.telegram.menu import STEPS, enabled_enrich_slots, status_order, step_by_running_status
 
 # (single-mass parity #4) Гранулярность визуального ревью.
 #
@@ -796,6 +797,29 @@ async def maybe_auto_advance(
     status = project.status
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать
+
+    from app.services.step_cancel import is_generation_active
+
+    if is_generation_active(project.id):
+        logger.debug(
+            "auto_advance: #{} {} — шаг ещё выполняется, пропуск",
+            project.id,
+            status.value,
+        )
+        return False
+
+    if not await ready_status_confirmed_by_data(session, project, status):
+        actual = await compute_actual_status(session, project)
+        if status_order(actual) < status_order(status):
+            project.status = actual
+            await session.flush()
+            logger.warning(
+                "auto_advance: #{} {} → {} (данные не подтверждают ready)",
+                project.id,
+                status.value,
+                actual.value,
+            )
+        return False
 
     transition = TRANSITIONS[status]
     hitl = await get_latest_hitl(session, project.id, transition.kind)

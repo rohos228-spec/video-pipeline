@@ -22,6 +22,23 @@ def is_xlsx_flow_active(project_id: int, step: str) -> bool:
     return (project_id, step) in _xlsx_flow_active
 
 
+def is_any_xlsx_flow_active(project_id: int) -> bool:
+    """Любой xlsx-flow шаг проекта (plan/script/split/img_pr) ещё в GPT."""
+    return any(is_xlsx_flow_active(project_id, code) for code in XLSX_FLOW_STEP_CODES)
+
+
+_project_gpt_locks: dict[int, asyncio.Lock] = {}
+
+
+def project_gpt_lock(project_id: int) -> asyncio.Lock:
+    """Один GPT-сеанс на проект — script не стартует пока plan не завершён."""
+    lock = _project_gpt_locks.get(project_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _project_gpt_locks[project_id] = lock
+    return lock
+
+
 def register_xlsx_flow_task(project_id: int, step: str, task: asyncio.Task) -> None:
     _xlsx_flow_tasks[(project_id, step)] = task
 

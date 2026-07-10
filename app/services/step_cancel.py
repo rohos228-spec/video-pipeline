@@ -63,14 +63,11 @@ def is_advance_active(project_id: int) -> bool:
 
 
 def is_generation_active(project_id: int) -> bool:
-    from app.services.xlsx_flow_locks import (
-        XLSX_FLOW_STEP_CODES,
-        is_xlsx_flow_active,
-    )
+    from app.services.xlsx_flow_locks import is_any_xlsx_flow_active
 
     if is_advance_active(project_id):
         return True
-    if any(is_xlsx_flow_active(project_id, code) for code in XLSX_FLOW_STEP_CODES):
+    if is_any_xlsx_flow_active(project_id):
         return True
     # stop-файл: воркер ещё не consume, но юзер уже жмёт ⏹
     return _stop_flag_path(project_id).exists()

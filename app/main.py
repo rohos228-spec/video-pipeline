@@ -470,9 +470,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                     ).scalars().all()
                     for ap in auto_projects:
-                        # При активной паузе массовой — пропускаем подпроекты
-                        # батчей (но не индивидуальные проекты с auto_mode=True).
                         if mass_paused and ap.batch_id is not None:
+                            continue
+                        if is_generation_active(ap.id):
                             continue
                         prev = ap.status.value
                         try:
