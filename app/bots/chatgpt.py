@@ -17,6 +17,7 @@ import base64
 import mimetypes
 import re
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from playwright.async_api import Download, Page
@@ -228,8 +229,18 @@ ASSISTANT_LAST_PREFIX = "[data-message-author-role='assistant']:last-of-type"
 # Текущий хэш на 2025-Q4: '#1a3695' (рядом с ним '#03424d' — share/options).
 # При обновлении ChatGPT хэши могут поменяться — тогда дампим outerHTML
 # и подставляем новые сюда.
-DOWNLOAD_SPRITE_HASHES = ["1a3695"]
+DOWNLOAD_SPRITE_HASHES = ["d20dea", "1a3695"]
+# Кнопка файла в prose: aria-label = имя файла (2026-Q2 UI).
+ASSISTANT_FILE_BTN_SELECTORS = [
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn[aria-label$='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn[aria-label$='.xls']",
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn[aria-label$='.txt']",
+    f"{ASSISTANT_LAST_PREFIX} button.behavior-btn[aria-label$='.csv']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label$='.xlsx']",
+    f"{ASSISTANT_LAST_PREFIX} button[aria-label$='.txt']",
+]
 DOWNLOAD_LINK_SELECTORS = [
+    *ASSISTANT_FILE_BTN_SELECTORS,
     f"{ASSISTANT_LAST_PREFIX} a[download]",
     f"{ASSISTANT_LAST_PREFIX} a[href*='/files/']",
     f"{ASSISTANT_LAST_PREFIX} a[href*='sandbox']",
@@ -340,6 +351,36 @@ async def _first_matching(page: Page, selectors: list[str], *, timeout: float = 
                 continue
         await asyncio.sleep(0.25)
     return None
+
+
+_FILE_EXTENSIONS = (".xlsx", ".xls", ".txt", ".csv", ".json", ".md")
+
+
+def _response_looks_like_file(resp: Any) -> bool:
+    """HTTP-ответ похож на скачиваемый файл (ChatGPT иногда без download event)."""
+    try:
+        if not resp.ok:
+            return False
+        url = (resp.url or "").lower()
+        ct = (resp.headers.get("content-type") or "").lower()
+        if any(
+            tok in ct
+            for tok in (
+                "spreadsheet",
+                "excel",
+                "octet-stream",
+                "text/plain",
+                "application/vnd",
+            )
+        ):
+            return True
+        if any(ext in url for ext in _FILE_EXTENSIONS):
+            return True
+        if "/files/" in url or "sandbox" in url or "file-" in url:
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 class ChatGPTBot:
@@ -1969,19 +2010,109 @@ class ChatGPTBot:
             project_id=project_id,
         )
 
+    async def _click_and_save_file(
+        self,
+        page: Page,
+        locator: Any,
+        target_path: Path,
+        *,
+        label: str = "",
+    ) -> bool:
+        """Клик по кнопке файла: expect_download, иначе перехват HTTP-ответа."""
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            async with page.expect_download(timeout=20_000) as dl_info:
+                await locator.click(timeout=5_000)
+            dl: Download = await dl_info.value
+            size = await self._save_download_to_path(dl, target_path)
+            logger.info(
+                "ChatGPT: download event ({}) → {} ({} байт)",
+                label or "file-btn",
+                target_path.name,
+                size,
+            )
+            return size >= 512
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "ChatGPT: download event не сработал ({}): {}",
+                label or "file-btn",
+                exc,
+            )
+
+        try:
+            async with page.expect_response(
+                _response_looks_like_file, timeout=20_000
+            ) as resp_info:
+                await locator.click(timeout=5_000)
+            resp = await resp_info.value
+            body = await resp.body()
+            if len(body) < 512:
+                logger.warning(
+                    "ChatGPT: HTTP-ответ слишком мал ({} байт) url={}",
+                    len(body),
+                    resp.url,
+                )
+                return False
+            target_path.write_bytes(body)
+            logger.info(
+                "ChatGPT: файл из HTTP ({}) → {} ({} байт, url={})",
+                label or "file-btn",
+                target_path.name,
+                len(body),
+                resp.url[:120],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "ChatGPT: HTTP fallback не сработал ({}): {}",
+                label or "file-btn",
+                exc,
+            )
+        return False
+
+    async def _try_download_aria_file_buttons(
+        self,
+        page: Page,
+        target_path: Path,
+        *,
+        timeout: float = 60,
+    ) -> bool:
+        """Кнопки «Файл: name.xlsx» с aria-label — приоритет над generic behavior-btn."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        selectors = [
+            *ASSISTANT_FILE_BTN_SELECTORS,
+            f"{ASSISTANT_LAST_PREFIX} button.behavior-btn",
+        ]
+        while asyncio.get_event_loop().time() < deadline:
+            for sel in selectors:
+                loc = page.locator(sel)
+                count = await loc.count()
+                if count == 0:
+                    continue
+                for idx in range(count - 1, -1, -1):
+                    btn = loc.nth(idx)
+                    aria = (await btn.get_attribute("aria-label")) or ""
+                    if sel.endswith("behavior-btn") and aria:
+                        if not any(
+                            aria.lower().endswith(ext) for ext in _FILE_EXTENSIONS
+                        ):
+                            continue
+                    if await self._click_and_save_file(
+                        page,
+                        btn,
+                        target_path,
+                        label=aria or sel,
+                    ):
+                        return True
+            await asyncio.sleep(0.35)
+        return False
+
     async def _try_download_via_file_card(
         self, page: Page, *, timeout: float = 60,
     ) -> Download | None:
-        """Пробует скачать файл, кликнув по карточке файла (behavior-btn).
-
-        В новом ChatGPT UI (2025-Q2) клик по ``button.behavior-btn``
-        напрямую запускает скачивание файла. Оборачиваем клик в
-        ``page.expect_download`` чтобы перехватить Download-объект.
-
-        Сначала ЖДЁМ появления карточки файла (polling до ``timeout``
-        секунд), потом кликаем. Возвращает ``Download`` или ``None``.
-        """
-        # Ждём появления любого FILE_CARD_SELECTOR (polling).
+        """Пробует скачать файл, кликнув по карточке файла (behavior-btn)."""
         card_sel = await _first_matching(
             page, FILE_CARD_SELECTORS, timeout=timeout,
         )
@@ -1993,27 +2124,39 @@ class ChatGPTBot:
             )
             return None
 
-        loc = page.locator(card_sel).first
-        logger.info(
-            "ChatGPT: пробую скачать файл кликом по карточке ({})",
-            card_sel,
-        )
-        try:
-            async with page.expect_download(timeout=30_000) as dl_info:
-                await loc.click(timeout=5_000)
-            dl: Download = await dl_info.value
+        loc = page.locator(card_sel)
+        count = await loc.count()
+        indices = list(range(count - 1, -1, -1)) if count else [0]
+        for idx in indices:
+            btn = loc.nth(idx) if count else loc.first
+            aria = (await btn.get_attribute("aria-label")) or ""
+            if aria and not any(aria.lower().endswith(ext) for ext in _FILE_EXTENSIONS):
+                if "behavior-btn" in card_sel:
+                    continue
             logger.info(
-                "ChatGPT: download triggered via file card ({}), "
-                "filename={}",
-                card_sel, dl.suggested_filename,
+                "ChatGPT: пробую скачать файл кликом по карточке ({}, idx={}, aria={})",
+                card_sel,
+                idx,
+                aria[:60],
             )
-            return dl
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "ChatGPT: клик по карточке ({}) не вызвал download: {}",
-                card_sel, exc,
-            )
-            return None
+            try:
+                async with page.expect_download(timeout=20_000) as dl_info:
+                    await btn.click(timeout=5_000)
+                dl: Download = await dl_info.value
+                logger.info(
+                    "ChatGPT: download triggered via file card ({}), filename={}",
+                    card_sel,
+                    dl.suggested_filename,
+                )
+                return dl
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ChatGPT: клик по карточке ({}, idx={}) не вызвал download: {}",
+                    card_sel,
+                    idx,
+                    exc,
+                )
+        return None
 
     async def _hover_file_cards(self) -> None:
         """В новых сборках ChatGPT кнопка Download появляется только при
@@ -2154,6 +2297,12 @@ class ChatGPTBot:
             DOWNLOAD_PHASE_TIMEOUT_SEC, max(10.0, timeout * 0.02)
         )
 
+        aria_timeout = min(60.0, max(25.0, timeout * 0.03))
+        if await self._try_download_aria_file_buttons(
+            page, target_path, timeout=aria_timeout
+        ):
+            return target_path
+
         download = await self._try_download_via_file_card(
             page, timeout=phase_timeout
         )
@@ -2206,6 +2355,11 @@ class ChatGPTBot:
                 target_path,
                 size,
             )
+            return target_path
+
+        if await self._try_download_aria_file_buttons(
+            page, target_path, timeout=min(90.0, timeout * 0.05)
+        ):
             return target_path
 
         suffix = target_path.suffix.lower()
