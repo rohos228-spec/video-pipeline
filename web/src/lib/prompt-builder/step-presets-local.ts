@@ -1,32 +1,29 @@
 import { api } from "@/lib/api";
 import type { StepPresetsFile } from "./prompt-presets";
-import animPrPresets from "./data/anim_pr-presets.json";
-import enrich1Presets from "./data/enrich_1-presets.json";
-import enrich2Presets from "./data/enrich_2-presets.json";
-import enrich3Presets from "./data/enrich_3-presets.json";
-import enrich4Presets from "./data/enrich_4-presets.json";
-import enrich5Presets from "./data/enrich_5-presets.json";
-import heroPresets from "./data/hero-presets.json";
-import imgPrPresets from "./data/img_pr-presets.json";
-import itemsPresets from "./data/items-presets.json";
-import planPresets from "./data/plan-presets.json";
-import scriptPresets from "./data/script-presets.json";
-import splitPresets from "./data/split-presets.json";
 
-/** Встроенные пресеты всех шагов — работают без перезапуска backend. */
+function emptyStepPresets(stepCode: string): StepPresetsFile {
+  return {
+    step_code: stepCode,
+    presets: {
+      default: { label: "По умолчанию", blocks: {} },
+    },
+  };
+}
+
+/** Встроенные пресеты всех шагов — fallback, если API недоступен. */
 export const LOCAL_STEP_PRESETS: Record<string, StepPresetsFile> = {
-  plan: planPresets as StepPresetsFile,
-  script: scriptPresets as StepPresetsFile,
-  split: splitPresets as StepPresetsFile,
-  hero: heroPresets as StepPresetsFile,
-  items: itemsPresets as StepPresetsFile,
-  enrich_1: enrich1Presets as StepPresetsFile,
-  enrich_2: enrich2Presets as StepPresetsFile,
-  enrich_3: enrich3Presets as StepPresetsFile,
-  enrich_4: enrich4Presets as StepPresetsFile,
-  enrich_5: enrich5Presets as StepPresetsFile,
-  img_pr: imgPrPresets as StepPresetsFile,
-  anim_pr: animPrPresets as StepPresetsFile,
+  plan: emptyStepPresets("plan"),
+  script: emptyStepPresets("script"),
+  split: emptyStepPresets("split"),
+  hero: emptyStepPresets("hero"),
+  items: emptyStepPresets("items"),
+  enrich_1: emptyStepPresets("enrich_1"),
+  enrich_2: emptyStepPresets("enrich_2"),
+  enrich_3: emptyStepPresets("enrich_3"),
+  enrich_4: emptyStepPresets("enrich_4"),
+  enrich_5: emptyStepPresets("enrich_5"),
+  img_pr: emptyStepPresets("img_pr"),
+  anim_pr: emptyStepPresets("anim_pr"),
 };
 
 function presetCount(data: StepPresetsFile | null | undefined): number {
