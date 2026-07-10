@@ -828,6 +828,7 @@ async def maybe_auto_advance(
         gen_queue_blocks_project,
         on_project_timeline_maybe_advance_queue,
     )
+    from app.services.sidebar_layout import get_gen_queue
     from app.services.gen_queue_run import (
         is_gen_queue_run_complete,
         mark_gen_queue_run_complete,
@@ -856,9 +857,10 @@ async def maybe_auto_advance(
     queue_blocker = await gen_queue_blocks_project(session, project.id)
     if queue_blocker is not None:
         logger.info(
-            "auto_advance: #{} {} — ждём очередь, блокирует #{}",
+            "auto_advance: #{} {} — ждём очередь {} (блокирует #{})",
             project.id,
             status.value,
+            get_gen_queue(),
             queue_blocker,
         )
         return False

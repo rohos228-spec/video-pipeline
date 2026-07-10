@@ -80,7 +80,16 @@ async def test_blocks_later_not_blocked_by_paused_earlier(
 ) -> None:
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    assert await gen_queue_blocks_project(session, 8) is None
+    assert await gen_queue_blocks_project(session, 8) == 7
+
+
+@pytest.mark.asyncio
+async def test_gen_queue_normalize_sorts_by_project_id(
+    monkeypatch,
+) -> None:
+    from app.services.sidebar_layout import _normalize_gen_queue
+
+    assert _normalize_gen_queue([4, 1, 3, 2]) == [1, 2, 3, 4]
 
 
 @pytest.mark.asyncio

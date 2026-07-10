@@ -113,8 +113,6 @@ async def gen_queue_incomplete_earlier(
         meta = project.meta if isinstance(project.meta, dict) else {}
         if meta.get("user_stop"):
             continue
-        if project.status is ProjectStatus.paused:
-            continue
         if await is_timeline_complete(session, project):
             continue
         return project.id
@@ -131,6 +129,8 @@ async def gen_queue_tick(session: AsyncSession) -> int:
     queue = get_gen_queue()
     if not queue:
         return 0
+
+    logger.debug("gen_queue tick: порядок {}", queue)
 
     if await gen_queue_busy_project(session) is not None:
         return 0
