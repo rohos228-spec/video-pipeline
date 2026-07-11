@@ -24,13 +24,14 @@ import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
+  excelGptEnrichStepCode,
   nodeTypeRequiresExcel,
   pipelinePromptSlots,
   resolvePromptSlots,
   resolvePromptSlotsForNode,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
-import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
+import { excelGptSlotIndex, isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +39,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
+  activeVariantForExcelGpt,
   activeVariantForSlot,
   preferredPromptFileName,
   withSlotVariant,
@@ -225,16 +227,25 @@ export function NodeStudio({
     null;
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
+  const enrichStepCode = excelGptEnrichStepCode(nodeKey ?? undefined, excelConfig.slotIndex);
   const promptStepCode =
     isExcelGptNode(nodeType) && activeSlot && (activeSlot.kind === "gpt" || activeSlot.kind === "blocks")
-      ? activeSlot.stepCode ?? excelGptPromptStepCode(excelConfig.slotIndex)
+      ? enrichStepCode
       : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
   const activeVariant =
     activeSlot && nodeKey
-      ? activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, promptStepCode)
+      ? isExcelGptNode(nodeType) && activeSlot.kind === "gpt"
+        ? activeVariantForExcelGpt(
+            metaRecord,
+            nodeKey,
+            activeSlot,
+            promptOverrides,
+            excelConfig.slotIndex,
+          )
+        : activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, promptStepCode)
       : "default";
   const preferredFile = preferredPromptFileName(activeSlot);
 

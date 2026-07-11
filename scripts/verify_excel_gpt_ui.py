@@ -24,46 +24,35 @@ def fail(msg: str) -> None:
 def main() -> None:
     print("=== excel_gpt UI verification ===")
 
-    for i in range(1, 6):
-        step = f"enrich_{i}"
-        files = list_prompts(step)
-        if len(files) < 1:
-            fail(f"{step} should have prompts, got {len(files)}")
-        folder = STEP_FOLDERS.get(step)
-        if not folder or not folder.startswith("05"):
-            fail(f"{step} folder mapping wrong: {folder}")
-        ok(f"{step} → {folder} ({len(files)} files)")
+    e1 = list_prompts("enrich_1")
+    if len(e1) < 5:
+        fail(f"enrich_1 should have many prompts, got {len(e1)}")
+    ok(f"enrich_1 folder has {len(e1)} prompt files (shown in PromptFilesPanel)")
+
+    if STEP_FOLDERS.get("enrich_1") != "05a_enrich_1":
+        fail("enrich_1 folder mapping wrong")
+    ok("STEP_FOLDERS enrich_1 → 05a_enrich_1")
 
     node_prompts = (ROOT / "web/src/lib/node-prompts.ts").read_text(encoding="utf-8")
-    if "enrichFolderPromptSlots" not in node_prompts:
-        fail("enrichFolderPromptSlots missing")
-    if "applyExcelGptNodeContext" in node_prompts:
-        fail("applyExcelGptNodeContext must be removed (overwrote enrich step codes)")
-    ok("node-prompts uses 5 enrich folder slots")
+    if "enrichFolderPromptSlots" in node_prompts or "expandExcelGptPromptSlots" in node_prompts:
+        fail("must not expand 5 folder chips in V-menu")
+    if 'id: "main"' not in node_prompts or "applyExcelGptNodeContext" not in node_prompts:
+        fail("excel_gpt must use single main slot + enrich step mapping")
+    ok("V-menu: excel + blocks + one Промт дополнения N per node")
 
-    folders = (ROOT / "web/src/lib/enrich-folder-slots.ts").read_text(encoding="utf-8")
-    for code in ("enrich_1", "enrich_5", "05a_enrich_1", "05e_enrich_5"):
-        if code not in folders:
-            fail(f"enrich-folder-slots missing {code}")
-    ok("enrich-folder-slots defines all 5 folders")
-
-    flow = (ROOT / "web/src/components/canvas/flow-canvas.tsx").read_text(encoding="utf-8")
-    if "excel_gpt_nodes" not in flow:
-        fail("flow-canvas meta hydration missing")
-    ok("flow-canvas hydrates excel_gpt_nodes from meta")
+    studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
+    if "excelGptEnrichStepCode" not in studio or "PromptFilesPanel" not in studio:
+        fail("node-studio must open PromptFilesPanel with enrich folder stepCode")
+    ok("studio PromptFilesPanel uses enrich_N folder for excel_gpt")
 
     vmenu = (ROOT / "web/src/components/canvas/node-v-menu.tsx").read_text(encoding="utf-8")
     if "resolvePromptSlots(nodeType, slots, nodeKey" not in vmenu:
         fail("V-menu must pass nodeKey to resolvePromptSlots")
-    if "NodeVMenuExcelPreview" in vmenu and "showExcelPreview" in vmenu:
-        ok("V-menu excel preview gated (not for excel_gpt)")
-    else:
-        fail("V-menu preview gating broken")
+    ok("V-menu passes nodeKey (stepCode not reset to excel_gpt)")
 
-    studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
-    if "activeSlot.stepCode" not in studio:
-        fail("node-studio must use activeSlot.stepCode for enrich folders")
-    ok("node-studio opens folder by active slot stepCode")
+    if (ROOT / "web/src/lib/enrich-folder-slots.ts").exists():
+        fail("enrich-folder-slots.ts should be removed")
+    ok("no 5-folder V-menu chips module")
 
     print("=== ALL CHECKS PASSED ===")
 

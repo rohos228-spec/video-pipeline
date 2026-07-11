@@ -1,7 +1,6 @@
 /** Схема промтов для ноды (меню «V»). */
 
-import { excelGptSlotIndex, isExcelGptNode } from "./excel-gpt-config";
-import { enrichFolderPromptSlots } from "./enrich-folder-slots";
+import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode } from "./excel-gpt-config";
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
@@ -15,8 +14,6 @@ export interface NodePromptSlot {
   kind: NodePromptKind;
   stepCode?: string;
   description?: string;
-  /** Имя .md без расширения — открыть конкретный файл в PromptFilesPanel. */
-  promptFile?: string;
   /** Пользовательский слот (+промт). */
   custom?: boolean;
 }
@@ -48,12 +45,12 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   excel_gpt: [
     { id: "excel", title: "Excel", kind: "excel", stepCode: "excel_gpt" },
+    { id: "main", title: "Промт доп. Excel", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
     { id: "main", title: "Промт картинок", kind: "gpt", stepCode: "img_pr" },
   ],
-  /** Outsee: промты задаются на шаге 6 (image_prompts), здесь Excel + просмотр кадров. */
   images: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img" },
     {
@@ -106,7 +103,6 @@ export function defaultPromptSlots(nodeType: string): NodePromptSlot[] {
   return [{ id: "main", title: "Настройки ноды", kind: "gpt" }];
 }
 
-/** Во всех рабочих нодах пайплайна Excel обязателен первым. */
 export function nodeTypeRequiresExcel(nodeType: string): boolean {
   if (!nodeType || isHitlNodeType(nodeType)) return false;
   if (NO_EXCEL_NODE_TYPES.has(nodeType)) return false;
@@ -122,7 +118,6 @@ export function excelSlotForNodeType(nodeType: string): NodePromptSlot {
   };
 }
 
-/** Старые meta.custom_prompts хранили файловые промты как kind=text (до redesign V-меню). */
 function migrateLegacyPromptSlotKinds(slots: NodePromptSlot[]): NodePromptSlot[] {
   return slots.map((s) => {
     if (s.kind === "text" && s.id !== "gpt_text") {
@@ -132,7 +127,6 @@ function migrateLegacyPromptSlotKinds(slots: NodePromptSlot[]): NodePromptSlot[]
   });
 }
 
-/** Дополняет сохранённые custom_prompts недостающими слотами из BASE (и чинит устаревшие id). */
 export function mergePromptSlotsWithDefaults(
   nodeType: string,
   slots: NodePromptSlot[],
@@ -150,12 +144,16 @@ export function mergePromptSlotsWithDefaults(
     if (d.kind === "excel") continue;
     const custom = byId.get(d.id);
     if (custom) {
+      const stepCode =
+        isExcelGptNode(nodeType) && custom.stepCode?.startsWith("enrich_")
+          ? custom.stepCode
+          : (d.stepCode ?? custom.stepCode);
       merged.push({
         ...d,
         ...custom,
         id: d.id,
         kind: d.kind,
-        stepCode: d.stepCode ?? custom.stepCode,
+        stepCode,
         title: custom.custom ? custom.title : d.title,
         description: d.description ?? custom.description,
       });
@@ -178,26 +176,22 @@ export function mergePromptSlotsWithDefaults(
   return ensureBlocksPromptSlot(nodeType, excel ? [excel, ...merged] : merged);
 }
 
-/** Пять папок enrich_1..5 для excel_gpt (как у старых нод «Дополнение Excel»). */
-export function enrichFolderSlots(): NodePromptSlot[] {
-  return enrichFolderPromptSlots();
-}
-
-/** Слот «Конструктор промта» для нод с блочной сборкой v2. */
 export function ensureBlocksPromptSlot(
   nodeType: string,
   slots: NodePromptSlot[],
   nodeKey?: string,
   slotIndex?: number,
 ): NodePromptSlot[] {
-  if (isExcelGptNode(nodeType)) return slots;
   if (!nodeSupportsBlocksV2(nodeType, undefined, nodeKey, slotIndex)) return slots;
   if (slots.some((s) => s.kind === "blocks")) return slots;
+  const blocksStep = isExcelGptNode(nodeType)
+    ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey, slotIndex))
+    : stepCodeForNodeType(nodeType);
   const slot: NodePromptSlot = {
     id: "blocks_builder",
     title: "Конструктор промта",
     kind: "blocks",
-    stepCode: stepCodeForNodeType(nodeType),
+    stepCode: blocksStep,
   };
   const excelIdx = slots.findIndex((s) => s.kind === "excel");
   if (excelIdx >= 0) {
@@ -208,7 +202,6 @@ export function ensureBlocksPromptSlot(
   return [slot, ...slots];
 }
 
-/** Сохраняет все gpt-слоты; убирает только дубли excel. */
 function normalizeExcelGptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
   const excel = slots.find((s) => s.kind === "excel");
   const others = slots.filter((s) => s.kind !== "excel" && s.kind !== "text");
@@ -223,26 +216,37 @@ function normalizeExcelGptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
   return out.length ? out : slots;
 }
 
-function expandExcelGptPromptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
-  const excel = slots.find((s) => s.kind === "excel");
-  const customs = slots.filter((s) => s.custom && s.kind === "gpt");
-  const folderSlots = enrichFolderPromptSlots();
-  const byId = new Map(folderSlots.map((s) => [s.id, s]));
-  for (const c of customs) {
-    if (!byId.has(c.id)) byId.set(c.id, c);
-  }
-  const out: NodePromptSlot[] = [];
-  if (excel) out.push(excel);
-  for (const f of folderSlots) {
-    out.push(byId.get(f.id) ?? f);
-  }
-  for (const c of customs) {
-    if (!folderSlots.some((f) => f.id === c.id)) out.push(c);
-  }
-  return out.length ? out : slots;
+function applyExcelGptNodeContext(
+  slots: NodePromptSlot[],
+  nodeKey?: string,
+  slotIndex?: number,
+): NodePromptSlot[] {
+  const slotIdx = excelGptSlotIndex(nodeKey, slotIndex);
+  const enrichStep = excelGptPromptStepCode(slotIdx);
+  return slots.map((s) => {
+    if (s.kind !== "gpt" && s.kind !== "blocks") return s;
+    if (
+      s.id === "main" ||
+      s.id === "blocks_builder" ||
+      s.stepCode === "excel_gpt" ||
+      s.stepCode?.startsWith("enrich_")
+    ) {
+      return {
+        ...s,
+        stepCode: enrichStep,
+        title:
+          s.kind === "blocks"
+            ? s.title
+            : s.custom
+              ? s.title
+              : `Промт дополнения ${slotIdx}`,
+      };
+    }
+    if (!s.stepCode) return { ...s, stepCode: enrichStep };
+    return s;
+  });
 }
 
-/** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
 export function resolvePromptSlots(
   nodeType: string,
   slots?: NodePromptSlot[] | null,
@@ -258,7 +262,9 @@ export function resolvePromptSlots(
   if (!nodeTypeRequiresExcel(nodeType)) {
     const filtered = raw.filter((s) => s.kind !== "text");
     if (isExcelGptNode(nodeType)) {
-      result = expandExcelGptPromptSlots(normalizeExcelGptSlots(filtered));
+      const normalized = normalizeExcelGptSlots(filtered);
+      const withBlocks = ensureBlocksPromptSlot(nodeType, normalized, nodeKey, slotIndex);
+      result = applyExcelGptNodeContext(withBlocks, nodeKey, slotIndex);
     } else {
       result = ensureBlocksPromptSlot(nodeType, filtered, nodeKey, slotIndex);
     }
@@ -272,7 +278,6 @@ export function resolvePromptSlots(
   return result;
 }
 
-/** custom_prompts после миграции enrich → excel_gpt (старые node_key). */
 export function customPromptsForExcelGptNode(
   custom: Record<string, NodePromptSlot[]> | undefined,
   nodeKey: string,
@@ -296,7 +301,6 @@ export function customPromptsForExcelGptNode(
   return undefined;
 }
 
-/** custom_prompts с учётом миграции enrich → excel_gpt. */
 export function resolvePromptSlotsForNode(
   nodeKey: string,
   nodeType: string,
@@ -307,7 +311,6 @@ export function resolvePromptSlotsForNode(
   return resolvePromptSlots(nodeType, stored ?? null, nodeKey, slotIndex);
 }
 
-/** Промты в горизонтальной схеме меню V (без «текста для GPT»). */
 export function pipelinePromptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
   return slots.filter((s) => s.kind !== "text");
 }
@@ -345,4 +348,9 @@ export function gptTextSlotForNode(nodeType: string): NodePromptSlot | null {
 
 export function isEnrichNode(nodeType: string): boolean {
   return nodeType === "excel_gpt" || nodeType.startsWith("enrich");
+}
+
+/** step_code папки промтов для excel_gpt (enrich_1..5 по node_key). */
+export function excelGptEnrichStepCode(nodeKey?: string, slotIndex?: number): string {
+  return excelGptPromptStepCode(excelGptSlotIndex(nodeKey, slotIndex));
 }

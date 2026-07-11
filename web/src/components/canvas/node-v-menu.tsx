@@ -255,9 +255,7 @@ export function NodeVMenu({
                         ? isExcelGptNode(nodeType)
                           ? excelAttachmentName
                           : "project.xlsx"
-                        : slot.stepCode?.startsWith("enrich_")
-                          ? slot.description?.replace("prompts/", "") ?? slotKindLabel(slot.kind)
-                          : slotKindLabel(slot.kind)}
+                        : slotKindLabel(slot.kind)}
                     </span>
                   </button>
                   {isCustomPromptSlot(slot) && slot.kind !== "excel" && (
