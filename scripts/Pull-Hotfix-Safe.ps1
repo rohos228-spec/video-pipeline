@@ -65,9 +65,16 @@ Get-ChildItem -Path (Join-Path $Root "app") -Recurse -Directory -Filter __pycach
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 $marker = Join-Path $Root "app\hotfix_build.py"
+$hotfixId = "unknown"
 if (Test-Path $marker) {
+    $raw = Get-Content -LiteralPath $marker -Raw -Encoding UTF8
+    if ($raw -match 'PIPELINE_HOTFIX_ID\s*=\s*"([^"]+)"') {
+        $hotfixId = $Matches[1]
+    }
     $line = Select-String -Path $marker -Pattern "PIPELINE_HOTFIX_ID" | Select-Object -First 1
-    Write-Host "Hotfix marker: $($line.Line.Trim())" -ForegroundColor Green
+    if ($line) {
+        Write-Host ("Hotfix marker: " + $line.Line.Trim()) -ForegroundColor Green
+    }
 } else {
     Write-Host "WARN: app\hotfix_build.py not found — pull incomplete?" -ForegroundColor Red
     exit 1
@@ -82,6 +89,6 @@ if (Test-Path $stop) {
 Write-Host ""
 Write-Host "Done. Restart Studio, then open:" -ForegroundColor Green
 Write-Host "  http://127.0.0.1:8765/api/studio-version" -ForegroundColor DarkGray
-Write-Host "Expect: pipeline_hotfix = hotfix-20260710-stop-queue-xlsx-v2" -ForegroundColor DarkGray
+Write-Host ("Expect: pipeline_hotfix = " + $hotfixId) -ForegroundColor DarkGray
 
 exit 0

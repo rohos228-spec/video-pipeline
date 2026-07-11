@@ -30,6 +30,9 @@ $Files = @(
     "app/services/project_steps.py",
     "app/services/step_data_guard.py",
     "app/services/plan_validation.py",
+    "scripts/Pull-Hotfix-Safe.ps1",
+    "scripts/Update-Hotfix-FromGitHub.ps1",
+    "PULL-HOTFIX.cmd",
     "web/src/lib/node-run-status.ts"
 )
 
@@ -88,7 +91,7 @@ $markers = @{
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
     "app\services\chrome_recovery.py" = "handle_chrome_step_failure"
-    "app\hotfix_build.py"             = "hotfix-20260711-gen-queue-userstop-v7"
+    "app\hotfix_build.py"             = "hotfix-20260711-pull-script-fix-v8"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {
@@ -120,14 +123,21 @@ if (Test-Path $stop) {
     & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $stop -Quiet 2>$null
 }
 
+$hotfixId = "unknown"
+$hotfixPath = Join-Path $Root "app\hotfix_build.py"
+if (Test-Path $hotfixPath) {
+    $raw = Get-Content -LiteralPath $hotfixPath -Raw -Encoding UTF8
+    if ($raw -match 'PIPELINE_HOTFIX_ID\s*=\s*"([^"]+)"') {
+        $hotfixId = $Matches[1]
+    }
+}
+
 Write-Host ""
 Write-Host "Done. Restart Studio (run-backend.ps1 or VideoPipelineStudio.cmd)." -ForegroundColor Green
 Write-Host "Expected logs after fix:" -ForegroundColor DarkGray
-Write-Host "  startup: hotfix=hotfix-20260710-strict-queue-v3" -ForegroundColor DarkGray
-Write-Host "  GET /api/studio-version -> pipeline_hotfix: hotfix-20260710-strict-queue-v3" -ForegroundColor DarkGray
-Write-Host "  plan xlsx: extra GPT sheets stripped -> exact template layout" -ForegroundColor DarkGray
-Write-Host "  script txt: plain-label / api-variants -> voiceover.txt (~10s)" -ForegroundColor DarkGray
-Write-Host "  STOP: user_stop aktiv — worker/auto_advance/gen_queue blocked" -ForegroundColor DarkGray
-Write-Host "  queue: gen_queue tick: poryadok [1, 2, 3, 4]" -ForegroundColor DarkGray
+Write-Host ("  startup: hotfix=" + $hotfixId) -ForegroundColor DarkGray
+Write-Host ("  GET /api/studio-version -> pipeline_hotfix: " + $hotfixId) -ForegroundColor DarkGray
+Write-Host "  gen_queue: #7 done -> started #14 (stale user_stop cleared)" -ForegroundColor DarkGray
+Write-Host "  STOP on running step: user_stop blocks until manual play" -ForegroundColor DarkGray
 
 exit $(if ($fail -eq 0 -and $missing -eq 0) { 0 } else { 1 })

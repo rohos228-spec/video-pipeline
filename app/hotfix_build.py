@@ -1,6 +1,6 @@
 """Идентификатор пакета hotfix — виден в логах и /api/studio-version."""
 
-PIPELINE_HOTFIX_ID = "hotfix-20260711-gen-queue-userstop-v7"
+PIPELINE_HOTFIX_ID = "hotfix-20260711-pull-script-fix-v8"
 
 # Маркеры для scripts/Update-Hotfix-FromGitHub.ps1 (проверка после скачивания).
 HOTFIX_MARKERS: dict[str, str] = {
