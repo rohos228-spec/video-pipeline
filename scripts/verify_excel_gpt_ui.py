@@ -24,33 +24,28 @@ def fail(msg: str) -> None:
 def main() -> None:
     print("=== excel_gpt UI verification ===")
 
-    e1 = list_prompts("enrich_1")
-    e2 = list_prompts("enrich_2")
-    if len(e1) < 5:
-        fail(f"enrich_1 should have many prompts, got {len(e1)}")
-    ok(f"enrich_1 has {len(e1)} prompt files")
-    if len(e2) < 1:
-        fail(f"enrich_2 should have prompts, got {len(e2)}")
-    ok(f"enrich_2 has {len(e2)} prompt files")
+    for i in range(1, 6):
+        step = f"enrich_{i}"
+        files = list_prompts(step)
+        if len(files) < 1:
+            fail(f"{step} should have prompts, got {len(files)}")
+        folder = STEP_FOLDERS.get(step)
+        if not folder or not folder.startswith("05"):
+            fail(f"{step} folder mapping wrong: {folder}")
+        ok(f"{step} → {folder} ({len(files)} files)")
 
-    if STEP_FOLDERS.get("enrich_1") != "05a_enrich_1":
-        fail("enrich_1 folder mapping wrong")
-    ok("STEP_FOLDERS enrich_1 → 05a_enrich_1")
-
-    # Frontend source checks (static)
     node_prompts = (ROOT / "web/src/lib/node-prompts.ts").read_text(encoding="utf-8")
-    if "resolvePromptSlotsForNode" not in node_prompts:
-        fail("resolvePromptSlotsForNode missing")
-    if "customPromptsForExcelGptNode" not in node_prompts:
-        fail("customPromptsForExcelGptNode missing")
-    if "enrichFilePromptSlots" not in node_prompts:
-        fail("enrichFilePromptSlots missing")
-    ok("node-prompts migration helpers present")
+    if "enrichFolderPromptSlots" not in node_prompts:
+        fail("enrichFolderPromptSlots missing")
+    if "applyExcelGptNodeContext" in node_prompts:
+        fail("applyExcelGptNodeContext must be removed (overwrote enrich step codes)")
+    ok("node-prompts uses 5 enrich folder slots")
 
-    enrich_files = (ROOT / "web/src/lib/enrich-prompt-files.ts").read_text(encoding="utf-8")
-    if "enrich_1" not in enrich_files or "заполнение таблицы" not in enrich_files:
-        fail("enrich-prompt-files catalog missing enrich_1 prompts")
-    ok("enrich-prompt-files has enrich_1 prompts")
+    folders = (ROOT / "web/src/lib/enrich-folder-slots.ts").read_text(encoding="utf-8")
+    for code in ("enrich_1", "enrich_5", "05a_enrich_1", "05e_enrich_5"):
+        if code not in folders:
+            fail(f"enrich-folder-slots missing {code}")
+    ok("enrich-folder-slots defines all 5 folders")
 
     flow = (ROOT / "web/src/components/canvas/flow-canvas.tsx").read_text(encoding="utf-8")
     if "excel_gpt_nodes" not in flow:
@@ -64,6 +59,11 @@ def main() -> None:
         ok("V-menu excel preview gated (not for excel_gpt)")
     else:
         fail("V-menu preview gating broken")
+
+    studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
+    if "activeSlot.stepCode" not in studio:
+        fail("node-studio must use activeSlot.stepCode for enrich folders")
+    ok("node-studio opens folder by active slot stepCode")
 
     print("=== ALL CHECKS PASSED ===")
 

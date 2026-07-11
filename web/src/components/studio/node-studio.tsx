@@ -38,7 +38,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
-  activeVariantForExcelGpt,
   activeVariantForSlot,
   preferredPromptFileName,
   withSlotVariant,
@@ -227,23 +226,15 @@ export function NodeStudio({
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
   const promptStepCode =
-    isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
-      ? excelGptPromptStepCode(excelConfig.slotIndex)
+    isExcelGptNode(nodeType) && activeSlot && (activeSlot.kind === "gpt" || activeSlot.kind === "blocks")
+      ? activeSlot.stepCode ?? excelGptPromptStepCode(excelConfig.slotIndex)
       : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
   const activeVariant =
     activeSlot && nodeKey
-      ? isExcelGptNode(nodeType) && activeSlot.kind === "gpt"
-        ? activeVariantForExcelGpt(
-            metaRecord,
-            nodeKey,
-            activeSlot,
-            promptOverrides,
-            excelConfig.slotIndex,
-          )
-        : activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, activeStepCode)
+      ? activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, promptStepCode)
       : "default";
   const preferredFile = preferredPromptFileName(activeSlot);
 
