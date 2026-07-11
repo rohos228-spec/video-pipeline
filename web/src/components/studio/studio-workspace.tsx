@@ -15,7 +15,7 @@ import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { gptTextSlotForNode, resolvePromptSlots, resolvePromptSlotsForNode, type NodePromptSlot } from "@/lib/node-prompts";
-import { isExcelGptNode } from "@/lib/excel-gpt-config";
+import { isExcelGptNode, excelGptPromptStepCode, excelGptSlotIndex } from "@/lib/excel-gpt-config";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
@@ -360,10 +360,19 @@ export function StudioWorkspace({
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
         if (slot.kind === "blocks" && projectId != null) {
           onSelectNode(nodeKey);
+          const enrichStep =
+            slot.stepCode ??
+            (isExcelGptNode(nodeType)
+              ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey))
+              : stepCodeForNodeType(nodeType)) ??
+            "plan";
+          const builderNodeType = isExcelGptNode(nodeType)
+            ? enrichStep
+            : nodeType;
           setPromptBuilderCtx({
             nodeKey,
-            nodeType,
-            stepCode: slot.stepCode ?? stepCodeForNodeType(nodeType) ?? "plan",
+            nodeType: builderNodeType,
+            stepCode: enrichStep,
           });
           return;
         }
@@ -387,16 +396,19 @@ export function StudioWorkspace({
           custom_prompts?: Record<string, NodePromptSlot[]>;
         };
         const custom = { ...(meta.custom_prompts || {}) };
-        const list = resolvePromptSlots(nodeType, custom[nodeKey]);
-        const n = list.filter((s) => s.id.startsWith("custom_")).length + 1;
-        list.push({
+        const prev = custom[nodeKey] ?? [];
+        const n = prev.filter((s) => s.custom || s.id.startsWith("custom_")).length + 1;
+        const enrichStep = isExcelGptNode(nodeType)
+          ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey))
+          : stepCodeForNodeType(nodeType);
+        const newSlot: NodePromptSlot = {
           id: `custom_${n}`,
           title: `Промт ${n}`,
           kind: "gpt",
-          stepCode: stepCodeForNodeType(nodeType),
+          stepCode: enrichStep,
           custom: true,
-        });
-        custom[nodeKey] = resolvePromptSlots(nodeType, list);
+        };
+        custom[nodeKey] = [...prev, newSlot];
         const slotId = `custom_${n}`;
         const metaBase = (project.data?.meta || {}) as Record<string, unknown>;
         const metaPatch = withSlotVariant(
@@ -409,13 +421,13 @@ export function StudioWorkspace({
           custom_prompts: custom,
           prompt_slot_variants: metaPatch.prompt_slot_variants,
         });
-        const step = stepCodeForNodeType(nodeType);
-        if (step) {
+        const saveStep = enrichStep ?? stepCodeForNodeType(nodeType);
+        if (saveStep) {
           try {
             await api.savePromptFile(
-              step,
+              saveStep,
               slotId,
-              `# ${list[list.length - 1]?.title ?? slotId}\n\n`,
+              `# ${newSlot.title}\n\n`,
             );
           } catch {
             /* файл может уже существовать */
@@ -432,10 +444,10 @@ export function StudioWorkspace({
           custom_prompts?: Record<string, NodePromptSlot[]>;
         };
         const custom = { ...(meta.custom_prompts || {}) };
-        const list = resolvePromptSlots(nodeType, custom[nodeKey]).filter(
+        const list = resolvePromptSlotsForNode(nodeKey, nodeType, custom).filter(
           (s) => s.id !== slot.id,
         );
-        custom[nodeKey] = resolvePromptSlots(nodeType, list);
+        custom[nodeKey] = list;
         await persistMeta({ custom_prompts: custom });
         toast.success("Промт удалён");
       },

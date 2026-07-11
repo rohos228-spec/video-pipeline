@@ -1,5 +1,15 @@
 /** step_code (prompt_library) / node_type → папка prompts/steps/ */
 
+import { excelGptSlotIndex } from "../excel-gpt-config";
+
+const ENRICH_COMPOSE_BY_SLOT: Record<number, string> = {
+  1: "05a_enrich_1",
+  2: "05b_enrich_2",
+  3: "05c_enrich_3",
+  4: "05d_enrich_4",
+  5: "05e_enrich_5",
+};
+
 export const NODE_TYPE_TO_COMPOSE_ID: Record<string, string> = {
   plan: "01_plan",
   script: "02_script",
@@ -75,7 +85,23 @@ export const PIPELINE_BLOCK_NODES = PIPELINE_RAIL_NODES.filter(
   (n): n is PipelineRailNode & { composeId: string } => n.composeId != null,
 );
 
-export function composeStepIdForNode(nodeType: string, stepCode?: string): string | null {
+export function composeStepIdForExcelGptNode(
+  nodeKey?: string | null,
+  slotIndex?: number,
+): string | null {
+  const slot = excelGptSlotIndex(nodeKey, slotIndex);
+  return ENRICH_COMPOSE_BY_SLOT[slot] ?? null;
+}
+
+export function composeStepIdForNode(
+  nodeType: string,
+  stepCode?: string,
+  nodeKey?: string | null,
+  slotIndex?: number,
+): string | null {
+  if (nodeType === "excel_gpt") {
+    return composeStepIdForExcelGptNode(nodeKey, slotIndex);
+  }
   return (
     NODE_TYPE_TO_COMPOSE_ID[nodeType] ??
     (stepCode ? STEP_CODE_TO_COMPOSE_ID[stepCode] : undefined) ??
@@ -83,6 +109,16 @@ export function composeStepIdForNode(nodeType: string, stepCode?: string): strin
   );
 }
 
-export function nodeSupportsBlocksV2(nodeType: string, stepCode?: string): boolean {
-  return composeStepIdForNode(nodeType, stepCode) != null;
+export function nodeSupportsBlocksV2(
+  nodeType: string,
+  stepCode?: string,
+  nodeKey?: string | null,
+  slotIndex?: number,
+): boolean {
+  return composeStepIdForNode(nodeType, stepCode, nodeKey, slotIndex) != null;
+}
+
+/** step_code enrich_N → compose id (для Prompt Builder из excel_gpt). */
+export function composeStepIdForEnrichStep(stepCode: string): string | null {
+  return STEP_CODE_TO_COMPOSE_ID[stepCode] ?? null;
 }

@@ -43,7 +43,14 @@ def main() -> None:
         fail("resolvePromptSlotsForNode missing")
     if "customPromptsForExcelGptNode" not in node_prompts:
         fail("customPromptsForExcelGptNode missing")
+    if "enrichFilePromptSlots" not in node_prompts:
+        fail("enrichFilePromptSlots missing")
     ok("node-prompts migration helpers present")
+
+    enrich_files = (ROOT / "web/src/lib/enrich-prompt-files.ts").read_text(encoding="utf-8")
+    if "enrich_1" not in enrich_files or "заполнение таблицы" not in enrich_files:
+        fail("enrich-prompt-files catalog missing enrich_1 prompts")
+    ok("enrich-prompt-files has enrich_1 prompts")
 
     flow = (ROOT / "web/src/components/canvas/flow-canvas.tsx").read_text(encoding="utf-8")
     if "excel_gpt_nodes" not in flow:
@@ -51,8 +58,8 @@ def main() -> None:
     ok("flow-canvas hydrates excel_gpt_nodes from meta")
 
     vmenu = (ROOT / "web/src/components/canvas/node-v-menu.tsx").read_text(encoding="utf-8")
-    if "excelGptAttachmentChipTitle" not in vmenu:
-        fail("V-menu dynamic attachment labels missing")
+    if "resolvePromptSlots(nodeType, slots, nodeKey" not in vmenu:
+        fail("V-menu must pass nodeKey to resolvePromptSlots")
     if "NodeVMenuExcelPreview" in vmenu and "showExcelPreview" in vmenu:
         ok("V-menu excel preview gated (not for excel_gpt)")
     else:
