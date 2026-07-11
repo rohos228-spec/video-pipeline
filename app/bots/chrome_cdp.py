@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 from loguru import logger
@@ -22,6 +24,26 @@ from app.settings import settings
 _CDP_LOCK = asyncio.Lock()
 _last_recovery_mono: float = 0.0
 _RECOVERY_COOLDOWN_SEC = 90.0
+_linux_chrome_proc: asyncio.subprocess.Process | None = None
+
+
+class ChromeCdpUnavailableError(RuntimeError):
+    """Chrome не слушает CDP — пайплайн не может открыть ChatGPT/Outsee."""
+
+
+def is_cdp_connection_error(exc: BaseException) -> bool:
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "cannot connect to host",
+        "clientconnectorerror",
+        "connection refused",
+        "connect call failed",
+        "connectionreseterror",
+        "cdp get",
+        "29229",
+        "chrome cdp недоступен",
+    )
+    return any(m in msg for m in markers)
 
 
 def normalize_cdp_http_url(url: str) -> str:
@@ -69,6 +91,112 @@ async def log_cdp_health(cdp_url: str) -> str:
     return str(browser)
 
 
+async def _linux_start_chrome_cdp(port: int) -> bool:
+    """Linux/macOS: поднять Chrome/Chromium с CDP, если бинарник есть в PATH."""
+    global _linux_chrome_proc
+
+    if await _probe_cdp(port):
+        return True
+
+    if _linux_chrome_proc is not None and _linux_chrome_proc.returncode is None:
+        for _ in range(15):
+            if await _probe_cdp(port):
+                return True
+            await asyncio.sleep(1)
+
+    exe: str | None = None
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium-browser",
+        "chromium",
+        "chrome",
+    ):
+        found = shutil.which(name)
+        if found:
+            exe = found
+            break
+    if not exe:
+        logger.warning("chrome_cdp: нет google-chrome/chromium в PATH")
+        return False
+
+    user_data = Path.home() / ".vp_browser_data"
+    user_data.mkdir(parents=True, exist_ok=True)
+    args = [
+        exe,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "about:blank",
+    ]
+    logger.warning("chrome_cdp: запуск {} :{} ...", exe, port)
+    try:
+        _linux_chrome_proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("chrome_cdp: не удалось запустить Chrome: {}", exc)
+        return False
+
+    for _ in range(45):
+        if await _probe_cdp(port):
+            logger.info("chrome_cdp: CDP :{} отвечает (linux)", port)
+            return True
+        if _linux_chrome_proc.returncode is not None:
+            logger.error(
+                "chrome_cdp: Chrome завершился rc={}",
+                _linux_chrome_proc.returncode,
+            )
+            return False
+        await asyncio.sleep(1)
+    return False
+
+
+async def _probe_cdp(port: int) -> bool:
+    try:
+        await fetch_cdp_version(f"http://127.0.0.1:{port}")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def ensure_cdp_ready(*, force_recover: bool = False) -> None:
+    """Проверить CDP; при connection refused — автозапуск Chrome (Windows/Linux)."""
+    url = normalize_cdp_http_url(settings.browser_cdp_url)
+    port = cdp_port_from_url(url)
+    first_err: BaseException | None = None
+    try:
+        await fetch_cdp_version(url)
+        return
+    except Exception as exc:  # noqa: BLE001
+        first_err = exc
+        if not is_cdp_connection_error(exc):
+            raise
+
+    logger.warning("cdp: нет ответа на :{} — автозапуск Chrome ({})", port, first_err)
+
+    recovered = False
+    if sys.platform == "win32":
+        recovered = await recover_chrome_cdp(force=True)
+    else:
+        recovered = await _linux_start_chrome_cdp(port)
+
+    if not recovered:
+        raise ChromeCdpUnavailableError(
+            f"Chrome CDP недоступен на 127.0.0.1:{port}. "
+            "Запустите Start-Chrome.cmd (Windows) или установите Google Chrome, "
+            "затем войдите в ChatGPT в открывшемся окне."
+        ) from first_err
+
+    await fetch_cdp_version(url)
+    logger.info("cdp: Chrome готов на {}", url)
+
+
 def playwright_cdp_hang(exc: BaseException) -> bool:
     """Playwright подключился по ws, но не завершил handshake (типичный зомби CDP)."""
     msg = f"{type(exc).__name__}: {exc}".lower()
@@ -94,12 +222,7 @@ async def recover_chrome_cdp(*, force: bool = False) -> bool:
         return False
 
     if sys.platform != "win32":
-        logger.error(
-            "chrome_cdp: авто-перезапуск только Windows. "
-            "Запустите Chrome: --remote-debugging-port=29229 "
-            "--user-data-dir=<profile>"
-        )
-        return False
+        return await _linux_start_chrome_cdp(cdp_port_from_url(settings.browser_cdp_url))
 
     root = find_project_root()
     ps1 = root / "scripts" / "VpBrowserProfile.ps1"

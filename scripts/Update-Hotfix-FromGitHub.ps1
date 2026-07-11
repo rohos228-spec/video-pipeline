@@ -12,6 +12,7 @@ $BaseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
 
 $Files = @(
     "app/hotfix_build.py",
+    "app/bots/chrome_cdp.py",
     "app/bots/chatgpt.py",
     "app/services/xlsx_versioning.py",
     "app/services/xlsx_gpt_flow.py",
@@ -85,7 +86,7 @@ $markers = @{
     "app\services\sidebar_layout.py"  = "_normalize_gen_queue"
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
-    "app\hotfix_build.py"             = "hotfix-20260711-queue-coordinator-v4"
+    "app\hotfix_build.py"             = "hotfix-20260711-cdp-autostart-v5"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {

@@ -79,7 +79,10 @@ class BrowserSession:
 
         async with cdp._CDP_LOCK:
             while True:
-                await cdp.log_cdp_health(url)
+                try:
+                    await cdp.ensure_cdp_ready(force_recover=chrome_restarted)
+                except cdp.ChromeCdpUnavailableError:
+                    raise
                 last_err = None
                 for attempt in range(1, 3):
                     logger.info(
@@ -108,8 +111,11 @@ class BrowserSession:
                 if (
                     not chrome_restarted
                     and last_err is not None
-                    and cdp.playwright_cdp_hang(last_err)
-                    and await cdp.recover_chrome_cdp()
+                    and (
+                        cdp.playwright_cdp_hang(last_err)
+                        or cdp.is_cdp_connection_error(last_err)
+                    )
+                    and await cdp.recover_chrome_cdp(force=True)
                 ):
                     chrome_restarted = True
                     url = cdp.normalize_cdp_http_url(settings.browser_cdp_url)
@@ -117,6 +123,13 @@ class BrowserSession:
                     continue
 
                 if last_err is not None:
+                    if cdp.is_cdp_connection_error(last_err):
+                        raise cdp.ChromeCdpUnavailableError(
+                            "Не удалось подключиться к Chrome CDP. "
+                            "Запустите Start-Chrome.cmd "
+                            f"(порт {cdp.cdp_port_from_url(url)}). "
+                            f"Причина: {last_err}"
+                        ) from last_err
                     raise RuntimeError(
                         "Не удалось подключиться к Chrome CDP. "
                         "Закройте все окна Chrome и запустите Start-Chrome.cmd "

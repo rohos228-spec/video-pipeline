@@ -17,6 +17,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bots.chrome_cdp import ChromeCdpUnavailableError, is_cdp_connection_error
 from app.models import Project, ProjectStatus
 from app.telegram.menu import step_by_running_status
 
@@ -196,8 +197,26 @@ async def record_step_failure(
 ) -> str:
     """Обработать ошибку advance_project.
 
-    Returns: retry | sleep | abandon
+    Returns: retry | sleep | abandon | pause_infra
     """
+    # Chrome/CDP недоступен — не жечь 9 ретраев; пауза с понятным сообщением.
+    if isinstance(error, ChromeCdpUnavailableError) or is_cdp_connection_error(error):
+        fs = _failure_state(project)
+        fs["last_error"] = (
+            f"{type(error).__name__}: {error} — запустите Start-Chrome.cmd, "
+            "войдите в ChatGPT, нажмите ▶"
+        )
+        fs["infra_pause"] = "chrome_cdp"
+        _save_failure_state(project, fs)
+        project.status = ProjectStatus.paused
+        await session.flush()
+        logger.error(
+            "[#{}] paused (Chrome CDP): {} — не 9× retry",
+            project.id,
+            error,
+        )
+        return "pause_infra"
+
     running = project.status
     step = step_by_running_status(running)
     step_code = step.code if step else running.value
