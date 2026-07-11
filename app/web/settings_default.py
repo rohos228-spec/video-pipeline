@@ -19,7 +19,14 @@ def default_workflow_needs_refresh(wf: Workflow) -> bool:
     if meta.get("layout_version") != LAYOUT_VERSION:
         return True
     types = {str(n.get("type") or "") for n in (wf.nodes or [])}
-    return "topic" not in types
+    if "topic" not in types:
+        return True
+    # Миграция enrich_1..5 → excel_gpt (layout 5 → 6+).
+    if any(t.startswith("enrich_") for t in types):
+        return True
+    if "excel_gpt" not in types and any("enrich" in t for t in types):
+        return True
+    return False
 
 
 async def apply_default_graph(session: AsyncSession, wf: Workflow) -> bool:

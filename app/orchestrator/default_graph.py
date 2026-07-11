@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 6
+LAYOUT_VERSION = 7
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
