@@ -166,35 +166,48 @@ async def _probe_cdp(port: int) -> bool:
 
 
 async def ensure_cdp_ready(*, force_recover: bool = False) -> None:
-    """Проверить CDP; при connection refused — автозапуск Chrome (Windows/Linux)."""
+    """Проверить CDP; при отказе — до 3 перезапусков Chrome."""
     url = normalize_cdp_http_url(settings.browser_cdp_url)
     port = cdp_port_from_url(url)
-    first_err: BaseException | None = None
+
     try:
         await fetch_cdp_version(url)
         return
     except Exception as exc:  # noqa: BLE001
-        first_err = exc
         if not is_cdp_connection_error(exc):
             raise
+        first_err = exc
 
-    logger.warning("cdp: нет ответа на :{} — автозапуск Chrome ({})", port, first_err)
+    max_attempts = 3 if force_recover else 2
+    last_err: BaseException | None = first_err
 
-    recovered = False
-    if sys.platform == "win32":
-        recovered = await recover_chrome_cdp(force=True)
-    else:
-        recovered = await _linux_start_chrome_cdp(port)
+    for attempt in range(1, max_attempts + 1):
+        logger.warning(
+            "cdp: нет ответа :{} — перезапуск Chrome ({}/{}): {}",
+            port,
+            attempt,
+            max_attempts,
+            last_err,
+        )
+        recovered = await restart_chrome_cdp(
+            reason=f"ensure_cdp_ready attempt {attempt}",
+            force=True,
+        )
+        if recovered:
+            try:
+                await fetch_cdp_version(url)
+                logger.info("cdp: Chrome готов на {} (попытка {})", url, attempt)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if not is_cdp_connection_error(exc):
+                    raise
+        await asyncio.sleep(2)
 
-    if not recovered:
-        raise ChromeCdpUnavailableError(
-            f"Chrome CDP недоступен на 127.0.0.1:{port}. "
-            "Запустите Start-Chrome.cmd (Windows) или установите Google Chrome, "
-            "затем войдите в ChatGPT в открывшемся окне."
-        ) from first_err
-
-    await fetch_cdp_version(url)
-    logger.info("cdp: Chrome готов на {}", url)
+    raise ChromeCdpUnavailableError(
+        f"Chrome CDP недоступен на 127.0.0.1:{port} после {max_attempts} перезапусков. "
+        "Запустите Start-Chrome.cmd, войдите в ChatGPT."
+    ) from last_err
 
 
 def playwright_cdp_hang(exc: BaseException) -> bool:
@@ -203,6 +216,35 @@ def playwright_cdp_hang(exc: BaseException) -> bool:
     if "ws connected" in msg:
         return True
     return "connect_over_cdp" in msg and "timeout" in msg and "exceeded" in msg
+
+
+async def restart_chrome_cdp(*, reason: str = "", force: bool = True) -> bool:
+    """Полный перезапуск Chrome (kill + start) и ожидание CDP."""
+    global _linux_chrome_proc, _last_recovery_mono
+
+    if reason:
+        logger.info("chrome_cdp: restart_chrome_cdp — {}", reason[:200])
+
+    port = cdp_port_from_url(settings.browser_cdp_url)
+
+    if sys.platform != "win32":
+        if _linux_chrome_proc is not None and _linux_chrome_proc.returncode is None:
+            try:
+                _linux_chrome_proc.terminate()
+                await asyncio.wait_for(_linux_chrome_proc.wait(), timeout=8)
+            except Exception:  # noqa: BLE001
+                try:
+                    _linux_chrome_proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            _linux_chrome_proc = None
+            await asyncio.sleep(1)
+        ok = await _linux_start_chrome_cdp(port)
+        if ok:
+            _last_recovery_mono = time.monotonic()
+        return ok
+
+    return await recover_chrome_cdp(force=force)
 
 
 async def recover_chrome_cdp(*, force: bool = False) -> bool:

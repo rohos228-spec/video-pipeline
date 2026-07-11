@@ -448,6 +448,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         prev = fail_counts.get(key, 0)
                         fail_counts[key] = prev + 1
                         try:
+                            from app.services.chrome_recovery import (
+                                is_chrome_infra_error,
+                            )
                             from app.services.step_failure_policy import (
                                 record_step_failure,
                             )
@@ -456,10 +459,16 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             await s.commit()
                             if bot and settings.telegram_active:
                                 if action == "retry" and prev == 0:
-                                    msg = (
-                                        f"⚠️ #{p.id} ({p.status.value}): "
-                                        f"{type(e).__name__}: {e}"
-                                    )
+                                    if is_chrome_infra_error(e):
+                                        msg = (
+                                            f"🔄 #{p.id}: Chrome перезапущен, "
+                                            f"повтор {p.status.value}"
+                                        )
+                                    else:
+                                        msg = (
+                                            f"⚠️ #{p.id} ({p.status.value}): "
+                                            f"{type(e).__name__}: {e}"
+                                        )
                                     await bot.send_message(
                                         settings.telegram_owner_chat_id, msg[:3800]
                                     )
@@ -483,6 +492,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
 
                                     await gen_queue_tick(s)
                                     await s.commit()
+                                elif action == "pause_infra":
+                                    await bot.send_message(
+                                        settings.telegram_owner_chat_id,
+                                        (
+                                            f"🌐 #{p.id}: Chrome не восстановился — "
+                                            f"paused. Start-Chrome.cmd + ▶"
+                                        )[:3800],
+                                    )
                             fail_counts.pop(key, None)
                         except Exception:  # noqa: BLE001
                             logger.warning(
