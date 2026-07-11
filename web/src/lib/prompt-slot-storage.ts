@@ -1,5 +1,6 @@
 /** Per-slot привязка файлов промтов (meta.prompt_slot_variants). */
 
+import { excelGptPromptStepCode } from "./excel-gpt-config";
 import { isCustomPromptSlot, type NodePromptSlot } from "./node-prompts";
 
 export type PromptSlotVariantsMeta = Record<string, Record<string, string>>;
@@ -33,6 +34,22 @@ export function activeVariantForSlot(
     return promptOverrides[stepCode] as string;
   }
   return "default";
+}
+
+export { excelGptPromptStepCode } from "./excel-gpt-config";
+
+/** Активный вариант промта excel_gpt: сначала enrich_N по слоту, затем excel_gpt. */
+export function activeVariantForExcelGpt(
+  meta: Record<string, unknown> | undefined,
+  nodeKey: string,
+  slot: NodePromptSlot,
+  promptOverrides: Record<string, unknown>,
+  slotIndex?: number,
+): string {
+  const legacyStep = excelGptPromptStepCode(slotIndex);
+  const legacy = activeVariantForSlot(meta, nodeKey, slot, promptOverrides, legacyStep);
+  if (legacy !== "default" || promptOverrides[legacyStep]) return legacy;
+  return activeVariantForSlot(meta, nodeKey, slot, promptOverrides, "excel_gpt");
 }
 
 export function withSlotVariant(

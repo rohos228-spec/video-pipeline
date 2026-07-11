@@ -44,6 +44,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
   ],
   excel_gpt: [
+    { id: "attachment", title: "Excel", kind: "excel", stepCode: "excel_gpt" },
     { id: "main", title: "Промт доп. Excel", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
@@ -209,12 +210,17 @@ export function resolvePromptSlots(
 
   if (!nodeTypeRequiresExcel(nodeType)) {
     const filtered = raw.filter((s) => s.kind !== "text");
-    return ensureBlocksPromptSlot(
-      nodeType,
-      isExcelGptNode(nodeType)
-        ? filtered.filter((s) => s.kind !== "excel")
-        : filtered,
-    );
+    if (isExcelGptNode(nodeType)) {
+      const attachment =
+        filtered.find((s) => s.kind === "excel") ??
+        defaultPromptSlots(nodeType).find((s) => s.kind === "excel");
+      const rest = filtered.filter((s) => s.kind !== "excel");
+      return ensureBlocksPromptSlot(
+        nodeType,
+        attachment ? [attachment, ...rest] : rest,
+      );
+    }
+    return ensureBlocksPromptSlot(nodeType, filtered);
   }
 
   const excel =

@@ -26,6 +26,11 @@ export const STEPS_WITH_PROMPT_VARIANTS = new Set([
   "hero_style",
   "items",
   "excel_gpt",
+  "enrich_1",
+  "enrich_2",
+  "enrich_3",
+  "enrich_4",
+  "enrich_5",
   "img_pr",
   "anim_pr",
 ]);

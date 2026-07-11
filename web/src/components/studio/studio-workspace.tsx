@@ -15,6 +15,7 @@ import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { gptTextSlotForNode, resolvePromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
+import { isExcelGptNode } from "@/lib/excel-gpt-config";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
@@ -129,7 +130,11 @@ export function StudioWorkspace({
     ) => {
       suppressStudioOpenUntil.current = 0;
       const resolvedTab =
-        slot?.kind === "excel" ? "excel" : tab;
+        slot?.kind === "excel" && isExcelGptNode(nodeType)
+          ? "settings"
+          : slot?.kind === "excel"
+            ? "excel"
+            : tab;
       let focus = slot;
       if (!focus) {
         const slots = resolvePromptSlots(nodeType, null);
@@ -139,16 +144,22 @@ export function StudioWorkspace({
           slots[0] ??
           null;
       }
+      const focusTab =
+        slot?.kind === "excel" && isExcelGptNode(nodeType)
+          ? "settings"
+          : focus?.kind === "excel"
+            ? "excel"
+            : resolvedTab;
       setStudioTarget({
         nodeKey,
         nodeType,
         promptFocus: focus,
-        tab: focus?.kind === "excel" ? "excel" : resolvedTab,
+        tab: focusTab,
       });
       onSelectNode(nodeKey);
       setVMenuNodeKey(null);
       setPromptFocus(focus);
-      setStudioTab(focus?.kind === "excel" ? "excel" : resolvedTab);
+      setStudioTab(focusTab);
       onStudioOpenChange(true);
     },
     [onSelectNode, onStudioOpenChange],

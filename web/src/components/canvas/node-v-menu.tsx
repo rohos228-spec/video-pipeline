@@ -9,6 +9,7 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
+  FileText,
   MessageSquareText,
   Play,
   Plus,
@@ -28,6 +29,7 @@ import { api } from "@/lib/api";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import {
   attachmentLabel,
+  excelGptAttachmentChipTitle,
   isExcelGptNode,
   type ExcelGptInputSource,
 } from "@/lib/excel-gpt-config";
@@ -139,9 +141,13 @@ export function NodeVMenu({
     enabled: open && projectId != null,
   });
   const outboundFiles = outbound.data?.files ?? [];
+  const source: ExcelGptInputSource = inputSource ?? "project_xlsx";
   const excelAttachmentName = isExcelGptNode(nodeType)
-    ? attachmentLabel(inputSource ?? "project_xlsx", uploadedFileName)
+    ? attachmentLabel(source, uploadedFileName)
     : "project.xlsx";
+  const excelAttachmentTitle = isExcelGptNode(nodeType)
+    ? excelGptAttachmentChipTitle(source)
+    : "Excel";
 
   if (!open || !mounted) return null;
 
@@ -212,9 +218,15 @@ export function NodeVMenu({
                     title={slot.description || slot.title}
                   >
                     {slot.kind === "excel" ? (
-                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/25 text-emerald-300">
-                        <FileSpreadsheet className="h-3.5 w-3.5" />
-                      </span>
+                      isExcelGptNode(nodeType) && source === "voiceover" ? (
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-sky-500/25 text-sky-300">
+                          <FileText className="h-3.5 w-3.5" />
+                        </span>
+                      ) : (
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/25 text-emerald-300">
+                          <FileSpreadsheet className="h-3.5 w-3.5" />
+                        </span>
+                      )
                     ) : (
                       <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
                         {(excelSlot ? 1 : 0) +
@@ -225,7 +237,7 @@ export function NodeVMenu({
                     <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
                       {slot.kind === "excel"
                         ? isExcelGptNode(nodeType)
-                          ? excelAttachmentName
+                          ? excelAttachmentTitle
                           : "Excel"
                         : slot.title}
                     </span>
@@ -235,7 +247,11 @@ export function NodeVMenu({
                         slot.kind === "excel" ? "text-emerald-400/90" : "text-muted-foreground",
                       )}
                     >
-                      {slot.kind === "excel" ? excelAttachmentName : slotKindLabel(slot.kind)}
+                      {slot.kind === "excel"
+                        ? isExcelGptNode(nodeType)
+                          ? excelAttachmentName
+                          : "project.xlsx"
+                        : slotKindLabel(slot.kind)}
                     </span>
                   </button>
                   {isCustomPromptSlot(slot) && slot.kind !== "excel" && (

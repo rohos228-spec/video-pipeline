@@ -37,10 +37,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
 import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
+  activeVariantForExcelGpt,
   activeVariantForSlot,
   preferredPromptFileName,
   withSlotVariant,
 } from "@/lib/prompt-slot-storage";
+import { excelGptPromptStepCode } from "@/lib/excel-gpt-config";
 import {
   pickDefaultSheetForNode,
   xlsxPreviewFocusForNode,
@@ -225,24 +227,37 @@ export function NodeStudio({
     null;
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
+  const promptStepCode =
+    isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
+      ? excelGptPromptStepCode(excelConfig.slotIndex)
+      : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const promptOverrides = (project.data?.prompt_overrides || {}) as Record<string, unknown>;
   const activeVariant =
     activeSlot && nodeKey
-      ? activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, activeStepCode)
+      ? isExcelGptNode(nodeType) && activeSlot.kind === "gpt"
+        ? activeVariantForExcelGpt(
+            metaRecord,
+            nodeKey,
+            activeSlot,
+            promptOverrides,
+            excelConfig.slotIndex,
+          )
+        : activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, activeStepCode)
       : "default";
   const preferredFile = preferredPromptFileName(activeSlot);
 
   const activateVariant = useMutation({
     mutationFn: async (variant: string) => {
-      if (!projectId || !activeStepCode || !nodeKey || !activeSlot) {
+      if (!projectId || !promptStepCode || !nodeKey || !activeSlot) {
         return Promise.reject(new Error("no step"));
       }
       const meta = withSlotVariant(metaRecord, nodeKey, activeSlot.id, variant);
       const prompt_overrides = {
         ...((project.data?.prompt_overrides || {}) as Record<string, unknown>),
-        [activeStepCode]: variant,
+        [promptStepCode]: variant,
+        ...(isExcelGptNode(nodeType) ? { excel_gpt: variant } : {}),
       };
       await api.patchProject(projectId, { meta, prompt_overrides });
     },
@@ -311,8 +326,8 @@ export function NodeStudio({
     activeSlot?.kind === "frame_prompts" && projectId != null;
   const showFilesPanel =
     activeSlot?.kind === "gpt" &&
-    Boolean(activeStepCode) &&
-    stepHasPromptVariants(activeStepCode);
+    Boolean(promptStepCode) &&
+    stepHasPromptVariants(promptStepCode);
   const showBlocksPanel = activeSlot?.kind === "blocks";
 
   const [mounted, setMounted] = useState(false);
@@ -452,7 +467,8 @@ export function NodeStudio({
                     className="h-7 text-[10px]"
                     onClick={() => {
                       setActiveSlotId(slot.id);
-                      if (slot.kind === "excel") setTab("excel");
+                      if (slot.kind === "excel" && !isExcelGptNode(nodeType)) setTab("excel");
+                      if (slot.kind === "excel" && isExcelGptNode(nodeType)) setTab("settings");
                     }}
                   >
                     {slot.title}
@@ -508,17 +524,17 @@ export function NodeStudio({
                       projectId={projectId}
                       field="image_prompt"
                     />
-                  ) : showFilesPanel && activeStepCode ? (
+                  ) : showFilesPanel && promptStepCode ? (
                     <PromptFilesPanel
-                      key={`files-${nodeKey}-${activeSlot?.id}-${activeStepCode}`}
-                      stepCode={activeStepCode}
+                      key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
+                      stepCode={promptStepCode}
                       slotId={activeSlot?.id}
                       preferredFile={preferredFile}
                       folderHint={
-                        legacyPromptFolder(activeStepCode) ??
+                        legacyPromptFolder(promptStepCode) ??
                         (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
                           ? activeSlot.stepCode
-                          : (promptPaths.legacyDir ?? activeStepCode))
+                          : (promptPaths.legacyDir ?? promptStepCode))
                       }
                       activeVariant={activeVariant}
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}

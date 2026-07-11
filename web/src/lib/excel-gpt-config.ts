@@ -19,3 +19,17 @@ export function attachmentLabel(source: ExcelGptInputSource, fileName?: string):
   if (source === "upload") return fileName?.trim() || "upload.xlsx";
   return "project.xlsx";
 }
+
+/** Папка промтов по slotIndex (legacy enrich_1..5). */
+export function excelGptPromptStepCode(slotIndex?: number): string {
+  if (typeof slotIndex === "number" && slotIndex >= 1 && slotIndex <= 5) {
+    return `enrich_${slotIndex}`;
+  }
+  return EXCEL_GPT_STEP_CODE;
+}
+
+export function excelGptAttachmentChipTitle(source: ExcelGptInputSource): string {
+  if (source === "voiceover") return "Voiceover";
+  if (source === "upload") return "Загрузка";
+  return "Excel";
+}
