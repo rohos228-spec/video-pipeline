@@ -184,3 +184,29 @@ async def test_gen_queue_tick_starts_next_only_after_earlier_done(
     p8 = await session.get(Project, 8)
     assert p8 is not None
     assert p8.status is ProjectStatus.planning
+
+
+@pytest.mark.asyncio
+async def test_advance_queue_starts_next_despite_stale_user_stop(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#7 done → #14 new+user_stop должен автостартовать (как в логах пользователя)."""
+    from app.services.gen_queue import on_project_timeline_maybe_advance_queue
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [7, 14],
+    )
+    p7 = await _add(
+        session, 7, status=ProjectStatus.script_ready, until="script"
+    )
+    p14 = await _add(session, 14, status=ProjectStatus.new, until="script")
+    p14.meta = {**(p14.meta or {}), "user_stop": True}
+    await session.flush()
+
+    started = await on_project_timeline_maybe_advance_queue(session, p7)
+    assert started == 1
+    await session.refresh(p14)
+    assert p14.status is ProjectStatus.planning
+    assert (p14.meta or {}).get("user_stop") is None

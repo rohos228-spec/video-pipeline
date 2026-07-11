@@ -421,6 +421,11 @@ _PLAIN_FILE_DOWNLOAD_FIND_JS = """
         const t = (s || '').toLowerCase();
         return t.includes('close') || t.includes('закры');
     };
+    const isEdit = (s) => {
+        const t = (s || '').toLowerCase();
+        return t.includes('редактир') || t.includes('edit message')
+            || (t.includes('edit') && !t.includes('credit'));
+    };
 
     const candidates = [];
     for (const btn of document.querySelectorAll('button, [role="button"]')) {
@@ -435,6 +440,7 @@ _PLAIN_FILE_DOWNLOAD_FIND_JS = """
         const al = btn.getAttribute('aria-label') || '';
         const title = btn.getAttribute('title') || '';
         if (isClose(al) || isClose(title)) continue;
+        if (isEdit(al) || isEdit(title)) continue;
         candidates.push({
             btn,
             right: br.right,
@@ -2540,6 +2546,14 @@ class ChatGPTBot:
             except Exception:  # noqa: BLE001
                 continue
             if not meta or not meta.get("found"):
+                continue
+            al_raw = (meta.get("al") or "").lower()
+            if "редактир" in al_raw or "edit message" in al_raw:
+                logger.debug(
+                    "ChatGPT: пропуск txt-кнопки (edit) на {}: {}",
+                    getattr(pg, "url", "?")[:60],
+                    meta.get("al"),
+                )
                 continue
             logger.info(
                 "ChatGPT: кнопка ↓ txt-превью на {} ({}, al={})",

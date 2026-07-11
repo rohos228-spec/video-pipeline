@@ -88,7 +88,7 @@ $markers = @{
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
     "app\services\chrome_recovery.py" = "handle_chrome_step_failure"
-    "app\hotfix_build.py"             = "hotfix-20260711-chrome-recovery-v6"
+    "app\hotfix_build.py"             = "hotfix-20260711-gen-queue-userstop-v7"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {

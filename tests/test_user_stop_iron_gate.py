@@ -117,7 +117,41 @@ async def test_user_stop_blocks_later_in_gen_queue(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_waits_on_user_stop(
+async def test_gen_queue_tick_starts_head_despite_stale_user_stop(
+    session: AsyncSession,
+    monkeypatch,
+) -> None:
+    """new+auto_mode в очереди: устаревший user_stop не блокирует автостарт."""
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [2, 4],
+    )
+    p2 = Project(
+        id=2,
+        slug="p2",
+        topic="t",
+        status=ProjectStatus.new,
+        auto_mode=True,
+        meta={"user_stop": True},
+    )
+    p4 = Project(
+        id=4,
+        slug="p4",
+        topic="t",
+        status=ProjectStatus.new,
+        auto_mode=True,
+    )
+    session.add_all([p2, p4])
+    await session.flush()
+
+    started = await gen_queue_tick(session)
+    assert started == 1
+    assert p2.status is ProjectStatus.planning
+    assert (p2.meta or {}).get("user_stop") is None
+
+
+@pytest.mark.asyncio
+async def test_gen_queue_tick_waits_on_user_stop_when_not_new(
     session: AsyncSession,
     monkeypatch,
 ) -> None:
@@ -129,8 +163,10 @@ async def test_gen_queue_tick_waits_on_user_stop(
         id=2,
         slug="p2",
         topic="t",
-        status=ProjectStatus.new,
+        status=ProjectStatus.script_ready,
         auto_mode=True,
+        script_text="x" * 500,
+        general_plan="y" * 500,
         meta={"user_stop": True},
     )
     p4 = Project(

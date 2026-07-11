@@ -45,9 +45,18 @@ def _slot_blocked(project: Project) -> bool:
     meta = project.meta if isinstance(project.meta, dict) else {}
     return bool(
         project.status is ProjectStatus.paused
-        or meta.get("user_stop")
-        or meta.get("mass_lane_user_stop")
+        or _user_stop_blocks_queue(project)
     )
+
+
+def _user_stop_blocks_queue(project: Project) -> bool:
+    """user_stop блокирует очередь, кроме new+auto_mode — там start_step сам снимет gate."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    if not (meta.get("user_stop") or meta.get("mass_lane_user_stop")):
+        return False
+    if project.status is ProjectStatus.new and project.auto_mode:
+        return False
+    return True
 
 
 async def is_timeline_complete(session: AsyncSession, project: Project) -> bool:
@@ -208,8 +217,9 @@ async def gen_queue_incomplete_earlier(
         project = await _load_project(session, pid)
         if project is None or mass_parent_id(project) is not None:
             continue
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        if is_gen_queue_run_complete(project):
+            continue
+        if _user_stop_blocks_queue(project):
             logger.debug(
                 "gen_queue: #{} блокирует очередь (user_stop)",
                 project.id,
@@ -252,8 +262,7 @@ async def gen_queue_tick(session: AsyncSession) -> int:
             continue
         if is_gen_queue_run_complete(project):
             continue
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        if _user_stop_blocks_queue(project):
             logger.info(
                 "gen_queue: ждём #{} (позиция {}, user_stop)",
                 project.id,
@@ -326,8 +335,7 @@ async def on_project_timeline_maybe_advance_queue(
     nxt = await _load_project(session, next_id)
     if nxt is None or mass_parent_id(nxt) is not None:
         return 0
-    meta = nxt.meta if isinstance(nxt.meta, dict) else {}
-    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+    if _user_stop_blocks_queue(nxt):
         logger.info(
             "gen_queue: #{} done → ждём #{} (user_stop)",
             project.id,
