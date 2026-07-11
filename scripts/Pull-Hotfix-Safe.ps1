@@ -1,9 +1,9 @@
-# Безопасный git pull hotfix-ветки, когда локальные файлы мешают merge.
-# Запуск из корня репозитория:
+# Safe git pull for hotfix branch when local files block merge.
+# Run from repo root:
 #   powershell -ExecutionPolicy Bypass -File scripts\Pull-Hotfix-Safe.ps1
 #
-# По умолчанию: stash (включая untracked) → pull devin/windows-installer.
-# -HardReset: сбросить локальные изменения и совпасть с origin (без stash).
+# Default: stash (incl. untracked) -> pull devin/windows-installer.
+# -HardReset: discard local changes and match origin (no stash).
 
 param(
     [switch]$HardReset
@@ -60,7 +60,6 @@ if ($HardReset) {
     git pull origin $Branch
 }
 
-# Clear stale bytecode
 Get-ChildItem -Path (Join-Path $Root "app") -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -76,7 +75,7 @@ if (Test-Path $marker) {
         Write-Host ("Hotfix marker: " + $line.Line.Trim()) -ForegroundColor Green
     }
 } else {
-    Write-Host "WARN: app\hotfix_build.py not found — pull incomplete?" -ForegroundColor Red
+    Write-Host "WARN: app\hotfix_build.py not found - pull incomplete?" -ForegroundColor Red
     exit 1
 }
 
@@ -89,6 +88,6 @@ if (Test-Path $stop) {
 Write-Host ""
 Write-Host "Done. Restart Studio, then open:" -ForegroundColor Green
 Write-Host "  http://127.0.0.1:8765/api/studio-version" -ForegroundColor DarkGray
-Write-Host ("Expect: pipeline_hotfix = " + $hotfixId) -ForegroundColor DarkGray
+Write-Host ('Expect: pipeline_hotfix = ' + $hotfixId) -ForegroundColor DarkGray
 
 exit 0
