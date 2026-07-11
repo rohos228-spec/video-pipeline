@@ -121,6 +121,9 @@ async def toggle_gen_queue(body: GenQueueToggle) -> dict:
         queue = layout_svc.get_gen_queue()
         if body.project_id in queue:
             queue = layout_svc.toggle_gen_queue(body.project_id)
+            from app.services.gen_queue import on_project_removed_from_gen_queue
+
+            await on_project_removed_from_gen_queue(session, project)
             await clear_gen_queue_run(session, project)
             await session.commit()
         else:

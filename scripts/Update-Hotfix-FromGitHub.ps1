@@ -23,6 +23,8 @@ $Files = @(
     "app/services/gen_queue_run.py",
     "app/services/sidebar_layout.py",
     "app/orchestrator/auto_advance.py",
+    "app/web/routers/sidebar_layout.py",
+    "app/orchestrator/auto_advance.py",
     "app/main.py",
     "app/services/run_sync.py",
     "app/services/project_state.py",
@@ -91,7 +93,7 @@ $markers = @{
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
     "app\services\chrome_recovery.py" = "handle_chrome_step_failure"
-    "app\hotfix_build.py"             = "hotfix-20260711-pull-script-fix-v8"
+    "app\hotfix_build.py"             = "hotfix-20260711-dequeue-no-autoadvance-v10"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {

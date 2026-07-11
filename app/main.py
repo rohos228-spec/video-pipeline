@@ -335,6 +335,15 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    from app.services.gen_queue import project_gated_by_gen_queue
+
+                    if project_gated_by_gen_queue(p.id):
+                        logger.debug(
+                            "worker: #{} {} — не в gen_queue, пропуск тика",
+                            p.id,
+                            p.status.value,
+                        )
+                        continue
                     if should_hold_queue_auto_advance(p):
                         logger.debug(
                             "worker: #{} {} — gen_queue target reached/passed, пропуск тика",
@@ -538,6 +547,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         if is_user_stopped(ap):
                             logger.debug(
                                 "auto_advance tick: #{} — user_stop, пропуск",
+                                ap.id,
+                            )
+                            continue
+                        from app.services.gen_queue import project_gated_by_gen_queue
+
+                        if project_gated_by_gen_queue(ap.id):
+                            logger.debug(
+                                "auto_advance tick: #{} — не в gen_queue, пропуск",
                                 ap.id,
                             )
                             continue

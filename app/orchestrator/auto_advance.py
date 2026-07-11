@@ -821,6 +821,16 @@ async def maybe_auto_advance(
         )
         return False
 
+    from app.services.gen_queue import project_gated_by_gen_queue
+
+    if project_gated_by_gen_queue(project.id):
+        logger.debug(
+            "auto_advance: #{} {} — не в gen_queue, пропуск",
+            project.id,
+            project.status.value,
+        )
+        return False
+
     await clamp_status_to_data(session, project)
     status = project.status
     if status not in TRANSITIONS:

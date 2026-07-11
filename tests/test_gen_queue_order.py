@@ -187,6 +187,96 @@ async def test_gen_queue_tick_starts_next_only_after_earlier_done(
 
 
 @pytest.mark.asyncio
+async def test_auto_advance_skips_project_not_in_gen_queue(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#17 вне очереди [14,15,16] не должен уходить в splitting."""
+    from app.orchestrator.auto_advance import maybe_auto_advance
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [14, 15, 16],
+    )
+    p17 = Project(
+        id=17,
+        slug="p17",
+        topic="t",
+        status=ProjectStatus.script_ready,
+        auto_mode=True,
+        script_text="x" * 500,
+        general_plan="y" * 500,
+    )
+    session.add(p17)
+    await session.flush()
+
+    advanced = await maybe_auto_advance(session, p17, bot=None)
+    assert advanced is False
+    assert p17.status is ProjectStatus.script_ready
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rolls_back_busy_not_in_queue(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.gen_queue import gen_queue_reconcile
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [14, 15, 16],
+    )
+    p17 = await _add(session, 17, status=ProjectStatus.splitting, until="script")
+    rolled = await gen_queue_reconcile(session)
+    await session.refresh(p17)
+    assert rolled >= 1
+    assert p17.status is ProjectStatus.script_ready
+
+
+@pytest.mark.asyncio
+async def test_dequeue_script_ready_sets_user_stop_blocks_auto_advance(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Снятие с очереди: script_ready не уходит в splitting (clear gen_queue_run)."""
+    from app.orchestrator.auto_advance import maybe_auto_advance
+    from app.services.gen_queue import on_project_removed_from_gen_queue
+    from app.services.gen_queue_run import clear_gen_queue_run, set_gen_queue_run
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [14, 15],
+    )
+    p17 = Project(
+        id=17,
+        slug="p17",
+        topic="t",
+        status=ProjectStatus.script_ready,
+        auto_mode=True,
+        script_text="x" * 500,
+        general_plan="y" * 500,
+    )
+    session.add(p17)
+    await session.flush()
+    await set_gen_queue_run(
+        session,
+        p17,
+        mode="until_node",
+        target_node_type="script",
+    )
+    await session.flush()
+
+    await on_project_removed_from_gen_queue(session, p17)
+    await clear_gen_queue_run(session, p17)
+    await session.flush()
+
+    assert (p17.meta or {}).get("user_stop") is True
+    advanced = await maybe_auto_advance(session, p17, bot=None)
+    assert advanced is False
+    assert p17.status is ProjectStatus.script_ready
+
+
+@pytest.mark.asyncio
 async def test_advance_queue_starts_next_despite_stale_user_stop(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

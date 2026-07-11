@@ -65,7 +65,11 @@ def test_should_not_hold_full_mode():
 
 
 @pytest.mark.asyncio
-async def test_maybe_auto_advance_holds_at_script_target(session: AsyncSession) -> None:
+async def test_maybe_auto_advance_holds_at_script_target(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.gen_queue.get_gen_queue", lambda: [8])
     p = Project(
         id=8,
         slug="t8",
@@ -86,8 +90,12 @@ async def test_maybe_auto_advance_holds_at_script_target(session: AsyncSession) 
 
 
 @pytest.mark.asyncio
-async def test_maybe_auto_advance_does_not_pass_script_target(session: AsyncSession) -> None:
+async def test_maybe_auto_advance_does_not_pass_script_target(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """script_ready + until_node=script не должен уйти в splitting."""
+    monkeypatch.setattr("app.services.gen_queue.get_gen_queue", lambda: [8])
     p = Project(
         id=8,
         slug="t8",

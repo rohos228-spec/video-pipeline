@@ -49,6 +49,43 @@ def _slot_blocked(project: Project) -> bool:
     )
 
 
+def gen_queue_is_active() -> bool:
+    return bool(get_gen_queue())
+
+
+def project_gated_by_gen_queue(project_id: int) -> bool:
+    """Очередь непуста, а проект не в ней — пайплайн не трогаем (только ручной ▶)."""
+    queue = get_gen_queue()
+    return bool(queue) and project_id not in queue
+
+
+async def on_project_removed_from_gen_queue(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """Снятие номера очереди: стоп running + user_stop (иначе script_ready → auto_advance)."""
+    from app.services.project_control import _set_user_stop_gate, stop_project_running
+    from app.services.step_cancel import request_stop
+
+    if project.status in GEN_QUEUE_BUSY_STATUSES:
+        request_stop(project.id)
+        await stop_project_running(session, project)
+        logger.info(
+            "[#{}] gen_queue: снят с очереди — остановлен {}",
+            project.id,
+            project.status.value,
+        )
+        return
+
+    _set_user_stop_gate(project)
+    await session.flush()
+    logger.info(
+        "[#{}] gen_queue: снят с очереди — user_stop ({}), без auto_advance",
+        project.id,
+        project.status.value,
+    )
+
+
 def _user_stop_blocks_queue(project: Project) -> bool:
     """user_stop блокирует очередь, кроме new+auto_mode — там start_step сам снимет gate."""
     meta = project.meta if isinstance(project.meta, dict) else {}
@@ -189,6 +226,20 @@ async def gen_queue_reconcile(session: AsyncSession) -> int:
         if project.status not in GEN_QUEUE_BUSY_STATUSES:
             continue
         if await _rollback_running(session, project, reason="out-of-turn"):
+            rolled += 1
+
+    queue_set = set(queue)
+    busy = (
+        await session.execute(
+            select(Project).where(Project.status.in_(GEN_QUEUE_BUSY_STATUSES))
+        )
+    ).scalars().all()
+    for project in busy:
+        if mass_parent_id(project) is not None:
+            continue
+        if project.id in queue_set:
+            continue
+        if await _rollback_running(session, project, reason="not in queue"):
             rolled += 1
 
     return rolled
