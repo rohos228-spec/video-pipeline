@@ -54,13 +54,13 @@ if (-not $js) {
     exit 1
 }
 $text = Get-Content -LiteralPath $js.FullName -Raw -Encoding UTF8
-foreach ($needle in @("Сеть", "Материалы", "Кадры")) {
+foreach ($needle in @("studio-open-fleet")) {
     if ($text -notmatch [regex]::Escape($needle)) {
         Write-Host "ERROR: bundle missing $needle" -ForegroundColor Red
         exit 1
     }
 }
-Write-Host "OK: web/out has Сеть + Материалы + Кадры" -ForegroundColor Green
+Write-Host "OK: web/out has fleet button (studio-open-fleet)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Restart Studio, browser Ctrl+F5" -ForegroundColor Yellow
 exit 0

@@ -1,6 +1,6 @@
 """Идентификатор пакета hotfix — виден в логах и /api/studio-version."""
 
-PIPELINE_HOTFIX_ID = "hotfix-20260711-materials-button-v12"
+PIPELINE_HOTFIX_ID = "hotfix-20260711-restore-fleet-only-v13"
 
 # Маркеры для scripts/Update-Hotfix-FromGitHub.ps1 (проверка после скачивания).
 HOTFIX_MARKERS: dict[str, str] = {

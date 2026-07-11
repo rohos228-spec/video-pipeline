@@ -34,13 +34,13 @@ echo STUDIO_VERSION:
 type web\STUDIO_VERSION
 echo.
 
-findstr /C:"Сеть" web\out\_next\static\chunks\app\page-*.js >nul
+findstr /C:"studio-open-fleet" web\out\_next\static\chunks\app\page-*.js >nul
 if errorlevel 1 (
-    echo ERROR: web/out still missing Сеть button - git checkout failed
+    echo ERROR: web/out still missing fleet button - git checkout failed
     pause
     exit /b 1
 )
-echo OK: web/out contains Сеть button
+echo OK: web/out contains fleet button (studio-open-fleet)
 
 echo.
 echo Start Studio, then Ctrl+F5 in browser
