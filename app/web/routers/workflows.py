@@ -33,7 +33,17 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
     wf = await session.get(Workflow, workflow_id)
     if wf is None:
         raise HTTPException(status_code=404, detail="workflow not found")
+    changed = False
     if wf.is_default and await apply_default_graph(session, wf):
+        changed = True
+    else:
+        nodes = list(wf.nodes or [])
+        if any(str(n.get("type") or "").startswith("enrich_") for n in nodes):
+            wf.nodes = assign_slot_indices(migrate_enrich_nodes(nodes))
+            wf.version = (wf.version or 1) + 1
+            await sync_runs_from_workflow(session, wf)
+            changed = True
+    if changed:
         await session.commit()
         await session.refresh(wf)
     return wf
