@@ -27,6 +27,11 @@ import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
+import {
+  attachmentLabel,
+  isExcelGptNode,
+  type ExcelGptInputSource,
+} from "@/lib/excel-gpt-config";
 import { Button } from "@/components/ui/button";
 import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
 
@@ -43,10 +48,13 @@ function openPromptSlot(
 export function NodeVMenu({
   open,
   anchorRef,
+  nodeKey,
   nodeType,
   slots,
   disabled,
   projectId,
+  inputSource,
+  uploadedFileName,
   onSelectPrompt,
   onOpenGptText,
   onAddPrompt,
@@ -64,6 +72,7 @@ export function NodeVMenu({
 }: {
   open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
+  nodeKey: string;
   nodeType: string;
   slots: NodePromptSlot[];
   disabled: boolean;
@@ -81,6 +90,8 @@ export function NodeVMenu({
   onClose: () => void;
   hasAssets: boolean;
   projectId?: number | null;
+  inputSource?: ExcelGptInputSource;
+  uploadedFileName?: string;
   canvasZoom?: number;
 }) {
   const [mounted, setMounted] = useState(false);
@@ -124,11 +135,14 @@ export function NodeVMenu({
 
   const stepCode = stepCodeForNodeType(nodeType) ?? nodeType;
   const outbound = useQuery({
-    queryKey: ["step-attachments", projectId, stepCode],
-    queryFn: () => api.getStepAttachments(projectId!, stepCode),
+    queryKey: ["step-attachments", projectId, stepCode, nodeKey],
+    queryFn: () => api.getStepAttachments(projectId!, stepCode, nodeKey),
     enabled: open && projectId != null,
   });
   const outboundFiles = outbound.data?.files ?? [];
+  const excelAttachmentName = isExcelGptNode(nodeType)
+    ? attachmentLabel(inputSource ?? "project_xlsx", uploadedFileName)
+    : "project.xlsx";
 
   if (!open || !mounted) return null;
 
@@ -209,7 +223,11 @@ export function NodeVMenu({
                       </span>
                     )}
                     <span className="mt-1 line-clamp-2 text-[9px] font-medium leading-tight">
-                      {slot.kind === "excel" ? "Excel" : slot.title}
+                      {slot.kind === "excel"
+                        ? isExcelGptNode(nodeType)
+                          ? excelAttachmentName
+                          : "Excel"
+                        : slot.title}
                     </span>
                     <span
                       className={cn(
@@ -217,7 +235,7 @@ export function NodeVMenu({
                         slot.kind === "excel" ? "text-emerald-400/90" : "text-muted-foreground",
                       )}
                     >
-                      {slotKindLabel(slot.kind)}
+                      {slot.kind === "excel" ? excelAttachmentName : slotKindLabel(slot.kind)}
                     </span>
                   </button>
                   {isCustomPromptSlot(slot) && slot.kind !== "excel" && (

@@ -697,3 +697,63 @@ def _rel_path(path: str | None) -> str:
         return str(p.resolve().relative_to(data))
     except Exception:
         return path
+
+
+@router.patch("/{project_id}/excel-gpt/{node_key}")
+async def patch_excel_gpt_config(
+    project_id: int,
+    node_key: str,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    p = _project_or_404(await session.get(Project, project_id))
+    meta = dict(p.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(node_key) or {})
+    for key in ("label", "inputSource", "uploadedFileName", "slotIndex"):
+        if key in payload:
+            cur[key] = payload[key]
+    configs[node_key] = cur
+    meta["excel_gpt_nodes"] = configs
+    meta["active_excel_gpt_node_key"] = node_key
+    p.meta = meta
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "config": cur}
+
+
+@router.post("/{project_id}/excel-gpt/{node_key}/upload")
+async def upload_excel_gpt_file(
+    project_id: int,
+    node_key: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.excel_gpt_node import upload_dir, upload_file_path
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="need filename")
+    safe_name = Path(file.filename).name
+    dest_dir = upload_dir(p, node_key)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_file_path(p, node_key, safe_name)
+    content = await file.read()
+    dest.write_bytes(content)
+    meta = dict(p.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(node_key) or {})
+    cur["inputSource"] = "upload"
+    cur["uploadedFileName"] = safe_name
+    cur["label"] = safe_name
+    configs[node_key] = cur
+    meta["excel_gpt_nodes"] = configs
+    meta["active_excel_gpt_node_key"] = node_key
+    p.meta = meta
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "fileName": safe_name, "path": str(dest)}

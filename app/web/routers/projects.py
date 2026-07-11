@@ -283,6 +283,7 @@ async def run_project_step(
     project_id: int,
     step_code: str,
     dry_run: bool = False,
+    node_key: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project."""
@@ -303,7 +304,7 @@ async def run_project_step(
         )
         return p
     try:
-        await start_step(session, p, step_code)
+        await start_step(session, p, step_code, node_key=node_key)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()

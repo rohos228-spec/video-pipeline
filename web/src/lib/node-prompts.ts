@@ -42,25 +42,9 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "items" },
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
   ],
-  enrich_1: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_1" },
-    { id: "main", title: "Промт дополнения 1", kind: "gpt", stepCode: "enrich_1" },
-  ],
-  enrich_2: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_2" },
-    { id: "main", title: "Промт дополнения 2", kind: "gpt", stepCode: "enrich_2" },
-  ],
-  enrich_3: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_3" },
-    { id: "main", title: "Промт дополнения 3", kind: "gpt", stepCode: "enrich_3" },
-  ],
-  enrich_4: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_4" },
-    { id: "main", title: "Промт дополнения 4", kind: "gpt", stepCode: "enrich_4" },
-  ],
-  enrich_5: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "enrich_5" },
-    { id: "main", title: "Промт дополнения 5", kind: "gpt", stepCode: "enrich_5" },
+  excel_gpt: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "excel_gpt" },
+    { id: "main", title: "Промт доп. Excel", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
@@ -275,5 +259,5 @@ export function gptTextSlotForNode(nodeType: string): NodePromptSlot | null {
 }
 
 export function isEnrichNode(nodeType: string): boolean {
-  return nodeType.startsWith("enrich");
+  return nodeType === "excel_gpt" || nodeType.startsWith("enrich");
 }

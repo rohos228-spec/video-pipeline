@@ -57,6 +57,7 @@ STEP_FOLDERS: dict[str, str] = {
     "enrich_3":   "05c_enrich_3",
     "enrich_4":   "05d_enrich_4",
     "enrich_5":   "05e_enrich_5",
+    "excel_gpt":  "05_excel_gpt",
     # Папки оставлены с историческими номерами (05/07), чтобы не ломать
     # уже существующие промты в `prompts/`. Меню-нумерация шагов
     # переехала, но имя папки на диске не зависит от позиции в меню.
@@ -80,6 +81,7 @@ STEP_HUMAN_NAMES: dict[str, str] = {
     "enrich_3":   "Доп работа с EXCEL #3",
     "enrich_4":   "Доп работа с EXCEL #4",
     "enrich_5":   "Доп работа с EXCEL #5",
+    "excel_gpt":  "Доп работа с Excel",
     "img_pr":     "6. Промты картинок",
     "anim_pr":    "8. Промты анимации",
     "music":      "10. Музыка",
@@ -93,7 +95,7 @@ DEFAULT_NAME = "default"
 
 # Слоты enrich — только .md из prompts/05*_enrich_*; не blocks v2 compose.
 ENRICH_STEP_CODES: frozenset[str] = frozenset(
-    f"enrich_{i}" for i in range(1, 6)
+    {*(f"enrich_{i}" for i in range(1, 6)), "excel_gpt"}
 )
 
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;

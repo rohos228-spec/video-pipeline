@@ -29,6 +29,12 @@ from app.models import Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_gpt_flow as xgf
+from app.services.excel_gpt_node import (
+    EXCEL_GPT_STEP_CODE,
+    active_node_key,
+    attachment_paths,
+    display_attachment_name,
+)
 from app.services.prompt_library import read_resolved_project_prompt
 from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
@@ -55,13 +61,9 @@ def _resolve_slot_idx(status: ProjectStatus) -> int | None:
 
 
 def _get_accompanying_text(project: Project, step_code: str) -> str:
-    """Возвращает сопровождающий текст для слота: override юзера или дефолт.
-
-    Источник дефолта — `gpt_text_builder.ENRICH_DEFAULT_ACCOMPANYING_TEXT`
-    (через `get_effective_text`). Юзер редактирует через
-    «✏️ Сопр. сообщение» в picker'е → запись попадает в
-    `Project.gpt_text_overrides[step_code]`.
-    """
+    text = gtb.get_effective_text(project, EXCEL_GPT_STEP_CODE)
+    if text.strip():
+        return text
     return gtb.get_effective_text(project, step_code)
 
 
@@ -74,9 +76,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.status.value,
         )
         return
-    running_status, ready_status, step_code = _SLOT_MAP[slot_idx]
+    running_status, ready_status, legacy_step_code = _SLOT_MAP[slot_idx]
+    node_key = active_node_key(project)
+    if not node_key:
+        from app.orchestrator.graph.planner import load_graph_for_project
+        from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE, slot_index_from_node
+
+        graph = await load_graph_for_project(session, project)
+        for nid, n in graph._by_id.items():
+            if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE and slot_index_from_node(n) == slot_idx:
+                node_key = nid
+                meta = dict(project.meta or {})
+                meta["active_excel_gpt_node_key"] = nid
+                project.meta = meta
+                await session.flush()
+                break
+    prompt_step_code = EXCEL_GPT_STEP_CODE
     logger.info(
-        "[#{}] enrich_xlsx slot={} (code={}) starting", project.id, slot_idx, step_code
+        "[#{}] enrich_xlsx slot={} node={} prompt={} starting",
+        project.id,
+        slot_idx,
+        node_key,
+        prompt_step_code,
     )
 
     await session.refresh(project)
@@ -86,14 +107,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     xlsx_path: Path = sheet.ensure_initialized(
         project_id=project.id, slug=project.slug
     )
-    if not xlsx_path.exists():
+    data_paths = attachment_paths(project, node_key)
+    if not data_paths:
         raise RuntimeError(
-            f"enrich_xlsx: project.xlsx не найден по пути {xlsx_path}"
+            f"enrich_xlsx: нет файла для отправки "
+            f"({display_attachment_name(project, node_key)})"
         )
+    download_path = data_paths[0] if data_paths[0].suffix.lower() in {".xlsx", ".xls"} else xlsx_path
+    if not download_path.exists():
+        download_path = xlsx_path
 
     # 2. Мастер-промт → файл; сопр. сообщение → короткий текст в чате.
     try:
-        variant, src_path, master = read_resolved_project_prompt(project, step_code)
+        variant, src_path, master = read_resolved_project_prompt(project, prompt_step_code)
         logger.info(
             "[#{}] enrich_xlsx slot={}: активный промт variant={!r} "
             "path={} ({} симв) overrides={!r}",
@@ -102,16 +128,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             variant,
             src_path,
             len(master or ""),
-            (getattr(project, "prompt_overrides", None) or {}).get(step_code),
+            (getattr(project, "prompt_overrides", None) or {}).get(prompt_step_code),
         )
     except FileNotFoundError:
         variant = "default"
         src_path = None
         master = (
-            f"# {step_code}\n\n"
-            "Мастер-промт для этого слота ещё не настроен. "
-            "Открой `prompts/05*_enrich_<i>/default.md` и опиши там, "
-            "что именно ChatGPT должен изменить в приложенном xlsx."
+            f"# {prompt_step_code}\n\n"
+            "Мастер-промт для доп. работы с Excel ещё не настроен. "
+            "Открой `prompts/05_excel_gpt/default.md` и опиши там, "
+            "что именно ChatGPT должен изменить в приложенном файле."
         )
         logger.warning(
             "[#{}] enrich_xlsx slot={}: файл промта не найден, fallback текст",
@@ -119,13 +145,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             slot_idx,
         )
 
-    accompanying = _get_accompanying_text(project, step_code)
+    accompanying = _get_accompanying_text(project, legacy_step_code)
 
     from app.services import chatgpt_xlsx as cx
 
     tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = tmp_dir / f"prompt_{step_code}_{variant}.md"
+    prompt_file = tmp_dir / f"prompt_{prompt_step_code}_{variant}.md"
     prompt_file.write_text((master or "").strip(), encoding="utf-8")
+    attach_files = [prompt_file, *data_paths]
 
     # 3. Round-trip до 3 раз.
     from app.services.step_cancel import StepCancelledError, raise_if_cancelled
@@ -149,16 +176,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             async def _do() -> str:
                 return await xgf.telegram_style_ask_and_download(
                     accompanying.strip(),
-                    [prompt_file, xlsx_path],
-                    xlsx_path,
+                    attach_files,
+                    download_path,
                     ask_timeout=1200,
                     download_timeout=600,
                     project_id=project.id,
-                    validate_xlsx_download=True,
+                    validate_xlsx_download=download_path.suffix.lower() in {".xlsx", ".xls"},
                 )
 
             reply = await xgf.run_under_xlsx_lock(
-                project.id, step_code, _do
+                project.id, legacy_step_code, _do
             )
             logger.info(
                 "[#{}] enrich_xlsx: получен ответ len={} (try={})",
@@ -166,15 +193,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 len(reply or ""),
                 attempt,
             )
-            if not xlsx_path.exists() or xlsx_path.stat().st_size < 1024:
+            if not download_path.exists() or download_path.stat().st_size < 1024:
                 raise RuntimeError(
-                    f"скачанный xlsx пустой/слишком маленький "
-                    f"({xlsx_path.stat().st_size if xlsx_path.exists() else 0} байт)"
+                    f"скачанный файл пустой/слишком маленький "
+                    f"({download_path.stat().st_size if download_path.exists() else 0} байт)"
                 )
             logger.info(
-                "[#{}] enrich_xlsx: xlsx обновлён ({} байт)",
+                "[#{}] enrich_xlsx: файл обновлён {} ({} байт)",
                 project.id,
-                xlsx_path.stat().st_size,
+                download_path.name,
+                download_path.stat().st_size,
             )
             break  # успех
         except Exception as e:  # noqa: BLE001
@@ -229,10 +257,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.services.chatgpt_xlsx import sync_project_xlsx
 
     try:
+        sync_target = (
+            download_path
+            if download_path.suffix.lower() in {".xlsx", ".xls"}
+            else xlsx_path
+        )
         sync_info = await sync_project_xlsx(
             session,
             project,
-            xlsx_path,
+            sync_target,
             keep_fields=False,
             update_frames_voiceover=True,
         )
@@ -261,6 +294,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         completed.append(slot_idx)
         completed.sort()
         meta["enrich_completed_slots"] = completed
+    if node_key:
+        done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if node_key not in done_keys:
+            done_keys.append(node_key)
+            meta["excel_gpt_completed_keys"] = done_keys
+        meta.pop("active_excel_gpt_node_key", None)
     # xlsx на диске обновлён — сбросить кэш персонажей, чтобы Hero
     # перечитал лист «Персонажи» (иначе остаётся старый meta['excel_hero']).
     if "excel_hero" in meta:

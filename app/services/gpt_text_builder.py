@@ -58,6 +58,7 @@ SUPPORTED_STEPS: tuple[str, ...] = (
     # `prompts/05<a..e>_enrich_<i>/<name>.md`, в `enrich_xlsx.py` они
     # склеиваются: master + "\n\n---\n\n" + accompanying.
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
+    "excel_gpt",
 )
 
 # Дефолтный «сопровождающий текст» для enrich-слотов. Единый источник
@@ -403,7 +404,7 @@ def build_default_text(project: Project, step_code: str, **ctx) -> str:
         return build_anim_pr_initial_default(
             project, frames, prompt_file_name=ctx.get("prompt_file_name", "prompt_anim_pr.md")
         )
-    if step_code.startswith("enrich_"):
+    if step_code.startswith("enrich_") or step_code == "excel_gpt":
         return _build_enrich_default(project, **ctx)
     if step_code == "music":
         return _build_music_default(project, **ctx)

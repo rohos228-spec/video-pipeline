@@ -8,11 +8,7 @@ export const GPT_TEXT_STEPS = new Set([
   "img_pr",
   "anim_pr",
   "music",
-  "enrich_1",
-  "enrich_2",
-  "enrich_3",
-  "enrich_4",
-  "enrich_5",
+  "excel_gpt",
 ]);
 
 /** step_code для gpt_text_overrides по типу ноды. */
@@ -21,11 +17,12 @@ export const NODE_TYPE_TO_GPT_TEXT_STEP: Record<string, string> = {
   script: "script",
   split: "split",
   hero: "hero",
-  enrich_1: "enrich_1",
-  enrich_2: "enrich_2",
-  enrich_3: "enrich_3",
-  enrich_4: "enrich_4",
-  enrich_5: "enrich_5",
+  excel_gpt: "excel_gpt",
+  enrich_1: "excel_gpt",
+  enrich_2: "excel_gpt",
+  enrich_3: "excel_gpt",
+  enrich_4: "excel_gpt",
+  enrich_5: "excel_gpt",
   image_prompts: "img_pr",
   animation_prompts: "anim_pr",
   music: "music",
@@ -37,6 +34,7 @@ export function isHitlNodeType(nodeType: string): boolean {
 
 export function gptTextStepForNode(nodeType: string): string | undefined {
   if (isHitlNodeType(nodeType)) return undefined;
+  if (nodeType.startsWith("enrich_")) return "excel_gpt";
   return NODE_TYPE_TO_GPT_TEXT_STEP[nodeType];
 }
 

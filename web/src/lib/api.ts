@@ -236,11 +236,40 @@ export const api = {
     http<{ code: string; label: string; running_status: string; ready_status: string }[]>(
       `/api/projects/steps/catalog`
     ),
-  runProjectStep: (projectId: number, stepCode: string, opts?: { dryRun?: boolean }) => {
-    const q = opts?.dryRun ? "?dry_run=true" : "";
+  runProjectStep: (
+    projectId: number,
+    stepCode: string,
+    opts?: { dryRun?: boolean; nodeKey?: string },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.dryRun) params.set("dry_run", "true");
+    if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
+    const q = params.toString() ? `?${params.toString()}` : "";
     return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
       method: "POST",
     });
+  },
+  patchExcelGptConfig: (
+    projectId: number,
+    nodeKey: string,
+    patch: {
+      label?: string;
+      inputSource?: string;
+      uploadedFileName?: string;
+      slotIndex?: number;
+    },
+  ) =>
+    http<{ ok: boolean; config: Record<string, unknown> }>(
+      `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  uploadExcelGptFile: (projectId: number, nodeKey: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{ ok: boolean; fileName: string; path: string }>(
+      `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}/upload`,
+      { method: "POST", body: fd },
+    );
   },
 
   // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────
@@ -520,10 +549,12 @@ export const api = {
       `/api/prompt-studio/projects/${projectId}/gpt-verdict/${stepCode}/templates/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     ),
-  getStepAttachments: (projectId: number, stepCode: string) =>
-    http<{ step_code: string; files: string[] }>(
-      `/api/prompt-studio/projects/${projectId}/step-attachments/${stepCode}`,
-    ),
+  getStepAttachments: (projectId: number, stepCode: string, nodeKey?: string) => {
+    const q = nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : "";
+    return http<{ step_code: string; node_key?: string; files: string[] }>(
+      `/api/prompt-studio/projects/${projectId}/step-attachments/${stepCode}${q}`,
+    );
+  },
   runGptVerdict: (projectId: number, stepCode: string, prompt: string) =>
     http<{
       approved: boolean;

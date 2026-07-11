@@ -699,6 +699,7 @@ async def save_verdict_template_route(
 async def get_step_attachments(
     project_id: int,
     step_code: str,
+    node_key: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     from app.services.gpt_verdict_review import attachments_for_step
@@ -706,8 +707,8 @@ async def get_step_attachments(
     project = await session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
-    files = await attachments_for_step(session, project, step_code)
-    return {"step_code": step_code, "files": [p.name for p in files]}
+    files = await attachments_for_step(session, project, step_code, node_key=node_key)
+    return {"step_code": step_code, "node_key": node_key, "files": [p.name for p in files]}
 
 
 @router.get("/projects/{project_id}/gpt-verdict/{step_code}")

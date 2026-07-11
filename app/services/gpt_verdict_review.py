@@ -52,6 +52,7 @@ STEP_TO_HITL: dict[str, HITLKind] = {
     "enrich_3": HITLKind.approve_hero,
     "enrich_4": HITLKind.approve_hero,
     "enrich_5": HITLKind.approve_hero,
+    "excel_gpt": HITLKind.approve_hero,
 }
 
 FIX_TARGET_BY_STEP: dict[str, str] = {
@@ -69,6 +70,7 @@ FIX_TARGET_BY_STEP: dict[str, str] = {
     "enrich_3": "excel",
     "enrich_4": "excel",
     "enrich_5": "excel",
+    "excel_gpt": "excel",
 }
 
 # Шаги с GPT-проверкой «Вердикт» и скачиванием файла при «Не одобрено».
@@ -82,6 +84,7 @@ FILE_FIX_STEPS: frozenset[str] = frozenset(
         "enrich_3",
         "enrich_4",
         "enrich_5",
+        "excel_gpt",
         "img_pr",
         "anim_pr",
     }
@@ -101,6 +104,7 @@ STEP_VERDICT_FOLDER: dict[str, str] = {
     "enrich_3": "check_plan",
     "enrich_4": "check_plan",
     "enrich_5": "check_plan",
+    "excel_gpt": "check_plan",
 }
 
 VERDICT_STUDIO_STEPS: frozenset[str] = frozenset(
@@ -118,6 +122,7 @@ VERDICT_STUDIO_STEPS: frozenset[str] = frozenset(
         "enrich_3",
         "enrich_4",
         "enrich_5",
+        "excel_gpt",
     }
 )
 
@@ -257,11 +262,19 @@ def delete_verdict_template(step_code: str, name: str) -> bool:
 
 
 async def attachments_for_step(
-    session: AsyncSession, project: Project, step_code: str
+    session: AsyncSession, project: Project, step_code: str, *, node_key: str | None = None
 ) -> list[Path]:
+    from app.services.excel_gpt_node import (
+        EXCEL_GPT_STEP_CODE,
+        attachment_paths,
+        display_attachment_name,
+    )
+
     paths: list[Path] = []
     if step_code == "topic":
         return paths
+    if step_code in (EXCEL_GPT_STEP_CODE, "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"):
+        return attachment_paths(project, node_key)
     xlsx = project.data_dir / "project.xlsx"
     excel_steps = (
         "plan",
@@ -271,17 +284,12 @@ async def attachments_for_step(
         "anim_pr",
         "hero",
         "items",
-        "enrich_1",
-        "enrich_2",
-        "enrich_3",
-        "enrich_4",
-        "enrich_5",
     )
     if step_code in excel_steps:
         if xlsx.is_file():
             paths.append(xlsx)
     voice = project.data_dir / "voiceover.txt"
-    if step_code in ("script", "music") and voice.is_file():
+    if step_code in ("script", "music", "split") and voice.is_file():
         paths.append(voice)
     if step_code in ("hero", "items", "images"):
         kinds = [ArtifactKind.hero_reference, ArtifactKind.scene_image]

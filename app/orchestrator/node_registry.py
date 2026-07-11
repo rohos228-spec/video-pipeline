@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.models import ProjectStatus
+from app.services.excel_gpt_node import (
+    EXCEL_GPT_NODE_TYPE,
+    EXCEL_GPT_STEP_CODE,
+    is_excel_gpt_node_type,
+    running_status_for_slot,
+    ready_status_for_slot,
+    slot_index_from_node,
+)
 
 HITL_NODE_TYPES: frozenset[str] = frozenset(
     {"hitl_hero", "hitl_images", "hitl_videos", "hitl_final", "hitl_gate"}
@@ -123,7 +132,7 @@ LINEAR_RUNNING_PIPELINE: list[tuple[ProjectStatus, str]] = [
 
 
 def is_work_node_type(node_type: str) -> bool:
-    return node_type in WORK_NODES
+    return node_type in WORK_NODES or node_type == EXCEL_GPT_NODE_TYPE
 
 
 def is_hitl_node_type(node_type: str) -> bool:
@@ -135,9 +144,40 @@ def is_config_node_type(node_type: str) -> bool:
 
 
 def spec_for_type(node_type: str) -> WorkNodeSpec | None:
+    if node_type == EXCEL_GPT_NODE_TYPE:
+        return WorkNodeSpec(
+            EXCEL_GPT_NODE_TYPE,
+            EXCEL_GPT_STEP_CODE,
+            ProjectStatus.enriching_1,
+            ProjectStatus.enrich_1_ready,
+        )
     return WORK_NODES.get(node_type)
 
 
+def excel_gpt_spec_for_node(node: dict[str, Any]) -> WorkNodeSpec:
+    slot = slot_index_from_node(node)
+    return WorkNodeSpec(
+        EXCEL_GPT_NODE_TYPE,
+        EXCEL_GPT_STEP_CODE,
+        running_status_for_slot(slot),
+        ready_status_for_slot(slot),
+    )
+
+
+def spec_for_node(node: dict[str, Any]) -> WorkNodeSpec | None:
+    typ = str(node.get("type") or "")
+    if typ == EXCEL_GPT_NODE_TYPE or is_excel_gpt_node_type(typ):
+        return excel_gpt_spec_for_node(node)
+    return spec_for_type(typ)
+
+
 def spec_for_step_code(step_code: str) -> WorkNodeSpec | None:
+    if step_code == EXCEL_GPT_STEP_CODE:
+        return WorkNodeSpec(
+            EXCEL_GPT_NODE_TYPE,
+            EXCEL_GPT_STEP_CODE,
+            ProjectStatus.enriching_1,
+            ProjectStatus.enrich_1_ready,
+        )
     typ = STEP_CODE_TO_NODE_TYPE.get(step_code)
     return WORK_NODES.get(typ) if typ else None

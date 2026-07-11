@@ -442,7 +442,10 @@ export function StudioWorkspace({
         }
         try {
           await api.reloadProjectXlsx(projectId).catch(() => undefined);
-          await api.runProjectStep(projectId, step);
+          if (nodeType === "excel_gpt" || nodeType.startsWith("enrich_")) {
+            await api.patchExcelGptConfig(projectId, nodeKey, {}).catch(() => undefined);
+          }
+          await api.runProjectStep(projectId, step, { nodeKey });
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
         } catch (e) {

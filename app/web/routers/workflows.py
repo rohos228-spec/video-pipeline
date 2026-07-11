@@ -15,6 +15,7 @@ from app.web.schemas import (
 )
 from app.orchestrator.graph.validate import validate_workflow_graph
 from app.orchestrator.default_graph import default_graph as _default_graph
+from app.services.excel_gpt_node import migrate_enrich_nodes, assign_slot_indices
 from app.services.workflow_run_sync import sync_runs_from_workflow
 from app.web.settings_default import apply_default_graph
 
@@ -53,6 +54,7 @@ async def create_workflow(
 ) -> Workflow:
     nodes_raw = [n.model_dump() for n in payload.nodes]
     edges_raw = [e.model_dump() for e in payload.edges]
+    nodes_raw = assign_slot_indices(migrate_enrich_nodes(nodes_raw))
     check = validate_workflow_graph(nodes_raw, edges_raw)
     if not check["valid"]:
         raise HTTPException(status_code=400, detail={"graph": check["errors"]})
@@ -85,6 +87,7 @@ async def update_workflow(
         wf.description = payload.description
     nodes_raw = [n.model_dump() for n in payload.nodes]
     edges_raw = [e.model_dump() for e in payload.edges]
+    nodes_raw = assign_slot_indices(migrate_enrich_nodes(nodes_raw))
     check = validate_workflow_graph(nodes_raw, edges_raw)
     if not check["valid"]:
         raise HTTPException(status_code=400, detail={"graph": check["errors"]})

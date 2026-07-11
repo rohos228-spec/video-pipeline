@@ -30,6 +30,8 @@ import {
   resolvePromptSlots,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
+import { isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
+import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -99,6 +101,35 @@ export function NodeStudio({
     project.data?.status,
     project.data?.generation_active,
   );
+
+  const excelGptConfig = useMemo((): ExcelGptNodeConfig => {
+    if (!nodeKey || !isExcelGptNode(nodeType)) return {};
+    const meta = (project.data?.meta || {}) as {
+      excel_gpt_nodes?: Record<string, ExcelGptNodeConfig>;
+    };
+    const cfg = meta.excel_gpt_nodes?.[nodeKey] ?? {};
+    return {
+      label: cfg.label ?? spec.label,
+      inputSource: cfg.inputSource ?? "project_xlsx",
+      uploadedFileName: cfg.uploadedFileName,
+      slotIndex: cfg.slotIndex,
+    };
+  }, [project.data?.meta, nodeKey, nodeType, spec.label]);
+
+  const [excelConfig, setExcelConfig] = useState<ExcelGptNodeConfig>(excelGptConfig);
+  useEffect(() => {
+    setExcelConfig(excelGptConfig);
+  }, [excelGptConfig]);
+
+  const patchExcelNodeData = (patch: Partial<ExcelGptNodeConfig>) => {
+    if (!nodeKey) return;
+    setExcelConfig((prev) => ({ ...prev, ...patch }));
+    window.dispatchEvent(
+      new CustomEvent("canvas-patch-node-data", {
+        detail: { nodeKey, patch },
+      }),
+    );
+  };
   const artifacts = useQuery({
     queryKey: ["artifacts", projectId, nodeType],
     queryFn: () => api.listArtifacts({ project_id: projectId! }),
@@ -349,7 +380,7 @@ export function NodeStudio({
                   >
                     <NodeIcon className="h-4 w-4" />
                   </span>
-                  {spec.label}
+                  {excelConfig.label?.trim() || spec.label}
                 </h2>
                 <p className="text-xs text-muted-foreground">{spec.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -436,6 +467,14 @@ export function NodeStudio({
             <div className="p-5">
               {tab === "settings" && (
                 <div className="flex flex-col gap-4 text-sm text-muted-foreground">
+                  {isExcelGptNode(nodeType) && projectId && nodeKey ? (
+                    <ExcelGptSettingsPanel
+                      projectId={projectId}
+                      nodeKey={nodeKey}
+                      config={excelConfig}
+                      onConfigChange={patchExcelNodeData}
+                    />
+                  ) : null}
                   {showStepParams ? (
                     <NodeStepParamsPanel projectId={projectId!} nodeType={nodeType} />
                   ) : null}

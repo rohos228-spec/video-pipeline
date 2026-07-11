@@ -26,9 +26,16 @@ import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 
+import type { ExcelGptInputSource } from "@/lib/excel-gpt-config";
+
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
   type: string;
+  label?: string;
+  description?: string;
+  slotIndex?: number;
+  inputSource?: ExcelGptInputSource;
+  uploadedFileName?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -119,10 +126,13 @@ export function PipelineNode({ data, selected }: NodeProps) {
             <NodeVMenu
               open={!!vMenuOpen}
               anchorRef={anchorRef}
+              nodeKey={d.nodeKey}
               nodeType={d.type}
               slots={slots}
               disabled={disabled}
               projectId={actions.projectId}
+              inputSource={d.inputSource}
+              uploadedFileName={d.uploadedFileName}
               canvasZoom={actions.canvasZoom}
               hasAssets={assetKind != null}
               onClose={() => actions.setVMenuNodeKey(null)}
@@ -174,7 +184,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
           <div className="min-w-0 flex-1 flex-col leading-tight pr-8">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-[13px] font-semibold tracking-tight">
-                {spec.label || formatNodeTypeLabel(d.type)}
+                {(d.label && d.label.trim()) || spec.label || formatNodeTypeLabel(d.type)}
               </span>
               <span className={cn("status-pill shrink-0", statusConfig.bg, statusConfig.text)}>
                 {running ? (

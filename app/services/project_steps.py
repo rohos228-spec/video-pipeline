@@ -42,6 +42,7 @@ async def start_step(
     project: Project,
     step_code: str,
     *,
+    node_key: str | None = None,
     skip_queue_guard: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
@@ -50,6 +51,17 @@ async def start_step(
 
         await assert_can_start_in_queue(session, project)
     step = step_by_code(step_code)
+    if step is None and step_code == "excel_gpt":
+        from app.telegram.menu import StepDef
+
+        step = StepDef(
+            -1,
+            "excel_gpt",
+            "Доп работа с Excel",
+            ProjectStatus.enriching_1,
+            ProjectStatus.enrich_1_ready,
+            ProjectStatus.hero_ready,
+        )
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
     if is_step_disabled(project, step_code):
@@ -167,7 +179,21 @@ async def start_step(
             step_code,
             e,
         )
-    project.status = step.running_status
+    running_status = step.running_status
+    if step_code == "excel_gpt":
+        from app.orchestrator.graph.planner import load_graph_for_project
+        from app.services.excel_gpt_node import running_status_for_slot, slot_index_from_node
+
+        meta = dict(project.meta or {})
+        nk = node_key or meta.get("active_excel_gpt_node_key")
+        if nk:
+            graph = await load_graph_for_project(session, project)
+            node = graph._by_id.get(str(nk))
+            if node is not None:
+                running_status = running_status_for_slot(slot_index_from_node(node))
+                meta["active_excel_gpt_node_key"] = str(nk)
+                project.meta = meta
+    project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()
     return project.status

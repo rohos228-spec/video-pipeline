@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 5
+LAYOUT_VERSION = 6
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
@@ -12,10 +12,10 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("plan", "1. Сценарий", "Сценарий ролика"),
         ("script", "2. Закадровый текст", "Закадровый текст по кадрам"),
         ("split", "3. Разбивка", "Разбивка на кадры"),
-        ("enrich_1", "4. Доп. Excel", "xlsx round-trip перед персонажами"),
+        ("excel_gpt", "4. Доп. Excel", "xlsx round-trip перед персонажами"),
         ("hero", "5a. Персонажи", "Генерация референсов героев"),
         ("items", "5b. Предметы", "Генерация референсов предметов"),
-        ("enrich_2", "6. Доп. Excel", "xlsx round-trip после предметов"),
+        ("excel_gpt", "6. Доп. Excel", "xlsx round-trip после предметов"),
         ("image_prompts", "7. Промты картинок", "Генерация image-prompt'ов"),
         ("images", "8. Картинки", "Генерация изображений"),
         ("animation_prompts", "9. Промты анимации", "Генерация animation-prompt'ов"),
@@ -31,15 +31,24 @@ def default_graph() -> tuple[list[dict], list[dict]]:
 
     nodes: list[dict] = []
     edges: list[dict] = []
+    excel_idx = 0
     for idx, (typ, label, descr) in enumerate(steps):
         x = BASE_X + idx * STEP_X
         y = MAIN_Y
+        node_id = f"n_{typ}"
+        if typ == "excel_gpt":
+            excel_idx += 1
+            node_id = f"n_excel_gpt_{excel_idx}"
         nodes.append(
             {
-                "id": f"n_{typ}",
+                "id": node_id,
                 "type": typ,
                 "position": {"x": float(x), "y": float(y)},
-                "data": {"label": label, "description": descr},
+                "data": {
+                    "label": label,
+                    "description": descr,
+                    **({"slotIndex": excel_idx} if typ == "excel_gpt" else {}),
+                },
             }
         )
     for i in range(len(steps) - 1):

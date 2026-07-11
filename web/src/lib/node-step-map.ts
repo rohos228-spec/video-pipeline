@@ -6,11 +6,7 @@ export const NODE_TO_STEP: Record<string, string> = {
   split: "split",
   hero: "hero",
   items: "items",
-  enrich_1: "enrich_1",
-  enrich_2: "enrich_2",
-  enrich_3: "enrich_3",
-  enrich_4: "enrich_4",
-  enrich_5: "enrich_5",
+  excel_gpt: "excel_gpt",
   image_prompts: "img_pr",
   images: "img",
   animation_prompts: "anim_pr",
@@ -29,17 +25,14 @@ export const STEPS_WITH_PROMPT_VARIANTS = new Set([
   "hero",
   "hero_style",
   "items",
-  "enrich_1",
-  "enrich_2",
-  "enrich_3",
-  "enrich_4",
-  "enrich_5",
+  "excel_gpt",
   "img_pr",
   "anim_pr",
 ]);
 
 export function stepCodeForNodeType(nodeType: string): string | undefined {
   if (nodeType.startsWith("hitl_")) return undefined;
+  if (nodeType.startsWith("enrich_")) return "excel_gpt";
   return NODE_TO_STEP[nodeType];
 }
 

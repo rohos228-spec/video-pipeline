@@ -18,6 +18,7 @@ export const LEGACY_STEP_FOLDER: Record<string, string> = {
   enrich_3: "05c_enrich_3",
   enrich_4: "05d_enrich_4",
   enrich_5: "05e_enrich_5",
+  excel_gpt: "05_excel_gpt",
   img_pr: "05_image_prompts",
   anim_pr: "07_animation",
 };
@@ -34,6 +35,7 @@ export const STEPS_V2_FOLDER: Record<string, string> = {
   enrich_3: "05c_enrich_3",
   enrich_4: "05d_enrich_4",
   enrich_5: "05e_enrich_5",
+  excel_gpt: "05_excel_gpt",
   image_prompts: "06_image_prompts",
   animation_prompts: "07_animation",
 };

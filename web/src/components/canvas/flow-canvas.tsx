@@ -64,6 +64,11 @@ import {
   type CanvasClipboardPayload,
 } from "@/lib/canvas-clipboard";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
+import {
+  assignExcelGptSlotIndices,
+  migrateWorkflowNodes,
+  workflowNodeFromCanvas,
+} from "@/lib/workflow-node-serialize";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -338,12 +343,9 @@ export function FlowCanvas({
     try {
       const currentNodes = nodesRef.current;
       const currentEdges = edgesRef.current;
-      const wfNodes: WorkflowNode[] = currentNodes.map((n) => ({
-        id: n.id,
-        type: (n.data as PipelineNodeData).type,
-        position: n.position,
-        data: { label: getNodeSpec((n.data as PipelineNodeData).type).label },
-      }));
+      const wfNodes: WorkflowNode[] = assignExcelGptSlotIndices(
+        currentNodes.map((n) => workflowNodeFromCanvas(n)),
+      );
       const wfEdges: WorkflowEdge[] = currentEdges.map((e) => ({
         id: e.id,
         source: e.source,
@@ -389,6 +391,28 @@ export function FlowCanvas({
       setSaving(false);
     }
   }, [workflow, projectId]);
+
+  useEffect(() => {
+    const onPatch = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ nodeKey: string; patch: Record<string, unknown> }>)
+        .detail;
+      if (!detail?.nodeKey) return;
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== detail.nodeKey) return n;
+          return {
+            ...n,
+            data: {
+              ...(n.data as PipelineNodeData),
+              ...detail.patch,
+            },
+          };
+        }),
+      );
+    };
+    window.addEventListener("canvas-patch-node-data", onPatch);
+    return () => window.removeEventListener("canvas-patch-node-data", onPatch);
+  }, [setNodes]);
 
   useEffect(() => {
     const clearRunning = () => {
@@ -513,12 +537,12 @@ export function FlowCanvas({
       sourceProjectId: projectId,
       copiedAt: Date.now(),
       nodes: selected.map((n) => {
-        const d = n.data as PipelineNodeData;
+        const wf = workflowNodeFromCanvas(n);
         return {
-          id: n.id,
-          type: d.type,
-          position: { x: n.position.x, y: n.position.y },
-          data: { label: getNodeSpec(d.type).label },
+          id: wf.id,
+          type: wf.type,
+          position: wf.position,
+          data: wf.data ?? {},
         };
       }),
       edges: edgesRef.current
@@ -642,6 +666,9 @@ export function FlowCanvas({
       const id = `n_${type}_${Date.now()}`;
       const maxX = nodes.reduce((m, n) => Math.max(m, n.position.x), 80);
       const spec = getNodeSpec(type);
+      const excelCount = nodes.filter(
+        (n) => (n.data as PipelineNodeData).type === "excel_gpt",
+      ).length;
       const newNode: Node<PipelineNodeData> = {
         id,
         type: "pipeline",
@@ -649,6 +676,10 @@ export function FlowCanvas({
         data: {
           nodeKey: id,
           type,
+          label: spec.label,
+          ...(type === "excel_gpt"
+            ? { slotIndex: Math.min(excelCount + 1, 5) }
+            : {}),
           status: "pending",
           progress: 0,
           progressText: null,
@@ -1417,8 +1448,11 @@ function workflowToReactFlowNodes(
       nodeRunByKey.set(nr.node_key, nr);
     }
   }
-  return wf.nodes.map((n) => {
+  const migrated = migrateWorkflowNodes(wf.nodes);
+  return migrated.map((n) => {
     const nr = nodeRunByKey.get(n.id);
+    const spec = getNodeSpec(n.type);
+    const data = (n.data ?? {}) as Record<string, unknown>;
     return {
       id: n.id,
       type: "pipeline",
@@ -1426,6 +1460,11 @@ function workflowToReactFlowNodes(
       data: {
         nodeKey: n.id,
         type: n.type,
+        label: (typeof data.label === "string" && data.label.trim()) || spec.label,
+        description: (data.description as string | undefined) ?? spec.description,
+        slotIndex: data.slotIndex as number | undefined,
+        inputSource: data.inputSource as PipelineNodeData["inputSource"],
+        uploadedFileName: data.uploadedFileName as string | undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,
