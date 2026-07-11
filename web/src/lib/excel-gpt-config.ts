@@ -20,6 +20,20 @@ export function attachmentLabel(source: ExcelGptInputSource, fileName?: string):
   return "project.xlsx";
 }
 
+/** Номер слота 1..5 из node_key (n_excel_gpt_2) или meta/canvas. */
+export function excelGptSlotIndex(
+  nodeKey?: string | null,
+  metaOrCanvasSlot?: number,
+): number {
+  if (typeof metaOrCanvasSlot === "number" && metaOrCanvasSlot >= 1 && metaOrCanvasSlot <= 5) {
+    return metaOrCanvasSlot;
+  }
+  if (!nodeKey) return 1;
+  const m = /excel_gpt_(\d+)/.exec(nodeKey) ?? /enrich_(\d+)/.exec(nodeKey);
+  if (m) return Math.min(Math.max(parseInt(m[1], 10), 1), 5);
+  return 1;
+}
+
 /** Папка промтов по slotIndex (legacy enrich_1..5). */
 export function excelGptPromptStepCode(slotIndex?: number): string {
   if (typeof slotIndex === "number" && slotIndex >= 1 && slotIndex <= 5) {

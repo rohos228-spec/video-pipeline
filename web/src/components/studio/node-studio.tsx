@@ -29,7 +29,7 @@ import {
   resolvePromptSlots,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
-import { isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
+import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,7 +42,6 @@ import {
   preferredPromptFileName,
   withSlotVariant,
 } from "@/lib/prompt-slot-storage";
-import { excelGptPromptStepCode } from "@/lib/excel-gpt-config";
 import {
   pickDefaultSheetForNode,
   xlsxPreviewFocusForNode,
@@ -109,11 +108,12 @@ export function NodeStudio({
       excel_gpt_nodes?: Record<string, ExcelGptNodeConfig>;
     };
     const cfg = meta.excel_gpt_nodes?.[nodeKey] ?? {};
+    const slotIndex = excelGptSlotIndex(nodeKey, cfg.slotIndex);
     return {
       label: cfg.label ?? spec.label,
       inputSource: cfg.inputSource ?? "project_xlsx",
       uploadedFileName: cfg.uploadedFileName,
-      slotIndex: cfg.slotIndex,
+      slotIndex,
     };
   }, [project.data?.meta, nodeKey, nodeType, spec.label]);
 
@@ -257,7 +257,6 @@ export function NodeStudio({
       const prompt_overrides = {
         ...((project.data?.prompt_overrides || {}) as Record<string, unknown>),
         [promptStepCode]: variant,
-        ...(isExcelGptNode(nodeType) ? { excel_gpt: variant } : {}),
       };
       await api.patchProject(projectId, { meta, prompt_overrides });
     },

@@ -30,6 +30,7 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import {
   attachmentLabel,
   excelGptAttachmentChipTitle,
+  excelGptSlotIndex,
   isExcelGptNode,
   type ExcelGptInputSource,
 } from "@/lib/excel-gpt-config";
@@ -56,6 +57,7 @@ export function NodeVMenu({
   projectId,
   inputSource,
   uploadedFileName,
+  slotIndex,
   onSelectPrompt,
   onOpenGptText,
   onAddPrompt,
@@ -93,6 +95,7 @@ export function NodeVMenu({
   projectId?: number | null;
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
+  slotIndex?: number;
   canvasZoom?: number;
 }) {
   const [mounted, setMounted] = useState(false);
@@ -142,6 +145,7 @@ export function NodeVMenu({
   });
   const outboundFiles = outbound.data?.files ?? [];
   const source: ExcelGptInputSource = inputSource ?? "project_xlsx";
+  const slotIdx = isExcelGptNode(nodeType) ? excelGptSlotIndex(nodeKey, slotIndex) : undefined;
   const excelAttachmentName = isExcelGptNode(nodeType)
     ? attachmentLabel(source, uploadedFileName)
     : "project.xlsx";
@@ -292,7 +296,7 @@ export function NodeVMenu({
           </p>
         )}
 
-        {outboundFiles.length > 0 && (
+        {outboundFiles.length > 0 && !isExcelGptNode(nodeType) && (
           <div className="mb-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
             <span className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">
               Отправляемые файлы

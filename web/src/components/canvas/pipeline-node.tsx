@@ -133,6 +133,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               projectId={actions.projectId}
               inputSource={d.inputSource}
               uploadedFileName={d.uploadedFileName}
+              slotIndex={d.slotIndex}
               canvasZoom={actions.canvasZoom}
               hasAssets={assetKind != null}
               onClose={() => actions.setVMenuNodeKey(null)}

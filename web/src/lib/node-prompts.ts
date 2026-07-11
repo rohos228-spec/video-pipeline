@@ -44,7 +44,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
   ],
   excel_gpt: [
-    { id: "attachment", title: "Excel", kind: "excel", stepCode: "excel_gpt" },
+    { id: "excel", title: "Excel", kind: "excel", stepCode: "excel_gpt" },
     { id: "main", title: "Промт доп. Excel", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
@@ -198,6 +198,22 @@ export function ensureBlocksPromptSlot(
   return [slot, ...slots];
 }
 
+/** Убирает дубли из старых custom_prompts (enrich_*, лишние gpt). */
+function normalizeExcelGptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {
+  const excel = slots.find((s) => s.kind === "excel");
+  const main =
+    slots.find((s) => s.id === "main") ??
+    slots.find((s) => s.kind === "gpt" && !s.custom);
+  const customs = slots.filter((s) => s.custom || s.id.startsWith("custom_"));
+  const out: NodePromptSlot[] = [];
+  if (excel) out.push(excel);
+  if (main) out.push(main);
+  for (const c of customs) {
+    if (!out.some((x) => x.id === c.id)) out.push(c);
+  }
+  return out;
+}
+
 /** Единая схема слотов: Excel всегда #1 (даже если custom_prompts его выкинул). */
 export function resolvePromptSlots(
   nodeType: string,
@@ -211,14 +227,7 @@ export function resolvePromptSlots(
   if (!nodeTypeRequiresExcel(nodeType)) {
     const filtered = raw.filter((s) => s.kind !== "text");
     if (isExcelGptNode(nodeType)) {
-      const attachment =
-        filtered.find((s) => s.kind === "excel") ??
-        defaultPromptSlots(nodeType).find((s) => s.kind === "excel");
-      const rest = filtered.filter((s) => s.kind !== "excel");
-      return ensureBlocksPromptSlot(
-        nodeType,
-        attachment ? [attachment, ...rest] : rest,
-      );
+      return ensureBlocksPromptSlot(nodeType, normalizeExcelGptSlots(filtered));
     }
     return ensureBlocksPromptSlot(nodeType, filtered);
   }
