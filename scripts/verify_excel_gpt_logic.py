@@ -39,6 +39,12 @@ def test_migration() -> None:
     print("[1] migrate enrich_* → excel_gpt")
     nodes = [
         {"id": "n_enrich_1", "type": "enrich_1", "position": {"x": 0, "y": 0}, "data": {}},
+        {
+            "id": "n_enrich_2",
+            "type": "enrich_2",
+            "position": {"x": 300, "y": 0},
+            "data": {"label": "Доп работа с EXCEL #2"},
+        },
         {"id": "n_enrich_3", "type": "enrich_3", "position": {"x": 600, "y": 0}, "data": {"label": "Custom"}},
     ]
     out = assign_slot_indices(migrate_enrich_nodes(nodes))
@@ -47,12 +53,15 @@ def test_migration() -> None:
         fail("enrich_1 not migrated")
     if slot_index_from_node(next(n for n in out if n["id"] == "n_enrich_1")) != 1:
         fail("slot 1 wrong after migrate")
-    if slot_index_from_node(next(n for n in out if n["id"] == "n_enrich_3")) != 2:
+    if slot_index_from_node(next(n for n in out if n["id"] == "n_enrich_3")) != 3:
         fail("slot renumber left-to-right failed")
+    legacy = next(n for n in out if n["id"] == "n_enrich_2")["data"].get("label")
+    if legacy != "Доп. Excel #2":
+        fail(f"legacy label not rewritten: {legacy!r}")
     custom = next(n for n in out if n["id"] == "n_enrich_3")["data"].get("label")
     if custom != "Custom":
         fail("custom label lost on migrate")
-    ok("migration + slot assignment")
+    ok("migration + slot assignment + legacy labels")
 
 
 def test_attachments(tmp: Path) -> None:

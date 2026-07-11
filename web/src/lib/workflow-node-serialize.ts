@@ -3,6 +3,22 @@ import { getNodeSpec } from "@/lib/node-catalog";
 import type { PipelineNodeData } from "@/components/canvas/pipeline-node";
 import type { WorkflowNode } from "@/lib/types";
 
+function isLegacyEnrichLabel(label: string | undefined): boolean {
+  if (!label?.trim()) return false;
+  const low = label.trim().toLowerCase();
+  return (
+    low.includes("дополнение") ||
+    low.includes("доп работа") ||
+    low.includes("доп. работа") ||
+    low.includes("enrich") ||
+    low.includes("excel #")
+  );
+}
+
+function defaultExcelGptLabel(slot: number): string {
+  return `Доп. Excel #${slot}`;
+}
+
 function migrateNodeType(type: string): string {
   if (type.startsWith("enrich_")) return "excel_gpt";
   return type;
@@ -45,12 +61,17 @@ export function assignExcelGptSlotIndices(nodes: WorkflowNode[]): WorkflowNode[]
   return nodes.map((n) => {
     if (n.type !== "excel_gpt") return n;
     const slotIndex = slotById.get(n.id) ?? 1;
+    const rawLabel = (n.data?.label as string) || "";
+    const label =
+      rawLabel.trim() && !isLegacyEnrichLabel(rawLabel)
+        ? rawLabel.trim()
+        : defaultExcelGptLabel(slotIndex);
     return {
       ...n,
       data: {
         ...(n.data || {}),
         slotIndex,
-        label: (n.data?.label as string) || `Доп. Excel #${slotIndex}`,
+        label,
       },
     };
   });
@@ -60,13 +81,18 @@ export function migrateWorkflowNodes(nodes: WorkflowNode[]): WorkflowNode[] {
   const migrated = nodes.map((n) => {
     if (!n.type.startsWith("enrich_")) return n;
     const slot = slotFromLegacyType(n.type);
+    const rawLabel = (n.data?.label as string) || "";
+    const label =
+      rawLabel.trim() && !isLegacyEnrichLabel(rawLabel)
+        ? rawLabel.trim()
+        : defaultExcelGptLabel(slot ?? 1);
     return {
       ...n,
       type: "excel_gpt",
       data: {
         ...(n.data || {}),
         slotIndex: slot ?? (n.data?.slotIndex as number | undefined),
-        label: (n.data?.label as string) || (slot ? `Доп. Excel #${slot}` : "Доп. Excel"),
+        label,
       },
     };
   });

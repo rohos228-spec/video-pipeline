@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import Workflow
 from app.orchestrator.default_graph import LAYOUT_VERSION, default_graph as _default_graph
+from app.services.excel_gpt_node import (
+    assign_slot_indices,
+    is_legacy_enrich_label,
+    migrate_enrich_nodes,
+)
 
 
 def default_workflow_needs_refresh(wf: Workflow) -> bool:
@@ -26,6 +31,12 @@ def default_workflow_needs_refresh(wf: Workflow) -> bool:
         return True
     if "excel_gpt" not in types and any("enrich" in t for t in types):
         return True
+    for n in wf.nodes or []:
+        typ = str(n.get("type") or "")
+        if typ.startswith("enrich_") or typ == "excel_gpt":
+            data = n.get("data") if isinstance(n.get("data"), dict) else {}
+            if is_legacy_enrich_label(str(data.get("label") or "")):
+                return True
     return False
 
 
@@ -57,6 +68,36 @@ async def apply_default_graph(session: AsyncSession, wf: Workflow) -> bool:
     return True
 
 
+async def migrate_workflow_enrich_nodes(session: AsyncSession, wf: Workflow) -> bool:
+    """Мигрирует enrich_* → excel_gpt и перезаписывает устаревшие подписи."""
+    nodes = list(wf.nodes or [])
+    if not nodes:
+        return False
+    has_enrich = any(str(n.get("type") or "").startswith("enrich_") for n in nodes)
+    has_legacy_labels = any(
+        is_legacy_enrich_label(
+            str((n.get("data") or {}).get("label") or "")
+        )
+        for n in nodes
+        if str(n.get("type") or "") == "excel_gpt"
+    )
+    if not has_enrich and not has_legacy_labels:
+        return False
+
+    from app.services.workflow_run_sync import sync_runs_from_workflow
+
+    wf.nodes = assign_slot_indices(migrate_enrich_nodes(nodes))
+    wf.version = (wf.version or 1) + 1
+    wf.updated_at = datetime.utcnow()
+    await sync_runs_from_workflow(session, wf)
+    logger.info(
+        "workflow #{} migrated enrich/excel_gpt labels ({} nodes)",
+        wf.id,
+        len(wf.nodes or []),
+    )
+    return True
+
+
 async def seed_default_workflow() -> None:
     """Создаёт или обновляет системный default Workflow."""
     nodes, edges = _default_graph()
@@ -82,6 +123,11 @@ async def seed_default_workflow() -> None:
                 meta={"layout_version": LAYOUT_VERSION},
             )
             session.add(wf)
-            return
+        else:
+            await apply_default_graph(session, existing)
 
-        await apply_default_graph(session, existing)
+        all_workflows = (await session.execute(select(Workflow))).scalars().all()
+        for wf in all_workflows:
+            if wf.is_default:
+                continue
+            await migrate_workflow_enrich_nodes(session, wf)

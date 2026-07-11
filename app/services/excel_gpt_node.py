@@ -28,6 +28,25 @@ def is_excel_gpt_node_type(node_type: str) -> bool:
     )
 
 
+def is_legacy_enrich_label(label: str | None) -> bool:
+    """Старые подписи enrich_1..5 / «Доп работа с Excel» — перезаписываем при миграции."""
+    if not label or not str(label).strip():
+        return False
+    low = str(label).strip().lower()
+    markers = (
+        "дополнение",
+        "доп работа",
+        "доп. работа",
+        "enrich",
+        "excel #",
+    )
+    return any(m in low for m in markers)
+
+
+def default_excel_gpt_label(slot: int) -> str:
+    return f"Доп. Excel #{slot}"
+
+
 def legacy_enrich_slot_from_type(node_type: str) -> int | None:
     if not node_type.startswith("enrich_"):
         return None
@@ -61,8 +80,9 @@ def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i, n in enumerate(excel_nodes[:MAX_EXCEL_GPT_SLOTS], start=1):
         data = dict(n.get("data") or {})
         data["slotIndex"] = i
-        if not data.get("label"):
-            data["label"] = f"Доп. Excel #{i}"
+        label = str(data.get("label") or "").strip()
+        if not label or is_legacy_enrich_label(label):
+            data["label"] = default_excel_gpt_label(i)
         out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
     keyed = {n["id"]: n for n in out}
     result: list[dict[str, Any]] = []
@@ -87,8 +107,9 @@ def migrate_enrich_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             slot = legacy_enrich_slot_from_type(typ)
             if slot is not None:
                 data.setdefault("slotIndex", slot)
-            if not data.get("label"):
-                data["label"] = f"Доп. Excel #{slot or 1}"
+            label = str(data.get("label") or "").strip()
+            if not label or is_legacy_enrich_label(label):
+                data["label"] = default_excel_gpt_label(slot or 1)
             migrated.append({**n, "type": EXCEL_GPT_NODE_TYPE, "data": data})
         else:
             migrated.append(n)
