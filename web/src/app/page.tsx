@@ -8,6 +8,7 @@ import { Inspector } from "@/components/inspector/inspector";
 import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
+import { ProjectMaterialsSheet } from "@/components/project/project-materials-sheet";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { api } from "@/lib/api";
@@ -19,6 +20,7 @@ export default function HomePage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
@@ -34,6 +36,18 @@ export default function HomePage() {
     window.addEventListener("studio-open-fleet", openFleet);
     return () => window.removeEventListener("studio-open-fleet", openFleet);
   }, []);
+
+  useEffect(() => {
+    const openMaterials = () => {
+      if (selectedProjectId == null) {
+        toast.error("Выбери проект слева");
+        return;
+      }
+      setMaterialsOpen(true);
+    };
+    window.addEventListener("studio-open-materials", openMaterials);
+    return () => window.removeEventListener("studio-open-materials", openMaterials);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     const openFrames = () => {
@@ -116,6 +130,11 @@ export default function HomePage() {
             setSelectedNodeKey(null);
             setStudioOpen(false);
           }}
+        />
+        <ProjectMaterialsSheet
+          projectId={selectedProjectId}
+          open={materialsOpen}
+          onOpenChange={setMaterialsOpen}
         />
         <Inspector
           projectId={selectedProjectId}
