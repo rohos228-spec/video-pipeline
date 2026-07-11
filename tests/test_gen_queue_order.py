@@ -105,12 +105,40 @@ async def test_user_stop_blocks_later_in_queue(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_normalize_sorts_by_project_id(
-    monkeypatch,
+async def test_gen_queue_normalize_sorts_by_sidebar_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
-    from app.services.sidebar_layout import _normalize_gen_queue
+    from app.services import sidebar_layout as sl
 
-    assert _normalize_gen_queue([4, 1, 3, 2]) == [1, 2, 3, 4]
+    layout_path = tmp_path / "sidebar_layout.json"
+    layout_path.write_text(
+        '{"folders":[],"project_layout":{"1":{"folder_id":null,"order":0},'
+        '"2":{"folder_id":null,"order":1},"3":{"folder_id":null,"order":2},'
+        '"4":{"folder_id":null,"order":3}},"gen_queue":[]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sl.settings, "data_dir", tmp_path)
+    assert sl._normalize_gen_queue([4, 1, 3, 2]) == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rolls_back_out_of_turn_planning(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.gen_queue import gen_queue_reconcile
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [2, 3, 4],
+    )
+    await _add(session, 2, status=ProjectStatus.paused, until="script")
+    p3 = await _add(session, 3, status=ProjectStatus.planning, until="script")
+    rolled = await gen_queue_reconcile(session)
+    await session.refresh(p3)
+    assert rolled == 1
+    assert p3.status is ProjectStatus.new
 
 
 @pytest.mark.asyncio

@@ -307,6 +307,18 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
             _last_mass_pause_log = False
         try:
             async with session_scope() as s:
+                from app.services.gen_queue import gen_queue_reconcile, gen_queue_tick
+
+                rolled = await gen_queue_reconcile(s)
+                if rolled:
+                    await s.commit()
+                    logger.info("gen_queue startup reconcile: rolled back {} runner(s)", rolled)
+                await gen_queue_tick(s)
+                await s.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("gen_queue startup reconcile failed")
+        try:
+            async with session_scope() as s:
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()

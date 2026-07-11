@@ -2,11 +2,11 @@
 # Запуск из корня репозитория:
 #   powershell -ExecutionPolicy Bypass -File scripts\Update-Hotfix-FromGitHub.ps1
 #
-# Ветка с фиксами: cursor/restore-legacy-prompts-fc98 (PR #89)
+# Ветка с фиксами: devin/windows-installer
 
 $ErrorActionPreference = "Stop"
 
-$Branch = "cursor/restore-legacy-prompts-fc98"
+$Branch = "devin/windows-installer"
 $Repo = "rohos228-spec/video-pipeline"
 $BaseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
 
@@ -25,6 +25,7 @@ $Files = @(
     "app/services/run_sync.py",
     "app/services/project_state.py",
     "app/services/project_control.py",
+    "app/services/project_steps.py",
     "app/services/step_data_guard.py",
     "app/services/plan_validation.py",
     "web/src/lib/node-run-status.ts"
@@ -84,7 +85,7 @@ $markers = @{
     "app\services\sidebar_layout.py"  = "_normalize_gen_queue"
     "app\services\xlsx_versioning.py" = "normalize_xlsx_to_reference_layout"
     "app\bots\chatgpt.py"             = "attach-guard-v85-iron-stop"
-    "app\hotfix_build.py"             = "hotfix-20260710-strict-queue-v3"
+    "app\hotfix_build.py"             = "hotfix-20260711-queue-coordinator-v4"
 }
 $missing = 0
 foreach ($rel in $markers.Keys) {

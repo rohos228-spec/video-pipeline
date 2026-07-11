@@ -57,6 +57,7 @@ def save_layout(data: dict[str, Any]) -> None:
 
 
 def _normalize_gen_queue(raw: list[Any]) -> list[int]:
+    """Уникальные ID в порядке сайдбара (order), затем по ID."""
     out: list[int] = []
     seen: set[int] = set()
     for item in raw:
@@ -68,7 +69,20 @@ def _normalize_gen_queue(raw: list[Any]) -> list[int]:
             continue
         seen.add(pid)
         out.append(pid)
-    out.sort()
+    layout: dict[str, Any] = dict(load_layout().get("project_layout") or {})
+
+    def _sort_key(pid: int) -> tuple[int, int]:
+        entry = layout.get(str(pid))
+        if isinstance(entry, dict):
+            try:
+                order = int(entry.get("order"))
+            except (TypeError, ValueError):
+                order = 999999
+        else:
+            order = 999999
+        return (order, pid)
+
+    out.sort(key=_sort_key)
     return out
 
 

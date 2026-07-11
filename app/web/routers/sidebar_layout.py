@@ -136,7 +136,48 @@ async def toggle_gen_queue(body: GenQueueToggle) -> dict:
     }
 
 
-@router.post("/gen-queue/enqueue")
+class GenQueueBulkEnqueue(BaseModel):
+    project_ids: list[int] = Field(min_length=1)
+    mode: Literal["full", "until_node"] = "full"
+    target_node_key: str | None = None
+    target_node_type: str | None = None
+
+
+@router.post("/gen-queue/bulk-enqueue")
+async def bulk_enqueue_gen_queue(body: GenQueueBulkEnqueue) -> dict:
+    """Поставить несколько проектов в очередь за раз (порядок = порядок в списке)."""
+    async with session_scope() as session:
+        projects: list[Project] = []
+        for pid in body.project_ids:
+            project = (
+                await session.execute(select(Project).where(Project.id == pid))
+            ).scalar_one_or_none()
+            if project is None:
+                raise HTTPException(status_code=404, detail=f"project not found: {pid}")
+            if not project.auto_mode:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Включите auto_mode для проекта #{pid}",
+                )
+            projects.append(project)
+        for project in projects:
+            await set_gen_queue_run(
+                session,
+                project,
+                mode=body.mode,
+                target_node_key=body.target_node_key,
+                target_node_type=body.target_node_type,
+            )
+        layout_svc.set_gen_queue(body.project_ids)
+        await session.commit()
+    queue = layout_svc.get_gen_queue()
+    positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
+    return {
+        "gen_queue": queue,
+        "gen_queue_positions": positions,
+    }
+
+
 async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
     async with session_scope() as session:
         project = (

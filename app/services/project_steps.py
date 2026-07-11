@@ -41,8 +41,14 @@ async def start_step(
     session: AsyncSession,
     project: Project,
     step_code: str,
+    *,
+    skip_queue_guard: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    if not skip_queue_guard:
+        from app.services.gen_queue import assert_can_start_in_queue
+
+        await assert_can_start_in_queue(session, project)
     step = step_by_code(step_code)
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
