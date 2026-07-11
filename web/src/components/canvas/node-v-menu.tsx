@@ -20,7 +20,6 @@ import type { NodePromptSlot } from "@/lib/node-prompts";
 import {
   gptTextSlotForNode,
   isCustomPromptSlot,
-  nodeTypeRequiresExcel,
   resolvePromptSlots,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
@@ -150,7 +149,8 @@ export function NodeVMenu({
 
   const menuSlots = resolvePromptSlots(nodeType, slots);
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
-  const showExcelPreview = nodeTypeRequiresExcel(nodeType) && projectId != null;
+  const showExcelPreview =
+    !isExcelGptNode(nodeType) && excelSlot != null && projectId != null;
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
@@ -334,7 +334,7 @@ export function NodeVMenu({
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
           )}
-          {excelSlot && (
+          {excelSlot && !isExcelGptNode(nodeType) && (
             <MenuAction
               icon={FileSpreadsheet}
               label="Просмотр Excel"

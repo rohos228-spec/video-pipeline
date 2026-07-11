@@ -20,7 +20,6 @@ export function pickDefaultSheetForNode(nodeType: string, sheets: string[]): str
     nodeType === "split" ||
     nodeType === "script" ||
     nodeType.startsWith("enrich_") ||
-    nodeType === "excel_gpt" ||
     nodeType === "image_prompts" ||
     nodeType === "images" ||
     nodeType === "animation_prompts" ||
@@ -57,7 +56,6 @@ export function xlsxPreviewFocusForNode(nodeType: string): {
     nodeType === "split" ||
     nodeType === "script" ||
     nodeType.startsWith("enrich_") ||
-    nodeType === "excel_gpt" ||
     nodeType === "image_prompts"
   ) {
     return {

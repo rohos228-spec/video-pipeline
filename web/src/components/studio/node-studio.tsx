@@ -24,7 +24,6 @@ import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
-  isEnrichNode,
   nodeTypeRequiresExcel,
   pipelinePromptSlots,
   resolvePromptSlots,
@@ -145,10 +144,10 @@ export function NodeStudio({
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
   const showExcel =
-    nodeTypeRequiresExcel(nodeType) ||
-    allSlots.some((s) => s.kind === "excel") ||
-    isEnrichNode(nodeType) ||
-    tab === "excel";
+    !isExcelGptNode(nodeType) &&
+    (nodeTypeRequiresExcel(nodeType) ||
+      allSlots.some((s) => s.kind === "excel") ||
+      tab === "excel");
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
@@ -171,7 +170,7 @@ export function NodeStudio({
     enabled:
       open &&
       projectId != null &&
-      (tab === "excel" || isEnrichNode(nodeType)) &&
+      tab === "excel" &&
       Boolean(xlsxSheet || xlsxSheetsMeta.data?.sheets?.length),
   });
 

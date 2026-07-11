@@ -1,5 +1,6 @@
 /** Схема промтов для ноды (меню «V»). */
 
+import { isExcelGptNode } from "./excel-gpt-config";
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
@@ -17,7 +18,7 @@ export interface NodePromptSlot {
   custom?: boolean;
 }
 
-const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed"]);
+const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt"]);
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
@@ -43,7 +44,6 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "main", title: "Промт предмета", kind: "gpt", stepCode: "items" },
   ],
   excel_gpt: [
-    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "excel_gpt" },
     { id: "main", title: "Промт доп. Excel", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
@@ -208,9 +208,12 @@ export function resolvePromptSlots(
   const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel" && s.id !== "verdict");
 
   if (!nodeTypeRequiresExcel(nodeType)) {
+    const filtered = raw.filter((s) => s.kind !== "text");
     return ensureBlocksPromptSlot(
       nodeType,
-      raw.filter((s) => s.kind !== "text"),
+      isExcelGptNode(nodeType)
+        ? filtered.filter((s) => s.kind !== "excel")
+        : filtered,
     );
   }
 
