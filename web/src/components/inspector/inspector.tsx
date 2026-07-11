@@ -12,6 +12,7 @@ import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { ProjectSettingsPanel } from "@/components/inspector/project-settings";
 import { TopicEditor } from "@/components/inspector/topic-editor";
+import { MontageHandoffCard } from "@/components/fleet/montage-handoff-card";
 import { useUi } from "@/components/shell/topbar";
 
 export function Inspector({
@@ -57,6 +58,7 @@ export function Inspector({
           {selectedNodeKey && (
             <div className="flex flex-col gap-3">
               <NodeInspector nodeKey={selectedNodeKey} projectId={projectId} />
+              {project.data ? <MontageHandoffCard project={project.data} /> : null}
               {onOpenNodeStudio && nodeTypeFromKey(selectedNodeKey) !== "topic" && (
                 <Button size="sm" variant="default" className="w-full" onClick={onOpenNodeStudio}>
                   Открыть студию ноды (GPT)
@@ -81,6 +83,7 @@ export function Inspector({
               <Row label="Главный герой">{formatHeroMode(project.data.hero_mode)}</Row>
               <Row label="Создан">{formatRelativeTime(project.data.created_at)}</Row>
               <Row label="Обновлён">{formatRelativeTime(project.data.updated_at)}</Row>
+              <MontageHandoffCard project={project.data} />
               <ProjectSettingsPanel project={project.data} />
               {project.data.general_plan && (
                 <div>

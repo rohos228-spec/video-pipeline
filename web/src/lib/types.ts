@@ -150,6 +150,7 @@ export interface ProjectDetail extends ProjectSummary {
   prompt_overrides: Record<string, unknown>;
   gpt_text_overrides: Record<string, string>;
   meta: Record<string, unknown>;
+  montage_handoff_pending?: boolean;
   /** Воркер держит asyncio-task (даже если status уже откатили). */
   generation_active?: boolean;
 }
@@ -240,6 +241,21 @@ export interface ArtifactDTO {
   path: string;
   meta: Record<string, unknown>;
   created_at: string;
+}
+
+export interface FleetTransferState {
+  project_id: number;
+  job?: string;
+  phase: string;
+  direction?: string;
+  percent?: number;
+  sent_mb?: number;
+  total_mb?: number;
+  message?: string;
+  source_node?: string;
+  target?: string;
+  slug?: string;
+  status: "active" | "done" | "error";
 }
 
 /**

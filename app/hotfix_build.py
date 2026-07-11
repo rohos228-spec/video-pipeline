@@ -1,6 +1,6 @@
 """Идентификатор пакета hotfix — виден в логах и /api/studio-version."""
 
-PIPELINE_HOTFIX_ID = "hotfix-20260711-dequeue-no-autoadvance-v10"
+PIPELINE_HOTFIX_ID = "hotfix-20260711-restore-fleet-ui-v11"
 
 # Маркеры для scripts/Update-Hotfix-FromGitHub.ps1 (проверка после скачивания).
 HOTFIX_MARKERS: dict[str, str] = {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity } from "lucide-react";
+import { useEffect, useState, createContext, useContext } from "react";
+import { Sparkles, Activity, Network, LayoutGrid } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -29,6 +29,15 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
     setFramesProjectId(id);
     setFramesOpen(true);
   };
+
+  useEffect(() => {
+    const onOpenFrames = (ev: Event) => {
+      const pid = (ev as CustomEvent<{ projectId?: number }>).detail?.projectId;
+      if (pid != null) openFrames(pid);
+    };
+    window.addEventListener("studio-open-frames", onOpenFrames);
+    return () => window.removeEventListener("studio-open-frames", onOpenFrames);
+  }, []);
 
   return (
     <UiContext.Provider value={{ framesProjectId, openFrames }}>
@@ -62,6 +71,26 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           >
             <Sparkles className="h-3.5 w-3.5" />
             Промты
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => window.dispatchEvent(new CustomEvent("studio-open-frames-topbar"))}
+            className="gap-2 text-xs"
+            title="Кадры, озвучка и промты проекта"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            Кадры
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => window.dispatchEvent(new CustomEvent("studio-open-fleet"))}
+            className="gap-2 text-xs"
+            title="Станции Tailscale и очередь монтажа"
+          >
+            <Network className="h-3.5 w-3.5" />
+            Сеть
           </Button>
           <Button
             variant="ghost"
