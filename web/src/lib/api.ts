@@ -271,6 +271,11 @@ export const api = {
       { method: "POST", body: fd },
     );
   },
+  remapExcelGptNodes: (projectId: number, mapping: Record<string, string>) =>
+    http<{ ok: boolean; remapped: string[] }>(
+      `/api/projects/${projectId}/excel-gpt/remap-keys`,
+      { method: "POST", body: JSON.stringify({ mapping }) },
+    ),
 
   // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────
   getExcelHero: (projectId: number) =>

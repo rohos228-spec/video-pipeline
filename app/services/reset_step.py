@@ -226,30 +226,61 @@ def _enrich_slot_wiper(slot: int):
        вызывающим кодом reset_step (мы не дублируем это здесь).
     """
     async def _wipe(session: AsyncSession, project: Project) -> dict[str, Any]:
+        from app.services.excel_gpt_node import clear_slot_completion_meta
+
         overrides = dict(project.prompt_overrides or {})
         code = f"enrich_{slot}"
-        had = code in overrides
-        if had:
+        had_legacy = code in overrides
+        if had_legacy:
             overrides.pop(code, None)
+        had_excel = "excel_gpt" in overrides
+        if had_excel:
+            overrides.pop("excel_gpt", None)
+        if had_legacy or had_excel:
             project.prompt_overrides = overrides
-        return {"override_cleared": had, "slot": slot}
+        cleared = await clear_slot_completion_meta(session, project, slot)
+        return {
+            "override_cleared": had_legacy or had_excel,
+            "slot": slot,
+            **cleared,
+        }
     return _wipe
 
 
 async def _wipe_excel_gpt(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс универсальной ноды excel_gpt (общий промт + meta слота)."""
+    from app.orchestrator.graph.planner import load_graph_for_project
+    from app.services.excel_gpt_node import (
+        EXCEL_GPT_NODE_TYPE,
+        clear_slot_completion_meta,
+        slot_index_from_node,
+    )
+
     overrides = dict(project.prompt_overrides or {})
     had = "excel_gpt" in overrides
     if had:
         overrides.pop("excel_gpt", None)
         project.prompt_overrides = overrides
     meta = dict(project.meta or {})
+    graph = await load_graph_for_project(session, project)
     nk = str(meta.get("active_excel_gpt_node_key") or "")
-    if nk:
-        done = [str(k) for k in (meta.get("excel_gpt_completed_keys") or []) if k != nk]
-        meta["excel_gpt_completed_keys"] = done
-        project.meta = meta
-    return {"override_cleared": had, "node_key": nk or None}
+    if not nk or nk not in graph._by_id:
+        done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if done_keys:
+            nk = done_keys[-1]
+        else:
+            excel_ids = [
+                k
+                for k, n in graph._by_id.items()
+                if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+            ]
+            if len(excel_ids) == 1:
+                nk = excel_ids[0]
+    cleared: dict[str, Any] = {}
+    if nk and nk in graph._by_id:
+        slot = slot_index_from_node(graph._by_id[nk])
+        cleared = await clear_slot_completion_meta(session, project, slot, node_key=nk)
+    return {"override_cleared": had, "node_key": nk or None, **cleared}
 
 
 async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any]:

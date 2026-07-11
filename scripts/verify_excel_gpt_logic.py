@@ -160,6 +160,53 @@ async def test_attachments_api_shape(tmp: Path) -> None:
     ok("attachments_for_step node_key")
 
 
+async def test_reset_meta_clears_slots() -> None:
+    print("[6] reset meta clears enrich_completed_slots")
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base
+    from app.services.excel_gpt_node import clear_slot_completion_meta
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    nodes, _ = default_graph()
+    async with Session() as session:
+        p = Project(id=2, slug="reset", topic="t", status=ProjectStatus.enrich_2_ready)
+        p.meta = {
+            "enrich_completed_slots": [1, 2],
+            "excel_gpt_completed_keys": ["n_excel_gpt_1", "n_excel_gpt_2"],
+            "active_excel_gpt_node_key": "n_excel_gpt_2",
+            "graph_executor": True,
+        }
+        session.add(p)
+        from app.models import Workflow, WorkflowRun
+
+        wf = Workflow(name="t", nodes=nodes, edges=[], is_default=False)
+        session.add(wf)
+        await session.flush()
+        run = WorkflowRun(
+            workflow_id=wf.id,
+            project_id=p.id,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.commit()
+        res = await clear_slot_completion_meta(session, p, 2, node_key="n_excel_gpt_2")
+        await session.commit()
+        await session.refresh(p)
+        meta = p.meta or {}
+        if 2 in (meta.get("enrich_completed_slots") or []):
+            fail("enrich_completed_slots still has slot 2")
+        if "n_excel_gpt_2" in (meta.get("excel_gpt_completed_keys") or []):
+            fail("excel_gpt_completed_keys still has n_excel_gpt_2")
+        if res.get("slots_cleared") != [2]:
+            fail(f"unexpected slots_cleared: {res}")
+    ok("reset meta slot 2")
+
+
 def main() -> None:
     print("=== excel_gpt logic verification ===")
     with tempfile.TemporaryDirectory() as td:
@@ -169,6 +216,7 @@ def main() -> None:
         asyncio.run(test_planner_states())
         test_spec_step_code()
         asyncio.run(test_attachments_api_shape(tmp))
+        asyncio.run(test_reset_meta_clears_slots())
     print("=== ALL CHECKS PASSED ===")
 
 

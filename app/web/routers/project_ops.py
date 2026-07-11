@@ -757,3 +757,24 @@ async def upload_excel_gpt_file(
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "fileName": safe_name, "path": str(dest)}
+
+
+@router.post("/{project_id}/excel-gpt/remap-keys")
+async def remap_excel_gpt_keys(
+    project_id: int,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.excel_gpt_node import remap_node_keys_in_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    raw = payload.get("mapping")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="mapping dict required")
+    mapping = {str(k): str(v) for k, v in raw.items() if k and v}
+    remapped = remap_node_keys_in_meta(p, mapping)
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "remapped": remapped}

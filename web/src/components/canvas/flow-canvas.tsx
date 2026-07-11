@@ -576,6 +576,12 @@ export function FlowCanvas({
     clip.nodes.forEach((n, idx) => {
       idMap.set(n.id, `n_${n.type}_${stamp}_${idx}`);
     });
+    const excelRemap: Record<string, string> = {};
+    clip.nodes.forEach((n) => {
+      if (n.type !== "excel_gpt") return;
+      const newId = idMap.get(n.id);
+      if (newId) excelRemap[n.id] = newId;
+    });
     const offsetX = 56;
     const offsetY = 56;
     const newNodes: Node<PipelineNodeData>[] = clip.nodes.map((n) => {
@@ -591,11 +597,14 @@ export function FlowCanvas({
         data: {
           nodeKey: newId,
           type: n.type,
-          label: srcData.label,
-          description: srcData.description,
-          slotIndex: srcData.slotIndex,
-          inputSource: srcData.inputSource,
-          uploadedFileName: srcData.uploadedFileName,
+          label: (srcData.label as string | undefined) ?? (n.data?.label as string | undefined),
+          description: srcData.description ?? (n.data?.description as string | undefined),
+          slotIndex: (srcData.slotIndex as number | undefined) ?? (n.data?.slotIndex as number | undefined),
+          inputSource: (srcData.inputSource as PipelineNodeData["inputSource"]) ??
+            (n.data?.inputSource as PipelineNodeData["inputSource"]),
+          uploadedFileName:
+            (srcData.uploadedFileName as string | undefined) ??
+            (n.data?.uploadedFileName as string | undefined),
           status: "pending",
           progress: 0,
           progressText: null,
@@ -624,6 +633,23 @@ export function FlowCanvas({
     setSelectedCount(newNodes.length);
     if (newNodes[0]) {
       onSelectNode((newNodes[0].data as PipelineNodeData).nodeKey);
+    }
+    if (projectId && Object.keys(excelRemap).length > 0) {
+      void api.remapExcelGptNodes(projectId, excelRemap).catch((e) => {
+        toast.error(`Не перенесены настройки Excel: ${errorMessageFromUnknown(e)}`);
+      });
+      for (const [oldId, newId] of Object.entries(excelRemap)) {
+        const src = clip.nodes.find((n) => n.id === oldId);
+        const cfg = (src?.data ?? {}) as Record<string, unknown>;
+        void api
+          .patchExcelGptConfig(projectId, newId, {
+            label: cfg.label as string | undefined,
+            inputSource: cfg.inputSource as string | undefined,
+            uploadedFileName: cfg.uploadedFileName as string | undefined,
+            slotIndex: cfg.slotIndex as number | undefined,
+          })
+          .catch(() => undefined);
+      }
     }
     scheduleSaveWorkflow();
     const fromOther =

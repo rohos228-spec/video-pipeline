@@ -142,7 +142,14 @@ export function inferNodeStatusFromProject(
 /** Ключ структуры графа — без updated_at и позиций (сохранение канваса не сбрасывает статусы). */
 export function workflowStructureKey(wf: WorkflowDetail): string {
   const nodes = [...wf.nodes]
-    .map((n) => `${n.id}:${n.type}`)
+    .map((n) => {
+      const data = (n.data ?? {}) as Record<string, unknown>;
+      const slot =
+        n.type === "excel_gpt" && typeof data.slotIndex === "number"
+          ? `:s${data.slotIndex}`
+          : "";
+      return `${n.id}:${n.type}${slot}`;
+    })
     .sort()
     .join(",");
   const edges = [...wf.edges]

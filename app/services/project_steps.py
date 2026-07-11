@@ -182,17 +182,40 @@ async def start_step(
     running_status = step.running_status
     if step_code == "excel_gpt":
         from app.orchestrator.graph.planner import load_graph_for_project
-        from app.services.excel_gpt_node import running_status_for_slot, slot_index_from_node
+        from app.services.excel_gpt_node import (
+            EXCEL_GPT_NODE_TYPE,
+            running_status_for_slot,
+            slot_index_from_node,
+        )
 
         meta = dict(project.meta or {})
-        nk = node_key or meta.get("active_excel_gpt_node_key")
-        if nk:
-            graph = await load_graph_for_project(session, project)
-            node = graph._by_id.get(str(nk))
-            if node is not None:
-                running_status = running_status_for_slot(slot_index_from_node(node))
-                meta["active_excel_gpt_node_key"] = str(nk)
+        graph = await load_graph_for_project(session, project)
+        nk = str(node_key or meta.get("active_excel_gpt_node_key") or "")
+        if not nk:
+            excel_keys = [
+                k
+                for k, n in graph._by_id.items()
+                if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+            ]
+            if len(excel_keys) == 1:
+                nk = excel_keys[0]
+            else:
+                raise ValueError(
+                    "excel_gpt: выберите ноду на канвасе и запустите шаг из меню V "
+                    f"(в графе excel_gpt нод: {len(excel_keys)})"
+                )
+        node = graph._by_id.get(nk)
+        if node is None or str(node.get("type") or "") != EXCEL_GPT_NODE_TYPE:
+            if "active_excel_gpt_node_key" in meta:
+                meta.pop("active_excel_gpt_node_key", None)
                 project.meta = meta
+                await session.flush()
+            raise ValueError(
+                f"excel_gpt: нода {nk!r} не найдена в графе — сохраните workflow"
+            )
+        running_status = running_status_for_slot(slot_index_from_node(node))
+        meta["active_excel_gpt_node_key"] = nk
+        project.meta = meta
     project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

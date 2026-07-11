@@ -38,6 +38,9 @@ export function ExcelGptSettingsPanel({
         label: res.fileName,
       });
       void qc.invalidateQueries({ queryKey: ["step-attachments", projectId] });
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+      }, 80);
       toast.success(`Файл загружен: ${res.fileName}`);
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -48,6 +51,9 @@ export function ExcelGptSettingsPanel({
       api.patchExcelGptConfig(projectId, nodeKey, patch),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["step-attachments", projectId] });
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+      }, 80);
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

@@ -183,3 +183,79 @@ def attachment_paths(project: Project, node_key: str | None = None) -> list[Path
     if xlsx.is_file():
         paths.append(xlsx)
     return paths
+
+
+async def clear_slot_completion_meta(
+    session: Any,
+    project: Project,
+    slot: int,
+    *,
+    node_key: str | None = None,
+) -> dict[str, Any]:
+    """Сбросить enrich_completed_slots и excel_gpt_completed_keys для слота."""
+    from app.orchestrator.graph.planner import load_graph_for_project
+
+    meta = dict(project.meta or {})
+    completed = [int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()]
+    slots_cleared: list[int] = []
+    if slot in completed:
+        completed.remove(slot)
+        slots_cleared.append(slot)
+        meta["enrich_completed_slots"] = sorted(completed)
+
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    keys_cleared: list[str] = []
+    targets: set[str] = set()
+    if node_key:
+        targets.add(str(node_key))
+    graph = await load_graph_for_project(session, project)
+    for nid, n in graph._by_id.items():
+        if str(n.get("type") or "") != EXCEL_GPT_NODE_TYPE:
+            continue
+        if slot_index_from_node(n) == slot:
+            targets.add(str(nid))
+    for k in list(keys):
+        if k in targets:
+            keys.remove(k)
+            keys_cleared.append(k)
+    meta["excel_gpt_completed_keys"] = keys
+    if node_key and str(meta.get("active_excel_gpt_node_key") or "") == str(node_key):
+        meta.pop("active_excel_gpt_node_key", None)
+    project.meta = meta
+    return {
+        "slot": slot,
+        "slots_cleared": slots_cleared,
+        "keys_cleared": keys_cleared,
+    }
+
+
+def remap_node_keys_in_meta(project: Project, mapping: dict[str, str]) -> list[str]:
+    """Перенести excel_gpt_nodes и upload-файлы при смене node_key (paste)."""
+    import shutil
+
+    meta = dict(project.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    remapped: list[str] = []
+    for old_key, new_key in mapping.items():
+        old_s, new_s = str(old_key), str(new_key)
+        if not old_s or not new_s or old_s == new_s:
+            continue
+        cfg = configs.pop(old_s, None)
+        if cfg:
+            configs[new_s] = dict(cfg)
+            remapped.append(new_s)
+        old_dir = upload_dir(project, old_s)
+        if old_dir.is_dir():
+            new_dir = upload_dir(project, new_s)
+            new_dir.mkdir(parents=True, exist_ok=True)
+            for f in old_dir.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, new_dir / f.name)
+    active = meta.get("active_excel_gpt_node_key")
+    if active and str(active) in mapping:
+        meta["active_excel_gpt_node_key"] = mapping[str(active)]
+    done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    meta["excel_gpt_completed_keys"] = [mapping.get(k, k) for k in done_keys]
+    meta["excel_gpt_nodes"] = configs
+    project.meta = meta
+    return remapped
