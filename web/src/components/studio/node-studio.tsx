@@ -27,6 +27,7 @@ import {
   nodeTypeRequiresExcel,
   pipelinePromptSlots,
   resolvePromptSlots,
+  resolvePromptSlotsForNode,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
 import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
@@ -137,11 +138,9 @@ export function NodeStudio({
     enabled: open && projectId != null,
   });
   const allSlots = useMemo(() => {
-    if (promptSlotsProp?.length) return resolvePromptSlots(nodeType, promptSlotsProp);
+    if (promptSlotsProp?.length) return resolvePromptSlots(nodeType, promptSlotsProp, nodeKey ?? undefined);
     const meta = (project.data?.meta || {}) as { custom_prompts?: Record<string, NodePromptSlot[]> };
-    if (nodeKey && meta.custom_prompts?.[nodeKey]) {
-      return resolvePromptSlots(nodeType, meta.custom_prompts[nodeKey]);
-    }
+    if (nodeKey) return resolvePromptSlotsForNode(nodeKey, nodeType, meta.custom_prompts);
     return resolvePromptSlots(nodeType, null);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 

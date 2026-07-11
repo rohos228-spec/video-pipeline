@@ -14,7 +14,7 @@ import { AssetTray } from "@/components/studio/asset-tray";
 import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import { gptTextSlotForNode, resolvePromptSlots, type NodePromptSlot } from "@/lib/node-prompts";
+import { gptTextSlotForNode, resolvePromptSlots, resolvePromptSlotsForNode, type NodePromptSlot } from "@/lib/node-prompts";
 import { isExcelGptNode } from "@/lib/excel-gpt-config";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
@@ -328,8 +328,7 @@ export function StudioWorkspace({
       const meta = (project.data?.meta || {}) as {
         custom_prompts?: Record<string, NodePromptSlot[]>;
       };
-      const stored = meta.custom_prompts?.[nodeKey];
-      return resolvePromptSlots(nodeType, stored);
+      return resolvePromptSlotsForNode(nodeKey, nodeType, meta.custom_prompts);
     },
     [project.data?.meta],
   );

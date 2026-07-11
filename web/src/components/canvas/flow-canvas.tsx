@@ -63,6 +63,7 @@ import {
   writeCanvasClipboard,
   type CanvasClipboardPayload,
 } from "@/lib/canvas-clipboard";
+import { excelGptSlotIndex } from "@/lib/excel-gpt-config";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
 import {
   assignExcelGptSlotIndices,
@@ -193,6 +194,37 @@ export function FlowCanvas({
     });
     setEdges(baseEdges);
   }, [workflow.data, baseNodes, baseEdges, graphVersion, nodes.length, setNodes, setEdges]);
+
+  // excel_gpt: подтянуть inputSource/label из project.meta → data ноды (для V-меню).
+  useEffect(() => {
+    if (!project.data?.meta || nodes.length === 0) return;
+    const configs = (project.data.meta as { excel_gpt_nodes?: Record<string, Record<string, unknown>> })
+      .excel_gpt_nodes;
+    if (!configs || !Object.keys(configs).length) return;
+    setNodes((prev) => {
+      let changed = false;
+      const next = prev.map((n) => {
+        const d = n.data as PipelineNodeData;
+        if (d.type !== "excel_gpt") return n;
+        const cfg = configs[n.id];
+        if (!cfg) return n;
+        const patch: Partial<PipelineNodeData> = {
+          slotIndex: excelGptSlotIndex(n.id, (cfg.slotIndex as number | undefined) ?? d.slotIndex),
+        };
+        if (cfg.label && cfg.label !== d.label) patch.label = cfg.label as string;
+        if (cfg.inputSource && cfg.inputSource !== d.inputSource) {
+          patch.inputSource = cfg.inputSource as PipelineNodeData["inputSource"];
+        }
+        if (cfg.uploadedFileName !== undefined && cfg.uploadedFileName !== d.uploadedFileName) {
+          patch.uploadedFileName = cfg.uploadedFileName as string;
+        }
+        if (!Object.keys(patch).length) return n;
+        changed = true;
+        return { ...n, data: { ...d, ...patch } };
+      });
+      return changed ? next : prev;
+    });
+  }, [project.data?.meta, nodes.length, setNodes]);
 
   // Статусы run — отдельно, без сброса позиций нод.
   useEffect(() => {
