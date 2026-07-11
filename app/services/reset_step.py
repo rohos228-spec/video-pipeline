@@ -236,6 +236,22 @@ def _enrich_slot_wiper(slot: int):
     return _wipe
 
 
+async def _wipe_excel_gpt(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс универсальной ноды excel_gpt (общий промт + meta слота)."""
+    overrides = dict(project.prompt_overrides or {})
+    had = "excel_gpt" in overrides
+    if had:
+        overrides.pop("excel_gpt", None)
+        project.prompt_overrides = overrides
+    meta = dict(project.meta or {})
+    nk = str(meta.get("active_excel_gpt_node_key") or "")
+    if nk:
+        done = [str(k) for k in (meta.get("excel_gpt_completed_keys") or []) if k != nk]
+        meta["excel_gpt_completed_keys"] = done
+        project.meta = meta
+    return {"override_cleared": had, "node_key": nk or None}
+
+
 async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 6 «Промты картинок»: frame.image_prompt = None
     у всех кадров."""
@@ -463,6 +479,7 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("enrich_3",  _enrich_slot_wiper(3)),
     ("enrich_4",  _enrich_slot_wiper(4)),
     ("enrich_5",  _enrich_slot_wiper(5)),
+    ("excel_gpt", _wipe_excel_gpt),
     ("img_pr",    _wipe_img_pr),
     ("img",       _wipe_images),
     ("anim_pr",   _wipe_anim_pr),
@@ -505,6 +522,7 @@ RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "objects", "hero", "items",
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
+    "excel_gpt",
     "img_pr", "img", "anim_pr", "video", "audio", "music", "assemble",
 })
 

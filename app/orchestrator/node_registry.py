@@ -92,7 +92,9 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
 }
 
 STEP_CODE_TO_NODE_TYPE: dict[str, str] = {s.step_code: s.node_type for s in WORK_NODES.values()}
+STEP_CODE_TO_NODE_TYPE[EXCEL_GPT_STEP_CODE] = EXCEL_GPT_NODE_TYPE
 NODE_TYPE_TO_STEP_CODE: dict[str, str] = {s.node_type: s.step_code for s in WORK_NODES.values()}
+NODE_TYPE_TO_STEP_CODE[EXCEL_GPT_NODE_TYPE] = EXCEL_GPT_STEP_CODE
 
 RUNNING_TO_NODE_TYPE: dict[ProjectStatus, str] = {
     s.running_status: s.node_type for s in WORK_NODES.values()

@@ -255,7 +255,7 @@ export function NodeStudio({
   });
 
   const runStep = useMutation({
-    mutationFn: () => api.runProjectStep(projectId!, stepCode!),
+    mutationFn: () => api.runProjectStep(projectId!, stepCode!, { nodeKey: nodeKey ?? undefined }),
     onSuccess: () => {
       toast.success(`Шаг «${spec.label}» запущен`);
       qc.invalidateQueries({ queryKey: ["project", projectId] });

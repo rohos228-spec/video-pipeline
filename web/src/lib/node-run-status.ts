@@ -76,11 +76,16 @@ function statusFromCheckpoint(
   nodeType: string,
   projectStatus: ProjectStatus | string | null | undefined,
   runStatus?: NodeRunStatus,
+  slotIndex?: number,
 ): NodeRunStatus | null {
   const checkpoint = projectStatus ? STATUS_TO_NODE[projectStatus] : undefined;
   if (!checkpoint) return null;
 
-  const nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
+  let nodeIdx = NODE_TYPE_ORDER.indexOf(nodeType);
+  if (nodeIdx < 0 && nodeType === "excel_gpt" && slotIndex != null && slotIndex >= 1) {
+    const enrichType = `enrich_${Math.min(slotIndex, 5)}`;
+    nodeIdx = NODE_TYPE_ORDER.indexOf(enrichType);
+  }
   const targetIdx = NODE_TYPE_ORDER.indexOf(checkpoint.type);
   if (nodeIdx < 0 || targetIdx < 0) return null;
 
@@ -106,8 +111,9 @@ export function reconcileNodeRunStatus(
   nodeType: string,
   runStatus: NodeRunStatus,
   projectStatus: ProjectStatus | string | null | undefined,
+  opts?: { slotIndex?: number },
 ): NodeRunStatus {
-  const cp = statusFromCheckpoint(nodeType, projectStatus, runStatus);
+  const cp = statusFromCheckpoint(nodeType, projectStatus, runStatus, opts?.slotIndex);
 
   if (runStatus === "done" || runStatus === "waiting_hitl") {
     if (cp === "pending" || cp === "failed" || cp === "skipped") {

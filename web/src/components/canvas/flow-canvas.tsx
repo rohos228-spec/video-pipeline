@@ -221,6 +221,7 @@ export function FlowCanvas({
           n.data.type,
           nr.status as PipelineNodeData["status"],
           projectStatus,
+          { slotIndex: n.data.slotIndex as number | undefined },
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -270,7 +271,9 @@ export function FlowCanvas({
             (!e.node_key && n.data.type === e.node_type);
           if (!matches) return n;
           const raw = e.to as PipelineNodeData["status"];
-          const to = reconcileNodeRunStatus(n.data.type, raw, project.data?.status);
+          const to = reconcileNodeRunStatus(n.data.type, raw, project.data?.status, {
+            slotIndex: n.data.slotIndex as number | undefined,
+          });
           return {
             ...n,
             data: {
@@ -577,6 +580,7 @@ export function FlowCanvas({
     const offsetY = 56;
     const newNodes: Node<PipelineNodeData>[] = clip.nodes.map((n) => {
       const newId = idMap.get(n.id)!;
+      const srcData = (n.data ?? {}) as Partial<PipelineNodeData>;
       return {
         id: newId,
         type: "pipeline",
@@ -587,6 +591,11 @@ export function FlowCanvas({
         data: {
           nodeKey: newId,
           type: n.type,
+          label: srcData.label,
+          description: srcData.description,
+          slotIndex: srcData.slotIndex,
+          inputSource: srcData.inputSource,
+          uploadedFileName: srcData.uploadedFileName,
           status: "pending",
           progress: 0,
           progressText: null,
@@ -1298,7 +1307,9 @@ function RunOverlay({
       const created = await api.startRunFromWorkflow(workflow.id, {
         project_id: projectId,
       });
-      await api.runProjectStep(projectId, stepCode);
+      await api.runProjectStep(projectId, stepCode, {
+        nodeKey: runStepNodeKey ?? undefined,
+      });
       onRunCreated();
       toast.success(`Run #${created.id} · шаг «${formatStepCode(stepCode)}» запущен`, {
         description: "Воркер подхватит шаг — HITL в веб-UI",

@@ -152,6 +152,12 @@ from app.orchestrator.node_registry import (
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
 )
+from app.services.excel_gpt_node import (
+    EXCEL_GPT_NODE_TYPE,
+    ready_status_for_slot,
+    running_status_for_slot,
+    slot_index_from_node,
+)
 from app.services.project_state import compute_actual_status, is_running_status
 from app.services.disabled_nodes import disabled_node_types
 
@@ -213,6 +219,29 @@ def _infer_stale_running_node_status(
     return NodeRunStatus.pending
 
 
+def _excel_gpt_status_for_node(
+    node: dict,
+    current_status: ProjectStatus,
+    *,
+    disabled: bool,
+) -> NodeRunStatus:
+    """Статус excel_gpt ноды по slotIndex и Project.status (без graph_executor)."""
+    if disabled:
+        return NodeRunStatus.skipped
+    slot = slot_index_from_node(node)
+    running = running_status_for_slot(slot)
+    ready = ready_status_for_slot(slot)
+    if current_status == running:
+        return NodeRunStatus.running
+    if current_status == ready:
+        return NodeRunStatus.done
+    from app.telegram.menu import status_order as _ord
+
+    if _ord(current_status) > _ord(ready):
+        return NodeRunStatus.done
+    return NodeRunStatus.pending
+
+
 async def sync_run_for_project(project_id: int) -> None:
     """Подтянуть NodeRun-статусы из текущего Project.status."""
     async with session_scope() as s:
@@ -267,6 +296,7 @@ async def sync_run_for_project(project_id: int) -> None:
         if not derived:
             return
 
+        snap_by_key = {n["id"]: n for n in (run.nodes_snapshot or []) if "id" in n}
         now = datetime.utcnow()
         any_running = False
         any_pending = False
@@ -280,6 +310,15 @@ async def sync_run_for_project(project_id: int) -> None:
                 if nr.node_type.startswith("hitl"):
                     continue
                 target = derived.get(nr.node_type)
+            if target is None:
+                if nr.node_type == EXCEL_GPT_NODE_TYPE:
+                    snap = snap_by_key.get(nr.node_key)
+                    if snap is not None:
+                        target = _excel_gpt_status_for_node(
+                            snap,
+                            project.status,
+                            disabled=nr.node_type in disabled_node_types(project),
+                        )
             if target is None:
                 if (
                     nr.status == NodeRunStatus.running
