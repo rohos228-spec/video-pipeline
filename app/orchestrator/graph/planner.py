@@ -119,18 +119,18 @@ class WorkflowGraph:
         return result
 
     def _flow_work_keys(self, skipped: set[str]) -> set[str]:
-        """Рабочие ноды, достижимые от topic/excel_feed по связям канваса."""
+        """Рабочие ноды, достижимые от topic/excel_feed и от «входных» без предшественников."""
         roots: list[str] = []
         for nid, n in self._by_id.items():
             typ = str(n.get("type") or "")
             if is_config_node_type(typ) or typ in PASSTHROUGH_NODE_TYPES:
                 roots.append(nid)
-        if not roots:
-            for nid in self._by_id:
-                if nid in skipped:
-                    continue
-                typ = self.node_type(nid)
-                if is_work_node_type(typ) and not self._effective_predecessors(nid, skipped):
+        for nid in self._by_id:
+            if nid in skipped:
+                continue
+            typ = self.node_type(nid)
+            if is_work_node_type(typ) and not self._effective_predecessors(nid, skipped):
+                if nid not in roots:
                     roots.append(nid)
 
         reachable: set[str] = set()
@@ -411,6 +411,17 @@ class WorkflowGraph:
             out[nid] = NodeRunStatus.pending
         return out
 
+    def _linear_prereq_met(self, project: Project, step_code: str) -> bool:
+        """Линейный prerequisite шага (когда на канвасе нет входящих связей)."""
+        from app.telegram.menu import step_by_code, status_order
+
+        step = step_by_code(step_code)
+        if step is None:
+            return True
+        if step.requires is None:
+            return True
+        return status_order(project.status) >= status_order(step.requires)
+
     def is_step_reachable(self, project: Project, step_code: str) -> bool:
         """Можно ли запустить step_code с текущего статуса проекта по графу."""
         from app.orchestrator.node_registry import spec_for_step_code
@@ -432,16 +443,13 @@ class WorkflowGraph:
                 for k in self.keys_of_type(EXCEL_GPT_NODE_TYPE)
                 if k not in skipped and k in flow
             ]
+        all_keys = list(self.keys_of_type(target_type))
+        if not all_keys and step_code == "excel_gpt":
+            all_keys = list(self.keys_of_type(EXCEL_GPT_NODE_TYPE))
         if not target_keys:
-            from app.telegram.menu import step_by_code, status_order
-
-            step = step_by_code(step_code)
-            if step is None:
-                return True
-            if step.requires is None:
-                return True
-            return status_order(project.status) >= status_order(step.requires)
-        done = self._work_types_done(project)
+            if all_keys:
+                return False
+            return self._linear_prereq_met(project, step_code)
         status = project.status
         if status in RUNNING_TO_NODE_TYPE and RUNNING_TO_NODE_TYPE[status] == target_type:
             return True
@@ -456,8 +464,8 @@ class WorkflowGraph:
             if not preds:
                 if target_type == "plan":
                     return True
-                return bool((project.topic or "").strip())
-            if all(self.node_type(p) in done for p in preds):
+                return self._linear_prereq_met(project, step_code)
+            if all(self._is_ready(p, project, skipped) for p in preds):
                 return True
         return False
 
@@ -487,8 +495,17 @@ async def load_graph_for_project(
             select(WorkflowRun).where(WorkflowRun.project_id == project.id)
         )
     ).scalar_one_or_none()
-    if run and run.nodes_snapshot and run.edges_snapshot:
-        return WorkflowGraph(run.nodes_snapshot, run.edges_snapshot)
+    if run is not None:
+        nodes = list(run.nodes_snapshot or [])
+        edges = list(run.edges_snapshot or [])
+        if nodes:
+            return WorkflowGraph(nodes, edges)
+        if run.workflow_id:
+            from app.models import Workflow
+
+            wf = await session.get(Workflow, run.workflow_id)
+            if wf and wf.nodes:
+                return WorkflowGraph(list(wf.nodes or []), list(wf.edges or []))
     return WorkflowGraph.default()
 
 

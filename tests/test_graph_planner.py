@@ -76,7 +76,56 @@ def test_disconnected_graph_returns_none() -> None:
     g = WorkflowGraph(nodes, edges)
     p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={"graph_executor": True})
     assert g.next_running_after_ready(p, ProjectStatus.plan_ready) is None
-    assert g.is_step_reachable(p, "script") is False
+    # script изолирован — автопродвижение не пойдёт, но ручной запуск возможен по linear prereq
+    assert g.is_step_reachable(p, "script") is True
+    p_new = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
+    assert g.is_step_reachable(p_new, "script") is False
+
+
+def test_excel_gpt_predecessor_allows_hero() -> None:
+    """После enrich_1 hero достижим, если excel_gpt — предшественник по графу."""
+    nodes = [
+        {"id": "n_plan", "type": "plan", "position": {"x": 0, "y": 0}, "data": {}},
+        {
+            "id": "n_excel_gpt_1",
+            "type": "excel_gpt",
+            "position": {"x": 100, "y": 0},
+            "data": {"slotIndex": 1},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 200, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e1", "source": "n_plan", "target": "n_excel_gpt_1", "sourceHandle": "out", "targetHandle": "in"},
+        {"id": "e2", "source": "n_excel_gpt_1", "target": "n_hero", "sourceHandle": "out", "targetHandle": "in"},
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        topic="t",
+        slug="t",
+        status=ProjectStatus.enrich_1_ready,
+        meta={"graph_executor": True, "enrich_completed_slots": [1]},
+    )
+    assert g.is_step_reachable(p, "hero") is True
+    nxt = g.next_running_after_ready(p, ProjectStatus.enrich_1_ready)
+    assert nxt == ProjectStatus.generating_hero
+
+
+def test_orphan_plan_in_flow_without_topic_edge() -> None:
+    """plan→script без связи topic→plan — обе ноды в потоке."""
+    nodes = [
+        {"id": "n_topic", "type": "topic", "position": {"x": 0, "y": 0}, "data": {}},
+        {"id": "n_plan", "type": "plan", "position": {"x": 100, "y": 0}, "data": {}},
+        {"id": "n_script", "type": "script", "position": {"x": 200, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e1", "source": "n_plan", "target": "n_script", "sourceHandle": "out", "targetHandle": "in"},
+    ]
+    g = WorkflowGraph(nodes, edges)
+    flow = g._flow_work_keys(set())
+    assert "n_plan" in flow
+    assert "n_script" in flow
+    p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
+    assert g.is_step_reachable(p, "plan") is True
 
 
 def test_bypass_graph_done_types_exclude_skipped_linear_steps() -> None:
@@ -110,4 +159,5 @@ def test_isolated_work_node_marked_skipped_in_derived_states() -> None:
     g = WorkflowGraph(nodes, edges)
     p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
     states = g.derived_node_states(p)
-    assert states["n_script"] == NodeRunStatus.skipped
+    # script без связи с plan — входная нода, не skipped
+    assert states["n_script"] == NodeRunStatus.pending

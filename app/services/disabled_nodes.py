@@ -68,7 +68,8 @@ def skip_disabled_running(
     if target is None:
         return None
     if graph_executor_enabled(project):
-        return WorkflowGraph.default().skip_disabled_running(project, target)
+        # Без session нельзя загрузить snapshot — не подменяем дефолтным графом.
+        return target
     disabled = disabled_node_types(project)
     if not disabled:
         return target
