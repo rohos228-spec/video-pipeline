@@ -237,6 +237,13 @@ function VoiceoverWideView({
   });
 
   if (fileText.isLoading && !text) return <LoadingBlock />;
+  if (fileText.isError && !text) {
+    return (
+      <p className="py-8 text-center text-sm text-muted-foreground">
+        Не удалось загрузить voiceover.txt. Откройте проект заново или сохраните текст вручную.
+      </p>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">

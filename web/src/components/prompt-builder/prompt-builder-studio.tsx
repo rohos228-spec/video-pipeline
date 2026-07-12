@@ -471,8 +471,8 @@ export function PromptBuilderStudio({
   });
 
   useEffect(() => {
-    if (!template || !project.data || hydrated.current) return;
-    const po = project.data.prompt_overrides as Record<string, unknown>;
+    if (!template || hydrated.current) return;
+    const po = (project.data?.prompt_overrides ?? {}) as Record<string, unknown>;
     const raw = selectionFromProject(template, po);
     const { selection: normSel, extras, changed } = normalizePromptSlotState(template, raw);
     setSelection(normSel);
@@ -481,7 +481,7 @@ export function PromptBuilderStudio({
       [template.id]: extras,
     }));
     hydrated.current = true;
-    if (changed && cleanedStepRef.current !== template.id) {
+    if (changed && project.data && cleanedStepRef.current !== template.id) {
       cleanedStepRef.current = template.id;
       save.mutate(normSel);
     }
@@ -1424,7 +1424,7 @@ export function PromptBuilderStudio({
 
   if (
     (blocksV2 && (catalog.isLoading || !selection || !template)) ||
-    project.isLoading
+    (project.isLoading && !project.data)
   ) {
     return portalWrap(
       <div

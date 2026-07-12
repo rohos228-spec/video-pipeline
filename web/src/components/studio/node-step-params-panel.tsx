@@ -474,7 +474,7 @@ export function NodeStepParamsPanel({
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
   const params = useMemo(() => readNodeStepParams(metaRecord), [metaRecord]);
 
-  if (!step || project.isLoading) return null;
+  if (!step || (project.isLoading && !project.data)) return null;
 
   const persist = (
     patch: PlanScriptStepParams | SplitStepParams | AudioStepParams | AssembleStepParams,

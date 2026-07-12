@@ -833,7 +833,10 @@ export function FlowCanvas({
     [onSelectNode, scheduleSaveWorkflow, selectedNodeKey, setEdges],
   );
 
-  if (workflows.isLoading || workflow.isLoading) {
+  const canvasBootLoading =
+    (workflows.isLoading && !workflows.data) ||
+    (Boolean(defaultWorkflow) && workflow.isLoading && !workflow.data);
+  if (canvasBootLoading) {
     return (
       <div className="flex h-full items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />

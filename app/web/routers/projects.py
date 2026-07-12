@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime
 
@@ -182,15 +183,11 @@ async def create_child_project(
         child = await create_child_from_parent(session, parent, slugify=_slugify)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    wf_id = await _get_default_workflow_id()
-    if wf_id is not None:
-        try:
-            await ensure_run_for_project(child.id, wf_id)
-            await sync_run_for_project(child.id)
-        except Exception:
-            pass
     await session.commit()
     await session.refresh(child)
+    # ensure_child_workflow_from_parent уже создал WorkflowRun — sync нод в фоне,
+    # иначе HTTP ждёт busy_timeout SQLite (~30 с) под нагрузкой воркера.
+    asyncio.create_task(sync_run_for_project(child.id))
     await publish_project_event(
         child.id,
         event_type="project_created",
