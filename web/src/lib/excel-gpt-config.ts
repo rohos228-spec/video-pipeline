@@ -34,11 +34,8 @@ export function excelGptSlotIndex(
   return 1;
 }
 
-/** Папка промтов по slotIndex (legacy enrich_1..5). */
-export function excelGptPromptStepCode(slotIndex?: number): string {
-  if (typeof slotIndex === "number" && slotIndex >= 1 && slotIndex <= 5) {
-    return `enrich_${slotIndex}`;
-  }
+/** Единая папка промтов для всех нод «Работа с GPT». */
+export function excelGptPromptStepCode(_slotIndex?: number): string {
   return EXCEL_GPT_STEP_CODE;
 }
 

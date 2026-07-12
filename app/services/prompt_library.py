@@ -102,6 +102,44 @@ ENRICH_STEP_CODES: frozenset[str] = frozenset(
     {*(f"enrich_{i}" for i in range(1, 6)), "excel_gpt"}
 )
 
+EXCEL_GPT_UNIFIED_STEP = "excel_gpt"
+
+
+def is_excel_gpt_prompt_step(step_code: str) -> bool:
+    return step_code in ENRICH_STEP_CODES
+
+
+def excel_gpt_source_steps() -> tuple[str, ...]:
+    return (EXCEL_GPT_UNIFIED_STEP, *(f"enrich_{i}" for i in range(1, 6)))
+
+
+def excel_gpt_prompt_exists(name: str) -> bool:
+    clean = _clean_variant_name(name) if name else ""
+    if not clean:
+        return False
+    for code in excel_gpt_source_steps():
+        try:
+            if prompt_path(code, clean).is_file():
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def resolve_excel_gpt_prompt_path(name: str) -> Path:
+    """Читать из 05_excel_gpt или legacy enrich_*; запись — всегда в excel_gpt."""
+    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
+    if not clean:
+        raise ValueError(f"некорректное имя промта: {name!r}")
+    primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
+    if primary.is_file():
+        return primary
+    for code in (f"enrich_{i}" for i in range(1, 6)):
+        legacy = step_dir(code) / f"{clean}.md"
+        if legacy.is_file():
+            return legacy
+    return primary
+
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
 # в веб-студии нужны длинные осмысленные имена файлов.
 MAX_PROMPT_NAME_BYTES = 255
@@ -215,9 +253,27 @@ def prompt_name_fits_telegram_callback(name: str) -> bool:
 def list_prompts(step_code: str) -> list[str]:
     """Список доступных вариантов (имена файлов без `.md`), отсортированный.
     `default` всегда идёт первым (если присутствует)."""
+    if is_excel_gpt_prompt_step(step_code):
+        return list_excel_gpt_prompts()
+    return _list_prompts_in_dir(step_code)
+
+
+def list_excel_gpt_prompts() -> list[str]:
+    """Все .md для «Работа с GPT» — единый список из 05_excel_gpt + legacy enrich_*."""
+    merged: dict[str, None] = {}
+    for code in excel_gpt_source_steps():
+        for n in _list_prompts_in_dir(code):
+            merged.setdefault(n, None)
+    names = sorted(merged.keys())
+    if DEFAULT_NAME in names:
+        names.remove(DEFAULT_NAME)
+        names.insert(0, DEFAULT_NAME)
+    return names
+
+
+def _list_prompts_in_dir(step_code: str) -> list[str]:
     d = step_dir(step_code)
     names = sorted(p.stem for p in d.glob("*.md"))
-    # default — всегда первым.
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -233,6 +289,11 @@ def prompt_path(step_code: str, name: str) -> Path:
 
 
 def read_prompt(step_code: str, name: str) -> str:
+    if is_excel_gpt_prompt_step(step_code):
+        p = resolve_excel_gpt_prompt_path(name)
+        if not p.is_file():
+            raise FileNotFoundError(f"prompt file not found: {p}")
+        return p.read_text(encoding="utf-8")
     p = prompt_path(step_code, name)
     if not p.exists():
         raise FileNotFoundError(f"prompt file not found: {p}")
@@ -240,6 +301,8 @@ def read_prompt(step_code: str, name: str) -> str:
 
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
+    if is_excel_gpt_prompt_step(step_code):
+        step_code = EXCEL_GPT_UNIFIED_STEP
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
     touch_prompt_meta(step_code, name, len(content.encode("utf-8")))
@@ -251,6 +314,12 @@ def delete_prompt(step_code: str, name: str) -> bool:
     Возвращает True если файл был удалён."""
     if name == DEFAULT_NAME:
         raise ValueError("default удалять нельзя")
+    if is_excel_gpt_prompt_step(step_code):
+        p = resolve_excel_gpt_prompt_path(name)
+        if not p.is_file():
+            return False
+        p.unlink()
+        return True
     p = prompt_path(step_code, name)
     if not p.exists():
         return False
@@ -285,7 +354,14 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
             continue
         for slot_id, variant in slots.items():
             clean = _clean_variant_name(str(variant or ""))
-            if not clean or not prompt_path(step_code, clean).exists():
+            if not clean:
+                continue
+            exists = (
+                excel_gpt_prompt_exists(clean)
+                if is_excel_gpt_prompt_step(step_code)
+                else prompt_path(step_code, clean).exists()
+            )
+            if not exists:
                 continue
             if slot_id == "main":
                 return clean
@@ -308,9 +384,27 @@ def resolve_project_prompt_name(
       3. `default`
 
     Meta не перебивает override: иначе другая нода на канвасе с устаревшим слотом
-    ломала enrich_1, хотя вы уже активировали нужный файл.
+    ломала выбор, хотя вы уже активировали нужный файл.
     """
     overrides = overrides or {}
+    if is_excel_gpt_prompt_step(step_code):
+        for key in excel_gpt_source_steps():
+            chosen = overrides.get(key)
+            if chosen:
+                clean = _clean_variant_name(str(chosen))
+                if clean and excel_gpt_prompt_exists(clean):
+                    return clean
+        from app.services.prompt_active_global import get_global_active
+
+        global_name = get_global_active(EXCEL_GPT_UNIFIED_STEP)
+        if global_name and excel_gpt_prompt_exists(global_name):
+            return global_name
+        for key in excel_gpt_source_steps():
+            from_meta = _variant_from_studio_meta(meta, key)
+            if from_meta:
+                return from_meta
+        return DEFAULT_NAME
+
     chosen = overrides.get(step_code)
     if chosen:
         clean = _clean_variant_name(str(chosen))

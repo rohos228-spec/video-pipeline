@@ -59,6 +59,10 @@ def get_global_active(step_code: str) -> str | None:
 
 
 def set_global_active(step_code: str, name: str) -> None:
+    from app.services.prompt_library import ENRICH_STEP_CODES, EXCEL_GPT_UNIFIED_STEP
+
+    if step_code in ENRICH_STEP_CODES:
+        step_code = EXCEL_GPT_UNIFIED_STEP
     clean = (name or "").strip()
     if not clean:
         return
@@ -76,10 +80,14 @@ def set_global_active(step_code: str, name: str) -> None:
 def sync_global_active_from_overrides(overrides: dict[str, Any] | None) -> None:
     if not overrides:
         return
-    from app.services.prompt_library import STEP_FOLDERS
+    from app.services.prompt_library import ENRICH_STEP_CODES, EXCEL_GPT_UNIFIED_STEP, STEP_FOLDERS
 
     for step_code, name in overrides.items():
-        if step_code not in STEP_FOLDERS or not isinstance(name, str):
+        if not isinstance(name, str):
             continue
-        set_global_active(step_code, name.strip())
+        if step_code in ENRICH_STEP_CODES:
+            set_global_active(EXCEL_GPT_UNIFIED_STEP, name.strip())
+            continue
+        if step_code in STEP_FOLDERS:
+            set_global_active(step_code, name.strip())
 

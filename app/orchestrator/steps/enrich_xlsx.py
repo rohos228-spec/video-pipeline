@@ -91,7 +91,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.meta = meta
                 await session.flush()
                 break
-    prompt_step_code = legacy_step_code
+    prompt_step_code = EXCEL_GPT_STEP_CODE
     logger.info(
         "[#{}] enrich_xlsx slot={} node={} prompt={} starting",
         project.id,
@@ -119,23 +119,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     try:
         variant, src_path, master = read_resolved_project_prompt(project, prompt_step_code)
     except FileNotFoundError:
-        prompt_step_code = EXCEL_GPT_STEP_CODE
-        try:
-            variant, src_path, master = read_resolved_project_prompt(project, prompt_step_code)
-        except FileNotFoundError:
-            variant = "default"
-            src_path = None
-            master = (
-                f"# {prompt_step_code}\n\n"
-                "Мастер-промт для доп. работы с Excel ещё не настроен. "
-                "Открой `prompts/05_excel_gpt/default.md` и опиши там, "
-                "что именно ChatGPT должен изменить в приложенном файле."
-            )
-            logger.warning(
-                "[#{}] enrich_xlsx slot={}: файл промта не найден, fallback текст",
-                project.id,
-                slot_idx,
-            )
+        variant = "default"
+        src_path = None
+        master = (
+            f"# {prompt_step_code}\n\n"
+            "Мастер-промт для доп. работы с Excel ещё не настроен. "
+            "Открой `prompts/05_excel_gpt/default.md` и опиши там, "
+            "что именно ChatGPT должен изменить в приложенном файле."
+        )
+        logger.warning(
+            "[#{}] enrich_xlsx slot={}: файл промта не найден, fallback текст",
+            project.id,
+            slot_idx,
+        )
     else:
         logger.info(
             "[#{}] enrich_xlsx slot={}: активный промт variant={!r} "

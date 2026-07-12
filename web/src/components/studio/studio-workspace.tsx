@@ -15,7 +15,7 @@ import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { gptTextSlotForNode, resolvePromptSlots, resolvePromptSlotsForNode, type NodePromptSlot } from "@/lib/node-prompts";
-import { isExcelGptNode, excelGptPromptStepCode, excelGptSlotIndex } from "@/lib/excel-gpt-config";
+import { isExcelGptNode, EXCEL_GPT_STEP_CODE } from "@/lib/excel-gpt-config";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
@@ -380,14 +380,14 @@ export function StudioWorkspace({
         const custom = { ...(meta.custom_prompts || {}) };
         const prev = custom[nodeKey] ?? [];
         const n = prev.filter((s) => s.custom || s.id.startsWith("custom_")).length + 1;
-        const enrichStep = isExcelGptNode(nodeType)
-          ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey))
+        const saveStep = isExcelGptNode(nodeType)
+          ? EXCEL_GPT_STEP_CODE
           : stepCodeForNodeType(nodeType);
         const newSlot: NodePromptSlot = {
           id: `custom_${n}`,
           title: `Промт ${n}`,
           kind: "gpt",
-          stepCode: enrichStep,
+          stepCode: saveStep ?? EXCEL_GPT_STEP_CODE,
           custom: true,
         };
         custom[nodeKey] = [...prev, newSlot];
@@ -403,7 +403,6 @@ export function StudioWorkspace({
           custom_prompts: custom,
           prompt_slot_variants: metaPatch.prompt_slot_variants,
         });
-        const saveStep = enrichStep ?? stepCodeForNodeType(nodeType);
         if (saveStep) {
           try {
             await api.savePromptFile(

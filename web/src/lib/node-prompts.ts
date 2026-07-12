@@ -1,6 +1,6 @@
 /** Схема промтов для ноды (меню «V»). */
 
-import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode } from "./excel-gpt-config";
+import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode, EXCEL_GPT_STEP_CODE } from "./excel-gpt-config";
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
@@ -349,7 +349,7 @@ export function isEnrichNode(nodeType: string): boolean {
   return nodeType === "excel_gpt" || nodeType.startsWith("enrich");
 }
 
-/** step_code папки промтов для excel_gpt (enrich_1..5 по node_key). */
-export function excelGptEnrichStepCode(nodeKey?: string, slotIndex?: number): string {
-  return excelGptPromptStepCode(excelGptSlotIndex(nodeKey, slotIndex));
+/** @deprecated Все excel_gpt ноды используют prompts/05_excel_gpt. */
+export function excelGptEnrichStepCode(_nodeKey?: string, _slotIndex?: number): string {
+  return EXCEL_GPT_STEP_CODE;
 }

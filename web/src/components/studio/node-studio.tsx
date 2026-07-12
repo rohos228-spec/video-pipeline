@@ -24,14 +24,13 @@ import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
-  excelGptEnrichStepCode,
   nodeTypeRequiresExcel,
   pipelinePromptSlots,
   resolvePromptSlots,
   resolvePromptSlotsForNode,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
-import { excelGptSlotIndex, isExcelGptNode, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
+import { excelGptSlotIndex, isExcelGptNode, EXCEL_GPT_STEP_CODE, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -238,10 +237,9 @@ export function NodeStudio({
     null;
 
   const activeStepCode = slotStepCode(activeSlot, stepCode);
-  const enrichStepCode = excelGptEnrichStepCode(nodeKey ?? undefined, excelConfig.slotIndex);
   const promptStepCode =
     isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
-      ? enrichStepCode
+      ? EXCEL_GPT_STEP_CODE
       : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
   const metaRecord = (project.data?.meta || {}) as Record<string, unknown>;
@@ -358,7 +356,7 @@ export function NodeStudio({
       isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
     );
   const builderNodeType = isExcelGptNode(nodeType)
-    ? (promptStepCode ?? enrichStepCode)
+    ? (promptStepCode ?? EXCEL_GPT_STEP_CODE)
     : nodeType;
 
   useEffect(() => {
