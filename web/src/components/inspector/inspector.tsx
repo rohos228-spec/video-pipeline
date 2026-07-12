@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Info, FileText, Hash, Folder, ExternalLink } from "lucide-react";
+import { Info, FileText, Hash, Folder, ExternalLink, Clapperboard } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ export function Inspector({
   selectedNodeKey: string | null;
   onOpenNodeStudio?: () => void;
 }) {
+  const ui = useUi();
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId!),
@@ -85,6 +86,15 @@ export function Inspector({
               <Row label="Обновлён">{formatRelativeTime(project.data.updated_at)}</Row>
               <MontageHandoffCard project={project.data} />
               <ProjectSettingsPanel project={project.data} />
+              <Button
+                size="sm"
+                variant="default"
+                className="w-full gap-2"
+                onClick={() => ui.openSceneBoard(projectId)}
+              >
+                <Clapperboard className="h-3.5 w-3.5" />
+                Сцены проекта
+              </Button>
               {project.data.general_plan && (
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -129,10 +139,19 @@ function FramesPreview({
           size="sm"
           variant="ghost"
           className="h-6 gap-1 px-1.5 text-[10px]"
+          onClick={() => ui.openSceneBoard(projectId)}
+        >
+          <Clapperboard className="h-3 w-3" />
+          Сцены
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 gap-1 px-1.5 text-[10px]"
           onClick={() => ui.openFrames(projectId)}
         >
           <ExternalLink className="h-3 w-3" />
-          Открыть
+          Текст
         </Button>
       </div>
       <div className="mt-2 flex flex-col gap-1">
