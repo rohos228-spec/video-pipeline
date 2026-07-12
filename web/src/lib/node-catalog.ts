@@ -86,7 +86,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   excel_gpt: {
     type: "excel_gpt",
-    label: "Доп. Excel",
+    label: "Работа с GPT",
     description: "Универсальная нода: Excel / загрузка / voiceover + ChatGPT.",
     category: "enrich",
     accent: "38 92% 60%",

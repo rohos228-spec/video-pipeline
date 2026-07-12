@@ -38,7 +38,7 @@ def main() -> None:
         fail("must not expand 5 folder chips in V-menu")
     if 'id: "main"' not in node_prompts or "applyExcelGptNodeContext" not in node_prompts:
         fail("excel_gpt must use single main slot + enrich step mapping")
-    ok("V-menu: excel + blocks + one Промт дополнения N per node")
+    ok("V-menu: excel + blocks + one Промт GPT per node")
 
     studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
     if "excelGptEnrichStepCode" not in studio or "PromptFilesPanel" not in studio:

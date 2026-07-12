@@ -1,4 +1,4 @@
-"""Универсальная нода «Доп работа с Excel» (excel_gpt)."""
+"""Универсальная нода «Работа с GPT» (excel_gpt)."""
 
 from __future__ import annotations
 
@@ -37,14 +37,15 @@ def is_legacy_enrich_label(label: str | None) -> bool:
         "дополнение",
         "доп работа",
         "доп. работа",
+        "доп. excel",
         "enrich",
         "excel #",
     )
     return any(m in low for m in markers)
 
 
-def default_excel_gpt_label(slot: int) -> str:
-    return f"Доп. Excel #{slot}"
+def default_excel_gpt_label(_slot: int) -> str:
+    return "Работа с GPT"
 
 
 def legacy_enrich_slot_from_type(node_type: str) -> int | None:

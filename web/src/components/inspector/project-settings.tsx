@@ -57,7 +57,7 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
       <MassFactoryPanel project={project} />
       <ToggleRow
         label="Граф-исполнитель"
-        hint="Только связанные на канвасе ноды, порядок по стрелкам; сохраните граф"
+        hint="Вкл: шаги только по стрелкам на канвасе. Выкл: фиксированная линейная цепочка как в боте"
         active={graphOn}
         disabled={patch.isPending}
         onClick={() => toggleMeta("graph_executor", !graphOn)}

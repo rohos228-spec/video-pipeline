@@ -301,3 +301,18 @@ body {
   stroke: hsl(var(--primary));
   stroke-width: 2;
 }
+
+/* Native <select>: светлый текст в закрытом состоянии, чёрный — в белом списке option. */
+select.studio-select {
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--card));
+}
+select.studio-select option {
+  color: hsl(240 10% 6%);
+  background-color: hsl(0 0% 100%);
+}
+select.studio-select option:checked,
+select.studio-select option:hover {
+  background-color: hsl(240 5% 92%);
+  color: hsl(240 10% 6%);
+}

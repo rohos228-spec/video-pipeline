@@ -10,13 +10,16 @@ function isLegacyEnrichLabel(label: string | undefined): boolean {
     low.includes("дополнение") ||
     low.includes("доп работа") ||
     low.includes("доп. работа") ||
+    low.includes("доп. excel") ||
     low.includes("enrich") ||
     low.includes("excel #")
   );
 }
 
-function defaultExcelGptLabel(slot: number): string {
-  return `Доп. Excel #${slot}`;
+const EXCEL_GPT_DEFAULT_LABEL = "Работа с GPT";
+
+function defaultExcelGptLabel(_slot: number): string {
+  return EXCEL_GPT_DEFAULT_LABEL;
 }
 
 function migrateNodeType(type: string): string {

@@ -1095,7 +1095,7 @@ function WorkflowToolbar({
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
         <select
-          className="h-8 max-w-[140px] rounded-md bg-transparent px-2 text-xs"
+          className="studio-select h-8 max-w-[140px] rounded-md border border-input bg-card px-2 text-xs"
           defaultValue=""
           onChange={(e) => {
             if (e.target.value) {

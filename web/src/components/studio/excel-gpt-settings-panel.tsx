@@ -73,7 +73,7 @@ export function ExcelGptSettingsPanel({
         <Input
           className="mt-2"
           value={config.label ?? ""}
-          placeholder="Доп. Excel"
+          placeholder="Работа с GPT"
           onChange={(e) => onConfigChange({ label: e.target.value })}
           onBlur={() => {
             const label = (config.label ?? "").trim();

@@ -56,7 +56,7 @@ def test_migration() -> None:
     if slot_index_from_node(next(n for n in out if n["id"] == "n_enrich_3")) != 3:
         fail("slot renumber left-to-right failed")
     legacy = next(n for n in out if n["id"] == "n_enrich_2")["data"].get("label")
-    if legacy != "Доп. Excel #2":
+    if legacy != "Работа с GPT":
         fail(f"legacy label not rewritten: {legacy!r}")
     custom = next(n for n in out if n["id"] == "n_enrich_3")["data"].get("label")
     if custom != "Custom":
@@ -158,7 +158,7 @@ async def test_attachments_api_shape(tmp: Path) -> None:
         nk = "n_excel_gpt_1"
         p.meta = {
             "excel_gpt_nodes": {
-                nk: {"inputSource": "project_xlsx", "label": "Доп. Excel"},
+                nk: {"inputSource": "project_xlsx", "label": "Работа с GPT"},
             }
         }
         session.add(p)

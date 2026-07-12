@@ -610,7 +610,7 @@ export function NodeStudio({
                   </div>
                   {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
                     <select
-                      className="h-8 max-w-xs rounded-md border border-input bg-background px-2 text-xs"
+                      className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
                       value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
                       onChange={(e) => setXlsxSheet(e.target.value)}
                     >
