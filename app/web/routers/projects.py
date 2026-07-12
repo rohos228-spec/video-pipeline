@@ -248,6 +248,51 @@ async def patch_project(
     return p
 
 
+@router.get("/{project_id}/scene-board")
+async def get_scene_board(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Вертикальный обзор сцен проекта: тексты, медиа, персонажи, таймслоты."""
+    from app.services.scene_board import build_scene_board
+
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return await build_scene_board(session, p)
+
+
+@router.put("/{project_id}/scene-board/regen-draft")
+async def put_scene_board_regen_draft(
+    project_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохранить черновик перегенерации (выбор объектов + текст для GPT).
+
+    Фактический запуск перегенерации — отдельный шаг; здесь только draft в meta.
+    """
+    from app.services.scene_board import validate_regen_draft
+
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        draft = validate_regen_draft(body if isinstance(body, dict) else {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    meta = dict(p.meta or {})
+    meta["scene_board_regen"] = draft
+    p.meta = meta
+    p.updated_at = datetime.utcnow()
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="scene_board_regen_draft",
+        payload={"selections": len(draft["selections"])},
+    )
+    return {"ok": True, "regen_draft": draft}
+
+
 @router.get("/{project_id}/media-review")
 async def media_review(
     project_id: int,

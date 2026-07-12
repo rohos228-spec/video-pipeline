@@ -1,15 +1,18 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity, Network } from "lucide-react";
+import { Activity, Network, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
+import { SceneBoardSheet } from "@/components/scene-board/scene-board-sheet";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 
 interface UiState {
   framesProjectId: number | null;
   openFrames: (projectId: number) => void;
+  sceneBoardProjectId: number | null;
+  openSceneBoard: (projectId: number) => void;
 }
 
 const UiContext = createContext<UiState | null>(null);
@@ -24,14 +27,25 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
   const [logsOpen, setLogsOpen] = useState(false);
   const [framesOpen, setFramesOpen] = useState(false);
   const [framesProjectId, setFramesProjectId] = useState<number | null>(null);
+  const [sceneBoardOpen, setSceneBoardOpen] = useState(false);
+  const [sceneBoardProjectId, setSceneBoardProjectId] = useState<number | null>(
+    null,
+  );
 
   const openFrames = (id: number) => {
     setFramesProjectId(id);
     setFramesOpen(true);
   };
 
+  const openSceneBoard = (id: number) => {
+    setSceneBoardProjectId(id);
+    setSceneBoardOpen(true);
+  };
+
   return (
-    <UiContext.Provider value={{ framesProjectId, openFrames }}>
+    <UiContext.Provider
+      value={{ framesProjectId, openFrames, sceneBoardProjectId, openSceneBoard }}
+    >
       <div className="flex h-full min-h-0 w-full flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/30 px-4 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
@@ -94,6 +108,11 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         projectId={framesProjectId}
         open={framesOpen}
         onOpenChange={setFramesOpen}
+      />
+      <SceneBoardSheet
+        projectId={sceneBoardProjectId}
+        open={sceneBoardOpen}
+        onOpenChange={setSceneBoardOpen}
       />
       {children != null ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>

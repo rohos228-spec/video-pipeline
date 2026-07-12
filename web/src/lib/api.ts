@@ -127,6 +127,92 @@ export interface ProjectAsset {
   uuid?: string;
 }
 
+export type SceneBoardRegenTarget =
+  | "voiceover_text"
+  | "image_shot1"
+  | "image_shot2"
+  | "video_shot1"
+  | "video_shot2"
+  | "characters"
+  | "audio"
+  | "music";
+
+export type SceneBoardRegenType = "media" | "prompt_and_media" | "full_scene";
+
+export interface SceneBoardMediaSlot {
+  artifact_uuid: string | null;
+  path: string | null;
+  preview_url: string | null;
+  present: boolean;
+}
+
+export interface SceneBoardCharacter {
+  id: string;
+  name: string;
+  kind: "character" | "item";
+  preview_url: string | null;
+  present: boolean;
+}
+
+export interface SceneBoardScene {
+  frame_id: number;
+  number: number;
+  status: string;
+  voiceover_text: string;
+  meaning: string | null;
+  image_prompt: string | null;
+  animation_prompt: string | null;
+  image_prompt_shot2: string | null;
+  animation_prompt_shot2: string | null;
+  has_shot2: boolean;
+  start_ts: number | null;
+  end_ts: number | null;
+  duration_seconds: number | null;
+  timeslot_label: string | null;
+  image_shot1: SceneBoardMediaSlot | null;
+  image_shot2: SceneBoardMediaSlot | null;
+  video_shot1: SceneBoardMediaSlot | null;
+  video_shot2: SceneBoardMediaSlot | null;
+  audio: SceneBoardMediaSlot | null;
+  characters: SceneBoardCharacter[];
+  items: SceneBoardCharacter[];
+  missing: string[];
+}
+
+export interface SceneBoardRegenSelection {
+  frame_id: number;
+  number: number;
+  targets: SceneBoardRegenTarget[];
+  regen_type: SceneBoardRegenType;
+}
+
+export interface SceneBoardRegenDraft {
+  note: string;
+  selections: SceneBoardRegenSelection[];
+}
+
+export interface SceneBoardDTO {
+  project_id: number;
+  slug: string;
+  topic: string;
+  status: string;
+  frame_count: number;
+  music: {
+    enabled: boolean;
+    present: boolean;
+    path: string | null;
+    preview_url: string | null;
+    level_percent: number;
+    label: string;
+  };
+  master_audio: SceneBoardMediaSlot | null;
+  final_video: SceneBoardMediaSlot | null;
+  scenes: SceneBoardScene[];
+  regen_draft: SceneBoardRegenDraft;
+  regen_targets: SceneBoardRegenTarget[];
+  regen_types: SceneBoardRegenType[];
+}
+
 export class ApiError extends Error {
   constructor(public status: number, public detail: string | object) {
     super(formatApiError(detail, status));
@@ -293,6 +379,16 @@ export const api = {
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>
     http<FrameDTO[]>(`/api/projects/${projectId}/frames`),
+  getSceneBoard: (projectId: number) =>
+    http<SceneBoardDTO>(`/api/projects/${projectId}/scene-board`),
+  saveSceneBoardRegenDraft: (
+    projectId: number,
+    body: { note: string; selections: SceneBoardRegenSelection[] },
+  ) =>
+    http<{ ok: boolean; regen_draft: SceneBoardRegenDraft }>(
+      `/api/projects/${projectId}/scene-board/regen-draft`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
   patchFrame: (projectId: number, frameId: number, body: Partial<FrameDTO>) =>
     http<FrameDTO>(`/api/projects/${projectId}/frames/${frameId}`, {
       method: "PATCH",
