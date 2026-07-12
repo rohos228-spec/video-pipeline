@@ -167,6 +167,38 @@ async def create_project(
     return project_to_detail(p)
 
 
+@router.post("/{project_id}/child", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)
+async def create_child_project(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ProjectDetail:
+    """Дочерний проект: копия настроек родителя + закадровый текст и xlsx."""
+    parent = await session.get(Project, project_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    from app.services.project_child import create_child_from_parent
+
+    try:
+        child = await create_child_from_parent(session, parent, slugify=_slugify)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    wf_id = await _get_default_workflow_id()
+    if wf_id is not None:
+        try:
+            await ensure_run_for_project(child.id, wf_id)
+            await sync_run_for_project(child.id)
+        except Exception:
+            pass
+    await session.commit()
+    await session.refresh(child)
+    await publish_project_event(
+        child.id,
+        event_type="project_created",
+        payload={"slug": child.slug, "topic": child.topic, "parent_id": project_id},
+    )
+    return project_to_detail(child)
+
+
 @router.post("/{project_id}/ensure-run")
 async def ensure_project_run(
     project_id: int, session: AsyncSession = Depends(get_session)

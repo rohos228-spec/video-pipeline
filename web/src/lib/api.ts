@@ -192,6 +192,8 @@ export const api = {
     http<ProjectDetail>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  createChildProject: (parentId: number) =>
+    http<ProjectDetail>(`/api/projects/${parentId}/child`, { method: "POST" }),
 
   // ── Sidebar layout ───────────────────────────────────────────────
   getSidebarLayout: () => http<SidebarLayout>(`/api/sidebar-layout`),

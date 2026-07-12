@@ -86,6 +86,17 @@ export function ProjectSidebar({
     onError: (e) => toast.error(`Не получилось удалить: ${String(e)}`),
   });
 
+  const createChildMutation = useMutation({
+    mutationFn: (parentId: number) => api.createChildProject(parentId),
+    onSuccess: (child, parentId) => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      setExpanded((e) => ({ ...e, [`mass:${parentId}`]: true }));
+      onSelect(child.id);
+      toast.success(`Дочерний проект создан: ${child.topic}`);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const saveLayoutMutation = useMutation({
     mutationFn: (body: {
       folders?: SidebarFolder[];
@@ -290,6 +301,8 @@ export function ProjectSidebar({
     const children = childrenByParent.get(p.id) ?? [];
     const isFactory = p.mass_factory || children.length > 0;
     const isOpen = expanded[`mass:${p.id}`] ?? isFactory;
+    const parentBadge = opts?.badge
+      ?? (p.mass_factory ? "шаблон" : children.length > 0 ? `${children.length} доч.` : undefined);
     return (
       <div key={p.id} className="flex flex-col">
         <div
@@ -335,13 +348,16 @@ export function ProjectSidebar({
             <ProjectRow
               project={p}
               selected={p.id === selectedProjectId}
-              badge={opts?.badge ?? (isFactory ? "шаблон" : undefined)}
+              badge={parentBadge}
               compact={opts?.compact}
               draggable={opts?.draggable}
+              canCreateChild={p.mass_parent_id == null}
+              creatingChild={createChildMutation.isPending && createChildMutation.variables === p.id}
               queuePosition={p.gen_queue_position ?? null}
               onToggleQueue={() => handleQueueClick(p)}
               onSelect={() => onSelect(p.id)}
               onDelete={() => deleteMutation.mutate(p.id)}
+              onCreateChild={() => createChildMutation.mutate(p.id)}
             />
           </div>
         </div>
@@ -354,7 +370,7 @@ export function ProjectSidebar({
                   project={c}
                   selected={c.id === selectedProjectId}
                   compact
-                  badge={`#${c.mass_lane_position ?? "?"}`}
+                  badge={p.mass_factory ? `#${c.mass_lane_position ?? "?"}` : `доч. ${c.mass_lane_position ?? "?"}`}
                   queuePosition={c.gen_queue_position ?? null}
                   onToggleQueue={() => handleQueueClick(c)}
                   onSelect={() => onSelect(c.id)}
@@ -781,20 +797,26 @@ function ProjectRow({
   compact,
   badge,
   draggable,
+  canCreateChild,
+  creatingChild,
   queuePosition,
   onToggleQueue,
   onSelect,
   onDelete,
+  onCreateChild,
 }: {
   project: ProjectSummary;
   selected: boolean;
   compact?: boolean;
   badge?: string;
   draggable?: boolean;
+  canCreateChild?: boolean;
+  creatingChild?: boolean;
   queuePosition?: number | null;
   onToggleQueue?: () => void;
   onSelect: () => void;
   onDelete: () => void;
+  onCreateChild?: () => void;
 }) {
   return (
     <div
@@ -877,17 +899,38 @@ function ProjectRow({
               )}
               {project.topic}
             </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (confirm(`Удалить проект «${project.topic}»?`)) onDelete();
-              }}
-              className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
-              aria-label="Удалить"
-            >
-              <Trash2 className="h-3 w-3" strokeWidth={1.5} />
-            </button>
+            <div className="flex shrink-0 flex-col items-center gap-0.5">
+              {canCreateChild && onCreateChild ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCreateChild();
+                  }}
+                  disabled={creatingChild}
+                  className="invisible h-5 w-5 rounded-md text-muted-foreground/50 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400/90 group-hover:visible disabled:opacity-50"
+                  aria-label="Создать дочерний проект"
+                  title="Дочерний проект (копия данных и закадрового текста)"
+                >
+                  {creatingChild ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Plus className="h-3 w-3" strokeWidth={1.5} />
+                  )}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm(`Удалить проект «${project.topic}»?`)) onDelete();
+                }}
+                className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
+                aria-label="Удалить"
+              >
+                <Trash2 className="h-3 w-3" strokeWidth={1.5} />
+              </button>
+            </div>
           </div>
           <div className="mt-2 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
