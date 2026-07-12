@@ -11,6 +11,7 @@ from app.db import session_scope
 from app.models import Project
 from app.services import sidebar_layout as layout_svc
 from app.services.gen_queue_run import clear_gen_queue_run, set_gen_queue_run
+from app.services.project_control import clear_user_stop_gate
 from sqlalchemy import select
 
 router = APIRouter(prefix="/sidebar-layout", tags=["sidebar-layout"])
@@ -164,6 +165,7 @@ async def bulk_enqueue_gen_queue(body: GenQueueBulkEnqueue) -> dict:
                 )
             projects.append(project)
         for project in projects:
+            clear_user_stop_gate(project)
             await set_gen_queue_run(
                 session,
                 project,
@@ -194,6 +196,7 @@ async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
                 status_code=400,
                 detail="Включите auto_mode (режим ИИ) для проекта перед добавлением в очередь",
             )
+        clear_user_stop_gate(project)
         try:
             await set_gen_queue_run(
                 session,

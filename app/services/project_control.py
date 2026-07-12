@@ -29,6 +29,20 @@ def _set_user_stop_gate(project: Project) -> None:
     project.meta = meta
 
 
+def clear_user_stop_gate(project: Project) -> list[str]:
+    """Снять user_stop (например при постановке в gen_queue)."""
+    meta = dict(project.meta or {})
+    cleared: list[str] = []
+    if meta.pop("user_stop", None) is not None:
+        cleared.append("user_stop")
+    if meta.pop("mass_lane_user_stop", None) is not None:
+        cleared.append("mass_lane_user_stop")
+    if cleared:
+        project.meta = meta
+        logger.info("[#{}] cleared {}", project.id, ", ".join(cleared))
+    return cleared
+
+
 async def stop_project_running(
     session: AsyncSession, project: Project
 ) -> dict[str, str | bool | list[str] | None]:
