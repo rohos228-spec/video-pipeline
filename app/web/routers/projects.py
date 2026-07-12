@@ -217,6 +217,7 @@ async def patch_project(
     }
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.services.canvas_graph import canvas_graph_from_meta, sync_run_snapshot_from_canvas_graph
     from app.services.chatgpt_xlsx import save_voiceover_text
     from app.services.content_locks import lock_ui_field
 
@@ -230,6 +231,10 @@ async def patch_project(
         save_voiceover_text(p, p.data_dir / "voiceover.txt", text)
         lock_ui_field(p, "script_text")
         flag_modified(p, "meta")
+    if "meta" in payload and canvas_graph_from_meta(
+        p.meta if isinstance(p.meta, dict) else {}
+    ):
+        await sync_run_snapshot_from_canvas_graph(session, p)
     p.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(p)

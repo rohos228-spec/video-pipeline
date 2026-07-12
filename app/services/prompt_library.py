@@ -25,8 +25,11 @@ ASCII + цифры + `_-`), чтобы юзер из TG не мог записа
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -92,6 +95,7 @@ STEP_HUMAN_NAMES: dict[str, str] = {
 STEPS_WITHOUT_PROMPT: set[str] = {"img", "video", "audio", "assemble"}
 
 DEFAULT_NAME = "default"
+_FILE_META = ".file_meta.json"
 
 # Слоты enrich — только .md из prompts/05*_enrich_*; не blocks v2 compose.
 ENRICH_STEP_CODES: frozenset[str] = frozenset(
@@ -141,6 +145,56 @@ def step_dir(step_code: str) -> Path:
     return path
 
 
+def _file_meta_path(step_code: str) -> Path:
+    return step_dir(step_code) / _FILE_META
+
+
+def load_file_meta(step_code: str) -> dict[str, Any]:
+    path = _file_meta_path(step_code)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_file_meta(step_code: str, data: dict[str, Any]) -> None:
+    path = _file_meta_path(step_code)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def touch_prompt_meta(step_code: str, name: str, size: int) -> float:
+    """Записать стабильную дату сохранения (не mtime файла)."""
+    saved_at = datetime.now(timezone.utc).timestamp()
+    meta = load_file_meta(step_code)
+    meta[name] = {"saved_at": saved_at, "size": size}
+    _save_file_meta(step_code, meta)
+    return saved_at
+
+
+def get_prompt_saved_at(step_code: str, name: str) -> float | None:
+    entry = load_file_meta(step_code).get(name)
+    if isinstance(entry, dict) and entry.get("saved_at") is not None:
+        return float(entry["saved_at"])
+    return None
+
+
+def rename_prompt_meta(step_code: str, old_name: str, new_name: str) -> None:
+    meta = load_file_meta(step_code)
+    if old_name in meta:
+        meta[new_name] = meta.pop(old_name)
+        _save_file_meta(step_code, meta)
+
+
+def remove_prompt_meta(step_code: str, name: str) -> None:
+    meta = load_file_meta(step_code)
+    if name in meta:
+        meta.pop(name, None)
+        _save_file_meta(step_code, meta)
+
+
 def is_valid_prompt_name(name: str, *, max_bytes: int = MAX_PROMPT_NAME_BYTES) -> bool:
     """Имя варианта: любые символы кроме path-traversal.
     Пробелы, кириллица, спецсимволы — допустимы."""
@@ -188,6 +242,7 @@ def read_prompt(step_code: str, name: str) -> str:
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
+    touch_prompt_meta(step_code, name, len(content.encode("utf-8")))
     return p
 
 

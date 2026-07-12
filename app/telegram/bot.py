@@ -53,6 +53,7 @@ from app.models import (
 )
 from app.services import gpt_text_builder as gtb
 from app.services import prompt_library as plib
+from app.services.prompt_history import write_prompt_with_history
 from app.services import reset_step as reset_step_svc
 from app.services.xlsx_flow_locks import (
     clear_xlsx_flow_locks,
@@ -3535,7 +3536,7 @@ async def _handle_prompt_upload(msg: Message) -> None:
             "промтом. (Жду тот же файл, режим ожидания не сброшен.)"
         )
         return
-    plib.write_prompt(step_code, name, content)
+    write_prompt_with_history(step_code, name, content)
     _pending_prompt_upload.pop(user_id, None)
     # Сохраняем выбор в проекте.
     async with session_scope() as s:

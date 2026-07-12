@@ -28,6 +28,7 @@ from app.services.prompt_library import (
     DEFAULT_NAME,
     STEP_FOLDERS,
     delete_prompt,
+    get_prompt_saved_at,
     is_valid_prompt_name,
     list_prompts,
     prompt_path,
@@ -99,6 +100,13 @@ def _library_prompt_path(step_code: str, name: str) -> str:
     return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
 
 
+def _prompt_modified(step_code: str, name: str, p: Path) -> float:
+    saved = get_prompt_saved_at(step_code, name)
+    if saved is not None:
+        return saved
+    return p.stat().st_mtime
+
+
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
 async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
     """Список .md-файлов в `prompts/<step>/`."""
@@ -115,7 +123,7 @@ async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
                 name=name,
                 filename=f"{name}.md",
                 size=stat.st_size,
-                modified=stat.st_mtime,
+                modified=_prompt_modified(step_code, name, p),
                 is_default=(name == DEFAULT_NAME),
             )
         )
@@ -135,7 +143,7 @@ async def get_prompt_file(step_code: str, name: str) -> PromptFileContent:
         filename=f"{name}.md",
         content=read_prompt(step_code, name),
         size=stat.st_size,
-        modified=stat.st_mtime,
+        modified=_prompt_modified(step_code, name, p),
     )
 
 
@@ -185,7 +193,7 @@ async def save_prompt_file(
         filename=f"{name}.md",
         content=payload.content,
         size=stat.st_size,
-        modified=stat.st_mtime,
+        modified=_prompt_modified(step_code, name, p),
     )
 
 
@@ -282,7 +290,7 @@ async def restore_prompt_file_history(
         filename=f"{name}.md",
         content=content,
         size=stat.st_size,
-        modified=stat.st_mtime,
+        modified=_prompt_modified(step_code, name, p),
     )
 
 
@@ -307,7 +315,7 @@ async def rename_prompt_file_route(
         name=final,
         filename=f"{final}.md",
         size=stat.st_size,
-        modified=stat.st_mtime,
+        modified=_prompt_modified(step_code, name, p),
         is_default=(final == DEFAULT_NAME),
     )
 
@@ -369,6 +377,6 @@ async def upload_prompt_file(
         name=raw_name,
         filename=f"{raw_name}.md",
         size=stat.st_size,
-        modified=stat.st_mtime,
+        modified=_prompt_modified(step_code, name, p),
         is_default=(raw_name == DEFAULT_NAME),
     )

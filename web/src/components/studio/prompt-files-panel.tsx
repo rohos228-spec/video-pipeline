@@ -229,6 +229,7 @@ export function PromptFilesPanel({
       toast.success(`Удалён: ${name}.md`);
       if (selectedName === name) setSelectedName(null);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
     onError: toastError,
@@ -240,6 +241,7 @@ export function PromptFilesPanel({
       toast.success(`Загружен: ${info.filename}`);
       setSelectedName(info.name);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
+      qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-variants", stepCode] });
     },
     onError: toastError,

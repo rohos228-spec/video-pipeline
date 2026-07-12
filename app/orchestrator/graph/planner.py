@@ -449,6 +449,13 @@ async def load_graph_for_project(
     session: AsyncSession,
     project: Project,
 ) -> WorkflowGraph:
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta)
+    if cg:
+        return WorkflowGraph(list(cg["nodes"]), list(cg["edges"]))
+
     run = (
         await session.execute(
             select(WorkflowRun).where(WorkflowRun.project_id == project.id)

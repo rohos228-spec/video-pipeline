@@ -35,10 +35,10 @@ from app.services.prompt_composer import (
     step_block_categories,
     write_step_template_blocks,
 )
+from app.services.prompt_history import write_prompt_with_history
 from app.services.prompt_library import (
     DEFAULT_NAME,
     is_valid_prompt_name,
-    write_prompt,
 )
 from app.services.prompt_library import (
     list_prompts as list_variants,
@@ -242,7 +242,7 @@ async def save_gpt_text_as_template(
     if not content.strip():
         raise HTTPException(status_code=400, detail="текст пустой — нечего сохранять")
 
-    path = write_prompt(step_code, raw_name, content)
+    path = write_prompt_with_history(step_code, raw_name, content)
     return {
         "step_code": step_code,
         "name": raw_name,

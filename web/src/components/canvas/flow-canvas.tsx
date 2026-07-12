@@ -71,6 +71,10 @@ import {
   migrateWorkflowNodes,
   workflowNodeFromCanvas,
 } from "@/lib/workflow-node-serialize";
+import {
+  buildCanvasGraph,
+  readCanvasGraph,
+} from "@/lib/canvas-graph-storage";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -105,6 +109,7 @@ export function FlowCanvas({
   disabledNodes?: Set<string>;
   onCanvasZoom?: (zoom: number) => void;
 }) {
+  const qc = useQueryClient();
   // 1) Дефолтный Workflow с бэкенда.
   const workflows = useQuery({
     queryKey: ["workflows"],
@@ -142,15 +147,35 @@ export function FlowCanvas({
     refetchInterval: 4000,
   });
 
-  // Базовая структура графа — только при смене workflow (не при каждом poll run).
+  // Базовая структура графа — из project.meta.canvas_graph (приоритет) или workflow.
+  const canvasGraph = useMemo(() => {
+    if (!project.data?.meta || !defaultWorkflow?.id) return null;
+    return readCanvasGraph(
+      project.data.meta as Record<string, unknown>,
+      defaultWorkflow.id,
+    );
+  }, [project.data?.meta, defaultWorkflow?.id]);
+
+  const graphSource = useMemo((): WorkflowDetail | null => {
+    if (!workflow.data) return null;
+    if (canvasGraph) {
+      return {
+        ...workflow.data,
+        nodes: canvasGraph.nodes,
+        edges: canvasGraph.edges,
+      };
+    }
+    return workflow.data;
+  }, [workflow.data, canvasGraph]);
+
   const baseNodes = useMemo(() => {
-    if (!workflow.data) return [];
-    return workflowToReactFlowNodes(workflow.data, null);
-  }, [workflow.data]);
+    if (!graphSource) return [];
+    return workflowToReactFlowNodes(graphSource, null);
+  }, [graphSource]);
   const baseEdges = useMemo(() => {
-    if (!workflow.data) return [];
-    return workflowToReactFlowEdges(workflow.data);
-  }, [workflow.data]);
+    if (!graphSource) return [];
+    return workflowToReactFlowEdges(graphSource);
+  }, [graphSource]);
 
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState<Node<PipelineNodeData>>([]);
   const [edges, setEdges, onEdgesChangeInternal] = useEdgesState<Edge>([]);
@@ -172,8 +197,10 @@ export function FlowCanvas({
   }, [edges]);
 
   useEffect(() => {
-    if (!workflow.data) return;
-    const ver = workflowStructureKey(workflow.data);
+    if (!graphSource) return;
+    const ver = canvasGraph?.saved_at
+      ? `${workflowStructureKey(graphSource)}|${canvasGraph.saved_at}`
+      : workflowStructureKey(graphSource);
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
     setNodes((prev) => {
@@ -196,7 +223,7 @@ export function FlowCanvas({
       });
     });
     setEdges(baseEdges);
-  }, [workflow.data, baseNodes, baseEdges, graphVersion, nodes.length, setNodes, setEdges]);
+  }, [graphSource, baseNodes, baseEdges, graphVersion, nodes.length, canvasGraph?.saved_at, setNodes, setEdges]);
 
   // excel_gpt: подтянуть inputSource/label из project.meta → data ноды (для V-меню).
   useEffect(() => {
@@ -323,12 +350,6 @@ export function FlowCanvas({
     }
   });
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) =>
-      setNodes((ns) => applyNodeChanges(changes, ns) as Node<PipelineNodeData>[]),
-    [setNodes],
-  );
-
   const scheduleSaveWorkflow = useCallback(() => {
     if (saveTimerRef.current != null) {
       window.clearTimeout(saveTimerRef.current);
@@ -338,6 +359,20 @@ export function FlowCanvas({
       window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
     }, 400);
   }, []);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setNodes((ns) => applyNodeChanges(changes, ns) as Node<PipelineNodeData>[]);
+      if (
+        changes.some(
+          (c) => c.type === "position" && "dragging" in c && c.dragging === false,
+        )
+      ) {
+        scheduleSaveWorkflow();
+      }
+    },
+    [setNodes, scheduleSaveWorkflow],
+  );
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
@@ -399,36 +434,33 @@ export function FlowCanvas({
       if (check.warnings.length) {
         toast.message(check.warnings[0]);
       }
-      await api.saveWorkflow(workflow.data.id, {
-        nodes: wfNodes,
-        edges: wfEdges,
-      });
       if (projectId) {
-        const project = await api.getProject(projectId).catch(() => null);
-        if (project) {
-          const meta = { ...((project.meta || {}) as Record<string, unknown>) };
-          const topics = Array.isArray(meta.mass_excel_topics)
-            ? (meta.mass_excel_topics as string[])
-            : [];
-          const bindings = buildExcelLaneBindings(currentNodes, currentEdges, topics);
-          if (bindings.length) {
-            await api.patchProject(projectId, {
-              meta: { ...meta, excel_lane_bindings: bindings },
-            });
-          }
+        const projectData = project.data ?? (await api.getProject(projectId));
+        const meta = { ...((projectData.meta || {}) as Record<string, unknown>) };
+        meta.canvas_graph = buildCanvasGraph(workflow.data.id, wfNodes, wfEdges);
+        const topics = Array.isArray(meta.mass_excel_topics)
+          ? (meta.mass_excel_topics as string[])
+          : [];
+        const bindings = buildExcelLaneBindings(currentNodes, currentEdges, topics);
+        if (bindings.length) {
+          meta.excel_lane_bindings = bindings;
         }
+        await api.patchProject(projectId, { meta });
+        await qc.invalidateQueries({ queryKey: ["project", projectId] });
+        await api.ensureProjectRun(projectId).catch(() => undefined);
+      } else {
+        await api.saveWorkflow(workflow.data.id, {
+          nodes: wfNodes,
+          edges: wfEdges,
+        });
       }
       toast.success("Граф сохранён");
-      await workflow.refetch();
-      if (projectId) {
-        await api.ensureProjectRun(projectId).catch(() => undefined);
-      }
     } catch (e) {
       toast.error(`Не сохранилось: ${errorMessageFromUnknown(e)}`);
     } finally {
       setSaving(false);
     }
-  }, [workflow, projectId]);
+  }, [workflow, projectId, project.data, qc]);
 
   useEffect(() => {
     const onPatch = (ev: Event) => {

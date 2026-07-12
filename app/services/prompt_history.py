@@ -178,14 +178,62 @@ def rename_prompt_file(step_code: str, old_name: str, new_name: str) -> str:
     if dst.exists():
         raise ValueError(f"prompt already exists: {new_name}")
     src.rename(dst)
+    from app.services.prompt_library import rename_prompt_meta
+
+    rename_prompt_meta(step_code, old_name, new_name)
     hist_root = _history_root(step_code)
     old_hist = hist_root / old_name
     if old_hist.is_dir():
         new_hist = hist_root / new_name
-        if new_hist.exists():
-            shutil.rmtree(new_hist)
-        old_hist.rename(new_hist)
+        if not new_hist.exists():
+            old_hist.rename(new_hist)
+        else:
+            _merge_prompt_history_dirs(old_hist, new_hist)
+            shutil.rmtree(old_hist, ignore_errors=True)
     return new_name
+
+
+def _merge_prompt_history_dirs(old_hist: Path, new_hist: Path) -> None:
+    """Слить историю при переименовании, если у нового имени уже есть архив."""
+    new_hist.mkdir(parents=True, exist_ok=True)
+    for snap in old_hist.glob("*.md"):
+        dest = new_hist / snap.name
+        if not dest.exists():
+            snap.rename(dest)
+    old_index = old_hist / _INDEX
+    new_index = new_hist / _INDEX
+    old_data = {"versions": []}
+    new_data = {"versions": []}
+    if old_index.is_file():
+        try:
+            raw = json.loads(old_index.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("versions"), list):
+                old_data = raw
+        except (json.JSONDecodeError, OSError):
+            pass
+    if new_index.is_file():
+        try:
+            raw = json.loads(new_index.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("versions"), list):
+                new_data = raw
+        except (json.JSONDecodeError, OSError):
+            pass
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for item in list(new_data.get("versions") or []) + list(old_data.get("versions") or []):
+        if not isinstance(item, dict):
+            continue
+        vid = item.get("id")
+        if not isinstance(vid, str) or vid in seen:
+            continue
+        seen.add(vid)
+        merged.append(item)
+    merged.sort(key=lambda x: float(x.get("saved_at") or 0), reverse=True)
+    new_data["versions"] = merged[:_MAX_VERSIONS]
+    new_index.write_text(
+        json.dumps(new_data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def restore_prompt_version(step_code: str, name: str, version_id: str) -> str:

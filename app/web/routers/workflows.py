@@ -17,7 +17,7 @@ from app.orchestrator.graph.validate import validate_workflow_graph
 from app.orchestrator.default_graph import default_graph as _default_graph
 from app.services.excel_gpt_node import migrate_enrich_nodes, assign_slot_indices
 from app.services.workflow_run_sync import sync_runs_from_workflow
-from app.web.settings_default import apply_default_graph, migrate_workflow_enrich_nodes
+from app.orchestrator.default_graph import LAYOUT_VERSION
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -33,14 +33,6 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
     wf = await session.get(Workflow, workflow_id)
     if wf is None:
         raise HTTPException(status_code=404, detail="workflow not found")
-    changed = False
-    if wf.is_default and await apply_default_graph(session, wf):
-        changed = True
-    elif await migrate_workflow_enrich_nodes(session, wf):
-        changed = True
-    if changed:
-        await session.commit()
-        await session.refresh(wf)
     return wf
 
 
@@ -99,6 +91,9 @@ async def update_workflow(
     wf.nodes = nodes_raw
     wf.edges = edges_raw
     wf.version = (wf.version or 1) + 1
+    meta = dict(wf.meta or {})
+    meta["layout_version"] = LAYOUT_VERSION
+    wf.meta = meta
     await sync_runs_from_workflow(session, wf)
     await session.commit()
     await session.refresh(wf)

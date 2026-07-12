@@ -126,12 +126,24 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
         wf = await s.get(Workflow, workflow_id)
         if wf is None:
             raise ValueError(f"workflow {workflow_id} not found")
+        project = await s.get(Project, project_id)
+        nodes = list(wf.nodes or [])
+        edges = list(wf.edges or [])
+        if project is not None:
+            from app.services.canvas_graph import canvas_graph_from_meta
+
+            cg = canvas_graph_from_meta(
+                project.meta if isinstance(project.meta, dict) else {}
+            )
+            if cg:
+                nodes = list(cg["nodes"])
+                edges = list(cg["edges"])
         run = WorkflowRun(
             workflow_id=wf.id,
             project_id=project_id,
             status=WorkflowRunStatus.new,
-            nodes_snapshot=list(wf.nodes or []),
-            edges_snapshot=list(wf.edges or []),
+            nodes_snapshot=nodes,
+            edges_snapshot=edges,
         )
         s.add(run)
         await s.flush()
