@@ -288,9 +288,12 @@ async def attachments_for_step(
     if step_code in excel_steps:
         if xlsx.is_file():
             paths.append(xlsx)
-    voice = project.data_dir / "voiceover.txt"
-    if step_code in ("script", "music", "split") and voice.is_file():
-        paths.append(voice)
+    if step_code in ("script", "music", "split"):
+        from app.services import chatgpt_xlsx as cx
+
+        voice = cx.ensure_source_voiceover(project)
+        if voice is not None:
+            paths.append(voice)
     if step_code in ("hero", "items", "images"):
         kinds = [ArtifactKind.hero_reference, ArtifactKind.scene_image]
         arts = (

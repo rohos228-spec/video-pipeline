@@ -348,6 +348,24 @@ async def sync_project_xlsx(
     return sync_info
 
 
+def ensure_source_voiceover(project: Project) -> Path | None:
+    """Возвращает путь к исходному voiceover.txt, синхронизируя из script_text при необходимости."""
+    voiceover_path = project.data_dir / "voiceover.txt"
+    if voiceover_path.is_file() and voiceover_path.stat().st_size > 0:
+        return voiceover_path
+    text = (project.script_text or "").strip()
+    if not text:
+        return None
+    voiceover_path.parent.mkdir(parents=True, exist_ok=True)
+    voiceover_path.write_text(text, encoding="utf-8")
+    logger.info(
+        "[#{}] ensure_source_voiceover: voiceover.txt из script_text ({} симв)",
+        project.id,
+        len(text),
+    )
+    return voiceover_path
+
+
 def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:
     """Сохраняет voiceover.txt с бэкапом предыдущей версии."""
     voiceover_path.parent.mkdir(parents=True, exist_ok=True)

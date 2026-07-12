@@ -233,9 +233,9 @@ async def run_script_xlsx(
     *,
     project_id: int | None = None,
 ) -> tuple[XlsxRoundtripResult, str]:
-    """Шаг «Закадровый текст»: prompt.txt + project.xlsx → voiceover.txt."""
+    """Шаг «Закадровый текст»: prompt + project.xlsx [+ voiceover.txt] → voiceover.txt."""
     proj_xlsx = _ensure_project_xlsx(project)
-    voiceover_path = proj_xlsx.parent / "voiceover.txt"
+    source_voiceover = cx.ensure_source_voiceover(project)
 
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
@@ -244,19 +244,23 @@ async def run_script_xlsx(
         project, "script", prompt_file_name=prompt_file.name
     )
     downloaded = tmp_dir / f"voiceover_{ts}.txt"
+    attach_files: list[Path] = [prompt_file, proj_xlsx]
+    if source_voiceover is not None:
+        attach_files.append(source_voiceover)
 
     logger.info(
-        "script_xlsx: prompt_file={} ({} байт), xlsx={}, chat_len={}",
+        "script_xlsx: prompt_file={} ({} байт), xlsx={}, voiceover={}, chat_len={}",
         prompt_file.name,
         prompt_file.stat().st_size,
         proj_xlsx,
+        source_voiceover.name if source_voiceover else "—",
         len(chat_msg),
     )
 
     async def _gpt() -> str:
         return await xgf.telegram_style_ask_and_download(
             chat_msg,
-            [prompt_file, proj_xlsx],
+            attach_files,
             downloaded,
             project_id=project_id or project.id,
             ask_timeout=1800.0,
@@ -270,7 +274,7 @@ async def run_script_xlsx(
         )
 
     voiceover_text = downloaded.read_text(encoding="utf-8").strip()
-    cx.save_voiceover_text(project, voiceover_path, voiceover_text)
+    cx.save_voiceover_text(project, proj_xlsx.parent / "voiceover.txt", voiceover_text)
 
     return (
         XlsxRoundtripResult(
@@ -289,10 +293,8 @@ async def run_split_xlsx(
 ) -> XlsxRoundtripResult:
     """Шаг «Разбивка»: prompt + project.xlsx + voiceover.txt → xlsx."""
     proj_xlsx = _ensure_project_xlsx(project)
-    voiceover = proj_xlsx.parent / "voiceover.txt"
-    if not voiceover.exists() and project.script_text:
-        voiceover.write_text(project.script_text.strip(), encoding="utf-8")
-    if not voiceover.exists():
+    voiceover = cx.ensure_source_voiceover(project)
+    if voiceover is None:
         raise FileNotFoundError(
             "voiceover.txt не найден — сначала пройди шаг «Закадровый текст»"
         )
