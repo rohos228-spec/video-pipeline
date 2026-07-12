@@ -181,6 +181,7 @@ async def bulk_enqueue_gen_queue(body: GenQueueBulkEnqueue) -> dict:
     }
 
 
+@router.post("/gen-queue/enqueue")
 async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
     async with session_scope() as session:
         project = (
