@@ -16,7 +16,6 @@ import {
 export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
   const meta = (project.meta || {}) as Record<string, unknown>;
-  const graphOn = Boolean(meta.graph_executor);
   const autoOn = project.auto_mode;
   const controlMode = readControlMode(meta);
 
@@ -30,10 +29,6 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const toggleMeta = (key: string, value: boolean) => {
-    patch.mutate({ meta: { ...meta, [key]: value } });
-  };
-
   const setControlMode = (mode: ControlMode) => {
     const ai = mode === "ai";
     patch.mutate({
@@ -41,7 +36,6 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
       meta: {
         ...meta,
         ai_control: ai,
-        graph_executor: meta.graph_executor ?? true,
       },
     });
   };
@@ -55,13 +49,6 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
         onChange={setControlMode}
       />
       <MassFactoryPanel project={project} />
-      <ToggleRow
-        label="Граф-исполнитель"
-        hint="Вкл: порядок по стрелкам на канвасе (сохраните граф). Выкл: фиксированная цепочка шагов"
-        active={graphOn}
-        disabled={patch.isPending}
-        onClick={() => toggleMeta("graph_executor", !graphOn)}
-      />
       <ToggleRow
         label="Автопродвижение"
         hint="По шагам без одобрения — следующий шаг стартует сразу после завершения текущего"

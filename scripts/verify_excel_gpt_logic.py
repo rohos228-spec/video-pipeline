@@ -109,7 +109,7 @@ async def test_planner_states() -> None:
     nodes, edges = default_graph()
     g = WorkflowGraph(nodes, edges)
     p = Project(id=1, slug="g", topic="t", status=ProjectStatus.enriching_2)
-    p.meta = {"enrich_completed_slots": [1], "graph_executor": True}
+    p.meta = {"enrich_completed_slots": [1]}
     states = g.derived_node_states(p)
     k1 = "n_excel_gpt_1"
     k2 = "n_excel_gpt_2"
@@ -187,7 +187,6 @@ async def test_reset_meta_clears_slots() -> None:
             "enrich_completed_slots": [1, 2],
             "excel_gpt_completed_keys": ["n_excel_gpt_1", "n_excel_gpt_2"],
             "active_excel_gpt_node_key": "n_excel_gpt_2",
-            "graph_executor": True,
         }
         session.add(p)
         from app.models import Workflow, WorkflowRun

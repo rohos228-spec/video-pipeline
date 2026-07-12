@@ -27,9 +27,6 @@ async def ensure_default_project() -> int | None:
             p = await s.get(Project, pid)
             if p is not None:
                 p.auto_mode = True
-                meta = dict(p.meta or {})
-                meta.setdefault("graph_executor", True)
-                p.meta = meta
                 await s.flush()
         logger.info(
             "default project #{} created (auto_mode=True, web-only)",

@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from app.models import Project, ProjectStatus
 
-from app.orchestrator.node_registry import (
-    LINEAR_RUNNING_PIPELINE,
-    STEP_CODE_TO_NODE_TYPE,
-)
+from app.orchestrator.node_registry import STEP_CODE_TO_NODE_TYPE
 
 KNOWN_NODE_TYPES: tuple[str, ...] = tuple(
     sorted(set(STEP_CODE_TO_NODE_TYPE.values()), key=len, reverse=True)
 )
-
-RUNNING_PIPELINE = LINEAR_RUNNING_PIPELINE
 
 
 def node_type_from_key(node_key: str) -> str | None:
@@ -62,26 +57,8 @@ def skip_disabled_running(
     project: Project,
     target: ProjectStatus | None,
 ) -> ProjectStatus | None:
-    """Если running-шаг отключён — перейти к следующему включённому (граф или линейно)."""
-    from app.orchestrator.graph.planner import WorkflowGraph, graph_executor_enabled
-
-    if target is None:
-        return None
-    if graph_executor_enabled(project):
-        # Без session нельзя загрузить snapshot — не подменяем дефолтным графом.
-        return target
-    disabled = disabled_node_types(project)
-    if not disabled:
-        return target
-    start_idx = 0
-    for i, (st, _) in enumerate(RUNNING_PIPELINE):
-        if st == target:
-            start_idx = i
-            break
-    for st, typ in RUNNING_PIPELINE[start_idx:]:
-        if typ not in disabled:
-            return st
-    return None
+    """Sync fallback: без session граф не загружается — возвращаем target как есть."""
+    return target
 
 
 async def skip_disabled_running_async(
@@ -89,16 +66,10 @@ async def skip_disabled_running_async(
     project: Project,
     target: ProjectStatus | None,
 ) -> ProjectStatus | None:
-    """Graph-aware skip с загрузкой snapshot проекта."""
-    from app.orchestrator.graph.planner import (
-        WorkflowGraph,
-        graph_executor_enabled,
-        load_graph_for_project,
-    )
+    """Пропуск отключённых нод по связям канваса."""
+    from app.orchestrator.graph.planner import load_graph_for_project
 
     if target is None:
         return None
-    if not graph_executor_enabled(project):
-        return skip_disabled_running(project, target)
     graph = await load_graph_for_project(session, project)
     return graph.skip_disabled_running(project, target)

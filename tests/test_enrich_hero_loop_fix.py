@@ -18,7 +18,7 @@ def test_work_types_done_remembers_completed_enrich_slots() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.frames_ready,
-        meta={"graph_executor": True, "enrich_completed_slots": [3]},
+        meta={"enrich_completed_slots": [3]},
     )
     done = g._work_types_done(p)
     assert "split" in done
@@ -44,7 +44,7 @@ def test_frames_ready_skips_completed_enrich_3_on_custom_graph() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.frames_ready,
-        meta={"graph_executor": True, "enrich_completed_slots": [3]},
+        meta={"enrich_completed_slots": [3]},
     )
     nxt = g.next_running_after_ready(p, ProjectStatus.frames_ready)
     assert nxt == ProjectStatus.generating_hero

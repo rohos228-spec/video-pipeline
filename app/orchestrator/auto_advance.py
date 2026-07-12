@@ -187,10 +187,8 @@ async def _graph_next_running(
     project: Project,
     ready_status: ProjectStatus,
 ) -> ProjectStatus | None:
-    from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
+    from app.orchestrator.graph.planner import load_graph_for_project
 
-    if not graph_executor_enabled(project):
-        return None
     graph = await load_graph_for_project(session, project)
     return graph.next_running_after_ready(project, ready_status)
 
@@ -553,21 +551,19 @@ async def _apply_approve(
     # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
-        from app.orchestrator.graph.planner import graph_executor_enabled
-
-        if graph_executor_enabled(project) and nxt is ProjectStatus.generating_items:
+        if nxt is not ProjectStatus.generating_hero:
             graph_nxt = await _graph_next_running(session, project, ProjectStatus.hero_ready)
             if graph_nxt is None:
                 logger.warning(
-                    "graph_executor: #{} no next step after hero_ready — check canvas edges",
+                    "graph: #{} no next step after hero_ready — check canvas edges",
                     project.id,
                 )
                 return
             nxt = graph_nxt
         skipped = await skip_disabled_running_async(session, project, nxt)
-        if skipped is None and graph_executor_enabled(project):
+        if skipped is None:
             logger.warning(
-                "graph_executor: #{} cannot skip disabled step {} — check canvas edges",
+                "graph: #{} cannot skip disabled step {} — check canvas edges",
                 project.id,
                 nxt.value if nxt else "none",
             )
@@ -577,32 +573,23 @@ async def _apply_approve(
             return
         project.status = nxt
     else:
-        from app.orchestrator.graph.planner import graph_executor_enabled
-
-        nxt = _next_running_with_enrich_cap(project, transition)
-        if graph_executor_enabled(project):
-            graph_nxt = await _graph_next_running(session, project, transition.ready_status)
-            if graph_nxt is None:
-                logger.warning(
-                    "graph_executor: #{} no next step after {} — check canvas edges",
-                    project.id,
-                    transition.ready_status.value,
-                )
-                return
-            candidate = graph_nxt
-        elif nxt is not None:
-            candidate = nxt
-        else:
-            return
-        skipped = await skip_disabled_running_async(session, project, candidate)
-        if skipped is None and graph_executor_enabled(project):
+        graph_nxt = await _graph_next_running(session, project, transition.ready_status)
+        if graph_nxt is None:
             logger.warning(
-                "graph_executor: #{} cannot advance to {} — check canvas edges",
+                "graph: #{} no next step after {} — check canvas edges",
                 project.id,
-                candidate.value,
+                transition.ready_status.value,
             )
             return
-        nxt = await _apply_running_if_data_ok(session, project, skipped or candidate)
+        skipped = await skip_disabled_running_async(session, project, graph_nxt)
+        if skipped is None:
+            logger.warning(
+                "graph: #{} cannot advance to {} — check canvas edges",
+                project.id,
+                graph_nxt.value,
+            )
+            return
+        nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
             return
         project.status = nxt

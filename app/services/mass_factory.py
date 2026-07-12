@@ -38,7 +38,6 @@ COPY_PROJECT_FIELDS = (
 )
 
 COPY_META_KEYS = (
-    "graph_executor",
     "ai_control",
     "auto_review_kinds",
     "ai_new_window_per_check",
@@ -125,7 +124,6 @@ def build_child_meta(
             continue
         if key in COPY_META_KEYS or key.startswith("prompt_"):
             out[key] = val
-    out["graph_executor"] = template_meta.get("graph_executor", True)
     out["mass_parent_id"] = parent_id
     out["mass_lane"] = lane_position
     out["mass_lane_position"] = lane_position

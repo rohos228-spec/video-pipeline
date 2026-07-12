@@ -10,9 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.orchestrator.node_registry import (
-    LINEAR_NODE_TYPES,
-    LINEAR_RUNNING_PIPELINE,
-    NODE_TYPE_TO_READY,
     NODE_TYPE_TO_RUNNING,
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
@@ -42,11 +39,6 @@ def is_passthrough_node_type(node_type: str) -> bool:
         or is_config_node_type(node_type)
         or node_type in PASSTHROUGH_NODE_TYPES
     )
-
-
-def graph_executor_enabled(project: Project) -> bool:
-    meta = project.meta if isinstance(project.meta, dict) else {}
-    return bool(meta.get("graph_executor", False))
 
 
 class WorkflowGraph:
@@ -148,41 +140,25 @@ class WorkflowGraph:
         return reachable
 
     def _work_types_done(self, project: Project) -> set[str]:
-        """Какие рабочие типы уже завершены по Project.status."""
+        """Какие рабочие типы уже завершены по Project.status (только по графу канваса)."""
         status = project.status
         done: set[str] = set()
-        strict = graph_executor_enabled(project)
         skipped = self.skipped_keys(project)
 
         if status in READY_TO_NODE_TYPE:
             cur = READY_TO_NODE_TYPE[status]
             done.add(cur)
-            if strict:
-                for key in self.keys_of_type(cur):
-                    for p in self._effective_predecessors(key, skipped):
-                        done.add(self.node_type(p))
-            else:
-                for typ in LINEAR_NODE_TYPES:
-                    if typ == cur:
-                        break
-                    done.add(typ)
+            for key in self.keys_of_type(cur):
+                for p in self._effective_predecessors(key, skipped):
+                    done.add(self.node_type(p))
         elif status in RUNNING_TO_NODE_TYPE:
             cur = RUNNING_TO_NODE_TYPE[status]
-            if strict:
-                for key in self.keys_of_type(cur):
-                    for p in self._effective_predecessors(key, skipped):
-                        done.add(self.node_type(p))
-            else:
-                for typ in LINEAR_NODE_TYPES:
-                    if typ == cur:
-                        break
-                    done.add(typ)
+            for key in self.keys_of_type(cur):
+                for p in self._effective_predecessors(key, skipped):
+                    done.add(self.node_type(p))
         elif status is ProjectStatus.published:
-            if strict:
-                for key in self._flow_work_keys(skipped):
-                    done.add(self.node_type(key))
-            else:
-                done = set(LINEAR_NODE_TYPES)
+            for key in self._flow_work_keys(skipped):
+                done.add(self.node_type(key))
         meta = project.meta if isinstance(project.meta, dict) else {}
         for slot in meta.get("enrich_completed_slots") or []:
             try:
@@ -346,14 +322,14 @@ class WorkflowGraph:
 
         done_types = self._work_types_done(project)
         out: dict[str, NodeRunStatus] = {}
-        flow = self._flow_work_keys(skipped) if graph_executor_enabled(project) else None
+        flow = self._flow_work_keys(skipped)
 
         for nid, n in self._by_id.items():
             typ = str(n.get("type") or "")
             if nid in skipped or typ in disabled_node_types(project):
                 out[nid] = NodeRunStatus.skipped
                 continue
-            if flow is not None and is_work_node_type(typ) and nid not in flow:
+            if is_work_node_type(typ) and nid not in flow:
                 out[nid] = NodeRunStatus.skipped
                 continue
             if is_hitl_node_type(typ):
@@ -469,23 +445,6 @@ class WorkflowGraph:
                 return True
         return False
 
-    @staticmethod
-    def _linear_next_running(
-        project: Project, ready_status: ProjectStatus
-    ) -> ProjectStatus | None:
-        if ready_status not in READY_TO_NODE_TYPE:
-            return None
-        typ = READY_TO_NODE_TYPE[ready_status]
-        try:
-            idx = LINEAR_NODE_TYPES.index(typ)
-        except ValueError:
-            return None
-        for t in LINEAR_NODE_TYPES[idx + 1 :]:
-            if t not in disabled_node_types(project):
-                return NODE_TYPE_TO_RUNNING.get(t)
-        return None
-
-
 async def load_graph_for_project(
     session: AsyncSession,
     project: Project,
@@ -515,8 +474,6 @@ async def assert_step_allowed_by_graph(
     step_code: str,
 ) -> None:
     """Блокирует ручной запуск шага, если он не достижим по связям канваса."""
-    if not graph_executor_enabled(project):
-        return
     from app.services.mass_factory import is_mass_factory_child
 
     if (
@@ -531,7 +488,7 @@ async def assert_step_allowed_by_graph(
     label = step_code.replace("_", " ")
     raise ValueError(
         f"шаг «{label}» недоступен по графу — соедините ноду на канвасе "
-        "и сохраните граф, либо отключите «Граф-исполнитель»"
+        "и сохраните граф"
     )
 
 
@@ -540,10 +497,6 @@ def sync_skip_disabled(
     target: ProjectStatus | None,
     graph: WorkflowGraph | None = None,
 ) -> ProjectStatus | None:
-    if not graph_executor_enabled(project):
-        from app.services.disabled_nodes import skip_disabled_running as linear_skip
-
-        return linear_skip(project, target)
     g = graph or WorkflowGraph.default()
     return g.skip_disabled_running(project, target)
 
@@ -553,7 +506,5 @@ def sync_next_after_ready(
     ready_status: ProjectStatus,
     graph: WorkflowGraph | None = None,
 ) -> ProjectStatus | None:
-    if not graph_executor_enabled(project):
-        return WorkflowGraph._linear_next_running(project, ready_status)
     g = graph or WorkflowGraph.default()
     return g.next_running_after_ready(project, ready_status)

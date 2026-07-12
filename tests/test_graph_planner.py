@@ -8,7 +8,7 @@ from app.orchestrator.graph.planner import WorkflowGraph
 
 def test_default_graph_linear_next_after_plan_ready() -> None:
     g = WorkflowGraph.default()
-    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={})
     nxt = g.next_running_after_ready(p, ProjectStatus.plan_ready)
     assert nxt == ProjectStatus.scripting
 
@@ -19,7 +19,7 @@ def test_disabled_script_skips_to_split() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.plan_ready,
-        meta={"graph_executor": True, "disabled_nodes": ["n_script"]},
+        meta={"disabled_nodes": ["n_script"]},
     )
     nxt = g.next_running_after_ready(p, ProjectStatus.plan_ready)
     assert nxt == ProjectStatus.splitting
@@ -53,7 +53,7 @@ def test_custom_edge_bypass() -> None:
         }
     ]
     g = WorkflowGraph(nodes, edges)
-    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={})
     nxt = g.next_running_after_ready(p, ProjectStatus.plan_ready)
     assert nxt == ProjectStatus.generating_images
 
@@ -74,11 +74,11 @@ def test_disconnected_graph_returns_none() -> None:
         }
     ]
     g = WorkflowGraph(nodes, edges)
-    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.plan_ready, meta={})
     assert g.next_running_after_ready(p, ProjectStatus.plan_ready) is None
     # script изолирован — автопродвижение не пойдёт, но ручной запуск возможен по linear prereq
     assert g.is_step_reachable(p, "script") is True
-    p_new = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
+    p_new = Project(topic="t", slug="t", status=ProjectStatus.new, meta={})
     assert g.is_step_reachable(p_new, "script") is False
 
 
@@ -103,7 +103,7 @@ def test_excel_gpt_predecessor_allows_hero() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.enrich_1_ready,
-        meta={"graph_executor": True, "enrich_completed_slots": [1]},
+        meta={"enrich_completed_slots": [1]},
     )
     assert g.is_step_reachable(p, "hero") is True
     nxt = g.next_running_after_ready(p, ProjectStatus.enrich_1_ready)
@@ -124,7 +124,7 @@ def test_orphan_plan_in_flow_without_topic_edge() -> None:
     flow = g._flow_work_keys(set())
     assert "n_plan" in flow
     assert "n_script" in flow
-    p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={})
     assert g.is_step_reachable(p, "plan") is True
 
 
@@ -139,7 +139,7 @@ def test_bypass_graph_done_types_exclude_skipped_linear_steps() -> None:
         {"id": "e2", "source": "n_plan", "target": "n_images", "sourceHandle": "out", "targetHandle": "in"},
     ]
     g = WorkflowGraph(nodes, edges)
-    p = Project(topic="t", slug="t", status=ProjectStatus.images_ready, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.images_ready, meta={})
     done = g._work_types_done(p)
     assert "plan" in done
     assert "images" in done
@@ -157,7 +157,7 @@ def test_isolated_work_node_marked_skipped_in_derived_states() -> None:
         {"id": "e1", "source": "n_topic", "target": "n_plan", "sourceHandle": "out", "targetHandle": "in"},
     ]
     g = WorkflowGraph(nodes, edges)
-    p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={"graph_executor": True})
+    p = Project(topic="t", slug="t", status=ProjectStatus.new, meta={})
     states = g.derived_node_states(p)
     # script без связи с plan — входная нода, не skipped
     assert states["n_script"] == NodeRunStatus.pending

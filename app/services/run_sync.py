@@ -146,7 +146,7 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
         return run.id
 
 
-from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
+from app.orchestrator.graph.planner import load_graph_for_project
 from app.orchestrator.node_registry import (
     LINEAR_NODE_TYPES,
     READY_TO_NODE_TYPE,
@@ -225,7 +225,7 @@ def _excel_gpt_status_for_node(
     *,
     disabled: bool,
 ) -> NodeRunStatus:
-    """Статус excel_gpt ноды по slotIndex и Project.status (без graph_executor)."""
+    """Статус excel_gpt ноды по slotIndex и Project.status."""
     if disabled:
         return NodeRunStatus.skipped
     slot = slot_index_from_node(node)
@@ -287,12 +287,11 @@ async def sync_run_for_project(project_id: int) -> None:
             disabled_node_types(project),
         )
         derived_by_key: dict[str, NodeRunStatus] | None = None
-        if graph_executor_enabled(project):
-            try:
-                graph = await load_graph_for_project(s, project)
-                derived_by_key = graph.derived_node_states(project)
-            except Exception:  # noqa: BLE001
-                logger.exception("graph derived states failed for #{}", project_id)
+        try:
+            graph = await load_graph_for_project(s, project)
+            derived_by_key = graph.derived_node_states(project)
+        except Exception:  # noqa: BLE001
+            logger.exception("graph derived states failed for #{}", project_id)
         if not derived:
             return
 

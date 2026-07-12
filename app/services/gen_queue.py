@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
 from app.orchestrator.auto_advance import TRANSITIONS
-from app.orchestrator.graph.planner import graph_executor_enabled, load_graph_for_project
+from app.orchestrator.graph.planner import load_graph_for_project
 from app.services.mass_factory import mass_parent_id
 from app.services.project_steps import start_step
 from app.services.gen_queue_run import (
@@ -108,33 +108,11 @@ async def is_timeline_complete(session: AsyncSession, project: Project) -> bool:
     if status in GEN_QUEUE_BUSY_STATUSES:
         return False
 
-    if graph_executor_enabled(project):
-        graph = await load_graph_for_project(session, project)
-        if status in TRANSITIONS:
-            return graph.next_running_after_ready(project, status) is None
-        if status is ProjectStatus.assembled:
-            return graph.next_running_after_ready(project, ProjectStatus.assembled) is None
-        return False
-
+    graph = await load_graph_for_project(session, project)
     if status in TRANSITIONS:
-        from app.orchestrator.auto_advance import _next_running_with_enrich_cap
-        from app.services.disabled_nodes import skip_disabled_running_async
-
-        tr = TRANSITIONS[status]
-        nxt = _next_running_with_enrich_cap(project, tr)
-        if nxt is None:
-            return True
-        skipped = await skip_disabled_running_async(session, project, nxt)
-        return skipped is None
-
+        return graph.next_running_after_ready(project, status) is None
     if status is ProjectStatus.assembled:
-        tr = TRANSITIONS.get(ProjectStatus.assembled)
-        if tr is None or tr.next_running is None:
-            return True
-        from app.services.disabled_nodes import skip_disabled_running_async
-
-        skipped = await skip_disabled_running_async(session, project, tr.next_running)
-        return skipped is None
+        return graph.next_running_after_ready(project, ProjectStatus.assembled) is None
     return False
 
 

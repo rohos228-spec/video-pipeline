@@ -30,11 +30,11 @@ def test_is_step_disabled() -> None:
     assert is_step_disabled(p, "plan") is False
 
 
-def test_skip_disabled_running() -> None:
+def test_skip_disabled_running_sync_returns_target() -> None:
     p = Project(
         topic="t",
         slug="t",
-        meta={"disabled_nodes": ["n_script", "n_split"], "graph_executor": False},
+        meta={"disabled_nodes": ["n_script", "n_split"]},
     )
     nxt = skip_disabled_running(p, ProjectStatus.scripting)
-    assert nxt == ProjectStatus.generating_hero
+    assert nxt == ProjectStatus.scripting

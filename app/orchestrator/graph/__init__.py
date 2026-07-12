@@ -1,5 +1,5 @@
-"""Graph-based workflow planning (edges + disabled nodes)."""
+"""Graph planner for canvas-driven pipeline execution."""
 
-from app.orchestrator.graph.planner import WorkflowGraph, graph_executor_enabled, load_graph_for_project
+from app.orchestrator.graph.planner import WorkflowGraph, load_graph_for_project
 
-__all__ = ["WorkflowGraph", "graph_executor_enabled", "load_graph_for_project"]
+__all__ = ["WorkflowGraph", "load_graph_for_project"]
