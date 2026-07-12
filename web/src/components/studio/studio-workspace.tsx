@@ -358,24 +358,6 @@ export function StudioWorkspace({
       getPromptSlots,
       getNodeResult,
       onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => {
-        if (slot.kind === "blocks" && projectId != null) {
-          onSelectNode(nodeKey);
-          const enrichStep =
-            slot.stepCode ??
-            (isExcelGptNode(nodeType)
-              ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey))
-              : stepCodeForNodeType(nodeType)) ??
-            "plan";
-          const builderNodeType = isExcelGptNode(nodeType)
-            ? enrichStep
-            : nodeType;
-          setPromptBuilderCtx({
-            nodeKey,
-            nodeType: builderNodeType,
-            stepCode: enrichStep,
-          });
-          return;
-        }
         openStudioForNode(nodeKey, nodeType, slot);
       },
       onOpenGptText: (nodeKey: string, nodeType: string) => {

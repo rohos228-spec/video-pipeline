@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeKeyLabel, humanizeSlug } from "@/lib/format-labels";
+import { cn } from "@/lib/utils";
 import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
   activeVariantForExcelGpt,
@@ -52,9 +53,12 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
+import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
+import { nodeSupportsBlocksV2 } from "@/lib/prompt-builder/step-compose-map";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
+type PromptEditMode = "classic" | "constructor";
 
 function slotStepCode(slot: NodePromptSlot | null, nodeStepCode: string | undefined): string | undefined {
   return slot?.stepCode ?? nodeStepCode;
@@ -86,6 +90,7 @@ export function NodeStudio({
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
+  const [promptMode, setPromptMode] = useState<PromptEditMode>("classic");
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -229,7 +234,7 @@ export function NodeStudio({
   const activeStepCode = slotStepCode(activeSlot, stepCode);
   const enrichStepCode = excelGptEnrichStepCode(nodeKey ?? undefined, excelConfig.slotIndex);
   const promptStepCode =
-    isExcelGptNode(nodeType) && activeSlot && (activeSlot.kind === "gpt" || activeSlot.kind === "blocks")
+    isExcelGptNode(nodeType) && activeSlot?.kind === "gpt"
       ? enrichStepCode
       : activeStepCode;
   const promptPaths = promptPathsForNode(nodeType);
@@ -328,7 +333,22 @@ export function NodeStudio({
     activeSlot?.kind === "gpt" &&
     Boolean(promptStepCode) &&
     stepHasPromptVariants(promptStepCode);
-  const showBlocksPanel = activeSlot?.kind === "blocks";
+  const supportsPromptConstructor =
+    projectId != null &&
+    Boolean(promptStepCode) &&
+    nodeSupportsBlocksV2(
+      nodeType,
+      promptStepCode,
+      nodeKey,
+      isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
+    );
+  const builderNodeType = isExcelGptNode(nodeType)
+    ? (promptStepCode ?? enrichStepCode)
+    : nodeType;
+
+  useEffect(() => {
+    if (open) setPromptMode("classic");
+  }, [open, activeSlotId, nodeKey]);
 
   const [mounted, setMounted] = useState(false);
   const backdropGuardUntil = useRef(0);
@@ -512,6 +532,34 @@ export function NodeStudio({
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
+                  {showFilesPanel && supportsPromptConstructor && (
+                    <div className="flex gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
+                      <button
+                        type="button"
+                        onClick={() => setPromptMode("classic")}
+                        className={cn(
+                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
+                          promptMode === "classic"
+                            ? "bg-primary/15 text-foreground"
+                            : "text-muted-foreground hover:bg-white/[0.04]",
+                        )}
+                      >
+                        Классический промт
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromptMode("constructor")}
+                        className={cn(
+                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
+                          promptMode === "constructor"
+                            ? "bg-primary/15 text-foreground"
+                            : "text-muted-foreground hover:bg-white/[0.04]",
+                        )}
+                      >
+                        Конструктор промтов
+                      </button>
+                    </div>
+                  )}
                   {showGptTextPanel ? (
                     <GptTextPanel
                       key={`gpt-${activeSlot?.id}-${activeStepCode}`}
@@ -524,6 +572,20 @@ export function NodeStudio({
                       projectId={projectId}
                       field="image_prompt"
                     />
+                  ) : showFilesPanel &&
+                    promptMode === "constructor" &&
+                    supportsPromptConstructor &&
+                    projectId &&
+                    promptStepCode ? (
+                    <div className="min-h-[min(70vh,720px)] overflow-hidden rounded-xl border border-white/10">
+                      <PromptBuilderStudio
+                        key={`builder-${nodeKey}-${promptStepCode}`}
+                        projectId={projectId}
+                        nodeType={builderNodeType}
+                        stepCode={promptStepCode}
+                        fullscreen={false}
+                      />
+                    </div>
                   ) : showFilesPanel && promptStepCode ? (
                     <PromptFilesPanel
                       key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
@@ -540,11 +602,6 @@ export function NodeStudio({
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}
                       activating={activateVariant.isPending}
                     />
-                  ) : showBlocksPanel ? (
-                    <p className="text-sm text-muted-foreground">
-                      Генерация через outsee.io в Chrome. Промты кадров — слот
-                      «Промты кадров»; файлы мастер-промта — слот «Мастер-промт».
-                    </p>
                   ) : activeSlot?.kind === "excel" ? (
                     <div className="flex flex-col gap-3 text-sm text-muted-foreground">
                       <p>

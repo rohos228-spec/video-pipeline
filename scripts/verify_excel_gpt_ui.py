@@ -38,12 +38,14 @@ def main() -> None:
         fail("must not expand 5 folder chips in V-menu")
     if 'id: "main"' not in node_prompts or "applyExcelGptNodeContext" not in node_prompts:
         fail("excel_gpt must use single main slot + enrich step mapping")
-    ok("V-menu: excel + blocks + one Промт GPT per node")
+    ok("V-menu: excel + one Промт GPT per node (no constructor chip)")
 
     studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
     if "excelGptEnrichStepCode" not in studio or "PromptFilesPanel" not in studio:
         fail("node-studio must open PromptFilesPanel with enrich folder stepCode")
-    ok("studio PromptFilesPanel uses enrich_N folder for excel_gpt")
+    if "Конструктор промтов" not in studio or "Классический промт" not in studio:
+        fail("node-studio must offer classic/constructor toggle in prompts tab")
+    ok("node-studio: classic/constructor toggle in PromptFilesPanel area")
 
     vmenu = (ROOT / "web/src/components/canvas/node-v-menu.tsx").read_text(encoding="utf-8")
     if "resolvePromptSlots(nodeType, slots, nodeKey" not in vmenu:

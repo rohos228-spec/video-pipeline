@@ -157,7 +157,9 @@ export function NodeVMenu({
 
   const zoom = Math.max(0.35, Math.min(canvasZoom, 1.5));
 
-  const menuSlots = resolvePromptSlots(nodeType, slots, nodeKey, slotIndex);
+  const menuSlots = resolvePromptSlots(nodeType, slots, nodeKey, slotIndex).filter(
+    (s) => s.kind !== "blocks",
+  );
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
   const showExcelPreview =
     !isExcelGptNode(nodeType) && excelSlot != null && projectId != null;

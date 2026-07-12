@@ -173,7 +173,7 @@ export function mergePromptSlotsWithDefaults(
     slots.find((s) => s.kind === "excel") ??
     defaults.find((s) => s.kind === "excel");
 
-  return ensureBlocksPromptSlot(nodeType, excel ? [excel, ...merged] : merged);
+  return excel ? [excel, ...merged] : merged;
 }
 
 export function ensureBlocksPromptSlot(
@@ -255,7 +255,7 @@ export function resolvePromptSlots(
 ): NodePromptSlot[] {
   const raw = slots?.length
     ? mergePromptSlotsWithDefaults(nodeType, [...slots])
-    : ensureBlocksPromptSlot(nodeType, [...defaultPromptSlots(nodeType)], nodeKey, slotIndex);
+    : [...defaultPromptSlots(nodeType)];
   const rest = raw.filter((s) => s.kind !== "text" && s.kind !== "excel" && s.id !== "verdict");
 
   let result: NodePromptSlot[];
@@ -263,19 +263,18 @@ export function resolvePromptSlots(
     const filtered = raw.filter((s) => s.kind !== "text");
     if (isExcelGptNode(nodeType)) {
       const normalized = normalizeExcelGptSlots(filtered);
-      const withBlocks = ensureBlocksPromptSlot(nodeType, normalized, nodeKey, slotIndex);
-      result = applyExcelGptNodeContext(withBlocks, nodeKey, slotIndex);
+      result = applyExcelGptNodeContext(normalized, nodeKey, slotIndex);
     } else {
-      result = ensureBlocksPromptSlot(nodeType, filtered, nodeKey, slotIndex);
+      result = filtered;
     }
   } else {
     const excel =
       raw.find((s) => s.kind === "excel") ??
       defaultPromptSlots(nodeType).find((s) => s.kind === "excel") ??
       excelSlotForNodeType(nodeType);
-    result = ensureBlocksPromptSlot(nodeType, [excel, ...rest], nodeKey, slotIndex);
+    result = [excel, ...rest];
   }
-  return result;
+  return result.filter((s) => s.kind !== "blocks");
 }
 
 export function customPromptsForExcelGptNode(

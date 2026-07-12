@@ -19,6 +19,7 @@ import {
   Position,
   Handle,
   useStore,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -160,6 +161,8 @@ export function FlowCanvas({
   /** Подавить onSelectionChange после программного setNodes(selected). */
   const ignoreSelectionChangeRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
+  const reactFlowRef = useRef<ReactFlowInstance<Node<PipelineNodeData>, Edge> | null>(null);
+  const paneRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -731,15 +734,28 @@ export function FlowCanvas({
     (type: string) => {
       if (!workflow.data) return;
       const id = `n_${type}_${Date.now()}`;
-      const maxX = nodes.reduce((m, n) => Math.max(m, n.position.x), 80);
       const spec = getNodeSpec(type);
       const excelCount = nodes.filter(
         (n) => (n.data as PipelineNodeData).type === "excel_gpt",
       ).length;
+
+      let position = { x: 120, y: 200 };
+      const rf = reactFlowRef.current;
+      const pane = paneRef.current;
+      if (rf && pane) {
+        const rect = pane.getBoundingClientRect();
+        position = rf.screenToFlowPosition({
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        });
+        position.x -= 110;
+        position.y -= 36;
+      }
+
       const newNode: Node<PipelineNodeData> = {
         id,
         type: "pipeline",
-        position: { x: maxX + 290, y: 200 },
+        position,
         data: {
           nodeKey: id,
           type,
@@ -757,23 +773,9 @@ export function FlowCanvas({
         targetPosition: Position.Left,
       };
       setNodes((prev) => [...prev, newNode]);
-      if (nodes.length > 0) {
-        const last = nodes[nodes.length - 1];
-        setEdges((prev) => [
-          ...prev,
-          {
-            id: `e_${last.id}_${id}`,
-            source: last.id,
-            target: id,
-            sourceHandle: "out",
-            targetHandle: "in",
-            type: "smoothstep",
-          },
-        ]);
-      }
       toast.message(`Добавлена нода: ${spec.label}`);
     },
-    [workflow.data, nodes, setNodes, setEdges]
+    [workflow.data, nodes, setNodes],
   );
 
   const onNodesDelete = useCallback(
@@ -834,9 +836,13 @@ export function FlowCanvas({
 
   return (
     <>
+      <div ref={paneRef} className="relative h-full w-full">
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        onInit={(inst) => {
+          reactFlowRef.current = inst;
+        }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
@@ -940,6 +946,7 @@ export function FlowCanvas({
         />
         <RightButtonMarquee />
       </ReactFlow>
+      </div>
       <WorkflowToolbar
         workflowId={workflow.data?.id}
         onSave={persistWorkflow}
