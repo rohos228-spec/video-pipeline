@@ -25,6 +25,7 @@ export function activeVariantForSlot(
   slot: NodePromptSlot,
   promptOverrides: Record<string, unknown>,
   stepCode: string | undefined,
+  globalActive?: Record<string, string>,
 ): string {
   const slotMap = getPromptSlotVariantsMeta(meta)[nodeKey];
   if (slotMap?.[slot.id]) return slotMap[slot.id];
@@ -32,6 +33,9 @@ export function activeVariantForSlot(
   if (preferred) return preferred;
   if (stepCode && typeof promptOverrides[stepCode] === "string") {
     return promptOverrides[stepCode] as string;
+  }
+  if (stepCode && globalActive?.[stepCode]) {
+    return globalActive[stepCode];
   }
   return "default";
 }
@@ -45,11 +49,26 @@ export function activeVariantForExcelGpt(
   slot: NodePromptSlot,
   promptOverrides: Record<string, unknown>,
   slotIndex?: number,
+  globalActive?: Record<string, string>,
 ): string {
   const legacyStep = excelGptPromptStepCode(slotIndex);
-  const legacy = activeVariantForSlot(meta, nodeKey, slot, promptOverrides, legacyStep);
+  const legacy = activeVariantForSlot(
+    meta,
+    nodeKey,
+    slot,
+    promptOverrides,
+    legacyStep,
+    globalActive,
+  );
   if (legacy !== "default" || promptOverrides[legacyStep]) return legacy;
-  return activeVariantForSlot(meta, nodeKey, slot, promptOverrides, "excel_gpt");
+  return activeVariantForSlot(
+    meta,
+    nodeKey,
+    slot,
+    promptOverrides,
+    "excel_gpt",
+    globalActive,
+  );
 }
 
 export function withSlotVariant(

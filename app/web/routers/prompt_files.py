@@ -40,6 +40,14 @@ from app.web.deps import get_session
 router = APIRouter(prefix="/prompt-files", tags=["prompt-files"])
 
 
+@router.get("/global-active")
+async def get_global_active_variants() -> dict[str, str]:
+    """Последние активные .md по шагам (общие для всех проектов)."""
+    from app.services.prompt_active_global import load_global_active
+
+    return load_global_active()
+
+
 class PromptFileInfo(BaseModel):
     name: str
     filename: str

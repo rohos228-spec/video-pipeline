@@ -317,6 +317,12 @@ def resolve_project_prompt_name(
         if clean and prompt_path(step_code, clean).exists():
             return clean
 
+    from app.services.prompt_active_global import get_global_active
+
+    global_name = get_global_active(step_code)
+    if global_name:
+        return global_name
+
     from_meta = _variant_from_studio_meta(meta, step_code)
     if from_meta:
         return from_meta

@@ -104,6 +104,12 @@ export function NodeStudio({
         ? 1500
         : false,
   });
+  const globalActivePrompts = useQuery({
+    queryKey: ["prompt-global-active"],
+    queryFn: () => api.getGlobalActivePrompts(),
+    enabled: open,
+    staleTime: 5000,
+  });
   const generationRunning = shouldShowStopBar(
     project.data?.status,
     project.data?.generation_active,
@@ -249,8 +255,16 @@ export function NodeStudio({
             activeSlot,
             promptOverrides,
             excelConfig.slotIndex,
+            globalActivePrompts.data,
           )
-        : activeVariantForSlot(metaRecord, nodeKey, activeSlot, promptOverrides, promptStepCode)
+        : activeVariantForSlot(
+            metaRecord,
+            nodeKey,
+            activeSlot,
+            promptOverrides,
+            promptStepCode,
+            globalActivePrompts.data,
+          )
       : "default";
   const preferredFile = preferredPromptFileName(activeSlot);
 
@@ -269,6 +283,7 @@ export function NodeStudio({
     onSuccess: () => {
       toast.success("Активный промт обновлён");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["prompt-global-active"] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

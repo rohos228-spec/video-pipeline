@@ -235,6 +235,12 @@ async def patch_project(
         p.meta if isinstance(p.meta, dict) else {}
     ):
         await sync_run_snapshot_from_canvas_graph(session, p)
+    if "prompt_overrides" in payload:
+        from app.services.prompt_active_global import sync_global_active_from_overrides
+
+        sync_global_active_from_overrides(
+            p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
+        )
     p.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(p)

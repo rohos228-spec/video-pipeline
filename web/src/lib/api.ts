@@ -763,6 +763,8 @@ export const api = {
     >(`/api/projects/${projectId}/media-review?kind=${kind}`),
 
   // ── Prompt files (prompts/<step>/*.md на диске) ────────────────────
+  getGlobalActivePrompts: () =>
+    http<Record<string, string>>("/api/prompt-files/global-active"),
   listPromptFiles: (stepCode: string) =>
     http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}`),
   getPromptFile: (stepCode: string, name: string) =>

@@ -104,7 +104,11 @@ def write_prompt_with_history(step_code: str, name: str, content: str) -> Path:
             old = ""
         if old != content:
             archive_prompt_version(step_code, name, old)
-    return write_prompt(step_code, name, content)
+    result = write_prompt(step_code, name, content)
+    from app.services.prompt_active_global import set_global_active
+
+    set_global_active(step_code, name)
+    return result
 
 
 def list_prompt_versions(step_code: str, name: str) -> list[dict[str, Any]]:
