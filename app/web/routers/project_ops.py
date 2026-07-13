@@ -803,6 +803,35 @@ async def disable_auto_mode_all_parents(
     await session.commit()
     return {"parents_total": sum(1 for p in rows if mass_parent_id(p) is None), "disabled": disabled}
 
+
+@router.post("/{project_id}/remount-video")
+async def remount_project_video(
+    project_id: int,
+    audio_only: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Перемонтаж: синхрон xlsx→кадры, Whisper по озвучке, новая сборка (видеоклипы не трогаем)."""
+    from app.services.remount_video import remount_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await remount_video(session, p, run_assemble=not audio_only)
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "remount_video": True,
+            "done": result.get("done"),
+            "error": result.get("error"),
+            "final_video": result.get("final_video"),
+        },
+    )
+    if result.get("error") and not result.get("done"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/restore-original-voiceover")
 async def restore_all_parents_voiceover(
     dry_run: bool = Query(False),
     force: bool = Query(False),
