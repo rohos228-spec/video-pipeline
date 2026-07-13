@@ -165,7 +165,7 @@ Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Папка: $InstallDir" -ForegroundColor White
-Write-Host "1. Двойной клик VideoPipelineStudio.cmd -> * Update + Start" -ForegroundColor White
+    Write-Host "1. Двойной клик STUDIO.cmd -> [2] Обновить и запустить" -ForegroundColor White
 Write-Host "2. Браузер: http://127.0.0.1:8765" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Chrome для ChatGPT/outsee (один раз, залогиниться):" -ForegroundColor DarkGray

@@ -6,11 +6,11 @@ alwaysApply: true
 # video-pipeline — операционный контекст
 
 ## Запуск и обновление
-- Studio: `powershell -ExecutionPolicy Bypass -File .\RUN-STUDIO.ps1` → http://127.0.0.1:8765
-- Локальный код без git reset: `.\apply-local.ps1 -SkipBuild`, затем `.\stop-backend.cmd` + `.\run-backend.ps1 -NoPause`
-- **НЕ** использовать `FORCE-UPDATE.cmd` / `VideoPipelineStudio.cmd` — делают `git reset --hard` и сносят незакоммиченные фиксы
-- Мягкое обновление: `Obnovit-i-Zapusk.ps1` / `OBNOVIT-I-ZAPUSK.cmd`
-- Ветка: `fix/text-save-persistence-v153`; много фиксов только локально (не в git) — перед reset проверить `git status`
+- Studio: `STUDIO.cmd` → пункт [1] → http://127.0.0.1:8765
+- Обновление с GitHub: `STUDIO.cmd` → [2] (`origin/main`, stash перед reset)
+- Локальный код без git reset: правки вручную, затем `stop-backend.cmd` + `STUDIO.cmd` [1]
+- **НЕ** использовать скрипты из `scripts/legacy/` (старые FORCE-UPDATE / VideoPipelineStudio)
+- Ветка по умолчанию: `main`
 
 ## ChatGPT attach (`app/bots/chatgpt.py`)
 - Счёт вложений — **inline** `page.evaluate` в `_count_attachment_previews` / `_attachments_upload_state`
@@ -34,6 +34,7 @@ alwaysApply: true
 
 ## Диагностика (делать самому, не переспрашивать)
 1. `git status` / `git diff` — что не закоммичено
-2. Хвост `data/backend-*.log` — последний PID из run-backend
-3. `pytest tests/test_chatgpt_attachment_guard.py tests/test_animation_prompt_gpt.py -q`
-4. API: `POST http://127.0.0.1:8765/api/projects/13/steps/anim_pr/run`
+2. `STUDIO.cmd` → [4] или `logs/doctor.log`
+3. Хвост `data/backend-*.log` — последний PID из scripts/run-backend
+4. `pytest tests/test_chatgpt_attachment_guard.py tests/test_animation_prompt_gpt.py -q`
+5. API: `POST http://127.0.0.1:8765/api/projects/13/steps/anim_pr/run`

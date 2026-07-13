@@ -194,5 +194,5 @@ TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=
 ```
 
-Запуск: `.\start-studio.ps1` или `python -m app.main` — воркер + API, HITL через веб.
+Запуск: `STUDIO.cmd` → [1] или `python -m app.main` — воркер + API, HITL через веб.
 Шаги: `POST /api/projects/{id}/steps/plan/run` или кнопка «Создать Run» на графе.

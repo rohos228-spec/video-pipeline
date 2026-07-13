@@ -1,4 +1,3 @@
 @echo off
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0RUN-STUDIO.ps1"
-exit /b %ERRORLEVEL%
+call "%~dp0STUDIO.cmd" 1
