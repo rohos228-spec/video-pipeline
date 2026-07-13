@@ -37,7 +37,7 @@ from app.services.frame_audio import (
 )
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.whisper import WordTS, dump_words_json
+from app.services.whisper import WordTS, dump_words_json, whisper_words_fresh_for_audio
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -60,22 +60,8 @@ async def _latest_artifact(
     ).scalar_one_or_none()
 
 
-def _artifact_mtime(artifact: Artifact | None) -> float | None:
-    if artifact is None or not artifact.path:
-        return None
-    path = Path(artifact.path)
-    if not path.is_file():
-        return None
-    return path.stat().st_mtime
-
-
 def _whisper_fresh_for_voice(whisper_art: Artifact | None, voice_path: Path) -> bool:
-    whisper_mtime = _artifact_mtime(whisper_art)
-    if whisper_mtime is None:
-        return False
-    if not voice_path.is_file():
-        return True
-    return whisper_mtime >= voice_path.stat().st_mtime
+    return whisper_words_fresh_for_audio(whisper_art, voice_path)
 
 
 async def _persist_audio_results(
