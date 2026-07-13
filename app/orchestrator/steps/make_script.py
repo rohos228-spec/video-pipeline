@@ -15,6 +15,11 @@ from app.storage import for_project as _sheet_for_project
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.scripting:
         return
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
+        logger.info("[#{}] make_script: user_stop — не запускаем GPT", project.id)
+        return
     logger.info("[#{}] make_script (xlsx-flow) starting", project.id)
 
     _result, voiceover_text = await xsr.run_script_xlsx(project)

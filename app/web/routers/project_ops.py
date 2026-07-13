@@ -780,7 +780,29 @@ async def remap_excel_gpt_keys(
     return {"ok": True, "remapped": remapped}
 
 
-@router.post("/restore-original-voiceover")
+@router.post("/parents/disable-auto-mode")
+async def disable_auto_mode_all_parents(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Выключить автопродвижение у всех родительских проектов (воркер перестанет сам жать шаги)."""
+    from app.services.mass_factory import mass_parent_id
+
+    rows = (await session.execute(select(Project))).scalars().all()
+    disabled = 0
+    for p in rows:
+        if mass_parent_id(p) is not None:
+            continue
+        if p.auto_mode:
+            p.auto_mode = False
+            disabled += 1
+            await publish_project_event(
+                p.id,
+                event_type="project_updated",
+                payload={"auto_mode": False},
+            )
+    await session.commit()
+    return {"parents_total": sum(1 for p in rows if mass_parent_id(p) is None), "disabled": disabled}
+
 async def restore_all_parents_voiceover(
     dry_run: bool = Query(False),
     force: bool = Query(False),
