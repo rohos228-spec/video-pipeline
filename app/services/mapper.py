@@ -214,9 +214,14 @@ def build_frame_word_spans_per_frame(
 def _timings_proportional_to_tokens(
     spans: list[FrameWordSpan],
     audio_duration: float,
+    *,
+    uniform: bool = False,
 ) -> list[FrameTiming]:
-    """Равномерное распределение по числу слов в ячейках R49 (без дыр)."""
-    weights = [max(len(s.lower_words), 1) for s in spans]
+    """Распределение длительностей по числу слов в ячейках R49 (или поровну)."""
+    if uniform:
+        weights = [1.0] * len(spans)
+    else:
+        weights = [max(len(s.lower_words), 1) for s in spans]
     raw = [
         FrameTiming(s.frame_number, 0.0, 0.0, float(w))
         for s, w in zip(spans, weights)
@@ -257,6 +262,9 @@ def _should_use_token_proportional(
     audio_duration: float,
 ) -> bool:
     if not spans:
+        return True
+    empty = sum(1 for s in spans if not s.lower_words)
+    if empty > max(1, len(spans) // 4):
         return True
     if not words:
         return True
@@ -315,6 +323,10 @@ def map_frames(
         return raw
 
     ad = max(float(audio_duration), 0.01)
+    empty = sum(1 for s in spans if not s.lower_words)
+    if empty > max(1, len(spans) // 4):
+        return _timings_proportional_to_tokens(spans, ad, uniform=True)
+
     segments = _segment_durations_from_transitions(spans, words, ad)
     if _should_use_token_proportional(spans, words, segments, ad):
         return _timings_proportional_to_tokens(spans, ad)

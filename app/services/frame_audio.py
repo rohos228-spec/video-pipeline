@@ -326,24 +326,43 @@ def _voiceover_cells_for_frames(
     cells: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
     """Ячейки R49; если пусто — voiceover.txt, БД, локальный split."""
-    out = [(n, (t or "").strip()) for n, t in cells]
-    if any(t for _, t in out):
+    cell_map = {n: (t or "").strip() for n, t in cells}
+    frame_by_num = {fr.number: fr for fr in frames}
+    out: list[tuple[int, str]] = []
+    for fr in frames:
+        text = cell_map.get(fr.number, "")
+        if not text:
+            text = (fr.voiceover_text or "").strip()
+        out.append((fr.number, text))
+
+    if all(t for _, t in out):
         return out
-    db_cells = [
-        (fr.number, (fr.voiceover_text or "").strip())
-        for fr in frames
-    ]
-    if any(t for _, t in db_cells):
-        return db_cells
+    if not any(t for _, t in out):
+        full = resolve_full_voiceover_text(project)
+        if not full:
+            return out
+        blocks = split_voiceover_locally(full)
+        if len(blocks) < len(frames):
+            raise RuntimeError(
+                f"voiceover: {len(blocks)} блоков после split, нужно {len(frames)} кадров"
+            )
+        return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+
+    empty_n = sum(1 for _, t in out if not t)
     full = resolve_full_voiceover_text(project)
-    if not full:
-        return out
-    blocks = split_voiceover_locally(full)
-    if len(blocks) < len(frames):
-        raise RuntimeError(
-            f"voiceover: {len(blocks)} блоков после split, нужно {len(frames)} кадров"
-        )
-    return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+    if full:
+        blocks = split_voiceover_locally(full)
+        if len(blocks) >= len(frames):
+            logger.warning(
+                "[#{}] voiceover_cells: R49 частично пуст ({}/{} кадров) — "
+                "тайминги из voiceover.txt",
+                project.id,
+                empty_n,
+                len(frames),
+            )
+            return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+
+    return out
 
 
 def frame_clips_equal_duration(
