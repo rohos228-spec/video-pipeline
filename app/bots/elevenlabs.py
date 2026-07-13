@@ -727,6 +727,7 @@ class ElevenLabsBot:
         *,
         timeout: float = 300,
         voice_id: str | None = None,
+        project_id: int | None = None,
     ) -> Path:
         vid = (voice_id or DEFAULT_ELEVENLABS_VOICE_ID).strip()
         page = await self.session.open_page(settings.elevenlabs_web_url, reuse=True)
@@ -744,6 +745,15 @@ class ElevenLabsBot:
             raise RuntimeError("11Labs: не найден textarea для текста")
 
         await _fill_tts_text(page, input_sel, text)
+        from app.services.sidebar_layout import log_prompt_send
+
+        log_prompt_send(
+            bot="elevenlabs",
+            project_id=project_id,
+            node="tts",
+            source="voiceover",
+            text=text,
+        )
         logger.info("11Labs: текст в поле ({} симв.)", len(text))
 
         gen_sel = await _first_visible(page, GENERATE_SELECTORS, timeout_ms=15_000)

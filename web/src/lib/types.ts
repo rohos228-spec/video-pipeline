@@ -102,11 +102,19 @@ export interface SidebarFolder {
   updated_at?: string | null;
 }
 
+export interface GenQueueIdleInfo {
+  project_id: number;
+  position: number;
+  reason: string;
+  detail: string;
+}
+
 export interface SidebarLayout {
   folders: SidebarFolder[];
   project_layout: Record<string, { folder_id: string | null; order: number }>;
   gen_queue: number[];
   gen_queue_positions: Record<number, number>;
+  gen_queue_idle?: GenQueueIdleInfo | null;
 }
 
 export interface GenerationConfigPresetSettings {

@@ -1191,6 +1191,15 @@ class ChatGPTBot:
                 "ChatGPT: после ввода текста превью вложений={} (clear_first=False)",
                 n_att,
             )
+        from app.services.sidebar_layout import log_prompt_send
+
+        log_prompt_send(
+            bot="chatgpt",
+            project_id=getattr(self, "_last_project_id", None),
+            node="chatgpt",
+            source="composer",
+            text=stripped,
+        )
         logger.info(
             "ChatGPT: текст в композере ({} симв.), отправляю через активную Send",
             len(stripped),
@@ -1377,16 +1386,10 @@ class ChatGPTBot:
     async def ask(
         self, prompt: str, *, timeout: float = 300, project_id: int | None = None
     ) -> str:
-        """Отправить один промт в текущий чат и вернуть финальный ответ.
-
-        После того как кнопка «Stop generating» пропала, ждём пока текст
-        стабилизируется (не меняется 6 сек подряд), но не дольше 120 сек.
-        ChatGPT 5 thinking model часто продолжает рендерить ответ ещё
-        несколько десятков секунд после исчезновения кнопки stop — раньше
-        мы хватали обрезанную версию.
-        """
+        """Отправить один промт в текущий чат и вернуть финальный ответ."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
+        self._last_project_id = project_id
         abort_if_cancelled(project_id)
         await self._send_prompt(prompt)
         abort_if_cancelled(project_id)

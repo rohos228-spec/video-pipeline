@@ -148,3 +148,37 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
     project.updated_at = datetime.utcnow()
     await session.flush()
     return project.status.value
+
+
+async def rollback_running_for_queue(
+    session: AsyncSession,
+    project: Project,
+    *,
+    reason: str,
+) -> bool:
+    """Откат running-шага для gen_queue (request_stop + FSM нод, без user_stop)."""
+    if not is_running_status(project.status):
+        return False
+    from app.services.step_cancel import request_stop
+    from app.services.run_sync import stop_active_running_node
+
+    request_stop(project.id)
+    await stop_active_running_node(session, project)
+    step = step_by_running_status(project.status)
+    rollback = (
+        step.requires
+        if step is not None and step.requires is not None
+        else ProjectStatus.new
+    )
+    cur = project.status.value
+    project.status = rollback
+    project.updated_at = datetime.utcnow()
+    await session.flush()
+    logger.warning(
+        "[#{}] gen_queue rollback ({}): {} → {}",
+        project.id,
+        reason,
+        cur,
+        rollback.value,
+    )
+    return True

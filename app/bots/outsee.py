@@ -1866,6 +1866,15 @@ class OutseeBot:
                 pass
             await await_with_cancel(page.locator(input_sel).first.click(), project_id)
             await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
+            from app.services.sidebar_layout import log_prompt_send
+
+            log_prompt_send(
+                bot="outsee",
+                project_id=project_id,
+                node="generate_image",
+                source="prompt",
+                text=prompt,
+            )
             await _verify_composer_prompt_filled(
                 page,
                 input_sel,

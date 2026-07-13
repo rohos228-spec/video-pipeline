@@ -456,6 +456,7 @@ async def synthesize_per_frame_audio(
         full_path,
         timeout=tts_timeout,
         voice_id=voice_id,
+        project_id=project.id,
     )
 
     master = await probe_duration(full_path)

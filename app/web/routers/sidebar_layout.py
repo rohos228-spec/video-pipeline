@@ -51,6 +51,7 @@ class GenQueueEnqueue(BaseModel):
 async def get_sidebar_layout() -> dict:
     from app.db import session_scope
     from app.models import Project
+    from app.services.gen_queue import get_gen_queue_idle_info
     from sqlalchemy import select
 
     async with session_scope() as session:
@@ -58,7 +59,10 @@ async def get_sidebar_layout() -> dict:
             int(pid)
             for pid in (await session.execute(select(Project.id))).scalars().all()
         }
-    return layout_svc.layout_for_api(ids)
+        payload = layout_svc.layout_for_api(ids)
+        payload["gen_queue_idle"] = await get_gen_queue_idle_info(session)
+        await session.commit()
+    return payload
 
 
 @router.put("")
