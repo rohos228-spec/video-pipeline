@@ -778,3 +778,97 @@ async def remap_excel_gpt_keys(
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "remapped": remapped}
+
+
+@router.post("/restore-original-voiceover")
+async def restore_all_parents_voiceover(
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover у всех родительских проектов."""
+    from app.services.voiceover_recovery import restore_all_parent_voiceovers
+
+    summary = await restore_all_parent_voiceovers(
+        session, dry_run=dry_run, force=force
+    )
+    if summary.get("restored"):
+        for row in summary.get("results", []):
+            if row.get("restored"):
+                await publish_project_event(
+                    int(row["project_id"]),
+                    event_type="project_updated",
+                    payload={"voiceover_restored": True, "source": row.get("source")},
+                )
+    return summary
+
+
+@router.post("/{project_id}/restore-original-voiceover")
+async def restore_project_voiceover(
+    project_id: int,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover одного проекта."""
+    from app.services.voiceover_recovery import restore_original_voiceover
+
+    from app.services.mass_factory import mass_parent_id
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "child_project_skipped",
+                "mass_parent_id": mass_parent_id(p),
+                "hint": "восстановление только для родительских проектов",
+            },
+        )
+    result = await restore_original_voiceover(
+        session, p, dry_run=dry_run, force=force
+    )
+    if result.get("restored"):
+        await session.commit()
+        await publish_project_event(
+            project_id,
+            event_type="project_updated",
+            payload={"voiceover_restored": True, "source": result.get("source")},
+        )
+    return result
+
+
+@router.get("/{project_id}/original-voiceover-preview")
+async def preview_original_voiceover(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Показать, откуда будет взят исходный voiceover (без записи)."""
+    from app.services.voiceover_recovery import find_original_voiceover
+
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail="preview только для родительских проектов",
+        )
+    cand = await find_original_voiceover(session, p)
+    if cand is None:
+        return {
+            "project_id": project_id,
+            "found": False,
+            "preview": None,
+            "source": None,
+            "chars": 0,
+        }
+    return {
+        "project_id": project_id,
+        "found": True,
+        "source": cand.source,
+        "chars": len(cand.text),
+        "preview": cand.text[:500],
+    }
+

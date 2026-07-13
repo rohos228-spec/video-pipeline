@@ -348,8 +348,8 @@ async def sync_project_xlsx(
     return sync_info
 
 
-def ensure_source_voiceover(project: Project) -> Path | None:
-    """Возвращает путь к исходному voiceover.txt, синхронизируя из script_text при необходимости."""
+def _sync_voiceover_from_script_text(project: Project) -> Path | None:
+    """Возвращает путь к voiceover.txt, синхронизируя из script_text / бэкапа при необходимости."""
     voiceover_path = project.data_dir / "voiceover.txt"
     if voiceover_path.is_file() and voiceover_path.stat().st_size > 0:
         return voiceover_path
@@ -358,7 +358,7 @@ def ensure_source_voiceover(project: Project) -> Path | None:
         voiceover_path.parent.mkdir(parents=True, exist_ok=True)
         voiceover_path.write_text(text, encoding="utf-8")
         logger.info(
-            "[#{}] ensure_source_voiceover: voiceover.txt из script_text ({} симв)",
+            "[#{}] ensure_current_voiceover: voiceover.txt из script_text ({} симв)",
             project.id,
             len(text),
         )
@@ -371,12 +371,32 @@ def ensure_source_voiceover(project: Project) -> Path | None:
                 voiceover_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup, voiceover_path)
                 logger.info(
-                    "[#{}] ensure_source_voiceover: voiceover.txt из бэкапа {}",
+                    "[#{}] ensure_current_voiceover: voiceover.txt из бэкапа {}",
                     project.id,
                     backup.name,
                 )
                 return voiceover_path
     return None
+
+
+def ensure_current_voiceover(project: Project) -> Path | None:
+    """Актуальный voiceover для split/music и шагов после script."""
+    return _sync_voiceover_from_script_text(project)
+
+
+def ensure_script_input_voiceover(project: Project) -> Path | None:
+    """Исходный voiceover для шага script — самый ранний бэкап, иначе текущий файл."""
+    from app.services.voiceover_recovery import oldest_voiceover_backup
+
+    oldest = oldest_voiceover_backup(project)
+    if oldest is not None:
+        return oldest
+    return ensure_current_voiceover(project)
+
+
+def ensure_source_voiceover(project: Project) -> Path | None:
+    """Обратная совместимость: актуальный voiceover (не исходный черновик)."""
+    return ensure_current_voiceover(project)
 
 
 def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:

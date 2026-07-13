@@ -490,9 +490,9 @@ async def _preserve_script_source_on_rerun(
 ) -> dict[str, Any]:
     """Повтор «Закадровый текст»: исходный voiceover остаётся для прикрепления в GPT."""
     _ = session
-    from app.services.chatgpt_xlsx import ensure_source_voiceover
+    from app.services.chatgpt_xlsx import ensure_script_input_voiceover
 
-    path = ensure_source_voiceover(project)
+    path = ensure_script_input_voiceover(project)
     text = (project.script_text or "").strip()
     return {
         "source_voiceover_preserved": True,

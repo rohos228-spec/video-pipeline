@@ -291,7 +291,10 @@ async def attachments_for_step(
     if step_code in ("script", "music", "split"):
         from app.services import chatgpt_xlsx as cx
 
-        voice = cx.ensure_source_voiceover(project)
+        if step_code == "script":
+            voice = cx.ensure_script_input_voiceover(project)
+        else:
+            voice = cx.ensure_current_voiceover(project)
         if voice is not None:
             paths.append(voice)
     if step_code in ("hero", "items", "images"):
