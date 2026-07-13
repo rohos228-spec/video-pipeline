@@ -73,6 +73,20 @@ def test_ensure_source_voiceover_missing_returns_none(tmp_path, monkeypatch) -> 
     assert cx.ensure_source_voiceover(p) is None
 
 
+def test_ensure_source_voiceover_from_backup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    p = _project(tmp_path)
+    old = p.data_dir / "old"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "20260101_120000_voiceover.txt").write_text("из бэкапа", encoding="utf-8")
+    path = cx.ensure_source_voiceover(p)
+    assert path is not None
+    assert path.read_text(encoding="utf-8") == "из бэкапа"
+
+
 @pytest.mark.asyncio
 async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))

@@ -354,16 +354,29 @@ def ensure_source_voiceover(project: Project) -> Path | None:
     if voiceover_path.is_file() and voiceover_path.stat().st_size > 0:
         return voiceover_path
     text = (project.script_text or "").strip()
-    if not text:
-        return None
-    voiceover_path.parent.mkdir(parents=True, exist_ok=True)
-    voiceover_path.write_text(text, encoding="utf-8")
-    logger.info(
-        "[#{}] ensure_source_voiceover: voiceover.txt из script_text ({} симв)",
-        project.id,
-        len(text),
-    )
-    return voiceover_path
+    if text:
+        voiceover_path.parent.mkdir(parents=True, exist_ok=True)
+        voiceover_path.write_text(text, encoding="utf-8")
+        logger.info(
+            "[#{}] ensure_source_voiceover: voiceover.txt из script_text ({} симв)",
+            project.id,
+            len(text),
+        )
+        return voiceover_path
+    old_dir = voiceover_path.parent / "old"
+    if old_dir.is_dir():
+        backups = sorted(old_dir.glob("*_voiceover.txt"), reverse=True)
+        for backup in backups:
+            if backup.is_file() and backup.stat().st_size > 0:
+                voiceover_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, voiceover_path)
+                logger.info(
+                    "[#{}] ensure_source_voiceover: voiceover.txt из бэкапа {}",
+                    project.id,
+                    backup.name,
+                )
+                return voiceover_path
+    return None
 
 
 def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:

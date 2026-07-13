@@ -322,6 +322,26 @@ async def test_reset_objects_wraps_to_hero_and_items(session, tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_script_preserves_voiceover(
+    session, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    p = await _mkproject(session, with_script=True)
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    (p.data_dir / "voiceover.txt").write_text("исходный закадровый", encoding="utf-8")
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "script")
+
+    assert summary["script"]["source_voiceover_preserved"] is True
+    assert p.script_text == "script text"
+    assert (p.data_dir / "voiceover.txt").read_text(encoding="utf-8") == "исходный закадровый"
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
     """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)

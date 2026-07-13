@@ -485,6 +485,23 @@ async def _preserve_user_media_on_rerun(
     return {"files_preserved": True}
 
 
+async def _preserve_script_source_on_rerun(
+    session: AsyncSession, project: Project
+) -> dict[str, Any]:
+    """Повтор «Закадровый текст»: исходный voiceover остаётся для прикрепления в GPT."""
+    _ = session
+    from app.services.chatgpt_xlsx import ensure_source_voiceover
+
+    path = ensure_source_voiceover(project)
+    text = (project.script_text or "").strip()
+    return {
+        "source_voiceover_preserved": True,
+        "voiceover_attached": path is not None,
+        "voiceover_path": str(path) if path else None,
+        "script_text_chars": len(text),
+    }
+
+
 async def _wipe_assemble(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 11 «Финальная сборка»: final_video + subtitle артефакты."""
     return await _wipe_artifacts_by_kind(
@@ -566,6 +583,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 
 # «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
+    "script": _preserve_script_source_on_rerun,
     "anim_pr": _resume_anim_pr_from_xlsx,
     "audio": _preserve_user_media_on_rerun,
     "music": _preserve_user_media_on_rerun,

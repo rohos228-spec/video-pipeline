@@ -480,23 +480,8 @@ async def assert_step_allowed_by_graph(
     project: Project,
     step_code: str,
 ) -> None:
-    """Блокирует ручной запуск шага, если он не достижим по связям канваса."""
-    from app.services.mass_factory import is_mass_factory_child
-
-    if (
-        is_mass_factory_child(project)
-        and step_code == "plan"
-        and project.status is ProjectStatus.new
-    ):
-        return
-    graph = await load_graph_for_project(session, project)
-    if graph.is_step_reachable(project, step_code):
-        return
-    label = step_code.replace("_", " ")
-    raise ValueError(
-        f"шаг «{label}» недоступен по графу — соедините ноду на канвасе "
-        "и сохраните граф"
-    )
+    """Ручной запуск шага не ограничивается связями канваса (no-op)."""
+    _ = session, project, step_code
 
 
 def sync_skip_disabled(

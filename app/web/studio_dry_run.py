@@ -5,9 +5,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
-from app.services.disabled_nodes import is_step_disabled
 from app.services.mass_factory import assert_not_factory_template_for_generation
-from app.orchestrator.graph.planner import assert_step_allowed_by_graph
 from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_code, step_by_running_status
 
@@ -29,11 +27,7 @@ async def validate_project_step_dry_run(
     step = step_by_code(step_code)
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
-    if is_step_disabled(project, step_code):
-        label = step_code.replace("_", " ")
-        raise ValueError(f"шаг «{label}» отключён в графе — включите ноду или выберите другой шаг")
     assert_not_factory_template_for_generation(project)
-    await assert_step_allowed_by_graph(session, project, step_code)
     if is_running_status(project.status) and project.status is not step.running_status:
         other = step_by_running_status(project.status)
         other_title = other.title if other is not None else project.status.value
