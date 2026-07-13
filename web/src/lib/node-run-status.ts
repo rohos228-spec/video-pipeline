@@ -1,5 +1,4 @@
 import type { NodeRunStatus, ProjectStatus } from "@/lib/types";
-import { isProjectRunningStatus } from "@/lib/project-running";
 import type { WorkflowDetail } from "@/lib/types";
 
 /** Минимальная длина general_plan — как sync_after_plan / plan_validation на бэкенде. */
@@ -122,9 +121,7 @@ export function reconcileNodeRunStatus(
     return runStatus;
   }
 
-  if (runStatus === "running") {
-    if (cp != null) return cp;
-    if (!isProjectRunningStatus(projectStatus)) return "pending";
+  if (runStatus === "running" || runStatus === "queued") {
     return runStatus;
   }
 

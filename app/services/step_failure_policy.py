@@ -228,6 +228,14 @@ async def record_step_failure(
         fs["recovery_cycles"] = MAX_CYCLES
         project.status = ProjectStatus.paused
         _save_failure_state(project, fs)
+        from app.services.run_sync import mark_running_node_failed
+
+        await mark_running_node_failed(
+            session,
+            project,
+            str(fs.get("last_error") or error),
+            initiator="worker",
+        )
         await session.flush()
         logger.error(
             "[#{}] abandoned after {} fails ({} cycles) on {}",
@@ -244,6 +252,14 @@ async def record_step_failure(
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // FAILS_PER_CYCLE
         _save_failure_state(project, fs)
+        from app.services.run_sync import mark_running_node_failed
+
+        await mark_running_node_failed(
+            session,
+            project,
+            str(fs.get("last_error") or error),
+            initiator="worker",
+        )
         await session.flush()
         logger.warning(
             "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{})",

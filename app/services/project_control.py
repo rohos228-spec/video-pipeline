@@ -69,6 +69,9 @@ async def stop_project_running(
             else ProjectStatus.new
         )
         rollback_to_val = rollback_to.value
+        from app.services.run_sync import stop_active_running_node
+
+        await stop_active_running_node(session, project)
         project.status = rollback_to
         meta = dict(project.meta or {})
         chain_to = meta.pop("enrich_auto_chain_to", None)

@@ -18,7 +18,12 @@ from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
 from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
-from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
+from app.services.run_sync import (
+    ensure_run_for_project,
+    reset_nodes_from_step,
+    sync_run_for_project,
+    _get_default_workflow_id,
+)
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -294,7 +299,14 @@ async def reset_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
         raise HTTPException(status_code=400, detail=str(summary["error"]))
+    wf_id = await _get_default_workflow_id()
+    if wf_id is not None:
+        await ensure_run_for_project(project_id, wf_id)
+    await reset_nodes_from_step(session, project_id, step_code)
+    await session.flush()
     await session.commit()
+    await session.refresh(p)
+    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,

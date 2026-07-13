@@ -970,6 +970,7 @@ export function FlowCanvas({
           nodeColor={(node) => {
             const data = node.data as PipelineNodeData;
             if (data.status === "running") return "hsl(var(--primary))";
+            if (data.status === "queued") return "hsl(200 80% 50%)";
             if (data.status === "done") return "hsl(var(--success))";
             if (data.status === "failed") return "hsl(var(--destructive))";
             if (data.status === "waiting_hitl") return "hsl(var(--warning))";

@@ -42,6 +42,7 @@ async def start_step(
     *,
     node_key: str | None = None,
     skip_queue_guard: bool = False,
+    require_node_fsm: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
     if not skip_queue_guard:
@@ -210,6 +211,11 @@ async def start_step(
         running_status = running_status_for_slot(slot_index_from_node(node))
         meta["active_excel_gpt_node_key"] = nk
         project.meta = meta
+    from app.services.run_sync import prepare_node_for_step_start
+
+    await prepare_node_for_step_start(
+        session, project, step_code, node_key=node_key, strict=require_node_fsm
+    )
     project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()
