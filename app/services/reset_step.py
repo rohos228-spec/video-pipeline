@@ -147,19 +147,25 @@ async def _wipe_script(session: AsyncSession, project: Project) -> dict[str, Any
     if project.script_text is not None:
         project.script_text = None
         changed = True
-    # voiceover.txt — артефакт на диске (если есть)
     voice_path = project.data_dir / "voiceover.txt"
-    voice_deleted = False
+    voice_trashed = False
     if voice_path.exists():
+        from app.services.voiceover_recovery import trash_voiceover_file
+
         try:
-            voice_path.unlink()
-            voice_deleted = True
+            trash_voiceover_file(project, voice_path)
+            voice_trashed = True
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "[#{}] reset_step.script: не удалил {}: {}",
-                project.id, voice_path, e,
+                "[#{}] reset_step.script: не переместил {} в .trash: {}",
+                project.id,
+                voice_path,
+                e,
             )
-    return {"script_text_cleared": changed, "voiceover_txt_deleted": voice_deleted}
+    return {
+        "script_text_cleared": changed,
+        "voiceover_txt_trashed": voice_trashed,
+    }
 
 
 async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]:

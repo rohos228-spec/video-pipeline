@@ -1,16 +1,16 @@
 """Восстановление исходного закадрового текста у родительских проектов.
 
-Ищет самый ранний бэкап в data/videos/<slug>/old/*_voiceover.txt,
-копии у дочерних проектов, затем записывает в voiceover.txt + script_text.
+Глубокий поиск: old/, .trash/, tmp_gpt/, xlsx-бэкапы, кадры в БД, дочерние.
 
 Запуск (все родители):
+    python3 -m restore_original_voiceover --all-parents --dry-run
     python3 -m restore_original_voiceover --all-parents
 
-Один проект:
-    python3 -m restore_original_voiceover 12
+Один родитель — посмотреть все найденные источники:
+    python3 -m restore_original_voiceover 12 --scan
 
-Только посмотреть, без записи:
-    python3 -m restore_original_voiceover --all-parents --dry-run
+Windows (корзина + БД):
+    powershell -ExecutionPolicy Bypass -File scripts\\Recover-VoiceoverFromRecycleBin.ps1 -ThenRestoreDb
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from app.db import session_scope
 from app.models import Project
 from app.services.mass_factory import mass_parent_id
 from app.services.voiceover_recovery import (
+    discover_original_candidates,
     find_original_voiceover,
     restore_all_parent_voiceovers,
     restore_original_voiceover,
@@ -63,7 +64,6 @@ async def _run(args: argparse.Namespace) -> int:
                         "restored": False,
                         "reason": "child_project_skipped",
                         "mass_parent_id": mass_parent_id(project),
-                        "hint": "восстановление только для родительских проектов",
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -72,17 +72,34 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 1
 
+        if args.scan:
+            candidates = await discover_original_candidates(session, project)
+            info = {
+                "project_id": project.id,
+                "slug": project.slug,
+                "candidates": [
+                    {
+                        "source": c.source,
+                        "priority": c.priority,
+                        "chars": len(c.text),
+                        "preview": c.text[:300],
+                    }
+                    for c in candidates[:20]
+                ],
+            }
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+            return 0
+
         if args.inspect:
             cand = await find_original_voiceover(session, project)
             info = {
                 "project_id": project.id,
                 "slug": project.slug,
-                "is_parent": mass_parent_id(project) is None,
                 "original": (
                     {
                         "source": cand.source,
                         "chars": len(cand.text),
-                        "preview": cand.text[:200],
+                        "preview": cand.text[:300],
                     }
                     if cand
                     else None
@@ -104,16 +121,13 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Восстановить исходный voiceover")
-    p.add_argument("project_id", nargs="?", type=int, help="ID проекта")
-    p.add_argument(
-        "--all-parents",
-        action="store_true",
-        help="все родительские проекты (mass_parent_id is null)",
-    )
-    p.add_argument("--dry-run", action="store_true", help="только показать план")
-    p.add_argument("--force", action="store_true", help="перезаписать даже если совпадает")
-    p.add_argument("--inspect", action="store_true", help="показать найденный исходник")
+    p = argparse.ArgumentParser(description="Восстановить voiceover (только родители)")
+    p.add_argument("project_id", nargs="?", type=int, help="ID родительского проекта")
+    p.add_argument("--all-parents", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--inspect", action="store_true", help="лучший кандидат")
+    p.add_argument("--scan", action="store_true", help="все найденные источники")
     args = p.parse_args()
     return asyncio.run(_run(args))
 
