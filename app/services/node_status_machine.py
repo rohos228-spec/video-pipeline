@@ -105,6 +105,9 @@ def _apply_side_effects(
     if new == NodeRunStatus.done and nr.finished_at is None:
         nr.finished_at = now
 
+    if new == NodeRunStatus.done:
+        nr.progress_text = None
+
     if new == NodeRunStatus.failed:
         nr.error = (error or nr.error or "ошибка шага")[:2000]
         nr.finished_at = now

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -25,6 +26,44 @@ from app.services.elevenlabs_voices import (
     ELEVENLABS_VOICES,
 )
 from app.settings import settings
+
+ERRORS_LOG_PATH = Path("logs/errors.log")
+
+ELEVENLABS_LOGIN_URL_MARKERS: tuple[str, ...] = (
+    "/login",
+    "/sign-in",
+    "/signin",
+    "/auth",
+)
+
+ELEVENLABS_LOGIN_PAGE_MARKERS: tuple[str, ...] = (
+    "sign in",
+    "log in",
+    "войти",
+    "email",
+    "password",
+    "пароль",
+)
+
+ELEVENLABS_ERROR_MARKERS: tuple[str, ...] = (
+    "something went wrong",
+    "try again",
+    "too many requests",
+    "rate limit",
+    "quota",
+    "limit reached",
+    "service unavailable",
+    "temporarily unavailable",
+    "error generating",
+    "generation failed",
+    "failed to generate",
+    "ошибка",
+    "не удалось",
+    "лимит",
+    "превышен",
+    "недоступн",
+    "попробуйте снова",
+)
 
 INPUT_SELECTORS = [
     "textarea[data-testid='tts-textarea']",
@@ -64,6 +103,90 @@ TTS_PAGE_PATHS = (
 
 V3_MODEL_LABEL = "Eleven v3"
 VOICE_SETUP_WAIT_SEC = 7.0
+_PAGE_DUMP_DIR = Path("logs")
+
+
+def elevenlabs_login_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(m in u for m in ELEVENLABS_LOGIN_URL_MARKERS)
+
+
+def elevenlabs_login_page_text(text: str) -> bool:
+    hay = (text or "").lower()
+    if not hay:
+        return False
+    has_pw = "password" in hay or "парол" in hay
+    has_login = any(m in hay for m in ("sign in", "log in", "войти"))
+    if has_pw and has_login:
+        return True
+    return any(m in hay for m in ELEVENLABS_LOGIN_PAGE_MARKERS)
+
+
+def elevenlabs_error_in_text(text: str) -> str | None:
+    hay = (text or "").lower()
+    if not hay:
+        return None
+    for m in ELEVENLABS_ERROR_MARKERS:
+        if m in hay:
+            idx = hay.find(m)
+            return (text or "")[max(0, idx - 20) : idx + 120].strip()
+    return None
+
+
+def _log_elevenlabs_error(*, kind: str, text: str, node: str = "elevenlabs") -> None:
+    try:
+        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().isoformat(timespec="seconds")
+        line = f"{ts}\tbot=elevenlabs\tnode={node}\tkind={kind}\t{text}"
+        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("11Labs: cannot write {}: {}", ERRORS_LOG_PATH, e)
+
+
+async def _check_elevenlabs_session(page: Page) -> None:
+    url = page.url or ""
+    if elevenlabs_login_url(url):
+        msg = "11Labs: слетела сессия — нужно перелогиниться"
+        _log_elevenlabs_error(kind="session_lost", text=msg)
+        raise RuntimeError(msg)
+    try:
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+        has_pw = await page.evaluate(
+            "() => !!document.querySelector('input[type=password]')"
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if has_pw or elevenlabs_login_page_text(body_text):
+        msg = "11Labs: слетела сессия — нужно перелогиниться"
+        _log_elevenlabs_error(kind="session_lost", text=msg)
+        raise RuntimeError(msg)
+
+
+async def _detect_elevenlabs_failure(page: Page) -> str | None:
+    try:
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return elevenlabs_error_in_text(body_text)
+
+
+async def _dump_elevenlabs_page(page: Page, label: str) -> Path | None:
+    try:
+        _PAGE_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        path = _PAGE_DUMP_DIR / f"elevenlabs_{label}_{ts}.html"
+        html = await page.evaluate("() => document.documentElement.outerHTML || ''")
+        path.write_text(html or "", encoding="utf-8")
+        logger.warning("11Labs: дамп страницы → {}", path)
+        return path
+    except Exception as e:  # noqa: BLE001
+        logger.warning("11Labs: dump page failed: {}", e)
+        return None
 
 
 async def _ensure_settings_tab(page: Page) -> None:
@@ -141,6 +264,7 @@ async def _dismiss_overlay_panels(page: Page) -> None:
 
 
 async def _ensure_tts_page(page: Page) -> None:
+    await _check_elevenlabs_session(page)
     base = settings.elevenlabs_web_url.rstrip("/")
     root = base.split("/app/")[0] if "/app/" in base else "https://elevenlabs.io"
 
@@ -151,6 +275,7 @@ async def _ensure_tts_page(page: Page) -> None:
                 break
             await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             await asyncio.sleep(1.5)
+            await _check_elevenlabs_session(page)
             sel = await _first_visible(page, INPUT_SELECTORS, timeout_ms=8_000)
             if sel:
                 logger.info("11Labs: страница TTS ok ({})", url)
@@ -160,6 +285,7 @@ async def _ensure_tts_page(page: Page) -> None:
 
     await page.goto(settings.elevenlabs_web_url, wait_until="domcontentloaded", timeout=60_000)
     await asyncio.sleep(2.0)
+    await _check_elevenlabs_session(page)
 
 
 async def _open_model_picker(page: Page) -> None:
@@ -286,7 +412,10 @@ async def _select_v3_model(page: Page) -> None:
             attempt + 1,
         )
 
-    raise RuntimeError(f"11Labs: не удалось выбрать модель {V3_MODEL_LABEL}")
+    await _dump_elevenlabs_page(page, "select_v3_model_failed")
+    msg = f"11Labs: не удалось выбрать модель {V3_MODEL_LABEL}"
+    _log_elevenlabs_error(kind="select_model", text=msg)
+    raise RuntimeError(msg)
 
 
 async def _open_voice_panel(page: Page) -> None:
@@ -564,7 +693,10 @@ async def _select_voice_by_id(page: Page, voice_id: str) -> None:
         await search.fill(voice_id)
         await asyncio.sleep(1.2)
 
-    raise RuntimeError(f"11Labs: не удалось выбрать голос {voice_id} после поиска")
+    await _dump_elevenlabs_page(page, f"select_voice_{voice_id[:8]}_failed")
+    msg = f"11Labs: не удалось выбрать голос {voice_id} после поиска"
+    _log_elevenlabs_error(kind="select_voice", text=msg)
+    raise RuntimeError(msg)
 
 
 async def _fill_tts_text(page: Page, input_sel: str, text: str) -> None:
@@ -622,6 +754,12 @@ class ElevenLabsBot:
         deadline = asyncio.get_event_loop().time() + timeout
         out_path.parent.mkdir(parents=True, exist_ok=True)
         while asyncio.get_event_loop().time() < deadline:
+            await _check_elevenlabs_session(page)
+            err_snip = await _detect_elevenlabs_failure(page)
+            if err_snip:
+                msg = f"11Labs: {err_snip[:160]}"
+                _log_elevenlabs_error(kind="tts_ui", text=msg)
+                raise RuntimeError(msg)
             sel = await _first_visible(page, DOWNLOAD_SELECTORS, timeout_ms=3_000)
             if sel is None:
                 await asyncio.sleep(1.0)
@@ -645,7 +783,12 @@ class ElevenLabsBot:
                         return out_path
                 await asyncio.sleep(1.0)
                 continue
-        raise PWTimeoutError("11Labs: не дождались загрузки mp3")
+        err_snip = await _detect_elevenlabs_failure(page)
+        msg = f"11Labs: не дождались загрузки mp3"
+        if err_snip:
+            msg = f"11Labs: {err_snip[:160]}"
+        _log_elevenlabs_error(kind="tts_timeout", text=msg)
+        raise PWTimeoutError(msg)
 
 
 async def _recon(text: str) -> None:

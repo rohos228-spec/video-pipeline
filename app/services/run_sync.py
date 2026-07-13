@@ -593,6 +593,27 @@ async def mark_running_node_failed(
             return
 
 
+async def update_active_node_progress_text(
+    session: AsyncSession,
+    project: Project,
+    progress_text: str | None,
+) -> None:
+    """Обновить progress_text активной ноды (видно в UI при running)."""
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is None:
+        return
+    node_type = RUNNING_TO_NODE_TYPE.get(project.status)
+    for nr in run.node_runs:
+        if node_type and nr.node_type != node_type:
+            continue
+        if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
+            nr.progress_text = (progress_text or None)
+            if nr.progress_text:
+                nr.progress_text = nr.progress_text[:200]
+            await session.flush()
+            return
+
+
 async def reset_nodes_from_step(
     session: AsyncSession,
     project_id: int,

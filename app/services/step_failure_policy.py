@@ -277,6 +277,14 @@ async def record_step_failure(
     # Не вызываем start_step / reset_step — они удаляют файлы на диске.
     if step is not None:
         project.status = step.running_status
+    short_err = str(error).replace("\n", " ")[:80]
+    from app.services.run_sync import update_active_node_progress_text
+
+    await update_active_node_progress_text(
+        session,
+        project,
+        f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}",
+    )
     await session.flush()
     logger.warning(
         "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), soft retry без wipe: {}",

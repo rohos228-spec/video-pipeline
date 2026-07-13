@@ -413,6 +413,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     try:
                         result = await task
                         clear_failure_on_success(p, ProjectStatus(prev_status_value))
+                        from app.services.run_sync import update_active_node_progress_text
+
+                        await update_active_node_progress_text(s, p, None)
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
                             with contextlib.suppress(Exception):

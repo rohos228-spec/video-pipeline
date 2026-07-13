@@ -20,6 +20,7 @@ import contextlib
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +31,113 @@ from playwright.async_api import TimeoutError as PWTimeoutError
 from app.bots.browser import BrowserSession, browser_session
 from app.settings import settings
 
+ERRORS_LOG_PATH = Path("logs/errors.log")
+
+OUTSEE_LOGIN_URL_MARKERS: tuple[str, ...] = (
+    "/login",
+    "/sign-in",
+    "/signin",
+    "/auth",
+)
+
+OUTSEE_LOGIN_PAGE_MARKERS: tuple[str, ...] = (
+    "sign in",
+    "log in",
+    "войти",
+    "вход в аккаунт",
+    "войдите",
+    "email",
+    "пароль",
+    "password",
+)
+
 
 def _outsee_queue_mode() -> bool:
     """Вариант A: одна генерация Outsee, первая новая картинка после baseline."""
     return bool(getattr(settings, "outsee_queue_mode", True))
 
 
+def outsee_login_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(m in u for m in OUTSEE_LOGIN_URL_MARKERS)
+
+
+def outsee_login_page_text(text: str) -> bool:
+    hay = (text or "").lower()
+    if not hay:
+        return False
+    if outsee_login_url(hay):
+        return True
+    has_pw = "password" in hay or "парол" in hay
+    has_login = any(m in hay for m in ("sign in", "log in", "войти", "вход"))
+    if has_pw and has_login:
+        return True
+    return any(m in hay for m in OUTSEE_LOGIN_PAGE_MARKERS)
+
+
+def _log_outsee_error(*, kind: str, text: str, node: str = "outsee") -> None:
+    try:
+        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().isoformat(timespec="seconds")
+        line = f"{ts}\tbot=outsee\tnode={node}\tkind={kind}\t{text}"
+        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("outsee: cannot write {}: {}", ERRORS_LOG_PATH, e)
+
+
+async def _collect_visible_alert_snippets(page: Page, *, limit: int = 5) -> list[str]:
+    try:
+        raw = await page.evaluate(
+            """(limit) => {
+                const out = [];
+                const seen = new Set();
+                const isVis = (el) => {
+                    const cs = window.getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                };
+                const roles = ['alert', 'status', 'dialog'];
+                for (const role of roles) {
+                    for (const el of document.querySelectorAll(`[role="${role}"]`)) {
+                        if (!isVis(el)) continue;
+                        const t = (el.innerText || '').trim().replace(/\\s+/g, ' ');
+                        if (t.length < 6 || seen.has(t)) continue;
+                        seen.add(t);
+                        out.push(t.slice(0, 240));
+                    }
+                }
+                for (const el of document.querySelectorAll(
+                    '[class*="error" i], [class*="alert" i], [class*="toast" i], [data-testid*="error" i]'
+                )) {
+                    if (!isVis(el)) continue;
+                    const t = (el.innerText || '').trim().replace(/\\s+/g, ' ');
+                    if (t.length < 6 || t.length > 500 || seen.has(t)) continue;
+                    seen.add(t);
+                    out.push(t.slice(0, 240));
+                }
+                return out.slice(0, limit);
+            }""",
+            limit,
+        )
+        return [s for s in (raw or []) if isinstance(s, str) and s.strip()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _outsee_timeout_message(base: str, alerts: list[str]) -> str:
+    if not alerts:
+        return base
+    joined = " | ".join(alerts[:3])
+    return f"{base}. Плашки на странице: {joined}"
+
+
 # Сколько последних (верхних) thumb'ов в галерее перебираем по [ID: …].
 # Outsee рендерит новые сверху — slice(0, N) = N самых свежих.
-_GALLERY_ID_SCAN_LIMIT = 10
+_GALLERY_ID_SCAN_LIMIT = 80
+
+_GENERATE_BUTTON_WAIT_SEC = 90.0
 
 
 # Порядок попыток — первый сработавший используется
@@ -669,6 +768,27 @@ class OutseeImageError(RuntimeError):
         return "\n".join(lines)
 
 
+async def _check_outsee_session(page: Page) -> None:
+    url = page.url or ""
+    if outsee_login_url(url):
+        msg = "outsee: слетела сессия — нужно перелогиниться"
+        _log_outsee_error(kind="session_lost", text=msg)
+        raise OutseeImageError(msg, context={"kind": "session_lost"})
+    try:
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+        has_pw_input = await page.evaluate(
+            "() => !!document.querySelector('input[type=password]')"
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if has_pw_input or outsee_login_page_text(body_text):
+        msg = "outsee: слетела сессия — нужно перелогиниться"
+        _log_outsee_error(kind="session_lost", text=msg)
+        raise OutseeImageError(msg, context={"kind": "session_lost"})
+
+
 class OutseeContentRejectedError(OutseeImageError):
     """Outsee показал плашку «Контент отклонён» (модерация запрещённых
     слов в промте). Отдельный класс, чтобы caller мог решить — ретраить
@@ -957,15 +1077,15 @@ def _raise_outsee_failure(
         )
     if kind == "moderation":
         detail = (text or "").strip().replace("\n", " ")[:120]
-        raise OutseeContentRejectedError(
-            f"outsee image: контент отклонён модерацией"
-            + (f" ({detail})" if detail else ""),
-            context=ctx,
+        msg = (
+            "outsee image: контент отклонён модерацией"
+            + (f" ({detail})" if detail else "")
         )
-    raise OutseeImageError(
-        "outsee image: ошибка генерации на outsee.io",
-        context=ctx,
-    )
+        _log_outsee_error(kind="moderation", text=msg)
+        raise OutseeContentRejectedError(msg, context=ctx)
+    msg = "outsee image: ошибка генерации на outsee.io"
+    _log_outsee_error(kind=kind, text=f"{msg}: {text[:120]}")
+    raise OutseeImageError(msg, context=ctx)
 
 
 # Минимум «настоящей» картинки из nano-banana — обычно 300 KB – 5 MB.
@@ -1511,6 +1631,8 @@ async def _first_visible(
     deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
     while asyncio.get_event_loop().time() < deadline:
         abort_if_cancelled(project_id)
+        if selectors is PROMPT_INPUT_SELECTORS:
+            await _check_outsee_session(page)
         for sel in selectors:
             try:
                 base = page.locator(sel)
@@ -2240,15 +2362,27 @@ class OutseeBot:
     async def _wait_button_enabled(
         self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
     ) -> None:
-        """Ждёт пока кнопка станет активной (не disabled). На outsee Generate
-        заблокирован, если идёт предыдущая генерация или пуст промт."""
+        """Ждёт пока кнопка станет активной (не disabled)."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
-        deadline = asyncio.get_event_loop().time() + timeout_s
+        effective_timeout = min(timeout_s, _GENERATE_BUTTON_WAIT_SEC)
+        deadline = asyncio.get_event_loop().time() + effective_timeout
         last_log = 0.0
         start = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
+            await _check_outsee_session(page)
+            try:
+                failure = await self._detect_outsee_failure(page)
+                if failure:
+                    ftext = str(failure.get("text") or "")
+                    msg = f"outsee: {ftext[:160]}"
+                    _log_outsee_error(kind="generate_ui", text=msg)
+                    raise OutseeImageError(msg, context={"failure": ftext[:200]})
+            except OutseeImageError:
+                raise
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 loc = page.locator(selector).first
                 disabled = await loc.get_attribute("disabled")
@@ -2270,10 +2404,13 @@ class OutseeBot:
                     now - start,
                 )
             await sleep_cancellable(1.0, project_id)
-        raise PWTimeoutError(
-            "outsee image: кнопка Generate остаётся disabled — "
-            "предыдущая генерация зависла?"
+        alerts = await _collect_visible_alert_snippets(page)
+        msg = _outsee_timeout_message(
+            "outsee: интерфейс завис (кнопка Generate неактивна)",
+            alerts,
         )
+        _log_outsee_error(kind="generate_stuck", text=msg)
+        raise PWTimeoutError(msg)
 
     async def _click_generate_button(
         self,
@@ -2318,7 +2455,7 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             pass
         await self._wait_button_enabled(
-            page, gen_sel, timeout_s=600, project_id=project_id
+            page, gen_sel, timeout_s=_GENERATE_BUTTON_WAIT_SEC, project_id=project_id
         )
         abort_if_cancelled(project_id)
 
@@ -3518,7 +3655,10 @@ class OutseeBot:
                     by_id, net_events=net_events
                 )
         raise OutseeImageError(
-            f"outsee image: результат не появился за {int(timeout)} сек",
+            _outsee_timeout_message(
+                f"outsee image: результат не появился за {int(timeout)} сек",
+                await _collect_visible_alert_snippets(page),
+            ),
             context=ctx,
         )
 
