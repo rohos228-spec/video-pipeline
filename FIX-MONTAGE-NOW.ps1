@@ -26,6 +26,7 @@ $HotfixFiles = @(
     "app/settings.py",
     "app/orchestrator/steps/assemble.py",
     "app/orchestrator/steps/generate_audio.py",
+    "app/services/mapper.py",
     "app/services/remount_video.py",
     "remount_video.py",
     "run-backend.ps1",
