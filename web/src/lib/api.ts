@@ -897,7 +897,7 @@ export interface PromptFileInfo {
   name: string;
   filename: string;
   size: number;
-  modified: number;
+  modified: number | null;
   is_default: boolean;
 }
 
@@ -906,7 +906,7 @@ export interface PromptFileContent {
   filename: string;
   content: string;
   size: number;
-  modified: number;
+  modified: number | null;
 }
 
 export interface PromptVersionInfo {

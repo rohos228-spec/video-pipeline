@@ -41,7 +41,10 @@ import { promptPathsForNode, legacyPromptFolder } from "@/lib/prompt-catalog";
 import {
   activeVariantForExcelGpt,
   activeVariantForSlot,
+  activeVariantSourceForExcelGpt,
+  activeVariantSourceForSlot,
   preferredPromptFileName,
+  promptSourceLabel,
   withSlotVariant,
 } from "@/lib/prompt-slot-storage";
 import {
@@ -264,6 +267,27 @@ export function NodeStudio({
             globalActivePrompts.data,
           )
       : "default";
+  const activeVariantSource =
+    activeSlot && nodeKey
+      ? isExcelGptNode(nodeType) && activeSlot.kind === "gpt"
+        ? activeVariantSourceForExcelGpt(
+            metaRecord,
+            nodeKey,
+            activeSlot,
+            promptOverrides,
+            excelConfig.slotIndex,
+            globalActivePrompts.data,
+          )
+        : activeVariantSourceForSlot(
+            metaRecord,
+            nodeKey,
+            activeSlot,
+            promptOverrides,
+            promptStepCode,
+            globalActivePrompts.data,
+          )
+      : "default";
+  const activeVariantSourceLabel = promptSourceLabel(activeVariantSource);
   const preferredFile = preferredPromptFileName(activeSlot);
 
   const activateVariant = useMutation({
@@ -612,6 +636,7 @@ export function NodeStudio({
                           : (promptPaths.legacyDir ?? promptStepCode))
                       }
                       activeVariant={activeVariant}
+                      activeVariantSourceLabel={activeVariantSourceLabel}
                       onActivateVariant={(variant) => activateVariant.mutate(variant)}
                       activating={activateVariant.isPending}
                     />

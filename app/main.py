@@ -672,6 +672,9 @@ async def _startup_maintenance() -> None:
         await _backfill_from_disk()
         await _recompute_all_projects()
         await sync_prompts_from_files()
+        from app.services.prompt_history import bootstrap_saved_at_from_history
+
+        bootstrap_saved_at_from_history()
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
