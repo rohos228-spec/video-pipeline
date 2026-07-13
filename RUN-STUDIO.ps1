@@ -69,6 +69,8 @@ function Start-VideoPipelineStudio {
     }
 
     Write-Host "==> backend (Ctrl+C = stop). Wait: Uvicorn running on :8765" -ForegroundColor Cyan
+    $env:HF_HUB_DISABLE_SYMLINKS = "1"
+    $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
     & (Join-Path $Root "run-backend.ps1") -NoPause
     if ($waitJob) {
         Stop-Job $waitJob -ErrorAction SilentlyContinue
