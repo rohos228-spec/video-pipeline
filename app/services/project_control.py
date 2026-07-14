@@ -48,12 +48,9 @@ async def stop_project_running(
 ) -> dict[str, str | bool | list[str] | None]:
     """⏹ STOP: откат running-шага и/или блок автопродвижения (user_stop)."""
     request_stop(project.id)
-    from app.services.montage_board_montage_job import cancel_montage_job
+    from app.services.montage_board_apply_job import cancel_all_montage_jobs
 
-    await cancel_montage_job(project.id)
-    from app.services.montage_board_apply_job import cancel_apply_job
-
-    await cancel_apply_job(project.id)
+    await cancel_all_montage_jobs(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
 
     from app.services.run_sync import stop_active_running_node

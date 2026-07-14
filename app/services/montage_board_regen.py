@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
@@ -55,6 +56,37 @@ from app.storage.plan_sheet_v8 import (
 )
 
 
+@dataclass
+class ImageRegenPrep:
+    project_id: int
+    frame_number: int
+    shot: int
+    prompt_text: str
+    file_path: Path
+    refs: list[Path] = field(default_factory=list)
+    prompt_id_prefix: str = ""
+    aspect_slug: str = "9:16"
+    model_slug: str | None = None
+    res_slug: str | None = None
+    quality_slug: str | None = None
+    image_relax: bool = False
+
+
+@dataclass
+class VideoRegenPrep:
+    project_id: int
+    frame_number: int
+    shot: int
+    prompt_text: str
+    file_path: Path
+    start_frame: Path
+    prompt_id_prefix: str = ""
+    aspect_slug: str = "9:16"
+    video_model_slug: str | None = None
+    video_res_slug: str | None = None
+    video_relax: bool = True
+
+
 async def _ensure_cdp_ready() -> None:
     try:
         await fetch_cdp_version(settings.browser_cdp_url)
@@ -101,7 +133,7 @@ async def _frame_by_number(
     ).scalar_one_or_none()
 
 
-async def regen_scene_image(
+async def prepare_image_regen(
     session: AsyncSession,
     project: Project,
     frame_number: int,
@@ -111,8 +143,7 @@ async def regen_scene_image(
     new_prompt: str | None = None,
     correction: str | None = None,
     board: dict | None = None,
-) -> dict:
-    """mode: same_prompt | edit_prompt | correction."""
+) -> ImageRegenPrep:
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
@@ -178,66 +209,87 @@ async def regen_scene_image(
     img_gen = IMAGE_GENERATORS_BY_ID.get(project.image_generator or DEFAULTS["image_generator"])
     ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
     ir = IMAGE_RESOLUTIONS_BY_ID.get(project.image_resolution or DEFAULTS["image_resolution"])
-    aspect_slug = ar.outsee_slug if ar else "9:16"
-    model_slug = img_gen.outsee_slug if img_gen else None
-    res_slug = ir.outsee_slug if ir else None
-    quality_slug = resolve_image_quality_slug(project.image_generator, project.image_quality)
 
+    return ImageRegenPrep(
+        project_id=project.id,
+        frame_number=frame_number,
+        shot=shot,
+        prompt_text=prompt_text,
+        file_path=file_path,
+        refs=refs,
+        prompt_id_prefix=prompt_id_prefix,
+        aspect_slug=ar.outsee_slug if ar else "9:16",
+        model_slug=img_gen.outsee_slug if img_gen else None,
+        res_slug=ir.outsee_slug if ir else None,
+        quality_slug=resolve_image_quality_slug(project.image_generator, project.image_quality),
+        image_relax=bool(project.image_relax),
+    )
+
+
+async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     await _ensure_cdp_ready()
     logger.info(
         "montage regen image #{} frame {} shot {} → outsee ({} симв.)",
-        project.id,
-        frame_number,
-        shot,
-        len(prompt_text),
+        prep.project_id,
+        prep.frame_number,
+        prep.shot,
+        len(prep.prompt_text),
     )
-
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
         gpt = ChatGPTBot(bs)
         result = await generate_image_with_retries(
             outsee,
             gpt,
-            prompt=prompt_text,
-            out_path=file_path,
+            prompt=prep.prompt_text,
+            out_path=prep.file_path,
             max_attempts_per_prompt=3,
             gpt_rewrite=True,
-            aspect_ratio=aspect_slug,
+            aspect_ratio=prep.aspect_slug,
             gen_id=uuid.uuid4().hex,
-            model_slug=model_slug,
-            resolution=res_slug,
-            quality=quality_slug,
-            relax=bool(project.image_relax),
-            prompt_id_prefix=prompt_id_prefix,
-            reference_image=refs if refs else None,
-            project_id=project.id,
+            model_slug=prep.model_slug,
+            resolution=prep.res_slug,
+            quality=prep.quality_slug,
+            relax=prep.image_relax,
+            prompt_id_prefix=prep.prompt_id_prefix,
+            reference_image=prep.refs if prep.refs else None,
+            project_id=prep.project_id,
         )
+    return Path(result.file_path)
 
-    new_path = Path(result.file_path)
+
+async def finalize_image_regen(
+    session: AsyncSession,
+    project: Project,
+    prep: ImageRegenPrep,
+    new_path: Path,
+    *,
+    board: dict | None = None,
+) -> dict:
     await finalize_scene_image(
-        session, project, frame_number, shot=shot, new_path=new_path
+        session, project, prep.frame_number, shot=prep.shot, new_path=new_path
     )
     if board is not None:
-        mark_stale_videos(board, frame_number, shot=shot)
+        mark_stale_videos(board, prep.frame_number, shot=prep.shot)
     await session.flush()
     logger.info(
         "montage regen image #{} frame {} shot {} → {}",
         project.id,
-        frame_number,
-        shot,
-        result.file_path,
+        prep.frame_number,
+        prep.shot,
+        new_path,
     )
     return {
         "ok": True,
         "kind": "image",
-        "frame_number": frame_number,
-        "shot": shot,
-        "path": str(result.file_path),
-        "highlight": f"{frame_number}:image{shot}",
+        "frame_number": prep.frame_number,
+        "shot": prep.shot,
+        "path": str(new_path),
+        "highlight": f"{prep.frame_number}:image{prep.shot}",
     }
 
 
-async def regen_scene_video(
+async def prepare_video_regen(
     session: AsyncSession,
     project: Project,
     frame_number: int,
@@ -246,7 +298,8 @@ async def regen_scene_video(
     mode: str = "same_prompt",
     new_prompt: str | None = None,
     board: dict | None = None,
-) -> dict:
+) -> VideoRegenPrep:
+    del board
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
@@ -293,60 +346,128 @@ async def regen_scene_video(
     vg = VIDEO_GENERATORS_BY_ID.get(project.video_generator or DEFAULTS["video_generator"])
     vr_o = VIDEO_RESOLUTIONS_BY_ID.get(project.video_resolution or DEFAULTS["video_resolution"])
     ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
-    video_model_slug = vg.outsee_slug if vg else None
-    video_res_slug = vr_o.outsee_slug if vr_o else None
-    aspect_slug = ar.outsee_slug if ar else "9:16"
-    video_relax = project.video_relax is not False
 
+    return VideoRegenPrep(
+        project_id=project.id,
+        frame_number=frame_number,
+        shot=shot,
+        prompt_text=prompt_text,
+        file_path=file_path,
+        start_frame=start_frame,
+        prompt_id_prefix=prompt_id_prefix,
+        aspect_slug=ar.outsee_slug if ar else "9:16",
+        video_model_slug=vg.outsee_slug if vg else None,
+        video_res_slug=vr_o.outsee_slug if vr_o else None,
+        video_relax=project.video_relax is not False,
+    )
+
+
+async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     await _ensure_cdp_ready()
     logger.info(
         "montage regen video #{} frame {} shot {} → outsee ({} симв.)",
-        project.id,
-        frame_number,
-        shot,
-        len(prompt_text),
+        prep.project_id,
+        prep.frame_number,
+        prep.shot,
+        len(prep.prompt_text),
     )
-
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
         gpt = ChatGPTBot(bs)
         result = await generate_video_with_retries(
             outsee,
             gpt,
-            prompt=prompt_text,
-            out_path=file_path,
+            prompt=prep.prompt_text,
+            out_path=prep.file_path,
             max_attempts_per_prompt=3,
             gpt_rewrite=True,
-            project_id=project.id,
-            start_frame=start_frame,
-            aspect_ratio=aspect_slug,
+            project_id=prep.project_id,
+            start_frame=prep.start_frame,
+            aspect_ratio=prep.aspect_slug,
             timeout=1200,
-            model_slug=video_model_slug,
-            resolution=video_res_slug,
-            relax=video_relax,
-            prompt_id_prefix=prompt_id_prefix,
+            model_slug=prep.video_model_slug,
+            resolution=prep.video_res_slug,
+            relax=prep.video_relax,
+            prompt_id_prefix=prep.prompt_id_prefix,
             duplicate_check_paths=[],
         )
+    return Path(result.file_path)
 
-    new_path = Path(result.file_path)
+
+async def finalize_video_regen(
+    session: AsyncSession,
+    project: Project,
+    prep: VideoRegenPrep,
+    new_path: Path,
+    *,
+    board: dict | None = None,
+) -> dict:
     await finalize_scene_video(
-        session, project, frame_number, shot=shot, new_path=new_path
+        session, project, prep.frame_number, shot=prep.shot, new_path=new_path
     )
     if board is not None:
-        clear_stale_video(board, frame_number, shot)
+        clear_stale_video(board, prep.frame_number, prep.shot)
     await session.flush()
     logger.info(
         "montage regen video #{} frame {} shot {} → {}",
         project.id,
-        frame_number,
-        shot,
-        result.file_path,
+        prep.frame_number,
+        prep.shot,
+        new_path,
     )
     return {
         "ok": True,
         "kind": "video",
-        "frame_number": frame_number,
-        "shot": shot,
-        "path": str(result.file_path),
-        "highlight": trim_key(frame_number, shot),
+        "frame_number": prep.frame_number,
+        "shot": prep.shot,
+        "path": str(new_path),
+        "highlight": trim_key(prep.frame_number, prep.shot),
     }
+
+
+async def regen_scene_image(
+    session: AsyncSession,
+    project: Project,
+    frame_number: int,
+    *,
+    shot: int,
+    mode: str = "same_prompt",
+    new_prompt: str | None = None,
+    correction: str | None = None,
+    board: dict | None = None,
+) -> dict:
+    prep = await prepare_image_regen(
+        session,
+        project,
+        frame_number,
+        shot=shot,
+        mode=mode,
+        new_prompt=new_prompt,
+        correction=correction,
+        board=board,
+    )
+    new_path = await execute_image_regen(prep)
+    return await finalize_image_regen(session, project, prep, new_path, board=board)
+
+
+async def regen_scene_video(
+    session: AsyncSession,
+    project: Project,
+    frame_number: int,
+    *,
+    shot: int,
+    mode: str = "same_prompt",
+    new_prompt: str | None = None,
+    board: dict | None = None,
+) -> dict:
+    prep = await prepare_video_regen(
+        session,
+        project,
+        frame_number,
+        shot=shot,
+        mode=mode,
+        new_prompt=new_prompt,
+        board=board,
+    )
+    new_path = await execute_video_regen(prep)
+    return await finalize_video_regen(session, project, prep, new_path, board=board)

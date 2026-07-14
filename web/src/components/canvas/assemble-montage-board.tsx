@@ -810,6 +810,9 @@ export function AssembleMontageBoard({
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
+  const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
   pendingOpsRef.current = pendingOps;
 
@@ -822,6 +825,7 @@ export function AssembleMontageBoard({
     queryKey: ["montage-board", projectId],
     queryFn: () => api.getMontageBoard(projectId!),
     enabled: open && projectId != null,
+    retry: false,
   });
 
   const frames = board.data?.frames ?? [];
@@ -939,27 +943,39 @@ export function AssembleMontageBoard({
           status?: string;
           errors?: string[];
           error?: string;
+          done_ops?: number;
+          total_ops?: number;
         };
       };
       if (evt.payload?.stopped) {
         setMontageRunning(false);
         setApplyRunning(false);
+        setApplyProgress(null);
         return;
       }
       if (evt.payload?.montage_board_apply) {
         const status = evt.payload.status;
-        if (status === "running") setApplyRunning(true);
-        else if (status === "done") {
+        const doneOps = evt.payload.done_ops as number | undefined;
+        const totalOps = evt.payload.total_ops as number | undefined;
+        if (status === "running") {
+          setApplyRunning(true);
+          if (typeof doneOps === "number" && typeof totalOps === "number") {
+            setApplyProgress({ done: doneOps, total: totalOps });
+          }
+        } else if (status === "done") {
           setApplyRunning(false);
+          setApplyProgress(null);
           toast.success("Генерация завершена");
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "error") {
           setApplyRunning(false);
+          setApplyProgress(null);
           const err = evt.payload.error || evt.payload.errors?.join("; ");
           toast.error(err || "Генерация не удалась");
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "cancelled") {
           setApplyRunning(false);
+          setApplyProgress(null);
           toast.message("Генерация остановлена");
         }
         return;
@@ -1021,9 +1037,17 @@ export function AssembleMontageBoard({
       try {
         const st = await api.getMontageApplyStatus(projectId);
         const status = st.job?.status;
+        const doneOps = st.job?.done_ops;
+        const totalOps = st.job?.total_ops;
         if (cancelled) return;
-        if (status === "running") return;
+        if (status === "running") {
+          if (typeof doneOps === "number" && typeof totalOps === "number") {
+            setApplyProgress({ done: doneOps, total: totalOps });
+          }
+          return;
+        }
         setApplyRunning(false);
+        setApplyProgress(null);
         if (status === "done") {
           toast.success("Генерация завершена");
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -1234,7 +1258,11 @@ export function AssembleMontageBoard({
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : null}
               Применить правки
-              {pendingOps.length > 0 ? ` (${pendingOps.length})` : ""}
+              {applyRunning && applyProgress
+                ? ` (${applyProgress.done}/${applyProgress.total})`
+                : pendingOps.length > 0
+                  ? ` (${pendingOps.length})`
+                  : ""}
             </Button>
             <Button
               type="button"
@@ -1324,9 +1352,12 @@ export function AssembleMontageBoard({
               </div>
             )}
             {!board.isLoading && board.isError && (
-              <p className="text-sm text-destructive">
-                Не удалось загрузить данные монтажа.
-              </p>
+              <div className="flex flex-col items-center gap-3 py-10">
+                <p className="text-sm text-destructive">Не удалось загрузить данные монтажа</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => void board.refetch()}>
+                  Повторить
+                </Button>
+              </div>
             )}
             {!board.isLoading && !board.isError && frames.length === 0 && (
               <p className="text-sm text-muted-foreground">

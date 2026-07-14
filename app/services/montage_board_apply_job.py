@@ -12,9 +12,8 @@ from app.db import session_scope
 from app.models import Project
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_apply import apply_montage_board
+from app.services.montage_board_job_state import resolve_job_status
 from app.services.montage_board_meta import montage_meta, set_montage_meta
-from app.services.montage_board_montage_job import cancel_montage_job
-from app.services.step_cancel import clear_stop
 
 _JOB_KEY = "apply_job"
 _apply_tasks: dict[int, asyncio.Task[None]] = {}
@@ -27,7 +26,8 @@ def _utc_now() -> str:
 def get_apply_job(project: Project) -> dict[str, Any]:
     board = montage_meta(project)
     job = board.get(_JOB_KEY)
-    return dict(job) if isinstance(job, dict) else {"status": "idle"}
+    raw = dict(job) if isinstance(job, dict) else {"status": "idle"}
+    return resolve_job_status(project.id, raw, live_tasks=_apply_tasks)
 
 
 def _set_job(project: Project, patch: dict[str, Any]) -> dict[str, Any]:
@@ -39,7 +39,12 @@ def _set_job(project: Project, patch: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
-async def _publish(project_id: int, status: str, *, extra: dict | None = None) -> None:
+async def _publish(
+    project_id: int,
+    status: str,
+    *,
+    extra: dict | None = None,
+) -> None:
     payload: dict[str, Any] = {"montage_board_apply": True, "status": status}
     if extra:
         payload.update(extra)
@@ -57,12 +62,30 @@ def spawn_apply_job(
         return prev
 
     async def _runner() -> None:
+        total_ops = len(pending_ops)
+        board_snapshot: dict[str, Any] = {}
+
+        async def _on_progress(done: int, total: int, _result: dict) -> None:
+            try:
+                async with session_scope() as session:
+                    project = await session.get(Project, project_id)
+                    if project is None:
+                        return
+                    _set_job(project, {"done_ops": done, "total_ops": total})
+                await _publish(
+                    project_id,
+                    "running",
+                    extra={"done_ops": done, "total_ops": total},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
-            clear_stop(project_id)
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
+                board_snapshot = dict(montage_meta(project))
                 _set_job(
                     project,
                     {
@@ -70,11 +93,11 @@ def spawn_apply_job(
                         "error": None,
                         "started_at": _utc_now(),
                         "finished_at": None,
-                        "total_ops": len(pending_ops),
+                        "total_ops": total_ops,
                         "done_ops": 0,
                     },
                 )
-            await _publish(project_id, "running", extra={"total_ops": len(pending_ops)})
+            await _publish(project_id, "running", extra={"total_ops": total_ops, "done_ops": 0})
 
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
@@ -85,6 +108,7 @@ def spawn_apply_job(
                     project,
                     video_trims=video_trims,
                     pending_ops=pending_ops,
+                    on_progress=_on_progress,
                 )
                 status = "done" if result.get("ok") else "error"
                 _set_job(
@@ -93,14 +117,19 @@ def spawn_apply_job(
                         "status": status,
                         "error": "; ".join(result.get("errors") or []) or None,
                         "finished_at": _utc_now(),
-                        "done_ops": len(pending_ops),
+                        "done_ops": total_ops,
                         "results": result.get("results"),
                     },
                 )
             await _publish(
                 project_id,
                 status,
-                extra={"errors": result.get("errors"), "ok": result.get("ok")},
+                extra={
+                    "errors": result.get("errors"),
+                    "ok": result.get("ok"),
+                    "done_ops": total_ops,
+                    "total_ops": total_ops,
+                },
             )
         except asyncio.CancelledError:
             logger.info("apply_job #{} cancelled", project_id)
@@ -152,10 +181,11 @@ async def cancel_apply_job(project_id: int) -> bool:
         async with session_scope() as session:
             project = await session.get(Project, project_id)
             if project is None:
-                return False
-            job = get_apply_job(project)
+                return task is not None
+            board = montage_meta(project)
+            job = dict(board.get(_JOB_KEY) or {})
             if job.get("status") != "running":
-                return task is not None and task.cancelled()
+                return task is not None
             _set_job(
                 project,
                 {
@@ -172,5 +202,7 @@ async def cancel_apply_job(project_id: int) -> bool:
 
 
 async def cancel_all_montage_jobs(project_id: int) -> None:
+    from app.services.montage_board_montage_job import cancel_montage_job
+
     await cancel_apply_job(project_id)
     await cancel_montage_job(project_id)

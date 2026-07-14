@@ -11,9 +11,10 @@ from loguru import logger
 from app.db import session_scope
 from app.models import Project, ProjectStatus
 from app.services.event_bus import publish_project_event
+from app.services.montage_board_job_state import resolve_job_status
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.remount_video import remount_video
-from app.services.step_cancel import clear_stop, is_stop_requested
+from app.services.step_cancel import is_stop_requested
 
 _JOB_KEY = "montage_job"
 _montage_tasks: dict[int, asyncio.Task[None]] = {}
@@ -26,7 +27,8 @@ def _utc_now() -> str:
 def get_montage_job(project: Project) -> dict[str, Any]:
     board = montage_meta(project)
     job = board.get(_JOB_KEY)
-    return dict(job) if isinstance(job, dict) else {"status": "idle"}
+    raw = dict(job) if isinstance(job, dict) else {"status": "idle"}
+    return resolve_job_status(project.id, raw, live_tasks=_montage_tasks)
 
 
 def _set_job(project: Project, patch: dict[str, Any]) -> dict[str, Any]:
@@ -86,9 +88,10 @@ async def cancel_montage_job(project_id: int) -> bool:
             project = await session.get(Project, project_id)
             if project is None:
                 return False
-            job = get_montage_job(project)
+            board = montage_meta(project)
+            job = dict(board.get(_JOB_KEY) or {})
             if job.get("status") != "running":
-                return task is not None and task.cancelled()
+                return task is not None
             _set_job(
                 project,
                 {
@@ -106,7 +109,6 @@ async def cancel_montage_job(project_id: int) -> bool:
 
 
 async def run_montage_job(project_id: int) -> None:
-    clear_stop(project_id)
     try:
         async with session_scope() as session:
             project = await session.get(Project, project_id)

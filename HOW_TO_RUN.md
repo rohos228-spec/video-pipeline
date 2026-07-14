@@ -69,4 +69,6 @@ python3 -m app.main
 
 ## Старые скрипты
 
-Перенесены в `scripts/legacy/` (архив). Используй только **STUDIO.cmd**.
+Перенесены в `scripts/legacy/` (архив): `BACKEND.cmd`, `START-STUDIO.cmd`, `Open-Studio.cmd`, `check-backend.cmd`, `stop-backend.cmd` и др.
+
+**Запуск бэкенда** — только через **STUDIO.cmd** (пункт 1) или `scripts/run-backend.ps1`.

@@ -83,26 +83,42 @@ export interface LibraryConfigDTO {
 
 async function http<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs = 30_000,
 ): Promise<T> {
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    let detail: string | object = await res.text();
-    try {
-      detail = JSON.parse(detail as string);
-    } catch {
-      // оставляем как text
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      let detail: string | object = await res.text();
+      try {
+        detail = JSON.parse(detail as string);
+      } catch {
+        // оставляем как text
+      }
+      throw new ApiError(res.status, detail);
     }
-    throw new ApiError(res.status, detail);
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new ApiError(
+        0,
+        "Сервер не ответил за 30 с — проверьте окно BACKEND (Uvicorn на :8765)",
+      );
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
 }
 
 export interface MontagePendingOp {
@@ -355,9 +371,14 @@ export const api = {
     }),
 
   getMontageApplyStatus: (projectId: number) =>
-    http<{ job: { status?: string; error?: string | null; total_ops?: number } }>(
-      `/api/projects/${projectId}/montage-board/apply-status`,
-    ),
+    http<{
+      job: {
+        status?: string;
+        error?: string | null;
+        total_ops?: number;
+        done_ops?: number;
+      };
+    }>(`/api/projects/${projectId}/montage-board/apply-status`),
 
   runMontageBoard: (projectId: number) =>
     http<{ started: boolean; already_running?: boolean; job?: Record<string, unknown> }>(

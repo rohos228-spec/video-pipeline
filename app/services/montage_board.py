@@ -18,15 +18,19 @@ from app.orchestrator.steps.generate_images import (
     _resolve_plan_sheet,
 )
 from app.services.excel_characters import parse_persons_sheet
-from app.services.media_probe import probe_duration
+from app.services.montage_board_cache import (
+    cached_probe_video_duration,
+    get_cached_plan_excel_cells,
+    get_cached_shot2_columns,
+    probe_video_durations_parallel,
+)
+from app.services.montage_board_meta import montage_meta, public_board_meta
 from app.services.plan_shot2 import (
     find_shot1_image,
     find_shot2_image,
     plan_column_for_frame,
-    read_shot2_columns,
     shot2_video_file_pattern,
 )
-from app.services.montage_board_meta import montage_meta, public_board_meta
 from app.services.shot2_timeline import split_voiceover_duration
 from app.services.xlsx_v8_import import (
     ROW_VOICEOVER_V8,
@@ -38,16 +42,6 @@ def _preview_url(path: Path | None) -> str | None:
     if path is None or not path.is_file():
         return None
     return f"/api/files?path={path}"
-
-
-async def _probe_video_duration(path: Path | None) -> float | None:
-    if path is None or not path.is_file():
-        return None
-    try:
-        return round(await probe_duration(path), 3)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("montage_board: probe_duration {}: {}", path, e)
-        return None
 
 
 def _find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
@@ -93,7 +87,7 @@ def _merged_plan_ids(ws, col: int, rows: tuple[int, ...]) -> list[str]:
     return merged
 
 
-def _read_plan_excel_cells(
+def _read_plan_excel_cells_uncached(
     xlsx_path: Path,
     *,
     chars_dir: Path,
@@ -141,6 +135,17 @@ def _read_plan_excel_cells(
     return out
 
 
+def _read_plan_excel_cells(
+    xlsx_path: Path,
+    *,
+    chars_dir: Path,
+) -> dict[int, dict[str, Any]]:
+    return get_cached_plan_excel_cells(
+        xlsx_path,
+        loader=lambda p: _read_plan_excel_cells_uncached(p, chars_dir=chars_dir),
+    )
+
+
 def _scene_use_durations(
     scene_seconds: float | None,
     *,
@@ -169,28 +174,38 @@ async def build_montage_board(
     xlsx_path = project.data_dir / "project.xlsx"
     chars_dir = project.data_dir / "characters"
     excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
-    shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    shot2_by = get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
 
-    rows: list[dict[str, Any]] = []
+    # Собираем пути видео и зондируем параллельно (кэш по mtime/size).
+    frame_videos: list[tuple[Frame, Path | None, Path | None, dict, bool, bool]] = []
+    all_vid_paths: list[Path | None] = []
     for fr in frames:
         ex = excel_by_frame.get(fr.number, {})
-        img1 = find_shot1_image(scenes_dir, fr.number)
-        img2 = find_shot2_image(scenes_dir, fr.number)
         vid1 = _find_shot1_video(videos_dir, fr.number)
         vid2 = _find_shot2_video(videos_dir, fr.number)
         shot2_info = shot2_by.get(fr.number)
         has_shot2 = bool(shot2_info is not None and shot2_info.has_shot2)
         has_shot2_video = has_shot2 and vid2 is not None and vid2.is_file()
+        frame_videos.append((fr, vid1, vid2, ex, has_shot2, has_shot2_video))
+        all_vid_paths.extend([vid1, vid2])
+
+    durations = await probe_video_durations_parallel(all_vid_paths)
+    dur_iter = iter(durations)
+
+    rows: list[dict[str, Any]] = []
+    for fr, vid1, vid2, ex, has_shot2, has_shot2_video in frame_videos:
+        img1 = find_shot1_image(scenes_dir, fr.number)
+        img2 = find_shot2_image(scenes_dir, fr.number)
         scene_seconds = (
             float(fr.duration_seconds)
             if fr.duration_seconds is not None and fr.duration_seconds > 0
             else None
         )
         shot1_use, shot2_use = _scene_use_durations(scene_seconds, has_shot2=has_shot2_video)
-        vid1_dur = await _probe_video_duration(vid1)
-        vid2_dur = await _probe_video_duration(vid2)
+        vid1_dur = next(dur_iter)
+        vid2_dur = next(dur_iter)
         vo_start = float(fr.start_ts) if fr.start_ts is not None else None
         vo_end = float(fr.end_ts) if fr.end_ts is not None else None
         shot1_timeline_start = vo_start

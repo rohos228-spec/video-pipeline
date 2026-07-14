@@ -678,6 +678,9 @@ async def _startup_maintenance() -> None:
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
+        from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+
+        await reconcile_stale_montage_jobs_on_startup()
     except Exception as e:  # noqa: BLE001
         logger.exception("startup maintenance failed: {}", e)
 
