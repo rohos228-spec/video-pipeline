@@ -87,7 +87,7 @@ function Start-StudioBackendWindow {
         Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [3]." "Red"
         return $false
     }
-    & $py -c "from app.web.api import create_app; create_app()" 2>$null | Out-Null
+    & $py -c 'from app.web.api import create_app; create_app()' 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [2] или [3]." "Red"
         return $false
