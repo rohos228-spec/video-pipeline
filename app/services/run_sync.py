@@ -35,6 +35,7 @@ from app.models import (
 from app.services.event_bus import publish_node_event
 from app.services.node_status_machine import (
     apply_sync_target,
+    complete_node,
     fail_node,
     reset_node_to_pending,
     start_node_running,
@@ -366,6 +367,22 @@ async def sync_run_for_project(project_id: int) -> None:
                         )
                     except ValueError:
                         changed = False
+                elif (
+                    nr.status == NodeRunStatus.running
+                    and target == NodeRunStatus.pending
+                    and not is_running_status(project.status)
+                ):
+                    changed = reset_node_to_pending(
+                        nr, project_id=project_id, initiator="api_stop"
+                    )
+                elif (
+                    nr.status == NodeRunStatus.running
+                    and target == NodeRunStatus.done
+                    and not is_running_status(project.status)
+                ):
+                    changed = complete_node(nr, project_id=project_id, initiator="sync")
+                elif nr.status == NodeRunStatus.done and target == NodeRunStatus.pending:
+                    continue
                 else:
                     changed = apply_sync_target(
                         nr,
@@ -650,11 +667,28 @@ async def stop_active_running_node(
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return
+
+    async def _reset_and_notify(nr: NodeRun) -> None:
+        old = nr.status
+        if not reset_node_to_pending(nr, project_id=project.id, initiator="api_stop"):
+            return
+        await publish_node_event(
+            run.id,
+            event_type="node_status_changed",
+            node_key=nr.node_key,
+            payload={
+                "node_type": nr.node_type,
+                "from": old.value,
+                "to": nr.status.value,
+                "project_id": project.id,
+            },
+        )
+
     node_type = RUNNING_TO_NODE_TYPE.get(project.status)
     if not node_type:
         for nr in run.node_runs:
             if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
-                reset_node_to_pending(nr, project_id=project.id, initiator="api_stop")
+                await _reset_and_notify(nr)
         await session.flush()
         return
     for nr in run.node_runs:
@@ -662,6 +696,6 @@ async def stop_active_running_node(
             NodeRunStatus.running,
             NodeRunStatus.queued,
         ):
-            reset_node_to_pending(nr, project_id=project.id, initiator="api_stop")
+            await _reset_and_notify(nr)
             await session.flush()
             return

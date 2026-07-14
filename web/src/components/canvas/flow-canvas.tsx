@@ -39,7 +39,7 @@ import {
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, subscribeWS } from "@/lib/api";
 import type {
   NodeRunDTO,
   WorkflowDetail,
@@ -146,6 +146,17 @@ export function FlowCanvas({
     enabled: projectId != null,
     refetchInterval: 4000,
   });
+
+  useEffect(() => {
+    if (projectId == null) return;
+    return subscribeWS(`projects.${projectId}`, (raw) => {
+      const evt = raw as { payload?: { stopped?: boolean } };
+      if (evt.payload?.stopped) {
+        void qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+        void qc.invalidateQueries({ queryKey: ["project", projectId] });
+      }
+    });
+  }, [projectId, qc]);
 
   // Базовая структура графа — из project.meta.canvas_graph (приоритет) или workflow.
   const canvasGraph = useMemo(() => {

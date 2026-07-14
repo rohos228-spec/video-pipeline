@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 
 from app.db import session_scope
-from app.models import Project
+from app.models import Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.remount_video import remount_video
@@ -62,6 +62,20 @@ def spawn_montage_job(project_id: int) -> asyncio.Task[None]:
     return task
 
 
+async def _cleanup_montage_interrupt(project_id: int) -> None:
+    """Сбросить assemble/audio running после отмены remount."""
+    from app.services.project_state import compute_actual_status
+    from app.services.run_sync import stop_active_running_node
+
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            return
+        if project.status in (ProjectStatus.generating_audio, ProjectStatus.assembling):
+            project.status = await compute_actual_status(session, project)
+        await stop_active_running_node(session, project)
+
+
 async def cancel_montage_job(project_id: int) -> bool:
     """⏹ STOP: отменить фоновый remount и сбросить статус в meta."""
     task = _montage_tasks.get(project_id)
@@ -84,6 +98,7 @@ async def cancel_montage_job(project_id: int) -> bool:
                 },
             )
         await _publish_job(project_id, "cancelled")
+        await _cleanup_montage_interrupt(project_id)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("cancel_montage_job #{}: {}", project_id, exc)
@@ -197,6 +212,7 @@ async def run_montage_job(project_id: int) -> None:
             await _publish_job(project_id, "cancelled")
         except Exception:  # noqa: BLE001
             pass
+        await _cleanup_montage_interrupt(project_id)
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("montage_job #{} failed", project_id)

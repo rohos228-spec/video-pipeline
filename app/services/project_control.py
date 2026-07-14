@@ -56,6 +56,8 @@ async def stop_project_running(
     await cancel_apply_job(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
 
+    from app.services.run_sync import stop_active_running_node
+
     ok = False
     stopped_kind: str | None = None
     step_title: str | None = None
@@ -75,8 +77,6 @@ async def stop_project_running(
             else ProjectStatus.new
         )
         rollback_to_val = rollback_to.value
-        from app.services.run_sync import stop_active_running_node
-
         await stop_active_running_node(session, project)
         project.status = rollback_to
         meta = dict(project.meta or {})
@@ -102,12 +102,14 @@ async def stop_project_running(
         ok = True
         stopped_kind = "xlsx"
         msg = f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
+        await stop_active_running_node(session, project)
     else:
         ok = True
         stopped_kind = "gate"
         msg = (
             f"автопродвижение остановлено (статус: {project.status.value})"
         )
+        await stop_active_running_node(session, project)
 
     _set_user_stop_gate(project)
     project.updated_at = datetime.utcnow()
