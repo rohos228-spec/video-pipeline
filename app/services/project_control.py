@@ -103,6 +103,7 @@ async def stop_project_running(
         stopped_kind = "xlsx"
         msg = f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
         await stop_active_running_node(session, project)
+        clear_stop(project.id)
     else:
         ok = True
         stopped_kind = "gate"
@@ -110,6 +111,8 @@ async def stop_project_running(
             f"автопродвижение остановлено (статус: {project.status.value})"
         )
         await stop_active_running_node(session, project)
+        # Иначе stop-файл блокирует Outsee при «Применить правки» (abort_if_cancelled).
+        clear_stop(project.id)
 
     _set_user_stop_gate(project)
     project.updated_at = datetime.utcnow()

@@ -572,6 +572,9 @@ async def montage_board_apply(
     trims = body.get("video_trims")
 
     if ops:
+        from app.services.step_cancel import clear_stop
+
+        clear_stop(project_id)
         job = get_apply_job(p)
         if job.get("status") == "running":
             board = await build_montage_board(session, p)
@@ -627,6 +630,9 @@ async def montage_board_montage(
     from app.services.montage_board_montage_job import get_montage_job, spawn_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
+    from app.services.step_cancel import clear_stop
+
+    clear_stop(project_id)
     job = get_montage_job(p)
     if job.get("status") == "running":
         return {"started": False, "already_running": True, "job": job}

@@ -14,6 +14,7 @@ from app.services.event_bus import publish_project_event
 from app.services.montage_board_apply import apply_montage_board
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.montage_board_montage_job import cancel_montage_job
+from app.services.step_cancel import clear_stop
 
 _JOB_KEY = "apply_job"
 _apply_tasks: dict[int, asyncio.Task[None]] = {}
@@ -57,6 +58,7 @@ def spawn_apply_job(
 
     async def _runner() -> None:
         try:
+            clear_stop(project_id)
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
                 if project is None:

@@ -13,7 +13,7 @@ from app.models import Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.remount_video import remount_video
-from app.services.step_cancel import is_stop_requested
+from app.services.step_cancel import clear_stop, is_stop_requested
 
 _JOB_KEY = "montage_job"
 _montage_tasks: dict[int, asyncio.Task[None]] = {}
@@ -106,6 +106,7 @@ async def cancel_montage_job(project_id: int) -> bool:
 
 
 async def run_montage_job(project_id: int) -> None:
+    clear_stop(project_id)
     try:
         async with session_scope() as session:
             project = await session.get(Project, project_id)
