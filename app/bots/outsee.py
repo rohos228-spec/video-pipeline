@@ -4382,7 +4382,9 @@ class OutseeBot:
         async with outsee_lane(project_id=project_id, op="generate_video"):
             page_url = _video_page_url(model_slug)
             logger.info(
-                "outsee.generate_video: gen_id={} url={}", gen_id[:8], page_url
+                "outsee.generate_video: открываю страницу gen_id={} url={}",
+                gen_id[:8],
+                page_url,
             )
             page = await self.session.open_page(page_url, reuse=True)
             from app.services.step_cancel import (
@@ -4443,24 +4445,18 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         dumps: list[Path] = []
-        page_base = page_url.split("?", 1)[0]
-        cur_base = (page.url or "").split("?", 1)[0]
-        if cur_base != page_base:
-            try:
-                await await_with_cancel(
-                    page.goto(page_url, wait_until="domcontentloaded"), project_id
-                )
-            except StepCancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "outsee.generate_video: page.goto({}) упал: {} — продолжаю",
-                    page_url,
-                    e,
-                )
-        else:
-            logger.info(
-                "outsee.generate_video: та же вкладка outsee video — без reload"
+        try:
+            await await_with_cancel(
+                page.goto(page_url, wait_until="domcontentloaded"), project_id
+            )
+        except StepCancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "outsee.generate_video: page.goto({}) упал: {} — продолжаю "
+                "без явного reload",
+                page_url,
+                e,
             )
         await await_with_cancel(page.wait_for_load_state("domcontentloaded"), project_id)
         try:
