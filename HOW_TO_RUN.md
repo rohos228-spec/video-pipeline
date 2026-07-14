@@ -72,3 +72,24 @@ python3 -m app.main
 Перенесены в `scripts/legacy/` (архив): `BACKEND.cmd`, `START-STUDIO.cmd`, `Open-Studio.cmd`, `check-backend.cmd`, `stop-backend.cmd` и др.
 
 **Запуск бэкенда** — только через **STUDIO.cmd** (пункт 1) или `scripts/run-backend.ps1`.
+
+---
+
+## Ошибка парсинга `scripts\studio.ps1` (кракозябры / Missing '}' )
+
+Обычно это старая копия без UTF-8 BOM или без `git pull`. Обнови репозиторий и перезапусти:
+
+```powershell
+cd C:\Users\Admin\Desktop\video-pipeline
+git fetch origin
+git pull
+.\STUDIO.cmd
+```
+
+Обходной путь без меню:
+
+```powershell
+.\scripts\run-backend.ps1
+```
+
+Браузер: http://127.0.0.1:8765

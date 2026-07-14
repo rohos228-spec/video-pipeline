@@ -1,4 +1,4 @@
-# Единый лаунчер Video Pipeline Studio (меню на русском)
+﻿# Единый лаунчер Video Pipeline Studio (меню на русском)
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(

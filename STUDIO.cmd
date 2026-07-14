@@ -3,7 +3,13 @@ REM Единый лаунчер Video Pipeline Studio — двойной кли�
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 title Video Pipeline Studio
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\studio.ps1" %*
+set "STUDIO_PS1=%~dp0scripts\studio.ps1"
+where pwsh >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "%STUDIO_PS1%" %*
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%STUDIO_PS1%" %*
+)
 set ERR=%ERRORLEVEL%
 if %ERR% neq 0 (
     echo.
