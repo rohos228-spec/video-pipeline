@@ -2,11 +2,16 @@
 # Launcher вызывает без паузы. Вручную: .\stop-backend.cmd
 
 param(
-    [switch]$Quiet
+    [switch]$Quiet,
+    [int]$WaitSec = 0
 )
 
 $ErrorActionPreference = "Continue"
-$Root = Split-Path -Parent $PSScriptRoot
+if ($env:VP_REPO_ROOT) {
+    $Root = $env:VP_REPO_ROOT.TrimEnd('\', '/')
+} else {
+    $Root = Split-Path -Parent $PSScriptRoot
+}
 if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
     $Root = (Get-Location).Path
 }
@@ -55,3 +60,25 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Silen
 
 Start-Sleep -Milliseconds 800
 Write-StopMsg "stop-backend: done" "Green"
+
+if ($WaitSec -gt 0) {
+    $deadline = (Get-Date).AddSeconds($WaitSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $null = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
+            Start-Sleep -Milliseconds 400
+        } catch {
+            break
+        }
+    }
+    try {
+        $null = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
+        if (-not $Quiet) {
+            Write-StopMsg "  port 8765 still listening after ${WaitSec}s" "Yellow"
+        }
+    } catch {
+        if (-not $Quiet) {
+            Write-StopMsg "  port 8765 free" "Green"
+        }
+    }
+}

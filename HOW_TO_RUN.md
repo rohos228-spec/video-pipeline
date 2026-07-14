@@ -1,14 +1,28 @@
 # Как запустить video-pipeline (Windows)
 
-## Быстрый старт
+## Единственная точка входа — `STUDIO.cmd`
 
 1. Открой папку `video-pipeline\` в Проводнике.
 2. **Дважды кликни `STUDIO.cmd`**.
-3. В меню выбери нужный пункт:
-   - **1** — запустить студию (бэкенд + веб + браузер на http://127.0.0.1:8765)
-   - **2** — обновить с GitHub (`origin/main`) и запустить
-   - **3** — починить установку (зависимости, сборка UI, Playwright, FFmpeg)
-   - **4** — диагностика (версия, git, порты; лог в `logs/doctor.log`)
+3. Выбери пункт меню:
+
+| Пункт | Действие |
+|-------|----------|
+| **1** | **Запустить студию** — бэкенд + Chrome CDP :29229 + браузер http://127.0.0.1:8765 |
+| **2** | **Остановить всё** — остановить бэкенд (порт 8765); Chrome с ИИ **не** закрывается |
+| **3** | **Браузер с ИИ** — Chrome CDP :29229 с профилем из `VpBrowserProfile.ps1` / `.env`; вкладки outsee.io и chatgpt.com. Если CDP уже жив — второе окно не открывается |
+| **4** | **Обновить и запустить** — `git stash` → `fetch` → `reset --hard origin/main` → зависимости → пункт 1 |
+| **5** | **Починить установку** — pip, npm build web, Playwright, FFmpeg |
+| **6** | **Диагностика** — версия, git, порты, Chrome-профиль; лог `logs/doctor.log` |
+| **0** | Выход |
+
+Из корня репозитория для автоматизации:
+
+```powershell
+.\STUDIO.cmd 1    # запуск
+.\STUDIO.cmd 2    # остановить бэкенд
+.\STUDIO.cmd 3    # браузер с ИИ
+```
 
 Ярлык на рабочий стол (один раз): `create-desktop-shortcut.cmd`
 
@@ -16,35 +30,31 @@
 
 ## Первая установка на новый ПК
 
-В PowerShell:
-
 ```powershell
 iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/main/bootstrap.ps1 -UseBasicParsing | iex
 ```
 
 Или вручную: `install.ps1` в корне репозитория.
 
-После установки — **STUDIO.cmd** → пункт **1**.
+После установки — **STUDIO.cmd** → **1**.
 
 ---
 
 ## Chrome для пайплайна (ChatGPT / outsee)
 
-Перед первым шагом с ботами запусти Chrome с CDP (пункт **1** может сделать это автоматически):
+Профиль по умолчанию: `%USERPROFILE%\.vp_browser_data`  
+Переопределение: `BROWSER_USER_DATA_DIR` в `.env` (см. `scripts/VpBrowserProfile.ps1`).
 
-```powershell
-& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=29229 `
-  --user-data-dir="$env:USERPROFILE\.vp_browser_data"
-```
+**STUDIO.cmd → 3** — запуск Chrome с CDP и вкладками outsee.io + chatgpt.com.  
+Залогинься один раз; сессии сохраняются в профиле. Окно держи открытым во время генерации.
 
-Залогинься в ChatGPT и outsee.io в этом окне. Окно держи открытым во время работы.
+Пункт **1** также поднимает CDP, если он ещё не запущен.
 
 ---
 
 ## Telegram (опционально)
 
-В `.env`: `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ENABLED=true`. Запуск с ботом — через `python -m app.main` в активированном `.venv` (режим разработки).
+В `.env`: `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ENABLED=true`. Запуск с ботом — `python -m app.main` в `.venv`.
 
 Для веб-студии без Telegram: `TELEGRAM_ENABLED=false` (по умолчанию после `install.ps1`).
 
@@ -61,35 +71,28 @@ python3 -m app.main
 
 ---
 
-## Что не трогает обновление (пункт 2)
+## Что не трогает обновление (пункт 4)
 
 Папки `data/`, `prompts/`, `logs/` и файл `.env` в `.gitignore` — `git reset` их не перезаписывает. Локальные правки в отслеживаемых файлах перед обновлением сохраняются в `git stash`.
 
 ---
 
-## Старые скрипты
+## Архив старых скриптов
 
-Перенесены в `scripts/legacy/` (архив): `BACKEND.cmd`, `START-STUDIO.cmd`, `Open-Studio.cmd`, `check-backend.cmd`, `stop-backend.cmd` и др.
+Перенесены в `scripts/legacy/`: `BACKEND.cmd`, `BROWSER-OUTSEE.cmd`, `Diagnose-Chrome.cmd`, `OBNOVIT-I-ZAPUSK.cmd`, `PULL-HOTFIX.cmd` и др.
 
-**Запуск бэкенда** — только через **STUDIO.cmd** (пункт 1) или `scripts/run-backend.ps1`.
+**Запуск** — только **STUDIO.cmd** (пункты 1–6).
 
 ---
 
-## Ошибка парсинга `scripts\studio.ps1` (кракозябры / Missing '}' )
+## Ошибка парсинга `scripts\studio.ps1`
 
-Обычно это старая копия без UTF-8 BOM или без `git pull`. Обнови репозиторий и перезапусти:
+Обнови репозиторий:
 
 ```powershell
-cd C:\Users\Admin\Desktop\video-pipeline
-git fetch origin
-git pull
+git checkout main
+git pull origin main
 .\STUDIO.cmd
 ```
 
-Обходной путь без меню:
-
-```powershell
-.\scripts\run-backend.ps1
-```
-
-Браузер: http://127.0.0.1:8765
+Обходной путь: `.\scripts\run-backend.ps1` → http://127.0.0.1:8765
