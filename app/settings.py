@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # True = вариант A (image+video): глобальная очередь Outsee, одна новая
     # картинка/ролик после Generate, без перебора галереи по [ID: …].
     outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
+    # Таймаут скачивания результата outsee (сек) — URL и клик «Скачать».
+    outsee_download_timeout_s: float = Field(120.0, alias="OUTSEE_DOWNLOAD_TIMEOUT_S")
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )

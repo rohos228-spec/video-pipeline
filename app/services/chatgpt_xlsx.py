@@ -302,6 +302,8 @@ async def sync_project_xlsx(
         raise RuntimeError(validation_err)
 
     sync_info: dict | None = None
+    v8_error: Exception | None = None
+    v7_error: Exception | None = None
     try:
         from openpyxl import load_workbook
 
@@ -331,19 +333,38 @@ async def sync_project_xlsx(
             )
             logger.info("[#{}] sync_project_xlsx v8: {}", project.id, sync_info)
         except Exception as e:  # noqa: BLE001
+            v8_error = e
             logger.warning(
                 "[#{}] sync_project_xlsx v8 failed: {}", project.id, e
             )
             if update_frames_voiceover:
-                raise
+                raise RuntimeError(f"xlsx-sync v8: {e}") from e
     try:
         info_v7 = await reload_from_xlsx(session, project, xlsx_path)
         logger.info("[#{}] sync_project_xlsx v7: {}", project.id, info_v7)
         if sync_info is None:
             sync_info = info_v7
     except Exception as e:  # noqa: BLE001
+        v7_error = e
         logger.warning("[#{}] sync_project_xlsx v7 failed: {}", project.id, e)
-    if sync_info and sync_info.get("error") and update_frames_voiceover:
+
+    if sync_info is None:
+        parts: list[str] = []
+        if is_v8 and v8_error is not None:
+            parts.append(f"v8: {v8_error}")
+        if v7_error is not None:
+            parts.append(f"v7: {v7_error}")
+        msg = "xlsx-sync: импорт не удался"
+        if parts:
+            msg += f" ({'; '.join(parts)})"
+        from app.services.run_sync import mark_running_node_failed
+
+        await mark_running_node_failed(
+            session, project, msg[:2000], initiator="worker"
+        )
+        raise RuntimeError(msg)
+
+    if sync_info.get("error") and update_frames_voiceover:
         raise RuntimeError(f"xlsx-sync: {sync_info['error']}")
     return sync_info
 
