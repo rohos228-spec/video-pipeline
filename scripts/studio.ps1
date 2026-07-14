@@ -8,7 +8,13 @@ param(
 
 $ErrorActionPreference = "Continue"
 $StudioBranch = "main"
-$Root = Split-Path -Parent $PSScriptRoot
+if ($env:VP_REPO_ROOT) {
+    $Root = $env:VP_REPO_ROOT.TrimEnd('\', '/')
+} elseif ($PSScriptRoot) {
+    $Root = Split-Path -Parent $PSScriptRoot
+} else {
+    $Root = (Get-Location).Path
+}
 Set-Location -LiteralPath $Root
 
 try { chcp 65001 | Out-Null } catch { }

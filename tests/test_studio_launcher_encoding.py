@@ -25,4 +25,5 @@ def test_studio_ps1_parses_as_utf8_text() -> None:
     text = (root / "scripts/studio.ps1").read_text(encoding="utf-8-sig")
     assert "function Start-StudioChromeCdp" in text
     assert "function Invoke-StudioDoctor" in text
+    assert "VP_REPO_ROOT" in text
     assert text.count("{") == text.count("}")
