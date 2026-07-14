@@ -544,6 +544,18 @@ async def preview_xlsx(
     }
 
 
+@router.get("/{project_id}/montage-board")
+async def montage_board(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сетка монтажа: озвучка, персонажи, shot1/2 картинки и видео по кадрам."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board import build_montage_board
+
+    return await build_montage_board(session, p)
+
+
 @router.get("/{project_id}/assets")
 async def list_project_assets(
     project_id: int,

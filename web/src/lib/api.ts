@@ -8,6 +8,7 @@ import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
+  MontageBoardDTO,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -300,6 +301,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  getMontageBoard: (projectId: number) =>
+    http<MontageBoardDTO>(`/api/projects/${projectId}/montage-board`),
 
   // ── Runs ─────────────────────────────────────────────────────────
   listRuns: () => http<WorkflowRunDetail[]>(`/api/runs`),

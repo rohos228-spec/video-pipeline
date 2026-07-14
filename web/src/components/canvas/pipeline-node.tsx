@@ -25,6 +25,7 @@ import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
+import { AssembleMontageTrigger } from "./assemble-montage-board";
 
 import type { ExcelGptInputSource } from "@/lib/excel-gpt-config";
 
@@ -60,10 +61,24 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const resultSnapshot = actions?.getNodeResult(d.type, d.status);
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
+  const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <>
+      <div className="relative">
+        {isAssemble && actions?.projectId && (
+          <AssembleMontageTrigger
+            active={actions.montageBoardOpen}
+            onClick={() => {
+              if (actions.montageBoardOpen) {
+                actions.onCloseMontageBoard();
+              } else {
+                actions.onOpenMontageBoard();
+              }
+            }}
+          />
+        )}
       <div
         ref={anchorRef}
         className={cn(
@@ -231,6 +246,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             style={{ width: `${d.progress}%` }}
           />
         )}
+      </div>
       </div>
     </>
   );

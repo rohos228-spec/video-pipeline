@@ -213,6 +213,27 @@ export interface FrameDTO {
   attrs: Record<string, unknown>;
 }
 
+export interface MontageBoardFrame {
+  frame_id: number;
+  number: number;
+  voiceover_text: string;
+  voiceover_excel: string;
+  characters: string;
+  start_ts: number | null;
+  end_ts: number | null;
+  duration_seconds: number | null;
+  image_shot1_url: string | null;
+  image_shot2_url: string | null;
+  video_shot1_url: string | null;
+  video_shot2_url: string | null;
+  plan_column: number;
+}
+
+export interface MontageBoardDTO {
+  frames: MontageBoardFrame[];
+  frame_count: number;
+}
+
 export interface PromptDTO {
   id: number;
   key: string;
