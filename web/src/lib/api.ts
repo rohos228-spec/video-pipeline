@@ -165,12 +165,27 @@ export function formatApiError(
     }
     return detail;
   }
-  if (detail && typeof detail === "object" && "detail" in detail) {
-    const d = (detail as { detail?: unknown }).detail;
-    if (typeof d === "string") return d;
-    if (Array.isArray(d)) return d.map(String).join("; ");
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    if (Array.isArray(d.errors) && d.errors.length > 0) {
+      return d.errors.map(String).join("; ");
+    }
+    if (typeof d.error === "string" && d.error.trim()) return d.error;
+    if (typeof d.message === "string" && d.message.trim()) return d.message;
+    if ("detail" in d) {
+      const inner = d.detail;
+      if (typeof inner === "string") return inner;
+      if (Array.isArray(inner)) return inner.map(String).join("; ");
+      if (inner && typeof inner === "object") {
+        const nested = inner as Record<string, unknown>;
+        if (Array.isArray(nested.errors) && nested.errors.length > 0) {
+          return nested.errors.map(String).join("; ");
+        }
+        if (typeof nested.error === "string") return nested.error;
+      }
+    }
   }
-  return JSON.stringify(detail);
+  return "Ошибка операции";
 }
 
 export const api = {
@@ -332,9 +347,15 @@ export const api = {
     ),
 
   runMontageBoard: (projectId: number) =>
-    http<Record<string, unknown>>(`/api/projects/${projectId}/montage-board/montage`, {
-      method: "POST",
-    }),
+    http<{ started: boolean; already_running?: boolean; job?: Record<string, unknown> }>(
+      `/api/projects/${projectId}/montage-board/montage`,
+      { method: "POST" },
+    ),
+
+  getMontageBoardStatus: (projectId: number) =>
+    http<{ job: { status?: string; error?: string | null } }>(
+      `/api/projects/${projectId}/montage-board/montage-status`,
+    ),
 
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(

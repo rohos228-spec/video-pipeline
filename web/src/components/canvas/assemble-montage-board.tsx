@@ -141,11 +141,9 @@ function PromptModal({
 }
 
 function MontageMediaExtras({
-  projectId,
   onVoiceUpload,
   onMusicUpload,
 }: {
-  projectId: number;
   onVoiceUpload: (file: File) => void;
   onMusicUpload: (file: File) => void;
 }) {
@@ -810,6 +808,9 @@ export function AssembleMontageBoard({
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
+  const [montageRunning, setMontageRunning] = useState(false);
+  const pendingOpsRef = useRef<MontagePendingOp[]>([]);
+  pendingOpsRef.current = pendingOps;
 
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
@@ -838,12 +839,18 @@ export function AssembleMontageBoard({
   }, []);
 
   const applyMutation = useMutation({
-    mutationFn: () =>
-      api.applyMontageBoard(projectId!, {
+    mutationFn: () => {
+      const queued = pendingOpsRef.current.length;
+      if (queued > 0) {
+        toast.message(`Генерация: ${queued} операций… (нужен Chrome :29229)`);
+      }
+      return api.applyMontageBoard(projectId!, {
         video_trims: trims,
-        pending_ops: pendingOps,
-      }),
+        pending_ops: pendingOpsRef.current,
+      });
+    },
     onSuccess: (res) => {
+      const queued = pendingOpsRef.current.length;
       setPendingOps([]);
       setHighlights(res.meta?.highlights ?? []);
       setStaleVideos(res.meta?.stale_videos ?? []);
@@ -851,19 +858,71 @@ export function AssembleMontageBoard({
         setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-      toast.success("Правки применены");
+      if (!res.ok && res.errors?.length) {
+        toast.error(res.errors.join("; "));
+        if (queued === 0) return;
+        toast.message("Trim-настройки сохранены");
+        return;
+      }
+      if (queued === 0) {
+        toast.success("Trim сохранён");
+      } else {
+        toast.success("Генерация завершена");
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const montageMutation = useMutation({
     mutationFn: () => api.runMontageBoard(projectId!),
-    onSuccess: () => {
-      toast.success("Монтаж запущен");
-      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    onSuccess: (res) => {
+      if (res.already_running) {
+        toast.message("Монтаж уже выполняется");
+        setMontageRunning(true);
+        return;
+      }
+      if (res.started) {
+        setMontageRunning(true);
+        toast.message("Монтаж запущен в фоне");
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
+
+  useEffect(() => {
+    if (!open || projectId == null) return;
+    void api.getMontageBoardStatus(projectId).then((st) => {
+      if (st.job?.status === "running") setMontageRunning(true);
+    }).catch(() => {});
+  }, [open, projectId]);
+
+  useEffect(() => {
+    if (!open || projectId == null || !montageRunning) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await api.getMontageBoardStatus(projectId);
+        const status = st.job?.status;
+        if (cancelled) return;
+        if (status === "running") return;
+        setMontageRunning(false);
+        if (status === "done") {
+          toast.success("Монтаж завершён");
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        } else if (status === "error") {
+          toast.error(st.job?.error || "Монтаж не удался");
+        }
+      } catch {
+        if (!cancelled) setMontageRunning(false);
+      }
+    };
+    const id = window.setInterval(() => void poll(), 2500);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, projectId, montageRunning, queryClient]);
 
   const refreshBoard = useCallback(() => {
     void board.refetch();
@@ -1059,10 +1118,10 @@ export function AssembleMontageBoard({
               size="sm"
               variant="outline"
               className="h-9 gap-1.5 text-xs"
-              disabled={!projectId || montageMutation.isPending}
+              disabled={!projectId || montageMutation.isPending || montageRunning}
               onClick={() => montageMutation.mutate()}
             >
-              {montageMutation.isPending ? (
+              {montageMutation.isPending || montageRunning ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Clapperboard className="h-4 w-4" />
@@ -1084,7 +1143,6 @@ export function AssembleMontageBoard({
                 {projectId != null ? (
                   <>
                     <MontageMediaExtras
-                      projectId={projectId}
                       onVoiceUpload={async (file) => {
                         try {
                           await api.uploadMontageVoice(projectId, file);

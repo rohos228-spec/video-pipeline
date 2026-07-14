@@ -578,8 +578,6 @@ async def montage_board_apply(
         event_type="project_updated",
         payload={"montage_board_apply": True, "ok": result.get("ok")},
     )
-    if result.get("errors"):
-        raise HTTPException(status_code=400, detail=result)
     return result
 
 
@@ -588,24 +586,28 @@ async def montage_board_montage(
     project_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Кнопка «Монтаж» — remount-video (озвучка + FFmpeg, клипы не трогаем)."""
-    from app.services.remount_video import remount_video
+    """Кнопка «Монтаж» — remount-video в фоне (озвучка + FFmpeg)."""
+    import asyncio
+
+    from app.services.montage_board_montage_job import get_montage_job, run_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    result = await remount_video(session, p, run_assemble=True)
-    await session.commit()
-    await publish_project_event(
-        project_id,
-        event_type="project_updated",
-        payload={
-            "montage_board_montage": True,
-            "done": result.get("done"),
-            "error": result.get("error"),
-        },
-    )
-    if result.get("error") and not result.get("done"):
-        raise HTTPException(status_code=400, detail=result)
-    return result
+    job = get_montage_job(p)
+    if job.get("status") == "running":
+        return {"started": False, "already_running": True, "job": job}
+    asyncio.create_task(run_montage_job(project_id))
+    return {"started": True, "job": {"status": "running"}}
+
+
+@router.get("/{project_id}/montage-board/montage-status")
+async def montage_board_montage_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_montage_job import get_montage_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_montage_job(p)}
 
 
 @router.post("/{project_id}/montage-board/delete-image")
