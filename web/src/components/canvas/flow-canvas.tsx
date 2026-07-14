@@ -485,28 +485,6 @@ export function FlowCanvas({
   }, [setNodes]);
 
   useEffect(() => {
-    const clearRunning = () => {
-      setNodes((prev) =>
-        prev.map((n) => {
-          const d = n.data as PipelineNodeData;
-          if (d.status !== "running") return n;
-          return {
-            ...n,
-            data: {
-              ...d,
-              status: "pending" as PipelineNodeData["status"],
-              progress: 0,
-              progressText: null,
-            },
-          };
-        }),
-      );
-    };
-    window.addEventListener("canvas-stop-clear-running", clearRunning);
-    return () => window.removeEventListener("canvas-stop-clear-running", clearRunning);
-  }, [setNodes]);
-
-  useEffect(() => {
     const onDetach = (ev: Event) => {
       const detail = (ev as CustomEvent<{ nodeKey: string; autoSave?: boolean }>).detail;
       const key = detail?.nodeKey;
@@ -970,6 +948,7 @@ export function FlowCanvas({
           nodeColor={(node) => {
             const data = node.data as PipelineNodeData;
             if (data.status === "running") return "hsl(var(--primary))";
+            if (data.status === "queued") return "hsl(200 80% 50%)";
             if (data.status === "done") return "hsl(var(--success))";
             if (data.status === "failed") return "hsl(var(--destructive))";
             if (data.status === "waiting_hitl") return "hsl(var(--warning))";
@@ -1300,7 +1279,6 @@ function RunOverlay({
     setBusy(true);
     try {
       const r = await api.stopProject(projectId);
-      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success(r.message || "⏹ Шаг остановлен");
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
@@ -1366,7 +1344,6 @@ function RunOverlay({
     try {
       await api.stopProject(projectId);
       await api.cancelRun(run.id);
-      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success("Run остановлен (task.cancel)");
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });

@@ -39,7 +39,7 @@ export interface ExcelHeroCharacter {
 }
 
 export type NodeRunStatus =
-  | "pending" | "running" | "waiting_hitl"
+  | "pending" | "queued" | "running" | "waiting_hitl"
   | "done" | "failed" | "skipped";
 
 export type WorkflowRunStatus =
@@ -102,11 +102,19 @@ export interface SidebarFolder {
   updated_at?: string | null;
 }
 
+export interface GenQueueIdleInfo {
+  project_id: number;
+  position: number;
+  reason: string;
+  detail: string;
+}
+
 export interface SidebarLayout {
   folders: SidebarFolder[];
   project_layout: Record<string, { folder_id: string | null; order: number }>;
   gen_queue: number[];
   gen_queue_positions: Record<number, number>;
+  gen_queue_idle?: GenQueueIdleInfo | null;
 }
 
 export interface GenerationConfigPresetSettings {
@@ -203,6 +211,27 @@ export interface FrameDTO {
   animation_prompt: string | null;
   status: string;
   attrs: Record<string, unknown>;
+}
+
+export interface MontageBoardFrame {
+  frame_id: number;
+  number: number;
+  voiceover_text: string;
+  voiceover_excel: string;
+  characters: string;
+  start_ts: number | null;
+  end_ts: number | null;
+  duration_seconds: number | null;
+  image_shot1_url: string | null;
+  image_shot2_url: string | null;
+  video_shot1_url: string | null;
+  video_shot2_url: string | null;
+  plan_column: number;
+}
+
+export interface MontageBoardDTO {
+  frames: MontageBoardFrame[];
+  frame_count: number;
 }
 
 export interface PromptDTO {

@@ -12,6 +12,7 @@ from app.db import session_scope
 from app.fleet import bundle as bundle_svc
 from app.models import Project, ProjectStatus
 from app.services.node_step_params import send_to_main_pc_for_project
+from app.services.gen_queue_run import is_user_stopped
 from app.settings import settings
 
 META_ENQUEUED = "montage_queue_enqueued"
@@ -145,6 +146,14 @@ async def process_montage_queue(session) -> int:
     started = 0
     for project in queued[:slots]:
         meta = dict(project.meta or {})
+        if meta.get("startup_autorun_blocked") or meta.get("startup_user_stop"):
+            continue
+        if is_user_stopped(project):
+            logger.info(
+                "montage queue: skip #{} — user_stop (manual ▶ required)",
+                project.id,
+            )
+            continue
         meta.pop(META_ENQUEUED, None)
         meta["montage_queue_started_at"] = datetime.now(timezone.utc).isoformat()
         project.meta = meta

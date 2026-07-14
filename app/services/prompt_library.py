@@ -26,6 +26,7 @@ ASCII + цифры + `_-`), чтобы юзер из TG не мог записа
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,7 +120,7 @@ def excel_gpt_prompt_exists(name: str) -> bool:
         return False
     for code in excel_gpt_source_steps():
         try:
-            if prompt_path(code, clean).is_file():
+            if prompt_path(code, clean).exists():
                 return True
         except ValueError:
             continue
@@ -200,16 +201,22 @@ def load_file_meta(step_code: str) -> dict[str, Any]:
 
 def _save_file_meta(step_code: str, data: dict[str, Any]) -> None:
     path = _file_meta_path(step_code)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def touch_prompt_meta(step_code: str, name: str, size: int) -> float:
     """Записать стабильную дату сохранения (не mtime файла)."""
     saved_at = datetime.now(timezone.utc).timestamp()
+    touch_prompt_meta_at(step_code, name, saved_at, size)
+    return saved_at
+
+
+def touch_prompt_meta_at(step_code: str, name: str, saved_at: float, size: int) -> None:
     meta = load_file_meta(step_code)
     meta[name] = {"saved_at": saved_at, "size": size}
     _save_file_meta(step_code, meta)
-    return saved_at
 
 
 def get_prompt_saved_at(step_code: str, name: str) -> float | None:
@@ -376,67 +383,107 @@ def resolve_project_prompt_name(
     *,
     meta: dict | None = None,
 ) -> str:
-    """Какой вариант .md использовать для шага.
+    """Какой вариант .md использовать для шага."""
+    return resolve_project_prompt_with_source(overrides, step_code, meta=meta)[0]
 
-    Приоритет:
-      1. `prompt_overrides[step_code]` — «Сделать активным» / TG picker (явный выбор проекта)
-      2. `meta.prompt_slot_variants` — если override не задан (старые проекты / только meta)
-      3. `default`
 
-    Meta не перебивает override: иначе другая нода на канвасе с устаревшим слотом
-    ломала выбор, хотя вы уже активировали нужный файл.
-    """
+PROMPT_SOURCE_LABELS: dict[str, str] = {
+    "slot": "слот ноды",
+    "preferred": "слот ноды",
+    "override": "оверрайд проекта",
+    "global": "глобально активный",
+    "default": "default",
+}
+
+
+def resolve_project_prompt_with_source(
+    overrides: dict | None,
+    step_code: str,
+    *,
+    meta: dict | None = None,
+    node_key: str | None = None,
+    slot_id: str | None = None,
+) -> tuple[str, str]:
+    """(имя варианта, источник: slot|preferred|override|global|default)."""
     overrides = overrides or {}
+
+    if node_key and slot_id:
+        slot_variants = (meta or {}).get("prompt_slot_variants")
+        if isinstance(slot_variants, dict):
+            node_slots = slot_variants.get(node_key)
+            if isinstance(node_slots, dict):
+                bound = _clean_variant_name(str(node_slots.get(slot_id) or ""))
+                if bound:
+                    exists = (
+                        excel_gpt_prompt_exists(bound)
+                        if is_excel_gpt_prompt_step(step_code)
+                        else prompt_path(step_code, bound).exists()
+                    )
+                    if exists:
+                        return bound, "slot"
+        if slot_id and slot_id != "main":
+            preferred = _clean_variant_name(slot_id)
+            if preferred:
+                exists = (
+                    excel_gpt_prompt_exists(preferred)
+                    if is_excel_gpt_prompt_step(step_code)
+                    else prompt_path(step_code, preferred).exists()
+                )
+                if exists:
+                    return preferred, "preferred"
+
     if is_excel_gpt_prompt_step(step_code):
         for key in excel_gpt_source_steps():
             chosen = overrides.get(key)
             if chosen:
                 clean = _clean_variant_name(str(chosen))
                 if clean and excel_gpt_prompt_exists(clean):
-                    return clean
+                    return clean, "override"
         from app.services.prompt_active_global import get_global_active
 
         global_name = get_global_active(EXCEL_GPT_UNIFIED_STEP)
         if global_name and excel_gpt_prompt_exists(global_name):
-            return global_name
+            return global_name, "global"
         for key in excel_gpt_source_steps():
             from_meta = _variant_from_studio_meta(meta, key)
             if from_meta:
-                return from_meta
-        return DEFAULT_NAME
+                return from_meta, "slot"
+        return DEFAULT_NAME, "default"
 
     chosen = overrides.get(step_code)
     if chosen:
         clean = _clean_variant_name(str(chosen))
         if clean and prompt_path(step_code, clean).exists():
-            return clean
+            return clean, "override"
 
     from app.services.prompt_active_global import get_global_active
 
     global_name = get_global_active(step_code)
     if global_name:
-        return global_name
+        return global_name, "global"
 
     from_meta = _variant_from_studio_meta(meta, step_code)
     if from_meta:
-        return from_meta
+        return from_meta, "slot"
 
-    return DEFAULT_NAME
+    return DEFAULT_NAME, "default"
 
 
 def read_resolved_project_prompt(
-    project, step_code: str
-) -> tuple[str, Path, str]:
-    """(имя варианта, путь к .md, текст) — единая точка для шагов и логов."""
+    project, step_code: str, *, node_key: str | None = None, slot_id: str | None = None
+) -> tuple[str, Path, str, str]:
+    """(имя варианта, путь к .md, текст, источник) — единая точка для шагов и логов."""
     overrides = getattr(project, "prompt_overrides", None) or {}
     meta = getattr(project, "meta", None) or {}
-    name = resolve_project_prompt_name(overrides, step_code, meta=meta)
+    name, source = resolve_project_prompt_with_source(
+        overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
+    )
     path = prompt_path(step_code, name)
     text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
     topic = str(getattr(project, "topic", None) or "")
-    return name, path, inject_topic_placeholders(text, topic)
+    return name, path, inject_topic_placeholders(text, topic), source
 
 
 def get_project_prompt(project, step_code: str) -> str:
@@ -477,11 +524,12 @@ def get_project_prompt(project, step_code: str) -> str:
             except FileNotFoundError:
                 pass
 
-    name, path, text = read_resolved_project_prompt(project, step_code)
+    name, path, text, source = read_resolved_project_prompt(project, step_code)
     logger.info(
-        "get_project_prompt: step={} variant={!r} path={}",
+        "get_project_prompt: step={} variant={!r} source={} path={}",
         step_code,
         name,
+        source,
         path,
     )
     return text

@@ -11,7 +11,7 @@ from app.models import Project, ProjectStatus
 from app.services.mass_factory import mass_parent_id
 from app.services.project_state import is_running_status
 from app.services.gen_queue_run import is_user_stopped
-from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
+from app.services.step_cancel import is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
@@ -69,6 +69,9 @@ async def stop_project_running(
             else ProjectStatus.new
         )
         rollback_to_val = rollback_to.value
+        from app.services.run_sync import stop_active_running_node
+
+        await stop_active_running_node(session, project)
         project.status = rollback_to
         meta = dict(project.meta or {})
         chain_to = meta.pop("enrich_auto_chain_to", None)
@@ -80,7 +83,7 @@ async def stop_project_running(
                 chain_to,
             )
         step_title = step.title if step is not None else cur.value
-        clear_stop(project.id)
+        # stop-файл не снимаем: воркер/outsee/Whisper должны увидеть ⏹ до завершения.
         msg = f"остановлен шаг «{step_title}» → {rollback_to.value}"
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
@@ -145,3 +148,37 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
     project.updated_at = datetime.utcnow()
     await session.flush()
     return project.status.value
+
+
+async def rollback_running_for_queue(
+    session: AsyncSession,
+    project: Project,
+    *,
+    reason: str,
+) -> bool:
+    """Откат running-шага для gen_queue (request_stop + FSM нод, без user_stop)."""
+    if not is_running_status(project.status):
+        return False
+    from app.services.step_cancel import request_stop
+    from app.services.run_sync import stop_active_running_node
+
+    request_stop(project.id)
+    await stop_active_running_node(session, project)
+    step = step_by_running_status(project.status)
+    rollback = (
+        step.requires
+        if step is not None and step.requires is not None
+        else ProjectStatus.new
+    )
+    cur = project.status.value
+    project.status = rollback
+    project.updated_at = datetime.utcnow()
+    await session.flush()
+    logger.warning(
+        "[#{}] gen_queue rollback ({}): {} → {}",
+        project.id,
+        reason,
+        cur,
+        rollback.value,
+    )
+    return True

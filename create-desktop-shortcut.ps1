@@ -1,16 +1,16 @@
-﻿# Creates Desktop shortcut to Video Pipeline Studio GUI
-# Run once: powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1
+﻿# Создать ярлык Video Pipeline Studio на рабочем столе
+# Запуск один раз: create-desktop-shortcut.cmd
 
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
-    Write-Host "ERROR: run from video-pipeline root" -ForegroundColor Red
+    Write-Host "ОШИБКА: запустите из корня репозитория video-pipeline" -ForegroundColor Red
     exit 1
 }
 
-$TargetCmd = Join-Path $Root "VideoPipelineStudio.cmd"
+$TargetCmd = Join-Path $Root "STUDIO.cmd"
 if (-not (Test-Path $TargetCmd)) {
-    Write-Host "ERROR: VideoPipelineStudio.cmd not found" -ForegroundColor Red
+    Write-Host "ОШИБКА: STUDIO.cmd не найден" -ForegroundColor Red
     exit 1
 }
 
@@ -21,30 +21,12 @@ $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = $TargetCmd
 $Shortcut.WorkingDirectory = $Root
 $Shortcut.WindowStyle = 1
-$Shortcut.Description = "Video Pipeline Studio - install, update, run"
+$Shortcut.Description = "Video Pipeline Studio — запуск, обновление, диагностика"
 $Shortcut.Save()
 
-$UpdateVerPath = Join-Path $Desktop "Video Pipeline - Obnovit versiyu.lnk"
-$UpdateVer = $WshShell.CreateShortcut($UpdateVerPath)
-$UpdateVer.TargetPath = Join-Path $Root "ОБНОВИТЬ-ВЕРСИЮ.cmd"
-$UpdateVer.WorkingDirectory = $Root
-$UpdateVer.WindowStyle = 1
-$UpdateVer.Description = "git pull + UI v109+ + restart backend"
-$UpdateVer.Save()
-
-$StartStudioPath = Join-Path $Desktop "Video Pipeline - Start Studio.lnk"
-$StartStudio = $WshShell.CreateShortcut($StartStudioPath)
-$StartStudio.TargetPath = Join-Path $Root "Open-Studio.cmd"
-$StartStudio.WorkingDirectory = $Root
-$StartStudio.WindowStyle = 1
-$StartStudio.Description = "Start backend on :8765 and open browser"
-$StartStudio.Save()
-
-Write-Host "Shortcuts created:" -ForegroundColor Green
+Write-Host "Ярлык создан:" -ForegroundColor Green
 Write-Host "  $ShortcutPath"
-Write-Host "  $UpdateVerPath"
-Write-Host "  $StartStudioPath"
 Write-Host ""
-Write-Host "Double-click from Desktop (WorkingDirectory = repo; not C:\Users\...)."
-Write-Host "Repo folder:"
+Write-Host "Двойной клик по ярлыку -> меню STUDIO.cmd"
+Write-Host "Папка проекта:"
 Write-Host "  $Root"

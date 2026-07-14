@@ -18,7 +18,12 @@ from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
 from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
-from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
+from app.services.run_sync import (
+    ensure_run_for_project,
+    reset_nodes_from_step,
+    sync_run_for_project,
+    _get_default_workflow_id,
+)
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -294,7 +299,14 @@ async def reset_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
         raise HTTPException(status_code=400, detail=str(summary["error"]))
+    wf_id = await _get_default_workflow_id()
+    if wf_id is not None:
+        await ensure_run_for_project(project_id, wf_id)
+    await reset_nodes_from_step(session, project_id, step_code)
+    await session.flush()
     await session.commit()
+    await session.refresh(p)
+    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -530,6 +542,18 @@ async def preview_xlsx(
         "headers": headers if not raw else [],
         "rows": rows,
     }
+
+
+@router.get("/{project_id}/montage-board")
+async def montage_board(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сетка монтажа: озвучка, персонажи, shot1/2 картинки и видео по кадрам."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board import build_montage_board
+
+    return await build_montage_board(session, p)
 
 
 @router.get("/{project_id}/assets")
@@ -778,3 +802,148 @@ async def remap_excel_gpt_keys(
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "remapped": remapped}
+
+
+@router.post("/parents/disable-auto-mode")
+async def disable_auto_mode_all_parents(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Выключить автопродвижение у всех родительских проектов (воркер перестанет сам жать шаги)."""
+    from app.services.mass_factory import mass_parent_id
+
+    rows = (await session.execute(select(Project))).scalars().all()
+    disabled = 0
+    for p in rows:
+        if mass_parent_id(p) is not None:
+            continue
+        if p.auto_mode:
+            p.auto_mode = False
+            disabled += 1
+            await publish_project_event(
+                p.id,
+                event_type="project_updated",
+                payload={"auto_mode": False},
+            )
+    await session.commit()
+    return {"parents_total": sum(1 for p in rows if mass_parent_id(p) is None), "disabled": disabled}
+
+
+@router.post("/{project_id}/remount-video")
+async def remount_project_video(
+    project_id: int,
+    audio_only: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Перемонтаж: синхрон xlsx→кадры, Whisper по озвучке, новая сборка (видеоклипы не трогаем)."""
+    from app.services.remount_video import remount_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await remount_video(session, p, run_assemble=not audio_only)
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "remount_video": True,
+            "done": result.get("done"),
+            "error": result.get("error"),
+            "final_video": result.get("final_video"),
+        },
+    )
+    if result.get("error") and not result.get("done"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/restore-original-voiceover")
+async def restore_all_parents_voiceover(
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover у всех родительских проектов."""
+    from app.services.voiceover_recovery import restore_all_parent_voiceovers
+
+    summary = await restore_all_parent_voiceovers(
+        session, dry_run=dry_run, force=force
+    )
+    if summary.get("restored"):
+        for row in summary.get("results", []):
+            if row.get("restored"):
+                await publish_project_event(
+                    int(row["project_id"]),
+                    event_type="project_updated",
+                    payload={"voiceover_restored": True, "source": row.get("source")},
+                )
+    return summary
+
+
+@router.post("/{project_id}/restore-original-voiceover")
+async def restore_project_voiceover(
+    project_id: int,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover одного проекта."""
+    from app.services.voiceover_recovery import restore_original_voiceover
+
+    from app.services.mass_factory import mass_parent_id
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "child_project_skipped",
+                "mass_parent_id": mass_parent_id(p),
+                "hint": "восстановление только для родительских проектов",
+            },
+        )
+    result = await restore_original_voiceover(
+        session, p, dry_run=dry_run, force=force
+    )
+    if result.get("restored"):
+        await session.commit()
+        await publish_project_event(
+            project_id,
+            event_type="project_updated",
+            payload={"voiceover_restored": True, "source": result.get("source")},
+        )
+    return result
+
+
+@router.get("/{project_id}/original-voiceover-preview")
+async def preview_original_voiceover(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Показать, откуда будет взят исходный voiceover (без записи)."""
+    from app.services.voiceover_recovery import find_original_voiceover
+
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail="preview только для родительских проектов",
+        )
+    cand = await find_original_voiceover(session, p)
+    if cand is None:
+        return {
+            "project_id": project_id,
+            "found": False,
+            "preview": None,
+            "source": None,
+            "chars": 0,
+        }
+    return {
+        "project_id": project_id,
+        "found": True,
+        "source": cand.source,
+        "chars": len(cand.text),
+        "preview": cand.text[:500],
+    }
+

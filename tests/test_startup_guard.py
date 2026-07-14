@@ -46,11 +46,14 @@ async def test_startup_guard_blocks_all_automatic_continuation(
 
     assert stats["running_projects_rolled_back"] == 1
     assert stats["auto_mode_disabled"] == 2
+    assert stats["user_stop_gates_set"] == 2
     assert stats["batches_paused"] == 1
     assert stats["mass_pause_enabled"] is True
     assert running_project.status is ProjectStatus.plan_ready
     assert running_project.auto_mode is False
+    assert (running_project.meta or {}).get("user_stop") is True
     assert auto_ready_project.status is ProjectStatus.plan_ready
     assert auto_ready_project.auto_mode is False
+    assert (auto_ready_project.meta or {}).get("user_stop") is True
     assert batch.status is BatchStatus.paused
     assert mass_pause_active() is True

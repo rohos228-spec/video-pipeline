@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # True = вариант A (image+video): глобальная очередь Outsee, одна новая
     # картинка/ролик после Generate, без перебора галереи по [ID: …].
     outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
+    # Таймаут скачивания результата outsee (сек) — URL и клик «Скачать».
+    outsee_download_timeout_s: float = Field(120.0, alias="OUTSEE_DOWNLOAD_TIMEOUT_S")
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
@@ -98,7 +100,9 @@ class Settings(BaseSettings):
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
     subtitle_lead_seconds: float = Field(0.18, alias="SUBTITLE_LEAD_SECONDS")
     subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
-    subtitle_rewhisper_on_assemble: bool = Field(True, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE")
+    subtitle_rewhisper_on_assemble: bool = Field(
+        False, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE"
+    )
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

@@ -44,7 +44,7 @@ echo OK: web/out contains fleet button (studio-open-fleet)
 
 echo.
 echo Start Studio, then Ctrl+F5 in browser
-start "video-pipeline" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-backend.ps1"
+start "video-pipeline" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-backend.ps1"
 timeout /t 6 /nobreak >nul
 start http://127.0.0.1:8765/
 pause

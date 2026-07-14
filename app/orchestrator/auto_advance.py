@@ -571,6 +571,12 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
         if nxt is None:
             return
+        if nxt is ProjectStatus.assembling:
+            logger.info(
+                "auto_advance: #{} blocked — assemble requires manual start",
+                project.id,
+            )
+            return
         project.status = nxt
     else:
         graph_nxt = await _graph_next_running(session, project, transition.ready_status)
@@ -591,6 +597,12 @@ async def _apply_approve(
             return
         nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
+            return
+        if nxt is ProjectStatus.assembling:
+            logger.info(
+                "auto_advance: #{} blocked — assemble requires manual start",
+                project.id,
+            )
             return
         project.status = nxt
     _reset_retry_count(project, transition.ready_status)

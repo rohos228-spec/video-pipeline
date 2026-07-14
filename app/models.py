@@ -142,6 +142,7 @@ class NodeRunStatus(str, enum.Enum):
     """Состояние одной ноды в рамках WorkflowRun.
 
     pending      — ещё не запущена (ждёт upstream-ы или ручной триггер)
+    queued       — в очереди на запуск (после клика ▶, до взятия воркером)
     running      — выполняется прямо сейчас (воркер взял в работу)
     waiting_hitl — ждёт решения пользователя (HITL-gate)
     done         — успешно завершена
@@ -150,6 +151,7 @@ class NodeRunStatus(str, enum.Enum):
     """
 
     pending = "pending"
+    queued = "queued"
     running = "running"
     waiting_hitl = "waiting_hitl"
     done = "done"

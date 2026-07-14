@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from loguru import logger
+
+# Windows: WinError 1314 при symlink в HF cache — копировать файлы вместо ссылок.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "0")
 
 
 @dataclass
@@ -30,6 +35,48 @@ _WHISPER_INSTALL_HINT = (
 )
 
 
+def _resolve_whisper_runtime(
+    device: str | None = None,
+    compute_type: str | None = None,
+) -> tuple[str, str]:
+    from app.settings import settings
+
+    dev = device or settings.whisper_device
+    ctype = compute_type or settings.whisper_compute_type
+    if dev != "cuda":
+        return dev, ctype
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return dev, ctype
+    except ImportError:
+        pass
+    logger.warning(
+        "whisper: CUDA недоступна — fallback device=cpu compute_type=int8"
+    )
+    return "cpu", "int8"
+
+
+def _create_model(
+    model_name: str,
+    device: str | None = None,
+    compute_type: str | None = None,
+):
+    if not whisper_available():
+        raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
+    from faster_whisper import WhisperModel
+
+    dev, ctype = _resolve_whisper_runtime(device, compute_type)
+    logger.info(
+        "whisper: loading model '{}' (device={}, compute={}) ...",
+        model_name,
+        dev,
+        ctype,
+    )
+    return WhisperModel(model_name, device=dev, compute_type=ctype)
+
+
 def transcribe_words(
     audio_path: Path,
     *,
@@ -37,21 +84,23 @@ def transcribe_words(
     language: str = "ru",
     beam_size: int = 5,
     vad_filter: bool = False,
+    device: str | None = None,
+    compute_type: str | None = None,
 ) -> list[WordTS]:
     """Word-level таймкоды; vad_filter=False — сохраняет паузы между словами."""
     if not whisper_available():
         raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
-    from faster_whisper import WhisperModel  # ленивый импорт — тяжёлая зависимость
     import time
 
-    logger.info("whisper: loading model '{}' ...", model_name)
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = _create_model(model_name, device, compute_type)
+    dev, _ = _resolve_whisper_runtime(device, compute_type)
     logger.info(
-        "whisper: transcribing {} (vad_filter={}, beam={}) — на CPU это может занять "
-        "несколько минут для длинного файла",
+        "whisper: transcribing {} (vad_filter={}, beam={}, device={}) — "
+        "на CPU это может занять несколько минут для длинного файла",
         audio_path.name,
         vad_filter,
         beam_size,
+        dev,
     )
     segments, info = model.transcribe(
         str(audio_path),
@@ -77,7 +126,7 @@ def transcribe_words(
                 prob=float(getattr(w, "probability", 0.0)),
             ))
         now = time.monotonic()
-        if now - last_log >= 30.0:
+        if now - last_log >= 15.0:
             logger.info(
                 "whisper: … {} сегм., {} слов, до {:.0f}s аудио",
                 seg_count,
@@ -96,16 +145,16 @@ def transcribe_words_many(
     language: str = "ru",
     beam_size: int = 5,
     vad_filter: bool = False,
+    device: str | None = None,
+    compute_type: str | None = None,
 ) -> list[list[WordTS]]:
     """Whisper для нескольких файлов — модель грузится один раз."""
     if not audio_paths:
         return []
     if not whisper_available():
         raise ImportError(f"faster-whisper не установлен. {_WHISPER_INSTALL_HINT}")
-    from faster_whisper import WhisperModel
 
-    logger.info("whisper: loading model '{}' for {} clips ...", model_name, len(audio_paths))
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = _create_model(model_name, device, compute_type)
     out: list[list[WordTS]] = []
     for audio_path in audio_paths:
         logger.info("whisper: transcribing {}", audio_path)
@@ -127,6 +176,25 @@ def transcribe_words_many(
                 ))
         out.append(words)
     return out
+
+
+def artifact_path_mtime(artifact) -> float | None:
+    if artifact is None or not getattr(artifact, "path", None):
+        return None
+    path = Path(artifact.path)
+    if not path.is_file():
+        return None
+    return path.stat().st_mtime
+
+
+def whisper_words_fresh_for_audio(whisper_art, audio_path: Path) -> bool:
+    """True если words.json новее или совпадает по времени с voice_full."""
+    whisper_mtime = artifact_path_mtime(whisper_art)
+    if whisper_mtime is None:
+        return False
+    if not audio_path.is_file():
+        return True
+    return whisper_mtime >= audio_path.stat().st_mtime
 
 
 def dump_words_json(

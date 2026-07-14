@@ -20,6 +20,7 @@ import contextlib
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +31,180 @@ from playwright.async_api import TimeoutError as PWTimeoutError
 from app.bots.browser import BrowserSession, browser_session
 from app.settings import settings
 
+ERRORS_LOG_PATH = Path("logs/errors.log")
+
+OUTSEE_LOGIN_URL_MARKERS: tuple[str, ...] = (
+    "/login",
+    "/sign-in",
+    "/signin",
+    "/auth",
+)
+
+OUTSEE_LOGIN_PAGE_MARKERS: tuple[str, ...] = (
+    "sign in",
+    "log in",
+    "войти",
+    "вход в аккаунт",
+    "войдите",
+    "email",
+    "пароль",
+    "password",
+)
+
 
 def _outsee_queue_mode() -> bool:
     """Вариант A: одна генерация Outsee, первая новая картинка после baseline."""
     return bool(getattr(settings, "outsee_queue_mode", True))
 
 
+def outsee_login_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(m in u for m in OUTSEE_LOGIN_URL_MARKERS)
+
+
+def outsee_login_page_text(text: str) -> bool:
+    hay = (text or "").lower()
+    if not hay:
+        return False
+    if outsee_login_url(hay):
+        return True
+    has_pw = "password" in hay or "парол" in hay
+    has_login = any(m in hay for m in ("sign in", "log in", "войти", "вход"))
+    if has_pw and has_login:
+        return True
+    return any(m in hay for m in OUTSEE_LOGIN_PAGE_MARKERS)
+
+
+def _log_outsee_error(*, kind: str, text: str, node: str = "outsee") -> None:
+    try:
+        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().isoformat(timespec="seconds")
+        line = f"{ts}\tbot=outsee\tnode={node}\tkind={kind}\t{text}"
+        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("outsee: cannot write {}: {}", ERRORS_LOG_PATH, e)
+
+
+def _outsee_download_timeout_s() -> float:
+    return float(getattr(settings, "outsee_download_timeout_s", 120.0))
+
+
+_CARD_SEARCH_POLL_STEP_S = 0.45
+_CARD_SEARCH_DEADLINE_S = 12.0
+
+
+def _log_download_stage(
+    *,
+    stage: str,
+    duration_s: float,
+    strategy: str,
+    media: str = "file",
+    project_id: int | None = None,
+    extra: str = "",
+) -> None:
+    pid = project_id if project_id is not None else "?"
+    detail = (
+        f"media={media}\tstage={stage}\tduration_s={duration_s:.2f}"
+        f"\tstrategy={strategy}"
+    )
+    if extra:
+        detail += f"\t{extra}"
+    _log_outsee_error(kind="download_stage", text=detail, node=f"project={pid}")
+
+
+async def _update_download_progress(
+    project_id: int | None,
+    progress_text: str | None,
+) -> None:
+    if project_id is None:
+        return
+    try:
+        from app.db import session_scope
+        from app.models import Project
+        from app.services.run_sync import update_active_node_progress_text
+
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is not None:
+                await update_active_node_progress_text(
+                    session, project, progress_text
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("outsee: cannot update download progress: {}", e)
+
+
+async def _poll_gallery_card(
+    find_fn,
+    *,
+    deadline_s: float = _CARD_SEARCH_DEADLINE_S,
+    poll_step_s: float = _CARD_SEARCH_POLL_STEP_S,
+    project_id: int | None = None,
+):
+    from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
+
+    start = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start < deadline_s:
+        abort_if_cancelled(project_id)
+        card = await find_fn()
+        if card is not None:
+            return card
+        await sleep_cancellable(poll_step_s, project_id)
+    return None
+
+
+async def _collect_visible_alert_snippets(page: Page, *, limit: int = 5) -> list[str]:
+    try:
+        raw = await page.evaluate(
+            """(limit) => {
+                const out = [];
+                const seen = new Set();
+                const isVis = (el) => {
+                    const cs = window.getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                };
+                const roles = ['alert', 'status', 'dialog'];
+                for (const role of roles) {
+                    for (const el of document.querySelectorAll(`[role="${role}"]`)) {
+                        if (!isVis(el)) continue;
+                        const t = (el.innerText || '').trim().replace(/\\s+/g, ' ');
+                        if (t.length < 6 || seen.has(t)) continue;
+                        seen.add(t);
+                        out.push(t.slice(0, 240));
+                    }
+                }
+                for (const el of document.querySelectorAll(
+                    '[class*="error" i], [class*="alert" i], [class*="toast" i], [data-testid*="error" i]'
+                )) {
+                    if (!isVis(el)) continue;
+                    const t = (el.innerText || '').trim().replace(/\\s+/g, ' ');
+                    if (t.length < 6 || t.length > 500 || seen.has(t)) continue;
+                    seen.add(t);
+                    out.push(t.slice(0, 240));
+                }
+                return out.slice(0, limit);
+            }""",
+            limit,
+        )
+        return [s for s in (raw or []) if isinstance(s, str) and s.strip()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _outsee_timeout_message(base: str, alerts: list[str]) -> str:
+    if not alerts:
+        return base
+    joined = " | ".join(alerts[:3])
+    return f"{base}. Плашки на странице: {joined}"
+
+
 # Сколько последних (верхних) thumb'ов в галерее перебираем по [ID: …].
 # Outsee рендерит новые сверху — slice(0, N) = N самых свежих.
-_GALLERY_ID_SCAN_LIMIT = 10
+_GALLERY_ID_SCAN_LIMIT = 80
+
+_GENERATE_BUTTON_WAIT_SEC = 90.0
 
 
 # Порядок попыток — первый сработавший используется
@@ -669,6 +835,27 @@ class OutseeImageError(RuntimeError):
         return "\n".join(lines)
 
 
+async def _check_outsee_session(page: Page) -> None:
+    url = page.url or ""
+    if outsee_login_url(url):
+        msg = "outsee: слетела сессия — нужно перелогиниться"
+        _log_outsee_error(kind="session_lost", text=msg)
+        raise OutseeImageError(msg, context={"kind": "session_lost"})
+    try:
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+        has_pw_input = await page.evaluate(
+            "() => !!document.querySelector('input[type=password]')"
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if has_pw_input or outsee_login_page_text(body_text):
+        msg = "outsee: слетела сессия — нужно перелогиниться"
+        _log_outsee_error(kind="session_lost", text=msg)
+        raise OutseeImageError(msg, context={"kind": "session_lost"})
+
+
 class OutseeContentRejectedError(OutseeImageError):
     """Outsee показал плашку «Контент отклонён» (модерация запрещённых
     слов в промте). Отдельный класс, чтобы caller мог решить — ретраить
@@ -957,15 +1144,15 @@ def _raise_outsee_failure(
         )
     if kind == "moderation":
         detail = (text or "").strip().replace("\n", " ")[:120]
-        raise OutseeContentRejectedError(
-            f"outsee image: контент отклонён модерацией"
-            + (f" ({detail})" if detail else ""),
-            context=ctx,
+        msg = (
+            "outsee image: контент отклонён модерацией"
+            + (f" ({detail})" if detail else "")
         )
-    raise OutseeImageError(
-        "outsee image: ошибка генерации на outsee.io",
-        context=ctx,
-    )
+        _log_outsee_error(kind="moderation", text=msg)
+        raise OutseeContentRejectedError(msg, context=ctx)
+    msg = "outsee image: ошибка генерации на outsee.io"
+    _log_outsee_error(kind=kind, text=f"{msg}: {text[:120]}")
+    raise OutseeImageError(msg, context=ctx)
 
 
 # Минимум «настоящей» картинки из nano-banana — обычно 300 KB – 5 MB.
@@ -1511,6 +1698,8 @@ async def _first_visible(
     deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
     while asyncio.get_event_loop().time() < deadline:
         abort_if_cancelled(project_id)
+        if selectors is PROMPT_INPUT_SELECTORS:
+            await _check_outsee_session(page)
         for sel in selectors:
             try:
                 base = page.locator(sel)
@@ -1744,6 +1933,15 @@ class OutseeBot:
                 pass
             await await_with_cancel(page.locator(input_sel).first.click(), project_id)
             await await_with_cancel(page.locator(input_sel).first.fill(prompt), project_id)
+            from app.services.sidebar_layout import log_prompt_send
+
+            log_prompt_send(
+                bot="outsee",
+                project_id=project_id,
+                node="generate_image",
+                source="prompt",
+                text=prompt,
+            )
             await _verify_composer_prompt_filled(
                 page,
                 input_sel,
@@ -2240,15 +2438,27 @@ class OutseeBot:
     async def _wait_button_enabled(
         self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
     ) -> None:
-        """Ждёт пока кнопка станет активной (не disabled). На outsee Generate
-        заблокирован, если идёт предыдущая генерация или пуст промт."""
+        """Ждёт пока кнопка станет активной (не disabled)."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
-        deadline = asyncio.get_event_loop().time() + timeout_s
+        effective_timeout = min(timeout_s, _GENERATE_BUTTON_WAIT_SEC)
+        deadline = asyncio.get_event_loop().time() + effective_timeout
         last_log = 0.0
         start = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
+            await _check_outsee_session(page)
+            try:
+                failure = await self._detect_outsee_failure(page)
+                if failure:
+                    ftext = str(failure.get("text") or "")
+                    msg = f"outsee: {ftext[:160]}"
+                    _log_outsee_error(kind="generate_ui", text=msg)
+                    raise OutseeImageError(msg, context={"failure": ftext[:200]})
+            except OutseeImageError:
+                raise
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 loc = page.locator(selector).first
                 disabled = await loc.get_attribute("disabled")
@@ -2270,10 +2480,13 @@ class OutseeBot:
                     now - start,
                 )
             await sleep_cancellable(1.0, project_id)
-        raise PWTimeoutError(
-            "outsee image: кнопка Generate остаётся disabled — "
-            "предыдущая генерация зависла?"
+        alerts = await _collect_visible_alert_snippets(page)
+        msg = _outsee_timeout_message(
+            "outsee: интерфейс завис (кнопка Generate неактивна)",
+            alerts,
         )
+        _log_outsee_error(kind="generate_stuck", text=msg)
+        raise PWTimeoutError(msg)
 
     async def _click_generate_button(
         self,
@@ -2318,7 +2531,7 @@ class OutseeBot:
         except Exception:  # noqa: BLE001
             pass
         await self._wait_button_enabled(
-            page, gen_sel, timeout_s=600, project_id=project_id
+            page, gen_sel, timeout_s=_GENERATE_BUTTON_WAIT_SEC, project_id=project_id
         )
         abort_if_cancelled(project_id)
 
@@ -3518,7 +3731,10 @@ class OutseeBot:
                     by_id, net_events=net_events
                 )
         raise OutseeImageError(
-            f"outsee image: результат не появился за {int(timeout)} сек",
+            _outsee_timeout_message(
+                f"outsee image: результат не появился за {int(timeout)} сек",
+                await _collect_visible_alert_snippets(page),
+            ),
             context=ctx,
         )
 
@@ -5785,15 +6001,62 @@ async def _download_via_video_card_click(
     prompt_id_prefix: str,
     out_path: Path,
     video_url: str | None = None,
-    timeout_s: float = 120.0,
+    timeout_s: float | None = None,
     project_id: int | None = None,
 ) -> None:
-    """Скачивание veo: physical click по 10 роликам → ID → кнопка ↓."""
+    """Скачивание veo: прямой URL → physical click по роликам → ID → кнопка ↓."""
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     abort_if_cancelled(project_id)
+    if timeout_s is None:
+        timeout_s = _outsee_download_timeout_s()
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if video_url and _video_url_looks_like_result(video_url):
+        await _update_download_progress(project_id, "Скачивание… (прямой URL)")
+        t0 = asyncio.get_event_loop().time()
+        try:
+            await _download_via_context(
+                page,
+                video_url,
+                out_path,
+                timeout_ms=deadline_ms,
+                project_id=project_id,
+            )
+            _validate_downloaded_video(
+                out_path, gen_id=prompt_id_prefix, video_url=video_url
+            )
+            _log_download_stage(
+                stage="direct_url",
+                duration_s=asyncio.get_event_loop().time() - t0,
+                strategy="url_first",
+                media="video",
+                project_id=project_id,
+            )
+            await _update_download_progress(project_id, None)
+            logger.info(
+                "_download_via_video_card_click: URL-first {} → {}",
+                video_url[:120],
+                out_path,
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            _log_download_stage(
+                stage="direct_url_failed",
+                duration_s=asyncio.get_event_loop().time() - t0,
+                strategy="url_first",
+                media="video",
+                project_id=project_id,
+                extra=f"err={type(e).__name__}",
+            )
+            logger.warning(
+                "_download_via_video_card_click: URL-first failed ({}), card cascade",
+                e,
+            )
+
+    await _update_download_progress(project_id, "Скачивание… (поиск карточки)")
+    t_search = asyncio.get_event_loop().time()
 
     n_thumbs = await _wait_gallery_video_thumbs(
         page, min_count=1, timeout_s=45.0, project_id=project_id
@@ -5804,22 +6067,36 @@ async def _download_via_video_card_click(
             prompt_id_prefix,
         )
 
-    card = None
-    for c_attempt in range(1, 4):
-        card = await _find_card_by_clicking_videos(
+    card = await _poll_gallery_card(
+        lambda: _find_card_by_clicking_videos(
             page,
             prompt_id_prefix=prompt_id_prefix,
             limit=_GALLERY_ID_SCAN_LIMIT,
             project_id=project_id,
-        )
-        if card is not None:
-            break
-        if c_attempt < 3:
-            await asyncio.sleep(2.0)
+        ),
+        project_id=project_id,
+    )
+    _log_download_stage(
+        stage="find_card",
+        duration_s=asyncio.get_event_loop().time() - t_search,
+        strategy="card_click_cascade",
+        media="video",
+        project_id=project_id,
+        extra=f"found={card is not None}",
+    )
 
     if card is None and video_url:
+        t_url_click = asyncio.get_event_loop().time()
         card = await _find_card_by_img_url_click(
             page, video_url, project_id=project_id
+        )
+        _log_download_stage(
+            stage="find_card_by_url",
+            duration_s=asyncio.get_event_loop().time() - t_url_click,
+            strategy="img_url_click",
+            media="video",
+            project_id=project_id,
+            extra=f"found={card is not None}",
         )
 
     if card is None:
@@ -5838,24 +6115,60 @@ async def _download_via_video_card_click(
         except PWTimeoutError:
             pass
 
-    if card is None and video_url:
+    if card is None and video_url and _video_url_looks_like_result(video_url):
+        t_retry = asyncio.get_event_loop().time()
         logger.warning(
-            "_download_via_video_card_click: карточка не найдена, URL {}",
+            "_download_via_video_card_click: карточка не найдена, повтор URL {}",
             video_url[:120],
         )
-        await _download_via_context(
-            page, video_url, out_path, project_id=project_id
-        )
-        return
+        try:
+            await _download_via_context(
+                page, video_url, out_path, timeout_ms=deadline_ms, project_id=project_id
+            )
+            _validate_downloaded_video(
+                out_path, gen_id=prompt_id_prefix, video_url=video_url
+            )
+            _log_download_stage(
+                stage="url_fallback",
+                duration_s=asyncio.get_event_loop().time() - t_retry,
+                strategy="url_after_card_miss",
+                media="video",
+                project_id=project_id,
+            )
+            await _update_download_progress(project_id, None)
+            return
+        except Exception as e:  # noqa: BLE001
+            _log_download_stage(
+                stage="url_fallback_failed",
+                duration_s=asyncio.get_event_loop().time() - t_retry,
+                strategy="url_after_card_miss",
+                media="video",
+                project_id=project_id,
+                extra=f"err={type(e).__name__}",
+            )
+            raise OutseeImageError(
+                "outsee video: не смог скачать файл",
+                context={
+                    "prompt_id_prefix": prompt_id_prefix,
+                    "video_url": video_url,
+                    "timeout_s": timeout_s,
+                    "err": f"{type(e).__name__}: {e}",
+                },
+            ) from e
 
     if card is None:
+        await _update_download_progress(project_id, None)
         raise OutseeImageError(
-            "outsee video: не нашёл карточку с нашим ID (10 роликов перебраны)",
+            "outsee video: не смог скачать файл",
             context={
                 "prompt_id_prefix": prompt_id_prefix,
                 "video_url": video_url,
+                "timeout_s": timeout_s,
             },
         )
+
+    await _update_download_progress(project_id, "Скачивание… (клик)")
+    t_click = asyncio.get_event_loop().time()
 
     with contextlib.suppress(Exception):
         await card.scroll_into_view_if_needed(timeout=5_000)
@@ -5873,18 +6186,50 @@ async def _download_via_video_card_click(
             )
         download = await dl_info.value
         await await_with_cancel(download.save_as(str(out_path)), project_id)
+        _validate_downloaded_video(
+            out_path, gen_id=prompt_id_prefix, video_url=video_url or ""
+        )
+        _log_download_stage(
+            stage="browser_download",
+            duration_s=asyncio.get_event_loop().time() - t_click,
+            strategy="card_click_download",
+            media="video",
+            project_id=project_id,
+        )
+        await _update_download_progress(project_id, None)
     except PWTimeoutError as e:
-        if video_url:
+        if video_url and _video_url_looks_like_result(video_url):
             logger.warning(
                 "_download_via_video_card_click: download click timeout, URL fallback"
             )
-            await _download_via_context(
-                page, video_url, out_path, project_id=project_id
-            )
-            return
+            try:
+                await _download_via_context(
+                    page, video_url, out_path, timeout_ms=deadline_ms, project_id=project_id
+                )
+                _validate_downloaded_video(
+                    out_path, gen_id=prompt_id_prefix, video_url=video_url
+                )
+                _log_download_stage(
+                    stage="url_after_click_timeout",
+                    duration_s=asyncio.get_event_loop().time() - t_click,
+                    strategy="url_after_click_timeout",
+                    media="video",
+                    project_id=project_id,
+                )
+                await _update_download_progress(project_id, None)
+                return
+            except Exception as url_e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee video: не смог скачать файл",
+                    context={
+                        "prompt_id_prefix": prompt_id_prefix,
+                        "timeout_s": timeout_s,
+                        "err": f"{type(url_e).__name__}: {url_e}",
+                    },
+                ) from url_e
         raise OutseeImageError(
-            "outsee video: клик «Скачать» не вызвал download",
-            context={"prompt_id_prefix": prompt_id_prefix},
+            "outsee video: не смог скачать файл",
+            context={"prompt_id_prefix": prompt_id_prefix, "timeout_s": timeout_s},
         ) from e
 
     logger.info(
@@ -6342,16 +6687,20 @@ async def _download_via_queue_video_result(
     out_path: Path,
     gen_id: str | None = None,
     project_id: int | None = None,
-    timeout_s: float = 300.0,
+    timeout_s: float | None = None,
 ) -> None:
     """Queue-mode video: URL из wait, иначе одна кнопка «Скачать» в результате."""
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     abort_if_cancelled(project_id)
+    if timeout_s is None:
+        timeout_s = _outsee_download_timeout_s()
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if video_url and _video_url_looks_like_result(video_url):
+        await _update_download_progress(project_id, "Скачивание… (прямой URL)")
+        t0 = asyncio.get_event_loop().time()
         try:
             await _download_via_context(
                 page,
@@ -6360,6 +6709,17 @@ async def _download_via_queue_video_result(
                 timeout_ms=deadline_ms,
                 project_id=project_id,
             )
+            _validate_downloaded_video(
+                out_path, gen_id=gen_id or "", video_url=video_url
+            )
+            _log_download_stage(
+                stage="direct_url",
+                duration_s=asyncio.get_event_loop().time() - t0,
+                strategy="url_first",
+                media="video",
+                project_id=project_id,
+            )
+            await _update_download_progress(project_id, None)
             logger.info(
                 "_download_via_queue_video_result: URL {} → {}",
                 video_url[:120],
@@ -6367,30 +6727,74 @@ async def _download_via_queue_video_result(
             )
             return
         except Exception as e:  # noqa: BLE001
+            _log_download_stage(
+                stage="direct_url_failed",
+                duration_s=asyncio.get_event_loop().time() - t0,
+                strategy="url_first",
+                media="video",
+                project_id=project_id,
+                extra=f"err={type(e).__name__}",
+            )
             logger.warning(
                 "_download_via_queue_video_result: URL-first ({}) — кнопка",
                 e,
             )
 
+    await _update_download_progress(project_id, "Скачивание… (поиск карточки)")
+    t_search = asyncio.get_event_loop().time()
     card = await _find_result_panel_video_card(page, video_url)
+    _log_download_stage(
+        stage="find_result_card",
+        duration_s=asyncio.get_event_loop().time() - t_search,
+        strategy="queue_result_card",
+        media="video",
+        project_id=project_id,
+        extra=f"found={card is not None}",
+    )
+
     if card is None:
-        if video_url:
-            await _download_via_context(
-                page,
-                video_url,
-                out_path,
-                timeout_ms=deadline_ms,
-                project_id=project_id,
-            )
-            logger.info(
-                "_download_via_queue_video_result: fallback URL → {}",
-                out_path,
-            )
-            return
+        if video_url and _video_url_looks_like_result(video_url):
+            t_fb = asyncio.get_event_loop().time()
+            try:
+                await _download_via_context(
+                    page,
+                    video_url,
+                    out_path,
+                    timeout_ms=deadline_ms,
+                    project_id=project_id,
+                )
+                _validate_downloaded_video(
+                    out_path, gen_id=gen_id or "", video_url=video_url
+                )
+                _log_download_stage(
+                    stage="url_fallback",
+                    duration_s=asyncio.get_event_loop().time() - t_fb,
+                    strategy="url_after_card_miss",
+                    media="video",
+                    project_id=project_id,
+                )
+                await _update_download_progress(project_id, None)
+                logger.info(
+                    "_download_via_queue_video_result: fallback URL → {}",
+                    out_path,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee video: не смог скачать файл",
+                    context={
+                        "gen_id": gen_id,
+                        "video_url": (video_url or "")[:200],
+                        "err": f"{type(e).__name__}: {e}",
+                    },
+                ) from e
         raise OutseeImageError(
-            "outsee video (queue): нет кнопки «Скачать» и нет URL",
+            "outsee video: не смог скачать файл",
             context={"gen_id": gen_id, "video_url": (video_url or "")[:200]},
         )
+
+    await _update_download_progress(project_id, "Скачивание… (клик)")
+    t_click = asyncio.get_event_loop().time()
 
     with contextlib.suppress(Exception):
         await card.scroll_into_view_if_needed(timeout=5_000)
@@ -6413,22 +6817,50 @@ async def _download_via_queue_video_result(
             )
         download = await dl_info.value
         await await_with_cancel(download.save_as(str(out_path)), project_id)
+        _validate_downloaded_video(
+            out_path, gen_id=gen_id or "", video_url=video_url
+        )
+        _log_download_stage(
+            stage="browser_download",
+            duration_s=asyncio.get_event_loop().time() - t_click,
+            strategy="queue_result_click",
+            media="video",
+            project_id=project_id,
+        )
+        await _update_download_progress(project_id, None)
     except PWTimeoutError as e:
-        if video_url:
-            await _download_via_context(
-                page,
-                video_url,
-                out_path,
-                timeout_ms=deadline_ms,
-                project_id=project_id,
-            )
-            logger.info(
-                "_download_via_queue_video_result: click timeout, URL → {}",
-                out_path,
-            )
-            return
+        if video_url and _video_url_looks_like_result(video_url):
+            try:
+                await _download_via_context(
+                    page,
+                    video_url,
+                    out_path,
+                    timeout_ms=deadline_ms,
+                    project_id=project_id,
+                )
+                _validate_downloaded_video(
+                    out_path, gen_id=gen_id or "", video_url=video_url
+                )
+                _log_download_stage(
+                    stage="url_after_click_timeout",
+                    duration_s=asyncio.get_event_loop().time() - t_click,
+                    strategy="url_after_click_timeout",
+                    media="video",
+                    project_id=project_id,
+                )
+                await _update_download_progress(project_id, None)
+                logger.info(
+                    "_download_via_queue_video_result: click timeout, URL → {}",
+                    out_path,
+                )
+                return
+            except Exception as url_e:  # noqa: BLE001
+                raise OutseeImageError(
+                    "outsee video: не смог скачать файл",
+                    context={"gen_id": gen_id, "err": f"{type(url_e).__name__}: {url_e}"},
+                ) from url_e
         raise OutseeImageError(
-            "outsee video (queue): клик «Скачать» не вызвал download",
+            "outsee video: не смог скачать файл",
             context={"gen_id": gen_id, "err": str(e)},
         ) from e
 
@@ -6444,7 +6876,7 @@ async def _download_via_card_click(
     *,
     prompt_id_prefix: str,
     out_path: Path,
-    timeout_s: float = 120.0,
+    timeout_s: float | None = None,
     project_id: int | None = None,
     img_url: str | None = None,
     net_events: list[tuple[float, str]] | None = None,
@@ -6464,6 +6896,8 @@ async def _download_via_card_click(
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
     abort_if_cancelled(project_id)
+    if timeout_s is None:
+        timeout_s = _outsee_download_timeout_s()
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -6474,6 +6908,8 @@ async def _download_via_card_click(
 
     # Быстрый путь: full PNG из net_events / DOM / guess от thumb (оба CDN).
     if img_url:
+        await _update_download_progress(project_id, "Скачивание… (прямой URL)")
+        t_url = asyncio.get_event_loop().time()
         dom_full = await _find_full_png_in_dom(
             page, _outsee_image_stable_key(img_url)
         )
@@ -6497,6 +6933,14 @@ async def _download_via_card_click(
                 _validate_downloaded_image(
                     out_path, gen_id=prompt_id_prefix, img_url=used
                 )
+                _log_download_stage(
+                    stage="direct_url",
+                    duration_s=asyncio.get_event_loop().time() - t_url,
+                    strategy="url_first",
+                    media="image",
+                    project_id=project_id,
+                )
+                await _update_download_progress(project_id, None)
                 logger.info(
                     "_download_via_card_click: сохранил {} (URL-first, id={}, "
                     "thumb={})",
@@ -6506,6 +6950,14 @@ async def _download_via_card_click(
                 )
                 return
             except OutseeImageError as e:
+                _log_download_stage(
+                    stage="direct_url_failed",
+                    duration_s=asyncio.get_event_loop().time() - t_url,
+                    strategy="url_first",
+                    media="image",
+                    project_id=project_id,
+                    extra=f"err={e.reason[:80]}",
+                )
                 logger.warning(
                     "_download_via_card_click: URL-first не удался ({}), card-click",
                     e,
@@ -6513,6 +6965,8 @@ async def _download_via_card_click(
 
     # ID уже в textarea композера — не кликаем галерею (иначе выделяется текст).
     if img_url and await _composer_has_prompt_id(page, prompt_id_prefix):
+        await _update_download_progress(project_id, "Скачивание… (прямой URL)")
+        t_composer = asyncio.get_event_loop().time()
         dom_full = await _find_full_png_in_dom(
             page, _outsee_image_stable_key(img_url)
         )
@@ -6535,6 +6989,14 @@ async def _download_via_card_click(
             _validate_downloaded_image(
                 out_path, gen_id=prompt_id_prefix, img_url=used
             )
+            _log_download_stage(
+                stage="composer_cdn",
+                duration_s=asyncio.get_event_loop().time() - t_composer,
+                strategy="composer_id_cdn",
+                media="image",
+                project_id=project_id,
+            )
+            await _update_download_progress(project_id, None)
             logger.info(
                 "_download_via_card_click: сохранил {} (composer-ID, CDN, id={})",
                 out_path,
@@ -6561,19 +7023,28 @@ async def _download_via_card_click(
             prompt_id_prefix,
         )
 
-    # --- C: перебор 10 картинок + ID в панели (основная логика бота).
-    for c_attempt in range(1, 4):
-        card = await _find_card_by_clicking_images(
+    await _update_download_progress(project_id, "Скачивание… (поиск карточки)")
+    t_search = asyncio.get_event_loop().time()
+
+    # --- C: перебор картинок + ID в панели (основная логика бота).
+    card = await _poll_gallery_card(
+        lambda: _find_card_by_clicking_images(
             page,
             prompt_id_prefix=prompt_id_prefix,
             limit=_GALLERY_ID_SCAN_LIMIT,
             project_id=project_id,
             img_url=img_url,
-        )
-        if card is not None:
-            break
-        if c_attempt < 3:
-            await asyncio.sleep(2.0)
+        ),
+        project_id=project_id,
+    )
+    _log_download_stage(
+        stage="find_card",
+        duration_s=asyncio.get_event_loop().time() - t_search,
+        strategy="card_click_cascade",
+        media="image",
+        project_id=project_id,
+        extra=f"found={card is not None}",
+    )
 
     # --- D: физический клик по img_url из wait (без ID в панели).
     if card is None and img_url:
@@ -6739,6 +7210,9 @@ async def _download_via_card_click(
     #    `lucide-download` стабилен и не зависит от Tailwind-стилей.
     download_btn = card.locator("button:has(svg.lucide-download)").first
 
+    await _update_download_progress(project_id, "Скачивание… (клик)")
+    t_click = asyncio.get_event_loop().time()
+
     try:
         async with page.expect_download(timeout=deadline_ms) as dl_info:
             await _physical_mouse_click(
@@ -6749,10 +7223,17 @@ async def _download_via_card_click(
             )
         download = await dl_info.value
         await await_with_cancel(download.save_as(str(out_path)), project_id)
+        _log_download_stage(
+            stage="browser_download",
+            duration_s=asyncio.get_event_loop().time() - t_click,
+            strategy="card_click_download",
+            media="image",
+            project_id=project_id,
+        )
+        await _update_download_progress(project_id, None)
     except PWTimeoutError as e:
         raise OutseeImageError(
-            "outsee image: клик по кнопке «Скачать» не вызвал download "
-            "за отведённое время",
+            "outsee image: не смог скачать файл",
             context={
                 "prompt_id_prefix": prompt_id_prefix,
                 "timeout_s": timeout_s,

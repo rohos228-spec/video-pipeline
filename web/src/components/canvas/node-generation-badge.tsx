@@ -21,6 +21,12 @@ const STATUS_VISUAL: Record<
     connector: "border-muted-foreground/50",
     label: "Ожидание",
   },
+  queued: {
+    icon: Hourglass,
+    className: "border-sky-400/70 bg-sky-500/20 text-sky-300",
+    connector: "border-sky-400/60",
+    label: "В очереди",
+  },
   running: {
     icon: Loader2,
     className: "border-primary/60 bg-primary/20 text-primary shadow-primary/20",

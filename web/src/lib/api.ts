@@ -8,6 +8,7 @@ import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
+  MontageBoardDTO,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -300,6 +301,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  getMontageBoard: (projectId: number) =>
+    http<MontageBoardDTO>(`/api/projects/${projectId}/montage-board`),
 
   // ── Runs ─────────────────────────────────────────────────────────
   listRuns: () => http<WorkflowRunDetail[]>(`/api/runs`),
@@ -897,7 +901,7 @@ export interface PromptFileInfo {
   name: string;
   filename: string;
   size: number;
-  modified: number;
+  modified: number | null;
   is_default: boolean;
 }
 
@@ -906,7 +910,7 @@ export interface PromptFileContent {
   filename: string;
   content: string;
   size: number;
-  modified: number;
+  modified: number | null;
 }
 
 export interface PromptVersionInfo {

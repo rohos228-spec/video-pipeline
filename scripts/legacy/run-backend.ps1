@@ -83,6 +83,9 @@ if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
 $env:TELEGRAM_ENABLED = "false"
 $env:WEB_HOST = "127.0.0.1"
 $env:WEB_PORT = "8765"
+# HuggingFace cache без symlink (WinError 1314 на Windows без прав SeCreateSymbolicLink)
+$env:HF_HUB_DISABLE_SYMLINKS = "1"
+$env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
 

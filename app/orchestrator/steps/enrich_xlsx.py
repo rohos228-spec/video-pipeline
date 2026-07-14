@@ -117,7 +117,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         download_path = xlsx_path
 
     try:
-        variant, src_path, master = read_resolved_project_prompt(project, prompt_step_code)
+        variant, src_path, master, prompt_source = read_resolved_project_prompt(
+            project, prompt_step_code
+        )
     except FileNotFoundError:
         variant = "default"
         src_path = None
@@ -134,11 +136,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     else:
         logger.info(
-            "[#{}] enrich_xlsx slot={}: активный промт variant={!r} "
+            "[#{}] enrich_xlsx slot={}: активный промт variant={!r} source={} "
             "path={} ({} симв) overrides={!r}",
             project.id,
             slot_idx,
             variant,
+            prompt_source,
             src_path,
             len(master or ""),
             (getattr(project, "prompt_overrides", None) or {}).get(prompt_step_code),

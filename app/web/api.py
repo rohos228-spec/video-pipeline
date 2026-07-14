@@ -195,7 +195,7 @@ def create_app() -> FastAPI:
 
         raise HTTPException(
             status_code=404,
-            detail="API route not found — перезапустите Studio (start-studio.ps1)",
+            detail="API route not found — перезапустите Studio (STUDIO.cmd → [1])",
         )
 
     # ── WebSocket: live-стрим событий выбранного канала ──

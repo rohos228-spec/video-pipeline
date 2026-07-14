@@ -16,6 +16,7 @@ import asyncio
 import base64
 import mimetypes
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,39 @@ from playwright.async_api import Download, Page
 from app.bots.browser import BrowserSession
 
 CHATGPT_URL = "https://chatgpt.com/"
+ERRORS_LOG_PATH = Path("logs/errors.log")
+
+CHATGPT_RATE_LIMIT_MARKERS: tuple[str, ...] = (
+    "You've reached your limit",
+    "You have reached your limit",
+    "Too many requests",
+    "rate limit",
+    "Rate limit",
+    "try again later",
+    "лимит запросов",
+    "достигнут лимит",
+    "слишком много запросов",
+    "превышен лимит",
+    "подождите и повторите",
+)
+
+CHATGPT_LOGIN_URL_MARKERS: tuple[str, ...] = (
+    "/auth/",
+    "/login",
+    "log-in",
+    "log_in",
+)
+
+CHATGPT_LOGIN_PAGE_MARKERS: tuple[str, ...] = (
+    "Sign in to ChatGPT",
+    "Log in to ChatGPT",
+    "Continue with Google",
+    "Welcome back",
+    "Войти в ChatGPT",
+    "Войти",
+    "Продолжить с Google",
+    "Добро пожаловать",
+)
 
 # Идентификатор логики attach/send — показывается в /api/studio-version.
 # Если в UI v69, а backend_attach другой — Python не перезапущен после git pull.
@@ -131,6 +165,37 @@ def find_attachment_failure_phrases(composer_text: str) -> list[str]:
     if not hay:
         return []
     return [p for p in ATTACHMENT_FAILURE_PHRASES if p in hay]
+
+
+def chatgpt_rate_limit_in_text(text: str) -> bool:
+    hay = (text or "").lower()
+    return any(m.lower() in hay for m in CHATGPT_RATE_LIMIT_MARKERS)
+
+
+def chatgpt_login_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(m in u for m in CHATGPT_LOGIN_URL_MARKERS)
+
+
+def chatgpt_login_page_text(text: str) -> bool:
+    hay = (text or "").lower()
+    if not hay:
+        return False
+    has_password_hint = "password" in hay and ("email" in hay or "парол" in hay)
+    if has_password_hint and ("sign in" in hay or "log in" in hay or "войти" in hay):
+        return True
+    return any(m.lower() in hay for m in CHATGPT_LOGIN_PAGE_MARKERS)
+
+
+def _log_chatgpt_error(*, kind: str, text: str, node: str = "chatgpt") -> None:
+    try:
+        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().isoformat(timespec="seconds")
+        line = f"{ts}\tbot=chatgpt\tnode={node}\tkind={kind}\t{text}"
+        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("chatgpt: cannot write {}: {}", ERRORS_LOG_PATH, e)
 
 
 def attachment_health_is_ok(health: dict) -> bool:
@@ -636,12 +701,44 @@ class ChatGPTBot:
         self.session = session
         self._page: Page | None = None
 
+    async def _check_chatgpt_session(self, page: Page) -> None:
+        """Полный редирект на логин — сразу ошибка, без ожидания input 30 с."""
+        url = page.url or ""
+        if chatgpt_login_url(url):
+            msg = "ChatGPT: слетела сессия — нужно перелогиниться"
+            _log_chatgpt_error(kind="session_lost", text=msg)
+            raise RuntimeError(msg)
+        try:
+            body_text = await page.evaluate(
+                "() => (document.body && document.body.innerText) || ''"
+            )
+        except Exception:  # noqa: BLE001
+            body_text = ""
+        if chatgpt_login_page_text(body_text):
+            msg = "ChatGPT: слетела сессия — нужно перелогиниться"
+            _log_chatgpt_error(kind="session_lost", text=msg)
+            raise RuntimeError(msg)
+
+    async def _check_chatgpt_rate_limit(self, page: Page) -> None:
+        try:
+            body_text = await page.evaluate(
+                "() => (document.body && document.body.innerText) || ''"
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if chatgpt_rate_limit_in_text(body_text):
+            msg = "ChatGPT: лимит запросов"
+            _log_chatgpt_error(kind="rate_limit", text=msg)
+            raise RuntimeError(msg)
+
     async def _page_ready(self) -> Page:
         if self._page is None or self._page.is_closed():
             self._page = await self.session.open_page(CHATGPT_URL, reuse=True)
+            await self._check_chatgpt_session(self._page)
             # ждём, пока загрузится UI
             await _first_matching(self._page, INPUT_SELECTORS, timeout=30)
             await self._dismiss_no_auth_modal(self._page)
+            await self._check_chatgpt_session(self._page)
         return self._page
 
     async def _dismiss_no_auth_modal(self, page: Page) -> None:
@@ -1094,6 +1191,15 @@ class ChatGPTBot:
                 "ChatGPT: после ввода текста превью вложений={} (clear_first=False)",
                 n_att,
             )
+        from app.services.sidebar_layout import log_prompt_send
+
+        log_prompt_send(
+            bot="chatgpt",
+            project_id=getattr(self, "_last_project_id", None),
+            node="chatgpt",
+            source="composer",
+            text=stripped,
+        )
         logger.info(
             "ChatGPT: текст в композере ({} симв.), отправляю через активную Send",
             len(stripped),
@@ -1214,6 +1320,8 @@ class ChatGPTBot:
         await sleep_cancellable(0.8, project_id)
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
+            await self._check_chatgpt_rate_limit(page)
+            await self._check_chatgpt_session(page)
             still_generating = False
             for sel in STOP_BUTTON_SELECTORS:
                 try:
@@ -1226,6 +1334,18 @@ class ChatGPTBot:
                 await sleep_cancellable(POST_STOP_SETTLE_SEC, project_id)
                 return
             await sleep_cancellable(0.5, project_id)
+        msg = "ChatGPT: лимит запросов"
+        try:
+            body_text = await page.evaluate(
+                "() => (document.body && document.body.innerText) || ''"
+            )
+            if chatgpt_rate_limit_in_text(body_text):
+                _log_chatgpt_error(kind="rate_limit", text=msg)
+                raise RuntimeError(msg)
+        except RuntimeError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
         raise TimeoutError("ChatGPT: таймаут ожидания ответа")
 
     async def _read_last_reply(self) -> str:
@@ -1266,16 +1386,10 @@ class ChatGPTBot:
     async def ask(
         self, prompt: str, *, timeout: float = 300, project_id: int | None = None
     ) -> str:
-        """Отправить один промт в текущий чат и вернуть финальный ответ.
-
-        После того как кнопка «Stop generating» пропала, ждём пока текст
-        стабилизируется (не меняется 6 сек подряд), но не дольше 120 сек.
-        ChatGPT 5 thinking model часто продолжает рендерить ответ ещё
-        несколько десятков секунд после исчезновения кнопки stop — раньше
-        мы хватали обрезанную версию.
-        """
+        """Отправить один промт в текущий чат и вернуть финальный ответ."""
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
+        self._last_project_id = project_id
         abort_if_cancelled(project_id)
         await self._send_prompt(prompt)
         abort_if_cancelled(project_id)
@@ -1285,6 +1399,7 @@ class ChatGPTBot:
         page = await self._page_ready()
         last_text = ""
         stable_for = 0.0
+        stabilized = False
         deadline = asyncio.get_event_loop().time() + 120.0
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
@@ -1307,10 +1422,16 @@ class ChatGPTBot:
             if text == last_text and len(text) > 50:
                 stable_for += 1.0
                 if stable_for >= 6.0:
+                    stabilized = True
                     break
             else:
                 stable_for = 0.0
                 last_text = text
+
+        if not stabilized:
+            msg = "ChatGPT: ответ не дорендерился"
+            _log_chatgpt_error(kind="reply_incomplete", text=msg)
+            raise TimeoutError(msg)
 
         reply = await self._read_last_reply()
         logger.info("ChatGPT reply len={}", len(reply))
@@ -2016,11 +2137,9 @@ class ChatGPTBot:
                 await asyncio.sleep(0.8)
                 return
             await asyncio.sleep(ATTACH_UPLOAD_POLL_SEC)
-        logger.warning(
-            "ChatGPT: upload-spinner так и не пропал за {}с — "
-            "продолжаю, но upload может быть незавершён",
-            timeout,
-        )
+        msg = "ChatGPT: файл не загрузился"
+        _log_chatgpt_error(kind="upload_timeout", text=msg)
+        raise RuntimeError(msg)
 
     async def _dump_composer_html(self, *, max_chars: int = 4000) -> None:
         """Логирует outerHTML формы композера — для отладки селекторов

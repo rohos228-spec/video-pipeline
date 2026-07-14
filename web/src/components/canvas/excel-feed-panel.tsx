@@ -1,12 +1,17 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+
+type OptimisticExcel = {
+  fileName: string;
+  topics: string[];
+};
 
 export function ExcelFeedPanel({
   projectId,
@@ -17,18 +22,31 @@ export function ExcelFeedPanel({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [topicCount, setTopicCount] = useState(0);
-  const [topicsPreview, setTopicsPreview] = useState<string[]>([]);
+  const [optimistic, setOptimistic] = useState<OptimisticExcel | null>(null);
+
+  const projectQ = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  const meta = (projectQ.data?.meta || {}) as Record<string, unknown>;
+  const metaFile =
+    typeof meta.mass_excel_file === "string" ? meta.mass_excel_file : null;
+  const metaTopics = Array.isArray(meta.mass_excel_topics)
+    ? (meta.mass_excel_topics as string[])
+    : [];
+
+  const fileName = optimistic?.fileName ?? metaFile;
+  const topics = optimistic?.topics ?? metaTopics;
+  const topicCount = topics.length;
+  const topicsPreview = topics.slice(0, 5);
 
   const upload = useMutation({
     mutationFn: (file: File) => api.parseMassTopicsXlsx(projectId, file),
     onSuccess: async (r, file) => {
-      setFileName(file.name);
-      setTopicCount(r.count);
-      setTopicsPreview(r.topics.slice(0, 5));
+      setOptimistic({ fileName: file.name, topics: r.topics });
       const project = await api.getProject(projectId);
-      const meta: Record<string, unknown> = {
+      const nextMeta: Record<string, unknown> = {
         ...((project.meta || {}) as Record<string, unknown>),
         mass_excel_topics: r.topics,
         mass_queue_topics: r.topics,
@@ -36,8 +54,8 @@ export function ExcelFeedPanel({
         mass_factory: true,
         excel_feed_node: nodeKey,
       };
-      if (r.revision != null) meta.mass_excel_revision = r.revision;
-      await api.patchProject(projectId, { meta });
+      if (r.revision != null) nextMeta.mass_excel_revision = r.revision;
+      await api.patchProject(projectId, { meta: nextMeta });
       await qc.invalidateQueries({ queryKey: ["project", projectId] });
       window.dispatchEvent(
         new CustomEvent("canvas-excel-topics-loaded", {
