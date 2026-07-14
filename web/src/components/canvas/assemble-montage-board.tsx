@@ -284,18 +284,25 @@ function clampTrim(
   end: number,
   fileMax: number,
   maxSpan: number,
+  moved: "start" | "end",
   minGap = 0.1,
 ): VideoTrim {
-  let s = Math.max(0, start);
-  let e = Math.max(s + minGap, end);
-  e = Math.min(e, fileMax);
-  s = Math.min(s, e - minGap);
-  if (e - s > maxSpan) {
-    e = s + maxSpan;
+  let s = Math.max(0, Math.min(start, fileMax));
+  let e = Math.max(0, Math.min(end, fileMax));
+  if (moved === "start") {
+    s = Math.min(s, fileMax - minGap);
+    if (e < s + minGap) e = s + minGap;
+    if (e - s > maxSpan) e = Math.min(fileMax, s + maxSpan);
+  } else {
+    e = Math.max(minGap, e);
+    if (e < s + minGap) s = e - minGap;
+    if (e - s > maxSpan) s = Math.max(0, e - maxSpan);
   }
-  if (e > fileMax) {
-    e = fileMax;
-    s = Math.max(0, e - maxSpan);
+  s = Math.max(0, Math.min(s, fileMax - minGap));
+  e = Math.max(s + minGap, Math.min(e, fileMax));
+  if (e - s > maxSpan) {
+    if (moved === "start") e = Math.min(fileMax, s + maxSpan);
+    else s = Math.max(0, e - maxSpan);
   }
   return { start: s, end: e };
 }
@@ -333,9 +340,9 @@ function DualRangeSlider({
     const onMove = (e: PointerEvent) => {
       const v = valueFromClientX(e.clientX);
       if (active === "start") {
-        onTrimChange(clampTrim(v, trim.end, fileMax, maxSpan));
+        onTrimChange(clampTrim(v, trim.end, fileMax, maxSpan, "start"));
       } else {
-        onTrimChange(clampTrim(trim.start, v, fileMax, maxSpan));
+        onTrimChange(clampTrim(trim.start, v, fileMax, maxSpan, "end"));
       }
     };
     const onUp = () => setActive(null);
@@ -350,10 +357,10 @@ function DualRangeSlider({
   if (fileMax <= 0) return null;
 
   return (
-    <div className="relative mt-2 pt-1">
+    <div className="relative isolate mt-2 overflow-hidden pt-1">
       <div
         ref={trackRef}
-        className="relative h-2 rounded-full bg-white/10"
+        className="relative mx-2 h-2 rounded-full bg-white/10"
         role="presentation"
       >
         <div
@@ -411,7 +418,7 @@ function VideoTrimSlider({
   }
 
   const fileMax = fileDuration ?? sceneUse;
-  const current = trim ?? clampTrim(0, Math.min(sceneUse, fileMax), fileMax, sceneUse);
+  const current = trim ?? clampTrim(0, Math.min(sceneUse, fileMax), fileMax, sceneUse, "end");
   const usedLen = Math.max(0, current.end - current.start);
 
   return (
@@ -588,7 +595,7 @@ function buildDefaultTrims(frames: MontageBoardFrame[]): Record<string, VideoTri
       if (use == null) continue;
       const fileMax = file ?? use;
       const end = Math.min(use, fileMax);
-      out[trimKey(fr.frame_id, shot)] = clampTrim(0, end, fileMax, use);
+      out[trimKey(fr.frame_id, shot)] = clampTrim(0, end, fileMax, use, "end");
     }
   }
   return out;
@@ -843,7 +850,10 @@ export function AssembleMontageBoard({
                           {frames.map((fr) => (
                             <td
                               key={`${fr.frame_id}-${row.key}`}
-                              className={cn("px-3 py-2 align-top", FRAME_COL_CLASS)}
+                              className={cn(
+                                "relative isolate overflow-hidden px-3 py-2 align-top",
+                                FRAME_COL_CLASS,
+                              )}
                             >
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
