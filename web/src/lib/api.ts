@@ -9,6 +9,7 @@ import type {
   ExcelHeroCharacter,
   FrameDTO,
   MontageBoardDTO,
+  MontageBoardMeta,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -102,6 +103,19 @@ async function http<T>(
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+export interface MontagePendingOp {
+  type:
+    | "image_regen"
+    | "image_regen_prompt"
+    | "image_regen_correction"
+    | "video_regen"
+    | "video_regen_prompt";
+  frame_number: number;
+  shot: 1 | 2;
+  prompt?: string;
+  correction?: string;
 }
 
 export interface XlsxPreview {
@@ -304,6 +318,79 @@ export const api = {
 
   getMontageBoard: (projectId: number) =>
     http<MontageBoardDTO>(`/api/projects/${projectId}/montage-board`),
+
+  applyMontageBoard: (
+    projectId: number,
+    body: {
+      video_trims: Record<string, { start: number; end: number }>;
+      pending_ops: MontagePendingOp[];
+    },
+  ) =>
+    http<{ ok: boolean; meta: MontageBoardMeta; errors?: string[] }>(
+      `/api/projects/${projectId}/montage-board/apply`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  runMontageBoard: (projectId: number) =>
+    http<Record<string, unknown>>(`/api/projects/${projectId}/montage-board/montage`, {
+      method: "POST",
+    }),
+
+  deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST" },
+    ),
+
+  deleteMontageVideo: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-video?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST" },
+    ),
+
+  uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; preview_url: string }>;
+  },
+
+  uploadMontageVideo: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/projects/${projectId}/montage-board/upload-video?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; preview_url: string }>;
+  },
+
+  uploadMontageVoice: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/montage-board/upload-voice`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; path: string }>;
+  },
+
+  uploadMontageMusic: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/montage-board/upload-music`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; path: string }>;
+  },
 
   // ── Runs ─────────────────────────────────────────────────────────
   listRuns: () => http<WorkflowRunDetail[]>(`/api/runs`),

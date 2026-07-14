@@ -245,9 +245,18 @@ export interface MontageBoardFrame {
   plan_column: number;
 }
 
+export interface MontageBoardMeta {
+  video_trims: Record<string, { start: number; end: number }>;
+  stale_videos: string[];
+  highlights: string[];
+  corrections: Record<string, string>;
+  applied_at: string | null;
+}
+
 export interface MontageBoardDTO {
   frames: MontageBoardFrame[];
   frame_count: number;
+  meta: MontageBoardMeta;
 }
 
 export interface PromptDTO {

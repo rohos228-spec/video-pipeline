@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy import select
@@ -554,6 +554,200 @@ async def montage_board(
     from app.services.montage_board import build_montage_board
 
     return await build_montage_board(session, p)
+
+
+@router.post("/{project_id}/montage-board/apply")
+async def montage_board_apply(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохранить trim и выполнить очередь regen (без remount)."""
+    from app.services.montage_board_apply import apply_montage_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await apply_montage_board(
+        session,
+        p,
+        video_trims=body.get("video_trims"),
+        pending_ops=body.get("pending_ops"),
+    )
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_board_apply": True, "ok": result.get("ok")},
+    )
+    if result.get("errors"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/montage-board/montage")
+async def montage_board_montage(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Кнопка «Монтаж» — remount-video (озвучка + FFmpeg, клипы не трогаем)."""
+    from app.services.remount_video import remount_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await remount_video(session, p, run_assemble=True)
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_board_montage": True,
+            "done": result.get("done"),
+            "error": result.get("error"),
+        },
+    )
+    if result.get("error") and not result.get("done"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/montage-board/delete-image")
+async def montage_board_delete_image(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import delete_scene_image
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    deleted = await delete_scene_image(session, p, frame_number, shot=shot)
+    board = montage_meta(p)
+    mark_stale_videos(board, frame_number, shot=shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+
+
+@router.post("/{project_id}/montage-board/delete-video")
+async def montage_board_delete_video(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import delete_scene_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    deleted = await delete_scene_video(session, p, frame_number, shot=shot)
+    await session.commit()
+    return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+
+
+@router.post("/{project_id}/montage-board/upload-image")
+async def montage_board_upload_image(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import save_scene_image_upload
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    suffix = Path(file.filename or "upload.png").suffix or ".png"
+    path = await save_scene_image_upload(
+        session, p, frame_number, shot=shot, content=content, suffix=suffix
+    )
+    board = montage_meta(p)
+    mark_stale_videos(board, frame_number, shot=shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {
+        "ok": True,
+        "path": str(path),
+        "preview_url": f"/api/files?path={path}",
+        "frame_number": frame_number,
+        "shot": shot,
+    }
+
+
+@router.post("/{project_id}/montage-board/upload-video")
+async def montage_board_upload_video(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import save_scene_video_upload
+    from app.services.montage_board_meta import clear_stale_video, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+    path = await save_scene_video_upload(
+        session, p, frame_number, shot=shot, content=content, suffix=suffix
+    )
+    board = montage_meta(p)
+    clear_stale_video(board, frame_number, shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {
+        "ok": True,
+        "path": str(path),
+        "preview_url": f"/api/files?path={path}",
+        "frame_number": frame_number,
+        "shot": shot,
+    }
+
+
+@router.post("/{project_id}/montage-board/upload-voice")
+async def montage_board_upload_voice(
+    project_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    audio_dir = p.data_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "voice.mp3").suffix or ".mp3"
+    dest = audio_dir / f"voice_montage{suffix}"
+    dest.write_bytes(content)
+    meta = dict(p.meta or {})
+    meta["montage_voice_path"] = str(dest)
+    p.meta = meta
+    await session.commit()
+    return {"ok": True, "path": str(dest)}
+
+
+@router.post("/{project_id}/montage-board/upload-music")
+async def montage_board_upload_music(
+    project_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    music_dir = p.data_dir / "music"
+    music_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "bgm.mp3").suffix or ".mp3"
+    dest = music_dir / f"bgm_montage{suffix}"
+    dest.write_bytes(content)
+    meta = dict(p.meta or {})
+    meta["bgm_path"] = str(dest)
+    p.meta = meta
+    await session.commit()
+    return {"ok": True, "path": str(dest)}
 
 
 @router.get("/{project_id}/assets")

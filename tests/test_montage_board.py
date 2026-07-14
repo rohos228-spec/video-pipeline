@@ -73,6 +73,8 @@ async def test_montage_board_reads_excel_voiceover_and_characters(
 
     board = await build_montage_board(session, montage_project)
     assert board["frame_count"] == 1
+    assert "meta" in board
+    assert board["meta"]["video_trims"] == {}
     row = board["frames"][0]
     assert row["voiceover_excel"] == "Текст закадровки кадра 1"
     assert row["characters"] == "c01, c02"

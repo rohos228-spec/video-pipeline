@@ -26,6 +26,7 @@ from app.services.plan_shot2 import (
     read_shot2_columns,
     shot2_video_file_pattern,
 )
+from app.services.montage_board_meta import montage_meta, public_board_meta
 from app.services.shot2_timeline import split_voiceover_duration
 from app.services.xlsx_v8_import import (
     ROW_VOICEOVER_V8,
@@ -180,18 +181,14 @@ async def build_montage_board(
         vid1 = _find_shot1_video(videos_dir, fr.number)
         vid2 = _find_shot2_video(videos_dir, fr.number)
         shot2_info = shot2_by.get(fr.number)
-        has_shot2 = bool(
-            shot2_info is not None
-            and shot2_info.has_shot2
-            and vid2 is not None
-            and vid2.is_file()
-        )
+        has_shot2 = bool(shot2_info is not None and shot2_info.has_shot2)
+        has_shot2_video = has_shot2 and vid2 is not None and vid2.is_file()
         scene_seconds = (
             float(fr.duration_seconds)
             if fr.duration_seconds is not None and fr.duration_seconds > 0
             else None
         )
-        shot1_use, shot2_use = _scene_use_durations(scene_seconds, has_shot2=has_shot2)
+        shot1_use, shot2_use = _scene_use_durations(scene_seconds, has_shot2=has_shot2_video)
         vid1_dur = await _probe_video_duration(vid1)
         vid2_dur = await _probe_video_duration(vid2)
         vo_start = float(fr.start_ts) if fr.start_ts is not None else None
@@ -233,4 +230,5 @@ async def build_montage_board(
             }
         )
 
-    return {"frames": rows, "frame_count": len(rows)}
+    board_meta = public_board_meta(montage_meta(project))
+    return {"frames": rows, "frame_count": len(rows), "meta": board_meta}

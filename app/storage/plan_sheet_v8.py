@@ -133,6 +133,42 @@ def write_plan_image_prompt(
         return False
 
 
+def write_plan_image_prompt_shot2(
+    project: Project,
+    frame_number: int,
+    image_prompt: str,
+) -> bool:
+    """Промт картинки shot_02 — строка 46 листа «план» (v8)."""
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return False
+    col = plan_frame_column(frame_number)
+    text = (image_prompt or "").strip()
+    if not text:
+        return False
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return False
+            ws.cell(row=ROW_IMAGE_PROMPT_2_V8, column=col, value=text)
+            wb.save(path)
+            wb.close()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] write_plan_image_prompt_shot2 frame {} failed: {}",
+            project.id,
+            frame_number,
+            e,
+        )
+        return False
+
+
 def merge_gpt_image_prompt_rows_into_project(
     project_xlsx: Path,
     gpt_xlsx: Path,

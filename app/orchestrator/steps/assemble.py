@@ -44,6 +44,7 @@ from app.services.node_step_params import (
 )
 from app.settings import settings
 from app.services.shot2_timeline import build_assembly_clip_specs
+from app.services.montage_board_meta import montage_meta
 from app.services.plan_shot2 import read_shot2_columns
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -363,7 +364,11 @@ async def _assemble_body(
         fr.duration_seconds = duration_by_frame[fr.number]
 
     clips = build_assembly_clip_specs(
-        frames, shot1_paths, shot2_paths, duration_by_frame
+        frames,
+        shot1_paths,
+        shot2_paths,
+        duration_by_frame,
+        video_trims=(montage_meta(project).get("video_trims") or None),
     )
 
     subs_path: Path | None = None
