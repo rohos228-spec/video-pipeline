@@ -213,12 +213,19 @@ export interface FrameDTO {
   attrs: Record<string, unknown>;
 }
 
+export interface MontageBoardCharacterRef {
+  id: string;
+  name: string;
+  image_url: string | null;
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
   voiceover_text: string;
   voiceover_excel: string;
   characters: string;
+  character_refs: MontageBoardCharacterRef[];
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;

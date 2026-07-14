@@ -11,6 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
+from app.orchestrator.steps.generate_images import (
+    _XLSX_ROWS_PERSONS,
+    _find_ref_file_any,
+    _parse_ref_ids,
+    _resolve_plan_sheet,
+)
+from app.services.excel_characters import parse_persons_sheet
 from app.services.plan_shot2 import (
     find_shot1_image,
     find_shot2_image,
@@ -20,10 +27,7 @@ from app.services.plan_shot2 import (
 from app.services.xlsx_v8_import import (
     ROW_VOICEOVER_V8,
     _cell_text,
-    _resolve_plan_sheet,
 )
-
-ROW_CHARACTERS_V8 = 7
 
 
 def _preview_url(path: Path | None) -> str | None:
@@ -56,11 +60,35 @@ def _find_shot2_video(videos_dir: Path, frame_number: int) -> Path | None:
     return candidates[0]
 
 
-def _read_plan_excel_cells(xlsx_path: Path) -> dict[int, dict[str, str]]:
-    """frame_number → {characters, voiceover_excel}."""
-    out: dict[int, dict[str, str]] = {}
+def _character_name_map(xlsx_path: Path) -> dict[str, str]:
+    try:
+        chars = parse_persons_sheet(xlsx_path)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {c.id.lower(): (c.name or c.id) for c in chars if c.id}
+
+
+def _merged_plan_ids(ws, col: int, rows: tuple[int, ...]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for ref_id in _parse_ref_ids(ws.cell(row=row, column=col).value):
+            if ref_id not in seen:
+                seen.add(ref_id)
+                merged.append(ref_id)
+    return merged
+
+
+def _read_plan_excel_cells(
+    xlsx_path: Path,
+    *,
+    chars_dir: Path,
+) -> dict[int, dict[str, Any]]:
+    """frame_number → {voiceover_excel, characters, character_refs}."""
+    out: dict[int, dict[str, Any]] = {}
     if not xlsx_path.is_file():
         return out
+    names = _character_name_map(xlsx_path)
     try:
         wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
     except Exception as e:  # noqa: BLE001
@@ -73,15 +101,26 @@ def _read_plan_excel_cells(xlsx_path: Path) -> dict[int, dict[str, str]]:
         max_col = ws.max_column or 0
         for col in range(3, max_col + 1):
             voice = (_cell_text(ws, ROW_VOICEOVER_V8, col) or "").strip()
-            chars = (_cell_text(ws, ROW_CHARACTERS_V8, col) or "").strip()
-            if not voice and not chars:
+            person_ids = _merged_plan_ids(ws, col, _XLSX_ROWS_PERSONS)
+            if not voice and not person_ids:
                 continue
             frame_num = col - 2
             if frame_num < 1:
                 continue
+            character_refs: list[dict[str, str | None]] = []
+            for ref_id in person_ids:
+                image_path = _find_ref_file_any(chars_dir, ref_id)
+                character_refs.append(
+                    {
+                        "id": ref_id,
+                        "name": names.get(ref_id.lower(), ref_id),
+                        "image_url": _preview_url(image_path),
+                    }
+                )
             out[frame_num] = {
-                "characters": chars,
+                "characters": ", ".join(person_ids),
                 "voiceover_excel": voice,
+                "character_refs": character_refs,
             }
     finally:
         wb.close()
@@ -101,7 +140,8 @@ async def build_montage_board(
     ).scalars().all()
 
     xlsx_path = project.data_dir / "project.xlsx"
-    excel_by_frame = _read_plan_excel_cells(xlsx_path)
+    chars_dir = project.data_dir / "characters"
+    excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
 
@@ -119,6 +159,7 @@ async def build_montage_board(
                 "voiceover_text": fr.voiceover_text or "",
                 "voiceover_excel": ex.get("voiceover_excel") or "",
                 "characters": ex.get("characters") or "",
+                "character_refs": ex.get("character_refs") or [],
                 "start_ts": fr.start_ts,
                 "end_ts": fr.end_ts,
                 "duration_seconds": fr.duration_seconds,
