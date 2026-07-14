@@ -22,13 +22,13 @@ from app.generation_options import (
     build_gen_id_prefix,
     resolve_image_quality_slug,
 )
-from app.models import Artifact, ArtifactKind, Frame, Project
+from app.models import Frame, Project
 from app.orchestrator.steps.generate_images import _load_refs_for_frame
 from app.orchestrator.steps.generate_videos import resolve_scene_image_path
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.montage_board_assets import (
-    delete_scene_image,
-    delete_scene_video,
+    finalize_scene_image,
+    finalize_scene_video,
 )
 from app.services.montage_board_meta import (
     clear_stale_video,
@@ -149,8 +149,6 @@ async def regen_scene_image(
         else:
             refs = []
 
-    await delete_scene_image(session, project, frame_number, shot=shot)
-
     short_uuid = uuid.uuid4().hex[:8]
     if shot == 2:
         file_path = scenes_dir / f"frame_{frame_number:03d}_s2_{short_uuid}.png"
@@ -188,15 +186,9 @@ async def regen_scene_image(
             project_id=project.id,
         )
 
-    session.add(
-        Artifact(
-            project_id=project.id,
-            frame_id=fr.id,
-            kind=ArtifactKind.scene_image,
-            uuid=uuid.uuid4().hex,
-            path=str(result.file_path),
-            meta={"shot": shot},
-        )
+    new_path = Path(result.file_path)
+    await finalize_scene_image(
+        session, project, frame_number, shot=shot, new_path=new_path
     )
     if board is not None:
         mark_stale_videos(board, frame_number, shot=shot)
@@ -280,8 +272,6 @@ async def regen_scene_video(
     if start_frame is None:
         raise RuntimeError(f"нет стартового кадра для видео shot {shot}")
 
-    await delete_scene_video(session, project, frame_number, shot=shot)
-
     short_uuid = uuid.uuid4().hex[:8]
     if shot == 2:
         file_path = videos_dir / f"clip_{frame_number:03d}_s2_{short_uuid}.mp4"
@@ -318,15 +308,9 @@ async def regen_scene_video(
             duplicate_check_paths=[],
         )
 
-    session.add(
-        Artifact(
-            project_id=project.id,
-            frame_id=fr.id,
-            kind=ArtifactKind.scene_video,
-            uuid=uuid.uuid4().hex,
-            path=str(result.file_path),
-            meta={"shot": shot},
-        )
+    new_path = Path(result.file_path)
+    await finalize_scene_video(
+        session, project, frame_number, shot=shot, new_path=new_path
     )
     if board is not None:
         clear_stale_video(board, frame_number, shot)

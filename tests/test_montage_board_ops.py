@@ -13,6 +13,7 @@ from app.orchestrator.steps.generate_images import _XLSX_ROWS_PERSONS
 from app.services.montage_board_apply import apply_montage_board
 from app.services.montage_board_assets import (
     delete_scene_image,
+    finalize_scene_image,
     save_scene_image_upload,
 )
 from app.services.montage_board_meta import montage_meta, trim_key
@@ -89,7 +90,7 @@ async def test_delete_and_upload_scene_image(
         montage_project,
         1,
         shot=1,
-        content=b"newpng",
+        content=b"x" * 128,
         suffix=".png",
     )
     assert path.is_file()
@@ -101,3 +102,66 @@ async def test_delete_and_upload_scene_image(
 
 def test_trim_key_format() -> None:
     assert trim_key(3, 1) == "3:1"
+
+
+@pytest.mark.asyncio
+async def test_finalize_scene_image_archives_old_only_after_new_ready(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr = Frame(project_id=montage_project.id, number=2, voiceover_text="t", status="planned")
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    old = scenes / "frame_002_old.png"
+    old.write_bytes(b"x" * 128)
+    new = scenes / "frame_002_new.png"
+    new.write_bytes(b"y" * 128)
+
+    await finalize_scene_image(session, montage_project, 2, shot=1, new_path=new)
+
+    assert new.is_file()
+    assert not old.is_file()
+    archived = list((montage_project.data_dir / "old" / "scenes").glob("*old.png"))
+    assert len(archived) == 1
+
+
+@pytest.mark.asyncio
+async def test_regen_failure_keeps_old_image(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="t",
+        status="planned",
+        image_prompt="test prompt for image",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    old = scenes / "frame_001_keep.png"
+    old.write_bytes(b"x" * 128)
+
+    async def _fail(*_a, **_k):
+        raise RuntimeError("outsee unavailable")
+
+    monkeypatch.setattr(
+        "app.services.montage_board_regen.generate_image_with_retries",
+        _fail,
+    )
+
+    from app.services.montage_board_regen import regen_scene_image
+
+    with pytest.raises(RuntimeError, match="outsee"):
+        await regen_scene_image(session, montage_project, 1, shot=1)
+
+    assert old.is_file()
