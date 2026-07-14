@@ -1075,21 +1075,23 @@ def _outsee_failure_is_stale(
     """Плашка от прошлой генерации / другого кадра — не ронять текущую."""
     if _outsee_failure_text_is_noise(ftext):
         return True
+    kind = _outsee_failure_kind(ftext)
+    result_kinds = ("moderation", "generation", "length")
     if queue_mode and prompt_id_prefix and not _failure_text_matches_prompt_id(
         ftext, prompt_id_prefix
     ):
-        return True
-    kind = _outsee_failure_kind(ftext)
+        # Video result often shows prompt text without `[ID: P…-F…]` token.
+        if not (in_result and kind in result_kinds):
+            return True
+    norm = _normalize_outsee_failure_text(ftext)
     # Generate уже завершился, ролика нет — «Контент отклонён» в результате
     # это провал ТЕКУЩЕЙ попытки, даже если такая же плашка была до клика.
-    if (
-        in_result
-        and gen_idle
-        and elapsed >= 20.0
-        and kind in ("moderation", "generation", "length")
-    ):
-        return False
-    if _normalize_outsee_failure_text(ftext) in baseline_failure_texts:
+    if in_result and kind in result_kinds and norm not in baseline_failure_texts:
+        if kind == "moderation" and elapsed >= 4.0:
+            return False
+        if gen_idle and elapsed >= 20.0:
+            return False
+    if norm in baseline_failure_texts:
         return True
     # Плашка вне блока результата при активной генерации — шум из сайдбара.
     if not in_result:

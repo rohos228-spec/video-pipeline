@@ -134,3 +134,35 @@ def test_queue_sidebar_moderation_stale_until_gen_idle_and_min_elapsed() -> None
         queue_mode=True,
         prompt_id_prefix=prefix,
     )
+
+
+def test_video_result_moderation_without_prompt_id_not_stale() -> None:
+    """Video UI: result panel shows prompt text + rejection without [ID: …]."""
+    text = (
+        "парень плачет без звукаГенерировать70Контент отклонён"
+        "Аудиодорожка видео не прошла модерацию"
+    )
+    prefix = "[ID: P42-F6-abc12345 r1a3]"
+    assert not _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=True,
+        elapsed=5.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+    )
+
+
+def test_foreign_queue_moderation_without_prompt_id_stays_stale() -> None:
+    text = "другой кадр запрещённый контент"
+    prefix = "[ID: P42-F6-abc12345 r1a3]"
+    assert _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=False,
+        elapsed=6.0,
+        gen_idle=True,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+    )
