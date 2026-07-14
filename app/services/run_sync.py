@@ -283,6 +283,9 @@ async def sync_run_for_project(project_id: int) -> None:
 
         actual = await compute_actual_status(s, project)
         meta = project.meta if isinstance(project.meta, dict) else {}
+        user_stop_active = bool(
+            meta.get("user_stop") or meta.get("mass_lane_user_stop")
+        )
         if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
             actual = project.status
         if (
@@ -355,7 +358,15 @@ async def sync_run_for_project(project_id: int) -> None:
             if nr.status != target:
                 old = nr.status
                 changed = False
-                if target == NodeRunStatus.running and nr.status in (
+                if (
+                    user_stop_active
+                    and target == NodeRunStatus.pending
+                    and nr.status in (NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.done)
+                ):
+                    changed = reset_node_to_pending(
+                        nr, project_id=project_id, initiator="api_stop"
+                    )
+                elif target == NodeRunStatus.running and nr.status in (
                     NodeRunStatus.pending,
                     NodeRunStatus.queued,
                     NodeRunStatus.failed,

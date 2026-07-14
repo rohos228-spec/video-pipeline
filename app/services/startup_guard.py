@@ -9,6 +9,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.fleet.montage_queue import META_ENQUEUED, META_ENQUEUED_AT
 from app.models import BatchProject, BatchStatus, Project, ProjectStatus
 from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_running_status
@@ -35,6 +36,8 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
     stats: dict[str, Any] = {
         "running_projects_rolled_back": 0,
         "auto_mode_disabled": 0,
+        "user_stop_gates_set": 0,
+        "montage_queue_cleared": 0,
         "batches_paused": 0,
         "mass_pause_enabled": False,
     }
@@ -78,6 +81,24 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
                 project.status.value,
             )
 
+        if meta.pop(META_ENQUEUED, None) is not None:
+            meta.pop(META_ENQUEUED_AT, None)
+            stats["montage_queue_cleared"] += 1
+            changed = True
+            logger.warning(
+                "[#{}] STARTUP GUARD: cleared montage queue enqueue",
+                project.id,
+            )
+
+        if changed and not meta.get("user_stop"):
+            meta["user_stop"] = True
+            meta["startup_user_stop"] = True
+            stats["user_stop_gates_set"] += 1
+            logger.warning(
+                "[#{}] STARTUP GUARD: user_stop until manual ▶",
+                project.id,
+            )
+
         if changed:
             project.meta = meta
             project.updated_at = datetime.utcnow()
@@ -99,7 +120,13 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
 
     if any(
         stats[key]
-        for key in ("running_projects_rolled_back", "auto_mode_disabled", "batches_paused")
+        for key in (
+            "running_projects_rolled_back",
+            "auto_mode_disabled",
+            "user_stop_gates_set",
+            "montage_queue_cleared",
+            "batches_paused",
+        )
     ):
         await session.flush()
 

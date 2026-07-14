@@ -11,7 +11,7 @@ from app.models import Project, ProjectStatus
 from app.services.mass_factory import mass_parent_id
 from app.services.project_state import is_running_status
 from app.services.gen_queue_run import is_user_stopped
-from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
+from app.services.step_cancel import is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
 
@@ -83,7 +83,7 @@ async def stop_project_running(
                 chain_to,
             )
         step_title = step.title if step is not None else cur.value
-        clear_stop(project.id)
+        # stop-файл не снимаем: воркер/outsee/Whisper должны увидеть ⏹ до завершения.
         msg = f"остановлен шаг «{step_title}» → {rollback_to.value}"
         logger.info(
             "[#{}] STOP: rolled back {} -> {} (auto_mode={} сохранён)",
