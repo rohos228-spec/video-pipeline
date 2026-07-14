@@ -28,8 +28,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 
-/** Единая ширина колонок кадров (≈ первый кадр). */
-const FRAME_COL_CLASS = "w-[11.5rem] min-w-[11.5rem] max-w-[11.5rem]";
+/** Единая ширина колонок кадров (+30% к v215). */
+const FRAME_COL_REM = 15;
+const FRAME_COL_CLASS = "w-[15rem] min-w-[15rem] max-w-[15rem]";
 const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
 
 type RowKey =
@@ -273,24 +274,133 @@ function ClickableMedia({
   );
 }
 
+function formatSecShort(sec: number): string {
+  if (!Number.isFinite(sec)) return "—";
+  return sec.toFixed(1);
+}
+
+function clampTrim(
+  start: number,
+  end: number,
+  fileMax: number,
+  maxSpan: number,
+  minGap = 0.1,
+): VideoTrim {
+  let s = Math.max(0, start);
+  let e = Math.max(s + minGap, end);
+  e = Math.min(e, fileMax);
+  s = Math.min(s, e - minGap);
+  if (e - s > maxSpan) {
+    e = s + maxSpan;
+  }
+  if (e > fileMax) {
+    e = fileMax;
+    s = Math.max(0, e - maxSpan);
+  }
+  return { start: s, end: e };
+}
+
+function DualRangeSlider({
+  fileMax,
+  maxSpan,
+  trim,
+  onTrimChange,
+}: {
+  fileMax: number;
+  maxSpan: number;
+  trim: VideoTrim;
+  onTrimChange: (next: VideoTrim) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState<"start" | "end" | null>(null);
+
+  const startPct = fileMax > 0 ? (trim.start / fileMax) * 100 : 0;
+  const endPct = fileMax > 0 ? (trim.end / fileMax) * 100 : 100;
+
+  const valueFromClientX = useCallback(
+    (clientX: number) => {
+      const track = trackRef.current;
+      if (!track || fileMax <= 0) return 0;
+      const rect = track.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return Math.round(ratio * fileMax * 10) / 10;
+    },
+    [fileMax],
+  );
+
+  useEffect(() => {
+    if (!active) return;
+    const onMove = (e: PointerEvent) => {
+      const v = valueFromClientX(e.clientX);
+      if (active === "start") {
+        onTrimChange(clampTrim(v, trim.end, fileMax, maxSpan));
+      } else {
+        onTrimChange(clampTrim(trim.start, v, fileMax, maxSpan));
+      }
+    };
+    const onUp = () => setActive(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [active, fileMax, maxSpan, onTrimChange, trim.end, trim.start, valueFromClientX]);
+
+  if (fileMax <= 0) return null;
+
+  return (
+    <div className="relative mt-2 pt-1">
+      <div
+        ref={trackRef}
+        className="relative h-2 rounded-full bg-white/10"
+        role="presentation"
+      >
+        <div
+          className="absolute top-0 h-2 rounded-full bg-amber-500/70"
+          style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
+        />
+        <button
+          type="button"
+          className={cn(
+            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
+            active === "start" && "scale-110",
+          )}
+          style={{ left: `${startPct}%` }}
+          aria-label="Начало фрагмента"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            setActive("start");
+          }}
+        />
+        <button
+          type="button"
+          className={cn(
+            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
+            active === "end" && "scale-110",
+          )}
+          style={{ left: `${endPct}%` }}
+          aria-label="Конец фрагмента"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            setActive("end");
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function VideoTrimSlider({
   fileDuration,
   sceneUse,
-  timelineStart,
-  timelineEnd,
   trim,
   onTrimChange,
-  shotLabel,
-  integratedShot2,
 }: {
   fileDuration: number | null;
   sceneUse: number | null;
-  timelineStart: number | null;
-  timelineEnd: number | null;
   trim: VideoTrim | undefined;
   onTrimChange: (next: VideoTrim) => void;
-  shotLabel: string;
-  integratedShot2?: boolean;
 }) {
   if (sceneUse == null) {
     return (
@@ -301,71 +411,23 @@ function VideoTrimSlider({
   }
 
   const fileMax = fileDuration ?? sceneUse;
-  const start = trim?.start ?? 0;
-  const end = trim?.end ?? Math.min(sceneUse, fileMax);
-  const usedLen = Math.max(0, end - start);
-
-  const setStart = (v: number) => {
-    const nextStart = Math.max(0, Math.min(v, fileMax - 0.05));
-    const nextEnd = Math.max(nextStart + 0.05, end);
-    onTrimChange({ start: nextStart, end: Math.min(nextEnd, fileMax) });
-  };
-  const setEnd = (v: number) => {
-    const nextEnd = Math.max(start + 0.05, Math.min(v, fileMax));
-    onTrimChange({ start, end: nextEnd });
-  };
+  const current = trim ?? clampTrim(0, Math.min(sceneUse, fileMax), fileMax, sceneUse);
+  const usedLen = Math.max(0, current.end - current.start);
 
   return (
-    <div className="mt-2 space-y-2 rounded-lg border border-white/10 bg-black/25 p-2">
-      <div className="text-[10px] leading-snug text-muted-foreground">
-        <div>
-          <span className="text-amber-200/90">{shotLabel}</span>
-          {integratedShot2 ? (
-            <span className="ml-1 text-[9px] text-sky-300/80">· shot 2 в кадре</span>
-          ) : null}
-        </div>
-        <div className="mt-0.5 font-mono text-foreground/90">
-          В сцене: {usedLen.toFixed(2)} с из {sceneUse.toFixed(2)} с
-        </div>
-        {timelineStart != null && timelineEnd != null ? (
-          <div className="font-mono text-[9px]">
-            Озвучка: {formatTs(timelineStart)} → {formatTs(timelineEnd)}
-          </div>
-        ) : null}
-        {fileDuration != null ? (
-          <div className="font-mono text-[9px]">
-            Файл: {formatTs(start)} → {formatTs(end)} / {formatTs(fileDuration)}
-          </div>
-        ) : null}
-      </div>
-      {fileDuration != null ? (
-        <div className="space-y-1.5">
-          <label className="flex flex-col gap-0.5 text-[9px] text-muted-foreground">
-            Начало в файле
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0, fileMax - 0.05)}
-              step={0.05}
-              value={start}
-              className="h-2 w-full accent-amber-500"
-              onChange={(e) => setStart(Number(e.target.value))}
-            />
-          </label>
-          <label className="flex flex-col gap-0.5 text-[9px] text-muted-foreground">
-            Конец в файле
-            <input
-              type="range"
-              min={0.05}
-              max={fileMax}
-              step={0.05}
-              value={end}
-              className="h-2 w-full accent-amber-500"
-              onChange={(e) => setEnd(Number(e.target.value))}
-            />
-          </label>
-        </div>
-      ) : null}
+    <div className="mt-2 rounded-lg border border-white/10 bg-black/25 p-2">
+      <p className="text-[11px] text-foreground">
+        В сцене:{" "}
+        <span className="font-mono font-semibold text-white">{formatSecShort(usedLen)}</span>{" "}
+        с из{" "}
+        <span className="font-mono font-semibold text-white">{formatSecShort(sceneUse)}</span> с
+      </p>
+      <DualRangeSlider
+        fileMax={fileMax}
+        maxSpan={sceneUse}
+        trim={current}
+        onTrimChange={onTrimChange}
+      />
     </div>
   );
 }
@@ -388,8 +450,6 @@ function VideoMediaCell({
   const isShot2 = shot === 2;
   const sceneUse = isShot2 ? fr.shot2_use_seconds : fr.shot1_use_seconds;
   const fileDur = isShot2 ? fr.video_shot2_duration : fr.video_shot1_duration;
-  const tStart = isShot2 ? fr.shot2_timeline_start : fr.shot1_timeline_start;
-  const tEnd = isShot2 ? fr.shot2_timeline_end : fr.shot1_timeline_end;
   const label = `Видео ${shot} · кадр #${fr.number}`;
 
   if (isShot2 && !fr.has_shot2) {
@@ -411,19 +471,9 @@ function VideoMediaCell({
       <VideoTrimSlider
         fileDuration={fileDur}
         sceneUse={sceneUse}
-        timelineStart={tStart}
-        timelineEnd={tEnd}
         trim={trim}
         onTrimChange={onTrimChange}
-        shotLabel={`Видео ${shot}`}
-        integratedShot2={isShot2 && fr.has_shot2}
       />
-      {shot === 1 && fr.has_shot2 && fr.shot2_use_seconds != null ? (
-        <p className="mt-1 text-[9px] text-sky-300/70">
-          + shot 2: {fr.shot2_use_seconds.toFixed(2)} с (
-          {formatTs(fr.shot2_timeline_start)} → {formatTs(fr.shot2_timeline_end)})
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -514,7 +564,6 @@ function CharactersCell({
 }
 
 function TimestampCell({ fr }: { fr: MontageBoardFrame }) {
-  const voice = voiceoverForFrame(fr);
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-2">
       <div className="font-mono text-xs font-semibold text-amber-300">
@@ -522,19 +571,8 @@ function TimestampCell({ fr }: { fr: MontageBoardFrame }) {
       </div>
       {fr.duration_seconds != null ? (
         <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-          {fr.duration_seconds.toFixed(2)} с
+          {fr.duration_seconds.toFixed(1)} с
         </div>
-      ) : null}
-      {fr.has_shot2 && fr.shot1_use_seconds != null && fr.shot2_use_seconds != null ? (
-        <div className="mt-1 space-y-0.5 font-mono text-[9px] text-sky-300/80">
-          <div>v1: {fr.shot1_use_seconds.toFixed(2)} с</div>
-          <div>v2: {fr.shot2_use_seconds.toFixed(2)} с</div>
-        </div>
-      ) : null}
-      {voice ? (
-        <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-foreground/80">
-          {voice}
-        </p>
       ) : null}
     </div>
   );
@@ -550,7 +588,7 @@ function buildDefaultTrims(frames: MontageBoardFrame[]): Record<string, VideoTri
       if (use == null) continue;
       const fileMax = file ?? use;
       const end = Math.min(use, fileMax);
-      out[trimKey(fr.frame_id, shot)] = { start: 0, end: Math.max(0.05, end) };
+      out[trimKey(fr.frame_id, shot)] = clampTrim(0, end, fileMax, use);
     }
   }
   return out;
@@ -591,7 +629,7 @@ export function AssembleMontageBoard({
 
   const tableWidthPx = useMemo(() => {
     const rowLabel = 11 * 16;
-    const col = 11.5 * 16;
+    const col = FRAME_COL_REM * 16;
     return rowLabel + frames.length * col;
   }, [frames.length]);
 
@@ -658,6 +696,25 @@ export function AssembleMontageBoard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              className="h-9 text-xs"
+              onClick={() => noopAction("apply edits")}
+            >
+              Применить правки
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 gap-1.5 text-xs"
+              onClick={() => noopAction("montage run")}
+            >
+              <Clapperboard className="h-4 w-4" />
+              Монтаж
+            </Button>
             <Popover open={extrasOpen} onOpenChange={setExtrasOpen}>
               <PopoverTrigger asChild>
                 <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5 text-xs">
