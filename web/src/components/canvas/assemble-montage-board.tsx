@@ -848,8 +848,8 @@ export function AssembleMontageBoard({
   }, []);
 
   const applyMutation = useMutation({
-    mutationFn: (opsOverride?: MontagePendingOp[]) => {
-      const ops = opsOverride ?? pendingOpsRef.current;
+    mutationFn: () => {
+      const ops = pendingOpsRef.current;
       if (ops.length > 0) {
         toast.message(`Генерация: ${ops.length} операций… (Chrome :29229, outsee.io)`);
       }
@@ -858,10 +858,10 @@ export function AssembleMontageBoard({
         pending_ops: ops,
       });
     },
-    onSuccess: (res, opsOverride) => {
-      const queued = opsOverride?.length ?? pendingOpsRef.current.length;
+    onSuccess: (res) => {
+      const queued = pendingOpsRef.current.length;
       if (res.started) {
-        if (!opsOverride) setPendingOps([]);
+        setPendingOps([]);
         setApplyRunning(true);
         toast.message(res.message || `Генерация ${queued} операций… смотрите outsee.io`);
         return;
@@ -892,18 +892,6 @@ export function AssembleMontageBoard({
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
-
-  const runRegenNow = useCallback(
-    (op: MontagePendingOp) => {
-      if (!projectId) return;
-      if (applyRunning || applyMutation.isPending) {
-        toast.error("Дождитесь завершения текущей генерации");
-        return;
-      }
-      applyMutation.mutate([op]);
-    },
-    [projectId, applyRunning, applyMutation],
-  );
 
   const montageMutation = useMutation({
     mutationFn: () => api.runMontageBoard(projectId!),
@@ -1170,7 +1158,7 @@ export function AssembleMontageBoard({
       };
     }
     setPromptModal(null);
-    runRegenNow(op);
+    queueOp(op);
   };
 
   const isHighlighted = (key: string) => highlights.includes(key);
@@ -1252,7 +1240,7 @@ export function AssembleMontageBoard({
               variant="default"
               className="h-9 text-xs"
               disabled={!projectId || applyMutation.isPending || applyRunning}
-              onClick={() => applyMutation.mutate(undefined)}
+              onClick={() => applyMutation.mutate()}
             >
               {applyMutation.isPending || applyRunning ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -1452,7 +1440,7 @@ export function AssembleMontageBoard({
                                   label={`Изображение 1 · кадр #${fr.number}`}
                                   onPreview={setPreview}
                                   onRegen={() =>
-                                    runRegenNow({
+                                    queueOp({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 1,
@@ -1476,7 +1464,7 @@ export function AssembleMontageBoard({
                                   label={`Изображение 2 · кадр #${fr.number}`}
                                   onPreview={setPreview}
                                   onRegen={() =>
-                                    runRegenNow({
+                                    queueOp({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 2,
@@ -1500,7 +1488,7 @@ export function AssembleMontageBoard({
                                   trim={trims[trimKey(fr.number, 1)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 1), t)}
                                   onRegen={() =>
-                                    runRegenNow({
+                                    queueOp({
                                       type: "video_regen",
                                       frame_number: fr.number,
                                       shot: 1,
@@ -1521,7 +1509,7 @@ export function AssembleMontageBoard({
                                   trim={trims[trimKey(fr.number, 2)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 2), t)}
                                   onRegen={() =>
-                                    runRegenNow({
+                                    queueOp({
                                       type: "video_regen",
                                       frame_number: fr.number,
                                       shot: 2,
