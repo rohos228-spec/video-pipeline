@@ -22,9 +22,10 @@ from app.generation_options import (
     build_gen_id_prefix,
     resolve_image_quality_slug,
 )
+from app.bots.chrome_cdp import fetch_cdp_version
+from app.settings import settings
 from app.models import Frame, Project
 from app.orchestrator.steps.generate_images import _load_refs_for_frame
-from app.orchestrator.steps.generate_videos import resolve_scene_image_path
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.montage_board_assets import (
     finalize_scene_image,
@@ -46,6 +47,7 @@ from app.services.plan_shot2 import (
 )
 from app.storage.plan_sheet_v8 import (
     read_plan_animation_prompt_cells,
+    read_plan_image_prompt_cells,
     write_plan_animation_prompt,
     write_plan_animation_prompt_shot2,
     write_plan_image_prompt,
@@ -53,22 +55,20 @@ from app.storage.plan_sheet_v8 import (
 )
 
 
-async def _frame_by_number(
-    session: AsyncSession,
-    project_id: int,
-    frame_number: int,
-) -> Frame | None:
-    return (
-        await session.execute(
-            select(Frame).where(
-                Frame.project_id == project_id,
-                Frame.number == frame_number,
-            )
-        )
-    ).scalar_one_or_none()
+async def _ensure_cdp_ready() -> None:
+    try:
+        await fetch_cdp_version(settings.browser_cdp_url)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Chrome CDP :29229 не отвечает — запустите Start-Chrome.cmd и откройте outsee.io"
+        ) from exc
 
 
 def _image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
+    cells = read_plan_image_prompt_cells(project, [frame.number], shot=shot)
+    excel_prompt = (cells[0][1] if cells else "").strip()
+    if excel_prompt:
+        return excel_prompt
     if shot == 2:
         attrs = dict(frame.attrs or {})
         return (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
@@ -84,6 +84,21 @@ def _video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
         return prompt
     cells = read_plan_animation_prompt_cells(project, [frame.number])
     return (cells[0][1] if cells else "").strip() or (frame.animation_prompt or "").strip()
+
+
+async def _frame_by_number(
+    session: AsyncSession,
+    project_id: int,
+    frame_number: int,
+) -> Frame | None:
+    return (
+        await session.execute(
+            select(Frame).where(
+                Frame.project_id == project_id,
+                Frame.number == frame_number,
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def regen_scene_image(
@@ -140,7 +155,10 @@ async def regen_scene_image(
     else:
         prompt_text = _image_prompt_from_excel(project, fr, shot)
         if not prompt_text:
-            raise RuntimeError("нет промта в Excel")
+            row = "R46" if shot == 2 else "R45"
+            raise RuntimeError(
+                f"нет промта картинки в Excel (строка {row}, кадр {frame_number})"
+            )
         if shot == 1:
             refs = await _load_refs_for_frame(session, project, frame_number)
         elif shot == 2:
@@ -164,6 +182,15 @@ async def regen_scene_image(
     model_slug = img_gen.outsee_slug if img_gen else None
     res_slug = ir.outsee_slug if ir else None
     quality_slug = resolve_image_quality_slug(project.image_generator, project.image_quality)
+
+    await _ensure_cdp_ready()
+    logger.info(
+        "montage regen image #{} frame {} shot {} → outsee ({} симв.)",
+        project.id,
+        frame_number,
+        shot,
+        len(prompt_text),
+    )
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -252,25 +279,9 @@ async def regen_scene_video(
     if shot == 2:
         start_frame = find_shot2_image(scenes_dir, frame_number)
     else:
-        img_art = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_image,
-                )
-                .order_by(Artifact.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        start_frame = resolve_scene_image_path(
-            artifact_path=img_art.path if img_art else None,
-            scenes_dir=scenes_dir,
-            frame_number=frame_number,
-        )
+        start_frame = find_shot1_image(scenes_dir, frame_number)
     if start_frame is None:
-        raise RuntimeError(f"нет стартового кадра для видео shot {shot}")
+        raise RuntimeError(f"нет стартового кадра для видео shot {shot} (папка scenes/)")
 
     short_uuid = uuid.uuid4().hex[:8]
     if shot == 2:
@@ -286,6 +297,15 @@ async def regen_scene_video(
     video_res_slug = vr_o.outsee_slug if vr_o else None
     aspect_slug = ar.outsee_slug if ar else "9:16"
     video_relax = project.video_relax is not False
+
+    await _ensure_cdp_ready()
+    logger.info(
+        "montage regen video #{} frame {} shot {} → outsee ({} симв.)",
+        project.id,
+        frame_number,
+        shot,
+        len(prompt_text),
+    )
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)

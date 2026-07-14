@@ -341,9 +341,22 @@ export const api = {
       pending_ops: MontagePendingOp[];
     },
   ) =>
-    http<{ ok: boolean; meta: MontageBoardMeta; errors?: string[] }>(
-      `/api/projects/${projectId}/montage-board/apply`,
-      { method: "POST", body: JSON.stringify(body) },
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      message?: string;
+      meta?: MontageBoardMeta;
+      errors?: string[];
+      job?: { status?: string; total_ops?: number; error?: string | null };
+    }>(`/api/projects/${projectId}/montage-board/apply`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getMontageApplyStatus: (projectId: number) =>
+    http<{ job: { status?: string; error?: string | null; total_ops?: number } }>(
+      `/api/projects/${projectId}/montage-board/apply-status`,
     ),
 
   runMontageBoard: (projectId: number) =>

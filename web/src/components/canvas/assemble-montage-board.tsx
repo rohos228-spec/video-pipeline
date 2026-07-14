@@ -809,6 +809,7 @@ export function AssembleMontageBoard({
   const [highlights, setHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
+  const [applyRunning, setApplyRunning] = useState(false);
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
   pendingOpsRef.current = pendingOps;
 
@@ -851,17 +852,28 @@ export function AssembleMontageBoard({
     },
     onSuccess: (res) => {
       const queued = pendingOpsRef.current.length;
+      if (res.started) {
+        setPendingOps([]);
+        setApplyRunning(true);
+        toast.message(res.message || `Генерация ${queued} операций… смотрите outsee.io`);
+        return;
+      }
+      if (res.already_running) {
+        setApplyRunning(true);
+        toast.message("Генерация уже выполняется");
+        return;
+      }
       setPendingOps([]);
-      setHighlights(res.meta?.highlights ?? []);
-      setStaleVideos(res.meta?.stale_videos ?? []);
-      if (res.meta?.video_trims) {
-        setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
+      if (res.meta) {
+        setHighlights(res.meta.highlights ?? []);
+        setStaleVideos(res.meta.stale_videos ?? []);
+        if (res.meta.video_trims) {
+          setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
+        }
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
       if (!res.ok && res.errors?.length) {
         toast.error(res.errors.join("; "));
-        if (queued === 0) return;
-        toast.message("Trim-настройки сохранены");
         return;
       }
       if (queued === 0) {
@@ -894,6 +906,9 @@ export function AssembleMontageBoard({
     void api.getMontageBoardStatus(projectId).then((st) => {
       if (st.job?.status === "running") setMontageRunning(true);
     }).catch(() => {});
+    void api.getMontageApplyStatus(projectId).then((st) => {
+      if (st.job?.status === "running") setApplyRunning(true);
+    }).catch(() => {});
   }, [open, projectId]);
 
   useEffect(() => {
@@ -901,10 +916,36 @@ export function AssembleMontageBoard({
     return subscribeWS(`projects.${projectId}`, (raw) => {
       const evt = raw as {
         type?: string;
-        payload?: { stopped?: boolean; montage_board_montage?: boolean; status?: string };
+        payload?: {
+          stopped?: boolean;
+          montage_board_montage?: boolean;
+          montage_board_apply?: boolean;
+          status?: string;
+          errors?: string[];
+          error?: string;
+        };
       };
       if (evt.payload?.stopped) {
         setMontageRunning(false);
+        setApplyRunning(false);
+        return;
+      }
+      if (evt.payload?.montage_board_apply) {
+        const status = evt.payload.status;
+        if (status === "running") setApplyRunning(true);
+        else if (status === "done") {
+          setApplyRunning(false);
+          toast.success("Генерация завершена");
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        } else if (status === "error") {
+          setApplyRunning(false);
+          const err = evt.payload.error || evt.payload.errors?.join("; ");
+          toast.error(err || "Генерация не удалась");
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        } else if (status === "cancelled") {
+          setApplyRunning(false);
+          toast.message("Генерация остановлена");
+        }
         return;
       }
       if (!evt.payload?.montage_board_montage) return;
@@ -956,6 +997,37 @@ export function AssembleMontageBoard({
       window.clearInterval(id);
     };
   }, [open, projectId, montageRunning, queryClient]);
+
+  useEffect(() => {
+    if (!open || projectId == null || !applyRunning) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await api.getMontageApplyStatus(projectId);
+        const status = st.job?.status;
+        if (cancelled) return;
+        if (status === "running") return;
+        setApplyRunning(false);
+        if (status === "done") {
+          toast.success("Генерация завершена");
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        } else if (status === "error") {
+          toast.error(st.job?.error || "Генерация не удалась");
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        } else if (status === "cancelled") {
+          toast.message("Генерация остановлена");
+        }
+      } catch {
+        if (!cancelled) setApplyRunning(false);
+      }
+    };
+    const id = window.setInterval(() => void poll(), 2500);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, projectId, applyRunning, queryClient]);
 
   const refreshBoard = useCallback(() => {
     void board.refetch();
@@ -1137,10 +1209,10 @@ export function AssembleMontageBoard({
               size="sm"
               variant="default"
               className="h-9 text-xs"
-              disabled={!projectId || applyMutation.isPending}
+              disabled={!projectId || applyMutation.isPending || applyRunning}
               onClick={() => applyMutation.mutate()}
             >
-              {applyMutation.isPending ? (
+              {applyMutation.isPending || applyRunning ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : null}
               Применить правки

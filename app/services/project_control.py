@@ -51,6 +51,9 @@ async def stop_project_running(
     from app.services.montage_board_montage_job import cancel_montage_job
 
     await cancel_montage_job(project.id)
+    from app.services.montage_board_apply_job import cancel_apply_job
+
+    await cancel_apply_job(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
 
     ok = False

@@ -563,14 +563,38 @@ async def montage_board_apply(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Сохранить trim и выполнить очередь regen (без remount)."""
+    from app.services.montage_board import build_montage_board
     from app.services.montage_board_apply import apply_montage_board
+    from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
 
     p = _project_or_404(await session.get(Project, project_id))
+    ops = list(body.get("pending_ops") or [])
+    trims = body.get("video_trims")
+
+    if ops:
+        job = get_apply_job(p)
+        if job.get("status") == "running":
+            board = await build_montage_board(session, p)
+            return {
+                "started": False,
+                "already_running": True,
+                "ok": False,
+                "job": job,
+                "meta": board["meta"],
+            }
+        spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
+        return {
+            "started": True,
+            "ok": True,
+            "job": {"status": "running", "total_ops": len(ops)},
+            "message": f"Генерация {len(ops)} операций запущена в фоне",
+        }
+
     result = await apply_montage_board(
         session,
         p,
-        video_trims=body.get("video_trims"),
-        pending_ops=body.get("pending_ops"),
+        video_trims=trims,
+        pending_ops=ops,
     )
     await session.commit()
     await publish_project_event(
@@ -579,6 +603,17 @@ async def montage_board_apply(
         payload={"montage_board_apply": True, "ok": result.get("ok")},
     )
     return result
+
+
+@router.get("/{project_id}/montage-board/apply-status")
+async def montage_board_apply_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_apply_job import get_apply_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_apply_job(p)}
 
 
 @router.post("/{project_id}/montage-board/montage")
