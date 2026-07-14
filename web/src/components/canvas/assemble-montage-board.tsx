@@ -835,25 +835,29 @@ export function AssembleMontageBoard({
   }, [board.dataUpdatedAt, frames.length, meta?.video_trims, meta?.highlights, meta?.stale_videos]);
 
   const queueOp = useCallback((op: MontagePendingOp) => {
-    setPendingOps((prev) => [...prev, op]);
+    setPendingOps((prev) => {
+      const next = [...prev, op];
+      pendingOpsRef.current = next;
+      return next;
+    });
     toast.message("Операция в очереди — нажмите «Применить правки»");
   }, []);
 
   const applyMutation = useMutation({
-    mutationFn: () => {
-      const queued = pendingOpsRef.current.length;
-      if (queued > 0) {
-        toast.message(`Генерация: ${queued} операций… (нужен Chrome :29229)`);
+    mutationFn: (opsOverride?: MontagePendingOp[]) => {
+      const ops = opsOverride ?? pendingOpsRef.current;
+      if (ops.length > 0) {
+        toast.message(`Генерация: ${ops.length} операций… (Chrome :29229, outsee.io)`);
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
-        pending_ops: pendingOpsRef.current,
+        pending_ops: ops,
       });
     },
-    onSuccess: (res) => {
-      const queued = pendingOpsRef.current.length;
+    onSuccess: (res, opsOverride) => {
+      const queued = opsOverride?.length ?? pendingOpsRef.current.length;
       if (res.started) {
-        setPendingOps([]);
+        if (!opsOverride) setPendingOps([]);
         setApplyRunning(true);
         toast.message(res.message || `Генерация ${queued} операций… смотрите outsee.io`);
         return;
@@ -884,6 +888,18 @@ export function AssembleMontageBoard({
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
+
+  const runRegenNow = useCallback(
+    (op: MontagePendingOp) => {
+      if (!projectId) return;
+      if (applyRunning || applyMutation.isPending) {
+        toast.error("Дождитесь завершения текущей генерации");
+        return;
+      }
+      applyMutation.mutate([op]);
+    },
+    [projectId, applyRunning, applyMutation],
+  );
 
   const montageMutation = useMutation({
     mutationFn: () => api.runMontageBoard(projectId!),
@@ -1106,29 +1122,31 @@ export function AssembleMontageBoard({
   const submitPromptModal = (text: string) => {
     if (!promptModal) return;
     const { kind, frameNumber, shot, mode } = promptModal;
+    let op: MontagePendingOp;
     if (mode === "correction" && kind === "image") {
-      queueOp({
+      op = {
         type: "image_regen_correction",
         frame_number: frameNumber,
         shot,
         correction: text,
-      });
+      };
     } else if (kind === "image") {
-      queueOp({
+      op = {
         type: "image_regen_prompt",
         frame_number: frameNumber,
         shot,
         prompt: text,
-      });
+      };
     } else {
-      queueOp({
+      op = {
         type: "video_regen_prompt",
         frame_number: frameNumber,
         shot,
         prompt: text,
-      });
+      };
     }
     setPromptModal(null);
+    runRegenNow(op);
   };
 
   const isHighlighted = (key: string) => highlights.includes(key);
@@ -1210,7 +1228,7 @@ export function AssembleMontageBoard({
               variant="default"
               className="h-9 text-xs"
               disabled={!projectId || applyMutation.isPending || applyRunning}
-              onClick={() => applyMutation.mutate()}
+              onClick={() => applyMutation.mutate(undefined)}
             >
               {applyMutation.isPending || applyRunning ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -1403,7 +1421,7 @@ export function AssembleMontageBoard({
                                   label={`Изображение 1 · кадр #${fr.number}`}
                                   onPreview={setPreview}
                                   onRegen={() =>
-                                    queueOp({
+                                    runRegenNow({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 1,
@@ -1427,7 +1445,7 @@ export function AssembleMontageBoard({
                                   label={`Изображение 2 · кадр #${fr.number}`}
                                   onPreview={setPreview}
                                   onRegen={() =>
-                                    queueOp({
+                                    runRegenNow({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 2,
@@ -1451,7 +1469,7 @@ export function AssembleMontageBoard({
                                   trim={trims[trimKey(fr.number, 1)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 1), t)}
                                   onRegen={() =>
-                                    queueOp({
+                                    runRegenNow({
                                       type: "video_regen",
                                       frame_number: fr.number,
                                       shot: 1,
@@ -1472,7 +1490,7 @@ export function AssembleMontageBoard({
                                   trim={trims[trimKey(fr.number, 2)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 2), t)}
                                   onRegen={() =>
-                                    queueOp({
+                                    runRegenNow({
                                       type: "video_regen",
                                       frame_number: fr.number,
                                       shot: 2,
