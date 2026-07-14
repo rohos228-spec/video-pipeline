@@ -21,6 +21,7 @@ from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.services.frame_audio import find_voice_full_on_disk
 from app.services.project_state import compute_actual_status
 from app.services.reset_step import reset_step
+from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 
 
 async def _delete_audio_artifacts(session: AsyncSession, project: Project) -> int:
@@ -48,6 +49,7 @@ async def remount_video(
     bot: Any = None,
 ) -> dict[str, Any]:
     """Перемонтировать ролик: заново выровнять озвучку по кадрам и собрать mp4."""
+    raise_if_cancelled(project.id)
     summary: dict[str, Any] = {
         "project_id": project.id,
         "slug": project.slug,
@@ -106,6 +108,7 @@ async def remount_video(
 
     reset_info = await reset_step(session, project, "assemble")
     summary["assemble_reset"] = reset_info
+    raise_if_cancelled(project.id)
 
     deleted = await _delete_audio_artifacts(session, project)
     summary["audio_artifacts_removed"] = deleted
@@ -121,6 +124,7 @@ async def remount_video(
     await session.flush()
     await generate_audio.run(session, project, bot)
     summary["audio_status"] = project.status.value
+    raise_if_cancelled(project.id)
 
     if project.status is not ProjectStatus.audio_ready:
         summary["error"] = (
@@ -139,6 +143,7 @@ async def remount_video(
     await session.flush()
     await assemble_mod.run(session, project, bot)
     summary["final_status"] = project.status.value
+    raise_if_cancelled(project.id)
 
     if project.status is ProjectStatus.assembled:
         summary["done"] = True

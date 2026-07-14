@@ -589,13 +589,13 @@ async def montage_board_montage(
     """Кнопка «Монтаж» — remount-video в фоне (озвучка + FFmpeg)."""
     import asyncio
 
-    from app.services.montage_board_montage_job import get_montage_job, run_montage_job
+    from app.services.montage_board_montage_job import get_montage_job, spawn_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
     job = get_montage_job(p)
     if job.get("status") == "running":
         return {"started": False, "already_running": True, "job": job}
-    asyncio.create_task(run_montage_job(project_id))
+    spawn_montage_job(project_id)
     return {"started": True, "job": {"status": "running"}}
 
 

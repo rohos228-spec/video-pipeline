@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,8 +13,10 @@ from app.models import Project
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.remount_video import remount_video
+from app.services.step_cancel import is_stop_requested
 
 _JOB_KEY = "montage_job"
+_montage_tasks: dict[int, asyncio.Task[None]] = {}
 
 
 def _utc_now() -> str:
@@ -35,22 +38,123 @@ def _set_job(project: Project, patch: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
+async def _publish_job(project_id: int, status: str) -> None:
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_board_montage": True, "status": status},
+    )
+
+
+def spawn_montage_job(project_id: int) -> asyncio.Task[None]:
+    prev = _montage_tasks.get(project_id)
+    if prev is not None and not prev.done():
+        return prev
+    task = asyncio.create_task(run_montage_job(project_id), name=f"montage-{project_id}")
+    _montage_tasks[project_id] = task
+
+    def _done(t: asyncio.Task[None]) -> None:
+        _montage_tasks.pop(project_id, None)
+        if t.cancelled():
+            logger.info("montage_job #{} cancelled", project_id)
+
+    task.add_done_callback(_done)
+    return task
+
+
+async def cancel_montage_job(project_id: int) -> bool:
+    """⏹ STOP: отменить фоновый remount и сбросить статус в meta."""
+    task = _montage_tasks.get(project_id)
+    if task is not None and not task.done():
+        task.cancel()
+    try:
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                return False
+            job = get_montage_job(project)
+            if job.get("status") != "running":
+                return task is not None and task.cancelled()
+            _set_job(
+                project,
+                {
+                    "status": "cancelled",
+                    "error": "остановлено пользователем",
+                    "finished_at": _utc_now(),
+                },
+            )
+        await _publish_job(project_id, "cancelled")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cancel_montage_job #{}: {}", project_id, exc)
+        return False
+
+
 async def run_montage_job(project_id: int) -> None:
     try:
         async with session_scope() as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return
+            if is_stop_requested(project_id):
+                _set_job(
+                    project,
+                    {
+                        "status": "cancelled",
+                        "error": "остановлено пользователем",
+                        "finished_at": _utc_now(),
+                    },
+                )
+                await _publish_job(project_id, "cancelled")
+                return
             _set_job(
                 project,
                 {"status": "running", "error": None, "started_at": _utc_now(), "finished_at": None},
             )
+        await _publish_job(project_id, "running")
+
+        if is_stop_requested(project_id):
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    _set_job(
+                        project,
+                        {
+                            "status": "cancelled",
+                            "error": "остановлено пользователем",
+                            "finished_at": _utc_now(),
+                        },
+                    )
+            await _publish_job(project_id, "cancelled")
+            return
 
         async with session_scope() as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return
+            if is_stop_requested(project_id):
+                _set_job(
+                    project,
+                    {
+                        "status": "cancelled",
+                        "error": "остановлено пользователем",
+                        "finished_at": _utc_now(),
+                    },
+                )
+                await _publish_job(project_id, "cancelled")
+                return
             result = await remount_video(session, project, run_assemble=True)
+            if is_stop_requested(project_id):
+                _set_job(
+                    project,
+                    {
+                        "status": "cancelled",
+                        "error": "остановлено пользователем",
+                        "finished_at": _utc_now(),
+                    },
+                )
+                await _publish_job(project_id, "cancelled")
+                return
             if result.get("error") and not result.get("done"):
                 _set_job(
                     project,
@@ -61,6 +165,7 @@ async def run_montage_job(project_id: int) -> None:
                         "result": {"done": False},
                     },
                 )
+                await _publish_job(project_id, "error")
             else:
                 _set_job(
                     project,
@@ -74,11 +179,25 @@ async def run_montage_job(project_id: int) -> None:
                         },
                     },
                 )
-            await publish_project_event(
-                project_id,
-                event_type="project_updated",
-                payload={"montage_board_montage": True, "status": get_montage_job(project).get("status")},
-            )
+                await _publish_job(project_id, "done")
+    except asyncio.CancelledError:
+        logger.info("montage_job #{} task cancelled", project_id)
+        try:
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    _set_job(
+                        project,
+                        {
+                            "status": "cancelled",
+                            "error": "остановлено пользователем",
+                            "finished_at": _utc_now(),
+                        },
+                    )
+            await _publish_job(project_id, "cancelled")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("montage_job #{} failed", project_id)
         try:
@@ -89,10 +208,6 @@ async def run_montage_job(project_id: int) -> None:
                         project,
                         {"status": "error", "error": str(exc), "finished_at": _utc_now()},
                     )
-                    await publish_project_event(
-                        project_id,
-                        event_type="project_updated",
-                        payload={"montage_board_montage": True, "status": "error"},
-                    )
+            await _publish_job(project_id, "error")
         except Exception:  # noqa: BLE001
             pass

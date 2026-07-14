@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, type MontagePendingOp } from "@/lib/api";
+import { api, subscribeWS, type MontagePendingOp } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import type { MontageBoardFrame } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -897,6 +897,37 @@ export function AssembleMontageBoard({
   }, [open, projectId]);
 
   useEffect(() => {
+    if (!open || projectId == null) return;
+    return subscribeWS(`projects.${projectId}`, (raw) => {
+      const evt = raw as {
+        type?: string;
+        payload?: { stopped?: boolean; montage_board_montage?: boolean; status?: string };
+      };
+      if (evt.payload?.stopped) {
+        setMontageRunning(false);
+        return;
+      }
+      if (!evt.payload?.montage_board_montage) return;
+      const status = evt.payload.status;
+      if (status === "running") {
+        setMontageRunning(true);
+      } else if (status === "done") {
+        setMontageRunning(false);
+        toast.success("Монтаж завершён");
+        void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+      } else if (status === "error") {
+        setMontageRunning(false);
+        void api.getMontageBoardStatus(projectId).then((st) => {
+          toast.error(st.job?.error || "Монтаж не удался");
+        }).catch(() => toast.error("Монтаж не удался"));
+      } else if (status === "cancelled") {
+        setMontageRunning(false);
+        toast.message("Монтаж остановлен");
+      }
+    });
+  }, [open, projectId, queryClient]);
+
+  useEffect(() => {
     if (!open || projectId == null || !montageRunning) return;
     let cancelled = false;
     const poll = async () => {
@@ -911,6 +942,8 @@ export function AssembleMontageBoard({
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "error") {
           toast.error(st.job?.error || "Монтаж не удался");
+        } else if (status === "cancelled") {
+          toast.message("Монтаж остановлен");
         }
       } catch {
         if (!cancelled) setMontageRunning(false);
