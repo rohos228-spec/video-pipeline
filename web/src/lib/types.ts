@@ -229,6 +229,15 @@ export interface MontageBoardFrame {
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;
+  has_shot2: boolean;
+  shot1_use_seconds: number | null;
+  shot2_use_seconds: number | null;
+  shot1_timeline_start: number | null;
+  shot1_timeline_end: number | null;
+  shot2_timeline_start: number | null;
+  shot2_timeline_end: number | null;
+  video_shot1_duration: number | null;
+  video_shot2_duration: number | null;
   image_shot1_url: string | null;
   image_shot2_url: string | null;
   video_shot1_url: string | null;
