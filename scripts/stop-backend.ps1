@@ -1,4 +1,4 @@
-# Остановить бэкенд Studio (порт 8765 + python + окна run-backend)
+﻿# Остановить бэкенд Studio (порт 8765 + python + окна run-backend)
 # Launcher вызывает без паузы. Вручную: .\stop-backend.cmd
 
 param(

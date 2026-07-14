@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,14 +51,14 @@ def load_layout() -> dict[str, Any]:
 
 def save_layout(data: dict[str, Any]) -> None:
     path = _layout_path()
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    tmp = path.with_suffix(".json.tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _normalize_gen_queue(raw: list[Any]) -> list[int]:
-    """Уникальные ID в порядке сайдбара (order), затем по ID."""
+    """Уникальные ID в порядке добавления в очередь."""
     out: list[int] = []
     seen: set[int] = set()
     for item in raw:
@@ -69,20 +70,6 @@ def _normalize_gen_queue(raw: list[Any]) -> list[int]:
             continue
         seen.add(pid)
         out.append(pid)
-    layout: dict[str, Any] = dict(load_layout().get("project_layout") or {})
-
-    def _sort_key(pid: int) -> tuple[int, int]:
-        entry = layout.get(str(pid))
-        if isinstance(entry, dict):
-            try:
-                order = int(entry.get("order"))
-            except (TypeError, ValueError):
-                order = 999999
-        else:
-            order = 999999
-        return (order, pid)
-
-    out.sort(key=_sort_key)
     return out
 
 
@@ -286,3 +273,26 @@ def layout_for_api(project_ids: set[int] | None = None) -> dict[str, Any]:
         "gen_queue": gen_queue,
         "gen_queue_positions": queue_map,
     }
+
+
+PROMPTS_LOG_PATH = Path("logs/prompts.log")
+
+
+def log_prompt_send(
+    *,
+    bot: str,
+    project_id: int | None,
+    node: str,
+    source: str,
+    text: str,
+) -> None:
+    try:
+        PROMPTS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        pid = project_id if project_id is not None else "?"
+        snippet = (text or "").replace("\n", " ")[:80]
+        line = f"{ts}\tproject={pid}\tbot={bot}\tnode={node}\tsource={source}\t{snippet}"
+        with PROMPTS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("prompts.log write failed: {}", e)

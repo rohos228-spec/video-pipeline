@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from loguru import logger
 from app.services.prompt_library import (
     DEFAULT_NAME,
     is_valid_prompt_name,
+    list_prompts,
     prompt_path,
     step_dir,
     write_prompt,
@@ -44,23 +46,75 @@ def _default_label(saved_at: float) -> str:
     return dt.strftime("%d.%m.%Y %H:%M")
 
 
+def _rebuild_index_from_snapshots(step_code: str, name: str) -> dict[str, Any]:
+    """Восстановить index.json из *.md в .history/<name>/."""
+    hist_dir = _prompt_history_dir(step_code, name)
+    versions: list[dict[str, Any]] = []
+    for snap in sorted(hist_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+        vid = snap.stem
+        if not vid or vid == _INDEX:
+            continue
+        try:
+            saved_at = float(snap.stat().st_mtime)
+        except OSError:
+            saved_at = 0.0
+        try:
+            size = snap.stat().st_size
+        except OSError:
+            size = 0
+        versions.append(
+            {
+                "id": vid,
+                "label": _default_label(saved_at),
+                "saved_at": saved_at,
+                "size": size,
+            }
+        )
+    versions = versions[:_MAX_VERSIONS]
+    data = {"versions": versions}
+    if versions:
+        _save_index(step_code, name, data)
+        logger.info(
+            "prompt_history: rebuilt index for {}/{} ({} versions)",
+            step_code,
+            name,
+            len(versions),
+        )
+    return data
+
+
 def _load_index(step_code: str, name: str) -> dict[str, Any]:
     path = _index_path(step_code, name)
-    if not path.is_file():
+    hist_dir = _prompt_history_dir(step_code, name)
+    has_snapshots = any(hist_dir.glob("*.md"))
+
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("prompt_history: bad index {}: {}", path, e)
+            data = None
+        else:
+            if isinstance(data, dict) and isinstance(data.get("versions"), list):
+                versions = data.get("versions") or []
+                if versions or not has_snapshots:
+                    return data
+            else:
+                data = None
+        if data is None and has_snapshots:
+            return _rebuild_index_from_snapshots(step_code, name)
         return {"versions": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("prompt_history: bad index {}: {}", path, e)
-        return {"versions": []}
-    if not isinstance(data, dict) or not isinstance(data.get("versions"), list):
-        return {"versions": []}
-    return data
+
+    if has_snapshots:
+        return _rebuild_index_from_snapshots(step_code, name)
+    return {"versions": []}
 
 
 def _save_index(step_code: str, name: str, data: dict[str, Any]) -> None:
     path = _index_path(step_code, name)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _new_version_id() -> str:
@@ -73,9 +127,9 @@ def archive_prompt_version(step_code: str, name: str, content: str) -> str | Non
         return None
     vid = _new_version_id()
     hist_dir = _prompt_history_dir(step_code, name)
+    idx = _load_index(step_code, name)
     (hist_dir / f"{vid}.md").write_text(text, encoding="utf-8")
     saved_at = datetime.now(timezone.utc).timestamp()
-    idx = _load_index(step_code, name)
     versions: list[dict[str, Any]] = list(idx.get("versions") or [])
     versions.insert(
         0,
@@ -104,11 +158,7 @@ def write_prompt_with_history(step_code: str, name: str, content: str) -> Path:
             old = ""
         if old != content:
             archive_prompt_version(step_code, name, old)
-    result = write_prompt(step_code, name, content)
-    from app.services.prompt_active_global import set_global_active
-
-    set_global_active(step_code, name)
-    return result
+    return write_prompt(step_code, name, content)
 
 
 def list_prompt_versions(step_code: str, name: str) -> list[dict[str, Any]]:
@@ -124,11 +174,13 @@ def list_prompt_versions(step_code: str, name: str) -> list[dict[str, Any]]:
         snap = hist_dir / f"{vid}.md"
         if not snap.is_file():
             continue
+        saved_raw = item.get("saved_at")
+        saved_at = float(saved_raw) if saved_raw is not None else 0.0
         out.append(
             {
                 "id": vid,
-                "label": str(item.get("label") or _default_label(float(item.get("saved_at") or 0))),
-                "saved_at": float(item.get("saved_at") or snap.stat().st_mtime),
+                "label": str(item.get("label") or _default_label(saved_at)),
+                "saved_at": saved_at,
                 "size": int(item.get("size") or snap.stat().st_size),
             }
         )
@@ -234,13 +286,46 @@ def _merge_prompt_history_dirs(old_hist: Path, new_hist: Path) -> None:
         merged.append(item)
     merged.sort(key=lambda x: float(x.get("saved_at") or 0), reverse=True)
     new_data["versions"] = merged[:_MAX_VERSIONS]
-    new_index.write_text(
+    tmp = new_index.with_suffix(".json.tmp")
+    tmp.write_text(
         json.dumps(new_data, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    os.replace(tmp, new_index)
 
 
 def restore_prompt_version(step_code: str, name: str, version_id: str) -> str:
     content = read_prompt_version(step_code, name, version_id)
     write_prompt_with_history(step_code, name, content)
     return content
+
+
+def bootstrap_saved_at_from_history(step_code: str | None = None) -> int:
+    """Проставить saved_at файлам без меты из последней версии .history."""
+    from app.services.prompt_library import (
+        STEP_FOLDERS,
+        get_prompt_saved_at,
+        touch_prompt_meta_at,
+    )
+
+    codes = [step_code] if step_code else list(STEP_FOLDERS.keys())
+    updated = 0
+    for code in codes:
+        if code not in STEP_FOLDERS:
+            continue
+        for name in list_prompts(code):
+            if get_prompt_saved_at(code, name) is not None:
+                continue
+            versions = list_prompt_versions(code, name)
+            if not versions:
+                continue
+            latest = versions[0]
+            saved_at = float(latest.get("saved_at") or 0)
+            if saved_at <= 0:
+                continue
+            size = int(latest.get("size") or 0)
+            touch_prompt_meta_at(code, name, saved_at, size)
+            updated += 1
+    if updated:
+        logger.info("prompt_history: bootstrapped saved_at for {} file(s)", updated)
+    return updated

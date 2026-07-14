@@ -235,7 +235,7 @@ async def run_script_xlsx(
 ) -> tuple[XlsxRoundtripResult, str]:
     """Шаг «Закадровый текст»: prompt + project.xlsx [+ voiceover.txt] → voiceover.txt."""
     proj_xlsx = _ensure_project_xlsx(project)
-    source_voiceover = cx.ensure_source_voiceover(project)
+    source_voiceover = cx.ensure_script_input_voiceover(project)
 
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
@@ -293,7 +293,7 @@ async def run_split_xlsx(
 ) -> XlsxRoundtripResult:
     """Шаг «Разбивка»: prompt + project.xlsx + voiceover.txt → xlsx."""
     proj_xlsx = _ensure_project_xlsx(project)
-    voiceover = cx.ensure_source_voiceover(project)
+    voiceover = cx.ensure_current_voiceover(project)
     if voiceover is None:
         raise FileNotFoundError(
             "voiceover.txt не найден — сначала пройди шаг «Закадровый текст»"

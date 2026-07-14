@@ -27,15 +27,15 @@ def test_stale_running_plan_done_when_project_on_script_ready() -> None:
     )
 
 
-def test_stale_running_split_pending_at_script_ready() -> None:
+def test_stale_running_split_no_auto_pending_at_script_ready() -> None:
     assert (
         _infer_stale_running_node_status("split", ProjectStatus.script_ready)
-        == NodeRunStatus.pending
+        is None
     )
 
 
-def test_stale_running_next_step_pending_at_ready() -> None:
+def test_stale_running_next_step_no_auto_pending() -> None:
     assert (
         _infer_stale_running_node_status("script", ProjectStatus.plan_ready)
-        == NodeRunStatus.pending
+        is None
     )

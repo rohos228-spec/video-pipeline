@@ -316,7 +316,7 @@ if (-not $npmCmd) {
     }
     catch {
         Write-Warn "Сборка UI не удалась: $($_.Exception.Message)"
-        Write-Warn "Позже: VideoPipelineStudio.cmd -> кнопка 6 Build Web UI"
+        Write-Warn "Позже: STUDIO.cmd -> [3] Починить установку (сборка web)"
     }
     finally {
         Pop-Location
@@ -331,16 +331,16 @@ Write-Host "  Установка завершена!" -ForegroundColor Green
 Write-Host "===================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Обновить + запустить (одна кнопка в меню):" -ForegroundColor Cyan
-Write-Host "  VideoPipelineStudio.cmd -> * Update + Start" -ForegroundColor White
+Write-Host "  STUDIO.cmd -> [2] Обновить и запустить" -ForegroundColor White
 Write-Host "  (git + pip + UI build + backend + browser)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Только Launcher:" -ForegroundColor Cyan
-Write-Host "  Двойной клик: VideoPipelineStudio.cmd" -ForegroundColor White
+Write-Host "  Двойной клик: STUDIO.cmd" -ForegroundColor White
 Write-Host "  Кнопка * Quick start  или  2 Start Studio" -ForegroundColor White
 Write-Host "  Браузер: http://127.0.0.1:8765  (не :3000)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Вручную (если нужно):" -ForegroundColor DarkGray
-Write-Host "  .\run-backend.ps1   — бэкенд + UI на :8765" -ForegroundColor DarkGray
+Write-Host "  STUDIO.cmd [1] или scripts\run-backend.ps1 — бэкенд + UI на :8765" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Chrome CDP :29229 — для шагов ChatGPT/outsee (см. HOW_TO_RUN.md)." -ForegroundColor DarkGray
 Write-Host ""

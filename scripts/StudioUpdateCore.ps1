@@ -64,7 +64,7 @@ function Invoke-StudioGit {
     $uiOk = Restore-StudioWebUiFromGit -Root $Root
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     if (-not $uiOk) {
-        Write-StudioLog "WARN: web/out stale - run FORCE-UPDATE.cmd from repo root" "Yellow"
+        Write-StudioLog "WARN: web/out stale - run STUDIO.cmd -> [3]" "Yellow"
     }
     return $true
 }
@@ -162,7 +162,7 @@ function Start-StudioBackendWindow {
         Write-StudioLog "FAIL: Python create_app() - backend will crash. git pull required." "Red"
         return $false
     }
-    $rb = Join-Path $Root "run-backend.ps1"
+    $rb = Join-Path $Root "scripts\run-backend.ps1"
     Write-StudioLog "Starting run-backend.ps1 window..." "Gray"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root
     $deadline = (Get-Date).AddSeconds(120)

@@ -344,11 +344,14 @@ async def run_project_step(
         )
         return p
     try:
-        await start_step(session, p, step_code, node_key=node_key)
+        await start_step(
+            session, p, step_code, node_key=node_key, require_node_fsm=True
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
+    await sync_run_for_project(project_id)
     await publish_project_event(
         project_id,
         event_type="project_updated",

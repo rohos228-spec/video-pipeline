@@ -52,6 +52,6 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "OK Studio can run. Optional whisper (big download):" -ForegroundColor Green
 Write-Host "  .\.venv\Scripts\python.exe -m pip install -e `"${spec}[whisper]`"" -ForegroundColor Gray
-Write-Host "Next: .\UPDATE-STUDIO.cmd" -ForegroundColor Green
+Write-Host "Next: STUDIO.cmd -> [2] Обновить и запустить" -ForegroundColor Green
 Write-Host ""
 exit 0

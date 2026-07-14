@@ -20,25 +20,13 @@ async def ensure_default_project() -> int | None:
         if count and int(count) > 0:
             return None
 
-    auto = not settings.telegram_active
+    auto = False
     pid = await seed(topic=DEFAULT_TOPIC, hero_mode=DEFAULT_HERO_MODE)
-    if auto and pid:
-        async with session_scope() as s:
-            p = await s.get(Project, pid)
-            if p is not None:
-                p.auto_mode = True
-                await s.flush()
-        logger.info(
-            "default project #{} created (auto_mode=True, web-only)",
-            pid,
-        )
-    else:
-        logger.info("default project #{} created", pid)
+    if pid:
+        logger.info("default project #{} created (auto_mode=False)", pid)
     return pid
 
 
 def default_auto_mode_for_new_project() -> bool:
-    """Новые проекты в web-only режиме идут с авто-продвижением."""
-    if settings.hitl_auto_approve:
-        return True
-    return not settings.telegram_active
+    """Новые проекты — ручной режим. Автопродвижение только если юзер включил сам."""
+    return False

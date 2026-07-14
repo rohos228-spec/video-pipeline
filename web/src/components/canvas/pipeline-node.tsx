@@ -25,6 +25,7 @@ import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
+import { AssembleMontageTrigger } from "./assemble-montage-board";
 
 import type { ExcelGptInputSource } from "@/lib/excel-gpt-config";
 
@@ -60,10 +61,24 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const resultSnapshot = actions?.getNodeResult(d.type, d.status);
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
+  const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <>
+      <div className="relative">
+        {isAssemble && actions?.projectId && (
+          <AssembleMontageTrigger
+            active={actions.montageBoardOpen}
+            onClick={() => {
+              if (actions.montageBoardOpen) {
+                actions.onCloseMontageBoard();
+              } else {
+                actions.onOpenMontageBoard();
+              }
+            }}
+          />
+        )}
       <div
         ref={anchorRef}
         className={cn(
@@ -232,6 +247,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
           />
         )}
       </div>
+      </div>
     </>
   );
 }
@@ -315,6 +331,7 @@ const STATUS_CONFIG: Record<
   { icon: typeof Circle; label: string; bg: string; text: string }
 > = {
   pending: { icon: Circle, label: "ожидание", bg: "bg-muted/80", text: "text-muted-foreground" },
+  queued: { icon: Hourglass, label: "в очереди", bg: "bg-sky-500/15", text: "text-sky-400" },
   running: { icon: Loader2, label: "работа", bg: "bg-primary/20", text: "text-primary" },
   waiting_hitl: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15", text: "text-amber-400" },
   done: { icon: CheckCircle2, label: "готово", bg: "bg-emerald-500/15", text: "text-emerald-400" },

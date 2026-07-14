@@ -43,3 +43,6 @@ Thumbs.db
 # Logs (только корневая папка; не web/src/components/logs)
 *.log
 /logs/
+
+# Локальная история версий промтов (не коммитим)
+prompts/**/.history/

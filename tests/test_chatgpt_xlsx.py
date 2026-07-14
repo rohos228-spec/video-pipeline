@@ -85,3 +85,44 @@ def test_default_accompanying_never_includes_master(project: Project) -> None:
         )
     assert master not in default
     assert "prompt.txt" in default
+
+
+@pytest.mark.asyncio
+async def test_sync_project_xlsx_raises_when_both_imports_fail(
+    project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openpyxl import Workbook
+
+    from app.services.xlsx_v8_import import SHEET_GENERAL_V8, SHEET_PLAN_V8
+
+    xlsx = tmp_path / "bad.xlsx"
+    wb = Workbook()
+    wb.active.title = SHEET_PLAN_V8
+    wb.create_sheet(SHEET_GENERAL_V8)
+    wb.save(xlsx)
+
+    async def _fail_v8(*_a: object, **_k: object) -> dict:
+        raise RuntimeError("v8 boom")
+
+    async def _fail_v7(*_a: object, **_k: object) -> dict:
+        raise RuntimeError("v7 boom")
+
+    marked: list[str] = []
+
+    async def _fake_mark(
+        _session: object, _project: Project, error: str, **_: object
+    ) -> None:
+        marked.append(error)
+
+    monkeypatch.setattr(cx, "import_v8_xlsx", _fail_v8)
+    monkeypatch.setattr(cx, "reload_from_xlsx", _fail_v7)
+    monkeypatch.setattr(
+        "app.services.run_sync.mark_running_node_failed", _fake_mark
+    )
+
+    session = object()
+    with pytest.raises(RuntimeError, match="xlsx-sync"):
+        await cx.sync_project_xlsx(session, project, xlsx)  # type: ignore[arg-type]
+
+    assert marked
+    assert "v8" in marked[0] or "v7" in marked[0]

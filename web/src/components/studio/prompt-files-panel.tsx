@@ -48,7 +48,8 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-function formatModified(mtime: number): string {
+function formatModified(mtime: number | null | undefined): string {
+  if (mtime == null || mtime <= 0) return "—";
   const ms = mtime > 1e12 ? mtime : mtime * 1000;
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return "—";
@@ -67,6 +68,7 @@ export function PromptFilesPanel({
   slotId,
   preferredFile,
   activeVariant,
+  activeVariantSourceLabel,
   onActivateVariant,
   activating = false,
   onPromptRenamed,
@@ -76,6 +78,7 @@ export function PromptFilesPanel({
   slotId?: string;
   preferredFile?: string;
   activeVariant?: string;
+  activeVariantSourceLabel?: string;
   onActivateVariant?: (variant: string) => void;
   activating?: boolean;
   onPromptRenamed?: (oldName: string, newName: string) => void;
@@ -269,7 +272,12 @@ export function PromptFilesPanel({
           <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/70">
             {folderLabel} • {fileList.length} файл(ов)
             {activeVariant ? (
-              <span className="ml-1 text-emerald-400/80">• активен: {activeVariant}</span>
+              <span className="ml-1 text-emerald-400/80">
+                • {activeVariant}
+                {activeVariantSourceLabel ? (
+                  <span className="text-muted-foreground/70"> ({activeVariantSourceLabel})</span>
+                ) : null}
+              </span>
             ) : null}
             {files.isFetching && (
               <span className="ml-1 inline-flex items-center gap-1 text-primary/70">

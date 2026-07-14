@@ -1,5 +1,9 @@
 /** Константы листов Excel (v8 + legacy). */
 
+/** Компактное превью в V-меню ноды (строки × колонки). */
+export const XLSX_PREVIEW_MAX_ROWS = 30;
+export const XLSX_PREVIEW_MAX_COLS = 20;
+
 export const SHEET_GENERAL_V8 = "Общий план";
 export const SHEET_GENERAL_LEGACY = "Общий план ролика";
 export const SHEET_PLAN_V8 = "план";

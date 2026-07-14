@@ -1,9 +1,9 @@
 ﻿# video-pipeline: bootstrap для нового ПК
-#   iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/fix/text-save-persistence-v153/bootstrap.ps1 -UseBasicParsing | iex
+#   iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/main/bootstrap.ps1 -UseBasicParsing | iex
 
 $ErrorActionPreference = "Stop"
 $InstallDir = Join-Path $env:USERPROFILE "video-pipeline"
-$Branch = "fix/text-save-persistence-v153"
+$Branch = "main"
 $RepoUrl = "https://github.com/rohos228-spec/video-pipeline.git"
 
 function Have-Cmd($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
@@ -32,4 +32,4 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
 
 Set-Location -LiteralPath $InstallDir
 & powershell -ExecutionPolicy Bypass -File ".\install.ps1" -NonInteractive
-Write-Host "==> Done. v160 branch. Run: .\run-backend.ps1" -ForegroundColor Green
+Write-Host "==> Готово. Двойной клик STUDIO.cmd -> [1] Запустить студию" -ForegroundColor Green

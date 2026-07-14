@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -28,16 +29,22 @@ from app.services.frame_audio import (
 )
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
-from app.services.media_probe import probe_video_size
+from app.services.media_probe import probe_duration, probe_video_size
 from app.services.step_data_guard import can_enter_running
 from app.services.subtitles import build_subtitle_cues_from_cells
-from app.services.whisper import WordTS, transcribe_words, whisper_available
+from app.services.whisper import (
+    WordTS,
+    transcribe_words,
+    whisper_available,
+    whisper_words_fresh_for_audio,
+)
 from app.services.node_step_params import (
     post_voiceover_tail_seconds_for_project,
     subtitles_enabled_for_project,
 )
 from app.settings import settings
 from app.services.shot2_timeline import build_assembly_clip_specs
+from app.services.montage_board_meta import montage_meta
 from app.services.plan_shot2 import read_shot2_columns
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -173,6 +180,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     subs_enabled = subtitles_enabled_for_project(project)
 
+    words: list[WordTS] = await ensure_whisper_words(
+        session,
+        project,
+        audio_path,
+        whisper_model=settings.whisper_model,
+    )
     whisper_art = (
         await session.execute(
             select(Artifact)
@@ -184,20 +197,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             .limit(1)
         )
     ).scalar_one_or_none()
-    words: list[WordTS] = await ensure_whisper_words(
-        session,
-        project,
-        audio_path,
-        whisper_model=settings.whisper_model,
-    )
 
     if subs_enabled and settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
-        if whisper_available() and not disk_whisper:
-            logger.info("[#{}] assemble: re-whisper voice_full для субтитров (без TTS)", project.id)
-            words = transcribe_words(
+        fresh_words = whisper_words_fresh_for_audio(whisper_art, audio_path)
+        if fresh_words and words:
+            logger.info(
+                "[#{}] assemble: words.json актуален для {} — re-whisper пропущен",
+                project.id,
+                audio_path.name,
+            )
+        elif whisper_available() and not disk_whisper:
+            audio_duration = await probe_duration(audio_path)
+            beam = 1 if audio_duration > 300 else 5
+            logger.info(
+                "[#{}] assemble: re-whisper voice_full для субтитров "
+                "(без TTS, {:.1f}s, beam={})",
+                project.id,
+                audio_duration,
+                beam,
+            )
+            words = await asyncio.to_thread(
+                transcribe_words,
                 audio_path,
                 model_name=settings.whisper_model,
                 language="ru",
+                beam_size=beam,
             )
         elif not words:
             raise RuntimeError(
@@ -340,7 +364,11 @@ async def _assemble_body(
         fr.duration_seconds = duration_by_frame[fr.number]
 
     clips = build_assembly_clip_specs(
-        frames, shot1_paths, shot2_paths, duration_by_frame
+        frames,
+        shot1_paths,
+        shot2_paths,
+        duration_by_frame,
+        video_trims=(montage_meta(project).get("video_trims") or None),
     )
 
     subs_path: Path | None = None

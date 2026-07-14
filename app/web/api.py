@@ -147,6 +147,13 @@ async def _lifespan(app: FastAPI):
         logger.exception("fleet init failed (non-fatal)")
 
     try:
+        from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+
+        await reconcile_stale_montage_jobs_on_startup()
+    except Exception:  # noqa: BLE001
+        logger.exception("montage job reconcile failed (non-fatal)")
+
+    try:
         yield
     finally:
         logger.remove(live_log_sink)
@@ -195,7 +202,7 @@ def create_app() -> FastAPI:
 
         raise HTTPException(
             status_code=404,
-            detail="API route not found — перезапустите Studio (start-studio.ps1)",
+            detail="API route not found — перезапустите Studio (STUDIO.cmd → [1])",
         )
 
     # ── WebSocket: live-стрим событий выбранного канала ──

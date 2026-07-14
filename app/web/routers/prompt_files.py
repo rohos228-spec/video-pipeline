@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import local_library as lib
 from app.services.prompt_history import (
+    bootstrap_saved_at_from_history,
     list_prompt_versions,
     read_prompt_version,
     rename_prompt_file,
@@ -26,6 +27,7 @@ from app.services.prompt_history import (
 )
 from app.services.prompt_library import (
     DEFAULT_NAME,
+    PROMPT_SOURCE_LABELS,
     STEP_FOLDERS,
     delete_prompt,
     get_prompt_saved_at,
@@ -33,6 +35,7 @@ from app.services.prompt_library import (
     list_prompts,
     prompt_path,
     read_prompt,
+    resolve_project_prompt_with_source,
     step_dir,
 )
 from app.web.deps import get_session
@@ -52,7 +55,7 @@ class PromptFileInfo(BaseModel):
     name: str
     filename: str
     size: int
-    modified: float
+    modified: float | None
     is_default: bool
 
 
@@ -61,7 +64,14 @@ class PromptFileContent(BaseModel):
     filename: str
     content: str
     size: int
-    modified: float
+    modified: float | None
+
+
+class PromptResolveInfo(BaseModel):
+    name: str
+    source: str
+    source_label: str
+    modified: float | None
 
 
 class PromptFileSavePayload(BaseModel):
@@ -108,17 +118,47 @@ def _library_prompt_path(step_code: str, name: str) -> str:
     return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
 
 
-def _prompt_modified(step_code: str, name: str, p: Path) -> float:
-    saved = get_prompt_saved_at(step_code, name)
-    if saved is not None:
-        return saved
-    return p.stat().st_mtime
+def _prompt_modified(step_code: str, name: str, p: Path) -> float | None:
+    return get_prompt_saved_at(step_code, name)
+
+
+@router.get("/{step_code}/resolve", response_model=PromptResolveInfo)
+async def resolve_prompt_for_project(
+    step_code: str,
+    project_id: int = Query(...),
+    node_key: str | None = Query(None),
+    slot_id: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> PromptResolveInfo:
+    from app.models import Project
+
+    _ensure_step(step_code)
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    overrides = project.prompt_overrides if isinstance(project.prompt_overrides, dict) else {}
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    name, source = resolve_project_prompt_with_source(
+        overrides,
+        step_code,
+        meta=meta,
+        node_key=node_key,
+        slot_id=slot_id,
+    )
+    p = prompt_path(step_code, name)
+    return PromptResolveInfo(
+        name=name,
+        source=source,
+        source_label=PROMPT_SOURCE_LABELS.get(source, source),
+        modified=_prompt_modified(step_code, name, p) if p.exists() else None,
+    )
 
 
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
 async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
     """Список .md-файлов в `prompts/<step>/`."""
     _ensure_step(step_code)
+    bootstrap_saved_at_from_history(step_code)
     folder = step_dir(step_code)
     out: list[PromptFileInfo] = []
     for name in list_prompts(step_code):
@@ -193,6 +233,9 @@ async def save_prompt_file(
         meta={"step_code": step_code, "name": name},
         force_version=True,
     )
+    from app.services.prompts import sync_step_prompt_to_db
+
+    await sync_step_prompt_to_db(session, step_code, payload.content)
     await session.commit()
     p = prompt_path(step_code, name)
     stat = p.stat()
@@ -323,7 +366,7 @@ async def rename_prompt_file_route(
         name=final,
         filename=f"{final}.md",
         size=stat.st_size,
-        modified=_prompt_modified(step_code, name, p),
+        modified=_prompt_modified(step_code, final, p),
         is_default=(final == DEFAULT_NAME),
     )
 
@@ -378,6 +421,9 @@ async def upload_prompt_file(
         meta={"step_code": step_code, "name": raw_name},
         force_version=True,
     )
+    from app.services.prompts import sync_step_prompt_to_db
+
+    await sync_step_prompt_to_db(session, step_code, text)
     await session.commit()
     p = prompt_path(step_code, raw_name)
     stat = p.stat()
@@ -385,6 +431,6 @@ async def upload_prompt_file(
         name=raw_name,
         filename=f"{raw_name}.md",
         size=stat.st_size,
-        modified=_prompt_modified(step_code, name, p),
+        modified=_prompt_modified(step_code, raw_name, p),
         is_default=(raw_name == DEFAULT_NAME),
     )

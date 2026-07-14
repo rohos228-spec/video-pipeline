@@ -1,16 +1,14 @@
-﻿# Запуск бэкенда из корня репозитория
-# RUN_BACKEND_ID=session-log-v3  (UTF-8 console + log)
-# powershell -ExecutionPolicy Bypass -File .\run-backend.ps1
+﻿# Запуск бэкенда из корня репозитория (вызывается из scripts/studio.ps1)
+# RUN_BACKEND_ID=session-log-v3
 
 param(
     [switch]$NoPause
 )
 
 $ErrorActionPreference = "Continue"
-$Root = $PSScriptRoot
-Set-Location $Root
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $Root
 
-# Loguru пишет UTF-8; без этого в консоли Windows кириллица = «каракули».
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -22,14 +20,14 @@ $logDir = Join-Path $Root "data"
 $sharedLog = Join-Path $logDir "backend.log"
 $sessionLog = Join-Path $logDir "backend-$PID.log"
 
-if (-not (Test-Path "pyproject.toml")) {
-    Write-Host "ERROR: pyproject.toml not found in $Root" -ForegroundColor Red
+if (-not (Test-Path (Join-Path $Root "pyproject.toml"))) {
+    Write-Host "ОШИБКА: pyproject.toml не найден в $Root" -ForegroundColor Red
     exit 1
 }
 
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
-    Write-Host "ERROR: .venv not found. Run .\install.ps1 first." -ForegroundColor Red
+    Write-Host "ОШИБКА: .venv не найден. Сначала запустите install.ps1 или STUDIO.cmd -> [3] Починить установку." -ForegroundColor Red
     exit 1
 }
 
@@ -40,20 +38,13 @@ if (-not (Test-Path $logDir)) {
 function Write-BackendLogLine([string]$Line) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = "$ts  $Line"
-    try {
-        Add-Content -Path $sessionLog -Value $entry -Encoding UTF8 -ErrorAction Stop
-    } catch { }
-    try {
-        Add-Content -Path $sharedLog -Value $entry -Encoding UTF8 -ErrorAction Stop
-    } catch {
-        # Второй бэкенд или Notepad держит backend.log — пишем только в session log
-    }
+    try { Add-Content -Path $sessionLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
+    try { Add-Content -Path $sharedLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
 }
 
 Write-Host "==> video-pipeline backend (cwd=$Root)" -ForegroundColor Cyan
 Write-Host "    http://127.0.0.1:8765" -ForegroundColor Yellow
-Write-Host "    log (this run): data\backend-$PID.log" -ForegroundColor DarkGray
-Write-Host "    log (shared):   data\backend.log (may be locked if 2 backends)" -ForegroundColor DarkGray
+Write-Host "    лог (этот запуск): data\backend-$PID.log" -ForegroundColor DarkGray
 try {
     $gitHead = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
     if ($gitHead) { Write-Host "    git HEAD: $gitHead" -ForegroundColor DarkGray }
@@ -70,44 +61,46 @@ Write-Host ""
 try {
     $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
     if ($listener) {
-        Write-Host "WARNING: port 8765 already in use (PID $($listener.OwningProcess))." -ForegroundColor Yellow
-        Write-Host "         Close the other backend window or run: .\stop-backend.cmd" -ForegroundColor Yellow
+        Write-Host "ВНИМАНИЕ: порт 8765 занят (PID $($listener.OwningProcess))." -ForegroundColor Yellow
+        Write-Host "         Закройте другое окно бэкенда или: stop-backend.cmd" -ForegroundColor Yellow
         Write-Host ""
     }
 } catch { }
 
 if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-    Write-Host "WARNING: web/out/index.html missing - Launcher button 6 Build Web UI" -ForegroundColor Yellow
+    Write-Host "ВНИМАНИЕ: web/out/index.html отсутствует — STUDIO.cmd -> [3] Починить установку" -ForegroundColor Yellow
 }
 
 $env:TELEGRAM_ENABLED = "false"
 $env:WEB_HOST = "127.0.0.1"
 $env:WEB_PORT = "8765"
+$env:HF_HUB_DISABLE_SYMLINKS = "1"
+$env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
 
-Write-Host "Preflight: create_app() ..." -ForegroundColor Gray
+Write-Host "Проверка create_app() ..." -ForegroundColor Gray
 $preflightOut = @(& $py -c "from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
 $preflightOk = ($LASTEXITCODE -eq 0) -and ($preflightOut -match "create_app OK")
 if (-not $preflightOk) {
     Write-Host ""
-    Write-Host "PREFLIGHT FAILED — backend will not listen on :8765" -ForegroundColor Red
+    Write-Host "ПРОВЕРКА НЕ ПРОШЛА — бэкенд не поднимется на :8765" -ForegroundColor Red
     $preflightOut | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     Write-Host ""
-    Write-Host "Usually fixed by: git pull  then run UPDATE-STUDIO.cmd" -ForegroundColor Yellow
-    Write-Host "Need app/web/api.py with response_model=None (commit 5190d6c+)" -ForegroundColor Yellow
-    Write-Host ""
+    Write-Host "Обычно помогает: STUDIO.cmd -> [2] Обновить и запустить" -ForegroundColor Yellow
     Write-BackendLogLine "PREFLIGHT FAILED: $($preflightOut -join ' | ')"
-    Write-Host "Press Enter to close..." -ForegroundColor Gray
-    Read-Host | Out-Null
+    if (-not $NoPause) {
+        Write-Host "Нажмите Enter для закрытия..." -ForegroundColor Gray
+        Read-Host | Out-Null
+    }
     exit 1
 }
-Write-Host "Preflight OK" -ForegroundColor Green
+Write-Host "Проверка OK" -ForegroundColor Green
 Write-BackendLogLine "preflight create_app OK"
 
 Write-Host ""
-Write-Host ">>> DO NOT CLOSE THIS WINDOW while Studio is open <<<" -ForegroundColor Yellow
-Write-Host "    Wait for: Uvicorn running on http://127.0.0.1:8765" -ForegroundColor Yellow
+Write-Host ">>> НЕ ЗАКРЫВАЙТЕ ЭТО ОКНО, пока открыта студия <<<" -ForegroundColor Yellow
+Write-Host "    Дождитесь: Uvicorn running on http://127.0.0.1:8765" -ForegroundColor Yellow
 Write-Host ""
 
 $exitCode = 0
@@ -117,25 +110,22 @@ try {
         Write-Host $line
         Write-BackendLogLine $line
     }
-    if ($null -ne $LASTEXITCODE) {
-        $exitCode = $LASTEXITCODE
-    }
+    if ($null -ne $LASTEXITCODE) { $exitCode = $LASTEXITCODE }
 } catch {
     $msg = $_.Exception.Message
-    Write-Host "Backend crashed: $msg" -ForegroundColor Red
+    Write-Host "Бэкенд упал: $msg" -ForegroundColor Red
     Write-BackendLogLine "CRASH: $msg"
     $exitCode = 1
 }
 
 Write-BackendLogLine "=== backend exit code=$exitCode ==="
-
 if ($exitCode -ne 0) {
     Write-Host ""
-    Write-Host "Backend exited with code $exitCode" -ForegroundColor Red
-    Write-Host "See data\backend-$PID.log (and data\backend.log if not locked)" -ForegroundColor Red
+    Write-Host "Бэкенд завершился с кодом $exitCode" -ForegroundColor Red
+    Write-Host "См. data\backend-$PID.log" -ForegroundColor Red
 }
 if (-not $NoPause) {
     Write-Host ""
-    Write-Host "Press Enter to close..." -ForegroundColor Gray
+    Write-Host "Нажмите Enter для закрытия..." -ForegroundColor Gray
     Read-Host | Out-Null
 }

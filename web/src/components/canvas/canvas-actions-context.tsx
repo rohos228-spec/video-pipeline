@@ -36,6 +36,9 @@ export interface CanvasActions {
   onOpenAiReview: (nodeKey: string, nodeType: string) => void;
   onOpenHitlById: (hitlId: number) => void;
   onOpenNodeResult: (nodeKey: string, nodeType: string) => void;
+  montageBoardOpen: boolean;
+  onOpenMontageBoard: () => void;
+  onCloseMontageBoard: () => void;
 }
 
 const Ctx = createContext<CanvasActions | null>(null);

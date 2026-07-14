@@ -8,6 +8,8 @@ import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
+  MontageBoardDTO,
+  MontageBoardMeta,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -81,26 +83,55 @@ export interface LibraryConfigDTO {
 
 async function http<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs = 30_000,
 ): Promise<T> {
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    let detail: string | object = await res.text();
-    try {
-      detail = JSON.parse(detail as string);
-    } catch {
-      // оставляем как text
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      let detail: string | object = await res.text();
+      try {
+        detail = JSON.parse(detail as string);
+      } catch {
+        // оставляем как text
+      }
+      throw new ApiError(res.status, detail);
     }
-    throw new ApiError(res.status, detail);
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new ApiError(
+        0,
+        "Сервер не ответил за 30 с — проверьте окно BACKEND (Uvicorn на :8765)",
+      );
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+}
+
+export interface MontagePendingOp {
+  type:
+    | "image_regen"
+    | "image_regen_prompt"
+    | "image_regen_correction"
+    | "video_regen"
+    | "video_regen_prompt";
+  frame_number: number;
+  shot: 1 | 2;
+  prompt?: string;
+  correction?: string;
 }
 
 export interface XlsxPreview {
@@ -150,12 +181,27 @@ export function formatApiError(
     }
     return detail;
   }
-  if (detail && typeof detail === "object" && "detail" in detail) {
-    const d = (detail as { detail?: unknown }).detail;
-    if (typeof d === "string") return d;
-    if (Array.isArray(d)) return d.map(String).join("; ");
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    if (Array.isArray(d.errors) && d.errors.length > 0) {
+      return d.errors.map(String).join("; ");
+    }
+    if (typeof d.error === "string" && d.error.trim()) return d.error;
+    if (typeof d.message === "string" && d.message.trim()) return d.message;
+    if ("detail" in d) {
+      const inner = d.detail;
+      if (typeof inner === "string") return inner;
+      if (Array.isArray(inner)) return inner.map(String).join("; ");
+      if (inner && typeof inner === "object") {
+        const nested = inner as Record<string, unknown>;
+        if (Array.isArray(nested.errors) && nested.errors.length > 0) {
+          return nested.errors.map(String).join("; ");
+        }
+        if (typeof nested.error === "string") return nested.error;
+      }
+    }
   }
-  return JSON.stringify(detail);
+  return "Ошибка операции";
 }
 
 export const api = {
@@ -300,6 +346,106 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  getMontageBoard: (projectId: number) =>
+    http<MontageBoardDTO>(`/api/projects/${projectId}/montage-board`),
+
+  applyMontageBoard: (
+    projectId: number,
+    body: {
+      video_trims: Record<string, { start: number; end: number }>;
+      pending_ops: MontagePendingOp[];
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      message?: string;
+      meta?: MontageBoardMeta;
+      errors?: string[];
+      job?: { status?: string; total_ops?: number; error?: string | null };
+    }>(`/api/projects/${projectId}/montage-board/apply`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getMontageApplyStatus: (projectId: number) =>
+    http<{
+      job: {
+        status?: string;
+        error?: string | null;
+        total_ops?: number;
+        done_ops?: number;
+      };
+    }>(`/api/projects/${projectId}/montage-board/apply-status`),
+
+  runMontageBoard: (projectId: number) =>
+    http<{ started: boolean; already_running?: boolean; job?: Record<string, unknown> }>(
+      `/api/projects/${projectId}/montage-board/montage`,
+      { method: "POST" },
+    ),
+
+  getMontageBoardStatus: (projectId: number) =>
+    http<{ job: { status?: string; error?: string | null } }>(
+      `/api/projects/${projectId}/montage-board/montage-status`,
+    ),
+
+  deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST" },
+    ),
+
+  deleteMontageVideo: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-video?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST" },
+    ),
+
+  uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; preview_url: string }>;
+  },
+
+  uploadMontageVideo: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/projects/${projectId}/montage-board/upload-video?frame_number=${frameNumber}&shot=${shot}`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; preview_url: string }>;
+  },
+
+  uploadMontageVoice: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/montage-board/upload-voice`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; path: string }>;
+  },
+
+  uploadMontageMusic: async (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/montage-board/upload-music`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean; path: string }>;
+  },
 
   // ── Runs ─────────────────────────────────────────────────────────
   listRuns: () => http<WorkflowRunDetail[]>(`/api/runs`),
@@ -897,7 +1043,7 @@ export interface PromptFileInfo {
   name: string;
   filename: string;
   size: number;
-  modified: number;
+  modified: number | null;
   is_default: boolean;
 }
 
@@ -906,7 +1052,7 @@ export interface PromptFileContent {
   filename: string;
   content: string;
   size: number;
-  modified: number;
+  modified: number | null;
 }
 
 export interface PromptVersionInfo {

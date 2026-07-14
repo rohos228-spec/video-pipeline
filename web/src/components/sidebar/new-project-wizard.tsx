@@ -75,7 +75,7 @@ export function NewProjectWizard({
   const [wizIndex, setWizIndex] = useState(0);
   const [topic, setTopic] = useState("");
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const [autoMode, setAutoMode] = useState(true);
+  const [autoMode, setAutoMode] = useState(false);
   const [answers, setAnswers] = useState<WizardAnswers>({});
   const [skipWizard, setSkipWizard] = useState(false);
   const [savePresetAfterCreate, setSavePresetAfterCreate] = useState(false);

@@ -48,7 +48,12 @@ async def stop_project_running(
 ) -> dict[str, str | bool | list[str] | None]:
     """⏹ STOP: откат running-шага и/или блок автопродвижения (user_stop)."""
     request_stop(project.id)
+    from app.services.montage_board_apply_job import cancel_all_montage_jobs
+
+    await cancel_all_montage_jobs(project.id)
     xlsx_stopped = clear_xlsx_flow_locks(project.id)
+
+    from app.services.run_sync import stop_active_running_node
 
     ok = False
     stopped_kind: str | None = None
@@ -69,6 +74,7 @@ async def stop_project_running(
             else ProjectStatus.new
         )
         rollback_to_val = rollback_to.value
+        await stop_active_running_node(session, project)
         project.status = rollback_to
         meta = dict(project.meta or {})
         chain_to = meta.pop("enrich_auto_chain_to", None)
@@ -93,12 +99,17 @@ async def stop_project_running(
         ok = True
         stopped_kind = "xlsx"
         msg = f"остановлен xlsx-flow ({', '.join(xlsx_stopped)})"
+        await stop_active_running_node(session, project)
+        clear_stop(project.id)
     else:
         ok = True
         stopped_kind = "gate"
         msg = (
             f"автопродвижение остановлено (статус: {project.status.value})"
         )
+        await stop_active_running_node(session, project)
+        # Иначе stop-файл блокирует Outsee при «Применить правки» (abort_if_cancelled).
+        clear_stop(project.id)
 
     _set_user_stop_gate(project)
     project.updated_at = datetime.utcnow()
@@ -145,3 +156,37 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
     project.updated_at = datetime.utcnow()
     await session.flush()
     return project.status.value
+
+
+async def rollback_running_for_queue(
+    session: AsyncSession,
+    project: Project,
+    *,
+    reason: str,
+) -> bool:
+    """Откат running-шага для gen_queue (request_stop + FSM нод, без user_stop)."""
+    if not is_running_status(project.status):
+        return False
+    from app.services.step_cancel import request_stop
+    from app.services.run_sync import stop_active_running_node
+
+    request_stop(project.id)
+    await stop_active_running_node(session, project)
+    step = step_by_running_status(project.status)
+    rollback = (
+        step.requires
+        if step is not None and step.requires is not None
+        else ProjectStatus.new
+    )
+    cur = project.status.value
+    project.status = rollback
+    project.updated_at = datetime.utcnow()
+    await session.flush()
+    logger.warning(
+        "[#{}] gen_queue rollback ({}): {} → {}",
+        project.id,
+        reason,
+        cur,
+        rollback.value,
+    )
+    return True

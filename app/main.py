@@ -413,6 +413,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     try:
                         result = await task
                         clear_failure_on_success(p, ProjectStatus(prev_status_value))
+                        from app.services.run_sync import update_active_node_progress_text
+
+                        await update_active_node_progress_text(s, p, None)
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
                             with contextlib.suppress(Exception):
@@ -669,9 +672,15 @@ async def _startup_maintenance() -> None:
         await _backfill_from_disk()
         await _recompute_all_projects()
         await sync_prompts_from_files()
+        from app.services.prompt_history import bootstrap_saved_at_from_history
+
+        bootstrap_saved_at_from_history()
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
+        from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+
+        await reconcile_stale_montage_jobs_on_startup()
     except Exception as e:  # noqa: BLE001
         logger.exception("startup maintenance failed: {}", e)
 

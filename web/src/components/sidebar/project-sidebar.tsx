@@ -19,7 +19,7 @@ import {
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
-import type { ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
+import type { GenQueueIdleInfo, ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,6 +34,23 @@ import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 type DragPayload =
   | { kind: "project"; id: number; folderId: string | null }
   | { kind: "folder"; id: string };
+
+function queueIdleShortLabel(idle: GenQueueIdleInfo | null, projectId: number): string | null {
+  if (!idle || idle.project_id !== projectId) return null;
+  const byReason: Record<string, string> = {
+    paused: "пауза",
+    user_stop: "стоп",
+    failed: "ошибка",
+    auto_mode: "нет ИИ",
+    waiting: "ждёт",
+  };
+  return byReason[idle.reason] ?? idle.detail.slice(0, 12);
+}
+
+function queueIdleTooltip(idle: GenQueueIdleInfo | null, projectId: number): string | null {
+  if (!idle || idle.project_id !== projectId) return null;
+  return idle.detail;
+}
 
 function parseDragPayload(raw: string): DragPayload | null {
   try {
@@ -72,7 +89,7 @@ export function ProjectSidebar({
   const layout = useQuery({
     queryKey: ["sidebar-layout"],
     queryFn: api.getSidebarLayout,
-    refetchInterval: 15000,
+    refetchInterval: 5000,
   });
   const qc = useQueryClient();
 
@@ -197,6 +214,7 @@ export function ProjectSidebar({
   }, [roots]);
 
   const rootProjects = projectsByFolder.get(null) ?? [];
+  const genQueueIdle = layout.data?.gen_queue_idle ?? null;
 
   const persistProjectLayout = useCallback(
     (
@@ -303,6 +321,8 @@ export function ProjectSidebar({
     const isOpen = expanded[`mass:${p.id}`] ?? isFactory;
     const parentBadge = opts?.badge
       ?? (p.mass_factory ? "шаблон" : children.length > 0 ? `${children.length} доч.` : undefined);
+    const queueIdleShort = queueIdleShortLabel(genQueueIdle, p.id);
+    const queueIdleTip = queueIdleTooltip(genQueueIdle, p.id);
     return (
       <div key={p.id} className="flex flex-col">
         <div
@@ -354,6 +374,8 @@ export function ProjectSidebar({
               canCreateChild={p.mass_parent_id == null}
               creatingChild={createChildMutation.isPending && createChildMutation.variables === p.id}
               queuePosition={p.gen_queue_position ?? null}
+              queueIdleShort={queueIdleShort}
+              queueIdleDetail={queueIdleTip}
               onToggleQueue={() => handleQueueClick(p)}
               onSelect={() => onSelect(p.id)}
               onDelete={() => deleteMutation.mutate(p.id)}
@@ -372,6 +394,8 @@ export function ProjectSidebar({
                   compact
                   badge={p.mass_factory ? `#${c.mass_lane_position ?? "?"}` : `доч. ${c.mass_lane_position ?? "?"}`}
                   queuePosition={c.gen_queue_position ?? null}
+                  queueIdleShort={queueIdleShortLabel(genQueueIdle, c.id)}
+                  queueIdleDetail={queueIdleTooltip(genQueueIdle, c.id)}
                   onToggleQueue={() => handleQueueClick(c)}
                   onSelect={() => onSelect(c.id)}
                   onDelete={() => deleteMutation.mutate(c.id)}
@@ -800,6 +824,8 @@ function ProjectRow({
   canCreateChild,
   creatingChild,
   queuePosition,
+  queueIdleShort,
+  queueIdleDetail,
   onToggleQueue,
   onSelect,
   onDelete,
@@ -813,6 +839,8 @@ function ProjectRow({
   canCreateChild?: boolean;
   creatingChild?: boolean;
   queuePosition?: number | null;
+  queueIdleShort?: string | null;
+  queueIdleDetail?: string | null;
   onToggleQueue?: () => void;
   onSelect: () => void;
   onDelete: () => void;
@@ -845,19 +873,28 @@ function ProjectRow({
           onToggleQueue?.();
         }}
         className={cn(
-          "absolute top-1.5 right-1.5 z-10 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border px-1 text-[9px] font-normal tabular-nums leading-none transition-all",
+          "absolute top-1.5 right-1.5 z-10 flex h-[18px] min-w-[18px] max-w-[72px] items-center justify-center gap-0.5 rounded-full border px-1 text-[9px] font-normal tabular-nums leading-none transition-all",
           queuePosition
-            ? "border-sky-300/35 bg-sky-400/15 text-sky-100/95 shadow-[0_0_12px_rgba(56,189,248,0.15)]"
+            ? queueIdleShort
+              ? "border-amber-300/40 bg-amber-400/15 text-amber-100/95 shadow-[0_0_12px_rgba(251,191,36,0.12)]"
+              : "border-sky-300/35 bg-sky-400/15 text-sky-100/95 shadow-[0_0_12px_rgba(56,189,248,0.15)]"
             : "border-white/[0.08] bg-white/[0.02] text-transparent opacity-0 hover:border-sky-300/30 hover:text-muted-foreground/50 group-hover:opacity-100",
           queuePosition && "opacity-100",
         )}
         title={
           queuePosition
-            ? `Очередь генерации: ${queuePosition}. Нажмите, чтобы снять.`
+            ? `Очередь генерации: ${queuePosition}${
+                queueIdleDetail ? ` — ${queueIdleDetail}` : ""
+              }. Нажмите, чтобы снять.`
             : "Добавить в очередь генерации"
         }
       >
-        {queuePosition ?? "·"}
+        <span>{queuePosition ?? "·"}</span>
+        {queuePosition && queueIdleShort ? (
+          <span className="max-w-[40px] truncate text-[7px] font-normal normal-case opacity-90">
+            {queueIdleShort}
+          </span>
+        ) : null}
       </button>
 
       <div className="flex items-start gap-1.5 pr-7">

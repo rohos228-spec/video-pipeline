@@ -169,3 +169,26 @@ async def mark_gen_queue_run_complete(session: AsyncSession, project: Project) -
     meta["gen_queue_run"] = run
     project.meta = meta
     await session.flush()
+
+
+async def skip_gen_queue_slot(
+    session: AsyncSession,
+    project: Project,
+    *,
+    reason: str,
+    detail: str | None = None,
+) -> None:
+    """Пометить слот очереди пропущенным (ошибка и т.п.) — не блокирует следующие."""
+    meta = dict(_meta_dict(project))
+    meta["gen_queue_skip"] = {
+        "reason": reason,
+        "detail": (detail or "")[:200],
+    }
+    project.meta = meta
+    await mark_gen_queue_run_complete(session, project)
+    await session.flush()
+
+
+def gen_queue_slot_skipped(project: Project) -> dict[str, Any] | None:
+    skip = _meta_dict(project).get("gen_queue_skip")
+    return skip if isinstance(skip, dict) else None
