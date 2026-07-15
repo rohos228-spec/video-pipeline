@@ -89,6 +89,8 @@ export interface ProjectSummary {
   mass_parent_id?: number | null;
   mass_factory?: boolean;
   mass_lane_position?: number | null;
+  batch_id?: number | null;
+  batch_position?: number | null;
   sidebar_folder_id?: string | null;
   sidebar_order?: number | null;
   gen_queue_position?: number | null;
@@ -98,8 +100,16 @@ export interface SidebarFolder {
   id: string;
   name: string;
   order: number;
+  batch_id?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface BatchSidebarInfo {
+  folder_id: string | null;
+  name: string;
+  status: string;
+  progress: { done: number; total: number };
 }
 
 export interface GenQueueIdleInfo {
@@ -115,6 +125,7 @@ export interface SidebarLayout {
   gen_queue: number[];
   gen_queue_positions: Record<number, number>;
   gen_queue_idle?: GenQueueIdleInfo | null;
+  batches?: Record<string, BatchSidebarInfo>;
 }
 
 export interface GenerationConfigPresetSettings {

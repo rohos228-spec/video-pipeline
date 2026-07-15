@@ -19,7 +19,7 @@ import {
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
-import type { GenQueueIdleInfo, ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
+import type { BatchSidebarInfo, GenQueueIdleInfo, ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -176,6 +176,9 @@ export function ProjectSidebar({
     const childrenMap = new Map<number, ProjectSummary[]>();
     const rootList: ProjectSummary[] = [];
     for (const p of list) {
+      if (p.batch_id != null) {
+        continue;
+      }
       const pid = p.mass_parent_id;
       if (pid != null) {
         const arr = childrenMap.get(pid) ?? [];
@@ -199,19 +202,40 @@ export function ProjectSidebar({
     [layout.data?.folders],
   );
 
+  const batchInfoByFolderId = useMemo(() => {
+    const out = new Map<string, BatchSidebarInfo>();
+    for (const info of Object.values(layout.data?.batches ?? {})) {
+      if (info.folder_id) out.set(info.folder_id, info);
+    }
+    for (const f of folders) {
+      if (f.batch_id != null) {
+        const info = layout.data?.batches?.[String(f.batch_id)];
+        if (info) out.set(f.id, info);
+      }
+    }
+    return out;
+  }, [folders, layout.data?.batches]);
+
   const projectsByFolder = useMemo(() => {
     const map = new Map<string | null, ProjectSummary[]>();
-    for (const p of roots) {
+    const list = projects.data ?? [];
+    for (const p of list) {
+      if (p.mass_parent_id != null) continue;
       const fid = p.sidebar_folder_id ?? null;
+      if (p.batch_id != null && !fid) continue;
       const arr = map.get(fid) ?? [];
       arr.push(p);
       map.set(fid, arr);
     }
     for (const arr of map.values()) {
-      arr.sort((a, b) => (a.sidebar_order ?? 999) - (b.sidebar_order ?? 999));
+      arr.sort((a, b) => {
+        const ao = a.batch_position ?? a.sidebar_order ?? 999;
+        const bo = b.batch_position ?? b.sidebar_order ?? 999;
+        return ao - bo;
+      });
     }
     return map;
-  }, [roots]);
+  }, [projects.data]);
 
   const rootProjects = projectsByFolder.get(null) ?? [];
   const genQueueIdle = layout.data?.gen_queue_idle ?? null;
@@ -242,8 +266,8 @@ export function ProjectSidebar({
       const pool = [...(projectsByFolder.get(targetFolderId) ?? [])].filter(
         (p) => p.id !== projectId,
       );
-      const moving = roots.find((p) => p.id === projectId);
-      if (!moving) return;
+      const moving = (projects.data ?? []).find((p) => p.id === projectId);
+      if (!moving || moving.batch_id != null) return;
       const clamped = Math.max(0, Math.min(targetIndex, pool.length));
       pool.splice(clamped, 0, { ...moving, sidebar_folder_id: targetFolderId });
       const updates = pool.map((p, idx) => ({
@@ -579,9 +603,16 @@ export function ProjectSidebar({
 
           {visibleFolders.map((folder) => {
             const fKey = `folder:${folder.id}`;
-            const isOpen = expanded[fKey] ?? true;
+            const isOpen = expanded[fKey] ?? false;
             const folderProjects = (projectsByFolder.get(folder.id) ?? []).filter(matchProject);
             const isActiveFolder = activeFolderId === folder.id;
+            const batchInfo = batchInfoByFolderId.get(folder.id);
+            const batchStatusLabel =
+              batchInfo?.status === "running"
+                ? "очередь"
+                : batchInfo?.status === "paused"
+                  ? "пауза"
+                  : null;
             return (
               <Fragment key={folder.id}>
               <div
@@ -660,10 +691,31 @@ export function ProjectSidebar({
                     <span className="break-words text-[12px] font-normal leading-snug tracking-[0.01em]">
                       {folder.name}
                     </span>
-                    <span className="ml-auto rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal tabular-nums text-muted-foreground/70">
-                      {folderProjects.length}
-                    </span>
+                    {batchInfo ? (
+                      <span
+                        className="ml-auto flex shrink-0 items-center gap-1"
+                        title={
+                          batchStatusLabel
+                            ? `Массовая генерация: ${batchInfo.progress.done}/${batchInfo.progress.total}, ${batchStatusLabel}`
+                            : `Массовая генерация: ${batchInfo.progress.done}/${batchInfo.progress.total}`
+                        }
+                      >
+                        {batchStatusLabel ? (
+                          <span className="rounded-full border border-violet-300/25 bg-violet-400/10 px-1.5 py-px text-[8px] font-normal text-violet-200/90">
+                            {batchStatusLabel}
+                          </span>
+                        ) : null}
+                        <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal tabular-nums text-muted-foreground/70">
+                          {batchInfo.progress.done}/{batchInfo.progress.total}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="ml-auto rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal tabular-nums text-muted-foreground/70">
+                        {folderProjects.length}
+                      </span>
+                    )}
                   </button>
+                  {!batchInfo ? (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -686,10 +738,17 @@ export function ProjectSidebar({
                   >
                     <Trash2 className="h-3 w-3" strokeWidth={1.5} />
                   </button>
+                  ) : null}
                 </div>
                 {isOpen && (
                   <div className="space-y-1 border-t border-white/[0.05] px-1.5 py-1.5">
-                    {folderProjects.map((p) => renderProject(p, { draggable: true }))}
+                    {folderProjects.map((p) =>
+                      renderProject(p, {
+                        draggable: !batchInfo,
+                        compact: !!batchInfo,
+                        badge: p.batch_position != null ? `#${p.batch_position}` : undefined,
+                      }),
+                    )}
                     {folderProjects.length === 0 && (
                       <div className="px-3 py-3 text-center text-[10px] font-light text-muted-foreground/45">
                         Перетащите проект сюда

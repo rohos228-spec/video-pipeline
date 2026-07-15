@@ -34,6 +34,8 @@ def project_to_summary(
         mass_parent_id=mass_parent_id(project),
         mass_factory=is_mass_factory_parent(project),
         mass_lane_position=lane_pos,
+        batch_id=project.batch_id,
+        batch_position=project.batch_position,
         sidebar_folder_id=sidebar_folder_id,
         sidebar_order=sidebar_order,
         gen_queue_position=gen_queue_position,

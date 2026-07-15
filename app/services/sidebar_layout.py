@@ -106,24 +106,71 @@ def set_gen_queue(queue: list[int]) -> list[int]:
     return data["gen_queue"]
 
 
-def create_folder(name: str) -> dict[str, Any]:
+def create_folder(name: str, *, batch_id: int | None = None) -> dict[str, Any]:
     clean = (name or "").strip()
     if not clean:
         raise ValueError("name is required")
     data = load_layout()
     folders: list[dict[str, Any]] = list(data.get("folders") or [])
+    if batch_id is not None:
+        for f in folders:
+            if f.get("batch_id") == batch_id:
+                if f.get("name") != clean:
+                    f["name"] = clean
+                    f["updated_at"] = _now_iso()
+                    data["folders"] = folders
+                    save_layout(data)
+                return f
     folder_id = uuid.uuid4().hex[:12]
     order = max((int(f.get("order") or 0) for f in folders), default=-1) + 1
-    record = {
+    record: dict[str, Any] = {
         "id": folder_id,
         "name": clean,
         "order": order,
         "created_at": _now_iso(),
     }
+    if batch_id is not None:
+        record["batch_id"] = batch_id
     folders.append(record)
     data["folders"] = folders
     save_layout(data)
     return record
+
+
+def ensure_batch_folder(batch_id: int, name: str) -> str:
+    """Папка батча в сайдбаре; возвращает folder_id."""
+    folder = create_folder(name, batch_id=batch_id)
+    return str(folder["id"])
+
+
+def get_batch_folder_id(batch_id: int) -> str | None:
+    for f in load_layout().get("folders") or []:
+        if isinstance(f, dict) and f.get("batch_id") == batch_id:
+            fid = f.get("id")
+            return str(fid) if fid else None
+    return None
+
+
+def delete_batch_folder(batch_id: int) -> bool:
+    folder_id = get_batch_folder_id(batch_id)
+    if folder_id is None:
+        return False
+    return delete_folder(folder_id)
+
+
+def ensure_batch_subproject_layout(
+    project_id: int, *, batch_id: int, batch_position: int
+) -> None:
+    """Размещает подпроект батча в папке батча по batch_position."""
+    folder_id = get_batch_folder_id(batch_id)
+    if folder_id is None:
+        return
+    data = load_layout()
+    layout: dict[str, Any] = dict(data.get("project_layout") or {})
+    key = str(project_id)
+    layout[key] = {"folder_id": folder_id, "order": int(batch_position)}
+    data["project_layout"] = layout
+    save_layout(data)
 
 
 def rename_folder(folder_id: str, name: str) -> dict[str, Any]:
@@ -182,20 +229,26 @@ def _project_layout_entry(
     }
 
 
-def ensure_project_layout(project_id: int, *, folder_id: str | None = None) -> None:
+def ensure_project_layout(
+    project_id: int,
+    *,
+    folder_id: str | None = None,
+    order: int | None = None,
+) -> None:
     """Добавить проект в layout при создании (в папку или в корень)."""
     data = load_layout()
     layout: dict[str, Any] = dict(data.get("project_layout") or {})
     key = str(project_id)
-    if key in layout:
+    if key in layout and order is None:
         return
-    siblings = [
-        _project_layout_entry(layout, int(k))
-        for k in layout
-        if _project_layout_entry(layout, int(k)).get("folder_id") == folder_id
-    ]
-    order = max((int(s.get("order") or 0) for s in siblings), default=-1) + 1
-    layout[key] = {"folder_id": folder_id, "order": order}
+    if order is None:
+        siblings = [
+            _project_layout_entry(layout, int(k))
+            for k in layout
+            if _project_layout_entry(layout, int(k)).get("folder_id") == folder_id
+        ]
+        order = max((int(s.get("order") or 0) for s in siblings), default=-1) + 1
+    layout[key] = {"folder_id": folder_id, "order": int(order)}
     data["project_layout"] = layout
     save_layout(data)
 
@@ -231,24 +284,57 @@ def update_layout(
     return data
 
 
-def sync_projects(project_ids: set[int]) -> None:
-    """Добавить отсутствующие root-проекты в layout (корень, конец списка)."""
+def sync_projects(
+    project_ids: set[int],
+    *,
+    batch_subprojects: dict[int, tuple[int, int]] | None = None,
+    batch_names: dict[int, str] | None = None,
+) -> None:
+    """Добавить отсутствующие проекты в layout.
+
+    Root-проекты — в корень. Подпроекты батча — в папку батча (не в корень).
+    batch_subprojects: project_id -> (batch_id, batch_position).
+    """
     data = load_layout()
     layout: dict[str, Any] = dict(data.get("project_layout") or {})
+    batch_subprojects = batch_subprojects or {}
+    batch_names = batch_names or {}
+
+    for batch_id, name in batch_names.items():
+        ensure_batch_folder(batch_id, name)
+    data = load_layout()
+    layout = dict(data.get("project_layout") or {})
+
+    changed = False
+    for pid, (batch_id, batch_position) in batch_subprojects.items():
+        folder_id = get_batch_folder_id(batch_id)
+        if folder_id is None:
+            continue
+        key = str(pid)
+        entry = layout.get(key)
+        desired = {"folder_id": folder_id, "order": int(batch_position)}
+        if entry != desired:
+            layout[key] = desired
+            changed = True
+
     root_orders = [
         int(v.get("order") or 0)
         for k, v in layout.items()
-        if isinstance(v, dict) and not v.get("folder_id")
+        if isinstance(v, dict)
+        and not v.get("folder_id")
+        and int(k) not in batch_subprojects
     ]
     next_order = max(root_orders, default=-1) + 1
-    changed = False
     for pid in sorted(project_ids):
+        if pid in batch_subprojects:
+            continue
         key = str(pid)
         if key in layout:
             continue
         layout[key] = {"folder_id": None, "order": next_order}
         next_order += 1
         changed = True
+
     if changed:
         data["project_layout"] = layout
         save_layout(data)
