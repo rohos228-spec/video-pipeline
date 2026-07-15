@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ExternalLink, Loader2, Network, RefreshCw, Server } from "lucide-react";
+import { toast } from "sonner";
 
 type FleetNode = {
   id: number;
@@ -40,6 +41,16 @@ type FleetProject = {
   montage_queue_position?: number | null;
   send_to_main_pc?: boolean;
 };
+
+function browserUrl(node: FleetNode, config: Record<string, unknown> | null): string {
+  let url = (node.base_url || "").trim();
+  if (/0\.0\.0\.0|127\.0\.0\.1|localhost/i.test(url)) {
+    const pub = String(config?.public_url ?? "").trim();
+    if (pub && !/0\.0\.0\.0/i.test(pub)) return pub;
+    return url.replace("0.0.0.0", "127.0.0.1");
+  }
+  return url;
+}
 
 export function FleetPanel({
   onOpenProject,
@@ -109,24 +120,37 @@ export function FleetPanel({
     !isLocalNode(node) &&
     /127\.0\.0\.1|localhost/i.test(node.base_url || "");
 
-  const loadPipeline = useCallback(async (nodeId: number) => {
+  const loadPipeline = useCallback(async (nodeId: number, quiet = false) => {
     setPipelineLoading(true);
     setLoadError("");
     try {
       const data = await fleetNodePipeline(nodeId);
-      setProjects((data.projects as FleetProject[]) || []);
+      const list = (data.projects as FleetProject[]) || [];
+      setProjects(list);
+      if (!quiet) {
+        toast.message(`Загружено проектов: ${list.length}`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Не удалось загрузить проекты";
       setLoadError(msg);
       setProjects([]);
+      if (!quiet) toast.error(msg.slice(0, 200));
     } finally {
       setPipelineLoading(false);
     }
   }, []);
 
+  const selectNode = (nodeId: number) => {
+    if (nodeId === selectedId) {
+      void loadPipeline(nodeId);
+      return;
+    }
+    setSelectedId(nodeId);
+  };
+
   useEffect(() => {
     if (selectedId == null) return;
-    void loadPipeline(selectedId);
+    void loadPipeline(selectedId, true);
   }, [selectedId, loadPipeline]);
 
   const openProject = (projectId: number) => {
@@ -135,7 +159,12 @@ export function FleetPanel({
       onOpenProject(projectId, selected);
       return;
     }
-    window.open(selected.base_url, "_blank", "noopener,noreferrer");
+    window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
+  };
+
+  const openStationStudio = () => {
+    if (!selected) return;
+    window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
   };
 
   const onLogin = async () => {
@@ -235,7 +264,7 @@ export function FleetPanel({
             <button
               key={n.id}
               type="button"
-              onClick={() => setSelectedId(n.id)}
+              onClick={() => selectNode(n.id)}
               className={cn(
                 "mb-1 flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-muted/60",
                 selectedId === n.id && "bg-muted",
@@ -266,13 +295,23 @@ export function FleetPanel({
 
         <section className="flex min-h-0 flex-col overflow-hidden p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium">Пайплайн</p>
-            {selected && !isLocalNode(selected) ? (
-              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <ExternalLink className="h-3 w-3" />
-                Перейти откроет Studio воркера
-              </span>
-            ) : null}
+            <p className="text-xs font-medium">
+              Пайплайн{selected ? ` · ${selected.name}` : ""}
+              {!pipelineLoading && selected ? ` (${projects.length})` : ""}
+            </p>
+            <div className="flex items-center gap-2">
+              {selected ? (
+                <Button size="sm" variant="ghost" className="h-7 text-[10px]" onClick={openStationStudio}>
+                  <ExternalLink className="mr-1 h-3 w-3" />
+                  Открыть Studio
+                </Button>
+              ) : null}
+              {selected && !isLocalNode(selected) ? (
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  удалённая станция
+                </span>
+              ) : null}
+            </div>
           </div>
           <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
             {pipelineLoading ? (
@@ -282,7 +321,11 @@ export function FleetPanel({
               </div>
             ) : null}
             {!pipelineLoading && projects.length === 0 ? (
-              <p className="px-2 text-xs text-muted-foreground">Проектов нет</p>
+              <p className="px-2 text-xs text-muted-foreground">
+                {nodes.length <= 1 && config?.role === "hub"
+                  ? "Второй ПК не подключён — подожди 30 сек или Sync"
+                  : "Проектов нет на этой станции"}
+              </p>
             ) : null}
             {projects.map((p) => (
               <FleetProjectRow
