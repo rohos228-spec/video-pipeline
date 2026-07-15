@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from loguru import logger
 from sqlalchemy import select
 
 from app.db import session_scope
@@ -219,6 +220,15 @@ async def register_heartbeat(body: FleetRegister, authorization: str | None = He
             node.is_main = body.is_main
         if (body.role or "").strip().lower() == "agent":
             node.is_main = False
+        # Не хранить localhost URL для удалённых agent — hub не достучится.
+        if (body.role or "").strip().lower() == "agent":
+            low = node.base_url.lower()
+            if "127.0.0.1" in low or "localhost" in low:
+                logger.warning(
+                    "fleet register {}: base_url={} — нужен FLEET_PUBLIC_URL (Tailscale IP)",
+                    body.name,
+                    node.base_url,
+                )
         node.status = FleetNodeStatus.online
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()

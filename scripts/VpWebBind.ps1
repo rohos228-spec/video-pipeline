@@ -85,6 +85,12 @@ function Ensure-VpFleetNetworkEnv {
             $changed += "FLEET_IS_MAIN=false"
         }
     }
+
+    $pub = Get-VpEnvFileValue -Root $Root -Key "FLEET_PUBLIC_URL" -Default ""
+    if (-not $pub -or $pub -match "127\.0\.0\.1|localhost") {
+        Write-Warning "FLEET_PUBLIC_URL не задан или localhost — укажите Tailscale IP:8765 в .env"
+    }
+
     return $changed
 }
 

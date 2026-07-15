@@ -27,8 +27,15 @@ async def _heartbeat_once() -> None:
         "base_url": settings.fleet_agent_base_url,
         "hostname": platform.node(),
         "role": "agent",
-        "is_main": settings.fleet_is_main,
+        "is_main": False,
     }
+    pub = (settings.fleet_public_url or "").strip()
+    if not pub or "127.0.0.1" in pub or "localhost" in pub.lower():
+        logger.warning(
+            "fleet agent: задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765 в .env "
+            "(сейчас {}), иначе hub не увидит проекты этой станции",
+            body["base_url"],
+        )
     token = settings.fleet_agent_token or ""
     try:
         await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=20)

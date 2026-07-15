@@ -75,8 +75,13 @@ export function FleetPanel({
       setLoggedIn(true);
       const list = await fetchFleetNodes();
       setNodes(list);
+      const selfName = String(cfg.self_node ?? "");
       if (list.length) {
-        setSelectedId((prev) => prev ?? list[0].id);
+        setSelectedId((prev) => {
+          if (prev != null && list.some((n) => n.id === prev)) return prev;
+          const remote = list.find((n) => n.name !== selfName);
+          return remote?.id ?? list[0].id;
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Ошибка загрузки сети";
@@ -99,12 +104,7 @@ export function FleetPanel({
   const selected = nodes.find((n) => n.id === selectedId) ?? null;
   const selfNodeName = String(config?.self_node ?? "");
 
-  const isLocalNode = (node: FleetNode) => {
-    if (node.name === selfNodeName) return true;
-    const selfUrl = String(config?.public_url ?? "").replace(/\/$/, "");
-    const nodeUrl = node.base_url.replace(/\/$/, "");
-    return Boolean(selfUrl && nodeUrl && selfUrl === nodeUrl);
-  };
+  const isLocalNode = (node: FleetNode) => node.name === selfNodeName;
 
   const loadPipeline = useCallback(async (nodeId: number) => {
     setPipelineLoading(true);
@@ -240,6 +240,7 @@ export function FleetPanel({
                   ) : null}
                 </span>
                 <span className="block text-[10px] text-muted-foreground">{n.role}</span>
+                <span className="block truncate text-[10px] text-muted-foreground/80">{n.base_url}</span>
                 <span
                   className={cn(
                     "text-[10px]",
