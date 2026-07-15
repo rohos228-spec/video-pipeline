@@ -794,7 +794,7 @@ async def _proxy_agent_ps_stream(node: FleetNode, body: PowerShellRun) -> AsyncI
 
 
 @router.get("/local/info")
-async def local_info(_auth: AgentAuth = None) -> dict:
+async def local_info() -> dict:
     from app.web.studio_version import read_studio_version
 
     ver = read_studio_version()
@@ -811,7 +811,7 @@ async def local_info(_auth: AgentAuth = None) -> dict:
 
 
 @router.get("/local/pipeline")
-async def local_pipeline(_auth: AgentAuth = None) -> dict:
+async def local_pipeline() -> dict:
     async with session_scope() as session:
         rows = (
             await session.execute(
@@ -847,7 +847,7 @@ async def local_pipeline(_auth: AgentAuth = None) -> dict:
 
 
 @router.get("/local/files")
-async def local_files(path: str = ".", _auth: AgentAuth = None) -> dict:
+async def local_files(path: str = ".") -> dict:
     root = _pipeline_root()
     target = _safe_path(root, path)
     if not target.exists():
@@ -871,7 +871,7 @@ async def local_files(path: str = ".", _auth: AgentAuth = None) -> dict:
 
 
 @router.get("/local/files/download")
-async def local_files_download(path: str, _auth: AgentAuth = None):
+async def local_files_download(path: str):
     root = _pipeline_root()
     target = _safe_path(root, path)
     if not target.exists() or not target.is_file():
@@ -884,7 +884,7 @@ async def local_files_download(path: str, _auth: AgentAuth = None):
 
 
 @router.get("/local/files/content")
-async def local_files_content(path: str, _auth: AgentAuth = None) -> dict:
+async def local_files_content(path: str) -> dict:
     root = _pipeline_root()
     target = _safe_path(root, path)
     if not target.exists() or not target.is_file():
@@ -908,7 +908,7 @@ async def local_files_content(path: str, _auth: AgentAuth = None) -> dict:
 
 
 @router.delete("/local/files")
-async def local_delete_file(path: str, _auth: AgentAuth = None) -> dict:
+async def local_delete_file(path: str) -> dict:
     root = _pipeline_root()
     target = _safe_path(root, path)
     if not target.exists():
@@ -926,7 +926,6 @@ async def local_delete_file(path: str, _auth: AgentAuth = None) -> dict:
 async def local_upload_file(
     path: str,
     file: UploadFile = File(...),
-    _auth: AgentAuth = None,
 ) -> dict:
     root = _pipeline_root()
     target = _safe_path(root, path)
@@ -937,7 +936,7 @@ async def local_upload_file(
 
 
 @router.get("/local/logs/stream")
-async def local_pipeline_logs_stream(_auth: AgentAuth = None):
+async def local_pipeline_logs_stream():
     return StreamingResponse(
         _pipeline_log_stream_events(),
         media_type="text/event-stream",
@@ -946,7 +945,7 @@ async def local_pipeline_logs_stream(_auth: AgentAuth = None):
 
 
 @router.post("/local/powershell/stream")
-async def local_powershell_stream(body: PowerShellRun, _auth: AgentAuth = None):
+async def local_powershell_stream(body: PowerShellRun):
     return StreamingResponse(
         _powershell_stream_events(body),
         media_type="text/event-stream",
@@ -955,7 +954,7 @@ async def local_powershell_stream(body: PowerShellRun, _auth: AgentAuth = None):
 
 
 @router.post("/local/powershell")
-async def local_powershell(body: PowerShellRun, _auth: AgentAuth = None) -> dict:
+async def local_powershell(body: PowerShellRun) -> dict:
     if platform.system() != "Windows":
         raise HTTPException(status_code=400, detail="powershell only on Windows")
     cwd = body.cwd or str(_pipeline_root())
@@ -981,7 +980,7 @@ async def local_powershell(body: PowerShellRun, _auth: AgentAuth = None) -> dict
 
 
 @router.post("/local/projects/{project_id}/mark-montage-ready")
-async def local_mark_montage_ready(project_id: int, _auth: AgentAuth = None) -> dict:
+async def local_mark_montage_ready(project_id: int) -> dict:
     async with session_scope() as session:
         project = await session.get(Project, project_id)
         if project is None:
@@ -992,7 +991,7 @@ async def local_mark_montage_ready(project_id: int, _auth: AgentAuth = None) -> 
 
 
 @router.get("/local/projects/{project_id}/export-bundle")
-async def local_export_bundle(project_id: int, _auth: AgentAuth = None):
+async def local_export_bundle(project_id: int):
     from fastapi.responses import Response
 
     async with session_scope() as session:
@@ -1008,7 +1007,6 @@ async def local_export_bundle(project_id: int, _auth: AgentAuth = None):
 async def local_push_to_hub(
     project_id: int,
     body: PushToHub | None = None,
-    _auth: AgentAuth = None,
 ) -> dict:
     """Agent: экспорт bundle на hub (любой статус проекта)."""
     hub = (settings.fleet_hub_url or "").strip().rstrip("/")

@@ -16,9 +16,9 @@ if ($token) {
     $headers["Authorization"] = "Bearer $token"
 }
 
-Write-Host "==> GET http://127.0.0.1:$port/api/fleet/local/pipeline" -ForegroundColor Cyan
+Write-Host "==> GET http://127.0.0.1:$port/api/fleet/local/pipeline (без токена)" -ForegroundColor Cyan
 try {
-    $res = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/local/pipeline" -Headers $headers -TimeoutSec 10
+    $res = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/local/pipeline" -TimeoutSec 10
     $count = @($res.projects).Count
     Write-Host "OK: projects=$count" -ForegroundColor Green
 } catch {
