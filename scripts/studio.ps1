@@ -21,6 +21,10 @@ $VpProfileScript = Join-Path $Root "scripts\VpBrowserProfile.ps1"
 if (Test-Path $VpProfileScript) {
     . $VpProfileScript
 }
+$VpWebBindScript = Join-Path $Root "scripts\VpWebBind.ps1"
+if (Test-Path $VpWebBindScript) {
+    . $VpWebBindScript
+}
 
 try { chcp 65001 | Out-Null } catch { }
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -205,6 +209,12 @@ function Start-StudioBackendWindow {
 
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
+    if (Get-Command Ensure-VpFleetNetworkEnv -ErrorAction SilentlyContinue) {
+        $patched = Ensure-VpFleetNetworkEnv -Root $Root
+        if ($patched.Count -gt 0) {
+            Write-StudioMsg "Fleet: .env → $($patched -join ', ')" "Green"
+        }
+    }
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [5] Починить установку." "Yellow"
     }
@@ -232,7 +242,17 @@ function Invoke-StudioStart {
     Open-StudioBrowser
     Stop-Job $job -ErrorAction SilentlyContinue
     Remove-Job $job -Force -ErrorAction SilentlyContinue
-    Write-StudioMsg "Студия: http://127.0.0.1:8765 (Ctrl+F5 в браузере)" "Green"
+    $bind = if (Get-Command Get-VpWebBindConfig -ErrorAction SilentlyContinue) {
+        Get-VpWebBindConfig -Root $Root
+    } else {
+        @{ LocalUrl = "http://127.0.0.1:8765"; WebHost = "127.0.0.1"; WebPort = "8765" }
+    }
+    if (Get-Command Test-VpListeningAllInterfaces -ErrorAction SilentlyContinue) {
+        if (Test-VpListeningAllInterfaces -Port ([int]$bind.WebPort)) {
+            Write-StudioMsg "Сеть: порт $($bind.WebPort) на 0.0.0.0 (Tailscale/LAN OK)" "Green"
+        }
+    }
+    Write-StudioMsg "Студия: $($bind.LocalUrl) (Ctrl+F5 в браузере)" "Green"
     return $true
 }
 
@@ -442,10 +462,21 @@ function Invoke-StudioDoctor {
 
     foreach ($port in @(8765, 29229)) {
         try {
-            $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop | Select-Object -First 1
-            Write-DoctorLine "Порт ${port}: ЗАНЯТ (PID $($c.OwningProcess))" $lines
+            $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop)
+            $c = $conns | Select-Object -First 1
+            $addrs = ($conns | Select-Object -ExpandProperty LocalAddress -Unique) -join ", "
+            Write-DoctorLine "Порт ${port}: ЗАНЯТ PID $($c.OwningProcess)  bind=[$addrs]" $lines
         } catch {
             Write-DoctorLine "Порт ${port}: свободен" $lines
+        }
+    }
+
+    if (Get-Command Get-VpWebBindConfig -ErrorAction SilentlyContinue) {
+        $bind = Get-VpWebBindConfig -Root $Root
+        Write-DoctorLine "WEB_HOST (.env): $($bind.WebHost)  WEB_PORT: $($bind.WebPort)" $lines
+        if ($bind.FleetEnabled) {
+            $okBind = Test-VpListeningAllInterfaces -Port ([int]$bind.WebPort)
+            Write-DoctorLine "Fleet сеть (0.0.0.0): $(if ($okBind) { 'OK' } else { 'НЕТ — запустите [1] или FLEET-NETWORK-FIX.cmd' })" $lines
         }
     }
 

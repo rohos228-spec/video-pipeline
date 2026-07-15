@@ -40,3 +40,18 @@ def test_stop_backend_supports_wait_sec() -> None:
     text = (root / "scripts/stop-backend.ps1").read_text(encoding="utf-8-sig")
     assert "WaitSec" in text
     assert "VP_REPO_ROOT" in text
+
+
+def test_run_backend_respects_env_web_host() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/run-backend.ps1").read_text(encoding="utf-8-sig")
+    assert "VpWebBind.ps1" in text
+    assert '$env:WEB_HOST = "127.0.0.1"' not in text
+    assert "Ensure-VpFleetNetworkEnv" in text
+
+
+def test_vp_web_bind_and_fleet_fix_scripts_exist() -> None:
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "scripts/VpWebBind.ps1").is_file()
+    assert (root / "scripts/fleet-network-fix.ps1").is_file()
+    assert (root / "FLEET-NETWORK-FIX.cmd").is_file()

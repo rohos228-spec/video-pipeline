@@ -42,22 +42,18 @@ function Write-BackendLogLine([string]$Line) {
     try { Add-Content -Path $sharedLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
 }
 
-function Get-EnvFileValue([string]$Key, [string]$Default = "") {
-    $envFile = Join-Path $Root ".env"
-    if (-not (Test-Path -LiteralPath $envFile)) { return $Default }
-    foreach ($line in Get-Content -LiteralPath $envFile -Encoding UTF8) {
-        if ($line -match "^\s*$([regex]::Escape($Key))=(.*)$") {
-            return $matches[1].Trim().Trim('"').Trim("'")
-        }
-    }
-    return $Default
-}
-
-$webHost = if ($env:WEB_HOST) { $env:WEB_HOST.Trim() } else { Get-EnvFileValue "WEB_HOST" "127.0.0.1" }
-$webPort = if ($env:WEB_PORT) { $env:WEB_PORT.Trim() } else { Get-EnvFileValue "WEB_PORT" "8765" }
+. (Join-Path $Root "scripts\VpWebBind.ps1")
+$null = Ensure-VpFleetNetworkEnv -Root $Root
+$bind = Get-VpWebBindConfig -Root $Root
+$webHost = $bind.WebHost
+$webPort = $bind.WebPort
 $env:WEB_HOST = $webHost
 $env:WEB_PORT = $webPort
-$bindLabel = if ($webHost -in @("0.0.0.0", "::")) { "0.0.0.0 (все интерфейсы, порт $webPort)" } else { "http://${webHost}:$webPort" }
+$bindLabel = if ($webHost -in @("0.0.0.0", "::")) {
+    "0.0.0.0 (все интерфейсы, порт $webPort)"
+} else {
+    "http://${webHost}:$webPort"
+}
 
 Write-Host "==> video-pipeline backend (cwd=$Root)" -ForegroundColor Cyan
 Write-Host "    $bindLabel" -ForegroundColor Yellow
