@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, AsyncIterator
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -40,6 +40,7 @@ from app.fleet.montage_queue import (
 from app.fleet.self_node import (
     is_local_fleet_node,
     is_localhost_fleet_url,
+    resolve_agent_public_url,
     self_node_name,
 )
 from app.services.node_step_params import send_to_main_pc_for_project
@@ -199,8 +200,13 @@ async def delete_node(node_id: int) -> dict:
 
 
 @router.post("/register", response_model=FleetNodeOut)
-async def register_heartbeat(body: FleetRegister, authorization: str | None = Header(None)) -> FleetNodeOut:
+async def register_heartbeat(
+    request: Request,
+    body: FleetRegister,
+    authorization: str | None = Header(None),
+) -> FleetNodeOut:
     _validate_agent_token_value(authorization)
+    remote_host = request.client.host if request.client else None
     async with session_scope() as session:
         node = (
             await session.execute(select(FleetNode).where(FleetNode.name == body.name))
@@ -223,23 +229,34 @@ async def register_heartbeat(body: FleetRegister, authorization: str | None = He
             node.is_main = body.is_main
         if (body.role or "").strip().lower() == "agent":
             node.is_main = False
-        incoming_url = body.base_url.rstrip("/")
         role_agent = (body.role or "").strip().lower() == "agent"
-        # Не перезаписывать рабочий Tailscale URL на 127.0.0.1 — hub тогда видит себя, не agent.
+        incoming_url = (
+            resolve_agent_public_url(
+                body.base_url,
+                remote_host=remote_host,
+                default_port=settings.web_port,
+            )
+            if role_agent
+            else body.base_url.rstrip("/")
+        )
+        if role_agent and is_localhost_fleet_url(body.base_url.rstrip("/")):
+            if incoming_url != body.base_url.rstrip("/"):
+                logger.info(
+                    "fleet register {}: {} -> {} (IP heartbeat)",
+                    body.name,
+                    body.base_url,
+                    incoming_url,
+                )
+            elif not (node.base_url and not is_localhost_fleet_url(node.base_url)):
+                logger.warning(
+                    "fleet register {}: localhost, IP не определён — задайте FLEET_PUBLIC_URL на agent",
+                    body.name,
+                )
         if role_agent and is_localhost_fleet_url(incoming_url):
             if node.base_url and not is_localhost_fleet_url(node.base_url):
-                logger.warning(
-                    "fleet register {}: игнорируем localhost base_url, оставляем {}",
-                    body.name,
-                    node.base_url,
-                )
+                pass  # оставляем старый рабочий URL
             else:
                 node.base_url = incoming_url
-                logger.warning(
-                    "fleet register {}: base_url={} — задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765",
-                    body.name,
-                    node.base_url,
-                )
         else:
             node.base_url = incoming_url
         node.status = FleetNodeStatus.online

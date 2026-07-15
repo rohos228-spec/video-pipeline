@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import urllib.parse
 
 from sqlalchemy import select
 
@@ -18,6 +19,30 @@ def self_node_name() -> str:
 def is_localhost_fleet_url(url: str) -> bool:
     low = (url or "").strip().lower()
     return "127.0.0.1" in low or "localhost" in low
+
+
+def resolve_agent_public_url(
+    declared_url: str,
+    *,
+    remote_host: str | None,
+    default_port: int | None = None,
+) -> str:
+    """Agent шлёт 127.0.0.1 — hub подставляет IP из входящего heartbeat."""
+    declared = (declared_url or "").strip().rstrip("/")
+    if not is_localhost_fleet_url(declared):
+        return declared
+    host = (remote_host or "").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host or is_localhost_fleet_url(f"http://{host}/"):
+        return declared
+    port = default_port
+    if port is None:
+        parsed = urllib.parse.urlparse(
+            declared if "://" in declared else f"http://{declared}"
+        )
+        port = parsed.port or settings.web_port
+    return f"http://{host}:{port}"
 
 
 def is_local_fleet_node(node: FleetNode) -> bool:
