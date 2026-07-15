@@ -15,6 +15,7 @@ from typing import Annotated, AsyncIterator
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -51,8 +52,10 @@ def _pipeline_root() -> Path:
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
+_agent_bearer = HTTPBearer(auto_error=False)
 
-def _check_agent_token(authorization: str | None = Header(None)) -> None:
+
+def _validate_agent_token_value(authorization: str | None) -> None:
     expected = (settings.fleet_agent_token or "").strip()
     if not expected:
         return
@@ -63,7 +66,16 @@ def _check_agent_token(authorization: str | None = Header(None)) -> None:
         raise HTTPException(status_code=403, detail="invalid fleet token")
 
 
-AgentAuth = Annotated[None, Depends(_check_agent_token)]
+async def require_agent_auth(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_agent_bearer),
+) -> None:
+    if credentials is None:
+        _validate_agent_token_value(None)
+        return
+    _validate_agent_token_value(f"Bearer {credentials.credentials}")
+
+
+AgentAuth = Annotated[None, Depends(require_agent_auth)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -183,7 +195,7 @@ async def delete_node(node_id: int) -> dict:
 
 @router.post("/register", response_model=FleetNodeOut)
 async def register_heartbeat(body: FleetRegister, authorization: str | None = Header(None)) -> FleetNodeOut:
-    _check_agent_token(authorization)
+    _validate_agent_token_value(authorization)
     async with session_scope() as session:
         node = (
             await session.execute(select(FleetNode).where(FleetNode.name == body.name))
