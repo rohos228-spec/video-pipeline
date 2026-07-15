@@ -99,14 +99,23 @@ export function FleetPanel({
   const selected = nodes.find((n) => n.id === selectedId) ?? null;
   const selfNodeName = String(config?.self_node ?? "");
 
-  const isLocalNode = (node: FleetNode) =>
-    node.is_main || node.name === selfNodeName || node.role.includes("hub");
+  const isLocalNode = (node: FleetNode) => {
+    if (node.name === selfNodeName) return true;
+    const selfUrl = String(config?.public_url ?? "").replace(/\/$/, "");
+    const nodeUrl = node.base_url.replace(/\/$/, "");
+    return Boolean(selfUrl && nodeUrl && selfUrl === nodeUrl);
+  };
 
   const loadPipeline = useCallback(async (nodeId: number) => {
     setPipelineLoading(true);
+    setLoadError("");
     try {
       const data = await fleetNodePipeline(nodeId);
       setProjects((data.projects as FleetProject[]) || []);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Не удалось загрузить проекты";
+      setLoadError(msg);
+      setProjects([]);
     } finally {
       setPipelineLoading(false);
     }

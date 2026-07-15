@@ -16,14 +16,13 @@ def self_node_name() -> str:
 
 
 def is_local_fleet_node(node: FleetNode) -> bool:
+    """True только для ЭТОЙ машины, не для любой is_main в реестре."""
     name = self_node_name()
     if node.name == name:
         return True
-    if node.is_main and settings.fleet_is_main:
-        return True
-    if (node.base_url or "").rstrip("/") == settings.fleet_agent_base_url.rstrip(
-        "/"
-    ):
+    local_base = settings.fleet_agent_base_url.rstrip("/")
+    node_base = (node.base_url or "").rstrip("/")
+    if local_base and node_base == local_base:
         return True
     return False
 

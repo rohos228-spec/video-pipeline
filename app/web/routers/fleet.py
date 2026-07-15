@@ -189,11 +189,14 @@ async def register_heartbeat(body: FleetRegister, authorization: str | None = He
             await session.execute(select(FleetNode).where(FleetNode.name == body.name))
         ).scalar_one_or_none()
         if node is None:
+            is_main = body.is_main
+            if (body.role or "").strip().lower() == "agent":
+                is_main = False
             node = FleetNode(
                 name=body.name,
                 base_url=body.base_url.rstrip("/"),
                 token=settings.fleet_agent_token or "",
-                is_main=body.is_main,
+                is_main=is_main,
                 role=body.role,
             )
             session.add(node)
@@ -202,6 +205,8 @@ async def register_heartbeat(body: FleetRegister, authorization: str | None = He
             node.hostname = body.hostname
             node.role = body.role
             node.is_main = body.is_main
+        if (body.role or "").strip().lower() == "agent":
+            node.is_main = False
         node.status = FleetNodeStatus.online
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()
