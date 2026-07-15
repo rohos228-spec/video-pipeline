@@ -33,15 +33,16 @@ async def _export_for_action(project_id: int, slug: str | None) -> tuple[bytes, 
         raise ValueError(f"project #{project_id} not found")
 
 
-async def execute_pending_fleet_actions(actions: list[dict]) -> None:
+async def execute_pending_fleet_actions(actions: list[dict]) -> list[dict]:
+    results: list[dict] = []
     if not actions:
-        return
+        return results
     role = (settings.fleet_role or "hub").strip().lower()
     if role != "agent":
-        return
+        return results
     hub = (settings.fleet_hub_url or "").strip().rstrip("/")
     if not hub:
-        return
+        return results
     token = settings.fleet_agent_token or ""
     source_node = (settings.fleet_node_name or "").strip() or platform.node()
 
@@ -71,7 +72,17 @@ async def execute_pending_fleet_actions(actions: list[dict]) -> None:
                 timeout_sec=600,
             )
             logger.info("fleet agent: pull_to_hub #{} ({}) → hub ok", project_id, slug or "")
+            results.append(
+                {"project_id": project_id, "slug": slug, "ok": True}
+            )
         except FleetAgentError as exc:
             logger.warning("fleet agent pull_to_hub #{} failed: {}", project_id, exc)
+            results.append(
+                {"project_id": project_id, "slug": slug, "ok": False, "error": str(exc)[:300]}
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("fleet agent pull_to_hub #{} error: {}", project_id, exc)
+            results.append(
+                {"project_id": project_id, "slug": slug, "ok": False, "error": str(exc)[:300]}
+            )
+    return results

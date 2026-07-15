@@ -15,9 +15,11 @@ from app.settings import settings
 
 _agent_task: asyncio.Task | None = None
 _heartbeat_interval_sec: float = 5.0
+_last_pull_results: list[dict] = []
 
 
 async def _heartbeat_once() -> float:
+    global _last_pull_results
     if not settings.fleet_enabled:
         return _heartbeat_interval_sec
     role = (settings.fleet_role or "hub").strip().lower()
@@ -43,6 +45,9 @@ async def _heartbeat_once() -> float:
         "is_main": False,
         "projects": projects,
     }
+    if _last_pull_results:
+        body["pull_results"] = _last_pull_results
+        _last_pull_results = []
     pub = (settings.fleet_public_url or "").strip()
     if not pub or is_localhost_fleet_url(pub):
         logger.debug(
@@ -55,7 +60,9 @@ async def _heartbeat_once() -> float:
         pending = result.get("pending_actions") if isinstance(result, dict) else []
         if pending:
             logger.info("fleet agent: hub queued {} action(s)", len(pending))
-        await execute_pending_fleet_actions(pending or [])
+        pull_results = await execute_pending_fleet_actions(pending or [])
+        if pull_results:
+            _last_pull_results = pull_results
         logger.info("fleet agent heartbeat ok: {} projects → hub", len(projects))
         next_sec = float(result.get("next_heartbeat_sec") or 5) if isinstance(result, dict) else 5.0
         return max(3.0, min(next_sec, 30.0))

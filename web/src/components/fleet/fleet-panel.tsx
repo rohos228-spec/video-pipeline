@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchFleetConfig,
+  fetchFleetDiagnostics,
   fetchFleetNodes,
   fleetLogin,
   fleetNodePipeline,
@@ -74,6 +75,7 @@ export function FleetPanel({
   const [loginLoading, setLoginLoading] = useState(false);
   const [connectIp, setConnectIp] = useState("100.100.240.106");
   const [connectLoading, setConnectLoading] = useState(false);
+  const [diagIssues, setDiagIssues] = useState<string[]>([]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -90,6 +92,12 @@ export function FleetPanel({
       setLoggedIn(true);
       const list = await fetchFleetNodes();
       setNodes(list);
+      try {
+        const diag = await fetchFleetDiagnostics();
+        setDiagIssues(diag.issues || []);
+      } catch {
+        setDiagIssues([]);
+      }
       const selfName = String(cfg.self_node ?? "");
       if (list.length) {
         setSelectedId((prev) => {
@@ -288,6 +296,13 @@ export function FleetPanel({
           <Button size="sm" className="h-8" disabled={connectLoading} onClick={() => void onQuickConnect()}>
             {connectLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Подключить"}
           </Button>
+        </div>
+      ) : null}
+      {diagIssues.length > 0 ? (
+        <div className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+          {diagIssues.slice(0, 4).map((issue) => (
+            <div key={issue}>{issue}</div>
+          ))}
         </div>
       ) : null}
       {loadError ? (

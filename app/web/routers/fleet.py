@@ -32,6 +32,7 @@ from app.fleet.client import (
     agent_upload_file,
     ping_agent,
 )
+from app.fleet.diagnostics import build_fleet_diagnostics
 from app.fleet.pipeline_list import build_pipeline_payload, cached_pipeline_from_node
 from app.fleet.montage_queue import (
     META_ENQUEUED,
@@ -117,6 +118,7 @@ class FleetRegister(BaseModel):
     role: str = "agent"
     is_main: bool = False
     projects: list[dict] | None = None
+    pull_results: list[dict] | None = None
 
 
 class FleetRegisterResponse(FleetNodeOut):
@@ -409,6 +411,40 @@ async def register_heartbeat(
                     register_name,
                     len(pending_actions),
                 )
+            if body.pull_results:
+                for pr in body.pull_results:
+                    if pr.get("ok"):
+                        logger.info(
+                            "fleet register {}: pull ok project #{}",
+                            register_name,
+                            pr.get("project_id"),
+                        )
+                        meta.pop("last_pull_error", None)
+                    else:
+                        err = str(pr.get("error") or "unknown")[:300]
+                        meta["last_pull_error"] = err
+                        logger.warning(
+                            "fleet register {}: pull FAILED #{}: {}",
+                            register_name,
+                            pr.get("project_id"),
+                            err,
+                        )
+                        # re-queue once
+                        pid = pr.get("project_id")
+                        if pid and not any(
+                            p.get("project_id") == pid for p in meta.get("pending_pulls") or []
+                        ):
+                            pending = meta.get("pending_pulls") or []
+                            pending.append(
+                                {
+                                    "type": "pull_to_hub",
+                                    "project_id": pid,
+                                    "slug": pr.get("slug"),
+                                    "run_assemble": True,
+                                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                            meta["pending_pulls"] = pending
             node.meta = meta
             flag_modified(node, "meta")
         node.status = FleetNodeStatus.online
@@ -1291,3 +1327,8 @@ async def fleet_config() -> dict:
         "auth_required": settings.web_auth_enabled,
         "montage_max_parallel": settings.fleet_montage_max_parallel,
     }
+
+
+@router.get("/diagnostics")
+async def fleet_diagnostics(_user: AuthDep = None) -> dict:
+    return await build_fleet_diagnostics()

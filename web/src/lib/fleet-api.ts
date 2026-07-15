@@ -42,6 +42,23 @@ export async function fleetLogin(username: string, password: string) {
   });
 }
 
+export async function fetchFleetDiagnostics() {
+  return fleetFetch<{
+    ok: boolean;
+    role: string;
+    self_node: string;
+    issues: string[];
+    fix: string;
+    nodes: Array<{
+      name: string;
+      cached_projects: number;
+      pending_pulls: number;
+      last_seen_sec_ago: number | null;
+      issues: string[];
+    }>;
+  }>("/api/fleet/diagnostics");
+}
+
 export async function fetchFleetConfig() {
   return fleetFetch<Record<string, unknown>>("/api/fleet/config");
 }
