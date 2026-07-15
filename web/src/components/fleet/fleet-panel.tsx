@@ -168,6 +168,23 @@ export function FleetPanel({
     window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
   };
 
+  const handleMontage = (projectId: number, montageReady: boolean) => {
+    if (selectedId == null) return;
+    void fleetPullProject(selectedId, projectId, { runAssemble: montageReady })
+      .then((res) => {
+        const r = res as { message?: string; pending?: boolean; slug?: string; queued?: boolean };
+        toast.success(
+          r.message ||
+            (r.pending
+              ? "Запрос отправлен — жди ~30 сек"
+              : `На монтаж: ${r.slug ?? "ok"}${r.queued ? " (очередь)" : ""}`),
+        );
+        void loadPipeline(selectedId);
+      })
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message.slice(0, 180) : "Ошибка");
+      });
+  };
   const openStationStudio = () => {
     if (!selected) return;
     window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
@@ -379,11 +396,8 @@ export function FleetPanel({
                 montageQueuePosition={p.montage_queue_position}
                 onOpen={() => openProject(p.id)}
                 onMontage={
-                  selected && !isLocalNode(selected) && !p.montage_queued && selectedId != null
-                    ? () =>
-                        void fleetPullProject(selectedId, p.id, {
-                          runAssemble: Boolean(p.montage_ready),
-                        }).then(() => loadPipeline(selectedId))
+                  selectedId != null && !p.montage_queued
+                    ? () => handleMontage(p.id, Boolean(p.montage_ready))
                     : undefined
                 }
               />

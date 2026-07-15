@@ -119,6 +119,10 @@ class FleetRegister(BaseModel):
     projects: list[dict] | None = None
 
 
+class FleetRegisterResponse(FleetNodeOut):
+    pending_actions: list[dict] = Field(default_factory=list)
+
+
 class PowerShellRun(BaseModel):
     command: str = Field(min_length=1, max_length=8000)
     cwd: str | None = None
@@ -164,6 +168,48 @@ async def _get_node(session, node_id: int) -> FleetNode:
     if node is None:
         raise HTTPException(status_code=404, detail="node not found")
     return node
+
+
+def _queue_agent_pull(node: FleetNode, project_id: int, run_assemble: bool) -> None:
+    meta = dict(node.meta or {})
+    pending = [p for p in (meta.get("pending_pulls") or []) if p.get("project_id") != project_id]
+    pending.append(
+        {
+            "type": "pull_to_hub",
+            "project_id": project_id,
+            "run_assemble": run_assemble,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    meta["pending_pulls"] = pending
+    node.meta = meta
+    flag_modified(node, "meta")
+
+
+async def _import_agent_bundle(
+    blob: bytes,
+    *,
+    node_name: str,
+    source_project_id: int,
+    run_assemble: bool,
+) -> dict:
+    async with session_scope() as session:
+        project = await bundle_svc.import_project_bundle(session, bytes(blob), run_assemble=False)
+        meta = dict(project.meta or {})
+        meta["fleet_source_node"] = node_name
+        meta["fleet_source_project_id"] = source_project_id
+        project.meta = meta
+        queued = False
+        if run_assemble:
+            queued = await enqueue_for_montage(session, project, source_node=node_name)
+            await process_montage_queue(session)
+        await session.commit()
+        return {
+            "ok": True,
+            "project_id": project.id,
+            "slug": project.slug,
+            "queued": queued,
+        }
 
 
 # ── Hub: registry ────────────────────────────────────────────────────────────
@@ -263,7 +309,7 @@ async def quick_connect_agent(body: FleetQuickConnect, _user: AuthDep = None) ->
     }
 
 
-@router.post("/register", response_model=FleetNodeOut)
+@router.post("/register", response_model=FleetRegisterResponse)
 async def register_heartbeat(
     request: Request,
     body: FleetRegister,
@@ -333,22 +379,28 @@ async def register_heartbeat(
                 node.base_url = incoming_url
         else:
             node.base_url = incoming_url
-        if role_agent and body.projects is not None:
+        pending_actions: list[dict] = []
+        if role_agent:
             meta = dict(node.meta or {})
-            meta["pipeline_snapshot"] = body.projects
-            meta["pipeline_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+            pending_actions = list(meta.pop("pending_pulls", None) or [])
+            if body.projects is not None:
+                meta["pipeline_snapshot"] = body.projects
+                meta["pipeline_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+                logger.info(
+                    "fleet register {}: {} projects cached from heartbeat",
+                    register_name,
+                    len(body.projects),
+                )
             node.meta = meta
             flag_modified(node, "meta")
-            logger.info(
-                "fleet register {}: {} projects cached from heartbeat",
-                register_name,
-                len(body.projects),
-            )
         node.status = FleetNodeStatus.online
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(node)
-        return _node_out(node)
+        return FleetRegisterResponse(
+            **_node_out(node).model_dump(),
+            pending_actions=pending_actions,
+        )
 
 
 @router.post("/nodes/{node_id}/sync")
@@ -603,33 +655,49 @@ async def pull_project_to_main(
             }
 
     token = node.token or settings.fleet_agent_token
+    if is_localhost_fleet_url(node.base_url):
+        async with session_scope() as session:
+            row = await _get_node(session, node_id)
+            _queue_agent_pull(row, project_id, body.run_assemble)
+            await session.commit()
+        return {
+            "ok": True,
+            "pending": True,
+            "queued": body.run_assemble,
+            "message": f"Запрос отправлен на {node.name} (~30 сек)",
+        }
     try:
         blob = await agent_get_bytes(
             node.base_url,
             token,
             f"/api/fleet/local/projects/{project_id}/export-bundle",
-            timeout_sec=600,
+            timeout_sec=30,
         )
-    except FleetAgentError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-
-    if not blob:
-        raise HTTPException(status_code=502, detail="empty bundle from agent")
+        if blob:
+            return await _import_agent_bundle(
+                blob,
+                node_name=node.name,
+                source_project_id=project_id,
+                run_assemble=body.run_assemble,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "fleet pull live failed {}#{}: {} — queue heartbeat",
+            node.name,
+            project_id,
+            exc,
+        )
 
     async with session_scope() as session:
-        project = await bundle_svc.import_project_bundle(
-            session, bytes(blob), run_assemble=False
-        )
-        meta = dict(project.meta or {})
-        meta["fleet_source_node"] = node.name
-        meta["fleet_source_project_id"] = project_id
-        project.meta = meta
-        queued = False
-        if body.run_assemble:
-            queued = await enqueue_for_montage(session, project, source_node=node.name)
-            await process_montage_queue(session)
+        row = await _get_node(session, node_id)
+        _queue_agent_pull(row, project_id, body.run_assemble)
         await session.commit()
-        return {"ok": True, "project_id": project.id, "slug": project.slug, "queued": queued}
+    return {
+        "ok": True,
+        "pending": True,
+        "queued": body.run_assemble,
+        "message": f"Запрос отправлен на {node.name} (~30 сек)",
+    }
 
 
 @router.post("/import-bundle")
@@ -638,9 +706,11 @@ async def import_bundle_from_agent(
     run_assemble: bool = False,
     source_node: str | None = None,
     source_project_id: int | None = None,
-    _auth: AgentAuth = None,
+    authorization: str | None = Header(None),
 ) -> dict:
     """Hub: принять bundle с agent (push-to-hub)."""
+    if (settings.fleet_agent_token or "").strip() and authorization:
+        _validate_agent_token_value(authorization)
     blob = await file.read()
     if not blob:
         raise HTTPException(status_code=400, detail="empty bundle")

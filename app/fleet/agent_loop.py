@@ -8,7 +8,7 @@ import platform
 from loguru import logger
 
 from app.fleet.client import FleetAgentError, agent_post
-from app.fleet.pipeline_list import build_pipeline_payload
+from app.fleet.agent_actions import execute_pending_fleet_actions
 from app.fleet.self_node import is_localhost_fleet_url
 from app.settings import settings
 
@@ -49,8 +49,11 @@ async def _heartbeat_once() -> None:
         )
     token = settings.fleet_agent_token or ""
     try:
-        await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=30)
+        result = await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=30)
         logger.info("fleet agent heartbeat ok: {} projects → hub", len(projects))
+        await execute_pending_fleet_actions(
+            result.get("pending_actions") if isinstance(result, dict) else []
+        )
     except FleetAgentError as exc:
         logger.warning("fleet agent heartbeat failed: {}", exc)
     except Exception as exc:  # noqa: BLE001
