@@ -69,11 +69,14 @@ export async function fleetNodePipeline(nodeId: number) {
 export async function fleetPullProject(
   nodeId: number,
   projectId: number,
-  opts?: { runAssemble?: boolean },
+  opts?: { runAssemble?: boolean; slug?: string },
 ) {
   return fleetFetch(`/api/fleet/nodes/${nodeId}/projects/${projectId}/pull-to-main`, {
     method: "POST",
-    body: JSON.stringify({ run_assemble: opts?.runAssemble ?? true }),
+    body: JSON.stringify({
+      run_assemble: opts?.runAssemble ?? true,
+      slug: opts?.slug,
+    }),
   });
 }
 

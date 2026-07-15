@@ -6,11 +6,31 @@ import platform
 import urllib.parse
 
 from loguru import logger
+from sqlalchemy import select
 
 from app.db import session_scope
 from app.fleet import bundle as bundle_svc
 from app.fleet.client import FleetAgentError, agent_upload_file
+from app.models import Project
 from app.settings import settings
+
+
+async def _export_for_action(project_id: int, slug: str | None) -> tuple[bytes, str]:
+    async with session_scope() as session:
+        if project_id:
+            try:
+                return await bundle_svc.export_project_bundle(session, project_id)
+            except ValueError:
+                if not slug:
+                    raise
+        if slug:
+            row = (
+                await session.execute(select(Project).where(Project.slug == slug))
+            ).scalar_one_or_none()
+            if row is None:
+                raise ValueError(f"project slug {slug!r} not found")
+            return await bundle_svc.export_project_bundle(session, row.id)
+        raise ValueError(f"project #{project_id} not found")
 
 
 async def execute_pending_fleet_actions(actions: list[dict]) -> None:
@@ -29,17 +49,17 @@ async def execute_pending_fleet_actions(actions: list[dict]) -> None:
         if (action.get("type") or "") != "pull_to_hub":
             continue
         project_id = action.get("project_id")
-        if not project_id:
+        slug = action.get("slug")
+        if not project_id and not slug:
             continue
         run_assemble = bool(action.get("run_assemble", True))
         try:
-            async with session_scope() as session:
-                blob, filename = await bundle_svc.export_project_bundle(session, int(project_id))
+            blob, filename = await _export_for_action(int(project_id or 0), slug)
             qs = urllib.parse.urlencode(
                 {
                     "run_assemble": "true" if run_assemble else "false",
                     "source_node": source_node,
-                    "source_project_id": str(project_id),
+                    "source_project_id": str(project_id or ""),
                 }
             )
             await agent_upload_file(
@@ -50,7 +70,7 @@ async def execute_pending_fleet_actions(actions: list[dict]) -> None:
                 filename=filename,
                 timeout_sec=600,
             )
-            logger.info("fleet agent: pull_to_hub project #{} → hub ok", project_id)
+            logger.info("fleet agent: pull_to_hub #{} ({}) → hub ok", project_id, slug or "")
         except FleetAgentError as exc:
             logger.warning("fleet agent pull_to_hub #{} failed: {}", project_id, exc)
         except Exception as exc:  # noqa: BLE001

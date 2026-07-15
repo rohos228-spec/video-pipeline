@@ -168,15 +168,15 @@ export function FleetPanel({
     window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
   };
 
-  const handleMontage = (projectId: number, montageReady: boolean) => {
+  const handleMontage = (projectId: number, montageReady: boolean, slug: string) => {
     if (selectedId == null) return;
-    void fleetPullProject(selectedId, projectId, { runAssemble: montageReady })
+    void fleetPullProject(selectedId, projectId, { runAssemble: montageReady, slug })
       .then((res) => {
         const r = res as { message?: string; pending?: boolean; slug?: string; queued?: boolean };
         toast.success(
           r.message ||
             (r.pending
-              ? "Запрос отправлен — жди ~30 сек"
+              ? "Запрос отправлен — жди ~5 сек"
               : `На монтаж: ${r.slug ?? "ok"}${r.queued ? " (очередь)" : ""}`),
         );
         void loadPipeline(selectedId);
@@ -397,7 +397,7 @@ export function FleetPanel({
                 onOpen={() => openProject(p.id)}
                 onMontage={
                   selectedId != null && !p.montage_queued
-                    ? () => handleMontage(p.id, Boolean(p.montage_ready))
+                    ? () => handleMontage(p.id, Boolean(p.montage_ready), p.slug)
                     : undefined
                 }
               />

@@ -121,6 +121,7 @@ class FleetRegister(BaseModel):
 
 class FleetRegisterResponse(FleetNodeOut):
     pending_actions: list[dict] = Field(default_factory=list)
+    next_heartbeat_sec: int = 5
 
 
 class PowerShellRun(BaseModel):
@@ -137,6 +138,7 @@ class FileWrite(BaseModel):
 
 class MontagePull(BaseModel):
     run_assemble: bool = True
+    slug: str | None = None
 
 
 class PushToHub(BaseModel):
@@ -170,17 +172,24 @@ async def _get_node(session, node_id: int) -> FleetNode:
     return node
 
 
-def _queue_agent_pull(node: FleetNode, project_id: int, run_assemble: bool) -> None:
+def _queue_agent_pull(
+    node: FleetNode, project_id: int, run_assemble: bool, slug: str | None = None
+) -> None:
     meta = dict(node.meta or {})
-    pending = [p for p in (meta.get("pending_pulls") or []) if p.get("project_id") != project_id]
-    pending.append(
-        {
-            "type": "pull_to_hub",
-            "project_id": project_id,
-            "run_assemble": run_assemble,
-            "requested_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    pending = [
+        p
+        for p in (meta.get("pending_pulls") or [])
+        if p.get("project_id") != project_id
+    ]
+    entry: dict = {
+        "type": "pull_to_hub",
+        "project_id": project_id,
+        "run_assemble": run_assemble,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if slug:
+        entry["slug"] = slug
+    pending.append(entry)
     meta["pending_pulls"] = pending
     node.meta = meta
     flag_modified(node, "meta")
@@ -384,12 +393,21 @@ async def register_heartbeat(
             meta = dict(node.meta or {})
             pending_actions = list(meta.pop("pending_pulls", None) or [])
             if body.projects is not None:
-                meta["pipeline_snapshot"] = body.projects
-                meta["pipeline_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+                incoming = body.projects
+                prev = meta.get("pipeline_snapshot")
+                if incoming or not prev:
+                    meta["pipeline_snapshot"] = incoming
+                    meta["pipeline_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+                    logger.info(
+                        "fleet register {}: {} projects cached from heartbeat",
+                        register_name,
+                        len(incoming),
+                    )
+            if pending_actions:
                 logger.info(
-                    "fleet register {}: {} projects cached from heartbeat",
+                    "fleet register {}: sending {} pull action(s) to agent",
                     register_name,
-                    len(body.projects),
+                    len(pending_actions),
                 )
             node.meta = meta
             flag_modified(node, "meta")
@@ -397,9 +415,11 @@ async def register_heartbeat(
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(node)
+        next_hb = 5 if pending_actions or (node.meta or {}).get("pending_pulls") else 5
         return FleetRegisterResponse(
             **_node_out(node).model_dump(),
             pending_actions=pending_actions,
+            next_heartbeat_sec=next_hb,
         )
 
 
@@ -658,13 +678,13 @@ async def pull_project_to_main(
     if is_localhost_fleet_url(node.base_url):
         async with session_scope() as session:
             row = await _get_node(session, node_id)
-            _queue_agent_pull(row, project_id, body.run_assemble)
+            _queue_agent_pull(row, project_id, body.run_assemble, body.slug)
             await session.commit()
         return {
             "ok": True,
             "pending": True,
             "queued": body.run_assemble,
-            "message": f"Запрос отправлен на {node.name} (~30 сек)",
+            "message": f"Запрос на {node.name} (~5 сек)",
         }
     try:
         blob = await agent_get_bytes(
@@ -690,13 +710,13 @@ async def pull_project_to_main(
 
     async with session_scope() as session:
         row = await _get_node(session, node_id)
-        _queue_agent_pull(row, project_id, body.run_assemble)
+        _queue_agent_pull(row, project_id, body.run_assemble, body.slug)
         await session.commit()
     return {
         "ok": True,
         "pending": True,
         "queued": body.run_assemble,
-        "message": f"Запрос отправлен на {node.name} (~30 сек)",
+        "message": f"Запрос на {node.name} (~5 сек)",
     }
 
 
@@ -714,6 +734,12 @@ async def import_bundle_from_agent(
     blob = await file.read()
     if not blob:
         raise HTTPException(status_code=400, detail="empty bundle")
+    logger.info(
+        "fleet import-bundle from {} project_id={} ({} bytes)",
+        source_node or "?",
+        source_project_id,
+        len(blob),
+    )
     async with session_scope() as session:
         project = await bundle_svc.import_project_bundle(session, blob, run_assemble=False)
         meta = dict(project.meta or {})

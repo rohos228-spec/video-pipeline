@@ -9,21 +9,23 @@ from loguru import logger
 
 from app.fleet.client import FleetAgentError, agent_post
 from app.fleet.agent_actions import execute_pending_fleet_actions
+from app.fleet.pipeline_list import build_pipeline_payload
 from app.fleet.self_node import is_localhost_fleet_url
 from app.settings import settings
 
 _agent_task: asyncio.Task | None = None
+_heartbeat_interval_sec: float = 5.0
 
 
-async def _heartbeat_once() -> None:
+async def _heartbeat_once() -> float:
     if not settings.fleet_enabled:
-        return
+        return _heartbeat_interval_sec
     role = (settings.fleet_role or "hub").strip().lower()
     if role != "agent":
-        return
+        return _heartbeat_interval_sec
     hub = (settings.fleet_hub_url or "").strip().rstrip("/")
     if not hub:
-        return
+        return _heartbeat_interval_sec
     name = (settings.fleet_node_name or "").strip() or platform.node()
     if name in ("main-pc", "hub"):
         name = platform.node() or "child-pc"
@@ -49,26 +51,31 @@ async def _heartbeat_once() -> None:
         )
     token = settings.fleet_agent_token or ""
     try:
-        result = await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=30)
+        result = await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=60)
+        pending = result.get("pending_actions") if isinstance(result, dict) else []
+        if pending:
+            logger.info("fleet agent: hub queued {} action(s)", len(pending))
+        await execute_pending_fleet_actions(pending or [])
         logger.info("fleet agent heartbeat ok: {} projects → hub", len(projects))
-        await execute_pending_fleet_actions(
-            result.get("pending_actions") if isinstance(result, dict) else []
-        )
+        next_sec = float(result.get("next_heartbeat_sec") or 5) if isinstance(result, dict) else 5.0
+        return max(3.0, min(next_sec, 30.0))
     except FleetAgentError as exc:
         logger.warning("fleet agent heartbeat failed: {}", exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("fleet agent heartbeat error: {}", exc)
+    return _heartbeat_interval_sec
 
 
 async def _agent_loop() -> None:
+    global _heartbeat_interval_sec
     while True:
         try:
-            await _heartbeat_once()
+            _heartbeat_interval_sec = await _heartbeat_once()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("fleet agent loop: {}", exc)
-        await asyncio.sleep(30)
+        await asyncio.sleep(_heartbeat_interval_sec)
 
 
 def start_fleet_agent() -> None:
