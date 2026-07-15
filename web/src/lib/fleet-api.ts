@@ -92,6 +92,18 @@ export async function fleetSyncNode(nodeId: number) {
   return fleetFetch(`/api/fleet/nodes/${nodeId}/sync`, { method: "POST" });
 }
 
+export async function fleetQuickConnect(baseUrl: string, name = "child-pc") {
+  return fleetFetch<{
+    ok: boolean;
+    project_count: number;
+    message: string;
+    node: { id: number; name: string; base_url: string };
+  }>("/api/fleet/nodes/quick-connect", {
+    method: "POST",
+    body: JSON.stringify({ base_url: baseUrl, name }),
+  });
+}
+
 export async function fleetNodeFiles(nodeId: number, path = ".") {
   return fleetFetch<{
     type: string;

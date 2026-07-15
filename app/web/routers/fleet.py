@@ -136,6 +136,11 @@ class PushToHub(BaseModel):
     run_assemble: bool | None = None
 
 
+class FleetQuickConnect(BaseModel):
+    base_url: str = Field(min_length=10, max_length=300)
+    name: str = Field(default="child-pc", min_length=1, max_length=120)
+
+
 def _node_out(n: FleetNode) -> FleetNodeOut:
     return FleetNodeOut(
         id=n.id,
@@ -199,6 +204,62 @@ async def delete_node(node_id: int) -> dict:
     return {"ok": True}
 
 
+@router.post("/nodes/quick-connect")
+async def quick_connect_agent(body: FleetQuickConnect, _user: AuthDep = None) -> dict:
+    """Hub: вручную подключить дочерний ПК по Tailscale IP (без heartbeat)."""
+    url = body.base_url.strip().rstrip("/")
+    if is_localhost_fleet_url(url):
+        raise HTTPException(status_code=400, detail="укажите Tailscale IP, не localhost")
+    name = body.name.strip()
+    hub_self = self_node_name()
+    if name == hub_self:
+        name = "child-pc"
+    token = settings.fleet_agent_token or ""
+    info = await ping_agent(url, token)
+    if not info:
+        raise HTTPException(
+            status_code=502,
+            detail=f"не достучались до {url} — проверь WEB_HOST=0.0.0.0 на дочернем",
+        )
+    try:
+        pipe = await agent_get(url, token, "/api/fleet/local/pipeline")
+    except FleetAgentError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+
+    async with session_scope() as session:
+        node = (
+            await session.execute(select(FleetNode).where(FleetNode.name == name))
+        ).scalar_one_or_none()
+        if node is None:
+            node = FleetNode(
+                name=name,
+                base_url=url,
+                token=token,
+                is_main=False,
+                role="agent",
+            )
+            session.add(node)
+        else:
+            node.base_url = url
+            node.role = "agent"
+            node.is_main = False
+        node.status = FleetNodeStatus.online
+        node.last_seen = datetime.now(timezone.utc)
+        node.hostname = info.get("hostname")
+        node.pipeline_version = info.get("studio_version")
+        await session.commit()
+        await session.refresh(node)
+        out = _node_out(node)
+
+    projects = pipe.get("projects") or []
+    return {
+        "ok": True,
+        "node": out.model_dump(),
+        "project_count": len(projects),
+        "message": f"Подключено: {len(projects)} проектов",
+    }
+
+
 @router.post("/register", response_model=FleetNodeOut)
 async def register_heartbeat(
     request: Request,
@@ -207,16 +268,25 @@ async def register_heartbeat(
 ) -> FleetNodeOut:
     _validate_agent_token_value(authorization)
     remote_host = request.client.host if request.client else None
+    register_name = body.name.strip()
+    role_agent = (body.role or "").strip().lower() == "agent"
+    if role_agent and register_name == self_node_name():
+        register_name = (body.hostname or "child-pc").strip()[:120]
+        logger.warning(
+            "fleet register: agent переименован {} -> {} (конфликт с hub)",
+            body.name,
+            register_name,
+        )
     async with session_scope() as session:
         node = (
-            await session.execute(select(FleetNode).where(FleetNode.name == body.name))
+            await session.execute(select(FleetNode).where(FleetNode.name == register_name))
         ).scalar_one_or_none()
         if node is None:
             is_main = body.is_main
             if (body.role or "").strip().lower() == "agent":
                 is_main = False
             node = FleetNode(
-                name=body.name,
+                name=register_name,
                 base_url=body.base_url.rstrip("/"),
                 token=settings.fleet_agent_token or "",
                 is_main=is_main,
@@ -229,7 +299,6 @@ async def register_heartbeat(
             node.is_main = body.is_main
         if (body.role or "").strip().lower() == "agent":
             node.is_main = False
-        role_agent = (body.role or "").strip().lower() == "agent"
         incoming_url = (
             resolve_agent_public_url(
                 body.base_url,
@@ -243,14 +312,14 @@ async def register_heartbeat(
             if incoming_url != body.base_url.rstrip("/"):
                 logger.info(
                     "fleet register {}: {} -> {} (IP heartbeat)",
-                    body.name,
+                    register_name,
                     body.base_url,
                     incoming_url,
                 )
             elif not (node.base_url and not is_localhost_fleet_url(node.base_url)):
                 logger.warning(
-                    "fleet register {}: localhost, IP не определён — задайте FLEET_PUBLIC_URL на agent",
-                    body.name,
+                    "fleet register {}: localhost, IP не определён — hub: POST /nodes/quick-connect",
+                    register_name,
                 )
         if role_agent and is_localhost_fleet_url(incoming_url):
             if node.base_url and not is_localhost_fleet_url(node.base_url):

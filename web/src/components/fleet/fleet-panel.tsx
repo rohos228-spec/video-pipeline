@@ -7,6 +7,7 @@ import {
   fleetLogin,
   fleetNodePipeline,
   fleetPullProject,
+  fleetQuickConnect,
   fleetSyncNode,
   clearAuthToken,
   getAuthToken,
@@ -70,6 +71,8 @@ export function FleetPanel({
   const [loginError, setLoginError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [connectIp, setConnectIp] = useState("100.100.240.106");
+  const [connectLoading, setConnectLoading] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -114,6 +117,8 @@ export function FleetPanel({
 
   const selected = nodes.find((n) => n.id === selectedId) ?? null;
   const selfNodeName = String(config?.self_node ?? "");
+  const remoteNodes = nodes.filter((n) => n.name !== selfNodeName);
+  const showQuickConnect = config?.role === "hub" && remoteNodes.length === 0;
 
   const isLocalNode = (node: FleetNode) => node.name === selfNodeName;
   const isBadRemoteUrl = (node: FleetNode) =>
@@ -165,6 +170,22 @@ export function FleetPanel({
   const openStationStudio = () => {
     if (!selected) return;
     window.open(browserUrl(selected, config), "_blank", "noopener,noreferrer");
+  };
+
+  const onQuickConnect = async () => {
+    const ip = connectIp.trim().replace(/^https?:\/\//, "").split("/")[0];
+    const url = ip.includes(":") ? `http://${ip}` : `http://${ip}:8765`;
+    setConnectLoading(true);
+    try {
+      const res = await fleetQuickConnect(url);
+      toast.success(res.message || `Подключено: ${res.project_count} проектов`);
+      await reload();
+      if (res.node?.id) selectNode(res.node.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message.slice(0, 180) : "Ошибка подключения");
+    } finally {
+      setConnectLoading(false);
+    }
   };
 
   const onLogin = async () => {
@@ -237,6 +258,20 @@ export function FleetPanel({
         </Button>
       </div>
 
+      {showQuickConnect ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-primary/20 bg-primary/5 px-4 py-2">
+          <span className="text-xs text-muted-foreground">Дочерний ПК:</span>
+          <Input
+            className="h-8 w-44 text-xs"
+            value={connectIp}
+            onChange={(e) => setConnectIp(e.target.value)}
+            placeholder="100.x.x.x"
+          />
+          <Button size="sm" className="h-8" disabled={connectLoading} onClick={() => void onQuickConnect()}>
+            {connectLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Подключить"}
+          </Button>
+        </div>
+      ) : null}
       {loadError ? (
         <p className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           {loadError}

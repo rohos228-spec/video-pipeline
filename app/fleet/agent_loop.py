@@ -41,7 +41,7 @@ async def _heartbeat_once() -> None:
     try:
         await agent_post(hub, token, "/api/fleet/register", json_body=body, timeout_sec=20)
     except FleetAgentError as exc:
-        logger.debug("fleet agent heartbeat failed: {}", exc)
+        logger.warning("fleet agent heartbeat failed: {}", exc)
     except Exception as exc:  # noqa: BLE001
         logger.debug("fleet agent heartbeat error: {}", exc)
 
