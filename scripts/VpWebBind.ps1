@@ -53,13 +53,13 @@ function Get-VpWebBindConfig {
     $fleetEnabled = (Get-VpEnvFileValue -Root $Root -Key "FLEET_ENABLED" -Default "false").ToLowerInvariant()
     $fleetOn = $fleetEnabled -in @("true", "1", "yes", "on")
     $defaultHost = if ($fleetOn) { "0.0.0.0" } else { "127.0.0.1" }
-    $host = if ($env:WEB_HOST) { $env:WEB_HOST.Trim() } else { Get-VpEnvFileValue -Root $Root -Key "WEB_HOST" -Default $defaultHost }
-    $port = if ($env:WEB_PORT) { $env:WEB_PORT.Trim() } else { Get-VpEnvFileValue -Root $Root -Key "WEB_PORT" -Default "8765" }
+    $webHost = if ($env:WEB_HOST) { $env:WEB_HOST.Trim() } else { Get-VpEnvFileValue -Root $Root -Key "WEB_HOST" -Default $defaultHost }
+    $webPort = if ($env:WEB_PORT) { $env:WEB_PORT.Trim() } else { Get-VpEnvFileValue -Root $Root -Key "WEB_PORT" -Default "8765" }
     @{
-        WebHost = $host
-        WebPort = $port
+        WebHost = $webHost
+        WebPort = $webPort
         FleetEnabled = $fleetOn
-        LocalUrl = "http://127.0.0.1:$port"
+        LocalUrl = "http://127.0.0.1:$webPort"
     }
 }
 
