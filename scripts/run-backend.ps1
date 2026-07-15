@@ -42,8 +42,25 @@ function Write-BackendLogLine([string]$Line) {
     try { Add-Content -Path $sharedLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
 }
 
+function Get-EnvFileValue([string]$Key, [string]$Default = "") {
+    $envFile = Join-Path $Root ".env"
+    if (-not (Test-Path -LiteralPath $envFile)) { return $Default }
+    foreach ($line in Get-Content -LiteralPath $envFile -Encoding UTF8) {
+        if ($line -match "^\s*$([regex]::Escape($Key))=(.*)$") {
+            return $matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return $Default
+}
+
+$webHost = if ($env:WEB_HOST) { $env:WEB_HOST.Trim() } else { Get-EnvFileValue "WEB_HOST" "127.0.0.1" }
+$webPort = if ($env:WEB_PORT) { $env:WEB_PORT.Trim() } else { Get-EnvFileValue "WEB_PORT" "8765" }
+$env:WEB_HOST = $webHost
+$env:WEB_PORT = $webPort
+$bindLabel = if ($webHost -in @("0.0.0.0", "::")) { "0.0.0.0 (все интерфейсы, порт $webPort)" } else { "http://${webHost}:$webPort" }
+
 Write-Host "==> video-pipeline backend (cwd=$Root)" -ForegroundColor Cyan
-Write-Host "    http://127.0.0.1:8765" -ForegroundColor Yellow
+Write-Host "    $bindLabel" -ForegroundColor Yellow
 Write-Host "    лог (этот запуск): data\backend-$PID.log" -ForegroundColor DarkGray
 try {
     $gitHead = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
@@ -59,9 +76,9 @@ if (Test-Path $verFile) {
 Write-Host ""
 
 try {
-    $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction Stop
+    $listener = Get-NetTCPConnection -LocalPort ([int]$webPort) -State Listen -ErrorAction Stop
     if ($listener) {
-        Write-Host "ВНИМАНИЕ: порт 8765 занят (PID $($listener.OwningProcess))." -ForegroundColor Yellow
+        Write-Host "ВНИМАНИЕ: порт $webPort занят (PID $($listener.OwningProcess))." -ForegroundColor Yellow
         Write-Host "         Закройте другое окно бэкенда или: stop-backend.cmd" -ForegroundColor Yellow
         Write-Host ""
     }
@@ -72,8 +89,6 @@ if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
 }
 
 $env:TELEGRAM_ENABLED = "false"
-$env:WEB_HOST = "127.0.0.1"
-$env:WEB_PORT = "8765"
 $env:HF_HUB_DISABLE_SYMLINKS = "1"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
 
@@ -100,7 +115,7 @@ Write-BackendLogLine "preflight create_app OK"
 
 Write-Host ""
 Write-Host ">>> НЕ ЗАКРЫВАЙТЕ ЭТО ОКНО, пока открыта студия <<<" -ForegroundColor Yellow
-Write-Host "    Дождитесь: Uvicorn running on http://127.0.0.1:8765" -ForegroundColor Yellow
+Write-Host "    Дождитесь: Uvicorn running on http://${webHost}:$webPort" -ForegroundColor Yellow
 Write-Host ""
 
 $exitCode = 0
