@@ -1,4 +1,4 @@
-# Авто: pull main, WEB_HOST=0.0.0.0 для fleet, перезапуск студии.
+﻿# Авто: pull main, WEB_HOST=0.0.0.0 для fleet, перезапуск студии.
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root

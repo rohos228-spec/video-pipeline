@@ -1,4 +1,4 @@
-# Чтение/запись WEB_HOST и авто-настройка fleet (0.0.0.0).
+﻿# Чтение/запись WEB_HOST и авто-настройка fleet (0.0.0.0).
 
 function Get-VpEnvFilePath {
     param([string]$Root)
