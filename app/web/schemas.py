@@ -34,6 +34,8 @@ class ProjectSummary(_ORM):
     mass_parent_id: int | None = None
     mass_factory: bool = False
     mass_lane_position: int | None = None
+    batch_id: int | None = None
+    batch_position: int | None = None
     sidebar_folder_id: str | None = None
     sidebar_order: int | None = None
     gen_queue_position: int | None = None

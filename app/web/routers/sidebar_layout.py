@@ -50,7 +50,8 @@ class GenQueueEnqueue(BaseModel):
 @router.get("")
 async def get_sidebar_layout() -> dict:
     from app.db import session_scope
-    from app.models import Project
+    from app.models import BatchProject, Project
+    from app.services import batches as batches_svc
     from app.services.gen_queue import get_gen_queue_idle_info
     from sqlalchemy import select
 
@@ -61,6 +62,22 @@ async def get_sidebar_layout() -> dict:
         }
         payload = layout_svc.layout_for_api(ids)
         payload["gen_queue_idle"] = await get_gen_queue_idle_info(session)
+
+        batches_info: dict[str, dict] = {}
+        batch_rows = (await session.execute(select(BatchProject))).scalars().all()
+        for batch in batch_rows:
+            folder_id = layout_svc.get_batch_folder_id(batch.id)
+            progress = await batches_svc.batch_progress(session, batch)
+            batches_info[str(batch.id)] = {
+                "folder_id": folder_id,
+                "name": batch.name,
+                "status": batch.status.value,
+                "progress": {
+                    "done": progress.get("done", 0),
+                    "total": progress.get("total", 0),
+                },
+            }
+        payload["batches"] = batches_info
         await session.commit()
     return payload
 

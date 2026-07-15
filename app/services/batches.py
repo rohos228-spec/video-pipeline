@@ -27,14 +27,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import BatchProject, BatchStatus, Project, ProjectStatus
+from app.services.canvas_graph import ensure_subproject_workflow_run, sanitize_canvas_graph_for_inherit
 from app.services.prompt_library import PROMPTS_ROOT
+from app.services import sidebar_layout as layout_svc
 from app.settings import settings
 
 # Поля Project, которые попадают в snapshot и применяются ко всем подпроектам
 # при их создании. ВНИМАНИЕ: тут перечислены только «настроечные» поля,
 # которые юзер задавал в мастере / меню. Поля с данными (general_plan,
 # script_text, status, slug, topic, …) НЕ копируются — у каждого подпроекта
-# они свои.
+# они свои. meta — отдельный whitelist-мердж (см. INHERITED_META_KEYS).
 TEMPLATE_FIELDS: tuple[str, ...] = (
     "hero_mode",
     "image_generator",
@@ -54,8 +56,79 @@ TEMPLATE_FIELDS: tuple[str, ...] = (
     "item_variations",
     "prompt_overrides",
     "gpt_text_overrides",
-    "meta",
 )
+
+# meta подпроекта: унаследовать от шаблона ТОЛЬКО эти ключи.
+INHERITED_META_KEYS: frozenset[str] = frozenset(
+    {
+        "canvas_graph",
+        "prompt_slot_variants",
+        "custom_prompts",
+        "excel_hero_enabled",
+    }
+)
+
+_FORBIDDEN_META_EXACT: frozenset[str] = frozenset(
+    {
+        "montage_board",
+        "prompt_history",
+        "prompt_applied_at",
+    }
+)
+
+_FORBIDDEN_META_PREFIXES: tuple[str, ...] = ("auto_retry_", "auto_paused_", "mass_")
+
+
+def _is_forbidden_meta_key(key: str) -> bool:
+    if key in _FORBIDDEN_META_EXACT:
+        return True
+    return any(key.startswith(p) for p in _FORBIDDEN_META_PREFIXES)
+
+
+def _extract_inheritable_meta(source: dict | None) -> dict:
+    """Whitelist-копия meta шаблона для snapshot / подпроекта."""
+    if not isinstance(source, dict):
+        return {}
+    import copy as _copy
+
+    out: dict = {}
+    for key in INHERITED_META_KEYS:
+        if key not in source or _is_forbidden_meta_key(key):
+            continue
+        val = _copy.deepcopy(source[key])
+        if key == "canvas_graph" and isinstance(val, dict):
+            val = sanitize_canvas_graph_for_inherit(val)
+        out[key] = val
+    return out
+
+
+def _merge_subproject_meta(
+    *,
+    topic_card: dict,
+    permanent_product: dict | None,
+    template_meta: dict | None,
+) -> dict:
+    """Собирает meta подпроекта: свои topic_card/product + whitelist от шаблона."""
+    import copy as _copy
+
+    meta: dict = {"topic_card": dict(topic_card)}
+    if permanent_product and permanent_product.get("name"):
+        meta["permanent_product"] = _copy.deepcopy(permanent_product)
+    inherited = _extract_inheritable_meta(template_meta)
+    for key, val in inherited.items():
+        meta[key] = val
+    return meta
+
+
+def _strip_forbidden_meta_keys(meta: dict) -> dict:
+    """Удаляет унаследованный runtime-мусор, не трогая topic_card / permanent_product."""
+    cleaned = dict(meta)
+    for key in list(cleaned.keys()):
+        if key in ("topic_card", "permanent_product"):
+            continue
+        if _is_forbidden_meta_key(key):
+            del cleaned[key]
+    return cleaned
 
 # Кириллица → ASCII транслитерация для slug. Дублирует логику из seed_pilot,
 # чтобы не плодить зависимостей.
@@ -121,15 +194,17 @@ async def _unique_project_slug(session: AsyncSession, base: str) -> str:
 
 def _snapshot_settings_from(project: Project) -> dict:
     """Снимаем настройки эталонного проекта в dict для settings_snapshot."""
+    import copy as _copy
+
     snap: dict = {}
     for f in TEMPLATE_FIELDS:
         val = getattr(project, f, None)
-        # Глубокая копия JSON-полей, чтобы snapshot не делил ссылки с эталонным
-        # проектом (иначе изменения эталона потекут в snapshot).
         if isinstance(val, (dict, list)):
-            import copy as _copy
             val = _copy.deepcopy(val)
         snap[f] = val
+    snap["meta"] = _extract_inheritable_meta(
+        project.meta if isinstance(project.meta, dict) else {}
+    )
     return snap
 
 
@@ -197,6 +272,7 @@ async def create_batch(
         "batches: created #{} '{}' (slug={}, template_pid={})",
         batch.id, name, slug, template_project_id,
     )
+    layout_svc.ensure_batch_folder(batch.id, batch.name)
     return batch
 
 
@@ -251,6 +327,7 @@ async def add_topics(
     ) + 1
 
     snap = batch.settings_snapshot or {}
+    template_meta = snap.get("meta") if isinstance(snap.get("meta"), dict) else {}
     created: list[Project] = []
 
     # Карточные поля, попадающие в Project.meta["topic_card"].
@@ -274,10 +351,11 @@ async def add_topics(
 
         # Карточные поля, кроме служебных, → meta["topic_card"].
         topic_card = {k: card[k] for k in CARD_KEYS if card.get(k)}
-        meta: dict = {"topic_card": topic_card}
-        if perm_product and perm_product.get("name"):
-            import copy as _copy
-            meta["permanent_product"] = _copy.deepcopy(perm_product)
+        meta = _merge_subproject_meta(
+            topic_card=topic_card,
+            permanent_product=perm_product,
+            template_meta=template_meta,
+        )
 
         kwargs: dict = {
             "slug": slug,
@@ -292,9 +370,9 @@ async def add_topics(
         }
         for f in TEMPLATE_FIELDS:
             if f in snap and snap[f] is not None:
+                import copy as _copy
                 v = snap[f]
                 if isinstance(v, (dict, list)):
-                    import copy as _copy
                     v = _copy.deepcopy(v)
                 kwargs[f] = v
 
@@ -323,6 +401,10 @@ async def add_topics(
             (sub_dir / sub).mkdir(parents=True, exist_ok=True)
 
         created.append(proj)
+        await ensure_subproject_workflow_run(session, proj)
+        layout_svc.ensure_batch_subproject_layout(
+            proj.id, batch_id=batch.id, batch_position=position
+        )
         logger.info(
             "batches: sub-project #{} '{}' (slug={}, pos={}) added to batch #{} "
             "[card_keys={}]",
@@ -427,7 +509,10 @@ async def delete_batch(
         )
     ).scalars().all()
     for p in subs:
+        layout_svc.remove_project_from_layout(p.id)
         await session.delete(p)
+
+    layout_svc.delete_batch_folder(batch_id)
 
     base_dir = batch.data_dir
     await session.delete(batch)
@@ -1033,4 +1118,78 @@ async def resume_all_paused_batches(
         "MASS RESUME: resumed {} batches, auto_mode on for {} subs",
         out["batches"], out["auto_mode_on"],
     )
+    return out
+
+
+# ----------------------------------------------------------------------
+# Миграция: очистка унаследованного мусора в meta подпроектов
+# ----------------------------------------------------------------------
+
+
+async def clean_subprojects_meta(
+    session: AsyncSession,
+    *,
+    batch_id: int | None = None,
+) -> dict:
+    """Удаляет унаследованный runtime-мусор из meta подпроектов.
+
+    Восстанавливает topic_card из topics.xlsx батча (по slug или position).
+    Returns: {"projects": N, "stripped_keys": M, "topic_cards_restored": K}.
+    """
+    from app.storage import batch_sheet
+
+    q = select(Project).where(Project.batch_id.is_not(None))
+    if batch_id is not None:
+        q = q.where(Project.batch_id == batch_id)
+    subs = (await session.execute(q)).scalars().all()
+
+    batches_cache: dict[int, BatchProject | None] = {}
+    topics_by_batch: dict[int, dict[str, dict]] = {}
+    topics_by_pos: dict[int, dict[int, dict]] = {}
+
+    out = {"projects": 0, "stripped_keys": 0, "topic_cards_restored": 0}
+
+    for p in subs:
+        bid = p.batch_id
+        if bid is None:
+            continue
+        if bid not in batches_cache:
+            batch = await get_batch(session, bid)
+            batches_cache[bid] = batch
+            if batch is not None:
+                rows = batch_sheet.read_topics(batch.topics_xlsx_path)
+                topics_by_batch[bid] = {
+                    (r.get("slug") or ""): r for r in rows if r.get("slug")
+                }
+                by_pos: dict[int, dict] = {}
+                for r in rows:
+                    try:
+                        pos = int(r.get("position"))
+                    except (TypeError, ValueError):
+                        continue
+                    by_pos[pos] = r
+                topics_by_pos[bid] = by_pos
+
+        meta = dict(p.meta or {})
+        before_len = len(meta)
+        meta = _strip_forbidden_meta_keys(meta)
+        out["stripped_keys"] += max(0, before_len - len(meta))
+
+        batch = batches_cache.get(bid)
+        if batch is not None:
+            row = topics_by_batch.get(bid, {}).get(p.slug)
+            if row is None and p.batch_position is not None:
+                row = topics_by_pos.get(bid, {}).get(int(p.batch_position))
+            if row:
+                card = batch_sheet.topic_card_from_row(row)
+                if card:
+                    meta["topic_card"] = card
+                    out["topic_cards_restored"] += 1
+
+        if meta != (p.meta or {}):
+            p.meta = meta
+            out["projects"] += 1
+
+    if out["projects"]:
+        await session.flush()
     return out
