@@ -21,6 +21,18 @@ MONTAGE_READY_STATUSES = frozenset(
     }
 )
 
+# При импорте на существующий проект — не затирать локальные промты/историю.
+_PRESERVE_META_KEYS = frozenset(
+    {
+        "prompt_slot_variants",
+        "custom_prompts",
+        "prompt_applied_at",
+        "prompt_history",
+        "gpt_text_overrides",
+        "montage_board",
+    }
+)
+
 
 def mark_montage_ready(meta: dict[str, Any] | None) -> dict[str, Any]:
     out = dict(meta or {})
@@ -93,6 +105,7 @@ async def import_project_bundle(
         project = (
             await session.execute(select(Project).where(Project.slug == slug))
         ).scalar_one_or_none()
+        existing = project is not None
         if project is None:
             project = Project(
                 slug=slug,
@@ -101,11 +114,22 @@ async def import_project_bundle(
             )
             session.add(project)
             await session.flush()
+            meta = dict(manifest.get("meta") or {})
+        else:
+            incoming_meta = dict(manifest.get("meta") or {})
+            local_meta = dict(project.meta or {})
+            meta = {**incoming_meta}
+            for key in _PRESERVE_META_KEYS:
+                if key in local_meta:
+                    meta[key] = local_meta[key]
+            if not (project.prompt_overrides or {}):
+                overrides = incoming_meta.get("prompt_overrides")
+                if isinstance(overrides, dict):
+                    project.prompt_overrides = overrides
 
-        meta = dict(manifest.get("meta") or {})
         meta["fleet_imported"] = True
         project.meta = meta
-        if manifest.get("topic"):
+        if manifest.get("topic") and (not existing or not (project.topic or "").strip()):
             project.topic = manifest.get("topic")
         project.status = ProjectStatus.music_ready
 
@@ -118,6 +142,8 @@ async def import_project_bundle(
             if not rel:
                 continue
             target = dest / rel
+            if existing and target.exists() and rel.startswith("prompts/"):
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar.extractfile(member)
             if extracted is None:

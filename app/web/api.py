@@ -141,6 +141,9 @@ async def _lifespan(app: FastAPI):
 
         await ensure_self_fleet_node()
         await ensure_hub_peer_node()
+        from app.fleet.diagnostics import prune_stale_fleet_nodes
+
+        await prune_stale_fleet_nodes()
         start_fleet_agent()
         start_fleet_pull_loop()
         start_montage_queue_loop()
@@ -149,10 +152,12 @@ async def _lifespan(app: FastAPI):
 
     try:
         from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+        from app.services.run_sync import reconcile_stale_node_runs_on_startup
 
         await reconcile_stale_montage_jobs_on_startup()
+        await reconcile_stale_node_runs_on_startup()
     except Exception:  # noqa: BLE001
-        logger.exception("montage job reconcile failed (non-fatal)")
+        logger.exception("startup job/node reconcile failed (non-fatal)")
 
     try:
         yield

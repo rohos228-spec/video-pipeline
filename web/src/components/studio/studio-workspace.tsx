@@ -454,6 +454,23 @@ export function StudioWorkspace({
           await api.runProjectStep(projectId, step, { nodeKey });
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
+          qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+        } catch (e) {
+          toast.error(errorMessageFromUnknown(e));
+        }
+      },
+      onResetNodeStep: async (nodeKey: string, nodeType: string) => {
+        if (!projectId) return;
+        const step = stepCodeForNodeType(nodeType);
+        if (!step) {
+          toast.error("У этой ноды нет шага для сброса");
+          return;
+        }
+        try {
+          await api.resetProjectStep(projectId, step);
+          toast.success(`Шаг сброшен: ${getNodeSpec(nodeType).label}`);
+          qc.invalidateQueries({ queryKey: ["project", projectId] });
+          qc.invalidateQueries({ queryKey: ["project-run", projectId] });
         } catch (e) {
           toast.error(errorMessageFromUnknown(e));
         }

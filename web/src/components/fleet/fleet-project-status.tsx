@@ -50,6 +50,7 @@ export function FleetProjectRow({
   montageQueuePosition,
   onOpen,
   onMontage,
+  exportHint,
 }: {
   slug: string;
   topic?: string | null;
@@ -59,6 +60,7 @@ export function FleetProjectRow({
   montageQueuePosition?: number | null;
   onOpen: () => void;
   onMontage?: () => void;
+  exportHint?: string;
 }) {
   const running = isProjectRunningStatus(status);
   const showExportBtn = !montageQueued && onMontage;
@@ -97,6 +99,9 @@ export function FleetProjectRow({
           >
             Перейти
           </button>
+          {exportHint && !showExportBtn ? (
+            <span className="max-w-[88px] text-center text-[9px] text-muted-foreground">{exportHint}</span>
+          ) : null}
           {showExportBtn ? (
             <button
               type="button"

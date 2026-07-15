@@ -172,6 +172,14 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 actions.setVMenuNodeKey(null);
                 actions.onRunNode(d.nodeKey, d.type);
               }}
+              onResetNodeStep={
+                d.status === "running" || d.status === "queued" || d.status === "failed"
+                  ? () => {
+                      actions.setVMenuNodeKey(null);
+                      actions.onResetNodeStep(d.nodeKey, d.type);
+                    }
+                  : undefined
+              }
               onOpenAssets={
                 assetKind
                   ? () => {

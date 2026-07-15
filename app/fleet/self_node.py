@@ -21,6 +21,21 @@ def is_localhost_fleet_url(url: str) -> bool:
     return "127.0.0.1" in low or "localhost" in low
 
 
+def agent_base_url_from_request(
+    remote_host: str | None,
+    *,
+    default_port: int | None = None,
+) -> str | None:
+    """Базовый URL agent-станции из IP входящего heartbeat (никогда localhost)."""
+    host = (remote_host or "").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host or is_localhost_fleet_url(f"http://{host}/"):
+        return None
+    port = default_port or settings.web_port
+    return f"http://{host}:{port}"
+
+
 def resolve_agent_public_url(
     declared_url: str,
     *,

@@ -570,7 +570,10 @@ async def prepare_node_for_step_start(
             raise ValueError(msg)
         logger.debug("[#{}] {}", project.id, msg)
         return False
-    if nr.status == NodeRunStatus.running:
+    if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
+        msg = f"нода «{nr.node_type}» уже в работе ({nr.status.value}) — дождитесь или «Сбросить шаг»"
+        if strict:
+            raise ValueError(msg)
         return True
     if not queue_node_for_start(nr, project_id=project.id, initiator="api"):
         pass
@@ -699,3 +702,41 @@ async def stop_active_running_node(
             await _reset_and_notify(nr)
             await session.flush()
             return
+
+
+_STALE_NODE_RUN_ERROR = "прервано перезапуском программы"
+
+
+async def reconcile_stale_node_runs_on_startup() -> int:
+    """NodeRun running/queued без живого воркера → failed (не pending)."""
+    fixed = 0
+    async with session_scope() as session:
+        runs = (
+            await session.execute(
+                select(WorkflowRun).options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalars().all()
+        for run in runs:
+            for nr in run.node_runs:
+                if nr.status not in (NodeRunStatus.running, NodeRunStatus.queued):
+                    continue
+                old = nr.status
+                if fail_node(
+                    nr,
+                    _STALE_NODE_RUN_ERROR,
+                    project_id=run.project_id,
+                    initiator="startup_reconcile",
+                ):
+                    fixed += 1
+                    logger.warning(
+                        "[#{}] NodeRun {}/{}: {} → failed (startup)",
+                        run.project_id,
+                        nr.node_type,
+                        nr.node_key,
+                        old.value,
+                    )
+        if fixed:
+            await session.commit()
+    if fixed:
+        logger.info("startup reconcile: {} stale NodeRun(s) → failed", fixed)
+    return fixed

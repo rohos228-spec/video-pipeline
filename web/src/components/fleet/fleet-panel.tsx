@@ -76,6 +76,14 @@ export function FleetPanel({
   const [connectIp, setConnectIp] = useState("100.100.240.106");
   const [connectLoading, setConnectLoading] = useState(false);
   const [diagIssues, setDiagIssues] = useState<string[]>([]);
+  const [diagFix, setDiagFix] = useState("");
+  const [diagSetup, setDiagSetup] = useState<{
+    needs_setup: boolean;
+    steps: string[];
+    role: string;
+    fleet_enabled: boolean;
+  } | null>(null);
+  const [diagOk, setDiagOk] = useState<string[]>([]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -95,8 +103,14 @@ export function FleetPanel({
       try {
         const diag = await fetchFleetDiagnostics();
         setDiagIssues(diag.issues || []);
+        setDiagFix(diag.fix || "");
+        setDiagSetup(diag.setup ?? null);
+        setDiagOk(diag.checks_ok || []);
       } catch {
         setDiagIssues([]);
+        setDiagFix("");
+        setDiagSetup(null);
+        setDiagOk([]);
       }
       const selfName = String(cfg.self_node ?? "");
       if (list.length) {
@@ -130,6 +144,13 @@ export function FleetPanel({
   const showQuickConnect = config?.role === "hub" && remoteNodes.length === 0;
 
   const isLocalNode = (node: FleetNode) => node.name === selfNodeName;
+  const nodeOnline = (node: FleetNode) => {
+    if (isLocalNode(node)) return true;
+    if (!node.last_seen) return false;
+    const age = (Date.now() - new Date(node.last_seen).getTime()) / 1000;
+    return age < 120;
+  };
+  const selectedOnline = selected ? nodeOnline(selected) : false;
   const isBadRemoteUrl = (node: FleetNode) =>
     !isLocalNode(node) &&
     /127\.0\.0\.1|localhost/i.test(node.base_url || "");
@@ -184,7 +205,7 @@ export function FleetPanel({
         toast.success(
           r.message ||
             (r.pending
-              ? "Запрос отправлен — жди ~5 сек"
+              ? "Поставлено в очередь — заберём при следующем heartbeat (~5 сек)"
               : `На монтаж: ${r.slug ?? "ok"}${r.queued ? " (очередь)" : ""}`),
         );
         void loadPipeline(selectedId);
@@ -298,10 +319,34 @@ export function FleetPanel({
           </Button>
         </div>
       ) : null}
+      {diagSetup?.needs_setup ? (
+        <div className="border-b border-primary/30 bg-primary/5 px-4 py-3 text-xs">
+          <p className="font-medium text-foreground">
+            Fleet не настроен · роль {diagSetup.role}
+            {!diagSetup.fleet_enabled ? " · FLEET_ENABLED=false" : ""}
+          </p>
+          <ol className="mt-2 list-decimal space-y-1 pl-4 text-muted-foreground">
+            {diagSetup.steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            Windows: STUDIO.cmd → [7] Fleet мастер или scripts\fleet-setup.ps1
+          </p>
+        </div>
+      ) : null}
       {diagIssues.length > 0 ? (
         <div className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive">
-          {diagIssues.slice(0, 4).map((issue) => (
+          <p className="mb-1 font-medium">Диагностика сети</p>
+          {diagIssues.map((issue) => (
             <div key={issue}>{issue}</div>
+          ))}
+          {diagFix ? <p className="mt-2 text-destructive/80">{diagFix}</p> : null}
+        </div>
+      ) : diagOk.length > 0 ? (
+        <div className="border-b border-green-500/30 bg-green-500/5 px-4 py-2 text-xs text-green-700 dark:text-green-300">
+          {diagOk.slice(0, 3).map((line) => (
+            <div key={line}>{line}</div>
           ))}
         </div>
       ) : null}
@@ -325,7 +370,9 @@ export function FleetPanel({
           </p>
           {!loading && nodes.length === 0 ? (
             <p className="px-2 text-xs text-muted-foreground">
-              Станций пока нет. Перезапустите Studio или нажмите обновить.
+              {diagSetup?.needs_setup
+                ? "Сначала настройте Fleet (см. инструкцию выше)"
+                : "Станций пока нет. Перезапустите Studio или нажмите обновить."}
             </p>
           ) : null}
           {nodes.map((n) => (
@@ -411,8 +458,15 @@ export function FleetPanel({
                 montageQueuePosition={p.montage_queue_position}
                 onOpen={() => openProject(p.id)}
                 onMontage={
-                  selectedId != null && !p.montage_queued
+                  selectedId != null &&
+                  !p.montage_queued &&
+                  (isLocalNode(selected!) || selectedOnline)
                     ? () => handleMontage(p.id, Boolean(p.montage_ready), p.slug)
+                    : undefined
+                }
+                exportHint={
+                  selected && !isLocalNode(selected) && !selectedOnline
+                    ? "Станция offline — дождитесь heartbeat"
                     : undefined
                 }
               />

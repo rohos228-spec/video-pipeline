@@ -6,6 +6,7 @@ import { Loader2, ListOrdered } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
+import { readCanvasGraph } from "@/lib/canvas-graph-storage";
 import { getNodeSpec } from "@/lib/node-catalog";
 import type { ProjectSummary, WorkflowNode } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -66,6 +67,11 @@ export function GenQueueDialog({
     queryFn: api.listWorkflows,
     enabled: open,
   });
+  const projectDetail = useQuery({
+    queryKey: ["project", project?.id],
+    queryFn: () => api.getProject(project!.id),
+    enabled: open && project != null,
+  });
   const defaultWf = useMemo(
     () => (workflows.data ?? []).find((w) => w.is_default) ?? workflows.data?.[0] ?? null,
     [workflows.data],
@@ -76,10 +82,17 @@ export function GenQueueDialog({
     enabled: open && defaultWf != null,
   });
 
-  const targets = useMemo(
-    () => workflowTargetNodes(workflow.data?.nodes ?? []),
-    [workflow.data?.nodes],
-  );
+  const targets = useMemo(() => {
+    const wfId = defaultWf?.id;
+    const canvas = wfId
+      ? readCanvasGraph(
+          (projectDetail.data?.meta || {}) as Record<string, unknown>,
+          wfId,
+        )
+      : null;
+    const nodes = canvas?.nodes?.length ? canvas.nodes : workflow.data?.nodes ?? [];
+    return workflowTargetNodes(nodes);
+  }, [defaultWf?.id, projectDetail.data?.meta, workflow.data?.nodes]);
 
   const enqueue = useMutation({
     mutationFn: (body: {

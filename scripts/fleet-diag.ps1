@@ -10,14 +10,23 @@ if (Test-Path (Join-Path $Root ".env")) {
     }
 }
 
-Write-Host "==> GET /api/fleet/diagnostics" -ForegroundColor Cyan
+Write-Host "==> prune stale + diagnostics" -ForegroundColor Cyan
 try {
-    $d = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/diagnostics" -TimeoutSec 15
+    $pr = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/nodes/prune-stale" -Method POST -TimeoutSec 15
+    if (@($pr.pruned).Count -gt 0) {
+        Write-Host "Removed ghost nodes: $($pr.pruned -join ', ')" -ForegroundColor Yellow
+    }
+    $d = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/diagnostics?prune=false" -TimeoutSec 15
     if ($d.ok) {
         Write-Host "OK: fleet healthy" -ForegroundColor Green
     } else {
         Write-Host "PROBLEMS:" -ForegroundColor Red
         foreach ($i in $d.issues) { Write-Host "  - $i" -ForegroundColor Yellow }
+    }
+    if ($d.setup) {
+        Write-Host ""
+        Write-Host "Setup: role=$($d.setup.role) enabled=$($d.setup.fleet_enabled)" -ForegroundColor DarkGray
+        foreach ($s in $d.setup.steps) { Write-Host "  -> $s" -ForegroundColor DarkGray }
     }
     Write-Host ""
     Write-Host $d.fix -ForegroundColor DarkGray

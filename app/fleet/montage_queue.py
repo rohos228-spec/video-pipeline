@@ -16,6 +16,10 @@ from app.settings import settings
 
 META_ENQUEUED = "montage_queue_enqueued"
 META_ENQUEUED_AT = "montage_queue_at"
+META_ASSEMBLE_STARTED = "montage_queue_started_at"
+META_WATCHDOG_RETRIES = "montage_watchdog_retries"
+ASSEMBLE_STALE_SEC = 600
+_WATCHDOG_ERROR = "сборка прервана"
 
 _queue_task: asyncio.Task | None = None
 
@@ -24,6 +28,19 @@ def _parse_ts(value: object) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return ""
+
+
+def _started_age_sec(meta: dict) -> float | None:
+    raw = meta.get(META_ASSEMBLE_STARTED)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        started = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - started).total_seconds()
+    except ValueError:
+        return None
 
 
 async def maybe_mark_for_fleet_montage(session, project: Project) -> None:
@@ -123,10 +140,55 @@ async def queue_position_for_project(session, project: Project) -> int | None:
     return None
 
 
+async def reconcile_stale_assembling(session) -> int:
+    """assembling без прогресса >10 мин → ошибка + один повтор в очереди."""
+    rows = (
+        await session.execute(
+            select(Project).where(Project.status == ProjectStatus.assembling)
+        )
+    ).scalars().all()
+    fixed = 0
+    for project in rows:
+        meta = dict(project.meta or {})
+        age = _started_age_sec(meta)
+        if age is None or age < ASSEMBLE_STALE_SEC:
+            continue
+        retries = int(meta.get(META_WATCHDOG_RETRIES) or 0)
+        meta["montage_assemble_error"] = _WATCHDOG_ERROR
+        meta.pop(META_ASSEMBLE_STARTED, None)
+        if retries < 1:
+            meta[META_WATCHDOG_RETRIES] = retries + 1
+            meta[META_ENQUEUED] = True
+            meta[META_ENQUEUED_AT] = datetime.now(timezone.utc).isoformat()
+            project.status = ProjectStatus.music_ready
+            logger.warning(
+                "montage watchdog: {} (#{}) stale {:.0f}s → re-queue (retry {})",
+                project.slug,
+                project.id,
+                age,
+                retries + 1,
+            )
+        else:
+            project.status = ProjectStatus.failed
+            meta["montage_assemble_failed"] = True
+            logger.error(
+                "montage watchdog: {} (#{}) stale {:.0f}s → failed",
+                project.slug,
+                project.id,
+                age,
+            )
+        project.meta = meta
+        fixed += 1
+        await session.flush()
+    return fixed
+
+
 async def process_montage_queue(session) -> int:
     """Запустить следующий проект из очереди, если есть свободный слот."""
     if not settings.fleet_montage_hub:
         return 0
+
+    await reconcile_stale_assembling(session)
 
     max_parallel = max(1, int(settings.fleet_montage_max_parallel))
     assembling = await count_assembling(session)
@@ -146,7 +208,7 @@ async def process_montage_queue(session) -> int:
     for project in queued[:slots]:
         meta = dict(project.meta or {})
         meta.pop(META_ENQUEUED, None)
-        meta["montage_queue_started_at"] = datetime.now(timezone.utc).isoformat()
+        meta[META_ASSEMBLE_STARTED] = datetime.now(timezone.utc).isoformat()
         project.meta = meta
         project.status = ProjectStatus.assembling
         await session.flush()

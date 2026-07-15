@@ -39,8 +39,11 @@ from app.models import (
     HITLDecision,
     HITLKind,
     HITLRequest,
+    NodeRunStatus,
     Project,
     ProjectStatus,
+    Workflow,
+    WorkflowRun,
 )
 from app.services.project_state import compute_actual_status
 from app.services.disabled_nodes import skip_disabled_running, skip_disabled_running_async
@@ -820,8 +823,40 @@ async def maybe_auto_advance(
 
     await clamp_status_to_data(session, project)
     status = project.status
+    if status == ProjectStatus.failed:
+        return False
     if status not in TRANSITIONS:
         return False  # не ready-статус, нечего двигать
+
+    from sqlalchemy.orm import selectinload
+
+    default_wf = (
+        await session.execute(
+            select(Workflow).where(Workflow.is_default == True)  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    if default_wf is not None:
+        run = (
+            await session.execute(
+                select(WorkflowRun)
+                .where(
+                    WorkflowRun.project_id == project.id,
+                    WorkflowRun.workflow_id == default_wf.id,
+                )
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one_or_none()
+        if run is not None:
+            for nr in run.node_runs:
+                if nr.status == NodeRunStatus.failed:
+                    logger.info(
+                        "auto_advance: #{} blocked — нода {}/{} в ошибке: {}",
+                        project.id,
+                        nr.node_type,
+                        nr.node_key,
+                        (nr.error or "")[:120],
+                    )
+                    return False
 
     meta = getattr(project, "meta", None) or {}
     if meta.get("user_stop") or meta.get("mass_lane_user_stop"):

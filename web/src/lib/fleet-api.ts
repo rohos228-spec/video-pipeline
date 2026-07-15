@@ -48,12 +48,24 @@ export async function fetchFleetDiagnostics() {
     role: string;
     self_node: string;
     issues: string[];
+    checks_ok?: string[];
     fix: string;
+    pruned?: string[];
+    setup?: {
+      fleet_enabled: boolean;
+      role: string;
+      hub_url_set: boolean;
+      agent_ready: boolean;
+      hub_ready: boolean;
+      needs_setup: boolean;
+      steps: string[];
+    };
     nodes: Array<{
       name: string;
       cached_projects: number;
       pending_pulls: number;
       last_seen_sec_ago: number | null;
+      online?: boolean;
       issues: string[];
     }>;
   }>("/api/fleet/diagnostics");

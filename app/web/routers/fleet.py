@@ -41,9 +41,9 @@ from app.fleet.montage_queue import (
     queue_position_for_project,
 )
 from app.fleet.self_node import (
+    agent_base_url_from_request,
     is_local_fleet_node,
     is_localhost_fleet_url,
-    resolve_agent_public_url,
     self_node_name,
 )
 from app.services.node_step_params import send_to_main_pc_for_project
@@ -228,6 +228,10 @@ async def _import_agent_bundle(
 
 @router.get("/nodes", response_model=list[FleetNodeOut])
 async def list_nodes(_user: AuthDep = None) -> list[FleetNodeOut]:
+    from app.fleet.diagnostics import prune_stale_fleet_nodes
+
+    if settings.fleet_enabled:
+        await prune_stale_fleet_nodes()
     async with session_scope() as session:
         rows = (await session.execute(select(FleetNode).order_by(FleetNode.name))).scalars().all()
         return [_node_out(n) for n in rows]
@@ -361,35 +365,24 @@ async def register_heartbeat(
             node.is_main = body.is_main
         if (body.role or "").strip().lower() == "agent":
             node.is_main = False
-        incoming_url = (
-            resolve_agent_public_url(
-                body.base_url,
-                remote_host=remote_host,
-                default_port=settings.web_port,
+        if role_agent:
+            resolved = agent_base_url_from_request(
+                remote_host, default_port=settings.web_port
             )
-            if role_agent
-            else body.base_url.rstrip("/")
-        )
-        if role_agent and is_localhost_fleet_url(body.base_url.rstrip("/")):
-            if incoming_url != body.base_url.rstrip("/"):
+            if resolved:
+                node.base_url = resolved
                 logger.info(
-                    "fleet register {}: {} -> {} (IP heartbeat)",
+                    "fleet register {}: base_url={} (heartbeat IP)",
                     register_name,
-                    body.base_url,
-                    incoming_url,
+                    resolved,
                 )
-            elif not (node.base_url and not is_localhost_fleet_url(node.base_url)):
+            elif is_localhost_fleet_url(node.base_url or ""):
                 logger.warning(
-                    "fleet register {}: localhost, IP не определён — hub: POST /nodes/quick-connect",
+                    "fleet register {}: IP heartbeat не определён — quick-connect или Tailscale",
                     register_name,
                 )
-        if role_agent and is_localhost_fleet_url(incoming_url):
-            if node.base_url and not is_localhost_fleet_url(node.base_url):
-                pass  # оставляем старый рабочий URL
-            else:
-                node.base_url = incoming_url
         else:
-            node.base_url = incoming_url
+            node.base_url = body.base_url.rstrip("/")
         pending_actions: list[dict] = []
         if role_agent:
             meta = dict(node.meta or {})
@@ -720,7 +713,7 @@ async def pull_project_to_main(
             "ok": True,
             "pending": True,
             "queued": body.run_assemble,
-            "message": f"Запрос на {node.name} (~5 сек)",
+            "message": "Поставлено в очередь — заберём при следующем heartbeat (~5 сек)",
         }
     try:
         blob = await agent_get_bytes(
@@ -752,7 +745,7 @@ async def pull_project_to_main(
         "ok": True,
         "pending": True,
         "queued": body.run_assemble,
-        "message": f"Запрос на {node.name} (~5 сек)",
+        "message": "Поставлено в очередь — заберём при следующем heartbeat (~5 сек)",
     }
 
 
@@ -1314,6 +1307,9 @@ async def local_push_to_hub(
 
 @router.get("/config")
 async def fleet_config() -> dict:
+    from app.fleet.diagnostics import fleet_setup_status
+
+    setup = fleet_setup_status()
     return {
         "enabled": settings.fleet_enabled,
         "role": settings.fleet_role,
@@ -1326,9 +1322,20 @@ async def fleet_config() -> dict:
         "public_url": settings.fleet_public_url or settings.fleet_agent_base_url,
         "auth_required": settings.web_auth_enabled,
         "montage_max_parallel": settings.fleet_montage_max_parallel,
+        "setup": setup,
     }
 
 
+@router.post("/nodes/prune-stale")
+async def prune_stale_nodes(_user: AuthDep = None) -> dict:
+    from app.fleet.diagnostics import prune_stale_fleet_nodes
+
+    removed = await prune_stale_fleet_nodes()
+    return {"ok": True, "pruned": removed}
+
+
 @router.get("/diagnostics")
-async def fleet_diagnostics(_user: AuthDep = None) -> dict:
-    return await build_fleet_diagnostics()
+async def fleet_diagnostics(_user: AuthDep = None, prune: bool = True) -> dict:
+    from app.fleet.diagnostics import build_fleet_diagnostics
+
+    return await build_fleet_diagnostics(prune=prune)

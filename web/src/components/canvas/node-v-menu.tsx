@@ -13,6 +13,7 @@ import {
   MessageSquareText,
   Play,
   Plus,
+  RotateCcw,
   Trash2,
   Unlink,
   X,
@@ -65,6 +66,7 @@ export function NodeVMenu({
   onViewAllPrompts,
   onDownloadPrompts,
   onRunNode,
+  onResetNodeStep,
   onOpenAssets,
   onDetachNode,
   onToggleDisable,
@@ -86,6 +88,7 @@ export function NodeVMenu({
   onViewAllPrompts: () => void;
   onDownloadPrompts: () => void;
   onRunNode: () => void;
+  onResetNodeStep?: () => void;
   onOpenAssets?: () => void;
   onDetachNode: () => void;
   onToggleDisable: () => void;
@@ -353,6 +356,9 @@ export function NodeVMenu({
           <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />
           <MenuAction icon={Download} label="Скачать промты" onClick={onDownloadPrompts} />
           <MenuAction icon={Play} label="Запустить шаг" onClick={onRunNode} />
+          {onResetNodeStep ? (
+            <MenuAction icon={RotateCcw} label="Сбросить шаг" onClick={onResetNodeStep} />
+          ) : null}
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
           )}

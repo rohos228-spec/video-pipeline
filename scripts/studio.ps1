@@ -2,7 +2,7 @@
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
-    [ValidateSet("1", "2", "3", "4", "5", "6", "")]
+    [ValidateSet("1", "2", "3", "4", "5", "6", "7", "8", "9", "")]
     [string]$Action = ""
 )
 
@@ -552,6 +552,9 @@ function Show-StudioMenu {
     Write-Host "  [4] Обновить и запустить (git origin/main + зависимости + запуск)"
     Write-Host "  [5] Починить установку (pip, web, Playwright, FFmpeg)"
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
+    Write-Host "  [7] Fleet: мастер настройки (hub/agent, .env)"
+    Write-Host "  [8] Fleet: диагностика сети (scripts/fleet-diag.ps1)"
+    Write-Host "  [9] Fleet: обновить agent (git pull + restart)"
     Write-Host "  [0] Выход"
     Write-Host ""
 }
@@ -575,6 +578,33 @@ if ($Action -eq "1") {
     $ok = Invoke-StudioRepair
 } elseif ($Action -eq "6") {
     $ok = Invoke-StudioDoctor
+} elseif ($Action -eq "7") {
+    $setup = Join-Path $Root "scripts\fleet-setup.ps1"
+    if (Test-Path $setup) {
+        & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $setup
+        $ok = $true
+    } else {
+        Write-StudioMsg "Не найден: scripts\fleet-setup.ps1" "Red"
+        $ok = $false
+    }
+} elseif ($Action -eq "8") {
+    $diag = Join-Path $Root "scripts\fleet-diag.ps1"
+    if (Test-Path $diag) {
+        & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $diag
+        $ok = $LASTEXITCODE -eq 0
+    } else {
+        Write-StudioMsg "Не найден: scripts\fleet-diag.ps1" "Red"
+        $ok = $false
+    }
+} elseif ($Action -eq "9") {
+    $upd = Join-Path $Root "scripts\fleet-agent-update.cmd"
+    if (Test-Path $upd) {
+        cmd /c $upd
+        $ok = $true
+    } else {
+        Write-StudioMsg "Не найден: scripts\fleet-agent-update.cmd" "Red"
+        $ok = $false
+    }
 } elseif ($Action -eq "") {
     while ($true) {
         Show-StudioMenu
@@ -586,6 +616,24 @@ if ($Action -eq "1") {
             "4" { $ok = Invoke-StudioUpdateAndStart; if (-not $ok) { Invoke-StudioPause } }
             "5" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
             "6" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
+            "7" {
+                $setup = Join-Path $Root "scripts\fleet-setup.ps1"
+                if (Test-Path $setup) { & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $setup }
+                else { Write-StudioMsg "Не найден: scripts\fleet-setup.ps1" "Red" }
+                Invoke-StudioPause
+            }
+            "8" {
+                $diag = Join-Path $Root "scripts\fleet-diag.ps1"
+                if (Test-Path $diag) { & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $diag }
+                else { Write-StudioMsg "Не найден: scripts\fleet-diag.ps1" "Red" }
+                Invoke-StudioPause
+            }
+            "9" {
+                $upd = Join-Path $Root "scripts\fleet-agent-update.cmd"
+                if (Test-Path $upd) { cmd /c $upd }
+                else { Write-StudioMsg "Не найден: scripts\fleet-agent-update.cmd" "Red" }
+                Invoke-StudioPause
+            }
             "0" { break }
             default {
                 Write-StudioMsg "Неизвестный пункт: $choice" "Yellow"
