@@ -141,6 +141,9 @@ async def _lifespan(app: FastAPI):
 
         await ensure_self_fleet_node()
         await ensure_hub_peer_node()
+        from app.fleet.diagnostics import prune_stale_fleet_nodes
+
+        await prune_stale_fleet_nodes()
         start_fleet_agent()
         start_fleet_pull_loop()
         start_montage_queue_loop()

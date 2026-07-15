@@ -1329,6 +1329,14 @@ async def fleet_config() -> dict:
     }
 
 
+@router.post("/nodes/prune-stale")
+async def prune_stale_nodes(_user: AuthDep = None) -> dict:
+    from app.fleet.diagnostics import prune_stale_fleet_nodes
+
+    removed = await prune_stale_fleet_nodes()
+    return {"ok": True, "pruned": removed}
+
+
 @router.get("/diagnostics")
-async def fleet_diagnostics(_user: AuthDep = None) -> dict:
-    return await build_fleet_diagnostics()
+async def fleet_diagnostics(_user: AuthDep = None, prune: bool = True) -> dict:
+    return await build_fleet_diagnostics(prune=prune)
