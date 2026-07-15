@@ -45,4 +45,23 @@ try {
     exit 1
 }
 
+Write-Host "==> prune stale fleet nodes + diagnostics" -ForegroundColor Cyan
+try {
+    $pr = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/nodes/prune-stale" -Method POST -TimeoutSec 15
+    if (@($pr.pruned).Count -gt 0) {
+        Write-Host "    removed: $($pr.pruned -join ', ')" -ForegroundColor Yellow
+    }
+    $d = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/diagnostics" -TimeoutSec 15
+    foreach ($n in $d.nodes) {
+        $tag = if ($n.is_self) { " (hub)" } else { "" }
+        Write-Host "    $($n.name)$tag  seen=$($n.last_seen_sec_ago)s  projects=$($n.cached_projects)" -ForegroundColor DarkGray
+    }
+    if (-not $d.ok) {
+        Write-Host "WARN: fleet issues remain — run FLEET-DIAG.cmd or FLEET-AGENT-UPDATE.cmd on child" -ForegroundColor Yellow
+        foreach ($i in $d.issues) { Write-Host "  - $i" -ForegroundColor Yellow }
+    }
+} catch {
+    Write-Host "WARN: fleet diagnostics skipped: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 Write-Host "Fleet fix complete." -ForegroundColor Green
