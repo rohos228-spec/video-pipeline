@@ -19,6 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db import session_scope
 from app.fleet import bundle as bundle_svc
@@ -31,6 +32,7 @@ from app.fleet.client import (
     agent_upload_file,
     ping_agent,
 )
+from app.fleet.pipeline_list import build_pipeline_payload, cached_pipeline_from_node
 from app.fleet.montage_queue import (
     META_ENQUEUED,
     enqueue_for_montage,
@@ -114,6 +116,7 @@ class FleetRegister(BaseModel):
     hostname: str | None = None
     role: str = "agent"
     is_main: bool = False
+    projects: list[dict] | None = None
 
 
 class PowerShellRun(BaseModel):
@@ -266,7 +269,9 @@ async def register_heartbeat(
     body: FleetRegister,
     authorization: str | None = Header(None),
 ) -> FleetNodeOut:
-    _validate_agent_token_value(authorization)
+    # Tailscale LAN — token опционален (как /local/*)
+    if (settings.fleet_agent_token or "").strip() and authorization:
+        _validate_agent_token_value(authorization)
     remote_host = request.client.host if request.client else None
     register_name = body.name.strip()
     role_agent = (body.role or "").strip().lower() == "agent"
@@ -328,6 +333,17 @@ async def register_heartbeat(
                 node.base_url = incoming_url
         else:
             node.base_url = incoming_url
+        if role_agent and body.projects is not None:
+            meta = dict(node.meta or {})
+            meta["pipeline_snapshot"] = body.projects
+            meta["pipeline_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+            node.meta = meta
+            flag_modified(node, "meta")
+            logger.info(
+                "fleet register {}: {} projects cached from heartbeat",
+                register_name,
+                len(body.projects),
+            )
         node.status = FleetNodeStatus.online
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()
@@ -382,19 +398,32 @@ async def node_pipeline(node_id: int, _user: AuthDep = None) -> dict:
     node = await _proxy_node(node_id)
     if is_local_fleet_node(node):
         return await local_pipeline()
-    if is_localhost_fleet_url(node.base_url):
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Станция {node.name} зарегистрирована как {node.base_url}. "
-                "На воркере задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765 и перезапустите Studio."
-            ),
-        )
+    cached = cached_pipeline_from_node(node.meta)
+    if cached:
+        if is_localhost_fleet_url(node.base_url):
+            return cached
     token = node.token or settings.fleet_agent_token
-    try:
-        return await agent_get(node.base_url, token, "/api/fleet/local/pipeline")
-    except FleetAgentError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    if not is_localhost_fleet_url(node.base_url):
+        try:
+            return await agent_get(
+                node.base_url, token, "/api/fleet/local/pipeline", timeout_sec=5
+            )
+        except (FleetAgentError, asyncio.TimeoutError, OSError) as exc:
+            if cached:
+                logger.debug("fleet pipeline live failed for {}, using cache: {}", node.name, exc)
+                return cached
+            if isinstance(exc, FleetAgentError):
+                raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+            raise HTTPException(status_code=502, detail=f"Станция {node.name} недоступна") from exc
+    if cached:
+        return cached
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            f"Станция {node.name} недоступна ({node.base_url}). "
+            "Жди heartbeat с дочернего ПК (~30 сек) или Sync."
+        ),
+    )
 
 
 @router.get("/nodes/{node_id}/files")
@@ -929,38 +958,7 @@ async def local_info() -> dict:
 
 @router.get("/local/pipeline")
 async def local_pipeline() -> dict:
-    async with session_scope() as session:
-        rows = (
-            await session.execute(
-                select(Project)
-                .order_by(Project.updated_at.desc())
-                .limit(50)
-            )
-        ).scalars().all()
-        projects = []
-        for project in rows:
-            meta = project.meta or {}
-            montage_queued = bool(meta.get(META_ENQUEUED)) and project.status == ProjectStatus.music_ready
-            queue_pos = (
-                await queue_position_for_project(session, project) if montage_queued else None
-            )
-            projects.append(
-                {
-                    "id": project.id,
-                    "slug": project.slug,
-                    "topic": project.topic,
-                    "status": project.status.value
-                    if hasattr(project.status, "value")
-                    else str(project.status),
-                    "montage_ready": bool(meta.get("montage_ready"))
-                    or project.status in bundle_svc.MONTAGE_READY_STATUSES,
-                    "exportable": True,
-                    "montage_queued": montage_queued,
-                    "montage_queue_position": queue_pos,
-                    "send_to_main_pc": send_to_main_pc_for_project(project),
-                }
-            )
-    return {"projects": projects, "count": len(projects)}
+    return await build_pipeline_payload()
 
 
 @router.get("/local/files")

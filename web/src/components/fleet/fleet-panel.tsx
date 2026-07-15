@@ -30,6 +30,7 @@ type FleetNode = {
   status: string;
   last_seen: string | null;
   hostname: string | null;
+  meta?: { pipeline_snapshot?: unknown[] };
 };
 
 type FleetProject = {
@@ -315,6 +316,11 @@ export function FleetPanel({
                 </span>
                 <span className="block text-[10px] text-muted-foreground">{n.role}</span>
                 <span className="block truncate text-[10px] text-muted-foreground/80">{n.base_url}</span>
+                {Array.isArray(n.meta?.pipeline_snapshot) ? (
+                  <span className="block text-[10px] text-primary">
+                    {n.meta.pipeline_snapshot.length} proj (кэш)
+                  </span>
+                ) : null}
                 <span
                   className={cn(
                     "text-[10px]",

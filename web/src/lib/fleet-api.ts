@@ -57,6 +57,7 @@ export async function fetchFleetNodes() {
       status: string;
       last_seen: string | null;
       hostname: string | null;
+      meta?: { pipeline_snapshot?: unknown[] };
     }>
   >("/api/fleet/nodes");
 }
