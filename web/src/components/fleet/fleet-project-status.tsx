@@ -61,7 +61,8 @@ export function FleetProjectRow({
   onMontage?: () => void;
 }) {
   const running = isProjectRunningStatus(status);
-  const showMontageBtn = montageReady && !montageQueued && onMontage;
+  const showExportBtn = !montageQueued && onMontage;
+  const exportLabel = montageReady ? "На монтаж" : "На hub";
 
   return (
     <div
@@ -96,13 +97,13 @@ export function FleetProjectRow({
           >
             Перейти
           </button>
-          {showMontageBtn ? (
+          {showExportBtn ? (
             <button
               type="button"
               onClick={onMontage}
               className="rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] hover:bg-muted"
             >
-              На монтаж
+              {exportLabel}
             </button>
           ) : null}
         </div>

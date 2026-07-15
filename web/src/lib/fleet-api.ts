@@ -65,17 +65,26 @@ export async function fleetNodePipeline(nodeId: number) {
   return fleetFetch<{ projects?: unknown[] }>(`/api/fleet/nodes/${nodeId}/pipeline`);
 }
 
-export async function fleetPullProject(nodeId: number, projectId: number) {
+export async function fleetPullProject(
+  nodeId: number,
+  projectId: number,
+  opts?: { runAssemble?: boolean },
+) {
   return fleetFetch(`/api/fleet/nodes/${nodeId}/projects/${projectId}/pull-to-main`, {
     method: "POST",
-    body: JSON.stringify({ run_assemble: true }),
+    body: JSON.stringify({ run_assemble: opts?.runAssemble ?? true }),
   });
 }
 
-export async function fleetPushToHub(projectId: number) {
+export async function fleetPushToHub(projectId: number, opts?: { runAssemble?: boolean }) {
   return fleetFetch<{ ok: boolean; started?: boolean; size_mb?: number }>(
     `/api/fleet/local/projects/${projectId}/push-to-hub`,
-    { method: "POST" },
+    {
+      method: "POST",
+      body: JSON.stringify(
+        opts?.runAssemble === undefined ? {} : { run_assemble: opts.runAssemble },
+      ),
+    },
   );
 }
 

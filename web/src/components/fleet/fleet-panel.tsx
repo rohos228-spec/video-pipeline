@@ -275,9 +275,11 @@ export function FleetPanel({
                 montageQueuePosition={p.montage_queue_position}
                 onOpen={() => openProject(p.id)}
                 onMontage={
-                  p.montage_ready && !p.montage_queued && selectedId != null
+                  selected && !isLocalNode(selected) && !p.montage_queued && selectedId != null
                     ? () =>
-                        void fleetPullProject(selectedId, p.id).then(() => loadPipeline(selectedId))
+                        void fleetPullProject(selectedId, p.id, {
+                          runAssemble: Boolean(p.montage_ready),
+                        }).then(() => loadPipeline(selectedId))
                     : undefined
                 }
               />

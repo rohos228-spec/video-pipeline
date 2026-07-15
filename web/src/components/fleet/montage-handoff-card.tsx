@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import { fleetPushToHub } from "@/lib/fleet-api";
+import { fetchFleetConfig, fleetPushToHub } from "@/lib/fleet-api";
 import {
   FLEET_TRANSFER_PUSH_START,
   optimisticPushTransfer,
@@ -15,7 +15,21 @@ import type { ProjectDetail } from "@/lib/types";
 
 export function MontageHandoffCard({ project }: { project: ProjectDetail }) {
   const [pushing, setPushing] = useState(false);
-  if (!isMontageHandoffPending(project)) return null;
+  const [fleet, setFleet] = useState<{ enabled?: boolean; role?: string } | null>(null);
+
+  useEffect(() => {
+    void fetchFleetConfig()
+      .then((cfg) => setFleet({ enabled: Boolean(cfg.enabled), role: String(cfg.role || "") }))
+      .catch(() => setFleet(null));
+  }, []);
+
+  if (!isMontageHandoffPending(project, fleet)) return null;
+
+  const montageReady = Boolean(
+    project.meta?.montage_ready ||
+      project.status === "music_ready" ||
+      project.status === "audio_ready",
+  );
 
   const startPush = () => {
     setPushing(true);
@@ -24,7 +38,7 @@ export function MontageHandoffCard({ project }: { project: ProjectDetail }) {
         detail: optimisticPushTransfer(project.id, project.slug),
       }),
     );
-    void fleetPushToHub(project.id)
+    void fleetPushToHub(project.id, { runAssemble: montageReady })
       .then((res) => {
         if ("started" in res && res.started) {
           toast.message("Отправка идёт — полоска прогресса внизу экрана");
@@ -42,9 +56,11 @@ export function MontageHandoffCard({ project }: { project: ProjectDetail }) {
 
   return (
     <div className="rounded-lg border border-primary/50 bg-primary/10 p-3">
-      <p className="text-[11px] font-medium text-foreground">Готово к отправке на главный ПК</p>
+      <p className="text-[11px] font-medium text-foreground">Отправка на главный ПК</p>
       <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-        Клипы и музыка на NucBox. Монтаж FFmpeg — на hub. Полоска прогресса — внизу экрана.
+        {montageReady
+          ? "Клипы и музыка готовы — на hub можно сразу запустить монтаж."
+          : "Проект на любом этапе: файлы уедут на hub для ручного или позднего монтажа."}
       </p>
       {pushing ? (
         <div className="mt-2.5">
@@ -69,7 +85,7 @@ export function MontageHandoffCard({ project }: { project: ProjectDetail }) {
         ) : (
           <Upload className="h-3.5 w-3.5" />
         )}
-        Отправить на главный ПК
+        {montageReady ? "Отправить на монтаж" : "Отправить на hub"}
       </Button>
     </div>
   );

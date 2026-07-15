@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import subprocess
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, AsyncIterator
@@ -111,6 +112,10 @@ class FileWrite(BaseModel):
 
 class MontagePull(BaseModel):
     run_assemble: bool = True
+
+
+class PushToHub(BaseModel):
+    run_assemble: bool | None = None
 
 
 def _node_out(n: FleetNode) -> FleetNodeOut:
@@ -464,6 +469,41 @@ async def pull_project_to_main(
         return {"ok": True, "project_id": project.id, "slug": project.slug, "queued": queued}
 
 
+@router.post("/import-bundle")
+async def import_bundle_from_agent(
+    file: UploadFile = File(...),
+    run_assemble: bool = False,
+    source_node: str | None = None,
+    source_project_id: int | None = None,
+    _auth: AgentAuth = None,
+) -> dict:
+    """Hub: принять bundle с agent (push-to-hub)."""
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="empty bundle")
+    async with session_scope() as session:
+        project = await bundle_svc.import_project_bundle(session, blob, run_assemble=False)
+        meta = dict(project.meta or {})
+        meta["fleet_imported"] = True
+        if source_node:
+            meta["fleet_source_node"] = source_node
+        if source_project_id is not None:
+            meta["fleet_source_project_id"] = source_project_id
+        project.meta = meta
+        queued = False
+        if run_assemble:
+            queued = await enqueue_for_montage(session, project, source_node=source_node)
+            await process_montage_queue(session)
+        await session.commit()
+        return {
+            "ok": True,
+            "project_id": project.id,
+            "slug": project.slug,
+            "queued": queued,
+            "size_mb": round(len(blob) / (1024 * 1024), 2),
+        }
+
+
 # ── Local agent endpoints (на каждой станции) ────────────────────────────────
 
 
@@ -780,6 +820,7 @@ async def local_pipeline(_auth: AgentAuth = None) -> dict:
                     else str(project.status),
                     "montage_ready": bool(meta.get("montage_ready"))
                     or project.status in bundle_svc.MONTAGE_READY_STATUSES,
+                    "exportable": True,
                     "montage_queued": montage_queued,
                     "montage_queue_position": queue_pos,
                     "send_to_main_pc": send_to_main_pc_for_project(project),
@@ -944,6 +985,69 @@ async def local_export_bundle(project_id: int, _auth: AgentAuth = None):
         media_type="application/gzip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/local/projects/{project_id}/push-to-hub")
+async def local_push_to_hub(
+    project_id: int,
+    body: PushToHub | None = None,
+    _auth: AgentAuth = None,
+) -> dict:
+    """Agent: экспорт bundle на hub (любой статус проекта)."""
+    hub = (settings.fleet_hub_url or "").strip().rstrip("/")
+    if not hub:
+        raise HTTPException(status_code=400, detail="FLEET_HUB_URL not configured")
+    role = (settings.fleet_role or "hub").strip().lower()
+    if role != "agent":
+        raise HTTPException(status_code=400, detail="push-to-hub only on agent stations")
+
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        meta = project.meta or {}
+        montage_ready = bool(meta.get("montage_ready")) or (
+            project.status in bundle_svc.MONTAGE_READY_STATUSES
+        )
+        run_assemble = (
+            body.run_assemble
+            if body is not None and body.run_assemble is not None
+            else montage_ready
+        )
+        blob, filename = await bundle_svc.export_project_bundle(session, project_id)
+
+    token = settings.fleet_agent_token or ""
+    source_node = settings.fleet_node_name or platform.node()
+    qs = urllib.parse.urlencode(
+        {
+            "run_assemble": "true" if run_assemble else "false",
+            "source_node": source_node,
+            "source_project_id": str(project_id),
+        }
+    )
+    try:
+        result = await agent_upload_file(
+            hub,
+            token,
+            f"/api/fleet/import-bundle?{qs}",
+            file_bytes=blob,
+            filename=filename,
+            timeout_sec=600,
+        )
+    except FleetAgentError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is not None:
+            handoff_meta = dict(project.meta or {})
+            handoff_meta["fleet_handoff_complete"] = True
+            handoff_meta["fleet_handoff_at"] = datetime.now(timezone.utc).isoformat()
+            project.meta = handoff_meta
+            await session.commit()
+
+    size_mb = round(len(blob) / (1024 * 1024), 2)
+    return {"ok": True, "size_mb": size_mb, **result}
 
 
 @router.get("/config")
