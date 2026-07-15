@@ -52,7 +52,7 @@ def _pipeline_root() -> Path:
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 
-def _check_agent_token(authorization: str | None) -> None:
+def _check_agent_token(authorization: str | None = Header(None)) -> None:
     expected = (settings.fleet_agent_token or "").strip()
     if not expected:
         return
