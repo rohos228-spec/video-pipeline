@@ -8,6 +8,7 @@ import platform
 from loguru import logger
 
 from app.fleet.client import FleetAgentError, agent_post
+from app.fleet.self_node import is_localhost_fleet_url
 from app.settings import settings
 
 _agent_task: asyncio.Task | None = None
@@ -30,7 +31,7 @@ async def _heartbeat_once() -> None:
         "is_main": False,
     }
     pub = (settings.fleet_public_url or "").strip()
-    if not pub or "127.0.0.1" in pub or "localhost" in pub.lower():
+    if not pub or is_localhost_fleet_url(pub):
         logger.warning(
             "fleet agent: задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765 в .env "
             "(сейчас {}), иначе hub не увидит проекты этой станции",

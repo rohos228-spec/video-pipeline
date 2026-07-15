@@ -63,6 +63,16 @@ function Get-VpWebBindConfig {
     }
 }
 
+function Get-VpTailscaleIPv4 {
+    try {
+        $out = & tailscale ip -4 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return "" }
+        $ip = ($out | Select-Object -First 1).ToString().Trim()
+        if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { return $ip }
+    } catch { }
+    return ""
+}
+
 function Ensure-VpFleetNetworkEnv {
     param([string]$Root)
     $changed = @()
@@ -88,7 +98,23 @@ function Ensure-VpFleetNetworkEnv {
 
     $pub = Get-VpEnvFileValue -Root $Root -Key "FLEET_PUBLIC_URL" -Default ""
     if (-not $pub -or $pub -match "127\.0\.0\.1|localhost") {
-        Write-Warning "FLEET_PUBLIC_URL не задан или localhost — укажите Tailscale IP:8765 в .env"
+        $tsIp = Get-VpTailscaleIPv4
+        if ($tsIp) {
+            $webPort = Get-VpEnvFileValue -Root $Root -Key "WEB_PORT" -Default "8765"
+            $newPub = "http://${tsIp}:$webPort"
+            Set-VpEnvFileValue -Root $Root -Key "FLEET_PUBLIC_URL" -Value $newPub
+            $changed += "FLEET_PUBLIC_URL=$newPub"
+            $pub = $newPub
+        } else {
+            Write-Warning "FLEET_PUBLIC_URL не задан или localhost — укажите Tailscale IP:8765 в .env (tailscale ip -4)"
+        }
+    }
+
+    $nodeName = Get-VpEnvFileValue -Root $Root -Key "FLEET_NODE_NAME" -Default ""
+    if (-not $nodeName) {
+        $defaultName = if ($role -eq "agent") { "child-pc" } else { "main-pc" }
+        Set-VpEnvFileValue -Root $Root -Key "FLEET_NODE_NAME" -Value $defaultName
+        $changed += "FLEET_NODE_NAME=$defaultName"
     }
 
     return $changed

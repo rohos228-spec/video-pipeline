@@ -105,6 +105,9 @@ export function FleetPanel({
   const selfNodeName = String(config?.self_node ?? "");
 
   const isLocalNode = (node: FleetNode) => node.name === selfNodeName;
+  const isBadRemoteUrl = (node: FleetNode) =>
+    !isLocalNode(node) &&
+    /127\.0\.0\.1|localhost/i.test(node.base_url || "");
 
   const loadPipeline = useCallback(async (nodeId: number) => {
     setPipelineLoading(true);
@@ -208,6 +211,13 @@ export function FleetPanel({
       {loadError ? (
         <p className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
           {loadError}
+        </p>
+      ) : null}
+      {selected && isBadRemoteUrl(selected) ? (
+        <p className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-200">
+          Станция {selected.name} зарегистрирована как {selected.base_url}. На воркере задайте
+          FLEET_PUBLIC_URL=http://&lt;tailscale-ip&gt;:8765, запустите FLEET-FIX-ALL.cmd и
+          перезапустите Studio.
         </p>
       ) : null}
 

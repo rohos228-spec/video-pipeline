@@ -37,7 +37,11 @@ from app.fleet.montage_queue import (
     process_montage_queue,
     queue_position_for_project,
 )
-from app.fleet.self_node import is_local_fleet_node, self_node_name
+from app.fleet.self_node import (
+    is_local_fleet_node,
+    is_localhost_fleet_url,
+    self_node_name,
+)
 from app.services.node_step_params import send_to_main_pc_for_project
 from app.models import FleetNode, FleetNodeStatus, Project, ProjectStatus
 from app.project_root import find_project_root
@@ -214,21 +218,30 @@ async def register_heartbeat(body: FleetRegister, authorization: str | None = He
             )
             session.add(node)
         else:
-            node.base_url = body.base_url.rstrip("/")
             node.hostname = body.hostname
             node.role = body.role
             node.is_main = body.is_main
         if (body.role or "").strip().lower() == "agent":
             node.is_main = False
-        # Не хранить localhost URL для удалённых agent — hub не достучится.
-        if (body.role or "").strip().lower() == "agent":
-            low = node.base_url.lower()
-            if "127.0.0.1" in low or "localhost" in low:
+        incoming_url = body.base_url.rstrip("/")
+        role_agent = (body.role or "").strip().lower() == "agent"
+        # Не перезаписывать рабочий Tailscale URL на 127.0.0.1 — hub тогда видит себя, не agent.
+        if role_agent and is_localhost_fleet_url(incoming_url):
+            if node.base_url and not is_localhost_fleet_url(node.base_url):
                 logger.warning(
-                    "fleet register {}: base_url={} — нужен FLEET_PUBLIC_URL (Tailscale IP)",
+                    "fleet register {}: игнорируем localhost base_url, оставляем {}",
                     body.name,
                     node.base_url,
                 )
+            else:
+                node.base_url = incoming_url
+                logger.warning(
+                    "fleet register {}: base_url={} — задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765",
+                    body.name,
+                    node.base_url,
+                )
+        else:
+            node.base_url = incoming_url
         node.status = FleetNodeStatus.online
         node.last_seen = datetime.now(timezone.utc)
         await session.commit()
@@ -283,6 +296,14 @@ async def node_pipeline(node_id: int, _user: AuthDep = None) -> dict:
     node = await _proxy_node(node_id)
     if is_local_fleet_node(node):
         return await local_pipeline()
+    if is_localhost_fleet_url(node.base_url):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Станция {node.name} зарегистрирована как {node.base_url}. "
+                "На воркере задайте FLEET_PUBLIC_URL=http://<tailscale-ip>:8765 и перезапустите Studio."
+            ),
+        )
     token = node.token or settings.fleet_agent_token
     try:
         return await agent_get(node.base_url, token, "/api/fleet/local/pipeline")

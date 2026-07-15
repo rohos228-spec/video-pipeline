@@ -46,7 +46,11 @@ if ($role -eq "hub") {
         $nodes = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/nodes" -Headers $nodeHeaders -TimeoutSec 10
         Write-Host "OK: nodes=$($nodes.Count)" -ForegroundColor Green
         foreach ($n in $nodes) {
-            if ($n.name -eq (Get-VpEnvFileValueLocal "FLEET_NODE_NAME" "")) { continue }
+            $selfName = Get-VpEnvFileValueLocal "FLEET_NODE_NAME" ""
+            if ($n.name -eq $selfName) { continue }
+            if ($n.base_url -match "127\.0\.0\.1|localhost") {
+                Write-Host "WARN: $($n.name) has localhost URL $($n.base_url) — fix FLEET_PUBLIC_URL on agent" -ForegroundColor Yellow
+            }
             Write-Host "==> pipeline via hub node $($n.name) ($($n.id))" -ForegroundColor Cyan
             $pipe = Invoke-RestMethod "http://127.0.0.1:$port/api/fleet/nodes/$($n.id)/pipeline" -Headers $nodeHeaders -TimeoutSec 15
             Write-Host "OK: $($n.name) projects=$(@($pipe.projects).Count)" -ForegroundColor Green

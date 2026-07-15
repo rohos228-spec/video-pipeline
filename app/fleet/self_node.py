@@ -15,6 +15,11 @@ def self_node_name() -> str:
     return (settings.fleet_node_name or platform.node() or "local").strip()
 
 
+def is_localhost_fleet_url(url: str) -> bool:
+    low = (url or "").strip().lower()
+    return "127.0.0.1" in low or "localhost" in low
+
+
 def is_local_fleet_node(node: FleetNode) -> bool:
     """True только для станции с FLEET_NODE_NAME этой машины.
 
@@ -50,4 +55,38 @@ async def ensure_self_fleet_node() -> None:
             row.role = settings.fleet_role or row.role
             row.status = FleetNodeStatus.online
             row.hostname = platform.node()
+        await session.commit()
+
+
+async def ensure_hub_peer_node() -> None:
+    """Agent: hub в локальной БД, чтобы «Сеть» показывала проекты главного ПК."""
+    if not settings.fleet_enabled:
+        return
+    role = (settings.fleet_role or "hub").strip().lower()
+    if role != "agent":
+        return
+    hub_url = (settings.fleet_hub_url or "").strip().rstrip("/")
+    if not hub_url or is_localhost_fleet_url(hub_url):
+        return
+    hub_name = "hub"
+    async with session_scope() as session:
+        row = (
+            await session.execute(select(FleetNode).where(FleetNode.name == hub_name))
+        ).scalar_one_or_none()
+        if row is None:
+            row = FleetNode(
+                name=hub_name,
+                base_url=hub_url,
+                token=settings.fleet_agent_token or "",
+                is_main=True,
+                role="hub",
+                status=FleetNodeStatus.online,
+                hostname="hub",
+            )
+            session.add(row)
+        else:
+            row.base_url = hub_url
+            row.is_main = True
+            row.role = "hub"
+            row.status = FleetNodeStatus.online
         await session.commit()
