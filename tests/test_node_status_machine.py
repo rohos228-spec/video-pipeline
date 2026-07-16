@@ -6,7 +6,7 @@ import pytest
 
 from app.models import NodeRun, NodeRunStatus
 from app.services.node_status_machine import (
-    apply_sync_target,
+    complete_node,
     is_transition_allowed,
     queue_node_for_start,
     reset_node_to_pending,
@@ -30,10 +30,14 @@ def test_allowed_pending_to_queued_to_running_to_done() -> None:
     assert nr.status == NodeRunStatus.queued
     assert start_node_running(nr, project_id=1, initiator="api")
     assert nr.status == NodeRunStatus.running
-    assert transition_node_status(
-        nr, NodeRunStatus.done, initiator="worker", project_id=1
-    )
+    assert complete_node(nr, project_id=1, initiator="worker")
     assert nr.status == NodeRunStatus.done
+
+
+def test_complete_node_rejects_sync_initiator() -> None:
+    nr = _nr(NodeRunStatus.running)
+    assert not complete_node(nr, project_id=1, initiator="sync")
+    assert nr.status == NodeRunStatus.running
 
 
 def test_allowed_failed_to_queued_retry() -> None:
@@ -65,23 +69,18 @@ def test_reset_any_to_pending() -> None:
     assert nr.finished_at is None
 
 
+def test_ui_restart_reset() -> None:
+    nr = _nr(NodeRunStatus.done)
+    assert reset_node_to_pending(nr, project_id=1, initiator="ui_restart")
+    assert nr.status == NodeRunStatus.pending
+
+
 def test_forbidden_pending_to_done_without_running() -> None:
     nr = _nr(NodeRunStatus.pending)
     assert not transition_node_status(
         nr, NodeRunStatus.done, initiator="sync", project_id=1
     )
     assert nr.status == NodeRunStatus.pending
-
-
-def test_checkpoint_backfill_pending_to_done() -> None:
-    nr = _nr(NodeRunStatus.pending)
-    assert apply_sync_target(
-        nr,
-        NodeRunStatus.done,
-        project_id=1,
-        checkpoint_upstream=True,
-    )
-    assert nr.status == NodeRunStatus.done
 
 
 def test_forbidden_running_to_pending_auto_rollback() -> None:
@@ -108,31 +107,22 @@ def test_forbidden_done_to_running() -> None:
 
 
 @pytest.mark.parametrize(
-    ("old", "new", "initiator", "backfill", "expected"),
+    ("old", "new", "initiator", "expected"),
     [
-        (NodeRunStatus.pending, NodeRunStatus.queued, "api", False, True),
-        (NodeRunStatus.queued, NodeRunStatus.running, "api", False, True),
-        (NodeRunStatus.running, NodeRunStatus.done, "worker", False, True),
-        (NodeRunStatus.running, NodeRunStatus.pending, "sync", False, False),
-        (NodeRunStatus.done, NodeRunStatus.pending, "api_reset", False, True),
-        (NodeRunStatus.failed, NodeRunStatus.queued, "api", False, True),
-        (NodeRunStatus.pending, NodeRunStatus.done, "sync_checkpoint", True, True),
-        (NodeRunStatus.pending, NodeRunStatus.done, "sync", False, False),
+        (NodeRunStatus.pending, NodeRunStatus.queued, "api", True),
+        (NodeRunStatus.queued, NodeRunStatus.running, "api", True),
+        (NodeRunStatus.running, NodeRunStatus.done, "worker", True),
+        (NodeRunStatus.running, NodeRunStatus.pending, "sync", False),
+        (NodeRunStatus.done, NodeRunStatus.pending, "api_reset", True),
+        (NodeRunStatus.done, NodeRunStatus.pending, "ui_restart", True),
+        (NodeRunStatus.failed, NodeRunStatus.queued, "api", True),
+        (NodeRunStatus.pending, NodeRunStatus.done, "sync", False),
     ],
 )
 def test_is_transition_allowed_matrix(
     old: NodeRunStatus,
     new: NodeRunStatus,
     initiator: str,
-    backfill: bool,
     expected: bool,
 ) -> None:
-    assert (
-        is_transition_allowed(
-            old,
-            new,
-            initiator=initiator,
-            allow_checkpoint_backfill=backfill,
-        )
-        is expected
-    )
+    assert is_transition_allowed(old, new, initiator=initiator) is expected

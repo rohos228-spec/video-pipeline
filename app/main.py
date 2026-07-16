@@ -681,6 +681,9 @@ async def _startup_maintenance() -> None:
         from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
 
         await reconcile_stale_montage_jobs_on_startup()
+        from app.services.run_sync import reconcile_stale_node_runs_on_startup
+
+        await reconcile_stale_node_runs_on_startup()
     except Exception as e:  # noqa: BLE001
         logger.exception("startup maintenance failed: {}", e)
 
@@ -770,7 +773,7 @@ async def main() -> None:
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None
     if settings.web_enabled:
-        from app.services.run_sync import background_sync_loop
+        from app.services.run_sync import background_node_run_reconcile_loop, background_sync_loop
         from app.web import create_app
 
         web_app = create_app()
@@ -787,8 +790,10 @@ async def main() -> None:
         server = uvicorn.Server(config)
         web_task = asyncio.create_task(server.serve())
         sync_task = asyncio.create_task(background_sync_loop())
+        reconcile_task = asyncio.create_task(background_node_run_reconcile_loop())
         tasks.append(web_task)
         tasks.append(sync_task)
+        tasks.append(reconcile_task)
         logger.info(
             "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}}) — "
             "backfill/recompute в фоне",

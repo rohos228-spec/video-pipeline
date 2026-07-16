@@ -6,22 +6,23 @@
   running → done | failed | waiting_hitl
   waiting_hitl → done | running | failed
   failed → queued
-  любой → pending — только явный сброс/стоп пользователем (ui_reset, api_reset, api_stop)
-  pending → done — только sync_checkpoint (upstream-ноды по чекпоинту проекта)
+  любой → pending — явный сброс/стоп (ui_reset, api_reset, api_stop, ui_restart, auto_unstick)
 
 Запрещено:
-  done минуя running (кроме sync_checkpoint для upstream)
-  автоматические откаты назад
+  done минуя running (только complete_node с initiator=worker)
+  автоматические откаты назад (кроме явных reset-initiators)
 """
 
 from __future__ import annotations
 
+import contextvars
 from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
 from app.models import NodeRun, NodeRunStatus
+from app.settings import settings
 
 STATUS_LOG_PATH = Path("logs/status.log")
 
@@ -39,8 +40,31 @@ _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
     NodeRunStatus.skipped: frozenset(),
 }
 
-_RESET_INITIATORS = frozenset({"ui_reset", "api_reset", "api_stop"})
-_SYNC_INITIATORS = frozenset({"sync", "sync_checkpoint", "worker"})
+_RESET_INITIATORS = frozenset(
+    {"ui_reset", "api_reset", "api_stop", "ui_restart", "auto_unstick"}
+)
+
+# Contextvar: True только внутри transition_node_status / _apply_side_effects.
+_status_machine_write: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "status_machine_write", default=False
+)
+
+
+def is_status_write_allowed() -> bool:
+    return _status_machine_write.get()
+
+
+def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:
+    """Runtime-защита от записи nr.status мимо машины состояний."""
+    if is_status_write_allowed():
+        return
+    msg = (
+        f"BYPASS NodeRun.status write: {nr.node_type}/{nr.node_key} "
+        f"→ {new_status.value} (use transition_node_status)"
+    )
+    if settings.node_status_strict:
+        raise RuntimeError(msg)
+    logger.error(msg)
 
 
 def _ensure_log_dir() -> None:
@@ -85,7 +109,11 @@ def _apply_side_effects(
     error: str | None,
 ) -> None:
     now = datetime.utcnow()
-    nr.status = new
+    token = _status_machine_write.set(True)
+    try:
+        nr.status = new
+    finally:
+        _status_machine_write.reset(token)
 
     if initiator in _RESET_INITIATORS:
         nr.finished_at = None
@@ -124,9 +152,8 @@ def transition_node_status(
     initiator: str,
     project_id: int | None = None,
     error: str | None = None,
-    allow_checkpoint_backfill: bool = False,
 ) -> bool:
-    """Сменить статус ноды. True — переход применён, False — запрещён (статус не меняется)."""
+    """Сменить статус ноды. True — переход применён, False — запрещён."""
     old = nr.status
     if old == new_status:
         return False
@@ -139,23 +166,6 @@ def transition_node_status(
             old=old,
             new=new_status,
             initiator=initiator,
-            project_id=project_id,
-        )
-        return True
-
-    if (
-        allow_checkpoint_backfill
-        and initiator in _SYNC_INITIATORS
-        and old == NodeRunStatus.pending
-        and new_status == NodeRunStatus.done
-    ):
-        _apply_side_effects(nr, old, new_status, initiator=initiator, error=error)
-        _log_line(
-            node_key=nr.node_key,
-            node_type=nr.node_type,
-            old=old,
-            new=new_status,
-            initiator="sync_checkpoint",
             project_id=project_id,
         )
         return True
@@ -191,23 +201,6 @@ def transition_node_status(
         project_id=project_id,
     )
     return True
-
-
-def apply_sync_target(
-    nr: NodeRun,
-    target: NodeRunStatus,
-    *,
-    project_id: int | None = None,
-    checkpoint_upstream: bool = False,
-) -> bool:
-    """Применить целевой статус из run_sync (с учётом checkpoint backfill)."""
-    return transition_node_status(
-        nr,
-        target,
-        initiator="sync_checkpoint" if checkpoint_upstream else "sync",
-        project_id=project_id,
-        allow_checkpoint_backfill=checkpoint_upstream,
-    )
 
 
 def queue_node_for_start(nr: NodeRun, *, project_id: int | None, initiator: str = "api") -> bool:
@@ -249,7 +242,15 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
 
 
 def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "worker") -> bool:
-    """running | waiting_hitl → done после успешного шага."""
+    """running | waiting_hitl → done после успешного шага (только initiator=worker)."""
+    if initiator != "worker":
+        logger.error(
+            "complete_node: initiator={!r} запрещён для {}/{}",
+            initiator,
+            nr.node_type,
+            nr.node_key,
+        )
+        return False
     if nr.status == NodeRunStatus.done:
         return False
     return transition_node_status(
@@ -280,9 +281,16 @@ def fail_node(
 def reset_node_to_pending(
     nr: NodeRun, *, project_id: int | None, initiator: str = "api_reset"
 ) -> bool:
-    """Явный сброс ноды пользователем."""
+    """Явный сброс ноды пользователем или auto_unstick/ui_restart."""
     return transition_node_status(
         nr, NodeRunStatus.pending, initiator=initiator, project_id=project_id
+    )
+
+
+def mark_node_skipped(nr: NodeRun, *, project_id: int | None) -> bool:
+    """pending → skipped (отключённая нода на канвасе)."""
+    return transition_node_status(
+        nr, NodeRunStatus.skipped, initiator="sync", project_id=project_id
     )
 
 
@@ -291,18 +299,10 @@ def is_transition_allowed(
     new: NodeRunStatus,
     *,
     initiator: str,
-    allow_checkpoint_backfill: bool = False,
 ) -> bool:
     """Проверка без записи (для тестов)."""
     if old == new:
         return True
     if new == NodeRunStatus.pending and initiator in _RESET_INITIATORS:
-        return True
-    if (
-        allow_checkpoint_backfill
-        and initiator in _SYNC_INITIATORS
-        and old == NodeRunStatus.pending
-        and new == NodeRunStatus.done
-    ):
         return True
     return new in _FORWARD_TRANSITIONS.get(old, frozenset())

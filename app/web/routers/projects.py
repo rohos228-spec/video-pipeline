@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
+from app.models import Artifact, ArtifactKind, BatchProject, Frame, Project, ProjectStatus
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
 from app.services.sidebar_layout import (
@@ -61,16 +61,29 @@ async def list_projects(
         await session.execute(select(Project).order_by(Project.id.desc()))
     ).scalars().all()
     root_ids = {
-        p.id for p in rows if mass_parent_id(p) is None
+        p.id for p in rows if mass_parent_id(p) is None and p.batch_id is None
     }
-    sync_sidebar_projects(root_ids)
-    layout = layout_for_api(root_ids)
+    batch_subprojects: dict[int, tuple[int, int]] = {}
+    batch_names: dict[int, str] = {}
+    batch_rows = (
+        await session.execute(select(BatchProject))
+    ).scalars().all()
+    for b in batch_rows:
+        batch_names[b.id] = b.name
+    for p in rows:
+        if p.batch_id is not None and p.batch_position is not None:
+            batch_subprojects[p.id] = (p.batch_id, int(p.batch_position))
+    sync_sidebar_projects(
+        root_ids,
+        batch_subprojects=batch_subprojects,
+        batch_names=batch_names,
+    )
+    sidebar_project_ids = root_ids | set(batch_subprojects.keys())
+    layout = layout_for_api(sidebar_project_ids)
     placements = layout.get("project_layout") or {}
     queue_pos = layout.get("gen_queue_positions") or {}
     out: list[ProjectSummary] = []
     for p in rows:
-        if mass_parent_id(p) is None:
-            await recompute_status(session, p, log_prefix="recompute(list)")
         if mass_parent_id(p) is not None:
             out.append(project_to_summary(p))
             continue
@@ -80,6 +93,8 @@ async def list_projects(
         except (TypeError, ValueError):
             order = None
         fid = pl.get("folder_id")
+        if mass_parent_id(p) is None and p.batch_id is None:
+            await recompute_status(session, p, log_prefix="recompute(list)")
         out.append(
             project_to_summary(
                 p,
@@ -249,11 +264,16 @@ async def patch_project(
     from app.services.canvas_graph import canvas_graph_from_meta, sync_run_snapshot_from_canvas_graph
     from app.services.chatgpt_xlsx import save_voiceover_text
     from app.services.content_locks import lock_ui_field
+    from app.services.project_meta import apply_project_meta_patch
 
     for k, v in payload.items():
+        if k == "meta":
+            apply_project_meta_patch(p, v, source="patch_project")
+            flag_modified(p, "meta")
+            continue
         if k in ALLOWED:
             setattr(p, k, v)
-            if k in ("meta", "prompt_overrides", "gpt_text_overrides"):
+            if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
     if "script_text" in payload:
         text = (payload.get("script_text") or "").strip()
@@ -345,7 +365,12 @@ async def run_project_step(
         return p
     try:
         await start_step(
-            session, p, step_code, node_key=node_key, require_node_fsm=True
+            session,
+            p,
+            step_code,
+            node_key=node_key,
+            require_node_fsm=True,
+            explicit_ui_start=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
