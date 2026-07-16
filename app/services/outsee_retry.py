@@ -61,6 +61,8 @@ from app.bots.outsee import (
     OutseeImageError,
     OutseePromptTooLongError,
     outsee_error_is_moderation,
+    outsee_error_is_refusal_audio,
+    outsee_error_is_refusal_person,
     outsee_error_kind,
     outsee_error_kind_label,
 )
@@ -123,9 +125,13 @@ def _is_prompt_related_error(err: OutseeImageError) -> bool:
     """Ошибки длины/обрезки промта — нужно GPT-сжатие, не rewrite модерации."""
     if outsee_error_is_moderation(err):
         return False
+    if outsee_error_is_refusal_audio(err):
+        return False
     if isinstance(err, OutseePromptTooLongError):
         return True
     if isinstance(err, OutseeContentRejectedError):
+        if outsee_error_is_refusal_person(err):
+            return False
         return False
     reason = (err.reason or "").lower()
     if any(m in reason for m in _PROMPT_ERROR_MARKERS):
@@ -384,9 +390,11 @@ async def _fix_prompt_after_outsee_error(
     project_id: int | None,
 ) -> str | None:
     """Сразу после ошибки — сжать (длина) или переписать (модерация)."""
-    if outsee_error_is_moderation(err):
+    if outsee_error_is_refusal_audio(err):
+        return None
+    if outsee_error_is_moderation(err) or outsee_error_is_refusal_person(err):
         logger.info(
-            "outsee_retry: модерация outsee — GPT-rewrite промта ({} симв)",
+            "outsee_retry: модерация/refusal_person — GPT-rewrite промта ({} симв)",
             len(prompt_body),
         )
         return await _ask_gpt_to_rewrite(
@@ -471,6 +479,7 @@ async def generate_image_with_retries(
 
     for round_idx, (round_label, _) in enumerate(rounds):
         pid = kwargs.get("project_id")
+        _DOWNLOAD_ONLY_RETRIES = 2
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(pid if isinstance(pid, int) else None)
             attempt_kwargs = dict(kwargs)
@@ -489,8 +498,55 @@ async def generate_image_with_retries(
                 )
             except StepCancelledError:
                 raise
+            except OutseeDownloadError as e:
+                img_url = e.context.get("img_url")
+                gen_id = str(e.context.get("gen_id") or "")
+                prefix = attempt_kwargs.get("prompt_id_prefix")
+                if isinstance(img_url, str) and img_url and gen_id:
+                    for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
+                        abort_if_cancelled(pid if isinstance(pid, int) else None)
+                        try:
+                            return await outsee.retry_image_download(
+                                img_url=img_url,
+                                out_path=out_path,
+                                gen_id=gen_id,
+                                prompt_id_prefix=prefix,
+                                project_id=pid if isinstance(pid, int) else None,
+                                model_slug=attempt_kwargs.get("model_slug"),
+                            )
+                        except OutseeDownloadError as dl_err:
+                            last_err = dl_err
+                            logger.warning(
+                                "outsee.retry_image_download [{}] {}/{}: {}",
+                                round_label,
+                                dl_try,
+                                _DOWNLOAD_ONLY_RETRIES,
+                                dl_err.reason,
+                            )
+                            if dl_try < _DOWNLOAD_ONLY_RETRIES:
+                                await sleep_cancellable(
+                                    2.0, pid if isinstance(pid, int) else None
+                                )
+                    logger.warning(
+                        "outsee.generate_image [{}] download-only retries "
+                        "исчерпаны (id={})",
+                        round_label,
+                        prefix or "—",
+                    )
+                last_err = e
+                if attempt < max_attempts_per_prompt:
+                    await sleep_cancellable(2.0, pid if isinstance(pid, int) else None)
             except OutseeImageError as e:
                 last_err = e
+                if outsee_error_is_refusal_audio(e):
+                    logger.warning(
+                        "outsee.generate_image [{}]: refusal_audio — "
+                        "без ретраев (id={}): {}",
+                        round_label,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                        e.reason,
+                    )
+                    break
                 err_kind = _retry_err_label(e)
                 if isinstance(e, OutseeContentRejectedError):
                     logger.warning(
@@ -519,6 +575,7 @@ async def generate_image_with_retries(
                 if (
                     gpt is not None
                     and attempt < max_attempts_per_prompt
+                    and not outsee_error_is_refusal_audio(e)
                     and (
                         isinstance(e, OutseePromptTooLongError)
                         or _is_prompt_related_error(e)
@@ -549,12 +606,20 @@ async def generate_image_with_retries(
                         )
                         current_prompt = fixed
                     elif isinstance(e, OutseeContentRejectedError):
-                        moderation_rewrite_failed = True
-                        logger.warning(
-                            "outsee.generate_image [{}]: модерация — GPT не "
-                            "переписал промт, не повторяю тот же текст",
-                            round_label,
-                        )
+                        if outsee_error_is_refusal_person(e):
+                            moderation_rewrite_failed = True
+                            logger.warning(
+                                "outsee.generate_image [{}]: refusal_person — "
+                                "GPT не переписал промт, не повторяю тот же текст",
+                                round_label,
+                            )
+                        else:
+                            moderation_rewrite_failed = True
+                            logger.warning(
+                                "outsee.generate_image [{}]: модерация — GPT не "
+                                "переписал промт, не повторяю тот же текст",
+                                round_label,
+                            )
                 if moderation_rewrite_failed:
                     break
                 if attempt < max_attempts_per_prompt:
@@ -694,6 +759,15 @@ async def generate_video_with_retries(
                     await sleep_cancellable(2.0, project_id)
             except OutseeImageError as e:
                 last_err = e
+                if outsee_error_is_refusal_audio(e):
+                    logger.warning(
+                        "outsee.generate_video [{}]: refusal_audio — "
+                        "без ретраев (id={}): {}",
+                        round_label,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                        e.reason,
+                    )
+                    break
                 err_kind = _retry_err_label(e)
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
