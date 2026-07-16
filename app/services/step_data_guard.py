@@ -101,6 +101,39 @@ async def can_enter_running(
 
     need_frames = await _frames_with_voiceover(session, project)
 
+    if target is ProjectStatus.generating_images:
+        # Промпты картинок должны быть хотя бы на части сцен (или статус ≥ image_prompts_ready).
+        if status_order(project.status) < status_order(ProjectStatus.image_prompts_ready):
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            with_prompt = sum(
+                1
+                for fr in frames
+                if (getattr(fr, "image_prompt", None) or "").strip()
+            )
+            if with_prompt == 0:
+                return (
+                    False,
+                    "нет image prompts (сначала img_pr)",
+                    ProjectStatus.frames_ready,
+                )
+        return True, "", None
+
+    if target is ProjectStatus.generating_animation_prompts:
+        imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
+        if imgs == 0:
+            return (
+                False,
+                "нет картинок сцен (сначала img)",
+                ProjectStatus.image_prompts_ready,
+            )
+        return True, "", None
+
     if target is ProjectStatus.generating_videos:
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
         if imgs < need_frames:

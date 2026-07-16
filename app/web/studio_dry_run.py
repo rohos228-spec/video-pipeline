@@ -36,6 +36,17 @@ async def validate_project_step_dry_run(
             "Остановите ⏹ или дождитесь завершения."
         )
 
+    from app.orchestrator.graph.planner import assert_step_allowed_by_graph
+    from app.services.step_data_guard import can_enter_running
+
+    await assert_step_allowed_by_graph(session, project, step_code)
+    ok, reason, _fix = await can_enter_running(session, project, step.running_status)
+    if not ok:
+        raise ValueError(
+            f"шаг «{step.title}» нельзя запустить: {reason} "
+            f"(статус проекта: {project.status.value})."
+        )
+
     return {
         "ok": True,
         "step_code": step_code,
