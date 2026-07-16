@@ -516,6 +516,58 @@ async def _apply_running_if_data_ok(
     return None
 
 
+async def _prepare_node_run_for_status(
+    session: AsyncSession,
+    project: Project,
+    running_status: ProjectStatus,
+    *,
+    allow_restart: bool = False,
+) -> None:
+    """Синхронизировать NodeRun с Project.status при auto_advance (SSoT)."""
+    from app.orchestrator.node_registry import (
+        NODE_TYPE_TO_STEP_CODE,
+        RUNNING_TO_NODE_TYPE,
+    )
+    from app.services.excel_gpt_node import (
+        EXCEL_GPT_NODE_TYPE,
+        EXCEL_GPT_STEP_CODE,
+        slot_from_running_status,
+    )
+    from app.services.run_sync import prepare_node_for_step_start
+
+    node_type = RUNNING_TO_NODE_TYPE.get(running_status)
+    step_code: str | None = None
+    node_key: str | None = None
+    if node_type is not None:
+        step_code = NODE_TYPE_TO_STEP_CODE.get(node_type)
+    else:
+        slot = slot_from_running_status(running_status)
+        if slot is not None:
+            step_code = EXCEL_GPT_STEP_CODE
+            node_type = EXCEL_GPT_NODE_TYPE
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            node_key = str(meta.get("active_excel_gpt_node_key") or "") or None
+    if not step_code:
+        return
+    try:
+        await prepare_node_for_step_start(
+            session,
+            project,
+            step_code,
+            node_key=node_key,
+            strict=False,
+            # regen / повтор шага: разрешаем done → running
+            explicit_ui_start=allow_restart,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "auto_advance: #{} prepare_node for {} failed",
+            project.id,
+            running_status.value,
+            exc_info=True,
+        )
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -571,6 +623,7 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
         if nxt is None:
             return
+        await _prepare_node_run_for_status(session, project, nxt)
         project.status = nxt
     else:
         graph_nxt = await _graph_next_running(session, project, transition.ready_status)
@@ -592,6 +645,7 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
             return
+        await _prepare_node_run_for_status(session, project, nxt)
         project.status = nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
@@ -647,6 +701,9 @@ async def _apply_regen(
         )
         project.status = ProjectStatus.paused
     else:
+        await _prepare_node_run_for_status(
+            session, project, back_to, allow_restart=True
+        )
         project.status = back_to
 
     # Передаём fix_hints в gpt_text_override, чтобы шаг увидел их и

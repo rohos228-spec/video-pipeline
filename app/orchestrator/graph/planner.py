@@ -480,8 +480,36 @@ async def assert_step_allowed_by_graph(
     project: Project,
     step_code: str,
 ) -> None:
-    """Ручной запуск шага не ограничивается связями канваса (no-op)."""
-    _ = session, project, step_code
+    """Запретить запуск шага вне порядка пайплайна / связей канваса.
+
+    - Ноды с mapping в registry → WorkflowGraph.is_step_reachable
+      (кастомные рёбра учитываются; без рёбер — linear requires).
+    - Wrapper-коды (objects/enrich) без node mapping → is_step_runnable.
+    """
+    from app.orchestrator.node_registry import spec_for_step_code
+    from app.telegram.menu import is_step_runnable, step_by_code
+
+    step = step_by_code(step_code)
+    title = step.title if step is not None else step_code
+    graph = await load_graph_for_project(session, project)
+    mapped = spec_for_step_code(step_code) is not None
+
+    if mapped:
+        if graph.is_step_reachable(project, step_code):
+            return
+        raise ValueError(
+            f"шаг «{title}» нельзя запустить сейчас: предыдущие ноды пайплайна "
+            f"ещё не готовы (статус проекта: {project.status.value}). "
+            "Дождитесь готовности предыдущего шага или сбросьте пайплайн."
+        )
+
+    # objects / enrich и прочие wrapper-коды без отдельной ноды в registry
+    if step is not None and not is_step_runnable(step, project.status):
+        req = step.requires.value if step.requires is not None else "?"
+        raise ValueError(
+            f"шаг «{title}» нельзя запустить сейчас: нужен статус ≥ {req} "
+            f"(сейчас: {project.status.value})."
+        )
 
 
 def sync_skip_disabled(
