@@ -10,8 +10,9 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
-from app.models import Project
+from app.models import Project, ProjectStatus
 from app.orchestrator.pipeline import advance_project
+from app.services.run_sync import complete_active_node_for_step
 
 
 @dataclass(frozen=True)
@@ -30,9 +31,16 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                 logger.warning("advance_project_job: проект #{} не найден", project_id)
                 return AdvanceJobResult(project_id, "", None)
             prev = project.status.value
+            prev_status = project.status
             await advance_project(session, project, bot)
             new = project.status.value
             if new != prev:
+                await complete_active_node_for_step(
+                    session,
+                    project,
+                    prev_status=prev_status,
+                    new_status=project.status,
+                )
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )

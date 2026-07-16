@@ -267,18 +267,17 @@ export function FlowCanvas({
     });
   }, [project.data?.meta, nodes.length, setNodes]);
 
-  // Статусы run — отдельно, без сброса позиций нод.
+  // Статусы run — только NodeRun (SSoT). Project.status не вмешивается.
   useEffect(() => {
     if (nodes.length === 0) return;
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
-    const projectStatus = project.data?.status;
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) {
-          const status = inferNodeStatusFromProject(n.data.type, projectStatus);
+          const status = inferNodeStatusFromProject(n.data.type);
           return {
             ...n,
             data: {
@@ -293,8 +292,6 @@ export function FlowCanvas({
         const status = reconcileNodeRunStatus(
           n.data.type,
           nr.status as PipelineNodeData["status"],
-          projectStatus,
-          { slotIndex: n.data.slotIndex as number | undefined },
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -311,7 +308,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
+  }, [run.data, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -329,24 +326,22 @@ export function FlowCanvas({
     });
   }, [selectedNodeKey, setNodes]);
 
-  // WS: обновления статуса нод (event-driven, без ожидания polling).
+  // WS: только по node_key — матч по node_type зажигал все ноды одного типа.
   useRunEvents(run.data?.id ?? null, (evt) => {
     if (
       typeof evt === "object" &&
       evt !== null &&
       (evt as { type?: string }).type === "node_status_changed"
     ) {
-      const e = evt as { node_key?: string; node_type: string; to: string };
+      const e = evt as { node_key?: string; to: string };
+      if (!e.node_key) return;
       setNodes((prev) =>
         prev.map((n) => {
-          const matches =
-            (e.node_key && n.id === e.node_key) ||
-            (!e.node_key && n.data.type === e.node_type);
-          if (!matches) return n;
-          const raw = e.to as PipelineNodeData["status"];
-          const to = reconcileNodeRunStatus(n.data.type, raw, project.data?.status, {
-            slotIndex: n.data.slotIndex as number | undefined,
-          });
+          if (n.id !== e.node_key) return n;
+          const to = reconcileNodeRunStatus(
+            n.data.type,
+            e.to as PipelineNodeData["status"],
+          );
           return {
             ...n,
             data: {
