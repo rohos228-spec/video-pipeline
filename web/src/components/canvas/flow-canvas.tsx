@@ -75,6 +75,7 @@ import {
   buildCanvasGraph,
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
+import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -176,8 +177,11 @@ export function FlowCanvas({
         edges: canvasGraph.edges,
       };
     }
+    // Не рисуем factory-layout, пока project.meta ещё грузится — иначе
+    // позиции залипают и потом перезаписывают canvas_graph при autosave.
+    if (projectId != null && !project.isFetched) return null;
     return workflow.data;
-  }, [workflow.data, canvasGraph]);
+  }, [workflow.data, canvasGraph, projectId, project.isFetched]);
 
   const baseNodes = useMemo(() => {
     if (!graphSource) return [];
@@ -207,34 +211,35 @@ export function FlowCanvas({
     edgesRef.current = edges;
   }, [edges]);
 
+  // Смена проекта — не тащим позиции/версию соседа с теми же node_key.
+  useEffect(() => {
+    setGraphVersion("");
+  }, [projectId]);
+
   useEffect(() => {
     if (!graphSource) return;
-    const ver = canvasGraph?.saved_at
-      ? `${workflowStructureKey(graphSource)}|${canvasGraph.saved_at}`
-      : workflowStructureKey(graphSource);
+    // Только структура + projectId (без saved_at): drag/autosave не пересобирает граф.
+    // Позиции из source — ждём project.isFetched, чтобы не залипнуть на factory.
+    const ver = `${projectId ?? "none"}|${workflowStructureKey(graphSource)}`;
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
-    setNodes((prev) => {
-      const prevById = new Map(prev.map((n) => [n.id, n]));
-      return (baseNodes as Node<PipelineNodeData>[]).map((n) => {
-        const old = prevById.get(n.id);
-        if (!old) return n;
-        return {
-          ...n,
-          position: old.position,
-          data: {
-            ...n.data,
-            status: old.data.status,
-            progress: old.data.progress,
-            progressText: old.data.progressText,
-            error: old.data.error,
-            attempts: old.data.attempts,
-          },
-        };
-      });
-    });
+    setNodes((prev) =>
+      mergeGraphNodesWithRuntime(
+        baseNodes as Node<PipelineNodeData>[],
+        prev,
+      ) as Node<PipelineNodeData>[],
+    );
     setEdges(baseEdges);
-  }, [graphSource, baseNodes, baseEdges, graphVersion, nodes.length, canvasGraph?.saved_at, setNodes, setEdges]);
+  }, [
+    graphSource,
+    baseNodes,
+    baseEdges,
+    graphVersion,
+    nodes.length,
+    projectId,
+    setNodes,
+    setEdges,
+  ]);
 
   // excel_gpt: подтянуть inputSource/label из project.meta → data ноды (для V-меню).
   useEffect(() => {
@@ -865,7 +870,7 @@ export function FlowCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView
+        fitView={!canvasGraph?.saved_at}
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
         minZoom={0.15}
         maxZoom={1.5}
