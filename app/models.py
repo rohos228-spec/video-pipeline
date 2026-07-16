@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import JSON, Enum, ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from app.settings import settings
 
@@ -642,6 +642,24 @@ class NodeRun(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
     run: Mapped[WorkflowRun] = relationship(back_populates="node_runs")
+
+    @validates("status")
+    def _validate_status_write(self, _key: str, value: NodeRunStatus) -> NodeRunStatus:
+        from sqlalchemy import inspect
+
+        from app.services.node_status_machine import (
+            guard_direct_status_write,
+            is_status_write_allowed,
+        )
+
+        if isinstance(value, str):
+            value = NodeRunStatus(value)
+        if is_status_write_allowed():
+            return value
+        if inspect(self).transient:
+            return value
+        guard_direct_status_write(self, value)
+        return value
 
 
 # ────────────────────────────────────────────────────────────────────────────

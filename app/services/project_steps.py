@@ -43,6 +43,7 @@ async def start_step(
     node_key: str | None = None,
     skip_queue_guard: bool = False,
     require_node_fsm: bool = False,
+    explicit_ui_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
     if not skip_queue_guard:
@@ -214,7 +215,12 @@ async def start_step(
     from app.services.run_sync import prepare_node_for_step_start
 
     await prepare_node_for_step_start(
-        session, project, step_code, node_key=node_key, strict=require_node_fsm
+        session,
+        project,
+        step_code,
+        node_key=node_key,
+        strict=require_node_fsm,
+        explicit_ui_start=explicit_ui_start,
     )
     project.status = running_status
     project.updated_at = datetime.utcnow()
