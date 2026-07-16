@@ -231,8 +231,19 @@ def update_layout(
     return data
 
 
-def sync_projects(project_ids: set[int]) -> None:
-    """Добавить отсутствующие root-проекты в layout (корень, конец списка)."""
+def sync_projects(
+    project_ids: set[int],
+    *,
+    batch_subprojects: dict[int, tuple[int, int]] | None = None,
+    batch_names: dict[int, str] | None = None,
+) -> None:
+    """Добавить отсутствующие root-проекты в layout (корень, конец списка).
+
+    Принимает batch_* kwargs (вызов из list_projects после #113) — не падаем.
+    Подпроекты батча в корень не кладём; папки батча — отдельный follow-up.
+    """
+    batch_subprojects = batch_subprojects or {}
+    _ = batch_names
     data = load_layout()
     layout: dict[str, Any] = dict(data.get("project_layout") or {})
     root_orders = [
@@ -243,6 +254,8 @@ def sync_projects(project_ids: set[int]) -> None:
     next_order = max(root_orders, default=-1) + 1
     changed = False
     for pid in sorted(project_ids):
+        if pid in batch_subprojects:
+            continue
         key = str(pid)
         if key in layout:
             continue
