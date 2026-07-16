@@ -45,4 +45,4 @@ async def test_stale_running_node_run_becomes_failed() -> None:
         row = await session.get(NodeRun, nr_id)
         assert row is not None
         assert row.status == NodeRunStatus.failed
-        assert "перезапуском" in (row.error or "")
+        assert "рабочий процесс не активен" in (row.error or "")

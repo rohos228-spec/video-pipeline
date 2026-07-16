@@ -1,22 +1,16 @@
-"""Синхронизатор: ProjectStatus → NodeRun.status (для веб-UI).
+"""Синхронизатор NodeRun ↔ WorkflowRun для веб-UI.
 
-Текущий воркер (`app/worker.py` + `app/orchestrator/pipeline.py`) работает на
-ProjectStatus. Веб-UI хочет видеть прогресс в терминах NodeRun (status,
-progress, started_at, finished_at).
-
-Этот модуль:
-  - на старте создаёт `WorkflowRun` для каждого Project, у которого ещё нет;
-  - в фоне обновляет статусы NodeRun по текущему ProjectStatus;
-  - публикует события в EventBus, чтобы веб-фронтенд получал live-обновления.
-
-После Phase 2 (полноценный NODE_REGISTRY) этот мост можно будет упростить
-или удалить, но он позволяет показать работающий веб-UI на текущем коде.
+NodeRun.status — единственный источник правды (см. node_status_machine.py).
+run_sync НЕ повышает статусы из Project.status; только:
+  - skipped для отключённых нод;
+  - агрегация WorkflowRun.status;
+  - reconcile зависших running/queued без живой задачи.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from loguru import logger
 from sqlalchemy import select
@@ -34,87 +28,26 @@ from app.models import (
 )
 from app.services.event_bus import publish_node_event
 from app.services.node_status_machine import (
-    apply_sync_target,
     complete_node,
     fail_node,
+    mark_node_skipped,
+    queue_node_for_start,
     reset_node_to_pending,
     start_node_running,
 )
 
-
-# Маппинг: ProjectStatus -> (node_type, NodeRunStatus).
-# «running»-статусы → нода типа N в состоянии running.
-# «ready»-статусы   → нода типа N в состоянии done.
-# Все ноды до этой в линейном пайплайне считаются done.
-STATUS_TO_NODE: dict[ProjectStatus, tuple[str, NodeRunStatus]] = {
-    ProjectStatus.new: ("plan", NodeRunStatus.pending),
-    ProjectStatus.planning: ("plan", NodeRunStatus.running),
-    ProjectStatus.plan_ready: ("plan", NodeRunStatus.done),
-    ProjectStatus.scripting: ("script", NodeRunStatus.running),
-    ProjectStatus.script_ready: ("script", NodeRunStatus.done),
-    ProjectStatus.splitting: ("split", NodeRunStatus.running),
-    ProjectStatus.frames_ready: ("split", NodeRunStatus.done),
-    ProjectStatus.generating_hero: ("hero", NodeRunStatus.running),
-    ProjectStatus.hero_ready: ("hero", NodeRunStatus.done),
-    ProjectStatus.generating_items: ("items", NodeRunStatus.running),
-    ProjectStatus.items_ready: ("items", NodeRunStatus.done),
-    ProjectStatus.enriching_1: ("enrich_1", NodeRunStatus.running),
-    ProjectStatus.enrich_1_ready: ("enrich_1", NodeRunStatus.done),
-    ProjectStatus.enriching_2: ("enrich_2", NodeRunStatus.running),
-    ProjectStatus.enrich_2_ready: ("enrich_2", NodeRunStatus.done),
-    ProjectStatus.enriching_3: ("enrich_3", NodeRunStatus.running),
-    ProjectStatus.enrich_3_ready: ("enrich_3", NodeRunStatus.done),
-    ProjectStatus.enriching_4: ("enrich_4", NodeRunStatus.running),
-    ProjectStatus.enrich_4_ready: ("enrich_4", NodeRunStatus.done),
-    ProjectStatus.enriching_5: ("enrich_5", NodeRunStatus.running),
-    ProjectStatus.enrich_5_ready: ("enrich_5", NodeRunStatus.done),
-    ProjectStatus.generating_image_prompts: ("image_prompts", NodeRunStatus.running),
-    ProjectStatus.image_prompts_ready: ("image_prompts", NodeRunStatus.done),
-    ProjectStatus.generating_images: ("images", NodeRunStatus.running),
-    ProjectStatus.images_ready: ("images", NodeRunStatus.done),
-    ProjectStatus.generating_animation_prompts: ("animation_prompts", NodeRunStatus.running),
-    ProjectStatus.animation_prompts_ready: ("animation_prompts", NodeRunStatus.done),
-    ProjectStatus.generating_videos: ("videos", NodeRunStatus.running),
-    ProjectStatus.videos_ready: ("videos", NodeRunStatus.done),
-    ProjectStatus.generating_audio: ("audio", NodeRunStatus.running),
-    ProjectStatus.audio_ready: ("audio", NodeRunStatus.done),
-    ProjectStatus.generating_music: ("music", NodeRunStatus.running),
-    ProjectStatus.music_ready: ("music", NodeRunStatus.done),
-    ProjectStatus.assembling: ("assemble", NodeRunStatus.running),
-    ProjectStatus.assembled: ("assemble", NodeRunStatus.done),
-    ProjectStatus.publishing: ("publish", NodeRunStatus.running),
-    ProjectStatus.published: ("publish", NodeRunStatus.done),
-}
-
-# Линейный порядок типов нод (для определения «всё до этой = done»).
-NODE_TYPE_ORDER: list[str] = [
-    "topic",
-    "plan",
-    "script",
-    "split",
-    "hero",
-    "items",
-    "enrich_1",
-    "enrich_2",
-    "enrich_3",
-    "enrich_4",
-    "enrich_5",
-    "image_prompts",
-    "images",
-    "animation_prompts",
-    "videos",
-    "audio",
-    "music",
-    "assemble",
-    "publish",
-]
+_STALE_NODE_RUN_ERROR = "прервано: рабочий процесс не активен"
+_STALE_GRACE_SEC = 30.0
 
 
 async def _get_default_workflow_id() -> int | None:
     async with session_scope() as s:
         wf = (
             await s.execute(
-                select(Workflow).where(Workflow.is_default == True)  # noqa: E712
+                select(Workflow)
+                .where(Workflow.is_default == True)  # noqa: E712
+                .order_by(Workflow.id.asc())
+                .limit(1)
             )
         ).scalar_one_or_none()
         return wf.id if wf is not None else None
@@ -165,109 +98,59 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
         return run.id
 
 
-from app.orchestrator.graph.planner import load_graph_for_project
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.orchestrator.node_registry import (
-    LINEAR_NODE_TYPES,
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
+    STEP_CODE_TO_NODE_TYPE,
 )
-from app.services.excel_gpt_node import (
-    EXCEL_GPT_NODE_TYPE,
-    ready_status_for_slot,
-    running_status_for_slot,
-    slot_index_from_node,
-)
-from app.services.project_state import compute_actual_status, is_running_status
 from app.services.disabled_nodes import disabled_node_types
+from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE
 
 
-def _derived_node_states(
-    current_status: ProjectStatus,
-    disabled_types: set[str] | None = None,
-) -> dict[str, NodeRunStatus]:
-    """Из ProjectStatus вычислить ожидаемый статус для каждого `node_type`.
-
-    Логика: всё до текущего шага — done; текущий — running либо done в
-    зависимости от того, *_ready он или *ing; всё после — pending.
-    HITL-gate ноды (типа `hitl_*`) пока остаются pending — их синхронизация
-    придёт через event-bus, когда воркер реально создаст HITLRequest.
-    """
-    disabled_types = disabled_types or set()
-    if current_status is ProjectStatus.new:
-        return {
-            typ: NodeRunStatus.skipped if typ in disabled_types else NodeRunStatus.pending
-            for typ in NODE_TYPE_ORDER
-        }
-    if current_status not in STATUS_TO_NODE:
-        return {}
-    target_type, target_state = STATUS_TO_NODE[current_status]
-    out: dict[str, NodeRunStatus] = {}
-    target_reached = False
-    for typ in NODE_TYPE_ORDER:
-        if typ in disabled_types:
-            out[typ] = NodeRunStatus.skipped
-            continue
-        if typ == target_type:
-            out[typ] = target_state
-            target_reached = True
-            continue
-        if not target_reached:
-            out[typ] = NodeRunStatus.done
-        else:
-            out[typ] = NodeRunStatus.pending
-    return out
+async def _workflow_run_with_nodes(
+    session: AsyncSession, project_id: int
+) -> WorkflowRun | None:
+    return (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
 
 
-def _infer_stale_running_node_status(
-    node_type: str,
-    project_status: ProjectStatus,
-) -> NodeRunStatus | None:
-    """NodeRun ещё running, проект уже не *ing.
+def _aggregate_workflow_run_status(run: WorkflowRun) -> None:
+    """Обновить WorkflowRun.status по NodeRun-ам."""
+    now = datetime.utcnow()
+    any_running = False
+    any_pending = False
+    any_failed = False
+    for nr in run.node_runs:
+        if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
+            any_running = True
+        elif nr.status == NodeRunStatus.pending:
+            any_pending = True
+        elif nr.status == NodeRunStatus.failed:
+            any_failed = True
 
-    done — для завершённых upstream-шагов; pending не выставляем (авто-откат запрещён).
-    """
-    if project_status not in STATUS_TO_NODE:
-        return None
-    target_type, target_state = STATUS_TO_NODE[project_status]
-    try:
-        node_idx = NODE_TYPE_ORDER.index(node_type)
-        target_idx = NODE_TYPE_ORDER.index(target_type)
-    except ValueError:
-        return None
-    if node_idx < target_idx:
-        return NodeRunStatus.done
-    if node_idx == target_idx:
-        if target_state == NodeRunStatus.done:
-            return NodeRunStatus.done
-        return None
-    return None
-
-
-def _excel_gpt_status_for_node(
-    node: dict,
-    current_status: ProjectStatus,
-    *,
-    disabled: bool,
-) -> NodeRunStatus:
-    """Статус excel_gpt ноды по slotIndex и Project.status."""
-    if disabled:
-        return NodeRunStatus.skipped
-    slot = slot_index_from_node(node)
-    running = running_status_for_slot(slot)
-    ready = ready_status_for_slot(slot)
-    if current_status == running:
-        return NodeRunStatus.running
-    if current_status == ready:
-        return NodeRunStatus.done
-    from app.telegram.menu import status_order as _ord
-
-    if _ord(current_status) > _ord(ready):
-        return NodeRunStatus.done
-    return NodeRunStatus.pending
+    if any_failed:
+        run.status = WorkflowRunStatus.failed
+    elif any_running:
+        run.status = WorkflowRunStatus.running
+        if run.started_at is None:
+            run.started_at = now
+    elif any_pending:
+        run.status = WorkflowRunStatus.waiting_hitl
+    else:
+        run.status = WorkflowRunStatus.done
+        if run.finished_at is None:
+            run.finished_at = now
 
 
 async def sync_run_for_project(project_id: int) -> None:
-    """Подтянуть NodeRun-статусы из текущего Project.status."""
+    """Синхронизировать skipped/disabled и агрегировать WorkflowRun (без повышения статусов)."""
     async with session_scope() as s:
         project = await s.get(Project, project_id)
         if project is None:
@@ -282,152 +165,39 @@ async def sync_run_for_project(project_id: int) -> None:
         if run is None:
             return
 
-        actual = await compute_actual_status(s, project)
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
-            actual = project.status
-        if (
-            not is_running_status(project.status)
-            and project.status != actual
-            and actual is not None
-        ):
-            from app.telegram.menu import status_order as _ord
-
-            if _ord(actual) < _ord(project.status):
-                from app.services.step_data_guard import ready_status_confirmed_by_data
-
-                if not await ready_status_confirmed_by_data(s, project, project.status):
-                    logger.warning(
-                        "run_sync: #{} status {} would downgrade to {} — пропуск "
-                        "(авто-откат project.status запрещён)",
-                        project_id,
-                        project.status.value,
-                        actual.value,
-                    )
-
-        derived = _derived_node_states(
-            project.status,
-            disabled_node_types(project),
-        )
-        derived_by_key: dict[str, NodeRunStatus] | None = None
-        try:
-            graph = await load_graph_for_project(s, project)
-            derived_by_key = graph.derived_node_states(project)
-        except Exception:  # noqa: BLE001
-            logger.exception("graph derived states failed for #{}", project_id)
-        if not derived:
-            return
-
-        snap_by_key = {n["id"]: n for n in (run.nodes_snapshot or []) if "id" in n}
-        now = datetime.utcnow()
-        any_running = False
-        any_pending = False
-        any_failed = False
+        disabled = disabled_node_types(project)
         for nr in run.node_runs:
-            if derived_by_key is not None:
-                target = derived_by_key.get(nr.node_key)
-                if target is None and nr.node_type in derived:
-                    target = derived.get(nr.node_type)
-            else:
-                if nr.node_type.startswith("hitl"):
-                    continue
-                target = derived.get(nr.node_type)
-            if target is None:
-                if nr.node_type == EXCEL_GPT_NODE_TYPE:
-                    snap = snap_by_key.get(nr.node_key)
-                    if snap is not None:
-                        target = _excel_gpt_status_for_node(
-                            snap,
-                            project.status,
-                            disabled=nr.node_type in disabled_node_types(project),
+            if nr.node_type in disabled:
+                if nr.status == NodeRunStatus.pending:
+                    old = nr.status
+                    if mark_node_skipped(nr, project_id=project_id):
+                        await publish_node_event(
+                            run.id,
+                            event_type="node_status_changed",
+                            node_key=nr.node_key,
+                            payload={
+                                "node_type": nr.node_type,
+                                "from": old.value,
+                                "to": nr.status.value,
+                                "project_id": project_id,
+                            },
                         )
-            if target is None:
-                if (
-                    nr.status == NodeRunStatus.running
-                    and not is_running_status(project.status)
-                ):
-                    target = _infer_stale_running_node_status(nr.node_type, project.status)
-                else:
-                    continue
-            checkpoint_upstream = (
-                target == NodeRunStatus.done
-                and nr.status == NodeRunStatus.pending
-            )
-            if nr.status != target:
+            elif nr.status == NodeRunStatus.skipped and nr.node_type not in disabled:
                 old = nr.status
-                changed = False
-                if target == NodeRunStatus.running and nr.status in (
-                    NodeRunStatus.pending,
-                    NodeRunStatus.queued,
-                    NodeRunStatus.failed,
-                ):
-                    try:
-                        changed = start_node_running(
-                            nr, project_id=project_id, initiator="sync"
-                        )
-                    except ValueError:
-                        changed = False
-                elif (
-                    nr.status == NodeRunStatus.running
-                    and target == NodeRunStatus.pending
-                    and not is_running_status(project.status)
-                ):
-                    changed = reset_node_to_pending(
-                        nr, project_id=project_id, initiator="api_stop"
+                if reset_node_to_pending(nr, project_id=project_id, initiator="api_reset"):
+                    await publish_node_event(
+                        run.id,
+                        event_type="node_status_changed",
+                        node_key=nr.node_key,
+                        payload={
+                            "node_type": nr.node_type,
+                            "from": old.value,
+                            "to": nr.status.value,
+                            "project_id": project_id,
+                        },
                     )
-                elif (
-                    nr.status == NodeRunStatus.running
-                    and target == NodeRunStatus.done
-                    and not is_running_status(project.status)
-                ):
-                    changed = complete_node(nr, project_id=project_id, initiator="sync")
-                elif nr.status == NodeRunStatus.done and target == NodeRunStatus.pending:
-                    continue
-                else:
-                    changed = apply_sync_target(
-                        nr,
-                        target,
-                        project_id=project_id,
-                        checkpoint_upstream=checkpoint_upstream,
-                    )
-                if not changed:
-                    continue
-                # Публикуем только при реальном переходе.
-                await publish_node_event(
-                    run.id,
-                    event_type="node_status_changed",
-                    node_key=nr.node_key,
-                    payload={
-                        "node_type": nr.node_type,
-                        "from": old.value,
-                        "to": nr.status.value,
-                        "project_id": project_id,
-                    },
-                )
-            if nr.status == NodeRunStatus.running:
-                any_running = True
-            elif nr.status == NodeRunStatus.queued:
-                any_running = True
-            elif nr.status == NodeRunStatus.pending:
-                any_pending = True
-            elif nr.status == NodeRunStatus.failed:
-                any_failed = True
 
-        # Агрегация: статус Run.
-        if any_failed:
-            run.status = WorkflowRunStatus.failed
-        elif any_running:
-            run.status = WorkflowRunStatus.running
-            if run.started_at is None:
-                run.started_at = now
-        elif any_pending:
-            # Все ноды до текущего — done, но впереди ещё есть pending →
-            # либо ждём действия пользователя, либо closed-ready.
-            run.status = WorkflowRunStatus.waiting_hitl
-        else:
-            run.status = WorkflowRunStatus.done
-            if run.finished_at is None:
-                run.finished_at = now
+        _aggregate_workflow_run_status(run)
 
 
 async def sync_all_active_projects() -> None:
@@ -452,35 +222,13 @@ async def sync_all_active_projects() -> None:
 
 
 async def background_sync_loop(*, interval_sec: float = 2.5) -> None:
-    """Фоновая задача: каждые N секунд пересинхронизирует все Run.
-
-    Простой пуллер. Когда Phase 2 будет реализована — заменим на
-    event-driven подписку.
-    """
+    """Фоновая задача: агрегация WorkflowRun (без повышения NodeRun из project.status)."""
     while True:
         try:
             await sync_all_active_projects()
         except Exception:  # noqa: BLE001
             logger.exception("background_sync_loop iteration failed")
         await asyncio.sleep(interval_sec)
-
-
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE, STEP_CODE_TO_NODE_TYPE
-from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE
-
-
-async def _workflow_run_with_nodes(
-    session: AsyncSession, project_id: int
-) -> WorkflowRun | None:
-    return (
-        await session.execute(
-            select(WorkflowRun)
-            .where(WorkflowRun.project_id == project_id)
-            .options(selectinload(WorkflowRun.node_runs))
-        )
-    ).scalar_one_or_none()
 
 
 async def resolve_node_run_for_step(
@@ -522,9 +270,10 @@ async def prepare_node_for_step_start(
     *,
     node_key: str | None = None,
     strict: bool = False,
+    explicit_ui_start: bool = False,
 ) -> bool:
-    """pending/failed → queued → running перед записью project.status."""
-    from app.services.node_status_machine import queue_node_for_start, start_node_running
+    """Подготовить ноду к запуску шага: queued → running."""
+    from app.services.step_cancel import is_generation_active
 
     default_wf = await _get_default_workflow_id()
     if default_wf is None:
@@ -554,27 +303,37 @@ async def prepare_node_for_step_start(
             raise ValueError(msg)
         logger.debug("[#{}] {}", project.id, msg)
         return False
-    if nr.status == NodeRunStatus.done:
-        msg = (
-            f"нода «{nr.node_type}» уже в статусе «готово» — сбросьте шаг перед перезапуском"
-        )
-        if strict:
-            raise ValueError(msg)
-        logger.debug("[#{}] {}", project.id, msg)
-        return False
-    if nr.status == NodeRunStatus.waiting_hitl:
-        msg = (
-            f"нода «{nr.node_type}» ждёт проверки (HITL) — завершите проверку или сбросьте шаг"
-        )
-        if strict:
-            raise ValueError(msg)
-        logger.debug("[#{}] {}", project.id, msg)
-        return False
+
+    if nr.status in (NodeRunStatus.done, NodeRunStatus.waiting_hitl):
+        if explicit_ui_start:
+            reset_node_to_pending(nr, project_id=project.id, initiator="ui_restart")
+        else:
+            msg = (
+                f"нода «{nr.node_type}» уже в статусе «{nr.status.value}» — "
+                "явный перезапуск только из UI"
+            )
+            if strict:
+                raise ValueError(msg)
+            logger.debug("[#{}] {}", project.id, msg)
+            return False
+
     if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
-        msg = f"нода «{nr.node_type}» уже в работе ({nr.status.value}) — дождитесь или «Сбросить шаг»"
-        if strict:
-            raise ValueError(msg)
-        return True
+        if is_generation_active(project.id):
+            msg = (
+                f"нода «{nr.node_type}» уже в работе ({nr.status.value}) — "
+                "дождитесь или «Сбросить шаг»"
+            )
+            if strict:
+                raise ValueError(msg)
+            return True
+        reset_node_to_pending(nr, project_id=project.id, initiator="auto_unstick")
+        logger.info(
+            "[#{}] prepare_node_for_step_start: auto_unstick {}/{}",
+            project.id,
+            nr.node_type,
+            nr.node_key,
+        )
+
     if not queue_node_for_start(nr, project_id=project.id, initiator="api"):
         pass
     if not start_node_running(nr, project_id=project.id, initiator="api"):
@@ -586,6 +345,57 @@ async def prepare_node_for_step_start(
         return False
     await session.flush()
     return True
+
+
+async def complete_active_node_for_step(
+    session: AsyncSession,
+    project: Project,
+    *,
+    prev_status: ProjectStatus,
+    new_status: ProjectStatus,
+) -> None:
+    """running → done для ноды после успешного шага воркера."""
+    if new_status not in READY_TO_NODE_TYPE:
+        return
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is None:
+        return
+
+    node_type = READY_TO_NODE_TYPE.get(new_status)
+    if node_type is None and prev_status in RUNNING_TO_NODE_TYPE:
+        node_type = RUNNING_TO_NODE_TYPE[prev_status]
+    if node_type is None:
+        return
+
+    active_key: str | None = None
+    if node_type == EXCEL_GPT_NODE_TYPE:
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        active_key = str(meta.get("active_excel_gpt_node_key") or "") or None
+
+    for nr in run.node_runs:
+        if nr.node_type != node_type:
+            continue
+        if active_key and nr.node_key != active_key:
+            continue
+        if nr.status in (
+            NodeRunStatus.running,
+            NodeRunStatus.queued,
+            NodeRunStatus.waiting_hitl,
+        ):
+            if complete_node(nr, project_id=project.id, initiator="worker"):
+                await session.flush()
+                await publish_node_event(
+                    run.id,
+                    event_type="node_status_changed",
+                    node_key=nr.node_key,
+                    payload={
+                        "node_type": nr.node_type,
+                        "from": "running",
+                        "to": nr.status.value,
+                        "project_id": project.id,
+                    },
+                )
+            return
 
 
 async def mark_running_node_failed(
@@ -704,12 +514,42 @@ async def stop_active_running_node(
             return
 
 
-_STALE_NODE_RUN_ERROR = "прервано перезапуском программы"
+# Линейный порядок типов нод (legacy — reset_nodes_from_step, тесты).
+NODE_TYPE_ORDER: list[str] = [
+    "topic",
+    "plan",
+    "script",
+    "split",
+    "hero",
+    "items",
+    "enrich_1",
+    "enrich_2",
+    "enrich_3",
+    "enrich_4",
+    "enrich_5",
+    "image_prompts",
+    "images",
+    "animation_prompts",
+    "videos",
+    "audio",
+    "music",
+    "assemble",
+    "publish",
+]
 
 
-async def reconcile_stale_node_runs_on_startup() -> int:
-    """NodeRun running/queued без живого воркера → failed (не pending)."""
+async def _reconcile_stale_node_runs(
+    *,
+    initiator: str,
+    require_no_live_task: bool = False,
+    grace_sec: float = _STALE_GRACE_SEC,
+) -> int:
+    """NodeRun running/queued без живого воркера → failed."""
+    from app.services.step_cancel import is_generation_active
+
     fixed = 0
+    now = datetime.utcnow()
+    grace = timedelta(seconds=grace_sec)
     async with session_scope() as session:
         runs = (
             await session.execute(
@@ -717,26 +557,53 @@ async def reconcile_stale_node_runs_on_startup() -> int:
             )
         ).scalars().all()
         for run in runs:
+            if run.project_id is None:
+                continue
+            live = is_generation_active(run.project_id)
             for nr in run.node_runs:
                 if nr.status not in (NodeRunStatus.running, NodeRunStatus.queued):
                     continue
+                if require_no_live_task:
+                    if live:
+                        continue
+                    if nr.started_at is not None and now - nr.started_at < grace:
+                        continue
                 old = nr.status
                 if fail_node(
                     nr,
                     _STALE_NODE_RUN_ERROR,
                     project_id=run.project_id,
-                    initiator="startup_reconcile",
+                    initiator=initiator,
                 ):
                     fixed += 1
                     logger.warning(
-                        "[#{}] NodeRun {}/{}: {} → failed (startup)",
+                        "[#{}] NodeRun {}/{}: {} → failed ({})",
                         run.project_id,
                         nr.node_type,
                         nr.node_key,
                         old.value,
+                        initiator,
                     )
         if fixed:
             await session.commit()
     if fixed:
-        logger.info("startup reconcile: {} stale NodeRun(s) → failed", fixed)
+        logger.info("reconcile stale NodeRun: {} → failed ({})", fixed, initiator)
     return fixed
+
+
+async def reconcile_stale_node_runs_on_startup() -> int:
+    """NodeRun running/queued без живого воркера после перезапуска → failed."""
+    return await _reconcile_stale_node_runs(initiator="startup_reconcile")
+
+
+async def background_node_run_reconcile_loop(*, interval_sec: float = 60.0) -> None:
+    """Фон: running/queued без живой задачи дольше N сек → failed."""
+    while True:
+        try:
+            await _reconcile_stale_node_runs(
+                initiator="background_reconcile",
+                require_no_live_task=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("background_node_run_reconcile_loop failed")
+        await asyncio.sleep(interval_sec)

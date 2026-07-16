@@ -264,11 +264,16 @@ async def patch_project(
     from app.services.canvas_graph import canvas_graph_from_meta, sync_run_snapshot_from_canvas_graph
     from app.services.chatgpt_xlsx import save_voiceover_text
     from app.services.content_locks import lock_ui_field
+    from app.services.project_meta import apply_project_meta_patch
 
     for k, v in payload.items():
+        if k == "meta":
+            apply_project_meta_patch(p, v, source="patch_project")
+            flag_modified(p, "meta")
+            continue
         if k in ALLOWED:
             setattr(p, k, v)
-            if k in ("meta", "prompt_overrides", "gpt_text_overrides"):
+            if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
     if "script_text" in payload:
         text = (payload.get("script_text") or "").strip()
@@ -360,7 +365,12 @@ async def run_project_step(
         return p
     try:
         await start_step(
-            session, p, step_code, node_key=node_key, require_node_fsm=True
+            session,
+            p,
+            step_code,
+            node_key=node_key,
+            require_node_fsm=True,
+            explicit_ui_start=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

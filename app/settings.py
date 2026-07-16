@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
+    # True — прямая запись NodeRun.status мимо машины состояний → RuntimeError (dev/tests)
+    node_status_strict: bool = Field(False, alias="NODE_STATUS_STRICT")
 
     # Web UI (локальный FastAPI + Next.js)
     web_enabled: bool = Field(True, alias="WEB_ENABLED")

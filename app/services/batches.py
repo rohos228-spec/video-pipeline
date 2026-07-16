@@ -71,7 +71,6 @@ INHERITED_META_KEYS: frozenset[str] = frozenset(
 _FORBIDDEN_META_EXACT: frozenset[str] = frozenset(
     {
         "montage_board",
-        "prompt_history",
         "prompt_applied_at",
     }
 )
