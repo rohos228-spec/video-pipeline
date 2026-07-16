@@ -245,11 +245,11 @@ async def build_montage_board(
                 "image_shot2_url": _preview_url(img2),
                 "video_shot1_url": _preview_url(vid1),
                 "video_shot2_url": _preview_url(vid2),
-                # Промты исходников для «Редактировать промт» (тот же resolve, что regen).
-                "image_prompt_shot1": image_prompt_from_excel(project, fr, 1),
-                "image_prompt_shot2": image_prompt_from_excel(project, fr, 2),
-                "animation_prompt_shot1": video_prompt_from_excel(project, fr, 1),
-                "animation_prompt_shot2": video_prompt_from_excel(project, fr, 2),
+                # Промты исходников — сразу в модалке «Редактировать промт».
+                "image_prompt_shot1": image_prompt_from_excel(project, fr, 1) or "",
+                "image_prompt_shot2": image_prompt_from_excel(project, fr, 2) or "",
+                "animation_prompt_shot1": video_prompt_from_excel(project, fr, 1) or "",
+                "animation_prompt_shot2": video_prompt_from_excel(project, fr, 2) or "",
                 "plan_column": plan_column_for_frame(fr.number),
             }
         )
