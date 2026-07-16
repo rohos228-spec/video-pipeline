@@ -9,8 +9,22 @@ import re
 import pytest
 
 from app.services import prompt_composer as pc
+from app.services.prompt_paths import BUNDLED_PROMPTS_ROOT
+
+from tests.conftest import patch_prompt_roots, patch_user_prompts_root_only
 
 HEADER_RE = re.compile(r"^## (\d+)\.\s+(.+)$", re.MULTILINE)
+
+
+def _bundled_step_templates() -> list[str]:
+    steps_root = BUNDLED_PROMPTS_ROOT / "steps"
+    if not steps_root.is_dir():
+        return []
+    return sorted(
+        d.name
+        for d in steps_root.iterdir()
+        if d.is_dir() and (d / "template.md").is_file()
+    )
 
 
 # ── resolve_block_value: обратная совместимость + новый формат ──────────
@@ -115,16 +129,18 @@ def test_compose_step_custom_text_block_supports_var_substitution() -> None:
     assert "тон для видео 9:16" in text
 
 
-def test_compose_step_no_dangling_placeholders_with_defaults() -> None:
+def test_compose_step_no_dangling_placeholders_with_defaults(tmp_path, monkeypatch) -> None:
     """Со стандартными blocks/vars ни один шаблон не должен оставлять
     неразрешённый {{BLOCK:}}/{{VAR:}} — иначе в промт уйдёт мусор."""
+    patch_user_prompts_root_only(monkeypatch, tmp_path)
     vars_ = dict(pc.DEFAULT_VARS)
     vars_["PROJECT_TOPIC"] = "тест"
     vars_["HERO_DESCRIPTION"] = "герой-кот"
     vars_["ITEM_STYLE_NOTE"] = "нейтральный фон"
     for i in range(1, 6):
         vars_[f"ENRICH_{i}_TASK"] = "тестовая задача"
-    for step_id in pc.list_step_templates():
+    vars_["EXCEL_GPT_TASK"] = "тестовая задача excel"
+    for step_id in _bundled_step_templates():
         text = pc.compose_step(step_id, dict(pc.DEFAULT_BLOCKS), vars_)
         assert "<!-- missing var" not in text, f"{step_id}: missing var"
         assert "<!-- missing block" not in text, f"{step_id}: missing block"
@@ -156,7 +172,7 @@ def test_project_uses_blocks_v2() -> None:
 # ── Структура шаблонов: 5-7 блоков, технический блок первым ─────────────
 
 
-ALL_STEP_TEMPLATES = pc.list_step_templates()
+ALL_STEP_TEMPLATES = _bundled_step_templates()
 
 
 def test_all_expected_steps_have_templates() -> None:
@@ -237,14 +253,14 @@ def test_parse_step_template_blocks_matches_header_regex(step_id: str) -> None:
 
 
 def test_write_step_template_blocks_round_trip(tmp_path, monkeypatch) -> None:
-    steps_root = tmp_path / "steps"
+    bundled, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    steps_root = bundled / "steps"
     (steps_root / "99_test").mkdir(parents=True)
     (steps_root / "99_test" / "template.md").write_text(
         "# Шаг 99 — Тест\n\n## 1. ТЕХНИЧЕСКАЯ ЧАСТЬ\n\nстарый текст\n\n"
         "## 2. РОЛЬ\n\nстарая роль\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(pc, "STEPS_ROOT", steps_root)
 
     blocks = pc.parse_step_template_blocks("99_test")
     assert len(blocks) == 2
@@ -260,12 +276,11 @@ def test_write_step_template_blocks_round_trip(tmp_path, monkeypatch) -> None:
 
     reparsed = pc.parse_step_template_blocks("99_test")
     assert reparsed[1]["body"] == "новая роль с {{VAR:X}}"
+    assert (user / "steps" / "99_test" / "template.md").is_file()
 
 
 def test_write_step_template_blocks_preserves_h1_without_reading_twice(tmp_path, monkeypatch) -> None:
-    steps_root = tmp_path / "steps"
-    (steps_root / "99_new").mkdir(parents=True)
-    monkeypatch.setattr(pc, "STEPS_ROOT", steps_root)
+    patch_prompt_roots(monkeypatch, tmp_path, folders=())
 
     # Файла ещё нет — H1 не сохранится (нечего сохранять), но запись не падает.
     blocks = [

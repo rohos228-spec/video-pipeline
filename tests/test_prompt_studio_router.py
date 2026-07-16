@@ -9,12 +9,15 @@ from httpx import ASGITransport, AsyncClient
 from app.services import prompt_composer as pc
 from app.web.api import create_app
 
+from tests.conftest import patch_prompt_roots
+
 app = create_app()
 
 
 @pytest.fixture
 def step_templates_dir(tmp_path, monkeypatch):
-    steps_root = tmp_path / "steps"
+    bundled, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    steps_root = bundled / "steps"
     step_dir = steps_root / "99_test"
     step_dir.mkdir(parents=True)
     (step_dir / "template.md").write_text(
@@ -26,7 +29,6 @@ def step_templates_dir(tmp_path, monkeypatch):
         "## 5. ФОРМАТ\n\nформат\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(pc, "STEPS_ROOT", steps_root)
     return "99_test"
 
 

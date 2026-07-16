@@ -44,5 +44,5 @@ Thumbs.db
 *.log
 /logs/
 
-# Локальная история версий промтов (не коммитим)
+# Локальная история версий промтов (не коммитим; user overlay — в data/prompts/)
 prompts/**/.history/

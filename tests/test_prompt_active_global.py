@@ -12,13 +12,12 @@ from app.services.prompt_active_global import (
 from app.services.prompt_library import resolve_project_prompt_name, write_prompt
 
 
+from tests.conftest import patch_prompt_roots
+
+
 @pytest.fixture
 def plan_step(tmp_path, monkeypatch):
-    root = tmp_path / "prompts" / "01_plan"
-    root.mkdir(parents=True)
-    prompts_root = tmp_path / "prompts"
-    monkeypatch.setattr("app.services.prompt_library.PROMPTS_ROOT", prompts_root)
-    monkeypatch.setattr("app.services.prompt_active_global.PROMPTS_ROOT", prompts_root)
+    patch_prompt_roots(monkeypatch, tmp_path, folders=("01_plan",))
     return "plan"
 
 

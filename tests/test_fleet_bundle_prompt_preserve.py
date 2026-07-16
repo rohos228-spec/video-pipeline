@@ -15,15 +15,15 @@ from app.models import Project
 from app.services.prompt_history import write_prompt_with_history
 from app.services.prompt_library import get_prompt_saved_at, read_prompt, write_prompt
 
+from tests.conftest import patch_prompt_roots
+
 
 @pytest.mark.asyncio
 async def test_bundle_import_preserves_local_prompt(tmp_path, monkeypatch) -> None:
     import uuid
 
     slug = f"bundle-prompt-{uuid.uuid4().hex[:8]}"
-    prompts_root = tmp_path / "prompts"
-    (prompts_root / "01_plan").mkdir(parents=True)
-    monkeypatch.setattr("app.services.prompt_library.PROMPTS_ROOT", prompts_root)
+    patch_prompt_roots(monkeypatch, tmp_path, folders=("01_plan",))
 
     write_prompt("plan", "draft", "local-v1")
     write_prompt_with_history("plan", "draft", "local-v2")

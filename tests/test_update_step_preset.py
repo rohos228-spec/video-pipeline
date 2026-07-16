@@ -5,6 +5,8 @@ import pytest
 
 from app.services.prompt_step_presets import resolve_prompt_preset, update_step_preset
 
+from tests.conftest import patch_prompt_roots
+
 
 def test_resolve_script_default_preset():
     preset = resolve_prompt_preset("script", "default")
@@ -28,7 +30,8 @@ def test_resolve_script_cyrillic_alias():
 
 
 def test_update_step_preset_label_and_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    presets_dir = tmp_path / "step-presets"
+    _, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    presets_dir = user / "step-presets"
     presets_dir.mkdir()
     data = {
         "step_code": "img_pr",
@@ -41,10 +44,6 @@ def test_update_step_preset_label_and_blocks(tmp_path: Path, monkeypatch: pytest
         },
     }
     (presets_dir / "img_pr.json").write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(
-        "app.services.prompt_step_presets.STEP_PRESETS_ROOT",
-        presets_dir,
-    )
 
     updated = update_step_preset(
         "img_pr",
@@ -62,7 +61,8 @@ def test_update_step_preset_label_and_blocks(tmp_path: Path, monkeypatch: pytest
 
 
 def test_update_step_preset_unomits_assigned_kind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    presets_dir = tmp_path / "step-presets"
+    _, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    presets_dir = user / "step-presets"
     presets_dir.mkdir()
     data = {
         "presets": {
@@ -74,7 +74,6 @@ def test_update_step_preset_unomits_assigned_kind(tmp_path: Path, monkeypatch: p
         },
     }
     (presets_dir / "img_pr.json").write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr("app.services.prompt_step_presets.STEP_PRESETS_ROOT", presets_dir)
 
     update_step_preset("img_pr", "knitted", blocks={"visual_style": "textile_style"})
     reloaded = json.loads((presets_dir / "img_pr.json").read_text(encoding="utf-8"))

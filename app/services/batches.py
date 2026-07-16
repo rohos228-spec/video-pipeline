@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import BatchProject, BatchStatus, Project, ProjectStatus
 from app.services.canvas_graph import ensure_subproject_workflow_run, sanitize_canvas_graph_for_inherit
-from app.services.prompt_library import PROMPTS_ROOT
+from app.services.prompt_paths import export_merged_prompts_snapshot
 from app.services import sidebar_layout as layout_svc
 from app.settings import settings
 
@@ -217,8 +217,7 @@ def _copy_prompts_snapshot(target_dir: Path) -> None:
         logger.info("batches: prompts snapshot already exists at {}", target_dir)
         return
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(PROMPTS_ROOT, target_dir, dirs_exist_ok=False)
-    logger.info("batches: copied prompts snapshot → {}", target_dir)
+    export_merged_prompts_snapshot(target_dir)
 
 
 async def create_batch(

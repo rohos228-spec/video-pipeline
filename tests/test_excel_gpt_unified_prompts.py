@@ -14,18 +14,17 @@ from app.services.prompt_library import (
 )
 
 
+from tests.conftest import patch_prompt_roots
+
+
 @pytest.fixture
 def prompts_root(tmp_path, monkeypatch):
-    root = tmp_path / "prompts"
-    for folder in (
-        "05_excel_gpt",
-        "05a_enrich_1",
-        "05b_enrich_2",
-    ):
-        (root / folder).mkdir(parents=True)
-    monkeypatch.setattr("app.services.prompt_library.PROMPTS_ROOT", root)
-    monkeypatch.setattr("app.services.prompt_active_global.PROMPTS_ROOT", root)
-    return root
+    _, user = patch_prompt_roots(
+        monkeypatch,
+        tmp_path,
+        folders=("05_excel_gpt", "05a_enrich_1", "05b_enrich_2"),
+    )
+    return user
 
 
 def test_list_merges_excel_gpt_and_legacy_enrich(prompts_root):

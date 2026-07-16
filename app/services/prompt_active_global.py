@@ -12,15 +12,16 @@ from typing import Any
 
 from loguru import logger
 
-from app.services.prompt_library import PROMPTS_ROOT, prompt_path
+from app.services.prompt_library import prompt_path
+from app.services.prompt_paths import user_prompts_root
 
 _ACTIVE_FILE = "active_variants.json"
 
 
 def _active_path() -> Path:
-    path = PROMPTS_ROOT / _ACTIVE_FILE
-    PROMPTS_ROOT.mkdir(parents=True, exist_ok=True)
-    return path
+    root = user_prompts_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / _ACTIVE_FILE
 
 
 def load_global_active() -> dict[str, str]:

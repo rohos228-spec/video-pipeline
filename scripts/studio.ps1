@@ -2,7 +2,7 @@
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
-    [ValidateSet("1", "2", "3", "4", "5", "6", "7", "8", "9", "")]
+    [ValidateSet("1", "2", "3", "4", "5", "6", "7", "8", "9", "P", "p", "")]
     [string]$Action = ""
 )
 
@@ -256,6 +256,38 @@ function Invoke-StudioStart {
     return $true
 }
 
+function Invoke-StudioPromptMigrate {
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path $py)) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: .venv не найден — миграция промтов пропущена." "Yellow"
+        return $false
+    }
+    Write-StudioMsg "==> Миграция пользовательских промтов → data/prompts/ ..." "Cyan"
+    & $py -m app.services.prompt_migrate 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    if ($LASTEXITCODE -ne 0) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: миграция промтов завершилась с ошибкой." "Yellow"
+        return $false
+    }
+    Write-StudioMsg "OK: пользовательские промты в data/prompts/ (git reset их не трогает)." "Green"
+    return $true
+}
+
+function Invoke-StudioRestorePromptsFromStash {
+    Write-StudioMsg "=== [P] Восстановить промты из автосохранений ===" "Cyan"
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path $py)) {
+        Write-StudioMsg "ОШИБКА: .venv не найден." "Red"
+        return $false
+    }
+    & $py -m app.services.prompt_stash_restore 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    if ($LASTEXITCODE -ne 0) {
+        Write-StudioMsg "ОШИБКА: восстановление промтов не удалось." "Red"
+        return $false
+    }
+    Write-StudioMsg "OK: stash не удалены — остаются как резерв." "Green"
+    return $true
+}
+
 function Invoke-StudioGitStash {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-StudioMsg "ОШИБКА: git не найден в PATH." "Red"
@@ -269,7 +301,8 @@ function Invoke-StudioGitStash {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
-    Write-StudioMsg "    (data/, prompts/, logs/, .env в .gitignore — не затрагиваются reset)" "DarkGray"
+    Write-StudioMsg "    (data/ в .gitignore — не затрагивается reset; prompts/ в репо — reset откатит tracked-файлы)" "DarkGray"
+    Write-StudioMsg "    Пользовательские промты хранятся в data/prompts/ и сохраняются при обновлении." "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: git stash не удался. Продолжаю обновление." "Yellow"
@@ -321,6 +354,7 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
+    Invoke-StudioPromptMigrate | Out-Null
     Invoke-StudioGitStash | Out-Null
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
@@ -512,7 +546,7 @@ function Invoke-StudioDoctor {
         Write-DoctorLine "FFmpeg: НЕ НАЙДЕН в PATH" $lines
     }
 
-    foreach ($path in @("data", "prompts", "logs", ".env")) {
+    foreach ($path in @("data", "data/prompts", "prompts", "logs", ".env")) {
         $full = Join-Path $Root $path
         Write-DoctorLine "Защищённый путь ${path}: $(if (Test-Path $full) { 'есть' } else { 'нет' })" $lines
     }
@@ -552,6 +586,7 @@ function Show-StudioMenu {
     Write-Host "  [4] Обновить и запустить (git origin/main + зависимости + запуск)"
     Write-Host "  [5] Починить установку (pip, web, Playwright, FFmpeg)"
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
+    Write-Host "  [P] Восстановить промты из автосохранений (git stash studio)"
     Write-Host "  [7] Fleet: мастер настройки (hub/agent, .env)"
     Write-Host "  [8] Fleet: диагностика сети (scripts/fleet-diag.ps1)"
     Write-Host "  [9] Fleet: обновить agent (git pull + restart)"
@@ -572,6 +607,8 @@ if ($Action -eq "1") {
     $ok = Invoke-StudioStop
 } elseif ($Action -eq "3") {
     $ok = Invoke-StudioBrowserAi
+} elseif ($Action -eq "P" -or $Action -eq "p") {
+    $ok = Invoke-StudioRestorePromptsFromStash
 } elseif ($Action -eq "4") {
     $ok = Invoke-StudioUpdateAndStart
 } elseif ($Action -eq "5") {
@@ -616,6 +653,8 @@ if ($Action -eq "1") {
             "4" { $ok = Invoke-StudioUpdateAndStart; if (-not $ok) { Invoke-StudioPause } }
             "5" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
             "6" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
+            "P" { $ok = Invoke-StudioRestorePromptsFromStash; if (-not $ok) { Invoke-StudioPause } }
+            "p" { $ok = Invoke-StudioRestorePromptsFromStash; if (-not $ok) { Invoke-StudioPause } }
             "7" {
                 $setup = Join-Path $Root "scripts\fleet-setup.ps1"
                 if (Test-Path $setup) { & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $setup }
