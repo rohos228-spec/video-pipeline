@@ -25,6 +25,10 @@ from app.services.montage_board_cache import (
     probe_video_durations_parallel,
 )
 from app.services.montage_board_meta import montage_meta, public_board_meta
+from app.services.montage_board_regen import (
+    image_prompt_from_excel,
+    video_prompt_from_excel,
+)
 from app.services.plan_shot2 import (
     find_shot1_image,
     find_shot2_image,
@@ -241,6 +245,11 @@ async def build_montage_board(
                 "image_shot2_url": _preview_url(img2),
                 "video_shot1_url": _preview_url(vid1),
                 "video_shot2_url": _preview_url(vid2),
+                # Промты исходников для «Редактировать промт» (тот же resolve, что regen).
+                "image_prompt_shot1": image_prompt_from_excel(project, fr, 1),
+                "image_prompt_shot2": image_prompt_from_excel(project, fr, 2),
+                "animation_prompt_shot1": video_prompt_from_excel(project, fr, 1),
+                "animation_prompt_shot2": video_prompt_from_excel(project, fr, 2),
                 "plan_column": plan_column_for_frame(fr.number),
             }
         )

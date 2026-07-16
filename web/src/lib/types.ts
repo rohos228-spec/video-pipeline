@@ -242,6 +242,11 @@ export interface MontageBoardFrame {
   image_shot2_url: string | null;
   video_shot1_url: string | null;
   video_shot2_url: string | null;
+  /** Промт исходного изображения / видео (Excel → Frame), для модалки редактирования. */
+  image_prompt_shot1?: string;
+  image_prompt_shot2?: string;
+  animation_prompt_shot1?: string;
+  animation_prompt_shot2?: string;
   plan_column: number;
 }
 

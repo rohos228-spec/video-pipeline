@@ -1112,12 +1112,33 @@ export function AssembleMontageBoard({
     }
   };
 
+  const sourcePromptFor = (
+    kind: "image" | "video",
+    frameNumber: number,
+    shot: 1 | 2,
+  ): string => {
+    const fr = frames.find((f) => f.number === frameNumber);
+    if (!fr) return "";
+    if (kind === "image") {
+      return (
+        (shot === 1 ? fr.image_prompt_shot1 : fr.image_prompt_shot2) ?? ""
+      ).trim();
+    }
+    return (
+      (shot === 1 ? fr.animation_prompt_shot1 : fr.animation_prompt_shot2) ?? ""
+    ).trim();
+  };
+
   const openPromptModal = (
     kind: "image" | "video",
     frameNumber: number,
     shot: 1 | 2,
     mode: "prompt" | "correction",
   ) => {
+    const initialText =
+      mode === "correction"
+        ? meta?.corrections?.[trimKey(frameNumber, shot)] ?? ""
+        : sourcePromptFor(kind, frameNumber, shot);
     setPromptModal({
       kind,
       frameNumber,
@@ -1127,7 +1148,7 @@ export function AssembleMontageBoard({
         mode === "correction"
           ? `Корректировка · кадр #${frameNumber} · ${kind === "image" ? "изображение" : "видео"} ${shot}`
           : `Промт · кадр #${frameNumber} · ${kind === "image" ? "изображение" : "видео"} ${shot}`,
-      initialText: meta?.corrections?.[trimKey(frameNumber, shot)] ?? "",
+      initialText,
     });
   };
 

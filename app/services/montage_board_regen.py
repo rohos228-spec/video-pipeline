@@ -96,7 +96,8 @@ async def _ensure_cdp_ready() -> None:
         ) from exc
 
 
-def _image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
+def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
+    """Промт исходного изображения: Excel R45/R46 → Frame/attrs."""
     cells = read_plan_image_prompt_cells(project, [frame.number], shot=shot)
     excel_prompt = (cells[0][1] if cells else "").strip()
     if excel_prompt:
@@ -107,7 +108,8 @@ def _image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
     return (frame.image_prompt or "").strip()
 
 
-def _video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
+def video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
+    """Промт исходного видео: Excel R48/R64 → Frame/attrs."""
     if shot == 2:
         prompt = animation_prompt_shot2_in_plan_xlsx(project, frame.number)
         if len(prompt) < MIN_SHOT2_VIDEO_PROMPT_LEN:
@@ -116,6 +118,11 @@ def _video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
         return prompt
     cells = read_plan_animation_prompt_cells(project, [frame.number])
     return (cells[0][1] if cells else "").strip() or (frame.animation_prompt or "").strip()
+
+
+# Совместимость со старыми импортами/вызовами внутри модуля.
+_image_prompt_from_excel = image_prompt_from_excel
+_video_prompt_from_excel = video_prompt_from_excel
 
 
 async def _frame_by_number(
