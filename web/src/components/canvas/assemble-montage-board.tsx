@@ -97,13 +97,31 @@ function PromptModal({
   onSubmit: (text: string) => void;
   busy: boolean;
 }) {
-  const [text, setText] = useState("");
-
-  useEffect(() => {
-    if (state) setText(state.initialText);
-  }, [state]);
-
   if (!state) return null;
+  // key — remount с исходным промптом сразу в textarea (не пустой useState + useEffect).
+  return (
+    <PromptModalBody
+      key={`${state.kind}:${state.frameNumber}:${state.shot}:${state.mode}`}
+      state={state}
+      onClose={onClose}
+      onSubmit={onSubmit}
+      busy={busy}
+    />
+  );
+}
+
+function PromptModalBody({
+  state,
+  onClose,
+  onSubmit,
+  busy,
+}: {
+  state: NonNullable<PromptModalState>;
+  onClose: () => void;
+  onSubmit: (text: string) => void;
+  busy: boolean;
+}) {
+  const [text, setText] = useState(state.initialText);
 
   return createPortal(
     <div
@@ -115,11 +133,15 @@ function PromptModal({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold">{state.title}</h3>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Исходный промт кадра — отредактируйте и поставьте в очередь.
+        </p>
         <textarea
-          className="mt-3 min-h-[140px] w-full rounded-lg border border-white/15 bg-black/30 p-3 text-sm"
+          className="mt-3 min-h-[160px] w-full rounded-lg border border-white/15 bg-black/30 p-3 text-sm"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Введите промт…"
+          placeholder="Промт исходника не найден — вставьте текст вручную…"
+          autoFocus
         />
         <div className="mt-3 flex justify-end gap-2">
           <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
@@ -1112,12 +1134,35 @@ export function AssembleMontageBoard({
     }
   };
 
+  const sourcePromptFor = (
+    kind: "image" | "video",
+    frameNumber: number,
+    shot: 1 | 2,
+  ): string => {
+    const fr = frames.find((f) => f.number === frameNumber);
+    if (!fr) return "";
+    if (kind === "image") {
+      return (
+        (shot === 1 ? fr.image_prompt_shot1 : fr.image_prompt_shot2) ?? ""
+      ).trim();
+    }
+    return (
+      (shot === 1 ? fr.animation_prompt_shot1 : fr.animation_prompt_shot2) ?? ""
+    ).trim();
+  };
+
   const openPromptModal = (
     kind: "image" | "video",
     frameNumber: number,
     shot: 1 | 2,
     mode: "prompt" | "correction",
   ) => {
+    // В textarea сразу кладём промт исходника (Excel/БД) — его и редактируют.
+    // Для correction: если есть сохранённая заметка — она, иначе тоже исходник.
+    const source = sourcePromptFor(kind, frameNumber, shot);
+    const correction = meta?.corrections?.[trimKey(frameNumber, shot)] ?? "";
+    const initialText =
+      mode === "correction" ? (correction.trim() || source) : source;
     setPromptModal({
       kind,
       frameNumber,
@@ -1127,7 +1172,7 @@ export function AssembleMontageBoard({
         mode === "correction"
           ? `Корректировка · кадр #${frameNumber} · ${kind === "image" ? "изображение" : "видео"} ${shot}`
           : `Промт · кадр #${frameNumber} · ${kind === "image" ? "изображение" : "видео"} ${shot}`,
-      initialText: meta?.corrections?.[trimKey(frameNumber, shot)] ?? "",
+      initialText,
     });
   };
 

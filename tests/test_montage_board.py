@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Base, Frame, Project
 from app.orchestrator.steps.generate_images import _XLSX_ROWS_PERSONS
 from app.services.montage_board import build_montage_board
-from app.services.xlsx_v8_import import SHEET_PLAN_V8, ROW_VOICEOVER_V8
+from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8, ROW_VIDEO_PROMPT_2_V8
+from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_V8,
+    ROW_VOICEOVER_V8,
+    SHEET_PLAN_V8,
+)
 
 
 @pytest.fixture
@@ -84,3 +90,75 @@ async def test_montage_board_reads_excel_voiceover_and_characters(
     assert row["character_refs"][0]["name"] == "Кот"
     assert row["character_refs"][0]["image_url"] is not None
     assert row["character_refs"][1]["id"] == "c02"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_exposes_source_prompts_from_excel(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """«Редактировать промт» должен получать промт исходника (Excel → board DTO)."""
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    col = 3  # кадр #1
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=col, value="IMG SHOT1 PROMPT")
+    ws.cell(row=ROW_IMAGE_PROMPT_2_V8, column=col, value="IMG SHOT2 PROMPT")
+    ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col, value="VID SHOT1 PROMPT")
+    ws.cell(row=ROW_VIDEO_PROMPT_2_V8, column=col, value="VID SHOT2 PROMPT long enough")
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="stale-db-image",
+        animation_prompt="stale-db-video",
+        status="planned",
+        attrs={
+            "image_prompt_shot2": "stale-db-img2",
+            "animation_prompt_shot2": "stale-db-vid2",
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["image_prompt_shot1"] == "IMG SHOT1 PROMPT"
+    assert row["image_prompt_shot2"] == "IMG SHOT2 PROMPT"
+    assert row["animation_prompt_shot1"] == "VID SHOT1 PROMPT"
+    assert row["animation_prompt_shot2"] == "VID SHOT2 PROMPT long enough"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_prompt_falls_back_to_frame_db(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="DB IMAGE PROMPT",
+        animation_prompt="DB VIDEO PROMPT",
+        status="planned",
+        attrs={"image_prompt_shot2": "DB IMAGE SHOT2"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["image_prompt_shot1"] == "DB IMAGE PROMPT"
+    assert row["image_prompt_shot2"] == "DB IMAGE SHOT2"
+    assert row["animation_prompt_shot1"] == "DB VIDEO PROMPT"
