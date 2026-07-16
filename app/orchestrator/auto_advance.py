@@ -498,21 +498,26 @@ async def _apply_running_if_data_ok(
     project: Project,
     target: ProjectStatus | None,
 ) -> ProjectStatus | None:
-    """Проверить данные перед переводом в running; при провале — откатить статус."""
+    """Проверить данные перед переводом в running.
+
+    При провале статус проекта НЕ меняем: suggested `fix` из
+    ``can_enter_running`` часто указывает «куда нужно дойти по данным»,
+    а не «безопасный откат». Запись такого fix раньше прыгала вперёд
+    (например plan_ready → frames_ready) и ломала порядок нод.
+    """
     if target is None:
         return None
     ok, reason, fix = await can_enter_running(session, project, target)
     if ok:
         return target
     logger.warning(
-        "auto_advance: #{} не переводим в {} — {}",
+        "auto_advance: #{} не переводим в {} — {} (status остаётся {}, suggested={})",
         project.id,
         target.value,
         reason,
+        project.status.value,
+        fix.value if fix is not None else None,
     )
-    if fix is not None:
-        project.status = fix
-        await session.flush()
     return None
 
 
