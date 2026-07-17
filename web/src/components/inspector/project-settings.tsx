@@ -51,7 +51,7 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
       <MassFactoryPanel project={project} />
       <ToggleRow
         label="Автопродвижение"
-        hint="По шагам без одобрения — следующий шаг стартует сразу после завершения текущего"
+        hint="После ручного ▶ продолжает шаги без одобрения. Само по себе включение ничего не запускает"
         active={autoOn}
         disabled={patch.isPending}
         onClick={() => patch.mutate({ auto_mode: !autoOn })}

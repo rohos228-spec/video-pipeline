@@ -81,9 +81,18 @@ async def start_step(
     # Studio/явный UI: очередь и «уже running» не блокируют — preempt + старт.
     if explicit_ui_start:
         skip_queue_guard = True
-        from app.services.project_control import clear_user_stop_gate
+        from app.services.project_control import (
+            clear_auto_await_manual_start,
+            clear_user_stop_gate,
+        )
 
         clear_user_stop_gate(project)
+        clear_auto_await_manual_start(project)
+    else:
+        # Любой старт шага (очередь / цепочка) тоже снимает «ждать ▶».
+        from app.services.project_control import clear_auto_await_manual_start
+
+        clear_auto_await_manual_start(project)
     if not skip_queue_guard:
         from app.services.gen_queue import assert_can_start_in_queue
 
