@@ -224,6 +224,57 @@ def completed_node_keys(project: Project) -> set[str]:
     return {str(k) for k in raw if k}
 
 
+def max_excel_gpt_slot(project: Project) -> int:
+    """Максимальный slotIndex среди excel_gpt на канвасе (1..5)."""
+    nodes = excel_gpt_nodes_from_project(project)
+    if not nodes:
+        return 1
+    return max(slot_index_from_node(n) for n in nodes)
+
+
+def next_incomplete_excel_gpt_slot(project: Project, after_slot: int) -> int | None:
+    """Следующий слот excel_gpt после after_slot, ещё не в completed."""
+    nodes = excel_gpt_nodes_from_project(project)
+    if not nodes:
+        return None
+    done_slots = set()
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    for raw in meta.get("enrich_completed_slots") or []:
+        try:
+            done_slots.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    done_keys = completed_node_keys(project)
+    candidates: list[int] = []
+    for n in nodes:
+        slot = slot_index_from_node(n)
+        if slot <= after_slot:
+            continue
+        nid = str(n.get("id") or "")
+        if slot in done_slots or (nid and nid in done_keys):
+            continue
+        candidates.append(slot)
+    return min(candidates) if candidates else None
+
+
+def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
+    """Выставить meta.enrich_auto_chain_to = max slot, если на канвасе есть хвост.
+
+    Нужно, чтобы после enrich_N_ready сразу шёл enriching_N+1 без ожидания
+    auto_advance (который часто режется gen_queue / auto_mode=False).
+    """
+    max_slot = max_excel_gpt_slot(project)
+    if max_slot <= from_slot:
+        return None
+    meta = dict(project.meta or {})
+    cur = meta.get("enrich_auto_chain_to")
+    if isinstance(cur, int) and cur >= max_slot:
+        return cur
+    meta["enrich_auto_chain_to"] = max_slot
+    project.meta = meta
+    return max_slot
+
+
 def display_attachment_name(project: Project, node_key: str | None) -> str:
     src = input_source(project, node_key)
     if src == "voiceover":

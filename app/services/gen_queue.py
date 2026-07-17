@@ -67,6 +67,24 @@ def project_gated_by_gen_queue(project_id: int) -> bool:
     return bool(queue) and project_id not in queue
 
 
+def enrich_ready_bypasses_gen_queue(project: Project) -> bool:
+    """enrich_N_ready + на канвасе есть следующий незавершённый excel_gpt.
+
+    Ручной ▶ одной ноды обходит очередь, но auto_advance после ready
+    снова упирался в gen_queue — слот 3 не стартовал. Цепочку excel_gpt
+    пропускаем через gate.
+    """
+    from app.services.excel_gpt_node import (
+        next_incomplete_excel_gpt_slot,
+        slot_from_ready_status,
+    )
+
+    slot = slot_from_ready_status(project.status)
+    if slot is None:
+        return False
+    return next_incomplete_excel_gpt_slot(project, slot) is not None
+
+
 async def on_project_removed_from_gen_queue(
     session: AsyncSession,
     project: Project,
