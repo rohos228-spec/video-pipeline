@@ -678,19 +678,15 @@ async def _startup_maintenance() -> None:
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
-        from app.services.prompt_paths import (
-            migrate_user_prompts_to_data,
-            restore_prompts_from_stashes,
-            seed_bundled_prompts_into_data,
-        )
-
-        migrate_user_prompts_to_data()
-        seed_stats = seed_bundled_prompts_into_data()
-        logger.info("prompt overlay seed on startup: {}", seed_stats)
+        # После отката overlay: вернуть кастомные файлы из data/prompts/ в prompts/.
         try:
-            restore_prompts_from_stashes()
+            from app.services.prompt_library import recover_prompts_from_data_overlay
+
+            rec = recover_prompts_from_data_overlay()
+            if rec.get("restored"):
+                logger.info("prompt recover on startup: {}", rec)
         except Exception as e:  # noqa: BLE001
-            logger.warning("prompt stash restore on startup failed: {}", e)
+            logger.warning("prompt recover on startup failed: {}", e)
         from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
 
         await reconcile_stale_montage_jobs_on_startup()

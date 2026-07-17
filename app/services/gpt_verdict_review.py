@@ -15,13 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, HITLKind, Project
-from app.services.auto_review import CHECK_FOLDER_BY_KIND, get_check_prompt_path, load_check_prompt
-from app.services.prompt_paths import (
-    BUNDLED_PROMPTS_ROOT,
-    first_existing_under_prompts,
-    user_prompts_root,
-    user_prompt_file,
-)
+from app.services.auto_review import CHECK_FOLDER_BY_KIND, PROMPTS_ROOT, load_check_prompt
 
 _APPROVED = re.compile(
     r"вердикт\s*:\s*одобрено",
@@ -215,11 +209,7 @@ def verdict_template_dir(step_code: str) -> Path | None:
         folder = CHECK_FOLDER_BY_KIND.get(kind)
     if not folder:
         return None
-    user = user_prompts_root() / folder
-    if user.is_dir():
-        return user
-    bundled = BUNDLED_PROMPTS_ROOT / folder
-    return bundled if bundled.is_dir() else user
+    return PROMPTS_ROOT / folder
 
 
 def verdict_template_path(step_code: str, name: str) -> Path | None:
@@ -227,18 +217,10 @@ def verdict_template_path(step_code: str, name: str) -> Path | None:
 
     if not is_valid_prompt_name(name):
         return None
-    folder = STEP_VERDICT_FOLDER.get(step_code)
-    if folder is None:
-        kind = STEP_TO_HITL.get(step_code)
-        if kind is None:
-            return None
-        folder = CHECK_FOLDER_BY_KIND.get(kind)
-    if not folder:
+    root = verdict_template_dir(step_code)
+    if root is None:
         return None
-    found = first_existing_under_prompts(folder, f"{name}.md")
-    if found is not None:
-        return found
-    return user_prompt_file(folder, f"{name}.md")
+    return root / f"{name}.md"
 
 
 def list_verdict_templates(step_code: str) -> list[str]:

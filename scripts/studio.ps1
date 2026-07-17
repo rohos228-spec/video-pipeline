@@ -2,7 +2,7 @@
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
-    [ValidateSet("1", "2", "3", "4", "5", "6", "P", "p", "")]
+    [ValidateSet("1", "2", "3", "4", "5", "6", "")]
     [string]$Action = ""
 )
 
@@ -236,36 +236,45 @@ function Invoke-StudioStart {
     return $true
 }
 
-function Invoke-StudioPromptMigrate {
-    $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (-not (Test-Path $py)) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: .venv не найден — миграция промтов пропущена." "Yellow"
+function Invoke-StudioPreservePrompts {
+    # Копия prompts/ в data/ (gitignore) — чтобы git reset не уничтожил кастомные .md
+    $src = Join-Path $Root "prompts"
+    $dst = Join-Path $Root "data\prompts_preserve"
+    if (-not (Test-Path $src)) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: папка prompts/ не найдена — preserve пропущен." "Yellow"
         return $false
     }
-    Write-StudioMsg "==> Миграция + seed промтов → data/prompts/ ..." "Cyan"
-    & $py -m app.services.prompt_migrate 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: миграция промтов завершилась с ошибкой." "Yellow"
-        return $false
+    Write-StudioMsg "==> Сохраняю prompts/ → data/prompts_preserve/ ..." "Cyan"
+    if (Test-Path $dst) {
+        Remove-Item -LiteralPath $dst -Recurse -Force -ErrorAction SilentlyContinue
     }
-    & $py -c "from app.services.prompt_paths import seed_bundled_prompts_into_data, count_prompt_overlay_files; print(seed_bundled_prompts_into_data()); print(count_prompt_overlay_files())" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    Write-StudioMsg "OK: промты в data/prompts/ (git reset их не трогает)." "Green"
+    New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
+    Write-StudioMsg "OK: prompts сохранены вне git (data/prompts_preserve)." "Green"
     return $true
 }
 
-function Invoke-StudioRestorePromptsFromStash {
-    Write-StudioMsg "=== [P] Восстановить промты из автосохранений ===" "Cyan"
+function Invoke-StudioRestorePreservedPrompts {
+    $src = Join-Path $Root "data\prompts_preserve"
+    $dst = Join-Path $Root "prompts"
     $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (-not (Test-Path $py)) {
-        Write-StudioMsg "ОШИБКА: .venv не найден." "Red"
-        return $false
+    if (Test-Path $src) {
+        Write-StudioMsg "==> Возвращаю кастомные промты из data/prompts_preserve/ ..." "Cyan"
+        if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
+        # Копируем все файлы обратно (новее/отсутствующие перезаписываем из preserve)
+        Get-ChildItem -LiteralPath $src -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($src.Length).TrimStart('\', '/')
+            $target = Join-Path $dst $rel
+            $parent = Split-Path $target -Parent
+            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+        }
+        Write-StudioMsg "OK: prompts восстановлены из preserve." "Green"
     }
-    & $py -m app.services.prompt_stash_restore 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioMsg "ОШИБКА: восстановление промтов не удалось." "Red"
-        return $false
+    # Также подтянуть остатки старого overlay data/prompts/
+    if (Test-Path $py) {
+        & $py -c "from app.services.prompt_library import recover_prompts_from_data_overlay; print(recover_prompts_from_data_overlay())" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     }
-    Write-StudioMsg "OK: stash не удалены — остаются как резерв." "Green"
     return $true
 }
 
@@ -282,8 +291,7 @@ function Invoke-StudioGitStash {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
-    Write-StudioMsg "    (data/ в .gitignore — не затрагивается reset; prompts/ в репо — reset откатит tracked-файлы)" "DarkGray"
-    Write-StudioMsg "    Пользовательские промты хранятся в data/prompts/ и сохраняются при обновлении." "DarkGray"
+    Write-StudioMsg "    (data/ в .gitignore; prompts/ перед reset копируются в data/prompts_preserve)" "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: git stash не удался. Продолжаю обновление." "Yellow"
@@ -335,17 +343,12 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
-    Invoke-StudioPromptMigrate | Out-Null
+    Invoke-StudioPreservePrompts | Out-Null
     Invoke-StudioGitStash | Out-Null
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
     }
-    # После обновления кода — подтянуть промты из прошлых studio-stash (если есть).
-    $pyAfter = Join-Path $Root ".venv\Scripts\python.exe"
-    if (Test-Path $pyAfter) {
-        Write-StudioMsg "==> Восстановление промтов из studio-stash → data/prompts/ ..." "Cyan"
-        & $pyAfter -m app.services.prompt_stash_restore 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    }
+    Invoke-StudioRestorePreservedPrompts | Out-Null
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
         & $py -c "import fastapi, sqlalchemy, playwright" 2>$null
@@ -522,7 +525,7 @@ function Invoke-StudioDoctor {
         Write-DoctorLine "FFmpeg: НЕ НАЙДЕН в PATH" $lines
     }
 
-    foreach ($path in @("data", "data/prompts", "prompts", "logs", ".env")) {
+    foreach ($path in @("data", "prompts", "logs", ".env")) {
         $full = Join-Path $Root $path
         Write-DoctorLine "Защищённый путь ${path}: $(if (Test-Path $full) { 'есть' } else { 'нет' })" $lines
     }
@@ -562,7 +565,6 @@ function Show-StudioMenu {
     Write-Host "  [4] Обновить и запустить (git origin/main + зависимости + запуск)"
     Write-Host "  [5] Починить установку (pip, web, Playwright, FFmpeg)"
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
-    Write-Host "  [P] Восстановить промты из автосохранений (git stash studio)"
     Write-Host "  [0] Выход"
     Write-Host ""
 }
@@ -580,8 +582,6 @@ if ($Action -eq "1") {
     $ok = Invoke-StudioStop
 } elseif ($Action -eq "3") {
     $ok = Invoke-StudioBrowserAi
-} elseif ($Action -eq "P" -or $Action -eq "p") {
-    $ok = Invoke-StudioRestorePromptsFromStash
 } elseif ($Action -eq "4") {
     $ok = Invoke-StudioUpdateAndStart
 } elseif ($Action -eq "5") {
@@ -599,7 +599,6 @@ if ($Action -eq "1") {
             "4" { $ok = Invoke-StudioUpdateAndStart; if (-not $ok) { Invoke-StudioPause } }
             "5" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
             "6" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
-            { $_ -eq "P" -or $_ -eq "p" } { $ok = Invoke-StudioRestorePromptsFromStash; if (-not $ok) { Invoke-StudioPause } }
             "0" { break }
             default {
                 Write-StudioMsg "Неизвестный пункт: $choice" "Yellow"

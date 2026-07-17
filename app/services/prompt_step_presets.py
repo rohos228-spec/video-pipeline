@@ -14,22 +14,18 @@ from typing import Any
 from loguru import logger
 
 from app.services.prompt_library import STEP_FOLDERS
-from app.services.prompt_paths import first_existing_under_prompts, user_prompt_file
 
-STEP_PRESETS_REL = "step-presets"
-
-
-def _preset_read_path(step_code: str) -> Path | None:
-    return first_existing_under_prompts(STEP_PRESETS_REL, f"{step_code}.json")
+PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
+STEP_PRESETS_ROOT = PROMPTS_ROOT / "step-presets"
 
 
-def _preset_write_path(step_code: str) -> Path:
-    return user_prompt_file(STEP_PRESETS_REL, f"{step_code}.json")
+def _preset_path(step_code: str) -> Path:
+    return STEP_PRESETS_ROOT / f"{step_code}.json"
 
 
 def load_step_presets(step_code: str) -> dict[str, Any] | None:
-    path = _preset_read_path(step_code)
-    if path is None:
+    path = _preset_path(step_code)
+    if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -41,14 +37,9 @@ def load_step_presets(step_code: str) -> dict[str, Any] | None:
 
 
 def list_step_preset_steps() -> list[str]:
-    stems: set[str] = set()
-    from app.services.prompt_paths import BUNDLED_PROMPTS_ROOT, user_prompts_root
-
-    for root in (user_prompts_root(), BUNDLED_PROMPTS_ROOT):
-        d = root / STEP_PRESETS_REL
-        if d.is_dir():
-            stems.update(p.stem for p in d.glob("*.json") if p.is_file())
-    return sorted(stems)
+    if not STEP_PRESETS_ROOT.is_dir():
+        return []
+    return sorted(p.stem for p in STEP_PRESETS_ROOT.glob("*.json") if p.is_file())
 
 
 def _alias_map(data: dict[str, Any]) -> dict[str, str]:
@@ -116,7 +107,8 @@ def apply_prompt_presets_from_overrides(
 
 
 def _write_step_presets(step_code: str, data: dict[str, Any]) -> None:
-    path = _preset_write_path(step_code)
+    path = _preset_path(step_code)
+    path.parent.mkdir(parents=True, exist_ok=True)
     out = {k: v for k, v in data.items() if k != "step_code"}
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

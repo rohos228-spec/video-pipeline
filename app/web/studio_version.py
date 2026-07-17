@@ -98,13 +98,14 @@ def read_studio_version() -> dict[str, str | int | bool]:
     )
 
     backend_git = _running_backend_git_short()
-    prompt_counts: dict[str, int] = {}
+    prompt_md = 0
     try:
-        from app.services.prompt_paths import count_prompt_overlay_files
+        from app.services.prompt_library import PROMPTS_ROOT
 
-        prompt_counts = count_prompt_overlay_files()
+        if PROMPTS_ROOT.is_dir():
+            prompt_md = sum(1 for p in PROMPTS_ROOT.rglob("*.md") if p.is_file())
     except Exception:
-        prompt_counts = {"bundled_md": 0, "user_md": 0, "overlay_ok": 0}
+        prompt_md = 0
     return {
         "build": build,
         "sha": sha,
@@ -122,9 +123,7 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "orchestrator_ok": orchestrator_ok,
         "pipeline_ok": attach_ok and orchestrator_ok,
         "pipeline_hotfix": PIPELINE_HOTFIX_ID,
-        "prompt_bundled_md": int(prompt_counts.get("bundled_md") or 0),
-        "prompt_user_md": int(prompt_counts.get("user_md") or 0),
-        "prompt_overlay_ok": bool(prompt_counts.get("overlay_ok")),
+        "prompt_md": prompt_md,
     }
 
 

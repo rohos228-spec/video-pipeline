@@ -20,8 +20,7 @@ from sqlalchemy import select
 
 from app.db import session_scope
 from app.models import MasterPrompt, PromptKey
-from app.services.prompt_paths import BUNDLED_PROMPTS_ROOT, resolve_prompt_file
-from app.services.prompt_library import STEP_FOLDERS
+from app.services.prompt_library import PROMPTS_ROOT, STEP_FOLDERS
 
 # Карта step_code → PromptKey (для апсерта в DB).
 _STEP_TO_KEY: dict[str, PromptKey] = {
@@ -36,10 +35,7 @@ _STEP_TO_KEY: dict[str, PromptKey] = {
 
 def _default_path(step_code: str) -> Path:
     folder = STEP_FOLDERS[step_code]
-    found = resolve_prompt_file(folder, "default.md")
-    if found is not None:
-        return found
-    return BUNDLED_PROMPTS_ROOT / folder / "default.md"
+    return PROMPTS_ROOT / folder / "default.md"
 
 
 async def sync_prompts_from_files() -> None:

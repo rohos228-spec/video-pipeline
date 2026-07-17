@@ -9,8 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import local_library as lib
-from app.services.prompt_composer import _block_label, list_block_categories
-from app.services.prompt_paths import user_prompt_file
+from app.services.prompt_composer import PROMPTS_ROOT, _block_label, list_block_categories
 
 BLOCK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,79}$", re.I)
 CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$", re.I)
@@ -44,7 +43,7 @@ def _validate_block_id(block_id: str) -> str:
 def block_repo_path(category: str, block_id: str) -> Path:
     cat = _validate_category(category)
     bid = _validate_block_id(block_id)
-    return user_prompt_file("blocks", cat, f"{bid}.md")
+    return PROMPTS_ROOT / "blocks" / cat / f"{bid}.md"
 
 
 def block_library_key(category: str, block_id: str) -> str:

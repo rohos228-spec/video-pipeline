@@ -31,11 +31,14 @@ from app.services.prompt_library import (
     STEP_FOLDERS,
     delete_prompt,
     get_prompt_saved_at,
+    is_excel_gpt_prompt_step,
     is_valid_prompt_name,
     list_prompts,
     prompt_path,
     read_prompt,
+    resolve_excel_gpt_prompt_path,
     resolve_project_prompt_with_source,
+    step_dir,
 )
 from app.web.deps import get_session
 
@@ -155,14 +158,16 @@ async def resolve_prompt_for_project(
 
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
 async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
-    """Список .md: overlay data/prompts/ + bundled prompts/ (не только user-dir)."""
+    """Список .md-файлов в `prompts/<step>/` (как до overlay)."""
     _ensure_step(step_code)
     bootstrap_saved_at_from_history(step_code)
+    folder = step_dir(step_code)
     out: list[PromptFileInfo] = []
     for name in list_prompts(step_code):
-        # Важно: prompt_path (user→bundled), НЕ step_dir (только data/prompts/).
-        # Иначе после overlay UI показывает «Папка пуста» на всех нодах.
-        p = prompt_path(step_code, name)
+        if is_excel_gpt_prompt_step(step_code):
+            p = resolve_excel_gpt_prompt_path(name)
+        else:
+            p = folder / f"{name}.md"
         if not p.is_file():
             continue
         stat = p.stat()
