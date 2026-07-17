@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.orchestrator.steps.generate_images import (
     _XLSX_ROWS_PERSONS,
+    _artifact_ref_path,
     _find_ref_file_any,
+    _hero_legacy_ref,
     _parse_ref_ids,
     _resolve_plan_sheet,
 )
@@ -30,6 +32,7 @@ from app.services.montage_board_regen import (
     video_prompt_from_excel,
 )
 from app.services.plan_shot2 import (
+    ROW_IMAGE_PROMPT_2_V8,
     find_shot1_image,
     find_shot2_image,
     plan_column_for_frame,
@@ -37,9 +40,16 @@ from app.services.plan_shot2 import (
 )
 from app.services.shot2_timeline import split_voiceover_duration
 from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_V8,
     ROW_VOICEOVER_V8,
     _cell_text,
 )
+
+# excel-cells.ts раньше помечал R7 как «персонажи» (в шаблоне R7=фон, R8=персонажи).
+# Читаем R7 тоже — туда могли записать c0N.
+_LEGACY_MISLABEL_PERSON_ROWS = (7,)
+# Fallback: id вида c01 иногда попадают только в image-prompt.
+_PERSON_ID_FALLBACK_ROWS = (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8)
 
 
 def _preview_url(path: Path | None) -> str | None:
@@ -91,10 +101,137 @@ def _merged_plan_ids(ws, col: int, rows: tuple[int, ...]) -> list[str]:
     return merged
 
 
+def _discover_person_rows(ws) -> tuple[int, ...]:
+    """Строки «персонажи»: канон v8 + подписи в col A + legacy R7."""
+    found: set[int] = set(_XLSX_ROWS_PERSONS)
+    found.update(_LEGACY_MISLABEL_PERSON_ROWS)
+    max_r = int(ws.max_row or 0) or 0
+    scan_to = min(max_r, 80) if max_r > 0 else 80
+    for r in range(1, scan_to + 1):
+        label = str(ws.cell(row=r, column=1).value or "").strip().casefold()
+        if "персонаж" in label:
+            found.add(r)
+    return tuple(sorted(found))
+
+
+def _person_ids_for_plan_column(ws, col: int, person_rows: tuple[int, ...]) -> list[str]:
+    ids = _merged_plan_ids(ws, col, person_rows)
+    if ids:
+        return ids
+    # Промт картинки иногда содержит c01 как токен — лучше, чем пустая строка.
+    return _merged_plan_ids(ws, col, _PERSON_ID_FALLBACK_ROWS)
+
+
+def _refs_from_ids(
+    person_ids: list[str],
+    *,
+    names: dict[str, str],
+    chars_dir: Path,
+    project_data_dir: Path,
+) -> list[dict[str, str | None]]:
+    refs: list[dict[str, str | None]] = []
+    for ref_id in person_ids:
+        image_path = _resolve_character_file(chars_dir, project_data_dir, ref_id)
+        refs.append(
+            {
+                "id": ref_id,
+                "name": names.get(ref_id.lower(), ref_id),
+                "image_url": _preview_url(image_path),
+            }
+        )
+    return refs
+
+
+def _project_character_ids(xlsx_path: Path, chars_dir: Path) -> list[str]:
+    """Все id с листа «Персонажи» (или cNN.png на диске), порядок стабильный."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    try:
+        for ch in parse_persons_sheet(xlsx_path):
+            cid = (ch.id or "").strip().lower()
+            if cid and cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+    except Exception:  # noqa: BLE001
+        pass
+    if chars_dir.is_dir():
+        for p in sorted(chars_dir.glob("c*.png")):
+            stem = p.stem.lower()
+            if _parse_ref_ids(stem) and stem not in seen:
+                seen.add(stem)
+                ids.append(stem)
+        for p in sorted(chars_dir.glob("c*.jpg")):
+            stem = p.stem.lower()
+            if _parse_ref_ids(stem) and stem not in seen:
+                seen.add(stem)
+                ids.append(stem)
+    return ids
+
+
+def _resolve_character_file(
+    chars_dir: Path,
+    project_data_dir: Path,
+    ref_id: str,
+) -> Path | None:
+    """Файл персонажа: c01.png → legacy hero_N_v1_*.png."""
+    return _find_ref_file_any(chars_dir, ref_id) or _hero_legacy_ref(
+        project_data_dir, ref_id
+    )
+
+
+def _refresh_character_image_urls(
+    excel_by_frame: dict[int, dict[str, Any]],
+    *,
+    chars_dir: Path,
+    project_data_dir: Path,
+) -> None:
+    """Обновить image_url по диску.
+
+    Кэш Excel ключуется только mtime xlsx: если монтаж открыли до генерации
+    hero, в кэше остаются image_url=null. PNG появляются без смены xlsx —
+    поэтому пути резолвим на каждый запрос.
+    """
+    for ex in excel_by_frame.values():
+        refs = ex.get("character_refs")
+        if not refs:
+            continue
+        for ref in refs:
+            rid = str(ref.get("id") or "").strip()
+            if not rid:
+                ref["image_url"] = None
+                continue
+            ref["image_url"] = _preview_url(
+                _resolve_character_file(chars_dir, project_data_dir, rid)
+            )
+
+
+async def _fill_missing_character_images_from_artifacts(
+    session: AsyncSession,
+    project_id: int,
+    excel_by_frame: dict[int, dict[str, Any]],
+) -> None:
+    """Fallback: hero_reference из БД, если файла нет в characters/."""
+    for ex in excel_by_frame.values():
+        refs = ex.get("character_refs")
+        if not refs:
+            continue
+        for ref in refs:
+            if ref.get("image_url"):
+                continue
+            rid = str(ref.get("id") or "").strip()
+            if not rid:
+                continue
+            path = await _artifact_ref_path(
+                session, project_id, rid, kind="character"
+            )
+            ref["image_url"] = _preview_url(path)
+
+
 def _read_plan_excel_cells_uncached(
     xlsx_path: Path,
     *,
     chars_dir: Path,
+    project_data_dir: Path,
 ) -> dict[int, dict[str, Any]]:
     """frame_number → {voiceover_excel, characters, character_refs}."""
     out: dict[int, dict[str, Any]] = {}
@@ -110,25 +247,25 @@ def _read_plan_excel_cells_uncached(
         ws = _resolve_plan_sheet(wb)
         if ws is None:
             return out
-        max_col = ws.max_column or 0
+        person_rows = _discover_person_rows(ws)
+        max_col = int(ws.max_column or 0)
+        if max_col < 3:
+            # read_only иногда отдаёт пустые dimensions — сканируем разумный хвост.
+            max_col = 40
         for col in range(3, max_col + 1):
             voice = (_cell_text(ws, ROW_VOICEOVER_V8, col) or "").strip()
-            person_ids = _merged_plan_ids(ws, col, _XLSX_ROWS_PERSONS)
+            person_ids = _person_ids_for_plan_column(ws, col, person_rows)
             if not voice and not person_ids:
                 continue
             frame_num = col - 2
             if frame_num < 1:
                 continue
-            character_refs: list[dict[str, str | None]] = []
-            for ref_id in person_ids:
-                image_path = _find_ref_file_any(chars_dir, ref_id)
-                character_refs.append(
-                    {
-                        "id": ref_id,
-                        "name": names.get(ref_id.lower(), ref_id),
-                        "image_url": _preview_url(image_path),
-                    }
-                )
+            character_refs = _refs_from_ids(
+                person_ids,
+                names=names,
+                chars_dir=chars_dir,
+                project_data_dir=project_data_dir,
+            )
             out[frame_num] = {
                 "characters": ", ".join(person_ids),
                 "voiceover_excel": voice,
@@ -143,11 +280,19 @@ def _read_plan_excel_cells(
     xlsx_path: Path,
     *,
     chars_dir: Path,
+    project_data_dir: Path,
 ) -> dict[int, dict[str, Any]]:
-    return get_cached_plan_excel_cells(
+    data = get_cached_plan_excel_cells(
         xlsx_path,
-        loader=lambda p: _read_plan_excel_cells_uncached(p, chars_dir=chars_dir),
+        loader=lambda p: _read_plan_excel_cells_uncached(
+            p, chars_dir=chars_dir, project_data_dir=project_data_dir
+        ),
     )
+    # Даже на cache-hit — пересчитать фото с диска (xlsx mtime мог не меняться).
+    _refresh_character_image_urls(
+        data, chars_dir=chars_dir, project_data_dir=project_data_dir
+    )
+    return data
 
 
 def _scene_use_durations(
@@ -177,7 +322,44 @@ async def build_montage_board(
 
     xlsx_path = project.data_dir / "project.xlsx"
     chars_dir = project.data_dir / "characters"
-    excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
+    excel_by_frame = _read_plan_excel_cells(
+        xlsx_path,
+        chars_dir=chars_dir,
+        project_data_dir=project.data_dir,
+    )
+    await _fill_missing_character_images_from_artifacts(
+        session, project.id, excel_by_frame
+    )
+
+    # Если на листе «план» ни у одного кадра нет c0N (enrich не проставил id),
+    # всё равно показываем сгенерированных персонажей — иначе строка «Персонажи»
+    # в монтаже пустая при живых PNG в characters/.
+    names = _character_name_map(xlsx_path)
+    any_plan_chars = any(
+        bool(ex.get("character_refs")) for ex in excel_by_frame.values()
+    )
+    project_fallback_refs: list[dict[str, str | None]] = []
+    if not any_plan_chars:
+        project_fallback_refs = _refs_from_ids(
+            _project_character_ids(xlsx_path, chars_dir),
+            names=names,
+            chars_dir=chars_dir,
+            project_data_dir=project.data_dir,
+        )
+        if project_fallback_refs:
+            # artifact fallback для project-wide списка
+            await _fill_missing_character_images_from_artifacts(
+                session,
+                project.id,
+                {0: {"character_refs": project_fallback_refs}},
+            )
+            logger.info(
+                "montage_board: #{} plan без id персонажей — fallback {} шт. "
+                "из листа «Персонажи»/characters/",
+                project.id,
+                len(project_fallback_refs),
+            )
+
     shot2_by = get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
@@ -186,7 +368,15 @@ async def build_montage_board(
     frame_videos: list[tuple[Frame, Path | None, Path | None, dict, bool, bool]] = []
     all_vid_paths: list[Path | None] = []
     for fr in frames:
-        ex = excel_by_frame.get(fr.number, {})
+        ex = dict(excel_by_frame.get(fr.number, {}) or {})
+        if not (ex.get("character_refs") or []) and project_fallback_refs:
+            ex = {
+                **ex,
+                "characters": ", ".join(
+                    str(r.get("id") or "") for r in project_fallback_refs if r.get("id")
+                ),
+                "character_refs": list(project_fallback_refs),
+            }
         vid1 = _find_shot1_video(videos_dir, fr.number)
         vid2 = _find_shot2_video(videos_dir, fr.number)
         shot2_info = shot2_by.get(fr.number)
