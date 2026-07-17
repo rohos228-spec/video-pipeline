@@ -122,10 +122,12 @@ async def start_step(
                 "Остановите ⏹ или дождитесь завершения."
             )
 
-    # Ручной старт ранних шагов: сброс stale enrich/split meta, иначе
-    # auto_advance/planner снова прыгнут через разбивку / GPT #1.
+    # Ручной старт ранних шагов: сброс stale enrich/split meta + NodeRun
+    # downstream → pending. Иначе канвас показывает ✅ на script/split и
+    # recompute прыгает plan_ready → frames_ready.
     if explicit_ui_start and step_code in ("plan", "script", "split"):
         from app.services.project_state import clear_pipeline_progress_meta
+        from app.services.run_sync import reset_nodes_from_step
 
         cleared = clear_pipeline_progress_meta(project)
         if cleared:
@@ -135,6 +137,13 @@ async def start_step(
                 step_code,
                 cleared,
             )
+        await reset_nodes_from_step(session, project.id, step_code)
+        logger.info(
+            "[#{}] start_step {}: reset NodeRuns from {} → pending",
+            project.id,
+            step_code,
+            step_code,
+        )
 
     # Ручной старт: порядок нод и data-guard не блокируют запуск.
 

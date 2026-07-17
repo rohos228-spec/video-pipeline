@@ -138,6 +138,56 @@ async def test_split_noderun_pending_blocks_frames_ready_promotion(session) -> N
 
 
 @pytest.mark.asyncio
+async def test_stale_split_noderun_done_does_not_skip_to_frames_ready(session) -> None:
+    """Как #42: после plan split NodeRun=done + кадры → НЕ frames_ready без meta."""
+    wf = Workflow(name="default", is_default=True, nodes=[], edges=[])
+    session.add(wf)
+    await session.flush()
+    p = Project(
+        slug="stale-split-done",
+        topic="t",
+        status=ProjectStatus.plan_ready,
+        general_plan="x" * 200,
+        script_text="script text here",
+        meta={},  # split_completed сброшен при рестарте plan
+    )
+    session.add(p)
+    await session.flush()
+    _frames(session, p.id)
+    run = WorkflowRun(
+        workflow_id=wf.id,
+        project_id=p.id,
+        status=WorkflowRunStatus.new,
+        nodes_snapshot=[
+            {"id": "n_script", "type": "script"},
+            {"id": "n_split", "type": "split"},
+        ],
+        edges_snapshot=[],
+    )
+    session.add(run)
+    await session.flush()
+    for key, typ in (("n_script", "script"), ("n_split", "split")):
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key=key,
+                node_type=typ,
+                status=NodeRunStatus.done,
+            )
+        )
+    await session.flush()
+
+    actual = await compute_actual_status(session, p)
+    assert actual is ProjectStatus.script_ready
+
+    old, new, changed = await recompute_status(session, p, log_prefix="recompute(web_get)")
+    assert old is ProjectStatus.plan_ready
+    assert new is ProjectStatus.plan_ready
+    assert changed is False
+    assert p.status is ProjectStatus.plan_ready
+
+
+@pytest.mark.asyncio
 async def test_frames_ready_next_excel_gpt_is_slot1_not_slot3() -> None:
     nodes = [
         {"id": "n_split", "type": "split", "position": {"x": 0, "y": 0}, "data": {}},

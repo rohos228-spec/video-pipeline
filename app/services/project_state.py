@@ -355,15 +355,14 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     if fr_total == 0:
         return ProjectStatus.script_ready
     # Кадры в БД есть, но split ещё не подтверждён — не поднимаем status
-    # выше script_ready (stale frames с прошлого прогона иначе помечают
-    # разбивку ✅ и пропускают реальный split).
+    # выше script_ready. Источник правды — meta.split_completed текущего
+    # прогона: stale NodeRun.done с прошлого круга НЕ должен пропускать split
+    # (иначе plan_ready → frames_ready и «прыжок через ноды»).
     if _status_ord(getattr(project, "status", None)) < _status_ord(
         ProjectStatus.frames_ready
     ):
-        split_done = await _split_noderun_done(session, project)
         meta_now = project.meta if isinstance(project.meta, dict) else {}
-        split_flag = bool(meta_now.get("split_completed"))
-        if split_done is False or (split_done is None and not split_flag):
+        if not bool(meta_now.get("split_completed")):
             return ProjectStatus.script_ready
     # frames ✓
     hero_required = _hero_step_required(project)
@@ -493,6 +492,22 @@ async def recompute_status(
             old.value,
             new.value,
         )
+
+    # Последовательный пайплайн: из *_ready не прыгаем вперёд по stale данным.
+    # Вперёд двигает только шаг / auto_advance (plan_ready → scripting и т.д.).
+    if (
+        _ord(new) > _ord(old)
+        and old.value.endswith("_ready")
+        and new.value.endswith("_ready")
+    ):
+        logger.info(
+            "[#{}] {}: keep {} (no upgrade to {} — sequential)",
+            project.id,
+            log_prefix,
+            old.value,
+            new.value,
+        )
+        return old, old, False
 
     if old == new:
         return old, new, False

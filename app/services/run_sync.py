@@ -552,12 +552,18 @@ async def reset_nodes_from_step(
         start_idx = NODE_TYPE_ORDER.index(node_type)
     except ValueError:
         start_idx = 0
+    try:
+        enrich_idx = NODE_TYPE_ORDER.index("enrich_1")
+    except ValueError:
+        enrich_idx = start_idx
+    # excel_gpt на канвасе вместо enrich_* — сбрасываем вместе с ранними шагами.
+    reset_excel = step_code == "excel_gpt" or start_idx <= enrich_idx
     for nr in run.node_runs:
         if nr.node_type in NODE_TYPE_ORDER:
             idx = NODE_TYPE_ORDER.index(nr.node_type)
             if idx >= start_idx:
                 reset_node_to_pending(nr, project_id=project_id, initiator="api_reset")
-        elif nr.node_type == EXCEL_GPT_NODE_TYPE and step_code == "excel_gpt":
+        elif nr.node_type == EXCEL_GPT_NODE_TYPE and reset_excel:
             reset_node_to_pending(nr, project_id=project_id, initiator="api_reset")
     await session.flush()
 
