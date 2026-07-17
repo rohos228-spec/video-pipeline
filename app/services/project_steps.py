@@ -73,22 +73,8 @@ async def start_step(
             "Остановите ⏹ или дождитесь завершения."
         )
 
-    # Порядок пайплайна: нельзя прыгать через ноды (img до split и т.п.).
-    from app.orchestrator.graph.planner import assert_step_allowed_by_graph
-    from app.services.step_data_guard import can_enter_running
-
-    await assert_step_allowed_by_graph(session, project, step_code)
-
-    # Для excel_gpt running_status зависит от slot — data-guard ниже, после slot resolve.
-    if step_code != "excel_gpt":
-        ok, reason, _fix = await can_enter_running(
-            session, project, step.running_status
-        )
-        if not ok:
-            raise ValueError(
-                f"шаг «{step.title}» нельзя запустить: {reason} "
-                f"(статус проекта: {project.status.value})."
-            )
+    # Ручной старт: порядок нод и data-guard не блокируют запуск.
+    # Нехватка данных — warning в лог; воркер сам упадёт с понятной ошибкой.
 
     if step_code == "anim_pr":
         from sqlalchemy import select
@@ -229,11 +215,24 @@ async def start_step(
         running_status = running_status_for_slot(slot_index_from_node(node))
         meta["active_excel_gpt_node_key"] = nk
         project.meta = meta
-        ok, reason, _fix = await can_enter_running(session, project, running_status)
-        if not ok:
-            raise ValueError(
-                f"шаг «{step.title}» нельзя запустить: {reason} "
-                f"(статус проекта: {project.status.value})."
+        try:
+            from app.services.step_data_guard import can_enter_running
+
+            ok, reason, _fix = await can_enter_running(
+                session, project, running_status
+            )
+            if not ok:
+                logger.warning(
+                    "[#{}] start_step excel_gpt: data-guard soft — {} (status={})",
+                    project.id,
+                    reason,
+                    project.status.value,
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step excel_gpt: data-guard skipped",
+                project.id,
+                exc_info=True,
             )
     from app.services.run_sync import prepare_node_for_step_start
 
