@@ -57,8 +57,11 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
-import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
-import { nodeSupportsBlocksV2 } from "@/lib/prompt-builder/step-compose-map";
+import { NeweraBlocksConstructor } from "@/components/studio/newera-blocks-constructor";
+import {
+  composeStepIdForNode,
+  nodeSupportsBlocksV2,
+} from "@/lib/prompt-builder/step-compose-map";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
@@ -397,18 +400,27 @@ export function NodeStudio({
     activeSlot?.kind === "gpt" &&
     Boolean(promptStepCode) &&
     stepHasPromptVariants(promptStepCode);
+  const blocksComposeStepId = composeStepIdForNode(
+    nodeType,
+    promptStepCode,
+    nodeKey,
+    isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
+  );
   const supportsPromptConstructor =
     projectId != null &&
     Boolean(promptStepCode) &&
+    Boolean(blocksComposeStepId) &&
     nodeSupportsBlocksV2(
       nodeType,
       promptStepCode,
       nodeKey,
       isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
     );
-  const builderNodeType = isExcelGptNode(nodeType)
-    ? (promptStepCode ?? EXCEL_GPT_STEP_CODE)
-    : nodeType;
+  const blocksV2Enabled =
+    promptOverrides.use_blocks_v2 === true ||
+    (typeof promptOverrides.blocks === "object" &&
+      promptOverrides.blocks !== null &&
+      Object.keys(promptOverrides.blocks as Record<string, unknown>).length > 0);
 
   useEffect(() => {
     if (open) setPromptMode("classic");
@@ -745,16 +757,31 @@ export function NodeStudio({
                     promptMode === "constructor" &&
                     supportsPromptConstructor &&
                     projectId &&
-                    promptStepCode ? (
-                    <div className="min-h-[min(70vh,720px)] overflow-hidden rounded-xl border border-white/10">
-                      <PromptBuilderStudio
-                        key={`builder-${nodeKey}-${promptStepCode}`}
-                        projectId={projectId}
-                        nodeType={builderNodeType}
-                        stepCode={promptStepCode}
-                        fullscreen={false}
-                      />
-                    </div>
+                    promptStepCode &&
+                    blocksComposeStepId ? (
+                    <NeweraBlocksConstructor
+                      key={`newera-blocks-${nodeKey}-${blocksComposeStepId}`}
+                      projectId={projectId}
+                      stepId={blocksComposeStepId}
+                      promptOverrides={promptOverrides}
+                      blocksV2Enabled={Boolean(blocksV2Enabled)}
+                      promptStepCode={promptStepCode}
+                      slotId={activeSlot?.id}
+                      preferredFile={preferredFile}
+                      folderHint={
+                        legacyPromptFolder(promptStepCode) ??
+                        (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                          ? activeSlot.stepCode
+                          : (promptPaths.legacyDir ?? promptStepCode))
+                      }
+                      activeVariant={activeVariant}
+                      activeVariantSourceLabel={activeVariantSourceLabel}
+                      onActivateVariant={(variant) => activateVariant.mutate(variant)}
+                      activating={activateVariant.isPending}
+                      legacyDirLabel={
+                        promptPaths.legacyDir ?? promptStepCode ?? undefined
+                      }
+                    />
                   ) : showFilesPanel && promptStepCode ? (
                     <PromptFilesPanel
                       key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}

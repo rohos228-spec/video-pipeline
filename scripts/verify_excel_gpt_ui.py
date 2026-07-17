@@ -41,11 +41,24 @@ def main() -> None:
     ok("V-menu: excel + one Промт GPT per node (no constructor chip)")
 
     studio = (ROOT / "web/src/components/studio/node-studio.tsx").read_text(encoding="utf-8")
-    if "excelGptEnrichStepCode" not in studio or "PromptFilesPanel" not in studio:
-        fail("node-studio must open PromptFilesPanel with enrich folder stepCode")
+    if "PromptFilesPanel" not in studio:
+        fail("node-studio must keep classic PromptFilesPanel path")
+    if "NeweraBlocksConstructor" not in studio and "StepBlocksEditor" not in studio:
+        fail("node-studio constructor must use newera block prompts UI")
+    if "composeStepIdForNode" not in studio:
+        fail("node-studio must resolve blocks step via composeStepIdForNode")
     if "Конструктор промтов" not in studio or "Классический промт" not in studio:
         fail("node-studio must offer classic/constructor toggle in prompts tab")
-    ok("node-studio: classic/constructor toggle in PromptFilesPanel area")
+    ok("node-studio: classic files + newera constructor (blocks left/right)")
+
+    ctor = ROOT / "web/src/components/studio/newera-blocks-constructor.tsx"
+    if not ctor.is_file():
+        fail("missing newera-blocks-constructor.tsx")
+    ctor_txt = ctor.read_text(encoding="utf-8")
+    for needle in ("StepBlocksEditor", "BlocksWeightPanel", "BlocksV2Toggle"):
+        if needle not in ctor_txt:
+            fail(f"newera constructor missing {needle}")
+    ok("newera constructor stacks toggle + left blocks + right weights")
 
     vmenu = (ROOT / "web/src/components/canvas/node-v-menu.tsx").read_text(encoding="utf-8")
     if "resolvePromptSlots(nodeType, slots, nodeKey" not in vmenu:
