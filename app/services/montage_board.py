@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.orchestrator.steps.generate_images import (
     _XLSX_ROWS_PERSONS,
+    _artifact_ref_path,
     _find_ref_file_any,
+    _hero_legacy_ref,
     _parse_ref_ids,
     _resolve_plan_sheet,
 )
@@ -91,10 +93,70 @@ def _merged_plan_ids(ws, col: int, rows: tuple[int, ...]) -> list[str]:
     return merged
 
 
+def _resolve_character_file(
+    chars_dir: Path,
+    project_data_dir: Path,
+    ref_id: str,
+) -> Path | None:
+    """Файл персонажа: c01.png → legacy hero_N_v1_*.png."""
+    return _find_ref_file_any(chars_dir, ref_id) or _hero_legacy_ref(
+        project_data_dir, ref_id
+    )
+
+
+def _refresh_character_image_urls(
+    excel_by_frame: dict[int, dict[str, Any]],
+    *,
+    chars_dir: Path,
+    project_data_dir: Path,
+) -> None:
+    """Обновить image_url по диску.
+
+    Кэш Excel ключуется только mtime xlsx: если монтаж открыли до генерации
+    hero, в кэше остаются image_url=null. PNG появляются без смены xlsx —
+    поэтому пути резолвим на каждый запрос.
+    """
+    for ex in excel_by_frame.values():
+        refs = ex.get("character_refs")
+        if not refs:
+            continue
+        for ref in refs:
+            rid = str(ref.get("id") or "").strip()
+            if not rid:
+                ref["image_url"] = None
+                continue
+            ref["image_url"] = _preview_url(
+                _resolve_character_file(chars_dir, project_data_dir, rid)
+            )
+
+
+async def _fill_missing_character_images_from_artifacts(
+    session: AsyncSession,
+    project_id: int,
+    excel_by_frame: dict[int, dict[str, Any]],
+) -> None:
+    """Fallback: hero_reference из БД, если файла нет в characters/."""
+    for ex in excel_by_frame.values():
+        refs = ex.get("character_refs")
+        if not refs:
+            continue
+        for ref in refs:
+            if ref.get("image_url"):
+                continue
+            rid = str(ref.get("id") or "").strip()
+            if not rid:
+                continue
+            path = await _artifact_ref_path(
+                session, project_id, rid, kind="character"
+            )
+            ref["image_url"] = _preview_url(path)
+
+
 def _read_plan_excel_cells_uncached(
     xlsx_path: Path,
     *,
     chars_dir: Path,
+    project_data_dir: Path,
 ) -> dict[int, dict[str, Any]]:
     """frame_number → {voiceover_excel, characters, character_refs}."""
     out: dict[int, dict[str, Any]] = {}
@@ -121,7 +183,9 @@ def _read_plan_excel_cells_uncached(
                 continue
             character_refs: list[dict[str, str | None]] = []
             for ref_id in person_ids:
-                image_path = _find_ref_file_any(chars_dir, ref_id)
+                image_path = _resolve_character_file(
+                    chars_dir, project_data_dir, ref_id
+                )
                 character_refs.append(
                     {
                         "id": ref_id,
@@ -143,11 +207,19 @@ def _read_plan_excel_cells(
     xlsx_path: Path,
     *,
     chars_dir: Path,
+    project_data_dir: Path,
 ) -> dict[int, dict[str, Any]]:
-    return get_cached_plan_excel_cells(
+    data = get_cached_plan_excel_cells(
         xlsx_path,
-        loader=lambda p: _read_plan_excel_cells_uncached(p, chars_dir=chars_dir),
+        loader=lambda p: _read_plan_excel_cells_uncached(
+            p, chars_dir=chars_dir, project_data_dir=project_data_dir
+        ),
     )
+    # Даже на cache-hit — пересчитать фото с диска (xlsx mtime мог не меняться).
+    _refresh_character_image_urls(
+        data, chars_dir=chars_dir, project_data_dir=project_data_dir
+    )
+    return data
 
 
 def _scene_use_durations(
@@ -177,7 +249,14 @@ async def build_montage_board(
 
     xlsx_path = project.data_dir / "project.xlsx"
     chars_dir = project.data_dir / "characters"
-    excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
+    excel_by_frame = _read_plan_excel_cells(
+        xlsx_path,
+        chars_dir=chars_dir,
+        project_data_dir=project.data_dir,
+    )
+    await _fill_missing_character_images_from_artifacts(
+        session, project.id, excel_by_frame
+    )
     shot2_by = get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
