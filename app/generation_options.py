@@ -208,28 +208,23 @@ OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID = "720p"
 OUTSEE_VIDEO_FALLBACK_ASPECT_LABEL = "Исходное"
 
 
-def outsee_video_fallback_kwargs(
-    current: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Параметры outsee.generate_video для запасной модели."""
+def outsee_video_fallback_fields() -> dict[str, str]:
+    """Параметры outsee.generate_video для запасной модели (без merge-логики)."""
     vg = VIDEO_GENERATORS_BY_ID[OUTSEE_VIDEO_FALLBACK_GENERATOR_ID]
     vr = VIDEO_RESOLUTIONS_BY_ID[OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID]
-    out = {
+    return {
         "model_slug": vg.outsee_slug,
         "resolution": vr.outsee_slug,
         "aspect_ratio": OUTSEE_VIDEO_FALLBACK_ASPECT_LABEL,
     }
-    if current:
-        base_slug = str(current.get("model_slug") or "")
-        base_res = str(current.get("resolution") or "")
-        base_ar = str(current.get("aspect_ratio") or "")
-        if (
-            base_slug == out["model_slug"]
-            and base_res == out["resolution"]
-            and base_ar == out["aspect_ratio"]
-        ):
-            return dict(current)
-    return out
+
+
+def outsee_video_fallback_kwargs(
+    current: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Совместимость: те же поля, что `outsee_video_fallback_fields()`."""
+    del current
+    return outsee_video_fallback_fields()
 
 
 # ---- Дефолты (используются если юзер ещё не прошёл мастер) -----------------

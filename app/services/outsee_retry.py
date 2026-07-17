@@ -71,7 +71,7 @@ from app.bots.outsee import (
 from app.generation_options import (
     OUTSEE_PROMPT_MAX_CHARS,
     OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES,
-    outsee_video_fallback_kwargs,
+    outsee_video_fallback_fields,
     prepend_gen_id,
     strip_prompt_id_lines,
 )
@@ -425,21 +425,26 @@ def _retry_err_label(e: OutseeImageError) -> str:
     return outsee_error_kind_label(outsee_error_kind(e))
 
 
-def _merge_video_fallback_kwargs(
-    kwargs: dict[str, Any],
-    *,
-    gen_failures: int,
-) -> dict[str, Any]:
-    """После `OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES` сбоев — Kling 2.5 / 720p / Исходное."""
-    if gen_failures < OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES:
-        return dict(kwargs)
+def _apply_video_fallback_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Kling 2.5 / 720p / «Исходное» поверх настроек проекта."""
     merged = dict(kwargs)
-    merged.update(outsee_video_fallback_kwargs(kwargs))
+    merged.update(outsee_video_fallback_fields())
     return merged
 
 
+def _should_use_video_fallback(*, round_idx: int, gen_failures: int) -> bool:
+    """После исчерпания раунда «original» (3 попытки) — всегда fallback.
+
+    Дополнительно: если счётчик сбоев дошёл до порога внутри раунда — тоже
+    fallback (на случай max_attempts_per_prompt > 3).
+    """
+    if round_idx > 0:
+        return True
+    return gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
+
+
 def _video_fallback_active(kwargs: dict[str, Any]) -> bool:
-    fb = outsee_video_fallback_kwargs()
+    fb = outsee_video_fallback_fields()
     return (
         str(kwargs.get("model_slug") or "") == fb["model_slug"]
         and str(kwargs.get("resolution") or "") == fb["resolution"]
@@ -637,11 +642,10 @@ async def generate_video_with_retries(
 ) -> GenerationResult:
     """Аналог `generate_image_with_retries` для видео-генерации.
 
-    1) До 3 попыток с моделью проекта.
-    2) После 3 сбоев генерации — fallback: Kling 2.5 Turbo, 720p,
+    1) До 3 попыток с моделью проекта (раунд «original»).
+    2) Со 2-го раунда (GPT-rewrite / fallback) — Kling 2.5 Turbo, 720p,
        соотношение «Исходное» (по стартовому кадру).
-    3) Опционально GPT-rewrite промта + ещё до 3 попыток (уже с fallback,
-       если порог сбоев достигнут).
+    3) Если в одном раунде >3 попыток — fallback также после 3 сбоев.
 
     `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
     при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
@@ -663,24 +667,35 @@ async def generate_video_with_retries(
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
-            attempt_kwargs = _merge_video_fallback_kwargs(
-                kwargs, gen_failures=gen_failures
+            use_fallback = _should_use_video_fallback(
+                round_idx=round_idx, gen_failures=gen_failures
             )
-            if (
-                gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
-                and _video_fallback_active(attempt_kwargs)
-                and not fallback_logged
-            ):
-                fb = outsee_video_fallback_kwargs()
+            attempt_kwargs = (
+                _apply_video_fallback_kwargs(kwargs)
+                if use_fallback
+                else dict(kwargs)
+            )
+            if use_fallback and not fallback_logged:
+                fb = outsee_video_fallback_fields()
                 logger.info(
-                    "outsee_retry: после {} сбоев — fallback video: model={} "
-                    "resolution={} aspect={}",
+                    "outsee_retry: fallback video (round={}, failures={}): "
+                    "model={} resolution={} aspect={}",
+                    round_label,
                     gen_failures,
                     fb["model_slug"],
                     fb["resolution"],
                     fb["aspect_ratio"],
                 )
                 fallback_logged = True
+            logger.info(
+                "outsee_retry: video [{}] попытка {}/{} model={} res={} aspect={}",
+                round_label,
+                attempt,
+                max_attempts_per_prompt,
+                attempt_kwargs.get("model_slug"),
+                attempt_kwargs.get("resolution"),
+                attempt_kwargs.get("aspect_ratio"),
+            )
             if uniquify_prompt_id:
                 attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
                     base_prompt_id, round_idx, attempt
@@ -740,6 +755,7 @@ async def generate_video_with_retries(
                         attempt_kwargs.get("prompt_id_prefix") or "—",
                     )
                 last_err = e
+                gen_failures += 1
                 if attempt < max_attempts_per_prompt:
                     await sleep_cancellable(2.0, project_id)
             except OutseeImageError as e:
