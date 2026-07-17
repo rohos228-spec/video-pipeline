@@ -314,6 +314,13 @@ export function NodeStudio({
         return Promise.reject(new Error("no step"));
       }
       const meta = withSlotVariant(metaRecord, nodeKey, activeSlot.id, variant);
+      // excel_gpt: SSoT — meta.prompt_slot_variants[nodeKey]. Не пишем в
+      // prompt_overrides["excel_gpt"], иначе все ноды «Работа с GPT» шлют
+      // один и тот же последний выбранный файл.
+      if (isExcelGptNode(nodeType) && activeSlot.kind === "gpt") {
+        await api.patchProject(projectId, { meta });
+        return;
+      }
       const prompt_overrides = {
         ...((project.data?.prompt_overrides || {}) as Record<string, unknown>),
         [promptStepCode]: variant,

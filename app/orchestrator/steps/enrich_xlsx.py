@@ -77,7 +77,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         return
     running_status, ready_status, legacy_step_code = _SLOT_MAP[slot_idx]
+    from app.services.excel_gpt_node import resolve_excel_gpt_node_key_for_slot
+
     node_key = active_node_key(project)
+    if not node_key:
+        node_key = resolve_excel_gpt_node_key_for_slot(project, slot_idx)
     if not node_key:
         from app.orchestrator.graph.planner import load_graph_for_project
         from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE, slot_index_from_node
@@ -86,12 +90,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         for nid, n in graph._by_id.items():
             if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE and slot_index_from_node(n) == slot_idx:
                 node_key = nid
-                meta = dict(project.meta or {})
-                meta["active_excel_gpt_node_key"] = nid
-                project.meta = meta
-                await session.flush()
                 break
+    if node_key:
+        meta = dict(project.meta or {})
+        if meta.get("active_excel_gpt_node_key") != node_key:
+            meta["active_excel_gpt_node_key"] = node_key
+            project.meta = meta
+            await session.flush()
     prompt_step_code = EXCEL_GPT_STEP_CODE
+    # Слот «main» в Node Studio → meta.prompt_slot_variants[node_key]["main"].
+    # Без node_key все excel_gpt брали один prompt_overrides["excel_gpt"].
+    prompt_slot_id = "main"
     logger.info(
         "[#{}] enrich_xlsx slot={} node={} prompt={} starting",
         project.id,
@@ -118,7 +127,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     try:
         variant, src_path, master, prompt_source = read_resolved_project_prompt(
-            project, prompt_step_code
+            project,
+            prompt_step_code,
+            node_key=node_key,
+            slot_id=prompt_slot_id if node_key else None,
         )
     except FileNotFoundError:
         variant = "default"
@@ -136,10 +148,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     else:
         logger.info(
-            "[#{}] enrich_xlsx slot={}: активный промт variant={!r} source={} "
-            "path={} ({} симв) overrides={!r}",
+            "[#{}] enrich_xlsx slot={} node={!r}: активный промт variant={!r} "
+            "source={} path={} ({} симв) overrides={!r}",
             project.id,
             slot_idx,
+            node_key,
             variant,
             prompt_source,
             src_path,
