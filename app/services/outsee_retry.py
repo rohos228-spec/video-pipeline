@@ -36,6 +36,9 @@ Caller'ы:
   - app/orchestrator/steps/generate_hero.py
   - app/orchestrator/steps/generate_images.py
   - app/orchestrator/steps/generate_videos.py
+
+Видео дополнительно: после первой серии из 3 ошибок — fallback на
+Kling 2.5 Turbo 720p с тем же aspect_ratio (см. generate_video_with_retries).
 """
 
 from __future__ import annotations
@@ -66,6 +69,8 @@ from app.bots.outsee import (
 )
 from app.generation_options import (
     OUTSEE_PROMPT_MAX_CHARS,
+    VIDEO_ERROR_FALLBACK_MODEL_SLUG,
+    VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG,
     prepend_gen_id,
     strip_prompt_id_lines,
 )
@@ -595,6 +600,28 @@ async def generate_image_with_retries(
     raise last_err
 
 
+def _norm_opt_slug(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def is_video_kling_720_fallback(kwargs: dict[str, Any]) -> bool:
+    """Уже Kling 2.5 Turbo + 720p — второй fallback не нужен."""
+    return (
+        _norm_opt_slug(kwargs.get("model_slug"))
+        == _norm_opt_slug(VIDEO_ERROR_FALLBACK_MODEL_SLUG)
+        and _norm_opt_slug(kwargs.get("resolution"))
+        == _norm_opt_slug(VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG)
+    )
+
+
+def apply_video_kling_720_fallback(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Сменить модель/резолюцию; aspect_ratio и прочие kwargs без изменений."""
+    out = dict(kwargs)
+    out["model_slug"] = VIDEO_ERROR_FALLBACK_MODEL_SLUG
+    out["resolution"] = VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG
+    return out
+
+
 async def generate_video_with_retries(
     outsee: OutseeBot,
     gpt: ChatGPTBot | None,
@@ -607,21 +634,26 @@ async def generate_video_with_retries(
     uniquify_prompt_id: bool = False,
     **kwargs: Any,
 ) -> GenerationResult:
-    """Аналог `generate_image_with_retries` для видео-генерации.
-    Логика идентична: 3 попытки → GPT-rewrite → ещё 3 попытки.
+    """Видео: 3 попытки → Kling 2.5 Turbo 720p (тот же aspect) → GPT-rewrite → ещё 3.
+
+    После исчерпания первой серии ошибок переключаем ``model_slug`` /
+    ``resolution`` на Kling 2.5 Turbo + 720p, **не трогая** ``aspect_ratio``.
+    Если проект уже на этом fallback — сразу GPT-rewrite как раньше.
 
     `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
-    при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
-    переиспользуем тот же except-handler.
+    при ошибках UI-уровня, поэтому except-handler общий с image-path.
 
     По умолчанию `uniquify_prompt_id=False`: один `[ID: …]` на весь кадр.
-    (Устаревший `uniquify_prompt_id=True` добавлял суффиксы r1a2 — больше не
-    используется для картинок.)
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
+    kwargs_live = dict(kwargs)
+    already_fallback = is_video_kling_720_fallback(kwargs_live)
+
     rounds: list[str] = ["original"]
+    if not already_fallback:
+        rounds.append("kling_fallback")
     if gpt_rewrite and gpt is not None:
         rounds.append("rewritten")
 
@@ -630,7 +662,7 @@ async def generate_video_with_retries(
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
-            attempt_kwargs = dict(kwargs)
+            attempt_kwargs = dict(kwargs_live)
             if uniquify_prompt_id:
                 attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
                     base_prompt_id, round_idx, attempt
@@ -738,6 +770,30 @@ async def generate_video_with_retries(
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:
             break
+
+        next_label = rounds[round_idx + 1]
+
+        # После первой серии ошибок — Kling 2.5 Turbo 720p, aspect тот же.
+        if next_label == "kling_fallback" and not is_video_kling_720_fallback(
+            kwargs_live
+        ):
+            prev_model = kwargs_live.get("model_slug")
+            prev_res = kwargs_live.get("resolution")
+            kwargs_live = apply_video_kling_720_fallback(kwargs_live)
+            logger.warning(
+                "outsee.generate_video: после {} ошибок — fallback "
+                "Kling 2.5 Turbo 720p (было model={}, resolution={}, "
+                "aspect={})",
+                max_attempts_per_prompt,
+                prev_model,
+                prev_res,
+                kwargs_live.get("aspect_ratio"),
+            )
+            continue
+
+        if next_label != "rewritten":
+            continue
+
         if gpt is None:
             logger.warning(
                 "outsee.generate_video [{}]: GPT недоступен — rewrite пропущен",
@@ -745,8 +801,11 @@ async def generate_video_with_retries(
             )
             break
         logger.info(
-            "outsee.generate_video: GPT-rewrite после раунда «{}»",
+            "outsee.generate_video: GPT-rewrite после раунда «{}» "
+            "(model={}, resolution={})",
             round_label,
+            kwargs_live.get("model_slug"),
+            kwargs_live.get("resolution"),
         )
         rewritten = await _ask_gpt_to_rewrite(
             gpt,
@@ -757,9 +816,11 @@ async def generate_video_with_retries(
         )
         if not rewritten:
             logger.warning(
-                "outsee.generate_video: GPT-rewrite не вернул текст — выхожу"
+                "outsee.generate_video: GPT-rewrite не вернул текст — "
+                "продолжаю с текущим промтом на fallback-модели"
             )
-            break
+            # Не break: ещё один раунд с тем же промтом на Kling 720p.
+            continue
         current_prompt = rewritten
 
     if last_err is None:

@@ -157,8 +157,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
         # `gpt` — для GPT-rewrite внутри generate_video_with_retries:
-        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
-        # animation_prompt без триггеров модерации, потом ещё 3 попытки.
+        # 3 попытки → Kling 2.5 Turbo 720p (тот же aspect) → GPT-rewrite → ещё 3.
         gpt = ChatGPTBot(bs)
 
         skipped = 0
@@ -255,8 +254,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # Relax (Безлимит): None = не задан → включаем по умолчанию.
                 # False = пользователь явно отключил.
                 video_relax = project.video_relax is not False
-                # До 3 попыток с исходным animation_prompt; если все 3 провалились
-                # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
+                # 3× исходная модель → Kling 2.5 Turbo 720p → GPT-rewrite → ещё 3×.
                 result = await generate_video_with_retries(
                     outsee, gpt,
                     prompt=fr.animation_prompt,

@@ -103,3 +103,80 @@ async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
     # 2× original (второй без лишних retry) + 1× rewritten
     assert len(attempts) == 3
     assert rewrite_calls
+
+
+@pytest.mark.asyncio
+async def test_generate_video_switches_to_kling_720_after_3_errors(monkeypatch) -> None:
+    """После 3 ошибок исходной модели — Kling 2.5 Turbo 720p, aspect тот же."""
+    from pathlib import Path
+
+    from app.bots.outsee import GenerationResult, OutseeImageError
+    from app.generation_options import (
+        VIDEO_ERROR_FALLBACK_MODEL_SLUG,
+        VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG,
+    )
+
+    calls: list[dict] = []
+
+    class FakeOutsee:
+        async def generate_video(self, prompt: str, out_path, **kwargs):
+            calls.append(
+                {
+                    "model_slug": kwargs.get("model_slug"),
+                    "resolution": kwargs.get("resolution"),
+                    "aspect_ratio": kwargs.get("aspect_ratio"),
+                }
+            )
+            if len(calls) <= 3:
+                raise OutseeImageError("outsee video: timeout", context={"kind": "timeout"})
+            return GenerationResult(
+                file_path=Path(out_path),
+                raw_url="https://example.com/v.mp4",
+                gen_id="abc",
+            )
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    async def fake_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", fake_sleep)
+
+    result = await mod.generate_video_with_retries(
+        FakeOutsee(),
+        gpt=None,
+        prompt="camera pans across the dark hall",
+        out_path=Path("out.mp4"),
+        max_attempts_per_prompt=3,
+        gpt_rewrite=False,
+        project_id=1,
+        model_slug="veo-3-fast",
+        resolution="1080p",
+        aspect_ratio="9:16",
+    )
+
+    assert result.file_path.name == "out.mp4"
+    assert len(calls) == 4
+    assert calls[0]["model_slug"] == "veo-3-fast"
+    assert calls[0]["resolution"] == "1080p"
+    assert calls[0]["aspect_ratio"] == "9:16"
+    assert calls[3]["model_slug"] == VIDEO_ERROR_FALLBACK_MODEL_SLUG
+    assert calls[3]["resolution"] == VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG
+    assert calls[3]["aspect_ratio"] == "9:16"
+
+
+def test_is_video_kling_720_fallback_helpers() -> None:
+    assert mod.is_video_kling_720_fallback(
+        {"model_slug": "kling-2-5-turbo", "resolution": "720p"}
+    )
+    assert not mod.is_video_kling_720_fallback(
+        {"model_slug": "kling-2-5-turbo", "resolution": "1080p"}
+    )
+    applied = mod.apply_video_kling_720_fallback(
+        {"model_slug": "veo-3-fast", "resolution": "1080p", "aspect_ratio": "16:9"}
+    )
+    assert applied["model_slug"] == "kling-2-5-turbo"
+    assert applied["resolution"] == "720p"
+    assert applied["aspect_ratio"] == "16:9"
