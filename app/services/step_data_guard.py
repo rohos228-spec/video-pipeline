@@ -102,8 +102,18 @@ async def can_enter_running(
     need_frames = await _frames_with_voiceover(session, project)
 
     if target is ProjectStatus.generating_images:
-        # Промпты картинок должны быть хотя бы на части сцен (или статус ≥ image_prompts_ready).
-        if status_order(project.status) < status_order(ProjectStatus.image_prompts_ready):
+        # Нельзя заходить в img из ранних статусов только из‑за leftover
+        # image_prompt (старый прогон) — иначе auto_advance прыгает через
+        # script/split/hero/... сразу в генерацию картинок.
+        if status_order(project.status) >= status_order(
+            ProjectStatus.image_prompts_ready
+        ):
+            return True, "", None
+        # Soft resume: статус чуть отстаёт (ещё generating_image_prompts),
+        # но промпты на кадрах уже есть.
+        if status_order(project.status) >= status_order(
+            ProjectStatus.generating_image_prompts
+        ):
             frames = (
                 await session.execute(
                     select(Frame)
@@ -116,13 +126,13 @@ async def can_enter_running(
                 for fr in frames
                 if (getattr(fr, "image_prompt", None) or "").strip()
             )
-            if with_prompt == 0:
-                return (
-                    False,
-                    "нет image prompts (сначала img_pr)",
-                    ProjectStatus.frames_ready,
-                )
-        return True, "", None
+            if with_prompt > 0:
+                return True, "", None
+        return (
+            False,
+            "нет image prompts (сначала img_pr)",
+            ProjectStatus.generating_image_prompts,
+        )
 
     if target is ProjectStatus.generating_animation_prompts:
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
@@ -196,6 +206,7 @@ async def clamp_status_to_data(
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
     from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_state import clear_stale_downstream_meta
 
     if is_user_stopped(project):
         return None
@@ -204,6 +215,7 @@ async def clamp_status_to_data(
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.
     if is_running_status(project.status):
         return None
+    clear_stale_downstream_meta(project)
     actual = await compute_actual_status(session, project)
     if status_order(project.status) > status_order(actual):
         old = project.status

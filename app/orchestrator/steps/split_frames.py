@@ -24,9 +24,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             .order_by(Frame.number)
         )
     ).scalars().all()
-    if len(existing_frames) >= 2:
+    meta = dict(project.meta or {})
+    # Нельзя считать разбивку готовой только из‑за stale Frame с прошлого
+    # прогона: иначе UI/auto_advance помечают split ✅ и прыгают дальше.
+    # Короткий путь — только если этот прогон уже пометил split_completed.
+    if len(existing_frames) >= 2 and meta.get("split_completed"):
         logger.info(
-            "[#{}] split_frames: в БД уже {} кадров — пропуск GPT",
+            "[#{}] split_frames: split_completed + {} кадров — пропуск GPT",
             project.id,
             len(existing_frames),
         )
@@ -55,6 +59,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             "Проверь: строка 49 листа «план», колонки C..N."
         )
 
+    meta = dict(project.meta or {})
+    # Новый успешный split сбрасывает stale excel_gpt completion с прошлого круга.
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+    ):
+        meta.pop(key, None)
+    meta["split_completed"] = True
+    project.meta = meta
     project.status = ProjectStatus.frames_ready
     await session.flush()
     logger.info("[#{}] split_frames: {} кадров из xlsx", project.id, len(frames))

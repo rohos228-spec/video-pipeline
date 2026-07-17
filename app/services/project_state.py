@@ -115,6 +115,81 @@ def _enrich_ready_from_meta(project: Project) -> ProjectStatus | None:
     return by_slot.get(max(slots))
 
 
+def _status_ord(status: ProjectStatus | None) -> int:
+    from app.telegram.menu import status_order
+
+    if status is None:
+        return status_order(ProjectStatus.new)
+    return status_order(status)
+
+
+def clear_stale_downstream_meta(project: Project) -> list[str]:
+    """Сбросить meta-флаги downstream, если статус ещё до frames_ready.
+
+    Stale ``enrich_completed_slots`` / ``excel_gpt_completed_keys`` иначе
+    заставляют ``compute_actual_status`` прыгнуть в enrich_N_ready и
+    пропустить разбивку + первые ноды «Работа с GPT».
+    """
+    cur = getattr(project, "status", None)
+    if _status_ord(cur) >= _status_ord(ProjectStatus.frames_ready):
+        return []
+    meta = dict(project.meta or {})
+    cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            cleared.append(key)
+    if cleared:
+        project.meta = meta
+    return cleared
+
+
+async def _split_noderun_done(session, project: Project) -> bool | None:
+    """True/False если есть NodeRun для split; None — FSM ещё нет."""
+    from app.models import NodeRun, NodeRunStatus, WorkflowRun
+
+    try:
+        run = (
+            await session.execute(
+                select(WorkflowRun).where(WorkflowRun.project_id == project.id)
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — mock-сессии в unit-тестах
+        return None
+    if run is None or not isinstance(run, WorkflowRun):
+        return None
+    try:
+        rows = (
+            await session.execute(
+                select(NodeRun).where(
+                    NodeRun.workflow_run_id == run.id,
+                    NodeRun.node_type == "split",
+                )
+            )
+        ).scalars().all()
+    except Exception:  # noqa: BLE001
+        return None
+    real = [nr for nr in rows if isinstance(nr, NodeRun)]
+    if not real:
+        return None
+    return any(nr.status is NodeRunStatus.done for nr in real)
+
+
+def _enrich_meta_allowed_for_status(project: Project) -> bool:
+    """meta.enrich_completed_slots — только сохранить уже достигнутый enrich.
+
+    Нельзя поднимать frames_ready/script_ready → enrich_N_ready по stale meta:
+    auto_advance тогда стартует excel_gpt #3, минуя split и первые GPT-ноды.
+    """
+    cur = getattr(project, "status", None)
+    return _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
+
+
 def _excel_hero_expected_count(project: Project) -> int:
     """Сколько персонажей в meta.excel_hero (лист «Персонажи»)."""
     meta = project.meta if isinstance(project.meta, dict) else {}
@@ -253,6 +328,17 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # script ✓
     if fr_total == 0:
         return ProjectStatus.script_ready
+    # Кадры в БД есть, но split ещё не подтверждён — не поднимаем status
+    # выше script_ready (stale frames с прошлого прогона иначе помечают
+    # разбивку ✅ и пропускают реальный split).
+    if _status_ord(getattr(project, "status", None)) < _status_ord(
+        ProjectStatus.frames_ready
+    ):
+        split_done = await _split_noderun_done(session, project)
+        meta_now = project.meta if isinstance(project.meta, dict) else {}
+        split_flag = bool(meta_now.get("split_completed"))
+        if split_done is False or (split_done is None and not split_flag):
+            return ProjectStatus.script_ready
     # frames ✓
     hero_required = _hero_step_required(project)
     if hero_required:
@@ -274,10 +360,12 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # Excel-hero / items / enrich — только пока нет image_prompt на всех кадрах.
     # Иначе recompute откатывал image_prompts_ready → hero_ready при частичном hero.
     if fr_with_img_prompt < fr_total:
-        # Зафиксированные enrich-слоты важнее частичного excel-hero.
-        enrich_st = _enrich_ready_from_meta(project)
-        if enrich_st is not None:
-            return enrich_st
+        # Зафиксированные enrich-слоты важнее частичного excel-hero —
+        # но только если проект уже дошёл до frames_ready (не stale meta).
+        if _enrich_meta_allowed_for_status(project):
+            enrich_st = _enrich_ready_from_meta(project)
+            if enrich_st is not None:
+                return enrich_st
         if hero_required:
             n_excel = _excel_hero_expected_count(project)
             if n_excel > 0:
@@ -344,6 +432,17 @@ async def recompute_status(
 
     if is_user_stopped(project):
         return old, old, False
+
+    stale_cleared = clear_stale_downstream_meta(project)
+    if stale_cleared:
+        from loguru import logger as _logger
+
+        _logger.info(
+            "[#{}] {}: cleared stale meta before compute: {}",
+            project.id,
+            log_prefix,
+            stale_cleared,
+        )
 
     new = await compute_actual_status(session, project)
     from app.telegram.menu import status_order as _ord
