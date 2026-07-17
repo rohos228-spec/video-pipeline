@@ -120,8 +120,12 @@ def save_node_xlsx_snapshot(
         shutil.copy2(after_path, dest)
         saved_after = dest
 
+    # produce (plan/split/excel_gpt/…): на входе старый Excel, на выходе
+    # обновлённый — в ноде показываем ТОЛЬКО обновлённый (after).
+    # before храним для истории, но не подставляем в display.
+    # consume (hero и т.п.): нода только читала файл — показываем его.
     if role == "produce":
-        display = saved_after or saved_before
+        display = saved_after
     else:
         display = saved_before or saved_after
 
@@ -212,17 +216,54 @@ def resolve_display_xlsx(
     *,
     node_key: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """Путь к xlsx для превью ноды + meta-инфо (или live project.xlsx)."""
+    """Путь к xlsx для превью ноды + meta-инфо (или live project.xlsx).
+
+    Ноды-обновлятели (role=produce) → after.xlsx (обновлённый выход).
+    Ноды-читатели (role=consume) → before.xlsx (использованный вход).
+    """
     live = project.data_dir / "project.xlsx"
     info = node_xlsx_result(project, node_key) or {}
+    role = str(info.get("role") or "")
+
+    # Явный displayPath из meta — но для produce игнорируем, если это before.
     display = _abs(project, str(info.get("displayPath") or "") or None)
     if display is not None:
-        return display, {**info, "resolved": "snapshot"}
-    # Fallback: after/before на диске даже если meta потеряна.
+        if role == "produce" and display.name == _BEFORE:
+            display = None
+        else:
+            return display, {**info, "resolved": "snapshot"}
+
     if node_key:
         d = snapshot_dir(project, node_key)
-        for name in (_AFTER, _BEFORE):
-            cand = d / name
-            if cand.is_file():
-                return cand, {**info, "resolved": "snapshot_file", "displayPath": _rel(project, cand)}
+        after = d / _AFTER
+        before = d / _BEFORE
+        if role == "produce" or (not role and after.is_file()):
+            if after.is_file():
+                return after, {
+                    **info,
+                    "role": role or "produce",
+                    "resolved": "snapshot_file",
+                    "displayPath": _rel(project, after),
+                }
+            # produce без after — не показываем старый before, лучше live
+            return live, {
+                **info,
+                "role": role or "produce",
+                "resolved": "live",
+                "source": "project_xlsx",
+            }
+        if before.is_file():
+            return before, {
+                **info,
+                "role": role or "consume",
+                "resolved": "snapshot_file",
+                "displayPath": _rel(project, before),
+            }
+        if after.is_file():
+            return after, {
+                **info,
+                "resolved": "snapshot_file",
+                "displayPath": _rel(project, after),
+            }
+
     return live, {"resolved": "live", "role": info.get("role"), "source": "project_xlsx"}

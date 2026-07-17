@@ -103,4 +103,26 @@ def test_record_produce_for_plan_keys(project: Project) -> None:
     )
     path, _ = resolve_display_xlsx(project, node_key="n_plan")
     assert path.is_file()
+    assert path.name == "after.xlsx"
     assert "xlsx_snapshots" in str(path)
+
+
+def test_produce_never_displays_before_as_fallback(project: Project) -> None:
+    """Если after пропал — produce не должен показывать старый before."""
+    before = project.data_dir / "old.xlsx"
+    after = project.data_dir / "project.xlsx"
+    _write_xlsx(before, "OLD")
+    _write_xlsx(after, "NEW")
+    save_node_xlsx_snapshot(
+        project,
+        "n_plan",
+        role="produce",
+        before_path=before,
+        after_path=after,
+    )
+    (snapshot_dir(project, "n_plan") / "after.xlsx").unlink()
+    # meta.displayPath ещё указывает на after — файл пропал → live
+    path, info = resolve_display_xlsx(project, node_key="n_plan")
+    assert path == project.data_dir / "project.xlsx"
+    assert info["resolved"] == "live"
+    assert path.name != "before.xlsx"

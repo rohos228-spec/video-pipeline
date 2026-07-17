@@ -55,13 +55,14 @@ export function NodeVMenuExcelPreview({
   const hasFile = sheets.length > 0;
   const startRow = 1;
   const xlsxSource = sheetsMeta.data?.xlsx_source;
+  // produce = нода обновила Excel → показываем выход (after), не вход.
   const sourceLabel =
     xlsxSource?.resolved === "live"
       ? "актуальный project.xlsx"
       : xlsxSource?.role === "consume"
-        ? "использованный Excel"
+        ? "использованный на входе"
         : xlsxSource?.role === "produce"
-          ? "результат ноды"
+          ? "обновлённый (выход ноды)"
           : nodeKey
             ? "снимок ноды"
             : "project.xlsx";
