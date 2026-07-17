@@ -237,14 +237,15 @@ function Invoke-StudioStart {
 }
 
 function Invoke-StudioGitStash {
+    # Returns stash ref (e.g. stash@{0}) when a stash was created; otherwise $null.
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-StudioMsg "ОШИБКА: git не найден в PATH." "Red"
-        return $false
+        return $null
     }
     $status = git -C $Root status --porcelain 2>&1
     if (-not $status) {
         Write-StudioMsg "Локальных изменений нет — stash не нужен." "Gray"
-        return $true
+        return $null
     }
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
@@ -253,10 +254,48 @@ function Invoke-StudioGitStash {
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: git stash не удался. Продолжаю обновление." "Yellow"
-    } else {
-        Write-StudioMsg "OK: stash создан. Восстановить: git stash list / git stash pop" "Green"
+        return $null
     }
-    return $true
+    Write-StudioMsg "OK: stash создан (stash@{0})." "Green"
+    return 'stash@{0}'
+}
+
+function Invoke-StudioReturnPromptEditsFromStash {
+    # После reset --hard код берётся с origin, но локальные правки в prompts/
+    # уже лежат в только что созданном stash — вернуть ТОЛЬКО эти пути.
+    # Без копий в data/, без overlay, без startup-recover.
+    param([string]$StashRef)
+    if ([string]::IsNullOrWhiteSpace($StashRef)) { return }
+
+    Write-StudioMsg "==> Возвращаю локальные правки prompts/ из $StashRef ..." "Cyan"
+    $count = 0
+
+    $tracked = @(
+        git -C $Root stash show --name-only $StashRef 2>$null |
+            Where-Object { $_ -and ($_ -replace '\\', '/') -match '^prompts/' }
+    )
+    foreach ($rel in $tracked) {
+        git -C $Root checkout $StashRef -- $rel 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $count++ }
+    }
+
+    git -C $Root rev-parse --verify "$StashRef^3" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $untracked = @(git -C $Root ls-tree -r --name-only "$StashRef^3" -- prompts 2>$null)
+        foreach ($rel in $untracked) {
+            if (-not $rel) { continue }
+            $norm = $rel -replace '\\', '/'
+            if ($norm -notmatch '^prompts/') { continue }
+            git -C $Root checkout "$StashRef^3" -- $rel 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $count++ }
+        }
+    }
+
+    if ($count -gt 0) {
+        Write-StudioMsg "OK: возвращено локальных файлов prompts/: $count" "Green"
+    } else {
+        Write-StudioMsg "Локальных правок prompts/ в stash не было." "Gray"
+    }
 }
 
 function Invoke-StudioGitUpdate {
@@ -301,10 +340,11 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
-    Invoke-StudioGitStash | Out-Null
+    $stashRef = Invoke-StudioGitStash
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
     }
+    Invoke-StudioReturnPromptEditsFromStash -StashRef $stashRef
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
         & $py -c "import fastapi, sqlalchemy, playwright" 2>$null
