@@ -160,13 +160,23 @@ class WorkflowGraph:
             for key in self._flow_work_keys(skipped):
                 done.add(self.node_type(key))
         meta = project.meta if isinstance(project.meta, dict) else {}
-        for slot in meta.get("enrich_completed_slots") or []:
-            try:
-                idx = int(slot)
-            except (TypeError, ValueError):
-                continue
-            if 1 <= idx <= 5:
-                done.add(f"enrich_{idx}")
+        # enrich_completed_slots учитываем только после реального split
+        # (split_completed) или когда уже внутри enrich-зоны. Иначе stale
+        # meta на frames_ready пропускает excel_gpt #1/#2.
+        from app.telegram.menu import status_order as _status_ord
+
+        trust_enrich_meta = bool(meta.get("split_completed")) or (
+            status is not None
+            and _status_ord(status) >= _status_ord(ProjectStatus.enriching_1)
+        )
+        if trust_enrich_meta:
+            for slot in meta.get("enrich_completed_slots") or []:
+                try:
+                    idx = int(slot)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= idx <= 5:
+                    done.add(f"enrich_{idx}")
         return done
 
     def _is_ready(self, node_key: str, project: Project, skipped: set[str]) -> bool:

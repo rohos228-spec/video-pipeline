@@ -123,29 +123,55 @@ def _status_ord(status: ProjectStatus | None) -> int:
     return status_order(status)
 
 
-def clear_stale_downstream_meta(project: Project) -> list[str]:
-    """Сбросить meta-флаги downstream, если статус ещё до frames_ready.
+_DOWNSTREAM_META_KEYS: tuple[str, ...] = (
+    "enrich_completed_slots",
+    "excel_gpt_completed_keys",
+    "active_excel_gpt_node_key",
+    "split_completed",
+)
 
-    Stale ``enrich_completed_slots`` / ``excel_gpt_completed_keys`` иначе
-    заставляют ``compute_actual_status`` прыгнуть в enrich_N_ready и
-    пропустить разбивку + первые ноды «Работа с GPT».
-    """
-    cur = getattr(project, "status", None)
-    if _status_ord(cur) >= _status_ord(ProjectStatus.frames_ready):
-        return []
+
+def clear_pipeline_progress_meta(project: Project) -> list[str]:
+    """Принудительно сбросить флаги прогресса (ручной старт plan/script/split)."""
     meta = dict(project.meta or {})
     cleared: list[str] = []
-    for key in (
-        "enrich_completed_slots",
-        "excel_gpt_completed_keys",
-        "active_excel_gpt_node_key",
-        "split_completed",
-    ):
+    for key in _DOWNSTREAM_META_KEYS:
         if key in meta:
             meta.pop(key, None)
             cleared.append(key)
     if cleared:
         project.meta = meta
+    return cleared
+
+
+def clear_stale_downstream_meta(project: Project) -> list[str]:
+    """Сбросить stale meta, который ломает порядок нод.
+
+    1) Статус ещё до frames_ready — чистим всё downstream.
+    2) frames_ready без ``split_completed`` — кадры/enrich meta с прошлого
+       прогона; иначе planner прыгает сразу на excel_gpt #3.
+    """
+    cur = getattr(project, "status", None)
+    meta = dict(project.meta or {})
+    cleared: list[str] = []
+
+    if _status_ord(cur) < _status_ord(ProjectStatus.frames_ready):
+        return clear_pipeline_progress_meta(project)
+
+    if (
+        cur is ProjectStatus.frames_ready
+        and not meta.get("split_completed")
+    ):
+        for key in (
+            "enrich_completed_slots",
+            "excel_gpt_completed_keys",
+            "active_excel_gpt_node_key",
+        ):
+            if key in meta:
+                meta.pop(key, None)
+                cleared.append(key)
+        if cleared:
+            project.meta = meta
     return cleared
 
 

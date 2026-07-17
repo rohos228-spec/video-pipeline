@@ -471,14 +471,12 @@ export function NodeStudio({
                     size="sm"
                     variant="default"
                     onClick={() => runStep.mutate()}
-                    disabled={
-                      !projectId || runStep.isPending || nodeDisabled || generationRunning
-                    }
+                    disabled={!projectId || runStep.isPending || nodeDisabled}
                     title={
-                      generationRunning
-                        ? "Шаг уже выполняется — нажмите ⏹ Остановить"
-                        : nodeDisabled
-                          ? "Нода отключена в графе"
+                      nodeDisabled
+                        ? "Нода отключена в графе"
+                        : generationRunning
+                          ? "Другой шаг выполняется — будет остановлен и запущен этот"
                           : undefined
                     }
                   >

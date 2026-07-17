@@ -35,6 +35,38 @@ def list_step_codes() -> list[dict[str, str]]:
     return out
 
 
+async def _preempt_running_for_manual_start(
+    session: AsyncSession,
+    project: Project,
+    target_running: ProjectStatus,
+) -> None:
+    """Остановить текущий running-шаг без user_stop — сразу стартуем другой."""
+    if not is_running_status(project.status) or project.status is target_running:
+        return
+    from app.services.project_control import clear_user_stop_gate
+    from app.services.run_sync import stop_active_running_node
+    from app.services.step_cancel import clear_stop, request_stop
+    from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
+
+    prev = project.status
+    request_stop(project.id)
+    clear_xlsx_flow_locks(project.id)
+    await stop_active_running_node(session, project)
+    clear_stop(project.id)
+    clear_user_stop_gate(project)
+    step = step_by_running_status(prev)
+    if step is not None and step.requires is not None:
+        project.status = step.requires
+    await session.flush()
+    logger.info(
+        "[#{}] start_step: preempt {} → {} перед ручным стартом {}",
+        project.id,
+        prev.value,
+        project.status.value,
+        target_running.value,
+    )
+
+
 async def start_step(
     session: AsyncSession,
     project: Project,
@@ -46,6 +78,12 @@ async def start_step(
     explicit_ui_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    # Studio/явный UI: очередь и «уже running» не блокируют — preempt + старт.
+    if explicit_ui_start:
+        skip_queue_guard = True
+        from app.services.project_control import clear_user_stop_gate
+
+        clear_user_stop_gate(project)
     if not skip_queue_guard:
         from app.services.gen_queue import assert_can_start_in_queue
 
@@ -65,16 +103,40 @@ async def start_step(
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
     assert_not_factory_template_for_generation(project)
+
     if is_running_status(project.status) and project.status is not step.running_status:
-        other = step_by_running_status(project.status)
-        other_title = other.title if other is not None else project.status.value
-        raise ValueError(
-            f"сейчас выполняется «{other_title}» ({project.status.value}). "
-            "Остановите ⏹ или дождитесь завершения."
-        )
+        cur_step = step_by_running_status(project.status)
+        same_family = cur_step is not None and cur_step.code == step_code
+        if step_code == "excel_gpt":
+            from app.services.excel_gpt_node import slot_from_running_status
+
+            same_family = slot_from_running_status(project.status) is not None
+        if explicit_ui_start and not same_family:
+            await _preempt_running_for_manual_start(
+                session, project, step.running_status
+            )
+        elif not explicit_ui_start:
+            other_title = cur_step.title if cur_step is not None else project.status.value
+            raise ValueError(
+                f"сейчас выполняется «{other_title}» ({project.status.value}). "
+                "Остановите ⏹ или дождитесь завершения."
+            )
+
+    # Ручной старт ранних шагов: сброс stale enrich/split meta, иначе
+    # auto_advance/planner снова прыгнут через разбивку / GPT #1.
+    if explicit_ui_start and step_code in ("plan", "script", "split"):
+        from app.services.project_state import clear_pipeline_progress_meta
+
+        cleared = clear_pipeline_progress_meta(project)
+        if cleared:
+            logger.info(
+                "[#{}] start_step {}: cleared progress meta {}",
+                project.id,
+                step_code,
+                cleared,
+            )
 
     # Ручной старт: порядок нод и data-guard не блокируют запуск.
-    # Нехватка данных — warning в лог; воркер сам упадёт с понятной ошибкой.
 
     if step_code == "anim_pr":
         from sqlalchemy import select
