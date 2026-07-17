@@ -242,13 +242,14 @@ function Invoke-StudioPromptMigrate {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: .venv не найден — миграция промтов пропущена." "Yellow"
         return $false
     }
-    Write-StudioMsg "==> Миграция пользовательских промтов → data/prompts/ ..." "Cyan"
+    Write-StudioMsg "==> Миграция + seed промтов → data/prompts/ ..." "Cyan"
     & $py -m app.services.prompt_migrate 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: миграция промтов завершилась с ошибкой." "Yellow"
         return $false
     }
-    Write-StudioMsg "OK: пользовательские промты в data/prompts/ (git reset их не трогает)." "Green"
+    & $py -c "from app.services.prompt_paths import seed_bundled_prompts_into_data, count_prompt_overlay_files; print(seed_bundled_prompts_into_data()); print(count_prompt_overlay_files())" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    Write-StudioMsg "OK: промты в data/prompts/ (git reset их не трогает)." "Green"
     return $true
 }
 

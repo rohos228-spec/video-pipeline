@@ -159,9 +159,52 @@ def _is_user_prompt_file(rel: Path, *, disk_content: bytes) -> bool:
     return head != disk_content
 
 
+def seed_bundled_prompts_into_data(*, dry_run: bool = False) -> dict[str, int]:
+    """Заполнить пробелы: скопировать ВСЕ отсутствующие bundled-файлы в data/prompts/.
+
+    Не затирает уже существующие user-файлы. Нужен чтобы список в Studio
+    (и старый код со step_dir) никогда не видел пустую папку.
+    """
+    stats = {"scanned": 0, "seeded": 0, "skipped": 0}
+    if not BUNDLED_PROMPTS_ROOT.is_dir():
+        return stats
+    user_root = ensure_user_prompts_root()
+    for src in sorted(BUNDLED_PROMPTS_ROOT.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(BUNDLED_PROMPTS_ROOT)
+        if _is_history_path(rel):
+            continue
+        # Не сидим огромные/служебные деревья без нужды — только .md/.json/.txt
+        if src.suffix.lower() not in {".md", ".json", ".txt"}:
+            continue
+        stats["scanned"] += 1
+        dest = user_root / rel
+        if dest.is_file():
+            stats["skipped"] += 1
+            continue
+        if dry_run:
+            stats["seeded"] += 1
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            stats["seeded"] += 1
+        except OSError as e:
+            logger.warning("prompt_seed: cannot write {}: {}", dest, e)
+            stats["skipped"] += 1
+    if stats["seeded"]:
+        logger.info(
+            "prompt_seed: seeded {} missing file(s) into {}",
+            stats["seeded"],
+            user_root,
+        )
+    return stats
+
+
 def migrate_user_prompts_to_data(*, dry_run: bool = False) -> dict[str, int]:
-    """Скопировать пользовательские файлы из prompts/ → data/prompts/."""
-    stats = {"scanned": 0, "copied": 0, "skipped": 0}
+    """Скопировать пользовательские файлы из prompts/ → data/prompts/ + seed gaps."""
+    stats = {"scanned": 0, "copied": 0, "skipped": 0, "seeded": 0}
     if not BUNDLED_PROMPTS_ROOT.is_dir():
         return stats
     user_root = ensure_user_prompts_root()
@@ -207,13 +250,33 @@ def migrate_user_prompts_to_data(*, dry_run: bool = False) -> dict[str, int]:
         shutil.copy2(src, dest)
         stats["copied"] += 1
         logger.info("prompt_migrate: {} → {}", rel, dest)
-    if stats["copied"]:
+    # Всегда добиваем пробелы stock-файлами (даже если они = HEAD).
+    seed = seed_bundled_prompts_into_data(dry_run=dry_run)
+    stats["seeded"] = int(seed.get("seeded") or 0)
+    if stats["copied"] or stats["seeded"]:
         logger.info(
-            "prompt_migrate: copied {} file(s) to {}",
+            "prompt_migrate: copied={} seeded={} → {}",
             stats["copied"],
+            stats["seeded"],
             user_root,
         )
     return stats
+
+
+def count_prompt_overlay_files() -> dict[str, int]:
+    """Счётчики для /api/studio-version — видно, живы ли промты на диске."""
+    bundled_md = 0
+    user_md = 0
+    if BUNDLED_PROMPTS_ROOT.is_dir():
+        bundled_md = sum(1 for p in BUNDLED_PROMPTS_ROOT.rglob("*.md") if p.is_file())
+    user = user_prompts_root()
+    if user.is_dir():
+        user_md = sum(1 for p in user.rglob("*.md") if p.is_file())
+    return {
+        "bundled_md": bundled_md,
+        "user_md": user_md,
+        "overlay_ok": 1 if (bundled_md > 0 or user_md > 0) else 0,
+    }
 
 
 def _stash_message_matches(msg: str) -> bool:
