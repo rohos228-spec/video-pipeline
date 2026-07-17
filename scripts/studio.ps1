@@ -208,6 +208,8 @@ function Invoke-StudioStart {
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [5] Починить установку." "Yellow"
     }
+    # Если прошлый [4] оставил кастомные промты в stash — вернуть до старта бэкенда.
+    Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
     Start-StudioChromeCdp
     $job = Start-Job -ScriptBlock {
@@ -331,6 +333,16 @@ function Invoke-StudioPipInstall {
     return $true
 }
 
+function Invoke-StudioRecoverPromptsFromAllStashes {
+    # После обновления / при старте: безопасный возврат prompts/* из studio stash.
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    if (-not (Test-Path -LiteralPath $helperPy)) { return }
+    Write-StudioMsg "==> Проверяю git stash на локальные prompts/ ..." "Cyan"
+    & $py $helperPy --repo $Root --all-studio 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+}
+
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
     $promptsDirty = Test-StudioPromptsDirty
@@ -348,6 +360,8 @@ function Invoke-StudioUpdateAndStart {
     }
     # После reset на диске уже новый scripts/* — предпочитаем helper с диска.
     Invoke-StudioReturnPromptEditsFromStash -StashRef $stashRef
+    # Подстраховка: старые studio-stash (в т.ч. после прошлого обновления без возврата).
+    Invoke-StudioRecoverPromptsFromAllStashes
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
         & $py -c "import fastapi, sqlalchemy, playwright" 2>$null
