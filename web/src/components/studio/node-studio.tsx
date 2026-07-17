@@ -50,6 +50,9 @@ import {
 import {
   pickDefaultSheetForNode,
   xlsxPreviewFocusForNode,
+  xlsxStudioPreviewParams,
+  XLSX_STUDIO_MAX_COLS,
+  XLSX_STUDIO_MAX_ROWS,
 } from "@/lib/xlsx-sheets";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
@@ -94,6 +97,8 @@ export function NodeStudio({
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [promptMode, setPromptMode] = useState<PromptEditMode>("classic");
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
+  /** false = весь лист (дефолт); true = узкий ключевой фрагмент по типу ноды */
+  const [xlsxFocusKeyRows, setXlsxFocusKeyRows] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const qc = useQueryClient();
@@ -159,10 +164,10 @@ export function NodeStudio({
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
   const showExcel =
-    !isExcelGptNode(nodeType) &&
-    (nodeTypeRequiresExcel(nodeType) ||
-      allSlots.some((s) => s.kind === "excel") ||
-      tab === "excel");
+    nodeTypeRequiresExcel(nodeType) ||
+    allSlots.some((s) => s.kind === "excel") ||
+    tab === "excel" ||
+    isExcelGptNode(nodeType);
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId],
@@ -170,17 +175,28 @@ export function NodeStudio({
     enabled: open && projectId != null && showExcel,
   });
 
-  const xlsxFocus = useMemo(() => xlsxPreviewFocusForNode(nodeType), [nodeType]);
+  const focusAvailable = useMemo(() => xlsxPreviewFocusForNode(nodeType) != null, [nodeType]);
+  const xlsxParams = useMemo(
+    () => xlsxStudioPreviewParams(nodeType, { focusKeyRows: xlsxFocusKeyRows && focusAvailable }),
+    [nodeType, xlsxFocusKeyRows, focusAvailable],
+  );
 
   const xlsxPreview = useQuery({
-    queryKey: ["xlsx-preview", projectId, xlsxSheet, xlsxFocus?.startRow],
+    queryKey: [
+      "xlsx-preview",
+      projectId,
+      xlsxSheet,
+      xlsxParams.startRow,
+      xlsxParams.maxRows,
+      xlsxFocusKeyRows,
+    ],
     queryFn: () =>
       api.previewProjectXlsx(projectId!, {
         sheet: xlsxSheet || undefined,
         raw: true,
-        maxRows: xlsxFocus?.maxRows ?? 500,
-        maxCols: 200,
-        startRow: xlsxFocus?.startRow ?? 1,
+        maxRows: xlsxParams.maxRows,
+        maxCols: xlsxParams.maxCols,
+        startRow: xlsxParams.startRow,
       }),
     enabled:
       open &&
@@ -230,7 +246,10 @@ export function NodeStudio({
   }, [open, tab, nodeType, xlsxSheetsMeta.data?.sheets]);
 
   useEffect(() => {
-    if (!open) setXlsxSheet("");
+    if (!open) {
+      setXlsxSheet("");
+      setXlsxFocusKeyRows(false);
+    }
   }, [open, nodeKey]);
 
   const activeSlot =
@@ -524,8 +543,7 @@ export function NodeStudio({
                     className="h-7 text-[10px]"
                     onClick={() => {
                       setActiveSlotId(slot.id);
-                      if (slot.kind === "excel" && !isExcelGptNode(nodeType)) setTab("excel");
-                      if (slot.kind === "excel" && isExcelGptNode(nodeType)) setTab("settings");
+                      if (slot.kind === "excel") setTab("excel");
                     }}
                   >
                     {slot.title}
@@ -704,17 +722,30 @@ export function NodeStudio({
                     </Button>
                   </div>
                   {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
-                    <select
-                      className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
-                      value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
-                      onChange={(e) => setXlsxSheet(e.target.value)}
-                    >
-                      {(xlsxSheetsMeta.data?.sheets ?? []).map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
+                        value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
+                        onChange={(e) => setXlsxSheet(e.target.value)}
+                      >
+                        {(xlsxSheetsMeta.data?.sheets ?? []).map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                      {focusAvailable ? (
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            className="rounded border-white/20"
+                            checked={xlsxFocusKeyRows}
+                            onChange={(e) => setXlsxFocusKeyRows(e.target.checked)}
+                          />
+                          Только ключевые строки
+                        </label>
+                      ) : null}
+                    </div>
                   )}
                   {(xlsxSheetsMeta.isLoading || xlsxPreview.isLoading) && (
                     <div className="flex items-center justify-center py-12">
@@ -723,9 +754,17 @@ export function NodeStudio({
                   )}
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
                     <div className="max-h-[min(70vh,720px)] overflow-auto rounded-xl border border-white/10">
-                      {xlsxFocus?.hint ? (
+                      {xlsxParams.hint && xlsxFocusKeyRows ? (
                         <p className="border-b border-white/10 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
-                          {xlsxFocus.hint}
+                          {xlsxParams.hint}
+                        </p>
+                      ) : null}
+                      {!xlsxFocusKeyRows &&
+                      ((xlsxPreview.data?.rows?.length ?? 0) >= XLSX_STUDIO_MAX_ROWS ||
+                        (xlsxPreview.data?.rows?.[0]?.length ?? 0) >= XLSX_STUDIO_MAX_COLS) ? (
+                        <p className="border-b border-white/10 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
+                          Показано до {XLSX_STUDIO_MAX_ROWS}×{XLSX_STUDIO_MAX_COLS} ячеек (потолок
+                          API). Скачайте Excel для полного файла.
                         </p>
                       ) : null}
                       <table className="min-w-max border-collapse text-left text-xs">
@@ -733,7 +772,7 @@ export function NodeStudio({
                           {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
                             <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
                               <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                                {(xlsxFocus?.startRow ?? 1) + ri}
+                                {xlsxParams.startRow + ri}
                               </td>
                               {row.map((cell, ci) => (
                                 <td

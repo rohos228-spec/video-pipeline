@@ -1,8 +1,12 @@
 /** Константы листов Excel (v8 + legacy). */
 
 /** Компактное превью в V-меню ноды (строки × колонки). */
-export const XLSX_PREVIEW_MAX_ROWS = 30;
-export const XLSX_PREVIEW_MAX_COLS = 20;
+export const XLSX_PREVIEW_MAX_ROWS = 80;
+export const XLSX_PREVIEW_MAX_COLS = 40;
+
+/** Полный просмотр во вкладке Excel студии (потолок API). */
+export const XLSX_STUDIO_MAX_ROWS = 500;
+export const XLSX_STUDIO_MAX_COLS = 200;
 
 export const SHEET_GENERAL_V8 = "Общий план";
 export const SHEET_GENERAL_LEGACY = "Общий план ролика";
@@ -24,6 +28,7 @@ export function pickDefaultSheetForNode(nodeType: string, sheets: string[]): str
     nodeType === "split" ||
     nodeType === "script" ||
     nodeType.startsWith("enrich_") ||
+    nodeType === "excel_gpt" ||
     nodeType === "image_prompts" ||
     nodeType === "images" ||
     nodeType === "animation_prompts" ||
@@ -46,11 +51,16 @@ export function nodeUsesRawXlsxGrid(nodeType: string): boolean {
     nodeType === "script" ||
     nodeType === "images" ||
     nodeType === "animation_prompts" ||
-    nodeType === "videos"
+    nodeType === "videos" ||
+    nodeType === "excel_gpt" ||
+    nodeType.startsWith("enrich_")
   );
 }
 
-/** Превью Excel в студии: v8-кадры — колонки C..N, ключевые строки 45–49. */
+/**
+ * Опциональный «ключевой фрагмент» для ноды (не дефолт полного просмотра).
+ * Полный лист: startRow=1, maxRows=XLSX_STUDIO_MAX_ROWS.
+ */
 export function xlsxPreviewFocusForNode(nodeType: string): {
   startRow: number;
   maxRows: number;
@@ -60,6 +70,7 @@ export function xlsxPreviewFocusForNode(nodeType: string): {
     nodeType === "split" ||
     nodeType === "script" ||
     nodeType.startsWith("enrich_") ||
+    nodeType === "excel_gpt" ||
     nodeType === "image_prompts"
   ) {
     return {
@@ -80,6 +91,27 @@ export function xlsxPreviewFocusForNode(nodeType: string): {
     return { startRow: ROW_VOICEOVER_V8 - 3, maxRows: 8 };
   }
   return null;
+}
+
+/** Параметры запроса превью: полный лист или ключевой фрагмент. */
+export function xlsxStudioPreviewParams(
+  nodeType: string,
+  opts: { focusKeyRows?: boolean } = {},
+): { startRow: number; maxRows: number; maxCols: number; hint?: string } {
+  const focus = opts.focusKeyRows ? xlsxPreviewFocusForNode(nodeType) : null;
+  if (focus) {
+    return {
+      startRow: focus.startRow,
+      maxRows: focus.maxRows,
+      maxCols: XLSX_STUDIO_MAX_COLS,
+      hint: focus.hint,
+    };
+  }
+  return {
+    startRow: 1,
+    maxRows: XLSX_STUDIO_MAX_ROWS,
+    maxCols: XLSX_STUDIO_MAX_COLS,
+  };
 }
 
 export function projectHasXlsx(assets: { id: string; kind: string }[]): boolean {
