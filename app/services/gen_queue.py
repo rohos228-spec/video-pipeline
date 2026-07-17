@@ -179,11 +179,21 @@ async def _start_or_advance_project(
 
     Возвращает 1 если что-то стартовало/продвинулось.
     """
+    from app.services.project_control import auto_awaits_manual_start
+
     if project.status is ProjectStatus.new:
         # Автопродвижение ≠ автостарт: первый шаг только руками.
         logger.info(
             "gen_queue: #{} new — ждём ручной ▶ (queue position {})",
             project.id,
+            queue_pos,
+        )
+        return 0
+    if auto_awaits_manual_start(project):
+        logger.info(
+            "gen_queue: #{} {} — auto_mode ждёт ручной ▶ (queue position {})",
+            project.id,
+            project.status.value,
             queue_pos,
         )
         return 0
@@ -232,6 +242,15 @@ def _idle_reason_for_project(project: Project, *, position: int) -> dict[str, An
             "position": position,
             "reason": "manual_start",
             "detail": "Ожидает ручного ▶ (автостарт отключён)",
+        }
+    from app.services.project_control import auto_awaits_manual_start
+
+    if auto_awaits_manual_start(project):
+        return {
+            "project_id": project.id,
+            "position": position,
+            "reason": "manual_start",
+            "detail": "Автопродвижение включено — ждёт ручного ▶",
         }
     if not project.auto_mode:
         return {

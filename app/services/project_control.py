@@ -43,6 +43,50 @@ def clear_user_stop_gate(project: Project) -> list[str]:
     return cleared
 
 
+# Включение auto_mode само по себе НЕ должно стартовать шаги с *_ready /
+# new. Флаг снимается только ручным ▶ (start_step).
+_AUTO_AWAIT_MANUAL_KEY = "auto_await_manual_start"
+
+
+def auto_awaits_manual_start(project: Project) -> bool:
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    return bool(meta.get(_AUTO_AWAIT_MANUAL_KEY))
+
+
+def arm_auto_await_manual_start(project: Project) -> bool:
+    """После включения auto_mode на idle/*_ready — ждать ручной ▶."""
+    if is_running_status(project.status):
+        return False
+    meta = dict(project.meta or {})
+    if meta.get(_AUTO_AWAIT_MANUAL_KEY):
+        return False
+    meta[_AUTO_AWAIT_MANUAL_KEY] = True
+    project.meta = meta
+    logger.info(
+        "[#{}] auto_mode: ждём ручной ▶ (status={}) — без автостарта",
+        project.id,
+        project.status.value,
+    )
+    return True
+
+
+def clear_auto_await_manual_start(project: Project) -> bool:
+    meta = dict(project.meta or {})
+    if meta.pop(_AUTO_AWAIT_MANUAL_KEY, None) is None:
+        return False
+    project.meta = meta
+    logger.info("[#{}] auto_await_manual_start снят (ручной ▶)", project.id)
+    return True
+
+
+def on_auto_mode_changed(project: Project, *, was_auto: bool, now_auto: bool) -> None:
+    """Реакция на переключение auto_mode в PATCH / UI."""
+    if now_auto and not was_auto:
+        arm_auto_await_manual_start(project)
+    elif not now_auto and was_auto:
+        clear_auto_await_manual_start(project)
+
+
 async def stop_project_running(
     session: AsyncSession, project: Project
 ) -> dict[str, str | bool | list[str] | None]:

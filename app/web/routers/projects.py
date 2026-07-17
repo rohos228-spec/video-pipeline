@@ -155,6 +155,10 @@ async def create_project(
     )
     session.add(p)
     await session.flush()
+    if auto_mode:
+        from app.services.project_control import arm_auto_await_manual_start
+
+        arm_auto_await_manual_start(p)
     ensure_project_layout(p.id, folder_id=payload.sidebar_folder_id)
     sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
     sheet.ensure_initialized(project_id=p.id, slug=p.slug)
@@ -264,8 +268,10 @@ async def patch_project(
     from app.services.canvas_graph import canvas_graph_from_meta, sync_run_snapshot_from_canvas_graph
     from app.services.chatgpt_xlsx import save_voiceover_text
     from app.services.content_locks import lock_ui_field
+    from app.services.project_control import on_auto_mode_changed
     from app.services.project_meta import apply_project_meta_patch
 
+    was_auto = bool(p.auto_mode)
     for k, v in payload.items():
         if k == "meta":
             apply_project_meta_patch(p, v, source="patch_project")
@@ -275,6 +281,9 @@ async def patch_project(
             setattr(p, k, v)
             if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
+    if "auto_mode" in payload:
+        on_auto_mode_changed(p, was_auto=was_auto, now_auto=bool(p.auto_mode))
+        flag_modified(p, "meta")
     if "script_text" in payload:
         text = (payload.get("script_text") or "").strip()
         save_voiceover_text(p, p.data_dir / "voiceover.txt", text)

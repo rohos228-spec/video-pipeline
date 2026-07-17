@@ -898,10 +898,19 @@ async def maybe_auto_advance(
         pass
 
     from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_control import auto_awaits_manual_start
 
     if is_user_stopped(project):
         logger.debug(
             "auto_advance: #{} {} — user_stop, пропуск",
+            project.id,
+            project.status.value,
+        )
+        return False
+
+    if auto_awaits_manual_start(project):
+        logger.info(
+            "auto_advance: #{} {} — auto_mode ждёт ручной ▶ (без автостарта)",
             project.id,
             project.status.value,
         )
