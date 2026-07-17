@@ -731,7 +731,7 @@ async def get_gpt_verdict_context(
         raise HTTPException(status_code=404, detail="project not found")
     if step_code not in VERDICT_STUDIO_STEPS:
         raise HTTPException(status_code=400, detail=f"no verdict check for {step_code}")
-    files = await attachments_for_step(session, project, step_code)
+    files = await attachments_for_step(session, project, step_code, include_result_artifacts=True)
     tpl = (template or "default").strip() or "default"
     from app.services.gpt_verdict_review import verdict_template_for_project
 

@@ -28,6 +28,16 @@ def test_excel_ref_deps_batch_uses_generated() -> None:
     assert not generate_hero._excel_ref_deps_met(
         ch, approved=set(), generated={"c01"}, batch_auto=False
     )
+    # Stale HITL approved без файла на диске — НЕ deps (после wipe).
+    assert not generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated=set(), batch_auto=True
+    )
+    assert not generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated=set(), batch_auto=False
+    )
+    assert generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated={"c01"}, batch_auto=False
+    )
 
 
 @pytest.mark.asyncio
