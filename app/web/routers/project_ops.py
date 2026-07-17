@@ -502,13 +502,20 @@ async def preview_xlsx(
     start_row: int = Query(1, ge=1, le=5000),
     row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
+    node_key: str | None = Query(
+        None,
+        description="Превью снимка Excel этой ноды (xlsx_snapshots/<node_key>/)",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
-        sheet_obj = ProjectSheet(file_path=xlsx)
+    from app.services.xlsx_node_snapshot import resolve_display_xlsx
+
+    xlsx, snap_info = resolve_display_xlsx(p, node_key=node_key)
+    if not xlsx.exists() and not node_key:
+        sheet_obj = ProjectSheet(file_path=p.data_dir / "project.xlsx")
         sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
+        xlsx, snap_info = resolve_display_xlsx(p, node_key=None)
     if not xlsx.exists():
         return {
             "path": str(xlsx),
@@ -523,6 +530,8 @@ async def preview_xlsx(
             "truncated_cols": False,
             "sheet_max_row": 0,
             "sheet_max_col": 0,
+            "node_key": node_key,
+            "xlsx_source": snap_info,
         }
     from openpyxl import load_workbook
 
@@ -547,6 +556,8 @@ async def preview_xlsx(
             "row": row,
             "cells": cells,
             "col_letters": [_col_letter(i) for i in range(len(cells))],
+            "node_key": node_key,
+            "xlsx_source": snap_info,
         }
 
     headers: list[str] = []
@@ -632,6 +643,8 @@ async def preview_xlsx(
         "truncated_cols": truncated_cols,
         "sheet_max_row": sheet_max_row,
         "sheet_max_col": sheet_max_col,
+        "node_key": node_key,
+        "xlsx_source": snap_info,
     }
 
 

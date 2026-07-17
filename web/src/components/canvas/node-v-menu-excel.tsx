@@ -17,11 +17,14 @@ export function NodeVMenuExcelPreview({
   open,
   projectId,
   nodeType,
+  nodeKey,
   onOpen,
 }: {
   open: boolean;
   projectId: number;
   nodeType: string;
+  /** Canvas node id — превью снимка этой ноды, не live project.xlsx. */
+  nodeKey?: string | null;
   onOpen: () => void;
 }) {
   const project = useQuery({
@@ -31,8 +34,12 @@ export function NodeVMenuExcelPreview({
   });
 
   const sheetsMeta = useQuery({
-    queryKey: ["xlsx-sheets", projectId],
-    queryFn: () => api.previewProjectXlsx(projectId, { maxRows: 1 }),
+    queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId, {
+        maxRows: 1,
+        nodeKey: nodeKey ?? undefined,
+      }),
     enabled: open,
   });
 
@@ -47,9 +54,20 @@ export function NodeVMenuExcelPreview({
   const sheet = selectedSheet || defaultSheet;
   const hasFile = sheets.length > 0;
   const startRow = 1;
+  const xlsxSource = sheetsMeta.data?.xlsx_source;
+  const sourceLabel =
+    xlsxSource?.resolved === "live"
+      ? "актуальный project.xlsx"
+      : xlsxSource?.role === "consume"
+        ? "использованный Excel"
+        : xlsxSource?.role === "produce"
+          ? "результат ноды"
+          : nodeKey
+            ? "снимок ноды"
+            : "project.xlsx";
 
   const preview = useQuery({
-    queryKey: ["v-menu-xlsx-preview", projectId, sheet],
+    queryKey: ["v-menu-xlsx-preview", projectId, nodeKey ?? "live", sheet],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet,
@@ -57,6 +75,7 @@ export function NodeVMenuExcelPreview({
         maxRows: XLSX_PREVIEW_MAX_ROWS,
         maxCols: XLSX_PREVIEW_MAX_COLS,
         startRow,
+        nodeKey: nodeKey ?? undefined,
       }),
     enabled: open && hasFile && Boolean(sheet),
   });
@@ -99,10 +118,13 @@ export function NodeVMenuExcelPreview({
         <div className="mb-1.5 flex items-center gap-2">
           <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
           <span className="text-[10px] font-medium text-emerald-200">
-            {sheet ? `Лист «${sheet}»` : "project.xlsx"}
+            {sheet ? `Лист «${sheet}»` : "Excel"}
+          </span>
+          <span className="truncate text-[8px] text-emerald-300/70" title={sourceLabel}>
+            {sourceLabel}
           </span>
           {truncated ? (
-            <span className="ml-auto text-[8px] text-emerald-300/70">
+            <span className="ml-auto shrink-0 text-[8px] text-emerald-300/70">
               ≤{XLSX_PREVIEW_MAX_ROWS}×{XLSX_PREVIEW_MAX_COLS}
             </span>
           ) : null}

@@ -159,6 +159,35 @@ def _ts() -> str:
     return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
+def _record_produce_snapshot(
+    project: Project,
+    node_type: str,
+    *,
+    before_path: Path | None,
+    after_path: Path,
+) -> None:
+    try:
+        from app.services.xlsx_node_snapshot import (
+            canvas_node_keys_of_type,
+            record_produce_for_node_keys,
+        )
+
+        keys = canvas_node_keys_of_type(project, node_type)
+        if not keys:
+            return
+        record_produce_for_node_keys(
+            project,
+            keys,
+            before_path=before_path,
+            after_path=after_path,
+            source="project_xlsx",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "xlsx_step_runners: snapshot {} failed: {}", node_type, e
+        )
+
+
 def _ensure_project_xlsx(project: Project) -> Path:
     proj_xlsx = project.data_dir / "project.xlsx"
     if proj_xlsx.exists():
@@ -220,6 +249,9 @@ async def run_plan_xlsx(
 
     backup = backup_to_old(proj_xlsx)
     replace_with(proj_xlsx, downloaded)
+    _record_produce_snapshot(
+        project, "plan", before_path=backup, after_path=proj_xlsx
+    )
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=downloaded,
@@ -377,6 +409,9 @@ async def run_split_xlsx(
                 f"project.xlsx={on_disk_blocks} блоков. {diag}"
             )
 
+    _record_produce_snapshot(
+        project, "split", before_path=backup, after_path=proj_xlsx
+    )
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=downloaded,
@@ -440,6 +475,9 @@ async def run_img_pr_xlsx(
         "img_pr_xlsx: в project.xlsx слиты R45={} R46={} (enrich сохранён)",
         n45,
         n46,
+    )
+    _record_produce_snapshot(
+        project, "image_prompts", before_path=backup, after_path=proj_xlsx
     )
     return XlsxRoundtripResult(
         reply_text=reply,

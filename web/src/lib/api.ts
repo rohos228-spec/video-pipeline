@@ -148,6 +148,15 @@ export interface XlsxPreview {
   truncated_cols?: boolean;
   sheet_max_row?: number;
   sheet_max_col?: number;
+  node_key?: string | null;
+  xlsx_source?: {
+    resolved?: string;
+    role?: string;
+    source?: string;
+    displayPath?: string | null;
+    inputPath?: string | null;
+    outputPath?: string | null;
+  };
 }
 
 export interface ProjectAsset {
@@ -871,6 +880,8 @@ export const api = {
       startRow?: number;
       row?: number;
       raw?: boolean;
+      /** Снимок Excel этой ноды (after/before), не живой project.xlsx. */
+      nodeKey?: string;
     },
   ) => {
     const q = new URLSearchParams();
@@ -880,6 +891,7 @@ export const api = {
     if (opts?.startRow != null) q.set("start_row", String(opts.startRow));
     if (opts?.row != null) q.set("row", String(opts.row));
     if (opts?.raw) q.set("raw", "true");
+    if (opts?.nodeKey) q.set("node_key", opts.nodeKey);
     const qs = q.toString();
     return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${qs ? `?${qs}` : ""}`);
   },
