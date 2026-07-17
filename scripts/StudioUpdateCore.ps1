@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "devin/windows-installer"
-$script:StudioUpdateCoreId = "studio-update-core-v7"
+$script:StudioUpdateCoreId = "studio-update-core-v8"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -56,11 +56,43 @@ function Invoke-StudioGit {
         return $false
     }
     $br = $script:StudioUpdateBranch
+    $promptsDirty = @((git -C $Root status --porcelain -- prompts 2>$null)).Count -gt 0
+    $stashRef = $null
+    $status = git -C $Root status --porcelain 2>&1
+    if ($status) {
+        $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $msg = "studio: автосохранение перед обновлением $stamp"
+        Write-StudioLog "> git stash push -u ($msg)" "Cyan"
+        git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        if ($LASTEXITCODE -ne 0) {
+            if ($promptsDirty) {
+                Write-StudioLog "FAIL: stash failed and prompts/ has local edits — abort (prompts kept)" "Red"
+                return $false
+            }
+            Write-StudioLog "WARN: stash failed; no dirty prompts/ — continue" "Yellow"
+        } else {
+            $stashRef = 'stash@{0}'
+        }
+    }
     git -C $Root fetch origin $br 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root checkout -B $br "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    if ($stashRef) {
+        $py = Join-Path $Root ".venv\Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+        $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
+        if (Test-Path -LiteralPath $pyHelper) {
+            Write-StudioLog "> return prompts/ from $stashRef" "Cyan"
+            & $py $pyHelper --repo $Root --stash $stashRef 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        } else {
+            $helper = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
+            if (Test-Path -LiteralPath $helper) {
+                & $helper -Root $Root -StashRef $stashRef
+            }
+        }
+    }
     $uiOk = Restore-StudioWebUiFromGit -Root $Root
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     if (-not $uiOk) {
