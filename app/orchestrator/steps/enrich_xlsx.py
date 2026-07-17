@@ -337,6 +337,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project.status.value,
     )
 
+    # NodeRun текущей ноды → done ДО переключения active_key на следующий слот.
+    # Иначе complete_active_node / UI видят «в работе» на слоте 1, а слот 3
+    # ошибочно done без применённого xlsx.
+    try:
+        from app.services.run_sync import complete_excel_gpt_node_by_key
+
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[#{}] enrich_xlsx: complete NodeRun slot={} failed",
+            project.id,
+            slot_idx,
+            exc_info=True,
+        )
+
     # 6. Auto-chain до хвоста excel_gpt на канвасе.
     # Ручной ▶ одной ноды раньше не ставил enrich_auto_chain_to → после
     # enrich_2_ready пайплайн зависал (auto_advance режется gen_queue).
@@ -395,10 +412,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project.status = next_running
         await session.flush()
         logger.info(
-            "[#{}] enrich_xlsx auto-chain: {} → {} (target slot #{}, node={})",
+            "[#{}] enrich_xlsx auto-chain: {} → {} (next slot #{}, chain_to={}, node={})",
             project.id,
             ready_status.value,
             next_running.value,
+            next_slot,
             chain_to,
             next_key,
         )

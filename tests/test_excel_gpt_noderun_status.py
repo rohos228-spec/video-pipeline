@@ -323,3 +323,133 @@ async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> No
         for k in keys:
             nr = await session.get(NodeRun, nr_ids[k])
             assert nr is not None and nr.status == NodeRunStatus.done
+
+
+@pytest.mark.asyncio
+async def test_auto_chain_complete_marks_prev_not_next(mem_db, monkeypatch) -> None:
+    """Баг #42: после slot1→enriching_2 active_key=slot2 — complete должен
+    закрыть slot1, а не пометить slot2 done до работы / apply xlsx."""
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_1784243040673"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=keys[0]
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        # Слот 1 running
+        await prepare_node_for_step_start(
+            session,
+            project,
+            "excel_gpt",
+            node_key=keys[0],
+            strict=True,
+            explicit_ui_start=True,
+        )
+        project.status = ProjectStatus.enriching_1
+        # Как enrich_xlsx auto-chain: сначала done meta на slot1, потом
+        # active→slot2 + prepare slot2 running, status→enriching_2
+        project.meta = {
+            **(project.meta or {}),
+            "excel_gpt_completed_keys": [keys[0]],
+            "enrich_completed_slots": [1],
+            "enrich_auto_chain_to": 3,
+            "active_excel_gpt_node_key": keys[1],
+        }
+        await prepare_node_for_step_start(
+            session,
+            project,
+            "excel_gpt",
+            node_key=keys[1],
+            strict=True,
+            explicit_ui_start=True,
+        )
+        project.status = ProjectStatus.enriching_2
+        await complete_active_node_for_step(
+            session,
+            project,
+            prev_status=ProjectStatus.enriching_1,
+            new_status=ProjectStatus.enriching_2,
+        )
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.done
+        # Слот 2 должен остаться running — работа ещё не сделана/не применена
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.running
+        assert (await session.get(NodeRun, nr_ids[keys[2]])).status == NodeRunStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_complete_excel_gpt_by_key_before_chain(mem_db, monkeypatch) -> None:
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_3"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=keys[0]
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        await prepare_node_for_step_start(
+            session,
+            project,
+            "excel_gpt",
+            node_key=keys[0],
+            strict=True,
+            explicit_ui_start=True,
+        )
+        ok = await complete_excel_gpt_node_by_key(
+            session, project, keys[0], enrich_slot=1
+        )
+        assert ok is True
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_sync_heals_stale_running_from_completed_keys(mem_db, monkeypatch) -> None:
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_3"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=keys[2]
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        # Слот 1 «застрял» running, хотя meta уже completed
+        nr1 = await session.get(NodeRun, nr_ids[keys[0]])
+        assert nr1 is not None
+        from app.services.node_status_machine import (
+            queue_node_for_start,
+            start_node_running,
+        )
+
+        queue_node_for_start(nr1, project_id=project_id, initiator="worker")
+        start_node_running(nr1, project_id=project_id, initiator="worker")
+        project.meta = {
+            **(project.meta or {}),
+            "excel_gpt_completed_keys": [keys[0], keys[1]],
+            "active_excel_gpt_node_key": keys[2],
+        }
+        await prepare_node_for_step_start(
+            session,
+            project,
+            "excel_gpt",
+            node_key=keys[2],
+            strict=True,
+            explicit_ui_start=True,
+        )
+
+    await sync_run_for_project(project_id)
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.done
+        # Активный слот 3 не трогаем heal'ом
+        assert (await session.get(NodeRun, nr_ids[keys[2]])).status == NodeRunStatus.running
