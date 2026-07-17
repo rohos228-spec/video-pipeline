@@ -559,6 +559,114 @@ export function NodeStudio({
             )}
           </header>
 
+          {tab === "excel" && projectId ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-5">
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={api.downloadProjectXlsx(projectId)} download>
+                        <Download className="h-3.5 w-3.5" />
+                        Скачать Excel
+                      </a>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fileRef.current?.click()}
+                      disabled={uploadXlsx.isPending}
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Загрузить
+                    </Button>
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) uploadXlsx.mutate(f);
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => reloadXlsx.mutate()}
+                      disabled={reloadXlsx.isPending}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Перечитать
+                    </Button>
+                  </div>
+                  {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <select
+                        className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
+                        value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
+                        onChange={(e) => setXlsxSheet(e.target.value)}
+                      >
+                        {(xlsxSheetsMeta.data?.sheets ?? []).map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                      {focusAvailable ? (
+                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            className="rounded border-white/20"
+                            checked={xlsxFocusKeyRows}
+                            onChange={(e) => setXlsxFocusKeyRows(e.target.checked)}
+                          />
+                          Только ключевые строки
+                        </label>
+                      ) : null}
+                    </div>
+                  )}
+                  {(xlsxSheetsMeta.isLoading || xlsxPreview.isLoading) && (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                  {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
+                    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                      {xlsxParams.hint && xlsxFocusKeyRows ? (
+                        <p className="shrink-0 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
+                          {xlsxParams.hint}
+                        </p>
+                      ) : null}
+                      {xlsxPreview.data?.truncated_rows || xlsxPreview.data?.truncated_cols ? (
+                        <p className="shrink-0 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
+                          Показана часть листа
+                          {xlsxPreview.data.sheet_max_row
+                            ? ` (в файле ~${xlsxPreview.data.sheet_max_row}×${xlsxPreview.data.sheet_max_col || "?"})`
+                            : ""}
+                          . Для полного файла — «Скачать Excel».
+                        </p>
+                      ) : null}
+                      {(xlsxPreview.data?.rows?.length ?? 0) > 0 ? (
+                        <StudioExcelGrid
+                          className="min-h-0 flex-1"
+                          rows={xlsxPreview.data?.rows ?? []}
+                          startRow={xlsxPreview.data?.start_row ?? xlsxParams.startRow}
+                          colLetters={xlsxPreview.data?.col_letters}
+                        />
+                      ) : (
+                        <p className="rounded-xl border border-white/10 p-4 text-xs text-muted-foreground">
+                          {nodeType === "plan"
+                            ? "Лист пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx. Переключите лист в списке выше (например «план»)."
+                            : "Таблица пуста или ещё не создана. Проверьте выбранный лист."}
+                          {nodeType === "plan" && project.data?.general_plan?.trim() ? (
+                            <span className="mt-2 block whitespace-pre-wrap text-foreground/90">
+                              Текст плана в БД: {project.data.general_plan}
+                            </span>
+                          ) : null}
+                        </p>
+                      )}
+                    </div>
+                  )}
+            </div>
+          ) : (
           <ScrollArea className="flex-1">
             <div className="p-5">
               {tab === "settings" && (
@@ -689,113 +797,6 @@ export function NodeStudio({
                 </div>
               )}
 
-              {tab === "excel" && projectId && (
-                <div className="flex flex-col gap-3">
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" asChild>
-                      <a href={api.downloadProjectXlsx(projectId)} download>
-                        <Download className="h-3.5 w-3.5" />
-                        Скачать Excel
-                      </a>
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => fileRef.current?.click()}
-                      disabled={uploadXlsx.isPending}
-                    >
-                      <Upload className="h-3.5 w-3.5" />
-                      Загрузить
-                    </Button>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      accept=".xlsx"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) uploadXlsx.mutate(f);
-                      }}
-                    />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => reloadXlsx.mutate()}
-                      disabled={reloadXlsx.isPending}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      Перечитать
-                    </Button>
-                  </div>
-                  {(xlsxSheetsMeta.data?.sheets?.length ?? 0) > 0 && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        className="studio-select h-8 max-w-xs rounded-md border border-input bg-card px-2 text-xs"
-                        value={xlsxSheet || pickDefaultSheetForNode(nodeType, xlsxSheetsMeta.data?.sheets ?? [])}
-                        onChange={(e) => setXlsxSheet(e.target.value)}
-                      >
-                        {(xlsxSheetsMeta.data?.sheets ?? []).map((s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
-                      {focusAvailable ? (
-                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            className="rounded border-white/20"
-                            checked={xlsxFocusKeyRows}
-                            onChange={(e) => setXlsxFocusKeyRows(e.target.checked)}
-                          />
-                          Только ключевые строки
-                        </label>
-                      ) : null}
-                    </div>
-                  )}
-                  {(xlsxSheetsMeta.isLoading || xlsxPreview.isLoading) && (
-                    <div className="flex items-center justify-center py-12">
-                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    </div>
-                  )}
-                  {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
-                    <div className="flex flex-col gap-2">
-                      {xlsxParams.hint && xlsxFocusKeyRows ? (
-                        <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
-                          {xlsxParams.hint}
-                        </p>
-                      ) : null}
-                      {xlsxPreview.data?.truncated_rows || xlsxPreview.data?.truncated_cols ? (
-                        <p className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
-                          Показана часть листа
-                          {xlsxPreview.data.sheet_max_row
-                            ? ` (в файле ~${xlsxPreview.data.sheet_max_row}×${xlsxPreview.data.sheet_max_col || "?"})`
-                            : ""}
-                          . Для полного файла — «Скачать Excel».
-                        </p>
-                      ) : null}
-                      {(xlsxPreview.data?.rows?.length ?? 0) > 0 ? (
-                        <StudioExcelGrid
-                          rows={xlsxPreview.data?.rows ?? []}
-                          startRow={xlsxPreview.data?.start_row ?? xlsxParams.startRow}
-                          colLetters={xlsxPreview.data?.col_letters}
-                        />
-                      ) : (
-                        <p className="rounded-xl border border-white/10 p-4 text-xs text-muted-foreground">
-                          {nodeType === "plan"
-                            ? "Лист пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx. Переключите лист в списке выше (например «план»)."
-                            : "Таблица пуста или ещё не создана. Проверьте выбранный лист."}
-                          {nodeType === "plan" && project.data?.general_plan?.trim() ? (
-                            <span className="mt-2 block whitespace-pre-wrap text-foreground/90">
-                              Текст плана в БД: {project.data.general_plan}
-                            </span>
-                          ) : null}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
 
               {tab === "results" && (
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -838,6 +839,7 @@ export function NodeStudio({
               )}
             </div>
           </ScrollArea>
+          )}
         </div>
       </aside>
     </>,

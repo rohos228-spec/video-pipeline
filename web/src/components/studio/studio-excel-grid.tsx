@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils";
 
-/** Нормальная сетка Excel: буквы колонок, номера строк, без пустого «колодца». */
+/** Нормальная сетка Excel: буквы колонок, номера строк, оба скроллбара. */
 export function StudioExcelGrid({
   rows,
   startRow = 1,
@@ -38,8 +38,14 @@ export function StudioExcelGrid({
   return (
     <div
       className={cn(
-        "overflow-auto rounded-xl border border-white/10 bg-black/20",
-        rows.length > 12 ? "max-h-[min(70vh,720px)]" : "max-h-none",
+        "min-h-0 overflow-auto overscroll-contain rounded-xl border border-white/10 bg-black/20",
+        "max-h-[min(70vh,720px)]",
+        // Явные полосы прокрутки (Win/Chrome/WebKit + Firefox).
+        "[scrollbar-gutter:stable] [scrollbar-width:thin] [scrollbar-color:hsl(0_0%_55%_/_0.55)_transparent]",
+        "[&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar]:w-2.5",
+        "[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/25",
+        "[&::-webkit-scrollbar-thumb:hover]:bg-white/40",
+        "[&::-webkit-scrollbar-track]:bg-transparent",
         className,
       )}
     >
