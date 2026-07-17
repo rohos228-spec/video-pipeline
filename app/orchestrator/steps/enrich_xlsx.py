@@ -337,13 +337,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project.status.value,
     )
 
-    # 6. Auto-chain — если юзер запустил «▶▶ Запустить все слоты подряд»,
-    # `project.meta['enrich_auto_chain_to']` хранит целевой номер слота
-    # (1..5). После завершения этого слота, если есть следующий — сами
-    # переводим статус в `enriching_<i+1>`. Воркер на следующем тике
-    # подхватит и продолжит. При достижении target — чистим флаг.
+    # 6. Auto-chain до хвоста excel_gpt на канвасе.
+    # Ручной ▶ одной ноды раньше не ставил enrich_auto_chain_to → после
+    # enrich_2_ready пайплайн зависал (auto_advance режется gen_queue).
     meta = dict(project.meta or {})
     chain_to = meta.get("enrich_auto_chain_to")
+    if not isinstance(chain_to, int):
+        from app.services.excel_gpt_node import ensure_enrich_auto_chain_to
+
+        inferred = ensure_enrich_auto_chain_to(project, slot_idx)
+        meta = dict(project.meta or {})
+        chain_to = inferred if inferred is not None else meta.get("enrich_auto_chain_to")
+        if inferred is not None:
+            logger.info(
+                "[#{}] enrich_xlsx: inferred enrich_auto_chain_to={} after slot {}",
+                project.id,
+                inferred,
+                slot_idx,
+            )
     if isinstance(chain_to, int) and chain_to > slot_idx:
         next_slot = slot_idx + 1
         next_running = _SLOT_MAP[next_slot][0]
@@ -360,6 +371,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # Цепочка дошла до target (или вышла за неё). Снимаем флаг,
         # чтобы при ручном повторном запуске одного слота не было
         # неожиданного авто-перехода.
+        meta = dict(project.meta or {})
         meta.pop("enrich_auto_chain_to", None)
         project.meta = meta
         await session.flush()

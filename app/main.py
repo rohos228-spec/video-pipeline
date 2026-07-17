@@ -553,14 +553,25 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 ap.id,
                             )
                             continue
-                        from app.services.gen_queue import project_gated_by_gen_queue
+                        from app.services.gen_queue import (
+                            enrich_ready_bypasses_gen_queue,
+                            project_gated_by_gen_queue,
+                        )
 
                         if project_gated_by_gen_queue(ap.id):
-                            logger.debug(
-                                "auto_advance tick: #{} — не в gen_queue, пропуск",
-                                ap.id,
-                            )
-                            continue
+                            if enrich_ready_bypasses_gen_queue(ap):
+                                logger.info(
+                                    "auto_advance tick: #{} {} — gen_queue bypass "
+                                    "(excel_gpt chain)",
+                                    ap.id,
+                                    ap.status.value,
+                                )
+                            else:
+                                logger.info(
+                                    "auto_advance tick: #{} — не в gen_queue, пропуск",
+                                    ap.id,
+                                )
+                                continue
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)

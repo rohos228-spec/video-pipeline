@@ -285,7 +285,23 @@ async def start_step(
             )
         running_status = running_status_for_slot(slot_index_from_node(node))
         meta["active_excel_gpt_node_key"] = nk
+        # Цепочка до последней excel_gpt на канвасе: иначе после ready
+        # auto_advance часто молчит (gen_queue / нет auto_mode) и слот 3
+        # не стартует.
+        from app.services.excel_gpt_node import ensure_enrich_auto_chain_to
+
+        started_slot = slot_index_from_node(node)
         project.meta = meta
+        chain_to = ensure_enrich_auto_chain_to(project, started_slot)
+        if chain_to is not None:
+            logger.info(
+                "[#{}] start_step excel_gpt: enrich_auto_chain_to={} "
+                "(from slot {}, node={})",
+                project.id,
+                chain_to,
+                started_slot,
+                nk,
+            )
         try:
             from app.services.step_data_guard import can_enter_running
 
