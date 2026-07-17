@@ -38,51 +38,6 @@ from loguru import logger
 # app/services/prompt_library.py  →  ../../prompts/
 PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
 
-
-def recover_prompts_from_data_overlay() -> dict[str, int]:
-    """Одноразовый возврат файлов из data/prompts/ → prompts/ (после неудачного overlay).
-
-    Не затирает уже существующие файлы в prompts/, если они новее.
-    """
-    import shutil
-
-    from app.settings import settings
-
-    stats = {"scanned": 0, "restored": 0, "skipped": 0}
-    src_root = Path(settings.data_dir) / "prompts"
-    if not src_root.is_dir():
-        return stats
-    for src in sorted(src_root.rglob("*")):
-        if not src.is_file():
-            continue
-        rel = src.relative_to(src_root)
-        if ".history" in rel.parts:
-            continue
-        stats["scanned"] += 1
-        dest = PROMPTS_ROOT / rel
-        if dest.is_file():
-            try:
-                if dest.stat().st_mtime >= src.stat().st_mtime:
-                    stats["skipped"] += 1
-                    continue
-            except OSError:
-                pass
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            stats["restored"] += 1
-            logger.info("prompt recover: data/prompts/{} → prompts/{}", rel, dest)
-        except OSError as e:
-            logger.warning("prompt recover failed {}: {}", rel, e)
-            stats["skipped"] += 1
-    if stats["restored"]:
-        logger.info(
-            "prompt recover: restored {} file(s) from data/prompts → {}",
-            stats["restored"],
-            PROMPTS_ROOT,
-        )
-    return stats
-
 # Карта step_code (как в menu.py StepDef.code) → имя папки в `prompts/`.
 # Шаги, у которых нет мастер-промта, тут не перечисляются.
 # Ключи совпадают с `StepDef.code` в `app/telegram/menu.py`.
