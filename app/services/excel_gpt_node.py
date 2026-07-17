@@ -139,6 +139,62 @@ def slot_from_ready_status(status: ProjectStatus) -> int | None:
     return None
 
 
+def next_excel_gpt_slot_after_ready(project: Project, ready_status: ProjectStatus) -> int | None:
+    """Следующий slot excel_gpt на канвасе после enrich_N_ready (игнор «готово»).
+
+    Stale enrich_completed_slots / excel_gpt_completed_keys не должны давать
+    прыжок enrich_2_ready → generating_hero, пока на канвасе есть слот 3+.
+    """
+    finished = slot_from_ready_status(ready_status)
+    if finished is None:
+        return None
+    nodes = excel_gpt_nodes_from_project(project)
+    if not nodes:
+        return None
+    later = sorted(
+        {
+            slot_index_from_node(n)
+            for n in nodes
+            if slot_index_from_node(n) > finished
+        }
+    )
+    return later[0] if later else None
+
+
+def next_excel_gpt_running_after_ready(
+    project: Project, ready_status: ProjectStatus
+) -> ProjectStatus | None:
+    """Running-статус следующего excel_gpt после enrich_N_ready, если слот есть."""
+    nxt = next_excel_gpt_slot_after_ready(project, ready_status)
+    if nxt is None:
+        return None
+    return running_status_for_slot(nxt)
+
+
+def prepare_enrich_chain_for_auto_advance(
+    project: Project, ready_status: ProjectStatus
+) -> ProjectStatus | None:
+    """Перед auto_advance с enrich_N_ready: цепочка + сброс stale «готово».
+
+    Возвращает enriching_{N+1} если на канвасе есть следующий слот, иначе None
+    (тогда caller идёт по обычному graph.next).
+    """
+    finished = slot_from_ready_status(ready_status)
+    if finished is None:
+        return None
+    nxt_slot = next_excel_gpt_slot_after_ready(project, ready_status)
+    if nxt_slot is None:
+        return None
+    ensure_enrich_auto_chain_to(project, finished)
+    clear_excel_gpt_tail_completion(project, finished + 1)
+    meta = dict(project.meta or {})
+    node_key = resolve_excel_gpt_node_key_for_slot(project, nxt_slot)
+    if node_key:
+        meta["active_excel_gpt_node_key"] = node_key
+        project.meta = meta
+    return running_status_for_slot(nxt_slot)
+
+
 def active_excel_gpt_node_key(project: Project) -> str | None:
     meta = project.meta if isinstance(project.meta, dict) else {}
     key = str(meta.get("active_excel_gpt_node_key") or "").strip()

@@ -253,10 +253,15 @@ class WorkflowGraph:
                 # excel_gpt в done лежит как enrich_N — typ «excel_gpt» сам
                 # в done не попадает; иначе первые слоты перезапускаются, а
                 # при кривом slotIndex можно сразу уйти в enriching_3.
+                # После enrich_N_ready следующий слот M>N на канвасе — всегда
+                # следующий шаг: stale «готово» не должно прыгать на hero.
                 # Активная цепочка enrich_auto_chain_to: даже done → переген.
                 slot = slot_index_from_node(n)
                 finished_slot = slot_from_ready_status(ready_status)
-                force_rerun = (
+                later_after_ready = (
+                    finished_slot is not None and slot > finished_slot
+                )
+                force_rerun = later_after_ready or (
                     slot in excel_gpt_force_rerun_slots(project)
                     and (finished_slot is None or slot > finished_slot)
                 )

@@ -161,15 +161,35 @@ async def test_approve_plan_default_graph_goes_to_scripting(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_plan_custom_images_edge_stays_without_prompts(session) -> None:
-    """plan→images без промптов: не стартуем img и не прыгаем в frames_ready."""
+async def test_approve_enrich2_goes_to_slot3_not_hero(session) -> None:
+    """Stale «готово» на слоте 3 + рёбра 2→hero не должны прыгать на hero."""
+    nodes = [
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 100, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+        {
+            "id": "n_excel_gpt_3",
+            "type": "excel_gpt",
+            "position": {"x": 200, "y": 0},
+            "data": {"slotIndex": 3},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 300, "y": 0}, "data": {}},
+    ]
+    edges = [{"id": "e2", "source": "n_excel_gpt_2", "target": "n_hero"}]
     p = Project(
-        slug="aa-order-5",
+        slug="aa-enrich-chain",
         topic="t",
-        status=ProjectStatus.plan_ready,
-        general_plan="x" * 200,
+        status=ProjectStatus.enrich_2_ready,
         auto_mode=True,
-        meta=_plan_to_images_meta(),
+        meta={
+            "split_completed": True,
+            "enrich_completed_slots": [2, 3],
+            "excel_gpt_completed_keys": ["n_excel_gpt_2", "n_excel_gpt_3"],
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+        },
     )
     session.add(p)
     await session.flush()
@@ -184,6 +204,9 @@ async def test_approve_plan_custom_images_edge_stays_without_prompts(session) ->
     await session.flush()
 
     await _apply_approve(
-        session, p, None, TRANSITIONS[ProjectStatus.plan_ready], bot=None
+        session, p, None, TRANSITIONS[ProjectStatus.enrich_2_ready], bot=None
     )
-    assert p.status is ProjectStatus.plan_ready
+    assert p.status is ProjectStatus.enriching_3
+    assert p.meta.get("enrich_auto_chain_to") == 3
+    assert 3 not in (p.meta.get("enrich_completed_slots") or [])
+    assert "n_excel_gpt_3" not in (p.meta.get("excel_gpt_completed_keys") or [])
