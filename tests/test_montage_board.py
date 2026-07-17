@@ -237,6 +237,85 @@ async def test_montage_board_resolves_legacy_hero_png(
 
 
 @pytest.mark.asyncio
+async def test_montage_board_reads_persons_from_legacy_row7(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """excel-cells.ts раньше слал id в R7 (фон) — монтаж должен их видеть."""
+    clear_montage_board_caches()
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=1, column=1, value="кадр1")
+    ws.cell(row=7, column=1, value="фон")
+    ws.cell(row=8, column=1, value="персонажи")
+    ws.cell(row=7, column=3, value="c01")  # ошибочно записано в «фон»
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="vo")
+    wb.save(xlsx)
+
+    chars_dir = montage_project.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    (chars_dir / "c01.png").write_bytes(b"png")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    refs = board["frames"][0]["character_refs"]
+    assert len(refs) == 1
+    assert refs[0]["id"] == "c01"
+    assert refs[0]["image_url"] is not None
+
+
+@pytest.mark.asyncio
+async def test_montage_board_fallback_when_plan_has_no_person_ids(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Hero PNG есть, а план без c0N — всё равно показать персонажей в монтаже."""
+    clear_montage_board_caches()
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="текст кадра")
+    persons = wb.create_sheet("Персонажи")
+    persons.cell(row=1, column=2, value="c01")
+    persons.cell(row=3, column=2, value="Герой")
+    persons.cell(row=1, column=3, value="c02")
+    persons.cell(row=3, column=3, value="Враг")
+    wb.save(xlsx)
+
+    chars_dir = montage_project.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    (chars_dir / "c01.png").write_bytes(b"a")
+    (chars_dir / "c02.png").write_bytes(b"b")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="из БД",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    refs = board["frames"][0]["character_refs"]
+    assert [r["id"] for r in refs] == ["c01", "c02"]
+    assert all(r["image_url"] for r in refs)
+
+
+@pytest.mark.asyncio
 async def test_montage_board_character_image_from_artifact(
     montage_project: Project,
     session: AsyncSession,
