@@ -22,6 +22,12 @@ BUNDLED_PROMPTS_ROOT = REPO_ROOT / "prompts"
 PROMPTS_ROOT = BUNDLED_PROMPTS_ROOT
 
 _STASH_MSG_PREFIX = "studio: автосохранение перед обновлением"
+# Доп. префиксы (hotfix / ручные stash) — тоже сканируем на prompts/.
+_STASH_MSG_EXTRA = (
+    "before-hotfix-pull-",
+    "studio:",
+    "автосохранение",
+)
 
 
 def user_prompts_root() -> Path:
@@ -159,6 +165,14 @@ def migrate_user_prompts_to_data(*, dry_run: bool = False) -> dict[str, int]:
     if not BUNDLED_PROMPTS_ROOT.is_dir():
         return stats
     user_root = ensure_user_prompts_root()
+    # active_variants.json — если только в bundled, подтянуть в user.
+    bundled_active = BUNDLED_PROMPTS_ROOT / "active_variants.json"
+    user_active = user_root / "active_variants.json"
+    if bundled_active.is_file() and not user_active.is_file():
+        if not dry_run:
+            user_active.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_active, user_active)
+        stats["copied"] += 1
     for src in sorted(BUNDLED_PROMPTS_ROOT.rglob("*")):
         if not src.is_file():
             continue
@@ -202,20 +216,35 @@ def migrate_user_prompts_to_data(*, dry_run: bool = False) -> dict[str, int]:
     return stats
 
 
+def _stash_message_matches(msg: str) -> bool:
+    if _STASH_MSG_PREFIX in msg:
+        return True
+    low = msg.lower()
+    return any(p.lower() in low for p in _STASH_MSG_EXTRA)
+
+
 def list_studio_update_stashes() -> list[tuple[str, str]]:
-    """(stash_ref, message) от новых к старым."""
+    """(stash_ref, message) от новых к старым — studio/hotfix и любые с prompts/."""
     r = _git_run(["stash", "list", "--format=%gd|%s"])
     if r.returncode != 0:
         return []
     out: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for line in r.stdout.splitlines():
         if "|" not in line:
             continue
         ref, msg = line.split("|", 1)
         ref = ref.strip()
         msg = msg.strip()
-        if _STASH_MSG_PREFIX in msg:
-            out.append((ref, msg))
+        if not _stash_message_matches(msg):
+            # Fallback: stash содержит prompts/* (даже без studio-префикса).
+            files = extract_prompt_files_from_stash(ref)
+            if not files:
+                continue
+        if ref in seen:
+            continue
+        seen.add(ref)
+        out.append((ref, msg))
     return out
 
 

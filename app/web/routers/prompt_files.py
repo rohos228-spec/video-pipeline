@@ -36,7 +36,6 @@ from app.services.prompt_library import (
     prompt_path,
     read_prompt,
     resolve_project_prompt_with_source,
-    step_dir,
 )
 from app.web.deps import get_session
 
@@ -156,14 +155,15 @@ async def resolve_prompt_for_project(
 
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
 async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
-    """Список .md-файлов в `prompts/<step>/`."""
+    """Список .md: overlay data/prompts/ + bundled prompts/ (не только user-dir)."""
     _ensure_step(step_code)
     bootstrap_saved_at_from_history(step_code)
-    folder = step_dir(step_code)
     out: list[PromptFileInfo] = []
     for name in list_prompts(step_code):
-        p = folder / f"{name}.md"
-        if not p.exists():
+        # Важно: prompt_path (user→bundled), НЕ step_dir (только data/prompts/).
+        # Иначе после overlay UI показывает «Папка пуста» на всех нодах.
+        p = prompt_path(step_code, name)
+        if not p.is_file():
             continue
         stat = p.stat()
         out.append(

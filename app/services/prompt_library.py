@@ -301,6 +301,8 @@ def _list_prompts_in_dir(step_code: str) -> list[str]:
 
 def prompt_path(step_code: str, name: str) -> Path:
     """Путь к .md для чтения (overlay) или будущей записи (user)."""
+    if is_excel_gpt_prompt_step(step_code):
+        return resolve_excel_gpt_prompt_path(name)
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
@@ -337,21 +339,38 @@ def write_prompt(step_code: str, name: str, content: str) -> Path:
 
 
 def delete_prompt(step_code: str, name: str) -> bool:
-    """Удалить файл варианта. `default` удалять нельзя.
-    Возвращает True если файл был удалён."""
+    """Удалить пользовательский файл варианта. `default` и bundled — нельзя.
+
+    Удаляет только из data/prompts/ (user overlay). Bundled prompts/ не трогаем.
+    """
     if name == DEFAULT_NAME:
         raise ValueError("default удалять нельзя")
-    if is_excel_gpt_prompt_step(step_code):
-        p = resolve_excel_gpt_prompt_path(name)
-        if not p.is_file():
-            return False
-        p.unlink()
-        return True
-    p = prompt_path(step_code, name)
-    if not p.exists():
+    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
+    if not clean:
         return False
-    p.unlink()
-    return True
+    user_root = user_prompts_root().resolve()
+    candidates: list[Path] = []
+    if is_excel_gpt_prompt_step(step_code):
+        for code in excel_gpt_source_steps():
+            folder = STEP_FOLDERS.get(code)
+            if folder:
+                candidates.append(user_root / folder / f"{clean}.md")
+    else:
+        folder = STEP_FOLDERS.get(step_code)
+        if folder:
+            candidates.append(user_root / folder / f"{clean}.md")
+    removed = False
+    for p in candidates:
+        try:
+            resolved = p.resolve()
+        except OSError:
+            continue
+        if not str(resolved).startswith(str(user_root)):
+            continue
+        if resolved.is_file():
+            resolved.unlink()
+            removed = True
+    return removed
 
 
 def _clean_variant_name(raw: str) -> str:
