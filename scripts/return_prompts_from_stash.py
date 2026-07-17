@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""Return dirty prompts/* paths from a git stash after reset --hard.
+"""Keep user prompts across Studio git update (stash + reset --hard).
 
-Used by Studio update scripts and by tests. Not an overlay / data/ migration:
-source of truth stays ``prompts/``; this only finishes the stash cycle for
-prompt paths that were local before the update.
+Runtime source of truth stays ``prompts/`` (no overlay).
+Protection layers:
+1) aside backup outside the repo (LOCALAPPDATA/TEMP) before reset
+2) return dirty prompts/* from the Studio git stash after reset
+3) safe scan of all Studio stashes on start (idempotent, no blocking stamp)
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 
+MANIFEST_NAME = "_vp_aside_manifest.json"
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    # core.quotepath=false — иначе кириллица в именах приходит как "\320\274..."
-    # и checkout по такому пути молча не находит файл.
     return subprocess.run(
         ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
         capture_output=True,
@@ -36,7 +43,6 @@ def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
 
 def _unquote_git_path(raw: str) -> str:
-    """Decode git C-quoted path if quotepath was left on."""
     s = raw.strip().replace("\\", "/")
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         inner = s[1:-1]
@@ -63,12 +69,23 @@ def _unquote_git_path(raw: str) -> str:
     return s
 
 
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def stash_has_ref(repo: Path, stash_ref: str) -> bool:
     return _git(repo, "rev-parse", "--verify", stash_ref).returncode == 0
 
 
 def list_prompt_paths_in_stash(repo: Path, stash_ref: str) -> tuple[list[str], list[str]]:
-    """Return (tracked_prompt_paths, untracked_prompt_paths)."""
     tracked: list[str] = []
     show = _git(repo, "stash", "show", "--name-only", stash_ref)
     if show.returncode == 0:
@@ -88,8 +105,7 @@ def list_prompt_paths_in_stash(repo: Path, stash_ref: str) -> tuple[list[str], l
     return tracked, untracked
 
 
-def list_studio_stash_refs(repo: Path, *, limit: int = 20) -> list[str]:
-    """Newest-first stash refs created by Studio update (or any with prompts/)."""
+def list_studio_stash_refs(repo: Path, *, limit: int = 30) -> list[str]:
     listed = _git(repo, "stash", "list", "--format=%gd|%s")
     if listed.returncode != 0:
         return []
@@ -114,7 +130,6 @@ def _blob_from_stash(repo: Path, stash_ref: str, rel: str, *, untracked: bool) -
     raw = _git_bytes(repo, "show", f"{tree}:{rel}")
     if raw.returncode != 0:
         if not untracked:
-            # try untracked tree as fallback
             raw = _git_bytes(repo, "show", f"{stash_ref}^3:{rel}")
         if raw.returncode != 0:
             return None
@@ -129,7 +144,6 @@ def _head_blob(repo: Path, rel: str) -> bytes | None:
 
 
 def _should_write_prompt(repo: Path, rel: str, content: bytes) -> bool:
-    """Write if missing, or disk still equals stock HEAD (post-reset), or content newer."""
     dest = repo / rel
     if not dest.is_file():
         return True
@@ -140,7 +154,6 @@ def _should_write_prompt(repo: Path, rel: str, content: bytes) -> bool:
     if disk == content:
         return False
     head = _head_blob(repo, rel)
-    # Disk already has non-stock edits — do not clobber.
     if head is not None and disk != head:
         return False
     return True
@@ -152,11 +165,6 @@ def return_prompts_from_stash(
     *,
     safe: bool = False,
 ) -> dict[str, object]:
-    """Checkout dirty prompts/* from stash into the working tree.
-
-    safe=True: only restore missing files or files that still match HEAD stock
-    (used on backend startup / RECOVER, so fresh local edits are not overwritten).
-    """
     report: dict[str, object] = {
         "ok": False,
         "stash_ref": stash_ref,
@@ -215,7 +223,6 @@ def return_prompts_from_all_studio_stashes(
     *,
     safe: bool = True,
 ) -> dict[str, object]:
-    """Walk Studio stashes newest→oldest and restore prompts (safe by default)."""
     refs = list_studio_stash_refs(repo)
     report: dict[str, object] = {
         "ok": True,
@@ -231,9 +238,10 @@ def return_prompts_from_all_studio_stashes(
     for ref in refs:
         one = return_prompts_from_stash(repo, ref, safe=safe)
         for rel in one.get("restored") or []:
-            if rel in seen:
+            key = str(rel)
+            if key in seen:
                 continue
-            seen.add(str(rel))
+            seen.add(key)
             report["restored"].append(rel)
         report["skipped"].extend(list(one.get("skipped") or []))
         report["errors"].extend(list(one.get("errors") or []))
@@ -242,44 +250,183 @@ def return_prompts_from_all_studio_stashes(
     return report
 
 
-def recover_prompts_on_startup_once(repo: Path | None = None) -> dict[str, object]:
-    """One-shot after update: pull prompts out of Studio stashes if still missing.
+def aside_dir_for_repo(repo: Path) -> Path:
+    """Backup location OUTSIDE the git repo (survives reset --hard)."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TMPDIR") or os.environ.get("TMP")
+    if not base:
+        base = tempfile.gettempdir()
+    # Isolate by repo path hash so multiple installs do not clash.
+    key = _sha256_bytes(str(repo.resolve()).encode("utf-8"))[:12]
+    return Path(base) / "video-pipeline" / f"prompts_aside_{key}"
 
-    Stamp: ``data/.prompts_studio_stash_recover_done`` — does not re-run forever.
-    Safe mode: never overwrites non-stock local files.
-    """
-    from app.project_root import find_project_root
-    from app.settings import settings
 
-    root = (repo or find_project_root()).resolve()
-    stamp = Path(settings.data_dir) / ".prompts_studio_stash_recover_done"
-    if stamp.is_file():
-        return {"ok": True, "note": "already recovered once", "stamp": str(stamp)}
+def _iter_prompt_files(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if ".history" in rel.parts:
+            continue
+        if rel.name == MANIFEST_NAME:
+            continue
+        out.append(p)
+    return out
 
-    report = return_prompts_from_all_studio_stashes(root, safe=True)
-    try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(
-            json.dumps(
-                {
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "restored": report.get("restored"),
-                    "stashes": report.get("stashes"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+
+def backup_prompts_aside(repo: Path, *, aside: Path | None = None) -> dict[str, object]:
+    """Copy prompts/ + mark user vs HEAD stock into aside dir (outside repo)."""
+    prompts = repo / "prompts"
+    dest_root = (aside or aside_dir_for_repo(repo)).resolve()
+    report: dict[str, object] = {
+        "ok": False,
+        "aside": str(dest_root),
+        "files": 0,
+        "user_files": 0,
+    }
+    if not prompts.is_dir():
+        report["note"] = "no prompts/"
+        report["ok"] = True
+        return report
+
+    if dest_root.exists():
+        shutil.rmtree(dest_root, ignore_errors=True)
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    entries: dict[str, object] = {}
+    files = _iter_prompt_files(prompts)
+    for src in files:
+        rel = src.relative_to(prompts).as_posix()
+        repo_rel = f"prompts/{rel}"
+        disk_hash = _sha256_file(src)
+        head = _head_blob(repo, repo_rel)
+        head_hash = _sha256_bytes(head) if head is not None else None
+        is_user = head_hash is None or head_hash != disk_hash
+        entries[rel] = {"sha256": disk_hash, "user": is_user}
+        if is_user:
+            report["user_files"] = int(report["user_files"]) + 1
+        report["files"] = int(report["files"]) + 1
+        target = dest_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+
+    (dest_root / MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "repo": str(repo.resolve()),
+                "entries": entries,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
-    except OSError as exc:
-        report["stamp_error"] = str(exc)
-    report["stamp"] = str(stamp)
+        + "\n",
+        encoding="utf-8",
+    )
+    report["ok"] = True
     return report
 
 
+def restore_prompts_from_aside(
+    repo: Path,
+    *,
+    aside: Path | None = None,
+    safe: bool = True,
+) -> dict[str, object]:
+    """Restore user prompt files from aside backup into prompts/."""
+    dest_root = (aside or aside_dir_for_repo(repo)).resolve()
+    report: dict[str, object] = {
+        "ok": False,
+        "aside": str(dest_root),
+        "restored": [],
+        "skipped": [],
+        "errors": [],
+    }
+    if not dest_root.is_dir():
+        report["ok"] = True
+        report["note"] = "no aside backup"
+        return report
+
+    entries: dict[str, object] = {}
+    manifest_path = dest_root / MANIFEST_NAME
+    if manifest_path.is_file():
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = dict(raw.get("entries") or {})
+        except (OSError, json.JSONDecodeError):
+            entries = {}
+
+    prompts = repo / "prompts"
+    prompts.mkdir(parents=True, exist_ok=True)
+    for src in _iter_prompt_files(dest_root):
+        rel = src.relative_to(dest_root).as_posix()
+        meta = entries.get(rel) or {}
+        is_user = bool(meta.get("user", True)) if entries else True
+        if entries and not is_user:
+            report["skipped"].append(rel)
+            continue
+        try:
+            content = src.read_bytes()
+        except OSError as exc:
+            report["errors"].append(f"{rel}: {exc}")
+            continue
+        repo_rel = f"prompts/{rel}"
+        if safe and not _should_write_prompt(repo, repo_rel, content):
+            report["skipped"].append(rel)
+            continue
+        target = prompts / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            report["restored"].append(rel)
+        except OSError as exc:
+            report["errors"].append(f"{rel}: {exc}")
+
+    report["ok"] = not report["errors"]
+    return report
+
+
+def recover_prompts_on_startup(repo: Path | None = None) -> dict[str, object]:
+    """Idempotent safe recover: aside backup + all studio stashes.
+
+    No blocking stamp — safe mode will not clobber newer local edits.
+    """
+    try:
+        from app.project_root import find_project_root
+
+        root = (repo or find_project_root()).resolve()
+    except Exception:
+        root = (repo or Path.cwd()).resolve()
+
+    report: dict[str, object] = {"ok": True, "from_aside": None, "from_stash": None}
+    try:
+        report["from_aside"] = restore_prompts_from_aside(root, safe=True)
+    except Exception as exc:  # noqa: BLE001
+        report["from_aside"] = {"ok": False, "error": str(exc)}
+        report["ok"] = False
+    try:
+        report["from_stash"] = return_prompts_from_all_studio_stashes(root, safe=True)
+    except Exception as exc:  # noqa: BLE001
+        report["from_stash"] = {"ok": False, "error": str(exc)}
+        report["ok"] = False
+    restored = list(report["from_aside"].get("restored") or []) + list(
+        report["from_stash"].get("restored") or []
+    )
+    report["restored"] = restored
+    return report
+
+
+# Back-compat name used by app/main.py
+def recover_prompts_on_startup_once(repo: Path | None = None) -> dict[str, object]:
+    return recover_prompts_on_startup(repo)
+
+
 def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
-    """stash -u → reset --hard branch_ref → return prompts from stash@{0}."""
+    """Full protect path: aside backup → stash → reset → stash return → aside restore."""
+    aside = backup_prompts_aside(repo)
     status = _git(repo, "status", "--porcelain")
     stashed = False
     if status.stdout.strip():
@@ -295,7 +442,7 @@ def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
             return {
                 "ok": False,
                 "errors": [push.stderr.strip() or "stash push failed"],
-                "stashed": False,
+                "aside": aside,
             }
         stashed = True
 
@@ -305,40 +452,45 @@ def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
             "ok": False,
             "errors": [hard.stderr.strip() or "reset failed"],
             "stashed": stashed,
+            "aside": aside,
         }
 
-    if not stashed:
-        return {"ok": True, "stashed": False, "restored": [], "note": "nothing to stash"}
-
-    restore = return_prompts_from_stash(repo, "stash@{0}")
-    restore["stashed"] = True
-    return restore
+    stash_restore: dict[str, object] = {"restored": []}
+    if stashed:
+        stash_restore = return_prompts_from_stash(repo, "stash@{0}", safe=False)
+    aside_restore = restore_prompts_from_aside(repo, safe=True)
+    restored = sorted(
+        set(list(stash_restore.get("restored") or []) + [f"prompts/{r}" for r in (aside_restore.get("restored") or [])])
+    )
+    # normalize aside restored to prompts/ prefix for asserts
+    return {
+        "ok": bool(aside.get("ok")) and bool(stash_restore.get("ok", True)) and bool(aside_restore.get("ok")),
+        "stashed": stashed,
+        "aside": aside,
+        "stash_restore": stash_restore,
+        "aside_restore": aside_restore,
+        "restored": restored,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--stash", default="stash@{0}")
-    parser.add_argument(
-        "--all-studio",
-        action="store_true",
-        help="Scan all Studio stashes (safe restore)",
-    )
-    parser.add_argument(
-        "--startup-once",
-        action="store_true",
-        help="One-shot recover with data/ stamp",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="With --all-studio: overwrite even non-stock disk files",
-    )
+    parser.add_argument("--all-studio", action="store_true")
+    parser.add_argument("--startup-once", action="store_true", help="safe recover (aside+stash)")
+    parser.add_argument("--backup-aside", action="store_true")
+    parser.add_argument("--restore-aside", action="store_true")
+    parser.add_argument("--force", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     repo = args.repo.resolve()
-    if args.startup_once:
-        report = recover_prompts_on_startup_once(repo)
+    if args.backup_aside:
+        report = backup_prompts_aside(repo)
+    elif args.restore_aside:
+        report = restore_prompts_from_aside(repo, safe=not args.force)
+    elif args.startup_once:
+        report = recover_prompts_on_startup(repo)
     elif args.all_studio:
         report = return_prompts_from_all_studio_stashes(repo, safe=not args.force)
     else:

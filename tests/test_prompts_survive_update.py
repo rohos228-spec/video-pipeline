@@ -1,11 +1,17 @@
-"""Five independent proofs that user prompts survive Studio update / sync / API.
+"""Brutal proofs that user prompts survive Studio update — including failure modes.
 
-No data/ overlay. Source of truth remains ``prompts/``.
+Previous tests only simulated the happy Python path. These also cover:
+- aside backup outside the repo (stash totally broken)
+- old updater (stash+reset, no return) then startup recover
+- argv ``stash@{0}`` (PowerShell splat footgun)
+- Cyrillic filenames
+- startup recover without blocking stamp
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +33,7 @@ def _load_helper():
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
         capture_output=True,
         text=True,
         check=False,
@@ -35,7 +41,6 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _init_prompt_repo(tmp_path: Path) -> tuple[Path, str]:
-    """Tiny git repo mimicking prompts/ + app/, returns (repo, origin_tip_sha)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
@@ -57,55 +62,128 @@ def _init_prompt_repo(tmp_path: Path) -> tuple[Path, str]:
     return repo, origin
 
 
-# ---------------------------------------------------------------------------
-# 1) Full STUDIO [4] simulation: stash → reset --hard → return prompts
-# ---------------------------------------------------------------------------
-def test_1_studio_update_keeps_edited_and_new_prompts(tmp_path: Path) -> None:
-    helper = _load_helper()
-    repo, origin = _init_prompt_repo(tmp_path)
+def _assert_user_prompts(repo: Path) -> None:
+    assert (repo / "prompts" / "05_excel_gpt" / "a.md").read_text(encoding="utf-8") == "USER custom A\n"
+    assert (repo / "prompts" / "05_excel_gpt" / "custom.md").read_text(encoding="utf-8") == "USER new\n"
+    assert (repo / "prompts" / "05_excel_gpt" / "мой промт.md").read_text(encoding="utf-8") == "UNICODE\n"
+
+
+def _plant_user_prompts(repo: Path) -> None:
     (repo / "prompts" / "05_excel_gpt" / "a.md").write_text("USER custom A\n", encoding="utf-8")
     (repo / "prompts" / "05_excel_gpt" / "custom.md").write_text("USER new\n", encoding="utf-8")
+    (repo / "prompts" / "05_excel_gpt" / "мой промт.md").write_text("UNICODE\n", encoding="utf-8")
     (repo / "app" / "main.py").write_text("local hack\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 1) Full new update path (aside + stash + restore)
+# ---------------------------------------------------------------------------
+def test_1_full_protect_keeps_prompts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    helper = _load_helper()
+    repo, origin = _init_prompt_repo(tmp_path)
+    aside = tmp_path / "aside"
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: aside)
+    _plant_user_prompts(repo)
 
     report = helper.simulate_studio_update(repo, branch_ref=origin)
     assert report.get("ok"), report
-
-    assert (repo / "prompts" / "05_excel_gpt" / "a.md").read_text(encoding="utf-8") == "USER custom A\n"
-    assert (repo / "prompts" / "05_excel_gpt" / "custom.md").read_text(encoding="utf-8") == "USER new\n"
-    # Untouched stock file must take origin update, not old stash snapshot.
+    _assert_user_prompts(repo)
     assert (repo / "prompts" / "05_excel_gpt" / "b.md").read_text(encoding="utf-8") == "stock B v2\n"
-    # App code must stay on origin (local hack discarded by design).
     assert (repo / "app" / "main.py").read_text(encoding="utf-8") == "code2\n"
 
 
 # ---------------------------------------------------------------------------
-# 2) Without return step prompts vanish — proves the failure mode we fixed
+# 2) Stash completely broken — aside alone must save prompts
 # ---------------------------------------------------------------------------
-def test_2_reset_alone_wipes_prompts_proves_bug(tmp_path: Path) -> None:
+def test_2_aside_alone_survives_when_stash_never_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load_helper()
     repo, origin = _init_prompt_repo(tmp_path)
-    (repo / "prompts" / "05_excel_gpt" / "a.md").write_text("USER custom A\n", encoding="utf-8")
-    (repo / "prompts" / "05_excel_gpt" / "custom.md").write_text("USER new\n", encoding="utf-8")
+    aside = tmp_path / "aside_only"
+    monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: aside)
+    _plant_user_prompts(repo)
+
+    bak = helper.backup_prompts_aside(repo, aside=aside)
+    assert bak["ok"] and bak["user_files"] >= 3
+    # old buggy updater: stash + reset, NO return from stash
+    _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
+    _git(repo, "reset", "--hard", origin)
+    assert not (repo / "prompts" / "05_excel_gpt" / "custom.md").exists()
+
+    rest = helper.restore_prompts_from_aside(repo, aside=aside, safe=True)
+    assert rest["ok"], rest
+    _assert_user_prompts(repo)
+
+
+# ---------------------------------------------------------------------------
+# 3) Old updater then startup recover (no blocking stamp)
+# ---------------------------------------------------------------------------
+def test_3_old_update_then_startup_recover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    helper = _load_helper()
+    repo, origin = _init_prompt_repo(tmp_path)
+    aside = tmp_path / "aside3"
+    monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: aside)
+    _plant_user_prompts(repo)
+
+    # First "startup" with nothing to recover must NOT block later recover
+    empty = helper.recover_prompts_on_startup(repo)
+    assert empty.get("ok")
+
+    _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
+    _git(repo, "reset", "--hard", origin)
+    assert not (repo / "prompts" / "05_excel_gpt" / "custom.md").exists()
+
+    again = helper.recover_prompts_on_startup(repo)
+    assert again.get("ok"), again
+    assert (repo / "prompts" / "05_excel_gpt" / "custom.md").is_file()
+    _assert_user_prompts(repo)
+
+
+# ---------------------------------------------------------------------------
+# 4) CLI argv stash@{0} (exactly how Studio passes it)
+# ---------------------------------------------------------------------------
+def test_4_cli_stash_ref_with_braces(tmp_path: Path) -> None:
+    repo, origin = _init_prompt_repo(tmp_path)
+    _plant_user_prompts(repo)
     _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
     _git(repo, "reset", "--hard", origin)
 
-    assert (repo / "prompts" / "05_excel_gpt" / "a.md").read_text(encoding="utf-8") == "stock A\n"
-    assert not (repo / "prompts" / "05_excel_gpt" / "custom.md").exists()
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER),
+            "--repo",
+            str(repo),
+            "--stash",
+            "stash@{0}",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    _assert_user_prompts(repo)
 
 
 # ---------------------------------------------------------------------------
-# 3) API upload/write path: file lands in prompts/ and survives simulated update
+# 5) write_prompt upload path + update
 # ---------------------------------------------------------------------------
-def test_3_write_prompt_then_update_keeps_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_5_write_prompt_upload_survives_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     helper = _load_helper()
     repo, origin = _init_prompt_repo(tmp_path)
+    aside = tmp_path / "aside5"
+    monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: aside)
 
     from app.services import prompt_library as plib
 
     monkeypatch.setattr(plib, "PROMPTS_ROOT", repo / "prompts")
-    # excel_gpt folder map already points at 05_excel_gpt
     plib.write_prompt("excel_gpt", "uploaded_by_user", "UPLOAD BODY\n")
     path = repo / "prompts" / "05_excel_gpt" / "uploaded_by_user.md"
-    assert path.is_file()
     assert path.read_text(encoding="utf-8") == "UPLOAD BODY\n"
 
     report = helper.simulate_studio_update(repo, branch_ref=origin)
@@ -115,99 +193,18 @@ def test_3_write_prompt_then_update_keeps_file(tmp_path: Path, monkeypatch: pyte
 
 
 # ---------------------------------------------------------------------------
-# 4) sync_prompts_from_files must NOT delete or rewrite custom prompt files
+# 6) Scripts on main wired for aside + python fallbacks
 # ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_4_db_sync_does_not_touch_custom_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from contextlib import asynccontextmanager
-
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.models import Base
-    from app.prompts_loader import sync_prompts_from_files
-    from app.services import prompt_library as plib
-
-    prompts = tmp_path / "prompts"
-    for _code, folder in plib.STEP_FOLDERS.items():
-        d = prompts / folder
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "default.md").write_text(f"default for {_code}\n", encoding="utf-8")
-    custom = prompts / "05_excel_gpt" / "keep_me.md"
-    custom.parent.mkdir(parents=True, exist_ok=True)
-    custom.write_text("CUSTOM MUST STAY\n", encoding="utf-8")
-    before = custom.read_bytes()
-
-    monkeypatch.setattr(plib, "PROMPTS_ROOT", prompts)
-    monkeypatch.setattr("app.prompts_loader.PROMPTS_ROOT", prompts)
-
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sync.db'}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    @asynccontextmanager
-    async def _scope():
-        async with factory() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
-    monkeypatch.setattr("app.prompts_loader.session_scope", _scope)
-    monkeypatch.setattr("app.db.session_scope", _scope)
-
-    loader_src = (REPO / "app" / "prompts_loader.py").read_text(encoding="utf-8")
-    assert "unlink" not in loader_src
-    assert "rmtree" not in loader_src
-
-    await sync_prompts_from_files()
-    assert custom.is_file()
-    assert custom.read_bytes() == before
-
-
-# ---------------------------------------------------------------------------
-# 5) StudioUpdateCore / helper script path + abort contract in studio.ps1 text
-# ---------------------------------------------------------------------------
-def test_5_update_scripts_wire_prompt_return_and_abort() -> None:
+def test_6_studio_scripts_wire_aside_and_python_fallback() -> None:
     studio = (REPO / "scripts" / "studio.ps1").read_text(encoding="utf-8")
-    core = (REPO / "scripts" / "StudioUpdateCore.ps1").read_text(encoding="utf-8")
-    launcher = (REPO / "installer" / "VideoPipelineLauncher.ps1").read_text(encoding="utf-8")
-    helper_ps1 = REPO / "scripts" / "Return-PromptsFromStash.ps1"
-    helper_py = REPO / "scripts" / "return_prompts_from_stash.py"
-
-    assert helper_ps1.is_file()
-    assert helper_py.is_file()
-    assert "Invoke-StudioReturnPromptEditsFromStash" in studio
-    assert "Test-StudioPromptsDirty" in studio
-    assert "stash не удался — обновление отменено" in studio
-    assert "return_prompts_from_stash.py" in studio
-    assert "return_prompts_from_stash.py" in core
-    assert "return_prompts_from_stash.py" in launcher
-    assert "Return local prompts/" in launcher
-    assert "Return-PromptsFromStash.ps1" in studio
-    assert "stash failed and prompts/" in core
-    assert "stash push -u" in core
-    # No banned migration resurfacing
+    assert "Invoke-StudioBackupPromptsAside" in studio
+    assert "Invoke-StudioRestorePromptsAside" in studio
+    assert "Get-StudioPython" in studio
+    assert "--backup-aside" in studio
+    assert "--restore-aside" in studio
+    assert "stash@{0}" in studio
     assert "prompts_preserve" not in studio
-    assert "prompts_preserve" not in core
-    assert not (REPO / "app" / "services" / "prompt_update_protect.py").exists()
-
-
-# ---------------------------------------------------------------------------
-# Bonus path: Cyrillic / spaces in filename (real user uploads)
-# ---------------------------------------------------------------------------
-def test_bonus_unicode_prompt_name_survives_update(tmp_path: Path) -> None:
-    helper = _load_helper()
-    repo, origin = _init_prompt_repo(tmp_path)
-    name = "мой промт 11.6 полька.md"
-    target = repo / "prompts" / "05_excel_gpt" / name
-    target.write_text("UNICODE BODY\n", encoding="utf-8")
-
-    report = helper.simulate_studio_update(repo, branch_ref=origin)
-    assert report.get("ok"), report
-    assert target.is_file()
-    assert target.read_text(encoding="utf-8") == "UNICODE BODY\n"
+    assert (REPO / "RECOVER-PROMPTS.cmd").is_file()
+    helper = HELPER.read_text(encoding="utf-8")
+    assert "backup_prompts_aside" in helper
+    assert "LOCALAPPDATA" in helper

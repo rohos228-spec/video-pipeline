@@ -203,14 +203,65 @@ function Start-StudioBackendWindow {
     return $false
 }
 
-function Invoke-StudioRecoverPromptsFromAllStashes {
-    # После обновления / при старте: безопасный возврат prompts/* из studio stash.
-    $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+function Get-StudioPython {
+    $candidates = @(
+        (Join-Path $Root ".venv\Scripts\python.exe"),
+        (Join-Path $Root ".venv\bin\python"),
+        "python",
+        "py",
+        "python3"
+    )
+    foreach ($c in $candidates) {
+        if ($c -eq "py") {
+            $cmd = Get-Command py -ErrorAction SilentlyContinue
+            if ($cmd) { return @("py", "-3") }
+            continue
+        }
+        if ($c -match '[\\/]' -or $c.EndsWith(".exe")) {
+            if (Test-Path -LiteralPath $c) { return @($c) }
+            continue
+        }
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue
+        if ($cmd) { return @($c) }
+    }
+    return $null
+}
+
+function Invoke-StudioPythonHelper {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$HelperArgs
+    )
+    $pyArgs = @(Get-StudioPython)
+    if (-not $pyArgs -or $pyArgs.Count -lt 1) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: Python не найден — не могу защитить/вернуть prompts/." "Yellow"
+        return $false
+    }
     $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
-    if (-not (Test-Path -LiteralPath $helperPy)) { return }
-    Write-StudioMsg "==> Проверяю git stash на локальные prompts/ ..." "Cyan"
-    & $py $helperPy --repo $Root --all-studio 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    if (-not (Test-Path -LiteralPath $helperPy)) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: нет scripts\return_prompts_from_stash.py" "Yellow"
+        return $false
+    }
+    $exe = $pyArgs[0]
+    $prefix = @()
+    if ($pyArgs.Count -gt 1) { $prefix = $pyArgs[1..($pyArgs.Count - 1)] }
+    & $exe @prefix $helperPy @HelperArgs 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-StudioBackupPromptsAside {
+    Write-StudioMsg "==> Снимок prompts/ вне репо (LOCALAPPDATA/TEMP) перед update..." "Cyan"
+    return (Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--backup-aside", "--json"))
+}
+
+function Invoke-StudioRestorePromptsAside {
+    Write-StudioMsg "==> Возвращаю user-промты из снимка вне репо..." "Cyan"
+    return (Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--restore-aside", "--json"))
+}
+
+function Invoke-StudioRecoverPromptsFromAllStashes {
+    # Безопасный возврат prompts/*: aside + studio stash (идемпотентно).
+    Write-StudioMsg "==> Проверяю aside/stash на локальные prompts/ ..." "Cyan"
+    Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--startup-once", "--json") | Out-Null
 }
 
 function Invoke-StudioStart {
@@ -280,27 +331,19 @@ function Invoke-StudioGitStash {
 
 function Invoke-StudioReturnPromptEditsFromStash {
     # После reset --hard код с origin; локальные правки prompts/ — из stash.
-    # Без копий в data/, без overlay, без startup-recover.
     param([string]$StashRef)
     if ([string]::IsNullOrWhiteSpace($StashRef) -or $StashRef -eq "FAILED") { return }
 
-    # Python helper first (handles Cyrillic paths / quotepath); PS fallback.
-    $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
-    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
-    if (Test-Path -LiteralPath $helperPy) {
-        Write-StudioMsg "==> Возвращаю локальные правки prompts/ из $StashRef ..." "Cyan"
-        & $py $helperPy --repo $Root --stash $StashRef 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-        return
-    }
+    # Важно: stash@{0} всегда в кавычках — иначе PowerShell ест @{0} как splat.
+    Write-StudioMsg "==> Возвращаю локальные правки prompts/ из '$StashRef' ..." "Cyan"
+    $ok = Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--stash", "$StashRef", "--json")
+    if ($ok) { return }
 
     $helperPs1 = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
     if (Test-Path -LiteralPath $helperPs1) {
         & $helperPs1 -Root $Root -StashRef $StashRef
         return
     }
-
-    Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: нет helper для возврата prompts/ из stash." "Yellow"
 }
 
 function Invoke-StudioGitUpdate {
@@ -345,6 +388,8 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
+    # 1) Снимок prompts/ ВНЕ репо — главный предохранитель (stash может сдохнуть).
+    Invoke-StudioBackupPromptsAside | Out-Null
     $promptsDirty = Test-StudioPromptsDirty
     $stashRef = Invoke-StudioGitStash
     if ($stashRef -eq "FAILED") {
@@ -358,9 +403,11 @@ function Invoke-StudioUpdateAndStart {
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
     }
-    # После reset на диске уже новый scripts/* — предпочитаем helper с диска.
+    # 2) Вернуть из stash (если был)
     Invoke-StudioReturnPromptEditsFromStash -StashRef $stashRef
-    # Подстраховка: старые studio-stash (в т.ч. после прошлого обновления без возврата).
+    # 3) Вернуть user-файлы из aside (даже если stash пустой/битый)
+    Invoke-StudioRestorePromptsAside | Out-Null
+    # 4) Подстраховка: старые studio-stash + aside ещё раз safe
     Invoke-StudioRecoverPromptsFromAllStashes
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
