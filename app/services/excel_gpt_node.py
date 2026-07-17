@@ -145,6 +145,51 @@ def active_excel_gpt_node_key(project: Project) -> str | None:
     return key or None
 
 
+def excel_gpt_nodes_from_project(project: Project) -> list[dict[str, Any]]:
+    """Ноды excel_gpt из canvas_graph meta (fallback — пусто)."""
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta)
+    nodes = list((cg or {}).get("nodes") or [])
+    return [n for n in nodes if is_excel_gpt_node_type(str(n.get("type") or ""))]
+
+
+def resolve_excel_gpt_node_key_for_slot(
+    project: Project,
+    slot: int,
+    *,
+    nodes: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """Найти node_key excel_gpt для слота 1..5 (слева направо / slotIndex)."""
+    if not (1 <= int(slot) <= MAX_EXCEL_GPT_SLOTS):
+        return None
+    pool = nodes if nodes is not None else excel_gpt_nodes_from_project(project)
+    if not pool:
+        return None
+    # Prefer explicit slotIndex match.
+    for n in pool:
+        if slot_index_from_node(n) == slot:
+            nid = str(n.get("id") or "").strip()
+            if nid:
+                return nid
+    # Fallback: order by x position.
+    ordered = sorted(
+        pool,
+        key=lambda n: float((n.get("position") or {}).get("x", 0)),
+    )
+    if slot - 1 < len(ordered):
+        nid = str(ordered[slot - 1].get("id") or "").strip()
+        return nid or None
+    return None
+
+
+def active_node_key(project: Project) -> str | None:
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    key = meta.get("active_excel_gpt_node_key")
+    return str(key) if key else None
+
+
 def node_config(project: Project, node_key: str) -> dict[str, Any]:
     meta = project.meta if isinstance(project.meta, dict) else {}
     configs = meta.get("excel_gpt_nodes")
@@ -171,12 +216,6 @@ def upload_dir(project: Project, node_key: str) -> Path:
 def upload_file_path(project: Project, node_key: str, filename: str) -> Path:
     safe = Path(filename).name
     return upload_dir(project, node_key) / safe
-
-
-def active_node_key(project: Project) -> str | None:
-    meta = project.meta if isinstance(project.meta, dict) else {}
-    key = meta.get("active_excel_gpt_node_key")
-    return str(key) if key else None
 
 
 def completed_node_keys(project: Project) -> set[str]:
