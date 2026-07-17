@@ -6,7 +6,7 @@ export const XLSX_PREVIEW_MAX_COLS = 40;
 
 /** Полный просмотр во вкладке Excel студии (потолок API). */
 export const XLSX_STUDIO_MAX_ROWS = 500;
-export const XLSX_STUDIO_MAX_COLS = 200;
+export const XLSX_STUDIO_MAX_COLS = 120;
 
 export const SHEET_GENERAL_V8 = "Общий план";
 export const SHEET_GENERAL_LEGACY = "Общий план ролика";

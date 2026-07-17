@@ -20,10 +20,16 @@ VMENU_XLSX = (
 def test_studio_defaults_to_full_sheet_params() -> None:
     assert "xlsxStudioPreviewParams" in XLSX
     assert "XLSX_STUDIO_MAX_ROWS = 500" in XLSX
-    assert "XLSX_STUDIO_MAX_COLS = 200" in XLSX
+    assert "XLSX_STUDIO_MAX_COLS = 120" in XLSX
     # Default path (no focusKeyRows) starts at row 1 with full caps
     assert "startRow: 1" in XLSX
     assert "maxRows: XLSX_STUDIO_MAX_ROWS" in XLSX
+
+
+def test_studio_uses_excel_grid_not_false_500x200_banner() -> None:
+    assert "StudioExcelGrid" in STUDIO
+    assert "Показано до {XLSX_STUDIO_MAX_ROWS}" not in STUDIO
+    assert "truncated_rows" in STUDIO
 
 
 def test_studio_ui_uses_full_params_and_optional_focus_toggle() -> None:
