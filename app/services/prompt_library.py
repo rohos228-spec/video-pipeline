@@ -404,15 +404,29 @@ def resolve_project_prompt_with_source(
     node_key: str | None = None,
     slot_id: str | None = None,
 ) -> tuple[str, str]:
-    """(имя варианта, источник: slot|preferred|override|global|default)."""
-    overrides = overrides or {}
+    """(имя варианта, источник: slot|preferred|override|global|default).
 
-    if node_key and slot_id:
+    Для excel_gpt при нескольких нодах обязателен node_key: иначе все слоты
+    получают один prompt_overrides["excel_gpt"]. Node Studio пишет выбор в
+    meta.prompt_slot_variants[node_key]["main"].
+    """
+    overrides = overrides or {}
+    # Node Studio gpt-слот по умолчанию id=main.
+    effective_slot = (slot_id or "").strip() or ("main" if node_key else None)
+
+    if node_key and effective_slot:
         slot_variants = (meta or {}).get("prompt_slot_variants")
         if isinstance(slot_variants, dict):
             node_slots = slot_variants.get(node_key)
             if isinstance(node_slots, dict):
-                bound = _clean_variant_name(str(node_slots.get(slot_id) or ""))
+                bound = _clean_variant_name(str(node_slots.get(effective_slot) or ""))
+                if not bound and effective_slot == "main":
+                    # Любой gpt-слот ноды, если main пуст.
+                    for sid, variant in node_slots.items():
+                        clean = _clean_variant_name(str(variant or ""))
+                        if clean:
+                            bound = clean
+                            break
                 if bound:
                     exists = (
                         excel_gpt_prompt_exists(bound)
@@ -421,8 +435,8 @@ def resolve_project_prompt_with_source(
                     )
                     if exists:
                         return bound, "slot"
-        if slot_id and slot_id != "main":
-            preferred = _clean_variant_name(slot_id)
+        if effective_slot and effective_slot != "main":
+            preferred = _clean_variant_name(effective_slot)
             if preferred:
                 exists = (
                     excel_gpt_prompt_exists(preferred)
