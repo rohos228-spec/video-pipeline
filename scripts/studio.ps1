@@ -203,6 +203,16 @@ function Start-StudioBackendWindow {
     return $false
 }
 
+function Invoke-StudioRecoverPromptsFromAllStashes {
+    # После обновления / при старте: безопасный возврат prompts/* из studio stash.
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    if (-not (Test-Path -LiteralPath $helperPy)) { return }
+    Write-StudioMsg "==> Проверяю git stash на локальные prompts/ ..." "Cyan"
+    & $py $helperPy --repo $Root --all-studio 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+}
+
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
@@ -331,16 +341,6 @@ function Invoke-StudioPipInstall {
     }
     Write-StudioMsg "OK: Python-зависимости установлены." "Green"
     return $true
-}
-
-function Invoke-StudioRecoverPromptsFromAllStashes {
-    # После обновления / при старте: безопасный возврат prompts/* из studio stash.
-    $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
-    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
-    if (-not (Test-Path -LiteralPath $helperPy)) { return }
-    Write-StudioMsg "==> Проверяю git stash на локальные prompts/ ..." "Cyan"
-    & $py $helperPy --repo $Root --all-studio 2>&1 | ForEach-Object { Write-StudioMsg $_ }
 }
 
 function Invoke-StudioUpdateAndStart {
