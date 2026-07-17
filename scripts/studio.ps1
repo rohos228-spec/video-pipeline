@@ -236,15 +236,22 @@ function Invoke-StudioStart {
     return $true
 }
 
+function Test-StudioPromptsDirty {
+    $porcelain = @(git -C $Root status --porcelain -- prompts 2>$null)
+    return ($porcelain.Count -gt 0)
+}
+
 function Invoke-StudioGitStash {
+    # Returns stash ref (e.g. stash@{0}) when a stash was created; otherwise $null.
+    # On failure returns the string "FAILED" so caller can abort if prompts are dirty.
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-StudioMsg "ОШИБКА: git не найден в PATH." "Red"
-        return $false
+        return "FAILED"
     }
     $status = git -C $Root status --porcelain 2>&1
     if (-not $status) {
         Write-StudioMsg "Локальных изменений нет — stash не нужен." "Gray"
-        return $true
+        return $null
     }
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
@@ -252,11 +259,36 @@ function Invoke-StudioGitStash {
     Write-StudioMsg "    (data/, logs/, .env в .gitignore — не затрагиваются reset)" "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: git stash не удался. Продолжаю обновление." "Yellow"
-    } else {
-        Write-StudioMsg "OK: stash создан. Восстановить: git stash list / git stash pop" "Green"
+        Write-StudioMsg "ОШИБКА: git stash не удался." "Red"
+        return "FAILED"
     }
-    return $true
+    Write-StudioMsg "OK: stash создан (stash@{0})." "Green"
+    return 'stash@{0}'
+}
+
+function Invoke-StudioReturnPromptEditsFromStash {
+    # После reset --hard код с origin; локальные правки prompts/ — из stash.
+    # Без копий в data/, без overlay, без startup-recover.
+    param([string]$StashRef)
+    if ([string]::IsNullOrWhiteSpace($StashRef) -or $StashRef -eq "FAILED") { return }
+
+    # Python helper first (handles Cyrillic paths / quotepath); PS fallback.
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    if (Test-Path -LiteralPath $helperPy) {
+        Write-StudioMsg "==> Возвращаю локальные правки prompts/ из $StashRef ..." "Cyan"
+        & $py $helperPy --repo $Root --stash $StashRef 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+        return
+    }
+
+    $helperPs1 = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
+    if (Test-Path -LiteralPath $helperPs1) {
+        & $helperPs1 -Root $Root -StashRef $StashRef
+        return
+    }
+
+    Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: нет helper для возврата prompts/ из stash." "Yellow"
 }
 
 function Invoke-StudioGitUpdate {
@@ -301,10 +333,21 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
-    Invoke-StudioGitStash | Out-Null
+    $promptsDirty = Test-StudioPromptsDirty
+    $stashRef = Invoke-StudioGitStash
+    if ($stashRef -eq "FAILED") {
+        if ($promptsDirty) {
+            Write-StudioMsg "СТОП: есть локальные правки в prompts/, stash не удался — обновление отменено, промты не трогаю." "Red"
+            return $false
+        }
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: stash не удался, локальных правок prompts/ нет — продолжаю." "Yellow"
+        $stashRef = $null
+    }
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
     }
+    # После reset на диске уже новый scripts/* — предпочитаем helper с диска.
+    Invoke-StudioReturnPromptEditsFromStash -StashRef $stashRef
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
         & $py -c "import fastapi, sqlalchemy, playwright" 2>$null

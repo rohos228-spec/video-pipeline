@@ -670,6 +670,21 @@ function Sync-ProjectFromGit {
     } else {
         Write-Log "Git: $beforeHead -> $afterHead | STUDIO_VERSION=$(Get-StudioVersionLabel)" "DarkGreen"
     }
+    # Return only dirty prompts/* from the stash we just made (no data/ migration).
+    if ($dirty) {
+        $py = Join-Path $Root ".venv\Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
+        $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
+        if (Test-Path -LiteralPath $pyHelper) {
+            Write-Log "Return local prompts/ from stash@{0}" "Cyan"
+            & $py $pyHelper --repo $Root --stash "stash@{0}" 2>&1 | ForEach-Object { Write-Log $_ }
+        } else {
+            $psHelper = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
+            if (Test-Path -LiteralPath $psHelper) {
+                & $psHelper -Root $Root -StashRef "stash@{0}"
+            }
+        }
+    }
     if (Test-LauncherScriptChanged $beforeHead $afterHead) {
         Write-Log "Launcher updated — window will reopen after this run" "DarkOrange"
         $script:LauncherNeedsRestart = $true
