@@ -162,9 +162,24 @@ async def _wipe_script(session: AsyncSession, project: Project) -> dict[str, Any
                 voice_path,
                 e,
             )
+    # Downstream meta иначе переживёт сброс script и поднимет enrich_N_ready.
+    meta = dict(project.meta or {})
+    meta_cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            meta_cleared.append(key)
+    if meta_cleared:
+        project.meta = meta
     return {
         "script_text_cleared": changed,
         "voiceover_txt_trashed": voice_trashed,
+        "meta_cleared": meta_cleared,
     }
 
 
@@ -199,7 +214,24 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     ).scalars().all()
     for fr in frames:
         await session.delete(fr)
-    return {"frames_deleted": len(frames), "frame_artifact_files": files_deleted}
+    meta = dict(project.meta or {})
+    meta_cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            meta_cleared.append(key)
+    if meta_cleared:
+        project.meta = meta
+    return {
+        "frames_deleted": len(frames),
+        "frame_artifact_files": files_deleted,
+        "meta_cleared": meta_cleared,
+    }
 
 
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:

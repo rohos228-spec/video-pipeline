@@ -236,13 +236,28 @@ class WorkflowGraph:
             if not is_work_node_type(typ):
                 queue.extend(self._out.get(key, []))
                 continue
-            if typ in done:
+            n = self._by_id.get(key) or {}
+            if typ == EXCEL_GPT_NODE_TYPE:
+                # excel_gpt в done лежит как enrich_N — typ «excel_gpt» сам
+                # в done не попадает; иначе первые слоты перезапускаются, а
+                # при кривом slotIndex можно сразу уйти в enriching_3.
+                slot = slot_index_from_node(n)
+                if (
+                    f"enrich_{slot}" in done
+                    or key in completed_node_keys(project)
+                ):
+                    queue.extend(self._out.get(key, []))
+                    continue
+            elif typ in done:
                 queue.extend(self._out.get(key, []))
                 continue
             preds = self._effective_predecessors(key, skipped)
             if all(self._is_ready(p, project, skipped) for p in preds):
-                n = self._by_id.get(key) or {}
-                spec = spec_for_node(n) if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE else spec_for_type(typ)
+                spec = (
+                    spec_for_node(n)
+                    if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+                    else spec_for_type(typ)
+                )
                 if spec:
                     return spec.running_status
             queue.extend(self._out.get(key, []))
@@ -293,10 +308,22 @@ class WorkflowGraph:
             if ntyp in disabled:
                 queue.extend(self._out.get(key, []))
                 continue
+            n = self._by_id.get(key) or {}
+            if ntyp == EXCEL_GPT_NODE_TYPE:
+                slot = slot_index_from_node(n)
+                if (
+                    f"enrich_{slot}" in done
+                    or key in completed_node_keys(project)
+                ):
+                    queue.extend(self._out.get(key, []))
+                    continue
             preds = self._effective_predecessors(key, skipped)
             if all(self.node_type(p) in done for p in preds):
-                n = self._by_id.get(key) or {}
-                spec = spec_for_node(n) if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE else spec_for_type(ntyp)
+                spec = (
+                    spec_for_node(n)
+                    if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+                    else spec_for_type(ntyp)
+                )
                 if spec:
                     return spec.running_status
             queue.extend(self._out.get(key, []))

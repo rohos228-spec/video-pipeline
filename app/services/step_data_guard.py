@@ -206,6 +206,7 @@ async def clamp_status_to_data(
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
     from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_state import clear_stale_downstream_meta
 
     if is_user_stopped(project):
         return None
@@ -214,6 +215,7 @@ async def clamp_status_to_data(
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.
     if is_running_status(project.status):
         return None
+    clear_stale_downstream_meta(project)
     actual = await compute_actual_status(session, project)
     if status_order(project.status) > status_order(actual):
         old = project.status
