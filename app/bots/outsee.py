@@ -1098,13 +1098,14 @@ def _outsee_failure_is_stale(
     gen_idle: bool = False,
     queue_mode: bool = False,
     prompt_id_prefix: str | None = None,
+    card_scoped: bool = False,
 ) -> bool:
     """Плашка от прошлой генерации / другого кадра — не ронять текущую."""
     if _outsee_failure_text_is_noise(ftext):
         return True
     kind = _outsee_failure_kind(ftext)
     result_kinds = ("moderation", "generation", "length")
-    id_match = bool(
+    id_match = card_scoped or bool(
         queue_mode
         and prompt_id_prefix
         and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
@@ -3501,6 +3502,15 @@ class OutseeBot:
                     queue_mode=queue_mode,
                     prompt_id_prefix=prompt_id_prefix,
                 )
+                if (
+                    not failure
+                    and queue_mode
+                    and prompt_id_prefix
+                ):
+                    failure = await self._detect_queue_card_failure(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                    )
                 if failure:
                     ftext = failure["text"]
                     in_result = bool(failure.get("in_result"))
@@ -3513,6 +3523,7 @@ class OutseeBot:
                         gen_idle=gen_idle,
                         queue_mode=queue_mode,
                         prompt_id_prefix=prompt_id_prefix,
+                        card_scoped=bool(failure.get("queue_card")),
                     ):
                         stale_key = _normalize_outsee_failure_text(ftext)[:80]
                         if stale_key not in stale_logged:
@@ -4161,13 +4172,11 @@ class OutseeBot:
                     function idMatches(text) {
                         if (!idToken || idToken.length < 6) return true;
                         const frame = idToken.match(/P\\d+-F\\d+-[a-f0-9]+/i);
-                        if (!frame) return text.includes(idToken);
-                        const core = frame[0];
-                        const all = text.match(/P\\d+-F\\d+-[a-f0-9]+/gi) || [];
-                        const uniq = [...new Set(all.map((s) => s.toLowerCase()))];
-                        if (uniq.length > 1) return false;
-                        return text.includes('[ID: ' + core)
-                            || text.includes('[ID:' + core);
+                        const core = frame ? frame[0] : idToken;
+                        const low = text.toLowerCase();
+                        if (low.includes(core.toLowerCase())) return true;
+                        return low.includes('[id: ' + core.toLowerCase())
+                            || low.includes('[id:' + core.toLowerCase());
                     }
 
                     function scanRoot(root, inResult, opts) {
@@ -4182,7 +4191,7 @@ class OutseeBot:
                             if (!scanSidebar && !inResult && isInHistorySidebar(el)) continue;
                             const raw = (el.textContent || '').trim();
                             if (!raw || raw.length < 8) continue;
-                            if (!idMatches(raw)) continue;
+                            if (!inResult && !idMatches(raw)) continue;
                             const snippet = extractSnippet(raw);
                             if (!snippet) continue;
                             if (snippet.length < bestLen) {
@@ -4237,6 +4246,138 @@ class OutseeBot:
                     return {
                         "text": text,
                         "in_result": bool(raw.get("in_result")),
+                    }
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    async def _detect_queue_card_failure(
+        self,
+        page: Page,
+        *,
+        prompt_id_prefix: str,
+    ) -> dict[str, object] | None:
+        """Ошибка в карточке очереди: ID в одном узле, «Контент отклонён» — в соседнем."""
+        core = _prompt_id_core_token(prompt_id_prefix)
+        if not core:
+            return None
+        mod_js = list(_OUTSEE_MODERATION_MARKERS)
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        try:
+            raw = await page.evaluate(
+                """(args) => {
+                    const core = (args.core || '').trim();
+                    const moderation = args.moderation;
+                    const generation = args.generation;
+                    const triggers = moderation.concat(generation);
+                    if (!core) return null;
+
+                    function isTrulyVisible(el) {
+                        const cs = window.getComputedStyle(el);
+                        if (cs.display === 'none') return false;
+                        if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+                        if (parseFloat(cs.opacity) === 0) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return false;
+                        if (r.bottom <= 0 || r.right <= 0) return false;
+                        if (r.top >= window.innerHeight) return false;
+                        if (r.left >= window.innerWidth) return false;
+                        let p = el.parentElement;
+                        while (p) {
+                            const pcs = window.getComputedStyle(p);
+                            if (pcs.display === 'none') return false;
+                            if (pcs.visibility === 'hidden' || pcs.visibility === 'collapse') return false;
+                            if (parseFloat(pcs.opacity) === 0) return false;
+                            p = p.parentElement;
+                        }
+                        return true;
+                    }
+
+                    function matchText(t) {
+                        const low = t.toLowerCase();
+                        for (const tr of triggers) {
+                            if (low.includes(tr.toLowerCase())) return true;
+                        }
+                        return false;
+                    }
+
+                    function extractSnippet(text) {
+                        if (!text) return null;
+                        const lines = text.split(/[\\n\\r]+/);
+                        for (const line of lines) {
+                            const l = line.trim();
+                            if (l.length < 8) continue;
+                            if (l.startsWith('--no ') || l.startsWith('-- no ')) continue;
+                            if (l.toLowerCase().startsWith('no text,')) continue;
+                            if (matchText(l)) return l.slice(0, 320);
+                        }
+                        if (!matchText(text)) return null;
+                        return text.trim().slice(0, 320);
+                    }
+
+                    function foreignIdCount(text) {
+                        const all = text.match(/P\\d+-F\\d+-[a-f0-9]+/gi) || [];
+                        const uniq = [...new Set(all.map((s) => s.toLowerCase()))];
+                        return uniq.filter((id) => id !== core.toLowerCase()).length;
+                    }
+
+                    let anchor = null;
+                    let anchorLen = Infinity;
+                    const coreLow = core.toLowerCase();
+                    for (const el of document.querySelectorAll('*')) {
+                        const tag = (el.tagName || '').toLowerCase();
+                        if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
+                        if (!isTrulyVisible(el)) continue;
+                        const t = (el.textContent || '').trim();
+                        if (!t || !t.toLowerCase().includes(coreLow)) continue;
+                        if (t.length >= anchorLen) continue;
+                        anchor = el;
+                        anchorLen = t.length;
+                    }
+                    if (!anchor) return null;
+
+                    let card = anchor;
+                    for (let depth = 0; depth < 10 && card.parentElement; depth++) {
+                        const parent = card.parentElement;
+                        const pt = (parent.textContent || '').trim();
+                        if (!pt || pt.length > 5000) break;
+                        if (foreignIdCount(pt) > 1) break;
+                        card = parent;
+                    }
+
+                    let best = null;
+                    let bestLen = Infinity;
+                    for (const el of card.querySelectorAll('*')) {
+                        const tag = (el.tagName || '').toLowerCase();
+                        if (tag === 'textarea' || tag === 'input' || tag === 'script' || tag === 'style' || tag === 'template') continue;
+                        if (!isTrulyVisible(el)) continue;
+                        const raw = (el.textContent || '').trim();
+                        if (!raw || raw.length < 8 || raw.length > 800) continue;
+                        const snippet = extractSnippet(raw);
+                        if (!snippet) continue;
+                        if (snippet.length < bestLen) {
+                            best = snippet;
+                            bestLen = snippet.length;
+                        }
+                    }
+                    if (!best) return null;
+                    const r = card.getBoundingClientRect();
+                    const inResult = r.left >= window.innerWidth * 0.34;
+                    return { text: best, in_result: inResult };
+                }""",
+                {
+                    "core": core,
+                    "moderation": mod_js,
+                    "generation": gen_js,
+                },
+            )
+            if isinstance(raw, dict) and raw.get("text"):
+                text = str(raw["text"]).strip()
+                if text and not _outsee_failure_text_is_noise(text):
+                    return {
+                        "text": text,
+                        "in_result": bool(raw.get("in_result")),
+                        "queue_card": True,
                     }
         except Exception:  # noqa: BLE001
             pass
@@ -5283,6 +5424,15 @@ class OutseeBot:
                     queue_mode=queue_mode,
                     prompt_id_prefix=prompt_id_prefix,
                 )
+                if (
+                    not failure
+                    and queue_mode
+                    and prompt_id_prefix
+                ):
+                    failure = await self._detect_queue_card_failure(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                    )
                 if failure:
                     ftext = str(failure["text"])
                     in_result = bool(failure.get("in_result"))
@@ -5295,6 +5445,7 @@ class OutseeBot:
                         gen_idle=gen_idle,
                         queue_mode=queue_mode,
                         prompt_id_prefix=prompt_id_prefix,
+                        card_scoped=bool(failure.get("queue_card")),
                     ):
                         stale_key = _normalize_outsee_failure_text(ftext)[:80]
                         if stale_key not in stale_logged:

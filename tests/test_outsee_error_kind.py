@@ -209,3 +209,34 @@ def test_prompt_body_not_counted_as_failure_noise() -> None:
     )
     assert _outsee_failure_looks_like_prompt_body(prompt) is True
     assert _outsee_failure_text_is_noise(prompt) is True
+
+
+def test_queue_card_rejection_without_id_fail_fast() -> None:
+    """Карточка очереди: отказ без [ID: …] в тексте ошибки — fail-fast."""
+    text = "Контент отклонён"
+    prefix = "[ID: P42-F1-71b220fd]"
+    assert not _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=False,
+        elapsed=8.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+        card_scoped=True,
+    )
+
+
+def test_queue_card_without_id_still_stale_if_not_card_scoped() -> None:
+    text = "Контент отклонён"
+    prefix = "[ID: P42-F1-71b220fd]"
+    assert _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=False,
+        elapsed=8.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+        card_scoped=False,
+    )
