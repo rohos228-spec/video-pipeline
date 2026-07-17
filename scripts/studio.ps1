@@ -236,48 +236,6 @@ function Invoke-StudioStart {
     return $true
 }
 
-function Invoke-StudioPreservePrompts {
-    # Копия prompts/ в data/ (gitignore) — чтобы git reset не уничтожил кастомные .md
-    $src = Join-Path $Root "prompts"
-    $dst = Join-Path $Root "data\prompts_preserve"
-    if (-not (Test-Path $src)) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: папка prompts/ не найдена — preserve пропущен." "Yellow"
-        return $false
-    }
-    Write-StudioMsg "==> Сохраняю prompts/ → data/prompts_preserve/ ..." "Cyan"
-    if (Test-Path $dst) {
-        Remove-Item -LiteralPath $dst -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
-    Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
-    Write-StudioMsg "OK: prompts сохранены вне git (data/prompts_preserve)." "Green"
-    return $true
-}
-
-function Invoke-StudioRestorePreservedPrompts {
-    $src = Join-Path $Root "data\prompts_preserve"
-    $dst = Join-Path $Root "prompts"
-    $py = Join-Path $Root ".venv\Scripts\python.exe"
-    if (Test-Path $src) {
-        Write-StudioMsg "==> Возвращаю кастомные промты из data/prompts_preserve/ ..." "Cyan"
-        if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
-        # Копируем все файлы обратно (новее/отсутствующие перезаписываем из preserve)
-        Get-ChildItem -LiteralPath $src -Recurse -File | ForEach-Object {
-            $rel = $_.FullName.Substring($src.Length).TrimStart('\', '/')
-            $target = Join-Path $dst $rel
-            $parent = Split-Path $target -Parent
-            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-        }
-        Write-StudioMsg "OK: prompts восстановлены из preserve." "Green"
-    }
-    # Также подтянуть остатки старого overlay data/prompts/
-    if (Test-Path $py) {
-        & $py -c "from app.services.prompt_library import recover_prompts_from_data_overlay; print(recover_prompts_from_data_overlay())" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    }
-    return $true
-}
-
 function Invoke-StudioGitStash {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-StudioMsg "ОШИБКА: git не найден в PATH." "Red"
@@ -291,7 +249,7 @@ function Invoke-StudioGitStash {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
-    Write-StudioMsg "    (data/ в .gitignore; prompts/ перед reset копируются в data/prompts_preserve)" "DarkGray"
+    Write-StudioMsg "    (data/, logs/, .env в .gitignore — не затрагиваются reset)" "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: git stash не удался. Продолжаю обновление." "Yellow"
@@ -343,12 +301,10 @@ function Invoke-StudioPipInstall {
 
 function Invoke-StudioUpdateAndStart {
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
-    Invoke-StudioPreservePrompts | Out-Null
     Invoke-StudioGitStash | Out-Null
     if (-not (Invoke-StudioGitUpdate)) {
         return $false
     }
-    Invoke-StudioRestorePreservedPrompts | Out-Null
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $py) {
         & $py -c "import fastapi, sqlalchemy, playwright" 2>$null

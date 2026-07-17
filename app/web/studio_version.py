@@ -98,14 +98,6 @@ def read_studio_version() -> dict[str, str | int | bool]:
     )
 
     backend_git = _running_backend_git_short()
-    prompt_md = 0
-    try:
-        from app.services.prompt_library import PROMPTS_ROOT
-
-        if PROMPTS_ROOT.is_dir():
-            prompt_md = sum(1 for p in PROMPTS_ROOT.rglob("*.md") if p.is_file())
-    except Exception:
-        prompt_md = 0
     return {
         "build": build,
         "sha": sha,
@@ -123,7 +115,6 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "orchestrator_ok": orchestrator_ok,
         "pipeline_ok": attach_ok and orchestrator_ok,
         "pipeline_hotfix": PIPELINE_HOTFIX_ID,
-        "prompt_md": prompt_md,
     }
 
 
