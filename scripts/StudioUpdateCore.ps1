@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "devin/windows-installer"
-$script:StudioUpdateCoreId = "studio-update-core-v8"
+$script:StudioUpdateCoreId = "studio-update-core-v9"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -56,6 +56,21 @@ function Invoke-StudioGit {
         return $false
     }
     $br = $script:StudioUpdateBranch
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) {
+        if (Get-Command python -ErrorAction SilentlyContinue) { $py = "python" }
+        elseif (Get-Command py -ErrorAction SilentlyContinue) { $py = "py" }
+        else { $py = "python3" }
+    }
+    $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    if (Test-Path -LiteralPath $pyHelper) {
+        Write-StudioLog "> backup prompts/ aside (outside repo)" "Cyan"
+        if ($py -eq "py") {
+            & py -3 $pyHelper --repo $Root --backup-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        } else {
+            & $py $pyHelper --repo $Root --backup-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        }
+    }
     $promptsDirty = @((git -C $Root status --porcelain -- prompts 2>$null)).Count -gt 0
     $stashRef = $null
     $status = git -C $Root status --porcelain 2>&1
@@ -79,18 +94,27 @@ function Invoke-StudioGit {
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root checkout -B $br "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
-    if ($stashRef) {
-        $py = Join-Path $Root ".venv\Scripts\python.exe"
-        if (-not (Test-Path -LiteralPath $py)) { $py = "python3" }
-        $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
-        if (Test-Path -LiteralPath $pyHelper) {
-            Write-StudioLog "> return prompts/ from $stashRef" "Cyan"
-            & $py $pyHelper --repo $Root --stash $stashRef 2>&1 | ForEach-Object { Write-StudioLog $_ }
-        } else {
-            $helper = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
-            if (Test-Path -LiteralPath $helper) {
-                & $helper -Root $Root -StashRef $stashRef
+    if (Test-Path -LiteralPath $pyHelper) {
+        if ($stashRef) {
+            Write-StudioLog "> return prompts/ from '$stashRef'" "Cyan"
+            if ($py -eq "py") {
+                & py -3 $pyHelper --repo $Root --stash "$stashRef" --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            } else {
+                & $py $pyHelper --repo $Root --stash "$stashRef" --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
             }
+        }
+        Write-StudioLog "> restore prompts/ from aside + stashes" "Cyan"
+        if ($py -eq "py") {
+            & py -3 $pyHelper --repo $Root --restore-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            & py -3 $pyHelper --repo $Root --startup-once --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        } else {
+            & $py $pyHelper --repo $Root --restore-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            & $py $pyHelper --repo $Root --startup-once --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        }
+    } elseif ($stashRef) {
+        $helper = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
+        if (Test-Path -LiteralPath $helper) {
+            & $helper -Root $Root -StashRef $stashRef
         }
     }
     $uiOk = Restore-StudioWebUiFromGit -Root $Root

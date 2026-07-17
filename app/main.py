@@ -662,12 +662,10 @@ async def _await_background_tasks(tasks: list[asyncio.Task]) -> None:
 async def _startup_maintenance() -> None:
     """Тяжёлая инициализация в фоне — не блокирует /api/health."""
     try:
-        # One-shot: после STUDIO [4] промты могут остаться только в git stash
-        # (старый studio.ps1 делал stash+reset без возврата). Не overlay —
-        # достаём prompts/* обратно в prompts/, без затирания свежих правок.
+        # Safe recover: aside backup (LOCALAPPDATA/TEMP) + studio git stash → prompts/.
+        # Idempotent; does not clobber non-stock local edits. No data/ overlay.
         try:
             import importlib.util
-            from pathlib import Path as _Path
 
             from app.project_root import find_project_root
 
@@ -678,21 +676,16 @@ async def _startup_maintenance() -> None:
             if _spec and _spec.loader:
                 _mod = importlib.util.module_from_spec(_spec)
                 _spec.loader.exec_module(_mod)
-                stash_report = _mod.recover_prompts_on_startup_once()
-                if stash_report.get("restored"):
-                    logger.warning(
-                        "prompts recovered from studio stash: {} file(s)",
-                        len(stash_report["restored"]),
-                    )
+                stash_report = _mod.recover_prompts_on_startup()
+                n = len(stash_report.get("restored") or [])
+                if n:
+                    logger.warning("prompts recovered on startup: {} file(s)", n)
                 else:
-                    logger.info(
-                        "prompts studio-stash recover: {}",
-                        stash_report.get("note") or "ok",
-                    )
+                    logger.info("prompts startup recover: ok (nothing to restore)")
             else:
-                logger.warning("prompts studio-stash helper missing: {}", _helper)
+                logger.warning("prompts recover helper missing: {}", _helper)
         except Exception as stash_exc:  # noqa: BLE001
-            logger.warning("prompts studio-stash recover skipped: {}", stash_exc)
+            logger.warning("prompts startup recover skipped: {}", stash_exc)
 
         from app.db import session_scope
         from app.services.local_library import ensure_library_dirs, import_existing_prompts
