@@ -896,6 +896,9 @@ _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "content reject",
     "не прошёл модер",
     "не прошел модер",
+    "не прошла модер",
+    "аудиодорожка видео не прошла",
+    "аудиодорожка не прошла",
     "содержит запрещ",
     "запрещён",
     "запрещен",
@@ -905,10 +908,14 @@ _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "нарушает правила",
     "policy violation",
     "moderation",
+    "отклонён",
+    "отклонен",
 )
 _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "ошибка генера",
-    "ошибк",  # «Ошибка», «Произошла ошибка»
+    "произошла ошибка",
+    "ошибка veo",
+    "ошибка kling",
     "не удалось сгенер",
     "не удалось создать",
     "generation failed",
@@ -919,6 +926,8 @@ _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "повторите попытку",
     "try again",
     "unable to generate",
+    "отказ в генерации",
+    "генерация отклон",
 )
 
 
@@ -1047,9 +1056,27 @@ def _normalize_pre_failure_baseline(
     return t
 
 
+def _outsee_failure_looks_like_prompt_body(text: str) -> bool:
+    """Ложное срабатывание: в плашку попал текст промта, а не ошибка outsee."""
+    t = " ".join(text.split()).strip().lower()
+    if not t:
+        return False
+    if t.startswith("--no ") or t.startswith("-- no "):
+        return True
+    if t.startswith("no text,") or t.startswith("no text "):
+        return True
+    if "subtitles" in t and "watermarks" in t and "captions" in t:
+        return True
+    if len(t) > 120 and " duplicated" in t and "logos" in t:
+        return True
+    return False
+
+
 def _outsee_failure_text_is_noise(text: str) -> bool:
     """Карточки истории outsee (Veo+ID) — не live-плашка. Модерацию не режем."""
     t = " ".join(text.split()).strip()
+    if _outsee_failure_looks_like_prompt_body(t):
+        return True
     if _outsee_failure_kind(t) == "moderation":
         return False
     if len(t) > _MAX_ACTIVE_FAILURE_CHARS:
@@ -1077,9 +1104,12 @@ def _outsee_failure_is_stale(
         return True
     kind = _outsee_failure_kind(ftext)
     result_kinds = ("moderation", "generation", "length")
-    if queue_mode and prompt_id_prefix and not _failure_text_matches_prompt_id(
-        ftext, prompt_id_prefix
-    ):
+    id_match = bool(
+        queue_mode
+        and prompt_id_prefix
+        and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
+    )
+    if queue_mode and prompt_id_prefix and not id_match:
         # Video result often shows prompt text without `[ID: P…-F…]` token.
         if not (in_result and kind in result_kinds):
             return True
@@ -1091,20 +1121,23 @@ def _outsee_failure_is_stale(
             return False
         if gen_idle and elapsed >= 20.0:
             return False
+        # Outsee часто оставляет Generate disabled после отказа — не ждём idle.
+        if kind in result_kinds and elapsed >= 6.0:
+            return False
     if norm in baseline_failure_texts:
         return True
     # Плашка вне блока результата при активной генерации — шум из сайдбара.
     if not in_result:
         min_sidebar_sec = stale_non_result_sec
-        if (
-            queue_mode
-            and prompt_id_prefix
-            and _failure_text_matches_prompt_id(ftext, prompt_id_prefix)
-        ):
+        if id_match:
             min_sidebar_sec = 4.0
-        if not gen_idle or elapsed < min_sidebar_sec:
+        if elapsed < min_sidebar_sec:
             return True
-        norm = _normalize_outsee_failure_text(ftext)
+        # Очередь: отказ по НАШЕМУ prompt_id — fail-fast, даже если Generate ещё disabled.
+        if id_match and kind in result_kinds:
+            return False
+        if not gen_idle:
+            return True
         if norm in ("ошибка", "error"):
             return True
     return False
@@ -4106,13 +4139,16 @@ class OutseeBot:
                     }
 
                     function extractSnippet(text) {
-                        if (!text || !matchText(text) || isVeoHistoryNoise(text)) return null;
+                        if (!text || isVeoHistoryNoise(text)) return null;
                         const lines = text.split(/[\\n\\r]+/);
                         for (const line of lines) {
                             const l = line.trim();
                             if (l.length < 8) continue;
+                            if (l.startsWith('--no ') || l.startsWith('-- no ')) continue;
+                            if (l.toLowerCase().startsWith('no text,')) continue;
                             if (matchText(l)) return l.slice(0, 320);
                         }
+                        if (!matchText(text)) return null;
                         return text.trim().slice(0, 320);
                     }
 
@@ -5263,10 +5299,17 @@ class OutseeBot:
                         stale_key = _normalize_outsee_failure_text(ftext)[:80]
                         if stale_key not in stale_logged:
                             stale_logged.add(stale_key)
-                            logger.debug(
+                            log_fn = (
+                                logger.warning
+                                if elapsed >= 45.0
+                                and _outsee_failure_kind(ftext) in ("moderation", "generation")
+                                else logger.debug
+                            )
+                            log_fn(
                                 "_wait_video_url_strict: игнорирую stale "
-                                "плашку (in_result={}): {}",
+                                "плашку (in_result={}, gen_idle={}): {}",
                                 in_result,
+                                gen_idle,
                                 ftext[:80],
                             )
                     else:

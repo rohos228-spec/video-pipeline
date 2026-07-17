@@ -9,6 +9,8 @@ from app.bots.outsee import (
     _failure_text_matches_prompt_id,
     _normalize_pre_failure_baseline,
     _outsee_failure_is_stale,
+    _outsee_failure_looks_like_prompt_body,
+    _outsee_failure_text_is_noise,
     _raise_outsee_failure,
     outsee_error_is_moderation,
     outsee_error_kind,
@@ -166,3 +168,44 @@ def test_foreign_queue_moderation_without_prompt_id_stays_stale() -> None:
         queue_mode=True,
         prompt_id_prefix=prefix,
     )
+
+
+def test_queue_rejection_fail_fast_while_generate_disabled() -> None:
+    """Регрессия: отказ в очереди по нашему ID — не ждать gen_idle 5 мин."""
+    text = "[ID: P42-F1-5bbec734] Контент отклонён"
+    prefix = "[ID: P42-F1-5bbec734]"
+    assert not _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=False,
+        elapsed=8.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+    )
+
+
+def test_video_audio_moderation_in_result_without_gen_idle() -> None:
+    text = (
+        "парень плачетКонтент отклонён"
+        "Аудиодорожка видео не прошла модерацию"
+    )
+    prefix = "[ID: P42-F1-abc12345]"
+    assert not _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=True,
+        elapsed=8.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix=prefix,
+    )
+
+
+def test_prompt_body_not_counted_as_failure_noise() -> None:
+    prompt = (
+        "--no text, subtitles, captions, logos, watermarks, "
+        "added characters, duplicated"
+    )
+    assert _outsee_failure_looks_like_prompt_body(prompt) is True
+    assert _outsee_failure_text_is_noise(prompt) is True
