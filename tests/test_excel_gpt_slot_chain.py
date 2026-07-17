@@ -98,7 +98,7 @@ def test_enrich_ready_bypass_when_slot3_done_but_chain_active() -> None:
 
 
 def test_graph_next_reruns_done_excel_gpt_under_chain() -> None:
-    """Planner не пропускает already-done excel_gpt #3 при активной цепочке."""
+    """Planner не пропускает already-done excel_gpt #3 после enrich_2_ready."""
     nodes = [
         {"id": "n_split", "type": "split", "position": {"x": 0, "y": 0}, "data": {}},
         {
@@ -132,11 +132,90 @@ def test_graph_next_reruns_done_excel_gpt_under_chain() -> None:
             "canvas_graph": {"nodes": nodes, "edges": edges},
         },
     )
-    # Без force: слот 3 done → прыжок на hero
+    # Stale «готово» на слоте 3 НЕ даёт прыжок на hero.
     assert g.next_running_after_ready(p, ProjectStatus.enrich_2_ready) is (
-        ProjectStatus.generating_hero
+        ProjectStatus.enriching_3
     )
     p.meta["enrich_auto_chain_to"] = 3
     assert g.next_running_after_ready(p, ProjectStatus.enrich_2_ready) is (
+        ProjectStatus.enriching_3
+    )
+
+
+def test_next_excel_slot_after_ready_ignores_done() -> None:
+    from app.services.excel_gpt_node import (
+        next_excel_gpt_running_after_ready,
+        next_excel_gpt_slot_after_ready,
+        prepare_enrich_chain_for_auto_advance,
+    )
+
+    p = _project_with_excel_nodes([1, 2, 3], completed=[1, 2, 3])
+    p.status = ProjectStatus.enrich_2_ready
+    assert next_excel_gpt_slot_after_ready(p, ProjectStatus.enrich_2_ready) == 3
+    assert next_excel_gpt_running_after_ready(p, ProjectStatus.enrich_2_ready) is (
+        ProjectStatus.enriching_3
+    )
+    nxt = prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_2_ready)
+    assert nxt is ProjectStatus.enriching_3
+    assert p.meta.get("enrich_auto_chain_to") == 3
+    assert 3 not in (p.meta.get("enrich_completed_slots") or [])
+    assert "n_excel_gpt_3" not in (p.meta.get("excel_gpt_completed_keys") or [])
+
+
+def test_graph_skips_to_hero_only_after_last_excel_slot() -> None:
+    nodes = [
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 100, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 300, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e2", "source": "n_excel_gpt_2", "target": "n_hero"},
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        topic="t",
+        slug="t",
+        status=ProjectStatus.enrich_2_ready,
+        meta={
+            "enrich_completed_slots": [2],
+            "excel_gpt_completed_keys": ["n_excel_gpt_2"],
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+        },
+    )
+    assert g.next_running_after_ready(p, ProjectStatus.enrich_2_ready) is (
+        ProjectStatus.generating_hero
+    )
+
+
+def test_prepare_chain_even_if_edges_skip_slot3() -> None:
+    """Слот 3 на канвасе, но рёбра excel_2→hero — всё равно enriching_3."""
+    from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+    nodes = [
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 100, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+        {
+            "id": "n_excel_gpt_3",
+            "type": "excel_gpt",
+            "position": {"x": 200, "y": 0},
+            "data": {"slotIndex": 3},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 300, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e2", "source": "n_excel_gpt_2", "target": "n_hero"},
+    ]
+    p = _project_with_excel_nodes([2, 3], completed=[2, 3])
+    p.meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
+    p.status = ProjectStatus.enrich_2_ready
+    assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_2_ready) is (
         ProjectStatus.enriching_3
     )

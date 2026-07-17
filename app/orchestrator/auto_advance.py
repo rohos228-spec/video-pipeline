@@ -648,7 +648,25 @@ async def _apply_approve(
         )
         project.status = nxt
     else:
-        graph_nxt = await _graph_next_running(session, project, transition.ready_status)
+        # enrich_N_ready: пока на канвасе есть excel_gpt M>N — только туда.
+        # Иначе graph BFS по stale «готово» / кривым рёбрам прыгает на hero.
+        from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+        enrich_nxt = prepare_enrich_chain_for_auto_advance(
+            project, transition.ready_status
+        )
+        if enrich_nxt is not None:
+            graph_nxt = enrich_nxt
+            logger.info(
+                "auto_advance: #{} {} → next excel_gpt {} (canvas slot chain)",
+                project.id,
+                transition.ready_status.value,
+                enrich_nxt.value,
+            )
+        else:
+            graph_nxt = await _graph_next_running(
+                session, project, transition.ready_status
+            )
         if graph_nxt is None:
             logger.warning(
                 "graph: #{} no next step after {} — check canvas edges",
