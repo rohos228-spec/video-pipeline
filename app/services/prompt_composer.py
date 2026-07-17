@@ -30,17 +30,10 @@ from loguru import logger
 
 from app.services.local_library import current_prompts_root, use_local_library_prompts
 
-from app.services.prompt_paths import (
-    BUNDLED_PROMPTS_ROOT,
-    first_existing_under_prompts,
-    overlay_roots_for_read,
-    user_prompt_file,
-)
-
-PROMPTS_ROOT = BUNDLED_PROMPTS_ROOT
-BLOCKS_ROOT = BUNDLED_PROMPTS_ROOT / "blocks"
-STEPS_ROOT = BUNDLED_PROMPTS_ROOT / "steps"
-STYLES_ROOT = BUNDLED_PROMPTS_ROOT / "styles"
+PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
+BLOCKS_ROOT = PROMPTS_ROOT / "blocks"
+STEPS_ROOT = PROMPTS_ROOT / "steps"
+STYLES_ROOT = PROMPTS_ROOT / "styles"
 
 BLOCK_RE = re.compile(r"\{\{BLOCK:([a-z0-9_]+)\}\}")
 VAR_RE = re.compile(r"\{\{VAR:([A-Z0-9_]+)\}\}")
@@ -168,8 +161,6 @@ DEFAULT_VARS: dict[str, str | int] = {
     "ENRICH_3_SHEET": "план",
     "ENRICH_4_SHEET": "план",
     "ENRICH_5_SHEET": "план",
-    "EXCEL_GPT_SHEET": "Блоки",
-    "EXCEL_GPT_TASK": "",
 }
 
 # Метки приоритета для веса блока (0..1). weight >= 1.0 → без метки.
@@ -189,11 +180,16 @@ LEGACY_BLOCK_ALIASES: dict[str, str] = {
 
 
 def _prompt_roots() -> list[Path]:
-    """User data/prompts → local library → bundled repo prompts."""
+    """Local library first, repo prompts as fallback."""
     local = current_prompts_root()
-    roots: list[Path] = list(overlay_roots_for_read())
-    if use_local_library_prompts() and local.is_dir() and local not in roots:
-        roots.insert(0, local)
+    roots: list[Path] = []
+    for configured in (STEPS_ROOT.parent, BLOCKS_ROOT.parent, STYLES_ROOT.parent):
+        if configured != PROMPTS_ROOT and configured not in roots:
+            roots.append(configured)
+    if use_local_library_prompts() and local.is_dir():
+        roots.append(local)
+    if PROMPTS_ROOT not in roots:
+        roots.append(PROMPTS_ROOT)
     return roots
 
 
@@ -304,10 +300,8 @@ def write_step_template_blocks(step_id: str, blocks: list[dict[str, Any]]) -> st
 
     `step_id` должен быть уже существующим шаблоном (проверяется на
     роутере через `list_step_templates()`, чтобы исключить path traversal)."""
-    if not use_local_library_prompts():
-        from app.services.prompt_paths import user_prompt_file
-
-        path = user_prompt_file("steps", step_id, "template.md")
+    if STEPS_ROOT.parent != PROMPTS_ROOT or not use_local_library_prompts():
+        path = STEPS_ROOT / step_id / "template.md"
     else:
         path = current_prompts_root() / "steps" / step_id / "template.md"
     h1 = ""

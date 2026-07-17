@@ -34,19 +34,54 @@ from typing import Any
 
 from loguru import logger
 
-from app.services.prompt_paths import (
-    BUNDLED_PROMPTS_ROOT,
-    PROMPTS_ROOT,
-    ensure_user_prompts_root,
-    first_existing_under_prompts,
-    list_overlay_md_stems,
-    overlay_exists,
-    read_prompt_text,
-    resolve_prompt_file,
-    user_prompt_file,
-    user_prompts_root,
-    write_prompt_text,
-)
+# Корень папки `prompts/` — два уровня вверх от текущего файла:
+# app/services/prompt_library.py  →  ../../prompts/
+PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
+
+
+def recover_prompts_from_data_overlay() -> dict[str, int]:
+    """Одноразовый возврат файлов из data/prompts/ → prompts/ (после неудачного overlay).
+
+    Не затирает уже существующие файлы в prompts/, если они новее.
+    """
+    import shutil
+
+    from app.settings import settings
+
+    stats = {"scanned": 0, "restored": 0, "skipped": 0}
+    src_root = Path(settings.data_dir) / "prompts"
+    if not src_root.is_dir():
+        return stats
+    for src in sorted(src_root.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(src_root)
+        if ".history" in rel.parts:
+            continue
+        stats["scanned"] += 1
+        dest = PROMPTS_ROOT / rel
+        if dest.is_file():
+            try:
+                if dest.stat().st_mtime >= src.stat().st_mtime:
+                    stats["skipped"] += 1
+                    continue
+            except OSError:
+                pass
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            stats["restored"] += 1
+            logger.info("prompt recover: data/prompts/{} → prompts/{}", rel, dest)
+        except OSError as e:
+            logger.warning("prompt recover failed {}: {}", rel, e)
+            stats["skipped"] += 1
+    if stats["restored"]:
+        logger.info(
+            "prompt recover: restored {} file(s) from data/prompts → {}",
+            stats["restored"],
+            PROMPTS_ROOT,
+        )
+    return stats
 
 # Карта step_code (как в menu.py StepDef.code) → имя папки в `prompts/`.
 # Шаги, у которых нет мастер-промта, тут не перечисляются.
@@ -129,27 +164,27 @@ def excel_gpt_prompt_exists(name: str) -> bool:
     if not clean:
         return False
     for code in excel_gpt_source_steps():
-        folder = STEP_FOLDERS.get(code)
-        if folder and overlay_exists(folder, f"{clean}.md"):
-            return True
+        try:
+            if prompt_path(code, clean).exists():
+                return True
+        except ValueError:
+            continue
     return False
 
 
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из overlay (user → bundled); excel_gpt или legacy enrich_*."""
+    """Читать из 05_excel_gpt или legacy enrich_*; запись — всегда в excel_gpt."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
-    folder = STEP_FOLDERS[EXCEL_GPT_UNIFIED_STEP]
-    found = resolve_prompt_file(folder, f"{clean}.md")
-    if found is not None:
-        return found
+    primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
+    if primary.is_file():
+        return primary
     for code in (f"enrich_{i}" for i in range(1, 6)):
-        leg_folder = STEP_FOLDERS[code]
-        found = resolve_prompt_file(leg_folder, f"{clean}.md")
-        if found is not None:
-            return found
-    return user_prompt_file(folder, f"{clean}.md")
+        legacy = step_dir(code) / f"{clean}.md"
+        if legacy.is_file():
+            return legacy
+    return primary
 
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
 # в веб-студии нужны длинные осмысленные имена файлов.
@@ -185,11 +220,11 @@ def step_folder_name(step_code: str) -> str | None:
 
 
 def step_dir(step_code: str) -> Path:
-    """Папка промтов шага в data/prompts/ (запись пользователя)."""
+    """Абсолютный путь к папке промтов для шага. Создаёт её при отсутствии."""
     folder = STEP_FOLDERS.get(step_code)
     if folder is None:
         raise ValueError(f"step_code {step_code!r} не имеет мастер-промта")
-    path = user_prompts_root() / folder
+    path = PROMPTS_ROOT / folder
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -289,10 +324,8 @@ def list_excel_gpt_prompts() -> list[str]:
 
 
 def _list_prompts_in_dir(step_code: str) -> list[str]:
-    folder = STEP_FOLDERS.get(step_code)
-    if folder is None:
-        return []
-    names = list_overlay_md_stems(folder)
+    d = step_dir(step_code)
+    names = sorted(p.stem for p in d.glob("*.md"))
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -300,19 +333,11 @@ def _list_prompts_in_dir(step_code: str) -> list[str]:
 
 
 def prompt_path(step_code: str, name: str) -> Path:
-    """Путь к .md для чтения (overlay) или будущей записи (user)."""
-    if is_excel_gpt_prompt_step(step_code):
-        return resolve_excel_gpt_prompt_path(name)
+    """Путь к файлу `<step_dir>/<name>.md`. Не проверяет существование."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
-    folder = STEP_FOLDERS.get(step_code)
-    if folder is None:
-        raise ValueError(f"step_code {step_code!r} не имеет мастер-промта")
-    found = resolve_prompt_file(folder, f"{clean}.md")
-    if found is not None:
-        return found
-    return user_prompt_file(folder, f"{clean}.md")
+    return step_dir(step_code) / f"{clean}.md"
 
 
 def read_prompt(step_code: str, name: str) -> str:
@@ -321,56 +346,37 @@ def read_prompt(step_code: str, name: str) -> str:
         if not p.is_file():
             raise FileNotFoundError(f"prompt file not found: {p}")
         return p.read_text(encoding="utf-8")
-    folder = STEP_FOLDERS.get(step_code)
-    if folder is None:
-        raise ValueError(f"step_code {step_code!r} не имеет мастер-промта")
-    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
-    return read_prompt_text(folder, f"{clean}.md")
+    p = prompt_path(step_code, name)
+    if not p.exists():
+        raise FileNotFoundError(f"prompt file not found: {p}")
+    return p.read_text(encoding="utf-8")
 
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
         step_code = EXCEL_GPT_UNIFIED_STEP
-    folder = STEP_FOLDERS[step_code]
-    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
-    p = write_prompt_text(folder, f"{clean}.md", content=content)
+    p = prompt_path(step_code, name)
+    p.write_text(content, encoding="utf-8")
     touch_prompt_meta(step_code, name, len(content.encode("utf-8")))
     return p
 
 
 def delete_prompt(step_code: str, name: str) -> bool:
-    """Удалить пользовательский файл варианта. `default` и bundled — нельзя.
-
-    Удаляет только из data/prompts/ (user overlay). Bundled prompts/ не трогаем.
-    """
+    """Удалить файл варианта. `default` удалять нельзя.
+    Возвращает True если файл был удалён."""
     if name == DEFAULT_NAME:
         raise ValueError("default удалять нельзя")
-    clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
-    if not clean:
-        return False
-    user_root = user_prompts_root().resolve()
-    candidates: list[Path] = []
     if is_excel_gpt_prompt_step(step_code):
-        for code in excel_gpt_source_steps():
-            folder = STEP_FOLDERS.get(code)
-            if folder:
-                candidates.append(user_root / folder / f"{clean}.md")
-    else:
-        folder = STEP_FOLDERS.get(step_code)
-        if folder:
-            candidates.append(user_root / folder / f"{clean}.md")
-    removed = False
-    for p in candidates:
-        try:
-            resolved = p.resolve()
-        except OSError:
-            continue
-        if not str(resolved).startswith(str(user_root)):
-            continue
-        if resolved.is_file():
-            resolved.unlink()
-            removed = True
-    return removed
+        p = resolve_excel_gpt_prompt_path(name)
+        if not p.is_file():
+            return False
+        p.unlink()
+        return True
+    p = prompt_path(step_code, name)
+    if not p.exists():
+        return False
+    p.unlink()
+    return True
 
 
 def _clean_variant_name(raw: str) -> str:
@@ -405,9 +411,7 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
             exists = (
                 excel_gpt_prompt_exists(clean)
                 if is_excel_gpt_prompt_step(step_code)
-                else overlay_exists(
-                    STEP_FOLDERS[step_code], f"{clean}.md"
-                )
+                else prompt_path(step_code, clean).exists()
             )
             if not exists:
                 continue
@@ -458,7 +462,7 @@ def resolve_project_prompt_with_source(
                     exists = (
                         excel_gpt_prompt_exists(bound)
                         if is_excel_gpt_prompt_step(step_code)
-                        else overlay_exists(STEP_FOLDERS[step_code], f"{bound}.md")
+                        else prompt_path(step_code, bound).exists()
                     )
                     if exists:
                         return bound, "slot"
@@ -468,7 +472,7 @@ def resolve_project_prompt_with_source(
                 exists = (
                     excel_gpt_prompt_exists(preferred)
                     if is_excel_gpt_prompt_step(step_code)
-                    else overlay_exists(STEP_FOLDERS[step_code], f"{preferred}.md")
+                    else prompt_path(step_code, preferred).exists()
                 )
                 if exists:
                     return preferred, "preferred"
@@ -494,7 +498,7 @@ def resolve_project_prompt_with_source(
     chosen = overrides.get(step_code)
     if chosen:
         clean = _clean_variant_name(str(chosen))
-        if clean and overlay_exists(STEP_FOLDERS[step_code], f"{clean}.md"):
+        if clean and prompt_path(step_code, clean).exists():
             return clean, "override"
 
     from app.services.prompt_active_global import get_global_active
