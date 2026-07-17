@@ -331,6 +331,26 @@ _EMPTY_PROMPT_MARKERS: tuple[str, ...] = (
     "нет исходных данных",
 )
 
+# Целиком статус/кнопка UI, попавшие в R45/R46 вместо промта (не substring).
+_STATUS_STUB_PROMPTS: frozenset[str] = frozenset(
+    {
+        "готово",
+        "готов",
+        "done",
+        "ok",
+        "ready",
+        "skip",
+        "skipped",
+        "n/a",
+        "na",
+        "-",
+        "—",
+        "нет",
+        "none",
+        "null",
+    }
+)
+
 # Shot_02: обязательная фраза без содержания сцены — не генерация.
 _SHOT2_PREFIX_ONLY = (
     "на основе референса, запрещено делать идентичную иллюстрацию "
@@ -353,6 +373,11 @@ def is_skippable_empty_prompt(prompt: str) -> bool:
     if any(marker in low for marker in _EMPTY_PROMPT_MARKERS):
         return True
     norm = _normalize_prompt_ws(body)
+    # «готово» и т.п. — статус ноды/ячейки, не описание кадра.
+    if norm in _STATUS_STUB_PROMPTS:
+        return True
+    if re.fullmatch(r"[.\-—_/\\]+", norm):
+        return True
     for prefix in _SHOT2_PREFIX_ONLY:
         pnorm = _normalize_prompt_ws(prefix)
         if norm == pnorm:
