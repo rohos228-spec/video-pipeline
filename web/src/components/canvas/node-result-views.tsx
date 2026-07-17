@@ -419,6 +419,8 @@ function FrameImagesView({
     onSuccess: () => {
       toast.success("Персонаж заменён");
       qc.invalidateQueries({ queryKey: ["project-assets", projectId] });
+      qc.invalidateQueries({ queryKey: ["artifacts", projectId] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
       onHeroReplaced?.();
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),

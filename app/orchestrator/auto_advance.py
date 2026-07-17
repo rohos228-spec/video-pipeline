@@ -375,9 +375,11 @@ async def _next_status_after_hero_approve(
     """(single-mass parity #1, #2) Зеркалит логику single-mode callback'а
     `bot.py` (≈ строки 5757-5851) для HITL `approve_hero`:
 
-    * Excel-режим (payload содержит `excel_id`): считаем сколько персонажей
-      ещё не одобрено; если есть остаток — `generating_hero` (воркер сделает
-      следующего), иначе — `generating_items`.
+    * Excel-режим (`meta.excel_hero` / payload `excel_id`): если на диске
+      уже есть файлы всех персонажей (batch auto_mode) — следующий шаг;
+      иначе — `generating_hero`. Нельзя опираться только на HITL approved:
+      batch не создаёт карточек, и stale approve_hero по одному excel_id
+      иначе крутит hero_ready ↔ generating_hero вечно.
     * Обычный режим (payload `hero_index` / `variation_index`):
       следующая вариация / следующий герой → `generating_hero`,
       иначе → `generating_items` (=transition.next_running).
@@ -386,35 +388,52 @@ async def _next_status_after_hero_approve(
     if hitl is not None and isinstance(hitl.payload, dict):
         payload = dict(hitl.payload)
 
-    # --- Excel-hero (parity #2) ---
+    meta = dict(project.meta or {})
+    cfg = meta.get("excel_hero") or {}
+    all_ids: list[str] = []
+    for c in cfg.get("characters") or []:
+        if isinstance(c, dict):
+            cid = str((c.get("id") or "")).strip()
+            if cid:
+                all_ids.append(cid)
+
     excel_id = payload.get("excel_id")
-    if isinstance(excel_id, str) and excel_id:
-        meta = dict(project.meta or {})
-        cfg = meta.get("excel_hero") or {}
-        all_ids: list[str] = []
-        for c in (cfg.get("characters") or []):
-            if isinstance(c, dict):
-                cid = str((c.get("id") or "")).strip()
-                if cid:
-                    all_ids.append(cid)
-        approved_rows = (
-            await session.execute(
-                select(HITLRequest).where(
-                    HITLRequest.project_id == project.id,
-                    HITLRequest.kind == HITLKind.approve_hero,
-                    HITLRequest.decision == HITLDecision.approved,
-                )
-            )
-        ).scalars().all()
-        approved_ids = {
-            (r.payload or {}).get("excel_id")
-            for r in approved_rows
-            if (r.payload or {}).get("excel_id")
-        }
-        approved_ids.add(excel_id)
-        remaining = [i for i in all_ids if i not in approved_ids]
-        if remaining:
+    excel_mode = bool(all_ids) or (
+        isinstance(excel_id, str) and bool(excel_id)
+    )
+
+    # --- Excel-hero (parity #2) ---
+    if excel_mode:
+        from app.orchestrator.steps.generate_hero import (
+            _excel_ids_with_artifact,
+            _is_regen_for_excel_id,
+        )
+
+        check_ids = list(all_ids)
+        if isinstance(excel_id, str) and excel_id and excel_id not in check_ids:
+            check_ids.append(excel_id)
+
+        for cid in check_ids:
+            if await _is_regen_for_excel_id(session, project, cid):
+                return ProjectStatus.generating_hero
+
+        generated = await _excel_ids_with_artifact(session, project)
+        if all_ids:
+            missing = [i for i in all_ids if i not in generated]
+            if missing:
+                return ProjectStatus.generating_hero
+            nxt = ProjectStatus.generating_items
+            return skip_disabled_running(project, nxt) or nxt
+
+        # meta.excel_hero пуст — только excel_id из HITL.
+        if isinstance(excel_id, str) and excel_id and excel_id not in generated:
             return ProjectStatus.generating_hero
+        nxt = ProjectStatus.generating_items
+        return skip_disabled_running(project, nxt) or nxt
+
+    # Step-level auto-approve без карточки hero_index (batch / hitl=None):
+    # не подставлять hero_index=1 — иначе при hero_count>1 вечный цикл.
+    if "hero_index" not in payload and "variation_index" not in payload:
         nxt = ProjectStatus.generating_items
         return skip_disabled_running(project, nxt) or nxt
 

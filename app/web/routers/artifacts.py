@@ -39,7 +39,13 @@ async def serve_data_file(path: str = Query(..., description="Абсолютны
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     mime, _ = mimetypes.guess_type(str(candidate))
-    return FileResponse(candidate, media_type=mime or "application/octet-stream")
+    # no-cache: replace hero/scene перезаписывает тот же path — иначе UI
+    # держит старое превью из дискового/браузерного кэша.
+    return FileResponse(
+        candidate,
+        media_type=mime or "application/octet-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @router.get("", response_model=list[ArtifactDTO])
@@ -85,4 +91,8 @@ async def download_artifact(
     if not path.is_file():
         raise HTTPException(status_code=410, detail="file gone from disk")
     mime, _ = mimetypes.guess_type(str(path))
-    return FileResponse(path, media_type=mime or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=mime or "application/octet-stream",
+        headers={"Cache-Control": "no-cache"},
+    )

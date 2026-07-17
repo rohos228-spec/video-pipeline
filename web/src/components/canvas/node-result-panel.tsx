@@ -66,6 +66,8 @@ export function NodeResultPanel({
             snapshot={snapshot}
             onHeroReplaced={() => {
               qc.invalidateQueries({ queryKey: ["project-assets", projectId] });
+              qc.invalidateQueries({ queryKey: ["artifacts", projectId] });
+              qc.invalidateQueries({ queryKey: ["project", projectId] });
               qc.invalidateQueries({ queryKey: ["media-review", projectId] });
             }}
           />
