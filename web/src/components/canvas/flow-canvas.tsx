@@ -151,8 +151,12 @@ export function FlowCanvas({
   useEffect(() => {
     if (projectId == null) return;
     return subscribeWS(`projects.${projectId}`, (raw) => {
-      const evt = raw as { payload?: { stopped?: boolean } };
-      if (evt.payload?.stopped) {
+      const evt = raw as { type?: string; payload?: { stopped?: boolean } };
+      if (
+        evt.payload?.stopped ||
+        evt.type === "node_status_changed" ||
+        evt.type === "project_updated"
+      ) {
         void qc.invalidateQueries({ queryKey: ["project-run", projectId] });
         void qc.invalidateQueries({ queryKey: ["project", projectId] });
       }

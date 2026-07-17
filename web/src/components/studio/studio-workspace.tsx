@@ -454,6 +454,8 @@ export function StudioWorkspace({
           await api.runProjectStep(projectId, step, { nodeKey });
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
+          qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+          await qc.refetchQueries({ queryKey: ["project-run", projectId] });
         } catch (e) {
           toast.error(errorMessageFromUnknown(e));
         }

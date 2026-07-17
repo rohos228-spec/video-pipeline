@@ -298,11 +298,18 @@ async def start_step(
             )
     from app.services.run_sync import prepare_node_for_step_start
 
+    prepare_key = node_key
+    if step_code == "excel_gpt":
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        prepare_key = str(
+            node_key or meta.get("active_excel_gpt_node_key") or ""
+        ) or None
+
     await prepare_node_for_step_start(
         session,
         project,
         step_code,
-        node_key=node_key,
+        node_key=prepare_key,
         strict=require_node_fsm,
         explicit_ui_start=explicit_ui_start,
     )

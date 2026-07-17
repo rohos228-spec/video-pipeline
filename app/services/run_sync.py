@@ -118,7 +118,25 @@ from app.orchestrator.node_registry import (
     STEP_CODE_TO_NODE_TYPE,
 )
 from app.services.disabled_nodes import disabled_node_types
-from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE
+from app.services.excel_gpt_node import (
+    EXCEL_GPT_NODE_TYPE,
+    active_excel_gpt_node_key,
+    slot_from_ready_status,
+    slot_from_running_status,
+)
+
+
+def _canvas_node_type_for_running(status: ProjectStatus) -> str | None:
+    """Тип ноды на канвасе для running ProjectStatus (excel_gpt, не enrich_N)."""
+    if slot_from_running_status(status) is not None:
+        return EXCEL_GPT_NODE_TYPE
+    return RUNNING_TO_NODE_TYPE.get(status)
+
+
+def _canvas_node_type_for_ready(status: ProjectStatus) -> str | None:
+    if slot_from_ready_status(status) is not None:
+        return EXCEL_GPT_NODE_TYPE
+    return READY_TO_NODE_TYPE.get(status)
 
 
 async def _workflow_run_with_nodes(
@@ -254,24 +272,26 @@ async def resolve_node_run_for_step(
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return None
-    if node_key:
+    key = (node_key or "").strip() or None
+    if step_code == "excel_gpt" and not key:
+        key = active_excel_gpt_node_key(project)
+    if key:
         for nr in run.node_runs:
-            if nr.node_key == node_key:
+            if nr.node_key == key:
                 return nr
     node_type = STEP_CODE_TO_NODE_TYPE.get(step_code)
-    if step_code == "excel_gpt" and node_key:
-        for nr in run.node_runs:
-            if nr.node_key == node_key:
-                return nr
     if node_type is None:
         return None
     matches = [nr for nr in run.node_runs if nr.node_type == node_type]
     if len(matches) == 1:
         return matches[0]
-    if node_key:
+    if key:
         for nr in matches:
-            if nr.node_key == node_key:
+            if nr.node_key == key:
                 return nr
+    # Несколько excel_gpt — без явного node_key не угадываем первую.
+    if step_code == "excel_gpt" and len(matches) > 1:
+        return None
     return matches[0] if matches else None
 
 
@@ -381,6 +401,19 @@ async def prepare_node_for_step_start(
             )
         return False
     await session.flush()
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is not None:
+        await publish_node_event(
+            run.id,
+            event_type="node_status_changed",
+            node_key=nr.node_key,
+            payload={
+                "node_type": nr.node_type,
+                "from": "pending",
+                "to": nr.status.value,
+                "project_id": project.id,
+            },
+        )
     return True
 
 
@@ -392,22 +425,18 @@ async def complete_active_node_for_step(
     new_status: ProjectStatus,
 ) -> None:
     """running → done для ноды после успешного шага воркера."""
-    if new_status not in READY_TO_NODE_TYPE:
+    node_type = _canvas_node_type_for_ready(new_status)
+    if node_type is None:
+        node_type = _canvas_node_type_for_running(prev_status)
+    if node_type is None:
         return
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return
 
-    node_type = READY_TO_NODE_TYPE.get(new_status)
-    if node_type is None and prev_status in RUNNING_TO_NODE_TYPE:
-        node_type = RUNNING_TO_NODE_TYPE[prev_status]
-    if node_type is None:
-        return
-
     active_key: str | None = None
     if node_type == EXCEL_GPT_NODE_TYPE:
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        active_key = str(meta.get("active_excel_gpt_node_key") or "") or None
+        active_key = active_excel_gpt_node_key(project)
 
     for nr in run.node_runs:
         if nr.node_type != node_type:
@@ -446,17 +475,36 @@ async def mark_running_node_failed(
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return
-    node_type = RUNNING_TO_NODE_TYPE.get(project.status)
+    node_type = _canvas_node_type_for_running(project.status)
     if not node_type:
         return
+    active_key = (
+        active_excel_gpt_node_key(project) if node_type == EXCEL_GPT_NODE_TYPE else None
+    )
     for nr in run.node_runs:
-        if nr.node_type == node_type and nr.status in (
+        if nr.node_type != node_type:
+            continue
+        if active_key and nr.node_key != active_key:
+            continue
+        if nr.status in (
             NodeRunStatus.running,
             NodeRunStatus.queued,
             NodeRunStatus.waiting_hitl,
         ):
             fail_node(nr, error, project_id=project.id, initiator=initiator)
             await session.flush()
+            await publish_node_event(
+                run.id,
+                event_type="node_status_changed",
+                node_key=nr.node_key,
+                payload={
+                    "node_type": nr.node_type,
+                    "from": "running",
+                    "to": nr.status.value,
+                    "project_id": project.id,
+                    "error": error[:200],
+                },
+            )
             return
 
 
@@ -469,9 +517,14 @@ async def update_active_node_progress_text(
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return
-    node_type = RUNNING_TO_NODE_TYPE.get(project.status)
+    node_type = _canvas_node_type_for_running(project.status)
+    active_key = (
+        active_excel_gpt_node_key(project) if node_type == EXCEL_GPT_NODE_TYPE else None
+    )
     for nr in run.node_runs:
         if node_type and nr.node_type != node_type:
+            continue
+        if active_key and nr.node_key != active_key:
             continue
         if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
             nr.progress_text = (progress_text or None)
@@ -534,15 +587,22 @@ async def stop_active_running_node(
             },
         )
 
-    node_type = RUNNING_TO_NODE_TYPE.get(project.status)
+    node_type = _canvas_node_type_for_running(project.status)
     if not node_type:
         for nr in run.node_runs:
             if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
                 await _reset_and_notify(nr)
         await session.flush()
         return
+    active_key = (
+        active_excel_gpt_node_key(project) if node_type == EXCEL_GPT_NODE_TYPE else None
+    )
     for nr in run.node_runs:
-        if nr.node_type == node_type and nr.status in (
+        if nr.node_type != node_type:
+            continue
+        if active_key and nr.node_key != active_key:
+            continue
+        if nr.status in (
             NodeRunStatus.running,
             NodeRunStatus.queued,
         ):

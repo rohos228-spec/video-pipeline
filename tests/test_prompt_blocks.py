@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Base
 from app.services import prompt_blocks as pb
 
+from tests.conftest import patch_prompt_roots
+
 
 @pytest.fixture
 async def session() -> AsyncSession:
@@ -22,8 +24,8 @@ async def session() -> AsyncSession:
 
 @pytest.mark.asyncio
 async def test_create_and_update_block_logs_events(session: AsyncSession, tmp_path, monkeypatch):
-    monkeypatch.setattr(pb, "PROMPTS_ROOT", tmp_path)
-    blocks_root = tmp_path / "blocks" / "test_cat"
+    _, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    blocks_root = user / "blocks" / "test_cat"
     blocks_root.mkdir(parents=True)
 
     created = await pb.create_block(
@@ -57,8 +59,8 @@ async def test_create_and_update_block_logs_events(session: AsyncSession, tmp_pa
 
 @pytest.mark.asyncio
 async def test_rename_and_delete_block(session: AsyncSession, tmp_path, monkeypatch):
-    monkeypatch.setattr(pb, "PROMPTS_ROOT", tmp_path)
-    cat_dir = tmp_path / "blocks" / "visual_style"
+    _, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
+    cat_dir = user / "blocks" / "visual_style"
     cat_dir.mkdir(parents=True)
 
     await pb.create_block(session, "visual_style", "orig", "content v1", message="seed")
@@ -78,11 +80,11 @@ async def test_rename_and_delete_block(session: AsyncSession, tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_sync_discovers_new_block(session: AsyncSession, tmp_path, monkeypatch):
+    bundled, user = patch_prompt_roots(monkeypatch, tmp_path, folders=())
     import app.services.prompt_composer as pc
 
-    monkeypatch.setattr(pb, "PROMPTS_ROOT", tmp_path)
-    monkeypatch.setattr(pc, "PROMPTS_ROOT", tmp_path)
-    cat_dir = tmp_path / "blocks" / "visual_style"
+    monkeypatch.setattr(pc, "BUNDLED_PROMPTS_ROOT", bundled)
+    cat_dir = user / "blocks" / "visual_style"
     cat_dir.mkdir(parents=True)
     (cat_dir / "new_style.md").write_text("new visual style block", encoding="utf-8")
 

@@ -534,24 +534,23 @@ async def _prepare_node_run_for_status(
         RUNNING_TO_NODE_TYPE,
     )
     from app.services.excel_gpt_node import (
-        EXCEL_GPT_NODE_TYPE,
         EXCEL_GPT_STEP_CODE,
         slot_from_running_status,
     )
     from app.services.run_sync import prepare_node_for_step_start
 
-    node_type = RUNNING_TO_NODE_TYPE.get(running_status)
+    # enriching_N в реестре → legacy enrich_N, на канвасе ноды type=excel_gpt.
+    slot = slot_from_running_status(running_status)
     step_code: str | None = None
     node_key: str | None = None
-    if node_type is not None:
-        step_code = NODE_TYPE_TO_STEP_CODE.get(node_type)
+    if slot is not None:
+        step_code = EXCEL_GPT_STEP_CODE
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        node_key = str(meta.get("active_excel_gpt_node_key") or "") or None
     else:
-        slot = slot_from_running_status(running_status)
-        if slot is not None:
-            step_code = EXCEL_GPT_STEP_CODE
-            node_type = EXCEL_GPT_NODE_TYPE
-            meta = project.meta if isinstance(project.meta, dict) else {}
-            node_key = str(meta.get("active_excel_gpt_node_key") or "") or None
+        node_type = RUNNING_TO_NODE_TYPE.get(running_status)
+        if node_type is not None:
+            step_code = NODE_TYPE_TO_STEP_CODE.get(node_type)
     if not step_code:
         return
     try:
