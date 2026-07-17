@@ -161,8 +161,7 @@ export function NodeVMenu({
     (s) => s.kind !== "blocks",
   );
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
-  const showExcelPreview =
-    !isExcelGptNode(nodeType) && excelSlot != null && projectId != null;
+  const showExcelPreview = excelSlot != null && projectId != null;
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 

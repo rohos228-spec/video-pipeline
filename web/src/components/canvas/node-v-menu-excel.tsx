@@ -46,6 +46,7 @@ export function NodeVMenuExcelPreview({
 
   const sheet = selectedSheet || defaultSheet;
   const hasFile = sheets.length > 0;
+  const startRow = 1;
 
   const preview = useQuery({
     queryKey: ["v-menu-xlsx-preview", projectId, sheet],
@@ -55,22 +56,30 @@ export function NodeVMenuExcelPreview({
         raw: true,
         maxRows: XLSX_PREVIEW_MAX_ROWS,
         maxCols: XLSX_PREVIEW_MAX_COLS,
-        startRow: 1,
+        startRow,
       }),
     enabled: open && hasFile && Boolean(sheet),
   });
 
-  const contentRows = xlsxRowsWithContent(preview.data?.rows ?? []);
-  const rows =
+  const rawRows = preview.data?.rows ?? [];
+  const contentRows = xlsxRowsWithContent(rawRows);
+  // Keep original Excel row numbers: map filtered rows back to raw indices.
+  const rowsWithIndex: { excelRow: number; cells: string[] }[] =
     contentRows.length > 0
-      ? contentRows
+      ? contentRows.map((cells) => {
+          const idx = rawRows.indexOf(cells);
+          return { excelRow: startRow + (idx >= 0 ? idx : 0), cells };
+        })
       : hasFile
-        ? (preview.data?.rows ?? []).slice(0, 5)
+        ? rawRows.slice(0, 5).map((cells, i) => ({ excelRow: startRow + i, cells }))
         : [];
   const planText = nodeType === "plan" ? project.data?.general_plan?.trim() : undefined;
   const loading = sheetsMeta.isLoading || (hasFile && preview.isLoading);
   const sheetEmpty =
-    !loading && hasFile && Boolean(sheet) && rows.length === 0 && !planText;
+    !loading && hasFile && Boolean(sheet) && rowsWithIndex.length === 0 && !planText;
+  const truncated =
+    rawRows.length >= XLSX_PREVIEW_MAX_ROWS ||
+    (rawRows[0]?.length ?? 0) >= XLSX_PREVIEW_MAX_COLS;
 
   return (
     <div
@@ -92,6 +101,11 @@ export function NodeVMenuExcelPreview({
           <span className="text-[10px] font-medium text-emerald-200">
             {sheet ? `Лист «${sheet}»` : "project.xlsx"}
           </span>
+          {truncated ? (
+            <span className="ml-auto text-[8px] text-emerald-300/70">
+              ≤{XLSX_PREVIEW_MAX_ROWS}×{XLSX_PREVIEW_MAX_COLS}
+            </span>
+          ) : null}
         </div>
 
         {loading && (
@@ -100,19 +114,19 @@ export function NodeVMenuExcelPreview({
           </div>
         )}
 
-        {!loading && rows.length > 0 && (
-          <div className="max-h-48 overflow-auto rounded-md border border-white/10 bg-black/30">
+        {!loading && rowsWithIndex.length > 0 && (
+          <div className="max-h-[min(40vh,320px)] overflow-auto rounded-md border border-white/10 bg-black/30">
             <table className="min-w-max border-collapse text-[8px]">
               <tbody>
-                {rows.map((row, ri) => (
-                  <tr key={ri} className="border-b border-white/5 last:border-0">
+                {rowsWithIndex.map(({ excelRow, cells }) => (
+                  <tr key={excelRow} className="border-b border-white/5 last:border-0">
                     <td className="sticky left-0 border-r border-white/10 bg-black/50 px-1 text-muted-foreground">
-                      {ri + 1}
+                      {excelRow}
                     </td>
-                    {row.map((cell, ci) => (
+                    {cells.map((cell, ci) => (
                       <td
                         key={ci}
-                        className="min-w-[48px] max-w-[120px] whitespace-pre-wrap px-1 py-0.5 text-muted-foreground"
+                        className="min-w-[48px] max-w-[160px] whitespace-pre-wrap px-1 py-0.5 text-muted-foreground"
                       >
                         {cell || "—"}
                       </td>
@@ -124,7 +138,7 @@ export function NodeVMenuExcelPreview({
           </div>
         )}
 
-        {!loading && rows.length === 0 && planText && (
+        {!loading && rowsWithIndex.length === 0 && planText && (
           <p className="line-clamp-3 text-[9px] leading-snug text-foreground/80">{planText}</p>
         )}
 
@@ -132,7 +146,7 @@ export function NodeVMenuExcelPreview({
           <p className="text-[9px] text-muted-foreground">Лист „{sheet}" пуст</p>
         )}
 
-        {!loading && rows.length === 0 && !planText && !sheetEmpty && (
+        {!loading && rowsWithIndex.length === 0 && !planText && !sheetEmpty && (
           <p className="text-[9px] text-muted-foreground">
             {hasFile ? "Шаблон Excel — нажмите для просмотра" : "Файл создаётся при открытии"}
           </p>
