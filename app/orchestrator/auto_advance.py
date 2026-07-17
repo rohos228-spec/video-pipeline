@@ -535,6 +535,7 @@ async def _prepare_node_run_for_status(
     )
     from app.services.excel_gpt_node import (
         EXCEL_GPT_STEP_CODE,
+        resolve_excel_gpt_node_key_for_slot,
         slot_from_running_status,
     )
     from app.services.run_sync import prepare_node_for_step_start
@@ -545,8 +546,21 @@ async def _prepare_node_run_for_status(
     node_key: str | None = None
     if slot is not None:
         step_code = EXCEL_GPT_STEP_CODE
-        meta = project.meta if isinstance(project.meta, dict) else {}
-        node_key = str(meta.get("active_excel_gpt_node_key") or "") or None
+        meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+        node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
+        # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту.
+        if not node_key:
+            node_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+            if node_key:
+                meta["active_excel_gpt_node_key"] = node_key
+                project.meta = meta
+                await session.flush()
+                logger.info(
+                    "auto_advance: #{} excel_gpt slot={} → node_key={}",
+                    project.id,
+                    slot,
+                    node_key,
+                )
     else:
         node_type = RUNNING_TO_NODE_TYPE.get(running_status)
         if node_type is not None:

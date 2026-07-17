@@ -22,6 +22,7 @@ from app.services.project_steps import start_step
 from app.services.run_sync import (
     complete_active_node_for_step,
     prepare_node_for_step_start,
+    sync_run_for_project,
     update_active_node_progress_text,
 )
 
@@ -49,7 +50,12 @@ async def mem_db(monkeypatch):
     await engine.dispose()
 
 
-async def _seed_excel_gpt_run(scope, *, keys: list[str] | None = None):
+async def _seed_excel_gpt_run(
+    scope,
+    *,
+    keys: list[str] | None = None,
+    active_key: str | None | object = ...,
+):
     keys = keys or ["n_excel_gpt_1", "n_excel_gpt_2"]
     slug = f"excel-nr-{uuid.uuid4().hex[:8]}"
     async with scope() as session:
@@ -70,14 +76,16 @@ async def _seed_excel_gpt_run(scope, *, keys: list[str] | None = None):
         )
         session.add(wf)
         await session.flush()
+        meta: dict = {"canvas_graph": {"nodes": nodes, "edges": []}}
+        if active_key is ...:
+            meta["active_excel_gpt_node_key"] = keys[0]
+        elif active_key is not None:
+            meta["active_excel_gpt_node_key"] = active_key
         project = Project(
             slug=slug,
             topic="t",
             status=ProjectStatus.frames_ready,
-            meta={
-                "active_excel_gpt_node_key": keys[0],
-                "canvas_graph": {"nodes": nodes, "edges": []},
-            },
+            meta=meta,
         )
         session.add(project)
         await session.flush()
@@ -216,3 +224,102 @@ async def test_complete_and_progress_target_excel_gpt_not_enrich(
         nr = await session.get(NodeRun, nr_ids[key])
         assert nr is not None
         assert nr.status == NodeRunStatus.done
+
+
+@pytest.mark.asyncio
+async def test_auto_advance_multi_excel_gpt_resolves_slot_without_active_key(
+    mem_db, monkeypatch
+) -> None:
+    """Как в логах #42: 3 excel_gpt, active key пуст → NodeRun running→done по слоту."""
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_1784243040673"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=None
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    from app.orchestrator.auto_advance import _prepare_node_run_for_status
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        assert not (project.meta or {}).get("active_excel_gpt_node_key")
+        await _prepare_node_run_for_status(
+            session, project, ProjectStatus.enriching_2
+        )
+        assert (project.meta or {}).get("active_excel_gpt_node_key") == keys[1]
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.running
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.pending
+        assert (await session.get(NodeRun, nr_ids[keys[2]])).status == NodeRunStatus.pending
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        # enrich_xlsx pops active key before complete — как в проде
+        meta = dict(project.meta or {})
+        meta.pop("active_excel_gpt_node_key", None)
+        meta["excel_gpt_completed_keys"] = [keys[1]]
+        project.meta = meta
+        project.status = ProjectStatus.enrich_2_ready
+        await complete_active_node_for_step(
+            session,
+            project,
+            prev_status=ProjectStatus.enriching_2,
+            new_status=ProjectStatus.enrich_2_ready,
+        )
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_complete_recovers_pending_when_prepare_missed(
+    mem_db, monkeypatch
+) -> None:
+    """Шаг успешен, NodeRun так и остался pending — complete поднимает до done."""
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=None
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        project.status = ProjectStatus.enrich_1_ready
+        await complete_active_node_for_step(
+            session,
+            project,
+            prev_status=ProjectStatus.enriching_1,
+            new_status=ProjectStatus.enrich_1_ready,
+        )
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.pending
+
+
+@pytest.mark.asyncio
+async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> None:
+    keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_3"]
+    project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
+        mem_db, keys=keys, active_key=None
+    )
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        project.meta = {
+            **(project.meta or {}),
+            "excel_gpt_completed_keys": [keys[0], keys[1], keys[2]],
+        }
+
+    await sync_run_for_project(project_id)
+
+    async with mem_db() as session:
+        for k in keys:
+            nr = await session.get(NodeRun, nr_ids[k])
+            assert nr is not None and nr.status == NodeRunStatus.done
