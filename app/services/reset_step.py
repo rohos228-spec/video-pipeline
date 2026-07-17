@@ -236,13 +236,32 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
 
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 4a «Персонажи»: удалить hero_reference артефакты.
+
     Описания героев (project.hero_descriptions) и вариации НЕ трогаем —
     их юзер вводил руками; повторный запуск шага сгенерит ИЗ ЭТИХ ЖЕ
-    описаний. Если нужен полный сброс с описаниями — это делается через
-    отдельное hero_reset_menu_kb («🎨 Сменить стиль»)."""
-    return await _wipe_artifacts_by_kind(
+    описаний. HITL approve_hero сбрасываем — иначе после wipe batch
+    считает персонажей «одобренными» без файлов и крутит missing-ref цикл.
+    """
+    from app.models import HITLDecision, HITLKind, HITLRequest
+
+    details = await _wipe_artifacts_by_kind(
         session, project, ArtifactKind.hero_reference
     )
+    hitl_rows = (
+        await session.execute(
+            select(HITLRequest).where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+            )
+        )
+    ).scalars().all()
+    cleared = 0
+    for r in hitl_rows:
+        if r.decision is not HITLDecision.pending:
+            r.decision = HITLDecision.pending
+            cleared += 1
+    details["hitl_hero_reset"] = cleared
+    return details
 
 
 async def _wipe_items(session: AsyncSession, project: Project) -> dict[str, Any]:
