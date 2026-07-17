@@ -12,7 +12,6 @@ from app.models import Project, ProjectStatus
 from app.orchestrator.auto_advance import TRANSITIONS
 from app.orchestrator.graph.planner import load_graph_for_project
 from app.services.mass_factory import mass_parent_id
-from app.services.project_steps import start_step
 from app.services.gen_queue_run import (
     gen_queue_slot_skipped,
     is_gen_queue_run_complete,
@@ -113,13 +112,9 @@ async def on_project_removed_from_gen_queue(
 
 
 def _user_stop_blocks_queue(project: Project) -> bool:
-    """user_stop блокирует очередь, кроме new+auto_mode — там start_step сам снимет gate."""
+    """user_stop блокирует очередь (ручной ▶ снимет gate через start_step)."""
     meta = project.meta if isinstance(project.meta, dict) else {}
-    if not (meta.get("user_stop") or meta.get("mass_lane_user_stop")):
-        return False
-    if project.status is ProjectStatus.new and project.auto_mode:
-        return False
-    return True
+    return bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
 
 
 async def is_timeline_complete(session: AsyncSession, project: Project) -> bool:
@@ -180,18 +175,18 @@ async def _advance_ready_project(session: AsyncSession, project: Project) -> boo
 async def _start_or_advance_project(
     session: AsyncSession, project: Project, *, queue_pos: int
 ) -> int:
-    """Запустить new или продвинуть *_ready. Возвращает 1 если что-то стартовало."""
+    """Продвинуть *_ready. new — только ручной ▶ (не автостарт).
+
+    Возвращает 1 если что-то стартовало/продвинулось.
+    """
     if project.status is ProjectStatus.new:
-        if not project.auto_mode:
-            return 0
-        await start_step(session, project, "plan", skip_queue_guard=True)
-        await session.flush()
+        # Автопродвижение ≠ автостарт: первый шаг только руками.
         logger.info(
-            "gen_queue: started #{} (queue position {})",
+            "gen_queue: #{} new — ждём ручной ▶ (queue position {})",
             project.id,
             queue_pos,
         )
-        return 1
+        return 0
     if project.status in TRANSITIONS:
         if not project.auto_mode:
             return 0
@@ -231,19 +226,19 @@ def _idle_reason_for_project(project: Project, *, position: int) -> dict[str, An
             "reason": "failed",
             "detail": err,
         }
+    if project.status is ProjectStatus.new:
+        return {
+            "project_id": project.id,
+            "position": position,
+            "reason": "manual_start",
+            "detail": "Ожидает ручного ▶ (автостарт отключён)",
+        }
     if not project.auto_mode:
         return {
             "project_id": project.id,
             "position": position,
             "reason": "auto_mode",
             "detail": "Выключен режим ИИ (auto_mode)",
-        }
-    if project.status is ProjectStatus.new:
-        return {
-            "project_id": project.id,
-            "position": position,
-            "reason": "waiting",
-            "detail": "Ожидает запуска",
         }
     return {
         "project_id": project.id,
@@ -277,10 +272,11 @@ async def get_gen_queue_idle_info(session: AsyncSession) -> dict[str, Any] | Non
             return _idle_reason_for_project(project, position=idx + 1)
         if project.status is ProjectStatus.new and not project.auto_mode:
             return _idle_reason_for_project(project, position=idx + 1)
+        if project.status is ProjectStatus.new:
+            # auto_mode включён, но первый старт только руками
+            return _idle_reason_for_project(project, position=idx + 1)
         if project.status in TRANSITIONS and project.auto_mode:
             return _idle_reason_for_project(project, position=idx + 1)
-        if project.status is ProjectStatus.new and project.auto_mode:
-            return None
         return _idle_reason_for_project(project, position=idx + 1)
     return None
 
