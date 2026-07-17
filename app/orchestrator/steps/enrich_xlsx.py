@@ -125,6 +125,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not download_path.exists():
         download_path = xlsx_path
 
+    # Снимок входа до GPT — для превью «что нода использовала».
+    snapshot_before: Path | None = None
+    if node_key and download_path.suffix.lower() in {".xlsx", ".xls"} and download_path.is_file():
+        try:
+            from app.services.xlsx_node_snapshot import snapshot_dir
+
+            snap_dir = snapshot_dir(project, node_key)
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_before = snap_dir / "before.xlsx"
+            import shutil
+
+            shutil.copy2(download_path, snapshot_before)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] enrich_xlsx: cannot snapshot before: {}", project.id, e
+            )
+            snapshot_before = None
+
     try:
         variant, src_path, master, prompt_source = read_resolved_project_prompt(
             project,
@@ -298,7 +316,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             e,
         )
 
-    # 5. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
+    # 5. Снимок Excel этой ноды: before (вход) + after (результат GPT).
+    if node_key and download_path.suffix.lower() in {".xlsx", ".xls"}:
+        try:
+            from app.services.xlsx_node_snapshot import save_node_xlsx_snapshot
+            from app.services.excel_gpt_node import input_source as excel_input_source
+
+            src = excel_input_source(project, node_key)
+            save_node_xlsx_snapshot(
+                project,
+                node_key,
+                role="produce",
+                before_path=snapshot_before,
+                after_path=download_path,
+                source=src,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] enrich_xlsx slot={}: xlsx snapshot failed: {}",
+                project.id,
+                slot_idx,
+                e,
+            )
+
+    # 6. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
     from app.telegram.menu import status_order as _ord
 
     await session.refresh(project)

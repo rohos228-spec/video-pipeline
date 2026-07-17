@@ -348,6 +348,19 @@ async def _load_excel_hero_from_xlsx(
     cfg = {"characters": [c.to_dict() for c in chars]}
     meta["excel_hero"] = cfg
     project.meta = meta
+    try:
+        from app.services.xlsx_node_snapshot import (
+            canvas_node_keys_of_type,
+            record_consume_for_node_keys,
+        )
+
+        keys = canvas_node_keys_of_type(project, "hero")
+        if keys and xlsx.is_file():
+            record_consume_for_node_keys(
+                project, keys, used_path=xlsx, source="project_xlsx"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[#{}] excel_hero: xlsx consume snapshot skip: {}", project.id, e)
     await session.flush()
     logger.info(
         "[#{}] excel_hero load: {} персонаж(ей) из project.xlsx",

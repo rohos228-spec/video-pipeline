@@ -169,8 +169,12 @@ export function NodeStudio({
     isExcelGptNode(nodeType);
 
   const xlsxSheetsMeta = useQuery({
-    queryKey: ["xlsx-sheets", projectId],
-    queryFn: () => api.previewProjectXlsx(projectId!, { maxRows: 1 }),
+    queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId!, {
+        maxRows: 1,
+        nodeKey: nodeKey ?? undefined,
+      }),
     enabled: open && projectId != null && showExcel,
   });
 
@@ -184,6 +188,7 @@ export function NodeStudio({
     queryKey: [
       "xlsx-preview",
       projectId,
+      nodeKey ?? "live",
       xlsxSheet,
       xlsxParams.startRow,
       xlsxParams.maxRows,
@@ -196,6 +201,7 @@ export function NodeStudio({
         maxRows: xlsxParams.maxRows,
         maxCols: xlsxParams.maxCols,
         startRow: xlsxParams.startRow,
+        nodeKey: nodeKey ?? undefined,
       }),
     enabled:
       open &&

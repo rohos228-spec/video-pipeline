@@ -331,6 +331,7 @@ export function NodeVMenu({
             open={open}
             projectId={projectId!}
             nodeType={nodeType}
+            nodeKey={nodeKey}
             onOpen={() => openPromptSlot(excelSlot, onClose, onSelectPrompt)}
           />
         )}
