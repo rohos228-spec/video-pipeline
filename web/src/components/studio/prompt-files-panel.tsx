@@ -327,9 +327,15 @@ export function PromptFilesPanel({
 
       <div className="grid gap-3 md:grid-cols-[180px,1fr]">
         <ul className="flex max-h-[260px] flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/5 bg-black/20 p-1">
-          {fileList.length === 0 && (
+          {files.isError && (
+            <li className="px-2 py-2 text-[10px] text-destructive">
+              Ошибка загрузки списка промтов. Нужен бэкенд v237+ — STUDIO → [4].
+            </li>
+          )}
+          {!files.isError && fileList.length === 0 && (
             <li className="px-2 py-2 text-[10px] text-muted-foreground">
-              Папка пуста.
+              Папка пуста. Если так на всех нодах — обновите студию (бейдж v237+)
+              и перезапустите бэкенд.
             </li>
           )}
           {fileList.map((f) => (

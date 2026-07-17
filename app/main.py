@@ -681,9 +681,12 @@ async def _startup_maintenance() -> None:
         from app.services.prompt_paths import (
             migrate_user_prompts_to_data,
             restore_prompts_from_stashes,
+            seed_bundled_prompts_into_data,
         )
 
         migrate_user_prompts_to_data()
+        seed_stats = seed_bundled_prompts_into_data()
+        logger.info("prompt overlay seed on startup: {}", seed_stats)
         try:
             restore_prompts_from_stashes()
         except Exception as e:  # noqa: BLE001

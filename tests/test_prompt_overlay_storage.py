@@ -16,6 +16,7 @@ from app.services.prompt_paths import (
     export_merged_prompts_snapshot,
     migrate_user_prompts_to_data,
     restore_prompts_from_stashes,
+    seed_bundled_prompts_into_data,
 )
 
 from tests.conftest import patch_prompt_roots
@@ -64,7 +65,7 @@ def test_migrate_copies_modified_from_bundled(prompt_dirs, monkeypatch) -> None:
     assert (user / folder / "default.md").read_text(encoding="utf-8") == "user edited script"
 
 
-def test_migrate_skips_identical_to_repo(prompt_dirs, monkeypatch) -> None:
+def test_migrate_skips_identical_to_repo_but_seeds_gap(prompt_dirs, monkeypatch) -> None:
     bundled, user = prompt_dirs
     folder = STEP_FOLDERS["plan"]
     (bundled / folder).mkdir(parents=True, exist_ok=True)
@@ -76,8 +77,22 @@ def test_migrate_skips_identical_to_repo(prompt_dirs, monkeypatch) -> None:
         lambda _rel: content,
     )
     stats = migrate_user_prompts_to_data()
+    # identical-to-HEAD не считается «user copy», но seed добивает пробел
     assert stats["copied"] == 0
-    assert not (user / folder / "default.md").exists()
+    assert stats["seeded"] >= 1
+    assert (user / folder / "default.md").is_file()
+
+
+def test_seed_fills_missing_without_clobber(prompt_dirs) -> None:
+    bundled, user = prompt_dirs
+    folder = STEP_FOLDERS["plan"]
+    (bundled / folder / "stock.md").write_text("bundled stock", encoding="utf-8")
+    (user / folder / "stock.md").write_text("user keeps", encoding="utf-8")
+    (bundled / folder / "only_bundled.md").write_text("fill me", encoding="utf-8")
+    stats = seed_bundled_prompts_into_data()
+    assert stats["seeded"] >= 1
+    assert (user / folder / "stock.md").read_text(encoding="utf-8") == "user keeps"
+    assert (user / folder / "only_bundled.md").read_text(encoding="utf-8") == "fill me"
 
 
 def test_export_merged_snapshot(prompt_dirs) -> None:
