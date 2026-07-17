@@ -210,6 +210,16 @@ DEFAULTS = {
     "video_resolution": "1080p",
 }
 
+# После N ошибок video-генерации (см. outsee_retry): та же aspect, модель↓резолюция.
+VIDEO_ERROR_FALLBACK_GENERATOR_ID = "kling_2_5_turbo"
+VIDEO_ERROR_FALLBACK_RESOLUTION_ID = "720p"
+VIDEO_ERROR_FALLBACK_MODEL_SLUG = VIDEO_GENERATORS_BY_ID[
+    VIDEO_ERROR_FALLBACK_GENERATOR_ID
+].outsee_slug
+VIDEO_ERROR_FALLBACK_RESOLUTION_SLUG = VIDEO_RESOLUTIONS_BY_ID[
+    VIDEO_ERROR_FALLBACK_RESOLUTION_ID
+].outsee_slug
+
 
 def resolve_image_quality_slug(
     generator_id: str | None,
