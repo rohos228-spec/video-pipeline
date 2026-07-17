@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -29,6 +29,7 @@ import { formatProjectStatus } from "@/lib/format-labels";
 import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
 import { GenQueueDialog } from "@/components/sidebar/gen-queue-dialog";
 import { SidebarResizeHandle } from "@/components/sidebar/sidebar-resize-handle";
+import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 
 type DragPayload =
@@ -72,8 +73,13 @@ export function ProjectSidebar({
   onToggleCollapsed: () => void;
 }) {
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Свёрнутые папки / mass — в localStorage, не сбрасывать на F5 и refetch.
+  const [expanded, setExpanded] = usePersistedState<Record<string, boolean>>(
+    "vp-studio-sidebar-expanded",
+    {},
+  );
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const lastExpandedForProject = useRef<number | null>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
@@ -296,15 +302,21 @@ export function ProjectSidebar({
     onSelect(list[0].id);
   }, [projects.data, selectedProjectId, onSelect]);
 
+  // Раскрывать папку только при СМЕНЕ выбранного проекта — не на каждом
+  // refetch projects (иначе свёрнутая папка снова открывается каждые 5с).
   useEffect(() => {
+    if (selectedProjectId == null) return;
+    if (lastExpandedForProject.current === selectedProjectId) return;
     const sel = projects.data?.find((p) => p.id === selectedProjectId);
-    if (sel?.mass_parent_id != null) {
+    if (!sel) return;
+    lastExpandedForProject.current = selectedProjectId;
+    if (sel.mass_parent_id != null) {
       setExpanded((e) => ({ ...e, [`mass:${sel.mass_parent_id}`]: true }));
     }
-    if (sel?.sidebar_folder_id) {
+    if (sel.sidebar_folder_id) {
       setExpanded((e) => ({ ...e, [`folder:${sel.sidebar_folder_id}`]: true }));
     }
-  }, [selectedProjectId, projects.data]);
+  }, [selectedProjectId, projects.data, setExpanded]);
 
   const q = filter.trim().toLowerCase();
   const matchProject = (p: ProjectSummary) =>
