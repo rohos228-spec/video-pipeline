@@ -315,6 +315,8 @@ export function NodeStudio({
     onSuccess: () => {
       toast.success(`Шаг «${spec.label}» запущен`);
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      void qc.refetchQueries({ queryKey: ["project-run", projectId] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

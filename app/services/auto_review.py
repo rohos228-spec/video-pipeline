@@ -38,9 +38,7 @@ from app.services.auto_review_validators import (
     validate_script_numeric,
 )
 
-# Корень с чек-промтами.
-PROMPTS_ROOT = Path(__file__).resolve().parent.parent.parent / "prompts"
-
+from app.services.prompt_paths import first_existing_under_prompts, user_prompt_file
 
 # HITLKind → имя папки с чек-промтами.
 CHECK_FOLDER_BY_KIND: dict[HITLKind, str] = {
@@ -84,7 +82,10 @@ def get_check_prompt_path(
         snap = batch_snapshot_dir / folder / name
         if snap.exists():
             return snap
-    return PROMPTS_ROOT / folder / name
+    found = first_existing_under_prompts(folder, name)
+    if found is not None:
+        return found
+    return user_prompt_file(folder, name)
 
 
 def load_check_prompt(

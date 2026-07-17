@@ -678,6 +678,16 @@ async def _startup_maintenance() -> None:
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
+        from app.services.prompt_paths import (
+            migrate_user_prompts_to_data,
+            restore_prompts_from_stashes,
+        )
+
+        migrate_user_prompts_to_data()
+        try:
+            restore_prompts_from_stashes()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("prompt stash restore on startup failed: {}", e)
         from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
 
         await reconcile_stale_montage_jobs_on_startup()

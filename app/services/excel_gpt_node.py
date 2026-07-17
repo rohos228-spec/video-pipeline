@@ -132,6 +132,19 @@ def slot_from_running_status(status: ProjectStatus) -> int | None:
     return None
 
 
+def slot_from_ready_status(status: ProjectStatus) -> int | None:
+    for idx, (_running, ready, _code) in _SLOT_MAP.items():
+        if status is ready:
+            return idx
+    return None
+
+
+def active_excel_gpt_node_key(project: Project) -> str | None:
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    key = str(meta.get("active_excel_gpt_node_key") or "").strip()
+    return key or None
+
+
 def node_config(project: Project, node_key: str) -> dict[str, Any]:
     meta = project.meta if isinstance(project.meta, dict) else {}
     configs = meta.get("excel_gpt_nodes")

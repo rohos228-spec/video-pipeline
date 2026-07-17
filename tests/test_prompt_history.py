@@ -18,15 +18,12 @@ from app.services.prompt_history import (
     write_prompt_with_history,
 )
 from app.services.prompt_library import get_prompt_saved_at, read_prompt, write_prompt
+from tests.conftest import patch_prompt_roots
 
 
 @pytest.fixture
 def plan_step(tmp_path, monkeypatch):
-    root = tmp_path / "prompts" / "01_plan"
-    root.mkdir(parents=True)
-    prompts_root = tmp_path / "prompts"
-    monkeypatch.setattr("app.services.prompt_library.PROMPTS_ROOT", prompts_root)
-    monkeypatch.setattr("app.services.prompt_active_global.PROMPTS_ROOT", prompts_root)
+    patch_prompt_roots(monkeypatch, tmp_path, folders=("01_plan",))
     return "plan"
 
 
