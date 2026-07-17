@@ -23,8 +23,10 @@ from app.orchestrator.node_registry import (
 from app.services.excel_gpt_node import (
     EXCEL_GPT_NODE_TYPE,
     completed_node_keys,
+    excel_gpt_force_rerun_slots,
     ready_status_for_slot,
     running_status_for_slot,
+    slot_from_ready_status,
     slot_from_running_status,
     slot_index_from_node,
 )
@@ -251,10 +253,19 @@ class WorkflowGraph:
                 # excel_gpt в done лежит как enrich_N — typ «excel_gpt» сам
                 # в done не попадает; иначе первые слоты перезапускаются, а
                 # при кривом slotIndex можно сразу уйти в enriching_3.
+                # Активная цепочка enrich_auto_chain_to: даже done → переген.
                 slot = slot_index_from_node(n)
+                finished_slot = slot_from_ready_status(ready_status)
+                force_rerun = (
+                    slot in excel_gpt_force_rerun_slots(project)
+                    and (finished_slot is None or slot > finished_slot)
+                )
                 if (
-                    f"enrich_{slot}" in done
-                    or key in completed_node_keys(project)
+                    not force_rerun
+                    and (
+                        f"enrich_{slot}" in done
+                        or key in completed_node_keys(project)
+                    )
                 ):
                     queue.extend(self._out.get(key, []))
                     continue
@@ -321,9 +332,13 @@ class WorkflowGraph:
             n = self._by_id.get(key) or {}
             if ntyp == EXCEL_GPT_NODE_TYPE:
                 slot = slot_index_from_node(n)
+                force_rerun = slot in excel_gpt_force_rerun_slots(project)
                 if (
-                    f"enrich_{slot}" in done
-                    or key in completed_node_keys(project)
+                    not force_rerun
+                    and (
+                        f"enrich_{slot}" in done
+                        or key in completed_node_keys(project)
+                    )
                 ):
                     queue.extend(self._out.get(key, []))
                     continue

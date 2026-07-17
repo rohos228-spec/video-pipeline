@@ -285,14 +285,26 @@ async def start_step(
             )
         running_status = running_status_for_slot(slot_index_from_node(node))
         meta["active_excel_gpt_node_key"] = nk
-        # Цепочка до последней excel_gpt на канвасе: иначе после ready
-        # auto_advance часто молчит (gen_queue / нет auto_mode) и слот 3
-        # не стартует.
-        from app.services.excel_gpt_node import ensure_enrich_auto_chain_to
+        # Цепочка до последней excel_gpt + сброс «готово» у хвоста —
+        # иначе already-done 3-я нода пропускается и не перегенерируется.
+        from app.services.excel_gpt_node import (
+            clear_excel_gpt_tail_completion,
+            ensure_enrich_auto_chain_to,
+        )
 
         started_slot = slot_index_from_node(node)
         project.meta = meta
+        cleared = clear_excel_gpt_tail_completion(project, started_slot)
         chain_to = ensure_enrich_auto_chain_to(project, started_slot)
+        if cleared.get("slots_cleared") or cleared.get("keys_cleared"):
+            logger.info(
+                "[#{}] start_step excel_gpt: cleared done for slots>={} "
+                "slots={} keys={}",
+                project.id,
+                started_slot,
+                cleared.get("slots_cleared"),
+                cleared.get("keys_cleared"),
+            )
         if chain_to is not None:
             logger.info(
                 "[#{}] start_step excel_gpt: enrich_auto_chain_to={} "
@@ -301,6 +313,42 @@ async def start_step(
                 chain_to,
                 started_slot,
                 nk,
+            )
+        # NodeRun done → pending для хвоста, иначе UI/FSM думают «уже готово».
+        try:
+            from app.models import NodeRun, NodeRunStatus, WorkflowRun
+            from app.services.node_status_machine import reset_node_to_pending
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            run = (
+                await session.execute(
+                    select(WorkflowRun)
+                    .where(WorkflowRun.project_id == project.id)
+                    .options(selectinload(WorkflowRun.node_runs))
+                )
+            ).scalar_one_or_none()
+            if run is not None:
+                keys_reset = set(cleared.get("keys_cleared") or [])
+                if nk:
+                    keys_reset.add(nk)
+                for nr in run.node_runs:
+                    if nr.node_key not in keys_reset:
+                        continue
+                    if nr.status in (
+                        NodeRunStatus.done,
+                        NodeRunStatus.failed,
+                        NodeRunStatus.waiting_hitl,
+                        NodeRunStatus.skipped,
+                    ):
+                        reset_node_to_pending(
+                            nr, project_id=project.id, initiator="ui_restart"
+                        )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step excel_gpt: NodeRun reset skipped",
+                project.id,
+                exc_info=True,
             )
         try:
             from app.services.step_data_guard import can_enter_running
