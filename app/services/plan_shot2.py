@@ -1,7 +1,7 @@
 """Второй кадр сцены (shot_02) на листе «план» v8.
 
-Строки 16–29 — описание shot_02 (enrich_1).
-Строка 46 — промт для картинки 2.
+Строки 16–29 — описание shot_02 (enrich), не источник image-промта.
+Строка 46 — единственный промт для картинки 2 (R29/action не подставляем).
 Файл на диске: ``frame_NNN_s2_<uuid>.png``; референс — ``frame_NNN_*.png`` (без ``_s2_``).
 """
 
@@ -16,7 +16,6 @@ from openpyxl import load_workbook
 
 from app.generation_options import is_skippable_empty_prompt
 from app.services.xlsx_v8_import import (
-    ROW_IMAGE_PROMPT_V8,
     ROW_VOICEOVER_V8,
     _cell_text,
     _resolve_plan_sheet,
@@ -25,7 +24,7 @@ from app.services.xlsx_v8_import import (
 ROW_IMAGE_PROMPT_2_V8 = 46
 ROW_VIDEO_PROMPT_2_V8 = 64  # промт для видео shot_02 (аналог R48 для shot_01)
 ROW_SHOT2_ID_SHOT_V8 = 18
-ROW_SHOT2_ACTION_V8 = 29
+ROW_SHOT2_ACTION_V8 = 29  # enrich action; не использовать как image_prompt
 
 SHOT2_PROMPT_ATTR = "image_prompt_shot2"
 SHOT2_STATUS_ATTR = "shot2_status"
@@ -45,24 +44,8 @@ def plan_column_for_frame(frame_number: int) -> int:
     return frame_number + 2
 
 
-def _shot2_block_filled(ws, col: int) -> bool:
-    """Есть ли содержательное описание shot_02 в блоке строк 16–29."""
-    shot_id = (_cell_text(ws, ROW_SHOT2_ID_SHOT_V8, col) or "").strip().lower()
-    if shot_id in ("shot_02", "shot02", "02", "2"):
-        return True
-    action = (_cell_text(ws, ROW_SHOT2_ACTION_V8, col) or "").strip()
-    if len(action) >= 15:
-        return True
-    for row in range(16, 30):
-        if row in (ROW_SHOT2_ID_SHOT_V8, ROW_SHOT2_ACTION_V8):
-            continue
-        if len((_cell_text(ws, row, col) or "").strip()) >= 8:
-            return True
-    return False
-
-
 def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
-    """frame_number → данные shot_02 из xlsx."""
+    """frame_number → shot_02 только из R46 (не из блока 16–29 / R29)."""
     out: dict[int, Shot2ColumnInfo] = {}
     if not xlsx_path.is_file():
         return out
@@ -85,11 +68,6 @@ def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
                 continue
             frame_no += 1
             prompt_2 = (_cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or "").strip()
-            block = _shot2_block_filled(ws, col)
-            has = bool(prompt_2) or block
-            if has and not prompt_2 and block:
-                action = (_cell_text(ws, ROW_SHOT2_ACTION_V8, col) or "").strip()
-                prompt_2 = action
             if is_skippable_empty_prompt(prompt_2):
                 prompt_2 = ""
             out[frame_no] = Shot2ColumnInfo(
