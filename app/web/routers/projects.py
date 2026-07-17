@@ -192,7 +192,7 @@ async def create_child_project(
     project_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ProjectDetail:
-    """Дочерний проект: копия настроек родителя + закадровый текст и xlsx."""
+    """Дочерний проект: настройки/промты/gpt_text родителя; без VO/Excel/результатов."""
     from loguru import logger
 
     from app.services.project_child import (

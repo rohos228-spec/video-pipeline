@@ -959,7 +959,7 @@ function ProjectRow({
                   disabled={creatingChild}
                   className="invisible h-5 w-5 rounded-md text-muted-foreground/50 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400/90 group-hover:visible disabled:opacity-50"
                   aria-label="Создать дочерний проект"
-                  title="Дочерний проект (копия данных и закадрового текста)"
+                  title="Дочерний проект (настройки, промты и текст для GPT — без закадрового, Excel и результатов)"
                 >
                   {creatingChild ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
