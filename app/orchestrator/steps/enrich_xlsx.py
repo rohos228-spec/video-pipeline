@@ -340,11 +340,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # 6. Auto-chain до хвоста excel_gpt на канвасе.
     # Ручной ▶ одной ноды раньше не ставил enrich_auto_chain_to → после
     # enrich_2_ready пайплайн зависал (auto_advance режется gen_queue).
+    # Снимаем «готово» со следующих слотов — даже done ноды перегенерируются.
     meta = dict(project.meta or {})
     chain_to = meta.get("enrich_auto_chain_to")
     if not isinstance(chain_to, int):
-        from app.services.excel_gpt_node import ensure_enrich_auto_chain_to
+        from app.services.excel_gpt_node import (
+            clear_excel_gpt_tail_completion,
+            ensure_enrich_auto_chain_to,
+        )
 
+        clear_excel_gpt_tail_completion(project, slot_idx + 1)
         inferred = ensure_enrich_auto_chain_to(project, slot_idx)
         meta = dict(project.meta or {})
         chain_to = inferred if inferred is not None else meta.get("enrich_auto_chain_to")
@@ -355,17 +360,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 inferred,
                 slot_idx,
             )
+    elif isinstance(chain_to, int) and chain_to > slot_idx:
+        from app.services.excel_gpt_node import clear_excel_gpt_tail_completion
+
+        clear_excel_gpt_tail_completion(project, slot_idx + 1)
     if isinstance(chain_to, int) and chain_to > slot_idx:
         next_slot = slot_idx + 1
         next_running = _SLOT_MAP[next_slot][0]
+        from app.services.excel_gpt_node import resolve_excel_gpt_node_key_for_slot
+        from app.services.run_sync import prepare_node_for_step_start
+
+        next_key = resolve_excel_gpt_node_key_for_slot(project, next_slot)
+        if next_key:
+            meta = dict(project.meta or {})
+            meta["active_excel_gpt_node_key"] = next_key
+            project.meta = meta
+            try:
+                await prepare_node_for_step_start(
+                    session,
+                    project,
+                    EXCEL_GPT_STEP_CODE,
+                    node_key=next_key,
+                    enrich_slot=next_slot,
+                    strict=False,
+                    explicit_ui_start=True,  # done → pending → running
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] enrich_xlsx auto-chain: prepare NodeRun {} failed",
+                    project.id,
+                    next_key,
+                    exc_info=True,
+                )
         project.status = next_running
         await session.flush()
         logger.info(
-            "[#{}] enrich_xlsx auto-chain: {} → {} (target slot #{})",
+            "[#{}] enrich_xlsx auto-chain: {} → {} (target slot #{}, node={})",
             project.id,
             ready_status.value,
             next_running.value,
             chain_to,
+            next_key,
         )
     elif chain_to is not None:
         # Цепочка дошла до target (или вышла за неё). Снимаем флаг,

@@ -233,12 +233,17 @@ def max_excel_gpt_slot(project: Project) -> int:
 
 
 def next_incomplete_excel_gpt_slot(project: Project, after_slot: int) -> int | None:
-    """Следующий слот excel_gpt после after_slot, ещё не в completed."""
+    """Следующий слот excel_gpt после after_slot (для цепочки / gen_queue bypass).
+
+    При активном enrich_auto_chain_to возвращает следующий слот даже если
+    он уже в completed — старт должен перегенерировать.
+    """
     nodes = excel_gpt_nodes_from_project(project)
     if not nodes:
         return None
-    done_slots = set()
     meta = project.meta if isinstance(project.meta, dict) else {}
+    chain_to = meta.get("enrich_auto_chain_to")
+    done_slots = set()
     for raw in meta.get("enrich_completed_slots") or []:
         try:
             done_slots.add(int(raw))
@@ -251,10 +256,19 @@ def next_incomplete_excel_gpt_slot(project: Project, after_slot: int) -> int | N
         if slot <= after_slot:
             continue
         nid = str(n.get("id") or "")
-        if slot in done_slots or (nid and nid in done_keys):
+        marked_done = slot in done_slots or (nid and nid in done_keys)
+        if marked_done and not (
+            isinstance(chain_to, int) and slot <= chain_to
+        ):
             continue
         candidates.append(slot)
-    return min(candidates) if candidates else None
+    if candidates:
+        return min(candidates)
+    if isinstance(chain_to, int) and after_slot < chain_to:
+        nxt = after_slot + 1
+        if any(slot_index_from_node(n) == nxt for n in nodes):
+            return nxt
+    return None
 
 
 def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
@@ -273,6 +287,61 @@ def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
     meta["enrich_auto_chain_to"] = max_slot
     project.meta = meta
     return max_slot
+
+
+def clear_excel_gpt_tail_completion(
+    project: Project,
+    from_slot: int,
+) -> dict[str, Any]:
+    """Снять enrich_completed / excel_gpt_completed_keys для слотов >= from_slot.
+
+    Старт/цепочка должны перегенерировать даже «готовые» ноды.
+    """
+    if from_slot < 1:
+        from_slot = 1
+    nodes = excel_gpt_nodes_from_project(project)
+    slots_to_clear: set[int] = set()
+    keys_to_clear: set[str] = set()
+    for n in nodes:
+        slot = slot_index_from_node(n)
+        if slot < from_slot:
+            continue
+        slots_to_clear.add(slot)
+        nid = str(n.get("id") or "").strip()
+        if nid:
+            keys_to_clear.add(nid)
+
+    meta = dict(project.meta or {})
+    completed = [
+        int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+    ]
+    slots_cleared = [s for s in completed if s in slots_to_clear]
+    if slots_cleared:
+        meta["enrich_completed_slots"] = sorted(
+            s for s in completed if s not in slots_to_clear
+        )
+
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    keys_cleared = [k for k in keys if k in keys_to_clear]
+    if keys_cleared:
+        meta["excel_gpt_completed_keys"] = [k for k in keys if k not in keys_to_clear]
+
+    if slots_cleared or keys_cleared:
+        project.meta = meta
+    return {
+        "from_slot": from_slot,
+        "slots_cleared": slots_cleared,
+        "keys_cleared": keys_cleared,
+    }
+
+
+def excel_gpt_force_rerun_slots(project: Project) -> set[int]:
+    """Слоты, которые нельзя пропускать как done (активная цепочка)."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    chain_to = meta.get("enrich_auto_chain_to")
+    if not isinstance(chain_to, int):
+        return set()
+    return set(range(1, min(5, chain_to) + 1))
 
 
 def display_attachment_name(project: Project, node_key: str | None) -> str:
