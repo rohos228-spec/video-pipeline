@@ -210,9 +210,49 @@ async def test_completed_excel_gpt_slots_skip_to_next_incomplete() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.frames_ready,
-        meta={"enrich_completed_slots": [1, 2]},
+        meta={"enrich_completed_slots": [1, 2], "split_completed": True},
     )
-    # После реального завершения 1–2 — следующий incomplete = slot 3.
+    # После реального split + завершения 1–2 — следующий incomplete = slot 3.
     assert g.next_running_after_ready(p, ProjectStatus.frames_ready) is (
         ProjectStatus.enriching_3
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_enrich_meta_without_split_completed_starts_slot1() -> None:
+    nodes = [
+        {"id": "n_split", "type": "split", "position": {"x": 0, "y": 0}, "data": {}},
+        {
+            "id": "n_eg1",
+            "type": "excel_gpt",
+            "position": {"x": 100, "y": 0},
+            "data": {"slotIndex": 1},
+        },
+        {
+            "id": "n_eg2",
+            "type": "excel_gpt",
+            "position": {"x": 200, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+        {
+            "id": "n_eg3",
+            "type": "excel_gpt",
+            "position": {"x": 300, "y": 0},
+            "data": {"slotIndex": 3},
+        },
+    ]
+    edges = [
+        {"id": "e1", "source": "n_split", "target": "n_eg1", "sourceHandle": "out", "targetHandle": "in"},
+        {"id": "e2", "source": "n_eg1", "target": "n_eg2", "sourceHandle": "out", "targetHandle": "in"},
+        {"id": "e3", "source": "n_eg2", "target": "n_eg3", "sourceHandle": "out", "targetHandle": "in"},
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        topic="t",
+        slug="t",
+        status=ProjectStatus.frames_ready,
+        meta={"enrich_completed_slots": [1, 2]},  # stale, no split_completed
+    )
+    assert g.next_running_after_ready(p, ProjectStatus.frames_ready) is (
+        ProjectStatus.enriching_1
     )

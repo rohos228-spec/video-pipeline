@@ -321,11 +321,25 @@ async def prepare_node_for_step_start(
         )
         return False
     if nr.status == NodeRunStatus.skipped:
-        msg = f"нода «{nr.node_type}» отключена в графе"
-        if strict:
-            raise ValueError(msg)
-        logger.debug("[#{}] {}", project.id, msg)
-        return False
+        if explicit_ui_start:
+            # Ручной старт: включаем ноду обратно и продолжаем.
+            meta = dict(project.meta or {})
+            disabled = [str(x) for x in (meta.get("disabled_nodes") or [])]
+            if nr.node_key in disabled:
+                meta["disabled_nodes"] = [k for k in disabled if k != nr.node_key]
+                project.meta = meta
+            reset_node_to_pending(nr, project_id=project.id, initiator="ui_restart")
+            logger.info(
+                "[#{}] prepare_node: skipped → pending (ui re-enable {})",
+                project.id,
+                nr.node_key,
+            )
+        else:
+            msg = f"нода «{nr.node_type}» отключена в графе"
+            if strict:
+                raise ValueError(msg)
+            logger.debug("[#{}] {}", project.id, msg)
+            return False
 
     if nr.status in (NodeRunStatus.done, NodeRunStatus.waiting_hitl):
         if explicit_ui_start:
@@ -341,7 +355,7 @@ async def prepare_node_for_step_start(
             return False
 
     if nr.status in (NodeRunStatus.running, NodeRunStatus.queued):
-        if is_generation_active(project.id):
+        if is_generation_active(project.id) and not explicit_ui_start:
             msg = (
                 f"нода «{nr.node_type}» уже в работе ({nr.status.value}) — "
                 "дождитесь или «Сбросить шаг»"
