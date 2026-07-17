@@ -912,13 +912,23 @@ async def list_project_assets(
             if kind != "all" and a.kind not in kind_map.get(kind, set()):
                 continue
             rel = _rel_path(a.path) if a.path else None
+            bust = ""
+            if a.path:
+                try:
+                    ap = Path(a.path)
+                    if ap.is_file():
+                        bust = f"?v={int(ap.stat().st_mtime)}"
+                except OSError:
+                    bust = ""
             out.append(
                 {
                     "source": "artifact",
                     "id": a.uuid,
                     "kind": a.kind.value if hasattr(a.kind, "value") else str(a.kind),
                     "path": a.path,
-                    "preview_url": f"/api/artifacts/{a.uuid}/file" if a.uuid else None,
+                    "preview_url": (
+                        f"/api/artifacts/{a.uuid}/file{bust}" if a.uuid else None
+                    ),
                     "frame_id": a.frame_id,
                     "meta": a.meta or {},
                 }
@@ -976,13 +986,17 @@ async def list_project_assets(
                     if fp.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".wav", ".mp3"}:
                         continue
                     rel = _rel_path(str(fp))
+                    try:
+                        mtime = int(fp.stat().st_mtime)
+                    except OSError:
+                        mtime = 0
                     out.append(
                         {
                             "source": "file",
                             "id": rel,
                             "kind": k,
                             "path": str(fp),
-                            "preview_url": f"/api/files?path={fp}",
+                            "preview_url": f"/api/files?path={fp}&v={mtime}",
                             "label": fp.name,
                         }
                     )
@@ -1027,6 +1041,44 @@ async def replace_hero_image(
         dest = chars_dir / f"{stem}{ext}"
 
     dest.write_bytes(content)
+
+    # Синхронизировать hero_reference: иначе нода продолжает смотреть в old path /
+    # браузер кэширует /api/artifacts/<uuid>/file без смены URL.
+    from sqlalchemy import select
+
+    from app.models import Artifact, ArtifactKind
+
+    arts = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+        )
+    ).scalars().all()
+    from sqlalchemy.orm.attributes import flag_modified
+
+    dest_res = dest.resolve()
+    dest_name = dest.name.lower()
+    try:
+        mtime = int(dest.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    for art in arts:
+        if not art.path:
+            continue
+        try:
+            ap = Path(art.path).resolve()
+        except OSError:
+            continue
+        if ap == dest_res or ap.name.lower() == dest_name:
+            art.path = str(dest)
+            meta = dict(art.meta or {})
+            meta["file_mtime"] = mtime
+            art.meta = meta
+            flag_modified(art, "meta")
+
+    await session.flush()
     await publish_project_event(
         project_id,
         event_type="project_updated",
@@ -1035,7 +1087,7 @@ async def replace_hero_image(
     rel = _rel_path(str(dest))
     return {
         "path": str(dest),
-        "preview_url": f"/api/files?path={dest}",
+        "preview_url": f"/api/files?path={dest}&v={mtime}",
         "id": rel,
     }
 

@@ -84,12 +84,20 @@ function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
   return arts.map((a) => {
     const path = a.path || "";
     const isVideo = /\.(mp4|webm)$/i.test(path) || a.kind.includes("video");
+    const url = api.artifactFileUrl(a.uuid);
+    const metaMtime = (a.meta as { file_mtime?: number } | undefined)?.file_mtime;
+    const bust = metaMtime
+      ? `?v=${metaMtime}`
+      : a.created_at
+        ? `?v=${encodeURIComponent(String(a.created_at))}`
+        : "";
     return {
       id: a.uuid,
       label: a.kind,
       kind: isVideo ? "video" : path.match(/\.(png|jpe?g|webp|gif)$/i) ? "image" : "file",
-      previewUrl: api.artifactFileUrl(a.uuid),
-      downloadUrl: api.artifactFileUrl(a.uuid),
+      previewUrl: `${url}${bust}`,
+      downloadUrl: `${url}${bust}`,
+      filePath: path || null,
     };
   });
 }
@@ -280,11 +288,28 @@ function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResult
 
     case "hero":
     case "hitl_hero": {
-      const heroAssets = ctx.assets.filter((a) => a.kind.includes("hero") || a.path?.includes("hero"));
-      const items = [
-        ...assetItems(heroAssets),
-        ...artifactItems(arts.filter((a) => a.kind.includes("hero"))),
-      ];
+      const heroAssets = ctx.assets.filter(
+        (a) =>
+          a.kind.includes("hero") ||
+          a.path?.includes("/hero") ||
+          a.path?.includes("\\hero") ||
+          a.path?.includes("/characters") ||
+          a.path?.includes("\\characters"),
+      );
+      // Диск (c01.png) важнее артефактов: у file-asset есть filePath для «Заменить».
+      const fromDisk = assetItems(heroAssets);
+      const fromArts = artifactItems(arts.filter((a) => a.kind.includes("hero")));
+      const seenPaths = new Set(
+        fromDisk.map((i) => (i.filePath || "").replace(/\\/g, "/").toLowerCase()).filter(Boolean),
+      );
+      const dedupedArts = fromArts.filter((i) => {
+        const key = (i.filePath || "").replace(/\\/g, "/").toLowerCase();
+        if (!key) return true;
+        if (seenPaths.has(key)) return false;
+        seenPaths.add(key);
+        return true;
+      });
+      const items = [...fromDisk, ...dedupedArts];
       if (items.length) {
         const descriptions = project?.hero_descriptions ?? [];
         const enriched = items.map((item, i) => ({
