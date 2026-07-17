@@ -51,9 +51,8 @@ import {
   pickDefaultSheetForNode,
   xlsxPreviewFocusForNode,
   xlsxStudioPreviewParams,
-  XLSX_STUDIO_MAX_COLS,
-  XLSX_STUDIO_MAX_ROWS,
 } from "@/lib/xlsx-sheets";
+import { StudioExcelGrid } from "@/components/studio/studio-excel-grid";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
@@ -753,44 +752,32 @@ export function NodeStudio({
                     </div>
                   )}
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
-                    <div className="max-h-[min(70vh,720px)] overflow-auto rounded-xl border border-white/10">
+                    <div className="flex flex-col gap-2">
                       {xlsxParams.hint && xlsxFocusKeyRows ? (
-                        <p className="border-b border-white/10 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
+                        <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
                           {xlsxParams.hint}
                         </p>
                       ) : null}
-                      {!xlsxFocusKeyRows &&
-                      ((xlsxPreview.data?.rows?.length ?? 0) >= XLSX_STUDIO_MAX_ROWS ||
-                        (xlsxPreview.data?.rows?.[0]?.length ?? 0) >= XLSX_STUDIO_MAX_COLS) ? (
-                        <p className="border-b border-white/10 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
-                          Показано до {XLSX_STUDIO_MAX_ROWS}×{XLSX_STUDIO_MAX_COLS} ячеек (потолок
-                          API). Скачайте Excel для полного файла.
+                      {xlsxPreview.data?.truncated_rows || xlsxPreview.data?.truncated_cols ? (
+                        <p className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100/90">
+                          Показана часть листа
+                          {xlsxPreview.data.sheet_max_row
+                            ? ` (в файле ~${xlsxPreview.data.sheet_max_row}×${xlsxPreview.data.sheet_max_col || "?"})`
+                            : ""}
+                          . Для полного файла — «Скачать Excel».
                         </p>
                       ) : null}
-                      <table className="min-w-max border-collapse text-left text-xs">
-                        <tbody>
-                          {(xlsxPreview.data?.rows ?? []).map((row, ri) => (
-                            <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
-                              <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                                {xlsxParams.startRow + ri}
-                              </td>
-                              {row.map((cell, ci) => (
-                                <td
-                                  key={ci}
-                                  className="min-w-[72px] max-w-[420px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
-                                >
-                                  {cell || "\u00a0"}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {!xlsxPreview.data?.rows?.length && (
-                        <p className="p-4 text-xs text-muted-foreground">
+                      {(xlsxPreview.data?.rows?.length ?? 0) > 0 ? (
+                        <StudioExcelGrid
+                          rows={xlsxPreview.data?.rows ?? []}
+                          startRow={xlsxPreview.data?.start_row ?? xlsxParams.startRow}
+                          colLetters={xlsxPreview.data?.col_letters}
+                        />
+                      ) : (
+                        <p className="rounded-xl border border-white/10 p-4 text-xs text-muted-foreground">
                           {nodeType === "plan"
-                            ? "Лист «Общий план» пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx."
-                            : "Таблица пуста или ещё не создана."}
+                            ? "Лист пуст или Excel ещё не создан — запустите шаг или загрузите project.xlsx. Переключите лист в списке выше (например «план»)."
+                            : "Таблица пуста или ещё не создана. Проверьте выбранный лист."}
                           {nodeType === "plan" && project.data?.general_plan?.trim() ? (
                             <span className="mt-2 block whitespace-pre-wrap text-foreground/90">
                               Текст плана в БД: {project.data.general_plan}

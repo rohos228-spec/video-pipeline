@@ -456,22 +456,59 @@ async def upload_xlsx(
     return p
 
 
+def _cell_str(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _trim_trailing_empty_cols(rows: list[list[str]]) -> list[list[str]]:
+    """Drop trailing all-empty columns — do NOT pad to max_cols."""
+    if not rows:
+        return rows
+    width = max((len(r) for r in rows), default=0)
+    last = -1
+    for c in range(width):
+        if any((r[c] if c < len(r) else "").strip() for r in rows):
+            last = c
+    if last < 0:
+        return [[] for _ in rows]
+    return [(r + [""] * (last + 1 - len(r)))[: last + 1] for r in rows]
+
+
+def _trim_trailing_empty_rows(rows: list[list[str]]) -> list[list[str]]:
+    end = len(rows)
+    while end > 0 and not any(str(c).strip() for c in rows[end - 1]):
+        end -= 1
+    return rows[:end]
+
+
+def _col_letter(index0: int) -> str:
+    """0 → A, 25 → Z, 26 → AA."""
+    n = index0 + 1
+    letters: list[str] = []
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters.append(chr(65 + rem))
+    return "".join(reversed(letters))
+
+
 @router.get("/{project_id}/xlsx/preview")
 async def preview_xlsx(
     project_id: int,
     sheet: str | None = Query(None),
-    max_rows: int = Query(40, ge=1, le=500),
-    max_cols: int = Query(80, ge=1, le=200),
-    start_row: int = Query(1, ge=1, le=500),
-    row: int | None = Query(None, ge=1, le=500),
+    max_rows: int = Query(80, ge=1, le=2000),
+    max_cols: int = Query(40, ge=1, le=500),
+    start_row: int = Query(1, ge=1, le=5000),
+    row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
-        sheet = ProjectSheet(file_path=xlsx)
-        sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+        sheet_obj = ProjectSheet(file_path=xlsx)
+        sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         return {
             "path": str(xlsx),
@@ -480,6 +517,12 @@ async def preview_xlsx(
             "headers": [],
             "rows": [],
             "cells": [],
+            "start_row": start_row,
+            "col_letters": [],
+            "truncated_rows": False,
+            "truncated_cols": False,
+            "sheet_max_row": 0,
+            "sheet_max_col": 0,
         }
     from openpyxl import load_workbook
 
@@ -493,11 +536,9 @@ async def preview_xlsx(
             min_row=row, max_row=row, max_col=max_cols, values_only=True
         )
         row_vals = next(row_iter, None)
-        cells = (
-            ["" if c is None else str(c) for c in row_vals]
-            if row_vals is not None
-            else []
-        )
+        cells = [_cell_str(c) for c in row_vals] if row_vals is not None else []
+        while cells and not cells[-1].strip():
+            cells.pop()
         wb.close()
         return {
             "path": str(xlsx),
@@ -505,42 +546,92 @@ async def preview_xlsx(
             "active_sheet": active,
             "row": row,
             "cells": cells,
+            "col_letters": [_col_letter(i) for i in range(len(cells))],
         }
 
     headers: list[str] = []
     rows: list[list[str]] = []
+    sheet_max_row = 0
+    sheet_max_col = 0
+    truncated_rows = False
+    truncated_cols = False
     if active:
         ws = wb[active]
-        end_row = min(start_row + max_rows - 1, ws.max_row or start_row)
+        # read_only: dimensions may be None — fall back to requested window.
+        dim_row = int(ws.max_row or 0)
+        dim_col = int(ws.max_column or 0)
+        sheet_max_row = dim_row
+        sheet_max_col = dim_col
+        end_row = start_row + max_rows - 1
+        if dim_row > 0:
+            end_row = min(end_row, dim_row)
+        scan_cols = max_cols
+        if dim_col > 0:
+            truncated_cols = dim_col > max_cols
+            scan_cols = min(max_cols, dim_col)
+        else:
+            scan_cols = max_cols
+
+        collected = 0
+        hit_row_cap = False
         for i, row_vals in enumerate(
             ws.iter_rows(
                 min_row=start_row,
                 max_row=end_row,
-                max_col=max_cols,
+                max_col=scan_cols,
                 values_only=True,
             )
         ):
-            cells = ["" if c is None else str(c) for c in row_vals]
-            if len(cells) > max_cols:
-                cells = cells[:max_cols]
-            elif len(cells) < max_cols:
-                cells = cells + [""] * (max_cols - len(cells))
+            cells = [_cell_str(c) for c in (row_vals or ())]
+            # Keep natural width — never pad up to max_cols (that broke the UI banner).
+            if len(cells) > scan_cols:
+                cells = cells[:scan_cols]
+                truncated_cols = True
             if raw:
                 rows.append(cells)
+                collected += 1
             elif i == 0:
                 headers = cells
                 continue
             else:
                 rows.append(cells)
-            if len(rows) >= max_rows:
+                collected += 1
+            if collected >= max_rows:
+                hit_row_cap = True
                 break
+
+        last_loaded = start_row + len(rows) - 1 if rows else start_row - 1
+        if hit_row_cap:
+            truncated_rows = True
+        elif dim_row > 0 and last_loaded < dim_row:
+            truncated_rows = True
+
+        rows = _trim_trailing_empty_rows(rows)
+        rows = _trim_trailing_empty_cols(rows)
+        if headers:
+            headers_trimmed = _trim_trailing_empty_cols([headers])
+            headers = headers_trimmed[0] if headers_trimmed else []
+            width = max((len(r) for r in rows), default=len(headers))
+            if len(headers) < width:
+                headers = headers + [""] * (width - len(headers))
+            else:
+                headers = headers[:width]
+
     wb.close()
+    width = max((len(r) for r in rows), default=len(headers))
+    col_letters = [_col_letter(i) for i in range(width)]
     return {
         "path": str(xlsx),
         "sheets": sheets,
         "active_sheet": active,
         "headers": headers if not raw else [],
         "rows": rows,
+        "start_row": start_row,
+        "col_letters": col_letters,
+        "truncated_rows": truncated_rows,
+        "truncated_cols": truncated_cols,
+        "sheet_max_row": sheet_max_row,
+        "sheet_max_col": sheet_max_col,
     }
 
 

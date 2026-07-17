@@ -142,6 +142,12 @@ export interface XlsxPreview {
   rows: string[][];
   row?: number;
   cells?: string[];
+  start_row?: number;
+  col_letters?: string[];
+  truncated_rows?: boolean;
+  truncated_cols?: boolean;
+  sheet_max_row?: number;
+  sheet_max_col?: number;
 }
 
 export interface ProjectAsset {
