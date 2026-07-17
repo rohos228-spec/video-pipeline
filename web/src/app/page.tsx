@@ -10,13 +10,20 @@ import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
+import { usePersistedState } from "@/hooks/use-persisted-state";
 import { api } from "@/lib/api";
 import { fleetPushToHub } from "@/lib/fleet-api";
 
 export default function HomePage() {
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = usePersistedState<number | null>(
+    "vp-studio-selected-project-id",
+    null,
+  );
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState(
+    "vp-studio-sidebar-collapsed",
+    false,
+  );
   const [studioOpen, setStudioOpen] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
