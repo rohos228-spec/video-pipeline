@@ -19,6 +19,10 @@
      промтом. Если и она провалилась — пробрасывает последнюю ошибку
      из второй серии (caller сам решит, что делать).
 
+  Видео (`generate_video_with_retries`): после 3 сбоев генерации переключает
+  outsee на Kling 2.5 Turbo, 720p и соотношение «Исходное»; дальнейшие
+  попытки (включая раунд GPT-rewrite) идут уже с этими параметрами.
+
   3) Если `gpt=None` или GPT-rewrite сам упал — caller получит
      последнюю ошибку первой серии.
 
@@ -66,6 +70,8 @@ from app.bots.outsee import (
 )
 from app.generation_options import (
     OUTSEE_PROMPT_MAX_CHARS,
+    OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES,
+    outsee_video_fallback_kwargs,
     prepend_gen_id,
     strip_prompt_id_lines,
 )
@@ -419,6 +425,28 @@ def _retry_err_label(e: OutseeImageError) -> str:
     return outsee_error_kind_label(outsee_error_kind(e))
 
 
+def _merge_video_fallback_kwargs(
+    kwargs: dict[str, Any],
+    *,
+    gen_failures: int,
+) -> dict[str, Any]:
+    """После `OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES` сбоев — Kling 2.5 / 720p / Исходное."""
+    if gen_failures < OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES:
+        return dict(kwargs)
+    merged = dict(kwargs)
+    merged.update(outsee_video_fallback_kwargs(kwargs))
+    return merged
+
+
+def _video_fallback_active(kwargs: dict[str, Any]) -> bool:
+    fb = outsee_video_fallback_kwargs()
+    return (
+        str(kwargs.get("model_slug") or "") == fb["model_slug"]
+        and str(kwargs.get("resolution") or "") == fb["resolution"]
+        and str(kwargs.get("aspect_ratio") or "") == fb["aspect_ratio"]
+    )
+
+
 def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str | None:
     """Делает `prompt_id_prefix` уникальным для текущей retry-итерации.
 
@@ -608,15 +636,16 @@ async def generate_video_with_retries(
     **kwargs: Any,
 ) -> GenerationResult:
     """Аналог `generate_image_with_retries` для видео-генерации.
-    Логика идентична: 3 попытки → GPT-rewrite → ещё 3 попытки.
+
+    1) До 3 попыток с моделью проекта.
+    2) После 3 сбоев генерации — fallback: Kling 2.5 Turbo, 720p,
+       соотношение «Исходное» (по стартовому кадру).
+    3) Опционально GPT-rewrite промта + ещё до 3 попыток (уже с fallback,
+       если порог сбоев достигнут).
 
     `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
     при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
     переиспользуем тот же except-handler.
-
-    По умолчанию `uniquify_prompt_id=False`: один `[ID: …]` на весь кадр.
-    (Устаревший `uniquify_prompt_id=True` добавлял суффиксы r1a2 — больше не
-    используется для картинок.)
     """
     last_err: OutseeImageError | None = None
     current_prompt = prompt
@@ -624,13 +653,34 @@ async def generate_video_with_retries(
     rounds: list[str] = ["original"]
     if gpt_rewrite and gpt is not None:
         rounds.append("rewritten")
+    else:
+        rounds.append("fallback_model")
 
     _DOWNLOAD_ONLY_RETRIES = 2
+    gen_failures = 0
+    fallback_logged = False
 
     for round_idx, round_label in enumerate(rounds):
         for attempt in range(1, max_attempts_per_prompt + 1):
             abort_if_cancelled(project_id)
-            attempt_kwargs = dict(kwargs)
+            attempt_kwargs = _merge_video_fallback_kwargs(
+                kwargs, gen_failures=gen_failures
+            )
+            if (
+                gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
+                and _video_fallback_active(attempt_kwargs)
+                and not fallback_logged
+            ):
+                fb = outsee_video_fallback_kwargs()
+                logger.info(
+                    "outsee_retry: после {} сбоев — fallback video: model={} "
+                    "resolution={} aspect={}",
+                    gen_failures,
+                    fb["model_slug"],
+                    fb["resolution"],
+                    fb["aspect_ratio"],
+                )
+                fallback_logged = True
             if uniquify_prompt_id:
                 attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
                     base_prompt_id, round_idx, attempt
@@ -694,6 +744,7 @@ async def generate_video_with_retries(
                     await sleep_cancellable(2.0, project_id)
             except OutseeImageError as e:
                 last_err = e
+                gen_failures += 1
                 err_kind = _retry_err_label(e)
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
@@ -757,10 +808,11 @@ async def generate_video_with_retries(
         )
         if not rewritten:
             logger.warning(
-                "outsee.generate_video: GPT-rewrite не вернул текст — выхожу"
+                "outsee.generate_video: GPT-rewrite не вернул текст — "
+                "продолжаю с исходным промтом"
             )
-            break
-        current_prompt = rewritten
+        else:
+            current_prompt = rewritten
 
     if last_err is None:
         raise RuntimeError("generate_video_with_retries: unreachable")

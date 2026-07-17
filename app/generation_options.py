@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,38 @@ IMAGE_RESOLUTIONS_BY_ID = _by_id(IMAGE_RESOLUTIONS)
 IMAGE_QUALITIES_BY_ID = _by_id(IMAGE_QUALITIES)
 VIDEO_GENERATORS_BY_ID = _by_id(VIDEO_GENERATORS)
 VIDEO_RESOLUTIONS_BY_ID = _by_id(VIDEO_RESOLUTIONS)
+
+# ---- Outsee video fallback (после 3 неудач generate_video_with_retries) ----
+
+OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES = 3
+OUTSEE_VIDEO_FALLBACK_GENERATOR_ID = "kling_2_5_turbo"
+OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID = "720p"
+# Kling image-to-video: соотношение стартового кадра (кнопка на outsee.io).
+OUTSEE_VIDEO_FALLBACK_ASPECT_LABEL = "Исходное"
+
+
+def outsee_video_fallback_kwargs(
+    current: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Параметры outsee.generate_video для запасной модели."""
+    vg = VIDEO_GENERATORS_BY_ID[OUTSEE_VIDEO_FALLBACK_GENERATOR_ID]
+    vr = VIDEO_RESOLUTIONS_BY_ID[OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID]
+    out = {
+        "model_slug": vg.outsee_slug,
+        "resolution": vr.outsee_slug,
+        "aspect_ratio": OUTSEE_VIDEO_FALLBACK_ASPECT_LABEL,
+    }
+    if current:
+        base_slug = str(current.get("model_slug") or "")
+        base_res = str(current.get("resolution") or "")
+        base_ar = str(current.get("aspect_ratio") or "")
+        if (
+            base_slug == out["model_slug"]
+            and base_res == out["resolution"]
+            and base_ar == out["aspect_ratio"]
+        ):
+            return dict(current)
+    return out
 
 
 # ---- Дефолты (используются если юзер ещё не прошёл мастер) -----------------

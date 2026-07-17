@@ -255,8 +255,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # Relax (Безлимит): None = не задан → включаем по умолчанию.
                 # False = пользователь явно отключил.
                 video_relax = project.video_relax is not False
-                # До 3 попыток с исходным animation_prompt; если все 3 провалились
-                # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
+                # До 3 попыток с моделью проекта; после 3 сбоев — Kling 2.5 / 720p /
+                # «Исходное»; затем опционально GPT-rewrite + ещё 3 попытки.
                 result = await generate_video_with_retries(
                     outsee, gpt,
                     prompt=fr.animation_prompt,
