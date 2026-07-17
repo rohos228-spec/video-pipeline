@@ -230,8 +230,9 @@ async def sync_run_for_project(project_id: int) -> None:
                         },
                     )
 
-        # Heal: excel_gpt уже в completed_keys, но NodeRun остался pending
-        # (баг multi-node без active key). Не трогаем active / running.
+        # Heal: excel_gpt в completed_keys, но NodeRun pending/running
+        # (auto-chain раньше помечал next done и оставлял prev running).
+        # Не трогаем только реально активную ноду.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
         for nr in run.node_runs:
@@ -241,27 +242,36 @@ async def sync_run_for_project(project_id: int) -> None:
                 continue
             if active_key and nr.node_key == active_key:
                 continue
-            if nr.status != NodeRunStatus.pending:
+            if nr.status == NodeRunStatus.done:
                 continue
-            queue_node_for_start(nr, project_id=project_id, initiator="worker")
-            start_node_running(nr, project_id=project_id, initiator="worker")
-            if complete_node(nr, project_id=project_id, initiator="worker"):
-                await publish_node_event(
-                    run.id,
-                    event_type="node_status_changed",
-                    node_key=nr.node_key,
-                    payload={
-                        "node_type": nr.node_type,
-                        "from": "pending",
-                        "to": nr.status.value,
-                        "project_id": project_id,
-                    },
-                )
-                logger.info(
-                    "[#{}] heal NodeRun {} → done (excel_gpt_completed_keys)",
-                    project_id,
-                    nr.node_key,
-                )
+            if nr.status == NodeRunStatus.pending:
+                queue_node_for_start(nr, project_id=project_id, initiator="worker")
+                start_node_running(nr, project_id=project_id, initiator="worker")
+            if nr.status in (
+                NodeRunStatus.running,
+                NodeRunStatus.queued,
+                NodeRunStatus.waiting_hitl,
+                NodeRunStatus.pending,
+            ):
+                old = nr.status.value
+                if complete_node(nr, project_id=project_id, initiator="worker"):
+                    await publish_node_event(
+                        run.id,
+                        event_type="node_status_changed",
+                        node_key=nr.node_key,
+                        payload={
+                            "node_type": nr.node_type,
+                            "from": old,
+                            "to": nr.status.value,
+                            "project_id": project_id,
+                        },
+                    )
+                    logger.info(
+                        "[#{}] heal NodeRun {} → done (excel_gpt_completed_keys, was {})",
+                        project_id,
+                        nr.node_key,
+                        old,
+                    )
 
         _aggregate_workflow_run_status(run)
 
@@ -480,6 +490,75 @@ async def prepare_node_for_step_start(
     return True
 
 
+async def complete_excel_gpt_node_by_key(
+    session: AsyncSession,
+    project: Project,
+    node_key: str | None,
+    *,
+    enrich_slot: int | None = None,
+) -> bool:
+    """Пометить excel_gpt NodeRun done ДО auto-chain на следующий слот.
+
+    Вызывать из enrich_xlsx после успешного скачивания/sync xlsx, пока
+    active_key ещё не переключён на next — иначе UI оставляет prev «в работе».
+    """
+    from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
+    from app.services.excel_gpt_node import resolve_excel_gpt_node_key_for_slot
+
+    key = (node_key or "").strip() or None
+    if not key and enrich_slot is not None:
+        key = resolve_excel_gpt_node_key_for_slot(project, enrich_slot)
+    if not key:
+        return False
+    try:
+        await sync_run_snapshot_from_canvas_graph(session, project)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[#{}] complete_excel_gpt_node: canvas sync failed",
+            project.id,
+            exc_info=True,
+        )
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is None:
+        return False
+    for nr in run.node_runs:
+        if nr.node_type != EXCEL_GPT_NODE_TYPE or nr.node_key != key:
+            continue
+        if nr.status == NodeRunStatus.done:
+            return True
+        if nr.status == NodeRunStatus.pending:
+            queue_node_for_start(nr, project_id=project.id, initiator="worker")
+            start_node_running(nr, project_id=project.id, initiator="worker")
+        if nr.status in (
+            NodeRunStatus.running,
+            NodeRunStatus.queued,
+            NodeRunStatus.waiting_hitl,
+            NodeRunStatus.pending,
+        ):
+            old = nr.status.value
+            if complete_node(nr, project_id=project.id, initiator="worker"):
+                await session.flush()
+                await publish_node_event(
+                    run.id,
+                    event_type="node_status_changed",
+                    node_key=nr.node_key,
+                    payload={
+                        "node_type": nr.node_type,
+                        "from": old,
+                        "to": nr.status.value,
+                        "project_id": project.id,
+                    },
+                )
+                logger.info(
+                    "[#{}] excel_gpt NodeRun {} → done (slot complete before chain)",
+                    project.id,
+                    key,
+                )
+                return True
+        return nr.status == NodeRunStatus.done
+    return False
+
+
 async def complete_active_node_for_step(
     session: AsyncSession,
     project: Project,
@@ -513,15 +592,28 @@ async def complete_active_node_for_step(
     if run is None:
         return
 
-    active_key: str | None = None
+    # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
+    # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
+    # первым = пометить next done и оставить prev running — UI врёт, xlsx
+    # следующего слота «применён» без работы. Всегда слот из prev_status.
+    finished_key: str | None = None
     if node_type == EXCEL_GPT_NODE_TYPE:
-        active_key = active_excel_gpt_node_key(project)
-        if not active_key:
-            slot = slot_from_running_status(prev_status)
-            if slot is None:
-                slot = slot_from_ready_status(new_status)
-            if slot is not None:
-                active_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+        slot = slot_from_running_status(prev_status)
+        if slot is None:
+            slot = slot_from_ready_status(new_status)
+        if slot is not None:
+            finished_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+        if not finished_key:
+            finished_key = active_excel_gpt_node_key(project)
+            if finished_key:
+                logger.warning(
+                    "[#{}] complete_active_node: excel_gpt fallback active_key={} "
+                    "(prev={} → {}) — слот prev не резолвится",
+                    project.id,
+                    finished_key,
+                    prev_status.value,
+                    new_status.value,
+                )
 
     excel_matches = [
         nr for nr in run.node_runs if nr.node_type == EXCEL_GPT_NODE_TYPE
@@ -529,7 +621,7 @@ async def complete_active_node_for_step(
     # Несколько excel_gpt без ключа — не трогаем «первую попавшуюся».
     if (
         node_type == EXCEL_GPT_NODE_TYPE
-        and not active_key
+        and not finished_key
         and len(excel_matches) > 1
     ):
         logger.warning(
@@ -544,7 +636,7 @@ async def complete_active_node_for_step(
     for nr in run.node_runs:
         if nr.node_type != node_type:
             continue
-        if active_key and nr.node_key != active_key:
+        if finished_key and nr.node_key != finished_key:
             continue
         if nr.status in (
             NodeRunStatus.running,
@@ -564,12 +656,19 @@ async def complete_active_node_for_step(
                         "project_id": project.id,
                     },
                 )
+                logger.info(
+                    "[#{}] NodeRun {} → done (finished slot, prev={} → {})",
+                    project.id,
+                    nr.node_key,
+                    prev_status.value,
+                    new_status.value,
+                )
             return
         # Recovery: шаг успешен, но prepare не нашёл ноду (осталась pending).
         if (
             node_type == EXCEL_GPT_NODE_TYPE
-            and active_key
-            and nr.node_key == active_key
+            and finished_key
+            and nr.node_key == finished_key
             and nr.status == NodeRunStatus.pending
         ):
             queue_node_for_start(nr, project_id=project.id, initiator="worker")
