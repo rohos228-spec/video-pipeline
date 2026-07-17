@@ -110,9 +110,10 @@ async function http<T>(
     return res.json() as Promise<T>;
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
+      const sec = Math.max(1, Math.round(timeoutMs / 1000));
       throw new ApiError(
         0,
-        "Сервер не ответил за 30 с — проверьте окно BACKEND (Uvicorn на :8765)",
+        `Сервер не ответил за ${sec} с — проверьте окно BACKEND (Uvicorn на :8765)`,
       );
     }
     throw e;
@@ -245,7 +246,11 @@ export const api = {
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
   createChildProject: (parentId: number) =>
-    http<ProjectDetail>(`/api/projects/${parentId}/child`, { method: "POST" }),
+    http<ProjectDetail>(
+      `/api/projects/${parentId}/child`,
+      { method: "POST" },
+      120_000,
+    ),
 
   // ── Sidebar layout ───────────────────────────────────────────────
   getSidebarLayout: () => http<SidebarLayout>(`/api/sidebar-layout`),

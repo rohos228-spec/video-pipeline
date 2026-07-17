@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -25,6 +28,27 @@ MANUAL_CHILD_EXTRA_FIELDS = (
     "hero_description",
     "script_text",
 )
+
+# Тяжёлые/временные каталоги: не копируем под открытой генерацией родителя
+# (иначе HTTP /child легко уходит за 30 с busy_timeout + abort UI).
+_COPY_IGNORE = shutil.ignore_patterns(
+    "tmp_gpt",
+    "__pycache__",
+    "old",
+    "videos",
+    "*.mp4",
+)
+
+
+@dataclass(frozen=True)
+class ChildDataCopyJob:
+    src: Path
+    dst: Path
+    topic: str
+    slug: str
+    hero_mode: str | None
+    status: str
+    script_text: str
 
 
 def _child_initial_status(parent: Project) -> ProjectStatus:
@@ -64,18 +88,15 @@ async def _unique_slug(session: AsyncSession, base: str, slugify) -> str:
     return candidate
 
 
-def _copy_parent_data_dir(parent: Project, child: Project) -> None:
-    src = parent.data_dir
-    dst = child.data_dir
+def apply_child_data_copy(job: ChildDataCopyJob) -> None:
+    """Синхронное копирование data_dir — вызывать после commit, в to_thread."""
+    src = job.src
+    dst = job.dst
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         shutil.rmtree(dst, ignore_errors=True)
     if src.is_dir():
-        shutil.copytree(
-            src,
-            dst,
-            ignore=shutil.ignore_patterns("tmp_gpt", "__pycache__"),
-        )
+        shutil.copytree(src, dst, ignore=_COPY_IGNORE)
     else:
         dst.mkdir(parents=True, exist_ok=True)
     xlsx = dst / "project.xlsx"
@@ -83,17 +104,29 @@ def _copy_parent_data_dir(parent: Project, child: Project) -> None:
         try:
             sheet = ProjectSheet(file_path=xlsx)
             sheet.write_general(
-                topic=child.topic,
-                slug=child.slug,
-                hero_mode=child.hero_mode,
-                status=child.status.value,
+                topic=job.topic,
+                slug=job.slug,
+                hero_mode=job.hero_mode,
+                status=job.status,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[#{}] child data_dir: xlsx patch failed: {}", child.id, exc)
-    if (parent.script_text or "").strip():
+            logger.warning("child data_dir: xlsx patch failed ({}): {}", job.slug, exc)
+    if job.script_text.strip():
         vo = dst / "voiceover.txt"
         vo.parent.mkdir(parents=True, exist_ok=True)
-        vo.write_text((parent.script_text or "").strip(), encoding="utf-8")
+        vo.write_text(job.script_text.strip(), encoding="utf-8")
+
+
+def child_data_copy_job(parent: Project, child: Project) -> ChildDataCopyJob:
+    return ChildDataCopyJob(
+        src=parent.data_dir,
+        dst=child.data_dir,
+        topic=child.topic,
+        slug=child.slug,
+        hero_mode=child.hero_mode,
+        status=child.status.value,
+        script_text=parent.script_text or "",
+    )
 
 
 async def create_child_from_parent(
@@ -102,6 +135,12 @@ async def create_child_from_parent(
     *,
     slugify,
 ) -> Project:
+    """Создаёт запись ребёнка + workflow в текущей сессии (без копирования файлов).
+
+    Копирование ``data/`` должно идти **после** ``session.commit()`` через
+    ``apply_child_data_copy`` / ``asyncio.to_thread`` — иначе при активной
+    генерации родителя SQLite busy_timeout (~30 с) роняет UI.
+    """
     if is_mass_factory_child(parent):
         raise ValueError("дочерний проект нельзя клонировать — выберите родительский")
     existing = await list_mass_children(session, parent.id)
@@ -112,7 +151,8 @@ async def create_child_from_parent(
     kwargs: dict[str, Any] = {}
     for field in (*COPY_PROJECT_FIELDS, *MANUAL_CHILD_EXTRA_FIELDS):
         kwargs[field] = getattr(parent, field)
-    kwargs["auto_mode"] = parent.auto_mode
+    # Не тянем auto_mode родителя: иначе ребёнок сразу конкурирует за Outsee.
+    kwargs["auto_mode"] = False
 
     child = Project(
         slug=slug,
@@ -127,15 +167,20 @@ async def create_child_from_parent(
     )
     session.add(child)
     await session.flush()
-    _copy_parent_data_dir(parent, child)
     await ensure_child_workflow_from_parent(session, parent.id, child.id)
     logger.info(
-        "project_child: #{} ← parent #{} (script={} chars)",
+        "project_child: #{} ← parent #{} (script={} chars, files deferred)",
         child.id,
         parent.id,
         len(child.script_text or ""),
     )
     return child
+
+
+async def finalize_child_data_dir(parent: Project, child: Project) -> None:
+    """Копирует data_dir после commit (не блокирует event loop)."""
+    job = child_data_copy_job(parent, child)
+    await asyncio.to_thread(apply_child_data_copy, job)
 
 
 async def count_children(session: AsyncSession, parent_id: int) -> int:

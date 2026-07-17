@@ -193,19 +193,33 @@ async def create_child_project(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectDetail:
     """Дочерний проект: копия настроек родителя + закадровый текст и xlsx."""
+    from loguru import logger
+
+    from app.services.project_child import (
+        create_child_from_parent,
+        finalize_child_data_dir,
+    )
+
     parent = await session.get(Project, project_id)
     if parent is None:
         raise HTTPException(status_code=404, detail="project not found")
-    from app.services.project_child import create_child_from_parent
 
     try:
         child = await create_child_from_parent(session, parent, slugify=_slugify)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # Сначала короткий commit — не держим write-lock на время copytree.
     await session.commit()
     await session.refresh(child)
-    # ensure_child_workflow_from_parent уже создал WorkflowRun — sync нод в фоне,
-    # иначе HTTP ждёт busy_timeout SQLite (~30 с) под нагрузкой воркера.
+    try:
+        await finalize_child_data_dir(parent, child)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "create_child #{}: data_dir copy failed after commit: {}",
+            child.id,
+            exc,
+        )
+    # sync нод в фоне — иначе HTTP ждёт busy_timeout SQLite под нагрузкой воркера.
     asyncio.create_task(sync_run_for_project(child.id))
     await publish_project_event(
         child.id,
