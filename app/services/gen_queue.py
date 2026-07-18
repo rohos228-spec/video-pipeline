@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project, ProjectStatus
 from app.orchestrator.auto_advance import TRANSITIONS
 from app.orchestrator.graph.planner import load_graph_for_project
-from app.services.mass_factory import mass_parent_id
+from app.services.mass_factory import is_mass_factory_child
 from app.services.gen_queue_run import (
     gen_queue_slot_skipped,
     is_gen_queue_run_complete,
@@ -19,7 +19,7 @@ from app.services.gen_queue_run import (
     mark_gen_queue_run_complete,
     skip_gen_queue_slot,
 )
-from app.services.sidebar_layout import get_gen_queue
+from app.services.sidebar_layout import get_gen_queue, is_gen_queue_halted
 from app.telegram.menu import step_by_code, step_by_running_status
 
 GEN_QUEUE_BUSY_STATUSES = [
@@ -277,7 +277,7 @@ async def get_gen_queue_idle_info(session: AsyncSession) -> dict[str, Any] | Non
 
     for idx, pid in enumerate(queue):
         project = await _load_project(session, pid)
-        if project is None or mass_parent_id(project) is not None:
+        if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
             continue
@@ -305,7 +305,7 @@ async def gen_queue_head_project(session: AsyncSession) -> Project | None:
     queue = get_gen_queue()
     for pid in queue:
         project = await _load_project(session, pid)
-        if project is None or mass_parent_id(project) is not None:
+        if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
             continue
@@ -343,7 +343,7 @@ async def gen_queue_reconcile(session: AsyncSession) -> int:
         if pid == head_id:
             continue
         project = await _load_project(session, pid)
-        if project is None or mass_parent_id(project) is not None:
+        if project is None or is_mass_factory_child(project):
             continue
         if project.status not in GEN_QUEUE_BUSY_STATUSES:
             continue
@@ -374,7 +374,7 @@ async def gen_queue_incomplete_earlier(
     pos = queue.index(project_id)
     for pid in queue[:pos]:
         project = await _load_project(session, pid)
-        if project is None or mass_parent_id(project) is not None:
+        if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
             continue
@@ -405,6 +405,9 @@ async def gen_queue_tick(session: AsyncSession) -> int:
     queue = get_gen_queue()
     if not queue:
         return 0
+    if is_gen_queue_halted():
+        logger.info("gen_queue tick: halted после ⏹ — следующий не стартует")
+        return 0
 
     rolled = await gen_queue_reconcile(session)
     if rolled:
@@ -417,7 +420,7 @@ async def gen_queue_tick(session: AsyncSession) -> int:
 
     for idx, pid in enumerate(queue):
         project = await _load_project(session, pid)
-        if project is None or mass_parent_id(project) is not None:
+        if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
             continue
@@ -475,7 +478,13 @@ async def on_project_timeline_maybe_advance_queue(
     queue = get_gen_queue()
     if not queue or project.id not in queue:
         return 0
-    if mass_parent_id(project) is not None:
+    if is_gen_queue_halted():
+        logger.info(
+            "gen_queue: #{} timeline complete — очередь halted после ⏹",
+            project.id,
+        )
+        return 0
+    if is_mass_factory_child(project):
         return 0
     if not await is_timeline_complete(session, project):
         return 0
@@ -497,7 +506,7 @@ async def on_project_timeline_maybe_advance_queue(
 
     next_id = queue[pos + 1]
     nxt = await _load_project(session, next_id)
-    if nxt is None or mass_parent_id(nxt) is not None:
+    if nxt is None or is_mass_factory_child(nxt):
         return 0
     if _slot_closed(nxt):
         return 0

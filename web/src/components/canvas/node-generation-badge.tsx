@@ -31,7 +31,7 @@ const STATUS_VISUAL: Record<
     icon: Loader2,
     className: "border-primary/60 bg-primary/20 text-primary shadow-primary/20",
     connector: "border-primary/50",
-    label: "Генерация",
+    label: "В работе",
   },
   waiting_hitl: {
     icon: Hourglass,

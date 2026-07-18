@@ -80,6 +80,7 @@ async def test_create_child_inherits_settings_not_content(
     assert mass_parent_id(child) == parent.id
     assert child.status is ProjectStatus.new
     assert child.auto_mode is False
+    assert child.topic.startswith("Новая тема")
     assert child.script_text is None
     assert child.general_plan is None
     assert child.hero_description is None
@@ -88,6 +89,8 @@ async def test_create_child_inherits_settings_not_content(
     assert child.video_generator == "veo_3_fast"
     assert child.prompt_overrides.get("plan") == "my_plan.md"
     assert child.gpt_text_overrides.get("plan") == "Текст для GPT родителя"
+    assert child.hero_descriptions == []
+    assert child.item_descriptions == []
     assert isinstance(child.meta, dict)
     assert child.meta.get("project_child_manual") is True
     assert child.meta.get("canvas_graph") == {"nodes": [{"id": "plan"}], "edges": []}
