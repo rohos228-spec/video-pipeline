@@ -16,6 +16,7 @@ from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
 from app.services.sidebar_layout import (
     ensure_project_layout,
+    get_gen_queue,
     layout_for_api,
     remove_project_from_layout,
     sync_projects as sync_sidebar_projects,
@@ -81,11 +82,15 @@ async def list_projects(
     sidebar_project_ids = root_ids | set(batch_subprojects.keys())
     layout = layout_for_api(sidebar_project_ids)
     placements = layout.get("project_layout") or {}
-    queue_pos = layout.get("gen_queue_positions") or {}
+    # Позиции очереди — по полной gen_queue (включая дочерние mass/manual).
+    # layout_for_api(sidebar_project_ids) выкидывает children из queue_map,
+    # из‑за этого круг в сайдбаре оставался без цифры при живом toast.
+    queue_pos = {pid: idx + 1 for idx, pid in enumerate(get_gen_queue())}
     out: list[ProjectSummary] = []
     for p in rows:
+        qpos = queue_pos.get(p.id)
         if mass_parent_id(p) is not None:
-            out.append(project_to_summary(p))
+            out.append(project_to_summary(p, gen_queue_position=qpos))
             continue
         pl = placements.get(str(p.id)) or {}
         try:
@@ -100,7 +105,7 @@ async def list_projects(
                 p,
                 sidebar_folder_id=str(fid) if fid else None,
                 sidebar_order=order,
-                gen_queue_position=queue_pos.get(p.id),
+                gen_queue_position=qpos,
             )
         )
     await session.commit()

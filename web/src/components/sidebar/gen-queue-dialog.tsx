@@ -92,6 +92,17 @@ export function GenQueueDialog({
         ...body,
       }),
     onSuccess: (data) => {
+      const positions = (data.gen_queue_positions || {}) as Record<string, number>;
+      qc.setQueryData<ProjectSummary[]>(["projects"], (old) => {
+        if (!old) return old;
+        return old.map((p) => {
+          const raw = positions[p.id] ?? positions[String(p.id)];
+          return {
+            ...p,
+            gen_queue_position: typeof raw === "number" ? raw : null,
+          };
+        });
+      });
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
       const pos = data.position;

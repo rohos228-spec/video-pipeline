@@ -158,7 +158,18 @@ export function ProjectSidebar({
 
   const queueToggleMutation = useMutation({
     mutationFn: (projectId: number) => api.toggleGenQueue(projectId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const positions = (data.gen_queue_positions || {}) as Record<string, number>;
+      qc.setQueryData<ProjectSummary[]>(["projects"], (old) => {
+        if (!old) return old;
+        return old.map((p) => {
+          const raw = positions[p.id] ?? positions[String(p.id)];
+          return {
+            ...p,
+            gen_queue_position: typeof raw === "number" ? raw : null,
+          };
+        });
+      });
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
       toast.success("Проект снят с очереди");
