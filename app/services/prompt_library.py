@@ -335,10 +335,20 @@ def delete_prompt(step_code: str, name: str) -> bool:
 
 
 def _clean_variant_name(raw: str) -> str:
-    """Имя .md без расширения, безопасное для `prompt_path`."""
+    """Имя .md без расширения, безопасное для `prompt_path`.
+
+    Снимает только хвостовой суффикс ``.md`` (регистр неважен):
+    ``my_plan.md`` → ``my_plan``, ``steven.txt.md`` → ``steven.txt``.
+    Иначе ``prompt_path`` дописывает ещё один ``.md`` → файл не находится
+    и резолвер молча падает в global/default (баг дочерних проектов).
+    """
     if not raw or not str(raw).strip():
         return ""
     name = str(raw).strip()
+    if name.lower().endswith(".md"):
+        name = name[:-3].rstrip()
+    if not name:
+        return ""
     if not is_valid_prompt_name(name):
         name = _sanitize_name(name)
     return name if name else ""
@@ -453,15 +463,17 @@ def resolve_project_prompt_with_source(
                 clean = _clean_variant_name(str(chosen))
                 if clean and excel_gpt_prompt_exists(clean):
                     return clean, "override"
+        # Слоты проекта (в т.ч. унаследованные ребёнком) важнее global —
+        # иначе active_variants.json с «default» перекрывает выбор родителя.
+        for key in excel_gpt_source_steps():
+            from_meta = _variant_from_studio_meta(meta, key)
+            if from_meta:
+                return from_meta, "slot"
         from app.services.prompt_active_global import get_global_active
 
         global_name = get_global_active(EXCEL_GPT_UNIFIED_STEP)
         if global_name and excel_gpt_prompt_exists(global_name):
             return global_name, "global"
-        for key in excel_gpt_source_steps():
-            from_meta = _variant_from_studio_meta(meta, key)
-            if from_meta:
-                return from_meta, "slot"
         return DEFAULT_NAME, "default"
 
     chosen = overrides.get(step_code)
@@ -470,15 +482,16 @@ def resolve_project_prompt_with_source(
         if clean and prompt_path(step_code, clean).exists():
             return clean, "override"
 
+    # Project-level слоты Node Studio / child inheritance — до global.
+    from_meta = _variant_from_studio_meta(meta, step_code)
+    if from_meta:
+        return from_meta, "slot"
+
     from app.services.prompt_active_global import get_global_active
 
     global_name = get_global_active(step_code)
     if global_name:
         return global_name, "global"
-
-    from_meta = _variant_from_studio_meta(meta, step_code)
-    if from_meta:
-        return from_meta, "slot"
 
     return DEFAULT_NAME, "default"
 
