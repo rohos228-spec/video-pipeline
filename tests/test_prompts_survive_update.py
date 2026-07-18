@@ -206,6 +206,13 @@ def test_6_studio_scripts_wire_aside_and_python_fallback() -> None:
     assert "--restore-aside" in studio
     assert "stash@{0}" in studio
     assert "prompts_preserve" not in studio
+    # UI URL открывается ровно один раз (Open-StudioBrowser), без фонового job.
+    assert studio.count('Start-Process "http://127.0.0.1:8765"') == 1
+    assert "Open-StudioBrowser" in studio
+    assert "function Invoke-StudioStart" in studio
+    start_fn = studio.split("function Invoke-StudioStart", 1)[1].split("function ", 1)[0]
+    assert "Start-Job -ScriptBlock" not in start_fn
+    assert "Open-StudioBrowser" in start_fn
     assert (REPO / "RECOVER-PROMPTS.cmd").is_file()
     helper = HELPER.read_text(encoding="utf-8")
     assert "backup_prompts_aside" in helper
