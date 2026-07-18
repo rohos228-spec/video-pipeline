@@ -309,8 +309,11 @@ export function StudioWorkspace({
   }, [project.data, artifacts.data, projectAssets.data, frames.data, mediaImages.data, mediaVideos.data]);
 
   const getNodeResult = useCallback(
-    (nodeType: string, nodeStatus?: import("@/lib/types").NodeRunStatus) =>
-      resolveNodeResult(nodeType, resultContext, nodeStatus),
+    (
+      nodeType: string,
+      nodeStatus?: import("@/lib/types").NodeRunStatus,
+      nodeKey?: string | null,
+    ) => resolveNodeResult(nodeType, resultContext, nodeStatus, nodeKey),
     [resultContext],
   );
 
@@ -732,8 +735,13 @@ export function StudioWorkspace({
             if (!o) setResultPanel(null);
           }}
           projectId={projectId}
+          nodeKey={resultPanel.nodeKey}
           nodeType={resultPanel.nodeType}
-          snapshot={getNodeResult(resultPanel.nodeType)}
+          snapshot={getNodeResult(
+            resultPanel.nodeType,
+            undefined,
+            resultPanel.nodeKey,
+          )}
         />
       )}
     </CanvasActionsProvider>

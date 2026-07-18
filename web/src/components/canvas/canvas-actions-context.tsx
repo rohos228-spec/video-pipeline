@@ -19,7 +19,11 @@ export interface CanvasActions {
   aiReviewNodeKey: string | null;
   canvasZoom: number;
   getPromptSlots: (nodeKey: string, nodeType: string) => NodePromptSlot[];
-  getNodeResult: (nodeType: string, nodeStatus?: NodeRunStatus) => NodeResultSnapshot;
+  getNodeResult: (
+    nodeType: string,
+    nodeStatus?: NodeRunStatus,
+    nodeKey?: string | null,
+  ) => NodeResultSnapshot;
   onOpenPrompt: (nodeKey: string, nodeType: string, slot: NodePromptSlot) => void;
   onOpenGptText: (nodeKey: string, nodeType: string) => void;
   onViewAllPrompts: (nodeKey: string, nodeType: string) => void;

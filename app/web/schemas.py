@@ -185,6 +185,7 @@ class NodeRunDTO(_ORM):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     updated_at: datetime
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowRunSummary(_ORM):

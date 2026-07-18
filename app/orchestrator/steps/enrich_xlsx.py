@@ -330,6 +330,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is running_status or _ord(project.status) < _ord(ready_status):
         project.status = ready_status
     await session.flush()
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(
+            session,
+            project,
+            node_key=node_key,
+            node_type="excel_gpt",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] enrich_xlsx slot={} xlsx snapshot bind failed: {}",
+            project.id,
+            slot_idx,
+            e,
+        )
     logger.info(
         "[#{}] enrich_xlsx slot={} → status={}",
         project.id,

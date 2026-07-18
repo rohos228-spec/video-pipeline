@@ -79,6 +79,7 @@ async def test_preview_xlsx_no_pad_and_used_range(tmp_path: Path, monkeypatch) -
             start_row=1,
             row=None,
             raw=True,
+            node_key=None,
             session=session,
         )
 

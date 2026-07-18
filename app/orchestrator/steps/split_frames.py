@@ -39,6 +39,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         return
 
     result = await xsr.run_split_xlsx(project)
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(
+            session, project, node_type="split"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] split xlsx snapshot bind failed: {}", project.id, e)
     sync_info = await xsr.sync_after_split(session, project, result.project_xlsx)
     if sync_info:
         logger.info("[#{}] split_frames sync: {}", project.id, sync_info)

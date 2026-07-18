@@ -27,6 +27,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     await xsr.run_plan_xlsx(project)
     proj_xlsx = project.data_dir / "project.xlsx"
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(
+            session, project, node_type="plan"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] plan xlsx snapshot bind failed: {}", project.id, e)
     await xsr.sync_after_plan(session, project, proj_xlsx)
 
     plan_text = (project.general_plan or "").strip()

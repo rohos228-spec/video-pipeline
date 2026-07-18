@@ -394,18 +394,24 @@ async def clear_excel_hero(
 
 @router.get("/{project_id}/xlsx")
 async def download_xlsx(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int,
+    node_key: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
+    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+
+    bound = resolve_bound_xlsx_path(p, node_key)
+    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
+    if not xlsx.exists() and bound is None:
         sheet = ProjectSheet(file_path=xlsx)
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         raise HTTPException(status_code=404, detail="project.xlsx not found")
+    fname = bound.name if bound is not None else f"{p.slug}-project.xlsx"
     return FileResponse(
         path=str(xlsx),
-        filename=f"{p.slug}-project.xlsx",
+        filename=fname,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -502,11 +508,16 @@ async def preview_xlsx(
     start_row: int = Query(1, ge=1, le=5000),
     row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
+    node_key: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
+    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+
+    bound = resolve_bound_xlsx_path(p, node_key)
+    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
+    snapshot_name = bound.name if bound is not None else None
+    if not xlsx.exists() and bound is None:
         sheet_obj = ProjectSheet(file_path=xlsx)
         sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
@@ -523,6 +534,8 @@ async def preview_xlsx(
             "truncated_cols": False,
             "sheet_max_row": 0,
             "sheet_max_col": 0,
+            "node_key": node_key,
+            "xlsx_snapshot": snapshot_name,
         }
     from openpyxl import load_workbook
 
@@ -547,6 +560,8 @@ async def preview_xlsx(
             "row": row,
             "cells": cells,
             "col_letters": [_col_letter(i) for i in range(len(cells))],
+            "node_key": node_key,
+            "xlsx_snapshot": snapshot_name,
         }
 
     headers: list[str] = []
@@ -632,6 +647,8 @@ async def preview_xlsx(
         "truncated_cols": truncated_cols,
         "sheet_max_row": sheet_max_row,
         "sheet_max_col": sheet_max_col,
+        "node_key": node_key,
+        "xlsx_snapshot": snapshot_name,
     }
 
 

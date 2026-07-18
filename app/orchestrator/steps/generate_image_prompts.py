@@ -113,6 +113,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await xsr.run_img_pr_xlsx(
                 project, n_frames=n_work, project_id=project.id
             )
+            try:
+                from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+                await snapshot_and_bind_node_xlsx(
+                    session, project, node_type="image_prompts"
+                )
+            except Exception as snap_err:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] image_prompts xlsx snapshot bind failed: {}",
+                    project.id,
+                    snap_err,
+                )
             await xsr.sync_after_img_pr(session, project, xlsx_path)
             await session.refresh(project)
             frames = (

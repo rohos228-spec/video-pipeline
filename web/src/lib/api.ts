@@ -149,6 +149,8 @@ export interface XlsxPreview {
   truncated_cols?: boolean;
   sheet_max_row?: number;
   sheet_max_col?: number;
+  node_key?: string | null;
+  xlsx_snapshot?: string | null;
 }
 
 export interface ProjectAsset {
@@ -853,8 +855,12 @@ export const api = {
     http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/reset`, {
       method: "POST",
     }),
-  downloadProjectXlsx: (projectId: number) =>
-    `/api/projects/${projectId}/xlsx`,
+  downloadProjectXlsx: (projectId: number, opts?: { nodeKey?: string }) => {
+    const q = opts?.nodeKey
+      ? `?node_key=${encodeURIComponent(opts.nodeKey)}`
+      : "";
+    return `/api/projects/${projectId}/xlsx${q}`;
+  },
   reloadProjectXlsx: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
   uploadProjectXlsx: async (projectId: number, file: File) => {
@@ -876,6 +882,7 @@ export const api = {
       startRow?: number;
       row?: number;
       raw?: boolean;
+      nodeKey?: string;
     },
   ) => {
     const q = new URLSearchParams();
@@ -885,6 +892,7 @@ export const api = {
     if (opts?.startRow != null) q.set("start_row", String(opts.startRow));
     if (opts?.row != null) q.set("row", String(opts.row));
     if (opts?.raw) q.set("raw", "true");
+    if (opts?.nodeKey) q.set("node_key", opts.nodeKey);
     const qs = q.toString();
     return http<XlsxPreview>(`/api/projects/${projectId}/xlsx/preview${qs ? `?${qs}` : ""}`);
   },

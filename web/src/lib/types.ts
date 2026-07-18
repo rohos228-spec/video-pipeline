@@ -177,6 +177,7 @@ export interface NodeRunDTO {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface WorkflowRunSummary {
