@@ -59,7 +59,8 @@ def test_read_shot2_from_row46(tmp_path: Path) -> None:
     assert info.prompt == "close-up on hands opening envelope"
 
 
-def test_read_shot2_fallback_action_from_block(tmp_path: Path) -> None:
+def test_read_shot2_ignores_r29_action_without_r46(tmp_path: Path) -> None:
+    """R29/блок enrich не должен создавать shot2 и не подставляется как промт."""
     p = tmp_path / "plan.xlsx"
     _write_min_v8(
         p,
@@ -68,8 +69,8 @@ def test_read_shot2_fallback_action_from_block(tmp_path: Path) -> None:
         shot2_action="Extreme close-up: trembling fingers on the diagnosis line",
     )
     info = read_shot2_columns(p)[1]
-    assert info.has_shot2
-    assert "trembling fingers" in info.prompt
+    assert info.has_shot2 is False
+    assert info.prompt == ""
 
 
 def test_shot1_and_shot2_disk_helpers(tmp_path: Path) -> None:
