@@ -534,7 +534,8 @@ def get_project_prompt(project, step_code: str) -> str:
                 composed = compose_step(step_id, blocks, vars_)
                 from app.services.gpt_text_builder import inject_topic_placeholders
 
-                return inject_topic_placeholders(composed, actual_topic)
+                topic = str(getattr(project, "topic", None) or "")
+                return inject_topic_placeholders(composed, topic)
             except FileNotFoundError:
                 pass
 
