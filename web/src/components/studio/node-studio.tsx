@@ -169,8 +169,12 @@ export function NodeStudio({
     isExcelGptNode(nodeType);
 
   const xlsxSheetsMeta = useQuery({
-    queryKey: ["xlsx-sheets", projectId],
-    queryFn: () => api.previewProjectXlsx(projectId!, { maxRows: 1 }),
+    queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId!, {
+        maxRows: 1,
+        nodeKey: nodeKey ?? undefined,
+      }),
     enabled: open && projectId != null && showExcel,
   });
 
@@ -184,6 +188,7 @@ export function NodeStudio({
     queryKey: [
       "xlsx-preview",
       projectId,
+      nodeKey ?? "live",
       xlsxSheet,
       xlsxParams.startRow,
       xlsxParams.maxRows,
@@ -196,6 +201,7 @@ export function NodeStudio({
         maxRows: xlsxParams.maxRows,
         maxCols: xlsxParams.maxCols,
         startRow: xlsxParams.startRow,
+        nodeKey: nodeKey ?? undefined,
       }),
     enabled:
       open &&
@@ -563,7 +569,12 @@ export function NodeStudio({
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-5">
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <Button size="sm" variant="outline" asChild>
-                      <a href={api.downloadProjectXlsx(projectId)} download>
+                      <a
+                        href={api.downloadProjectXlsx(projectId, {
+                          nodeKey: nodeKey ?? undefined,
+                        })}
+                        download
+                      >
                         <Download className="h-3.5 w-3.5" />
                         Скачать Excel
                       </a>

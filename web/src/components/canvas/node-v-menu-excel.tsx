@@ -16,11 +16,13 @@ import { cn } from "@/lib/utils";
 export function NodeVMenuExcelPreview({
   open,
   projectId,
+  nodeKey,
   nodeType,
   onOpen,
 }: {
   open: boolean;
   projectId: number;
+  nodeKey?: string | null;
   nodeType: string;
   onOpen: () => void;
 }) {
@@ -31,8 +33,12 @@ export function NodeVMenuExcelPreview({
   });
 
   const sheetsMeta = useQuery({
-    queryKey: ["xlsx-sheets", projectId],
-    queryFn: () => api.previewProjectXlsx(projectId, { maxRows: 1 }),
+    queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId, {
+        maxRows: 1,
+        nodeKey: nodeKey ?? undefined,
+      }),
     enabled: open,
   });
 
@@ -49,7 +55,7 @@ export function NodeVMenuExcelPreview({
   const startRow = 1;
 
   const preview = useQuery({
-    queryKey: ["v-menu-xlsx-preview", projectId, sheet],
+    queryKey: ["v-menu-xlsx-preview", projectId, nodeKey ?? "live", sheet],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet,
@@ -57,6 +63,7 @@ export function NodeVMenuExcelPreview({
         maxRows: XLSX_PREVIEW_MAX_ROWS,
         maxCols: XLSX_PREVIEW_MAX_COLS,
         startRow,
+        nodeKey: nodeKey ?? undefined,
       }),
     enabled: open && hasFile && Boolean(sheet),
   });
@@ -99,7 +106,9 @@ export function NodeVMenuExcelPreview({
         <div className="mb-1.5 flex items-center gap-2">
           <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
           <span className="text-[10px] font-medium text-emerald-200">
-            {sheet ? `Лист «${sheet}»` : "project.xlsx"}
+            {sheet
+              ? `Лист «${sheet}»`
+              : sheetsMeta.data?.xlsx_snapshot || "project.xlsx"}
           </span>
           {truncated ? (
             <span className="ml-auto text-[8px] text-emerald-300/70">

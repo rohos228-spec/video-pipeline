@@ -58,7 +58,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
-  const resultSnapshot = actions?.getNodeResult(d.type, d.status);
+  const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
   const isAssemble = d.type === "assemble";

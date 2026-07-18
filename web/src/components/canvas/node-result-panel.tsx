@@ -27,12 +27,14 @@ export function NodeResultPanel({
   open,
   onOpenChange,
   projectId,
+  nodeKey,
   nodeType,
   snapshot,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectId: number;
+  nodeKey?: string | null;
   nodeType: string;
   snapshot: NodeResultSnapshot;
 }) {
@@ -62,6 +64,7 @@ export function NodeResultPanel({
         ) : (
           <NodeResultViewBody
             projectId={projectId}
+            nodeKey={nodeKey}
             nodeType={nodeType}
             snapshot={snapshot}
             onHeroReplaced={() => {
