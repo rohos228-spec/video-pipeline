@@ -1,917 +1,785 @@
-# План производства классического сериала на базе video-pipeline
+# План производства классического сериала (индустриальная версия)
 
-Документ — рабочая спецификация апгрейда.  
-Текущий продукт: **вертикальные Shorts 60–75 сек** (закадровый VO, 1 слой, клипы ~8 сек).  
-Цель: **вторая продуктовая линия `format=series`** рядом с Shorts, с общим движком генерации (ChatGPT / Outsee / ElevenLabs / FFmpeg).
+Спецификация апгрейда **video-pipeline** под формат `series`.  
+Документ переработан по профессиональным источникам TV/кино (см. §0) и привязан к тому, что уже есть в репо (Shorts-граф, Outsee, ElevenLabs, FFmpeg).
 
----
-
-## 1. Целевой продукт
-
-### 1.1. Определение «классического сериала» (MVP → полный)
-
-| Уровень | Формат | Длина эпизода | Эпизодов | Персонажи | Звук |
-|--------|--------|---------------|----------|-----------|------|
-| **MVP сериал** | 16:9 (или 9:16 mini) | 6–10 мин | 3–5 | 3–5 с диалогами | multi-voice + music |
-| **Standard** | 16:9 | 12–22 мин | 6–10 | 5–8 | + ambience/SFX |
-| **Full classic** | 16:9 | 22–45 мин | сезон 8–12 | полный cast | stems, ADR, recap, credits |
-
-### 1.2. Главный принцип
-
-Shorts сегодня: **тема → VO → кадры под VO**.  
-Сериал: **bible → эпизод → teleplay → сцены → шоты → медиа → монтаж**.
-
-Нельзя «растянуть» текущий `plan → script → split`. Нужен **другой граф** и **новые сущности**, а генераторы картинок/видео/аудио переиспользовать как исполнители.
-
-### 1.3. Два профиля формата (обязательно с первого дня)
-
-| | `shorts` (как сейчас) | `series` (новый) |
-|--|----------------------|------------------|
-| Единица | `Project` = 1 ролик | `Season` → `Episode` → `Scene` → `Shot` |
-| Текст | `voiceover.txt` | teleplay (сцены + реплики) |
-| Картинка | 1 кадр ≈ 1 VO-бит | coverage pack на сцену |
-| Звук | 1 narrator + 1 BGM | голоса персонажей + beds |
-| Граф | `default_graph()` | `default_series_graph()` |
-| UI | линейный canvas | season board + episode timeline |
+**Текущий продукт:** вертикальные Shorts 60–75 сек, закадровый VO, 1 слой, клипы ~8 сек.  
+**Цель:** вторая линия `format=series` с индустриальной последовательностью отделов, а не «растянутый short».
 
 ---
 
-## 2. Иерархия производства и взаимосвязи
+## 0. Источники (профессиональная база)
+
+| Тема | Источники |
+|------|-----------|
+| Жизненный цикл сериала (dev → finance → production → distribution) | [Vitrina: TV Series Lifecycle](https://vitrina.ai/blog/the-tv-series-lifecycle-a-complete-guide-from-concept-to-screen-in-2025/), [TV Show Development 2025](https://vitrina.ai/blog/the-tv-show-development-process-a-2025-insiders-guide/) |
+| Show bible (структура, уровни) | [Final Draft: 10 Steps to TV Show Bible](https://www.finaldraft.com/blog/10-easy-steps-to-developing-your-tv-show-bible), [AIScriptReader: Bible Format Template](https://aiscriptreader.com/blog/screenwriting/tv-show-bible-format-template-and-examples) |
+| Writers’ room / showrunner | [Final Draft: Who’s in a TV Writers Room](https://www.finaldraft.com/blog/whos-in-a-tv-writers-room-roles-and-jobs-explained) |
+| Структура эпизода (teaser / acts / tag, A/B/C) | [Final Draft: Structure a TV Pilot](https://www.finaldraft.com/blog/how-to-structure-a-tv-pilot), [ScreenWeaver: 60-min outline](https://www.screenweaver.ai/blog/outline-60-minute-tv-drama-pilot), [ScreenWeaver: Act breaks](https://www.screenweaver.ai/blog/broadcast-tv-act-breaks-teaser-tag-format) |
+| Формат телепьесы | [BBC Writersroom: Screenplay Format for TV](https://downloads.bbc.co.uk/writersroom/scripts/screenplaytv.pdf), [StudioBinder: TV Script Format](https://www.studiobinder.com/blog/tv-script-format-examples/) |
+| Script breakdown / stripboard | [StudioBinder: Breaking Down a Script](https://www.studiobinder.com/blog/free-script-breakdown-sheet/) |
+| Coverage / shot list | [Tools for Film: Coverage](https://www.toolsforfilm.com/glossary/coverage), [StudioBinder: Shot List](https://www.studiobinder.com/blog/shot-list-template-free-download/), storyboard/coverage guides (shot/reverse, OTS, reaction) |
+| Continuity / script supervisor | [Film Independent: Script Supervisor](https://www.filmindependent.org/blog/script-supervisor-tips-tricks-and-tools-for-better-continuity-and-careers/), [StudioBinder: Script Supervisor](https://www.studiobinder.com/blog/script-supervisor-forms-template/), [EP: Meet the Script Supervisor](https://www.ep.com/blog/meet-the-script-supervisor-rachel-connors-phillippe/) |
+| Picture post (assembly → picture lock → online) | [Fastio: Post-Production Workflow](https://fast.io/resources/post-production-workflow/), offline/online editing practice |
+| Audio post (spotting, dialogue, ADR, Foley, stems) | [Forte: Audio Post Workflow](https://www.forte-ai.com/blog/audio-post-production-workflow-from-picture-handoff-to-final-mix), [Hurricane Sound](https://hurricanesound.tv/2026/03/audio-post-production-for-tv-and-film-a-complete-guide-to-the-process/), [Post-Super: Spotting Sessions](https://post-super.com/blog/spotting-sessions) |
+
+Индустрия снимает **out of order**; у нас генерация может идти по сценам/шотам — но **учёт continuity обязан быть как у script supervisor**, иначе сериал развалится так же, как на площадке без scripty.
+
+---
+
+## 1. Индустриальный lifecycle → наш пайплайн
+
+По Vitrina и практике TV:
 
 ```text
-SERIES / SEASON BIBLE
-    │  (тон, мир, арки, табу, cast rules)
-    ▼
-EPISODE OUTLINE (E01…En)
-    │  (acts, cold open, cliffhanger, B-plot)
-    ▼
-TELEPLAY (screenplay)
-    │  (сцены, ремарки, реплики)
-    ├──────────────┬────────────────┐
-    ▼              ▼                ▼
-SCENE BREAKDOWN  CAST/VOICE MAP   CONTINUITY LEDGER
-    │              │                │
-    ▼              │                │
-SHOT LIST / CAMERA │                │
-    │              │                │
-    ▼              ▼                ▼
-IMAGE PROMPTS ──► IMAGES ──► ANIM PROMPTS ──► VIDEOS
-    │                                         │
-    └──────── DIALOGUE AUDIO / SFX / MUSIC ◄──┘
-                        │
-                        ▼
-                 EPISODE ASSEMBLE
-                        │
-                        ▼
-              QA / SHOWRUNNER HITL
-                        │
-                        ▼
-               RECAP + TITLES + PUBLISH
+DEVELOPMENT          PRE-PRODUCTION           «PRINCIPAL» (у нас gen)
+concept → bible      breakdown → stripboard   coverage media
+pilot package        cast/loc/look lock       (images/videos)
+
+POST-PRODUCTION      DELIVERY
+offline edit →       masters / stems / publish
+picture lock →
+audio post → online finish
 ```
 
-**Правило зависимостей:** вниз по стрелке можно идти только если верхний артефакт **locked** (или явно помечен draft для чернового прогона).  
-Иначе continuity и диалоги разъедутся.
+| Индустриальная фаза | Что делают люди | Наш аналог в продукте |
+|---------------------|-----------------|------------------------|
+| Development | bible, pitch, pilot | F01–F03, pilot outline/teleplay |
+| Writers’ room | break season → break episode → outline → draft → notes | F04–F07 + showrunner HITL |
+| Pre-production | breakdown, stripboard, shot list, dept prep | F08–F11 |
+| Production | coverage на площадке | F12–F14 (генерация пластин/клипов) |
+| Script supervising | continuity log | F15 |
+| Picture editorial | assembly → rough → fine → **picture lock** | F16–F17 |
+| Audio post | spotting → DX → ADR → Foley/SFX → music → mix/stems | F18–F22 |
+| Finish / delivery | online, titles, QC, deliverables | F23–F25 |
+
+**Критический вывод индустрии:** audio post и finishing **после picture lock** (или near-lock).  
+Нельзя финалить Foley/music mix, пока режут картинку — иначе всё поедет. В MVP допускаем iterative rough cut, но **финальный mix только после lock**.
 
 ---
 
-## 3. Модель данных — что конкретно сделать
+## 2. Целевой продукт и format profiles
 
-### 3.1. Новые сущности (БД + API)
+| Профиль | Близкий индустриальный формат | Длина | Структура страницы* |
+|---------|--------------------------------|-------|---------------------|
+| `series_half_hour` | half-hour drama/comedy | ~22–30 мин эфира / 6–12 мин MVP | Teaser + 2–3 acts + Tag |
+| `series_hour` | one-hour drama | ~42–60 мин / 12–22 мин MVP | Teaser + 4–5 acts + Tag |
+| `series_limited` | limited / mini | как hour, короткий сезон | Season = одна арка |
+| `shorts` | текущий продукт | 60–75 сек | viral VO arc |
 
-| Сущность | Для чего | Ключевые поля | Где в коде (сделать) |
-|----------|----------|---------------|----------------------|
-| `Series` | Зонтик франшизы | title, logline, format_profile | `app/models.py`, миграция Alembic |
-| `Season` | Сезон / мини-сезон | number, bible_md, status, style_lock_id | то же |
-| `Episode` | Единица выпуска | season_id, number, title, outline, teleplay, duration_target, status | то же; связь 1:1 или 1:N с `Project` на переходный период |
-| `Scene` | Драматическая сцена | episode_id, idx, location_id, summary, objective, emotional_turn, day_night | новое |
-| `Shot` | Съёмочный план | scene_id, idx, shot_type, camera, action, dialogue_line_ids, duration_est | новое; позже мапится на Frame/Artifact |
-| `CharacterBible` | Сквозной персонаж сезона | name, bio, arc, appearance_lock, voice_id, relationships_json | расширить hero |
-| `LocationBible` | Локация сезона | name, description, ref_artifact_ids, lighting_rules | новое |
-| `ContinuityEntry` | Факт continuity | scope (season/ep/scene), key, value, established_at | новое |
-| `DialogueLine` | Реплика | scene_id, character_id, text, emotion, timing_hints | новое |
-| `FormatProfile` | shorts vs series | aspect, episode_length, graph_template | settings / JSON |
+\*Правило «~1 страница ≈ 1 минута экрана» — ориентир индустрии (Courier screenplay), не закон. У AI-видео тайминг задаём отдельно (shot durations).
 
-**Переходный хак (не как финал):** `Episode` → внутренний `Project` для переиспользования Outsee/TTS.  
-**Цель:** Shot/Dialogue стали first-class, а не «Frame с VO».
+**MVP для video-pipeline (рекомендация):**  
+`series_half_hour` урезанный — **6–10 мин**, 16:9, 3–5 эпизодов, Teaser + 3 acts + Tag, диалоговая драма, coverage `master + OTS pair + selective CU`.
 
-### 3.2. Артефакты на диске (предложение)
+---
+
+## 3. Иерархия артефактов (как в комнате сценаристов + на площадке)
 
 ```text
-data/series/<series_slug>/
-  season_01/
-    bible.md
-    characters/
-    locations/
-    continuity.json
-    episodes/
-      e01/
-        outline.md
-        teleplay.md
-        scenes/
-          s01/
-            shots/
-            images/
-            videos/
-            audio/
-        mix/
-        final/
+SERIES BIBLE (living document)
+  ├─ Season break (A/B/C arcs across episodes)
+  ├─ Character bibles + relationships
+  ├─ World / tone / comps
+  └─ Episode rundowns (paragraph each)
+
+EPISODE
+  ├─ Beat sheet / outline (teaser, acts, act-outs, tag)
+  ├─ Teleplay / shooting script (sluglines, action, dialogue)
+  ├─ Script breakdown sheets (cast, props, wardrobe, FX…)
+  ├─ Stripboard / shoot order (optional for AI; useful for cost)
+  ├─ Shot list → Coverage
+  ├─ Continuity log (story day, wardrobe state, props, eyelines)
+  ├─ Picture: assembly → rough → fine → PICTURE LOCK
+  ├─ Audio: spotting notes → DX/ADR → Foley/SFX → music → stems
+  └─ Deliverables: master, M&E, subs, QC report
 ```
 
-### 3.3. Конкретные задачи по данным
+**Зависимости (жёсткие):**
 
-1. Добавить модели + Alembic migration.  
-2. API: CRUD series/season/episode/scene/shot.  
-3. Studio UI: season board (список эпизодов + статусы).  
-4. Не ломать текущий shorts `Project` — feature flag `FORMAT_SERIES_ENABLED`.
-
----
-
-## 4. Каталог функций (агентов): зачем, как применять, связи, вариации
-
-Ниже каждая функция = **нода/агент** в series-графе.  
-Формат карточки:
-
-- **Зачем**  
-- **Вход → выход**  
-- **Когда запускать**  
-- **Как применять (оператору)**  
-- **Связи**  
-- **Вариации**  
-- **Что сделать в продукте**
+1. Season break / bible lock → episode outline  
+2. Outline lock (с чёткими **act-outs**) → teleplay  
+3. Teleplay lock → breakdown  
+4. Breakdown → shot list / coverage  
+5. Coverage media → offline edit  
+6. **Picture lock** → финальный audio post + online finish  
+7. Cliffhanger / established facts → bible archive + next episode
 
 ---
 
-### F01. Series / Season Bible Agent
+## 4. Каталог функций (отделы), зачем / как / связи / вариации / что сделать
 
-**Зачем:** единый «закон мира». Без bible каждый эпизод будет как отдельный short с новыми правилами.
+Каждая функция = нода/агент + артефакт. Имена даны в **индустриальных терминах**, в скобках — код ноды.
+
+---
+
+### F01. Series Bible — Development Blueprint  
+**Нода:** `series_bible`
+
+**Зачем (индустрия):** bible доказывает, что шоу живёт не один эпизод. Final Draft выделяет 3 уровня: development tool → pitch → writers’ room archive. AIScriptReader: обычно 15–30 стр.; блоки — logline, premise, world, tone, regulars, S1 arc, future seasons, pilot summary, episode rundowns.
 
 **Вход → выход**  
-- Вход: логлайн, жанр, тон, число эпизодов, каст (имена), табу, референсы.  
-- Выход: `season.bible_md` + черновики Character/Location list + arc map (A/B/C).
-
-**Когда:** один раз в начале сезона; правки только через showrunner HITL.
+- Вход: логлайн, жанр, comps («A meets B»), число эпизодов, каст-черновик.  
+- Выход: структурированный bible + season episode map (1 абзац на эпизод) + список series regulars.
 
 **Как применять**  
-1. Создать Series + Season.  
-2. Заполнить бриф (форма в Studio).  
-3. Запустить F01 → получить bible.  
-4. HITL: утвердить / править / lock.
+1. Заполнить бриф (title, logline, comps, engine: procedural / serialized / hybrid).  
+2. Сгенерировать bible по секциям (не одним простынёй без заголовков).  
+3. Showrunner HITL: утвердить tone + season map.  
+4. Lock v1; дальше bible растёт как archive (Level 3).
 
-**Связи:** блокирует F02–F04; питает continuity (F12), style lock, dialogue voice.
+**Связи:** корень для F02–F05; обновляется после каждого эп. (archive).
 
-**Вариации**
-
-| Вариант | Когда |
-|---------|--------|
-| Mini-bible | 3 эпизода, 1 страница |
-| Full bible | сезон 8+, отделы: мир / cast / tone / episode map |
-| Adaptation bible | из книги/сценария пользователя |
+**Вариации:** pitch-bible (короткая) / room-bible (живая) / adaptation-bible (IP).
 
 **Сделать:**  
-- нода `series_bible`, step_code `ser_bible`  
-- промпт `prompts/steps/ser_01_bible/template.md` + blocks  
-- HITL `approve_bible`  
-- запись в `Season.bible_md`
+- промпт-контракт секций bible (как в AIScriptReader template)  
+- `Season.bible_md` + versioning  
+- HITL `approve_bible`
 
 ---
 
-### F02. Character Bible + Cast Lock
+### F02. Season Break (Writers’ Room: break the season)  
+**Нода:** `season_break`
 
-**Зачем:** стабильные лица, характеры, голоса; диалоги звучат «по-разному».
+**Зачем:** в writers’ room сначала «ломают» сезон: где персонажи начинают/заканчивают, major turns, reveals — *до* письма отдельных серий ([Final Draft: Writers Room](https://www.finaldraft.com/blog/whos-in-a-tv-writers-room-roles-and-jobs-explained)).
 
 **Вход → выход**  
-- Вход: bible, список ролей.  
-- Выход: CharacterBible × N + задания на hero-refs (переиспользовать `hero`).
+- Вход: locked bible.  
+- Выход: arc table (A/B/C per episode), premiere/midpoint/finale tentpoles, mythology rules.
 
-**Когда:** сразу после F01; до teleplay желательно lock внешности главных.
+**Как применять:** один раз на сезон; править только showrunner override.
+
+**Связи:** ← F01; → F04 outlines; питает continuity plot threads.
+
+**Вариации:** serialized drama / procedural+mythology / anthology (слабый season break).
+
+**Сделать:** JSON/Markdown `season_arcs.json`; UI season board с арками.
+
+---
+
+### F03. Character Bible + Casting Lock (+ Voice Cast)  
+**Нода:** `cast_bible` → reuse `hero`
+
+**Зачем:** TV-персонажи живут сезонами; bible описывает personality, flaws, relationships, conflict drivers (Final Draft). На площадке внешность/костюм фиксируются; у нас + `voice_id` для DX.
 
 **Как применять**  
-1. Утвердить список персонажей (main / supporting / guest).  
-2. Сгенерировать текстовые карточки.  
-3. Прогнать генерацию референсов (существующий `hero` / turnaround).  
-4. Назначить `voice_id` (ElevenLabs) на каждого говорящего.  
-5. Lock главных перед E01.
+1. Series regulars vs recurring vs guest.  
+2. Текстовые карточки → visual turnaround (существующий hero).  
+3. Voice casting map (ElevenLabs).  
+4. Lock appearance для mains до pilot media.
 
-**Связи:** → dialogue (F05), images, continuity wardrobe; ← bible.
+**Связи:** dialogue voice, wardrobe continuity, image refs.
 
-**Вариации:** 1 протагонист + narrator; ансамбль; «голос за кадром + диалоги».
+**Вариации:** ensemble / single protagonist / narrator+cast (hybrid docudrama).
 
-**Сделать:**  
-- расширить hero workflow до season-scoped characters  
-- UI: voice casting map  
-- запрет смены appearance_lock без showrunner override
+**Сделать:** season-scoped CharacterBible; запрет смены lock без override.
 
 ---
 
-### F03. Location Bible
+### F04. Location / World Lookbook  
+**Нода:** `location_bible`
 
-**Зачем:** одни и те же места не «плывут» между эпизодами.
+**Зачем:** мир — storytelling engine (Final Draft: world section). Локации должны быть консистентны между эп.
 
-**Вход → выход**  
-- Вход: bible + outline намёки на локации.  
-- Выход: LocationBible + ref images (через items/hero-like image gen).
+**Как применять:** извлечь локации из bible/season break → plate refs (день/ночь) → привязка сцен к location_id.
 
-**Когда:** после F01; уточняется по мере outline эпизодов.
+**Связи:** breakdown, ambience beds, image prompts.
 
-**Как применять**  
-1. Извлечь локации из bible/outline.  
-2. Сгенерировать plate-рефы (день/ночь при необходимости).  
-3. Привязать сцены эпизода к `location_id`.
-
-**Связи:** scene breakdown, image prompts, ambience beds (F14).
-
-**Вариации:** 2–3 локации (chamber drama) vs travel series.
-
-**Сделать:** модель LocationBible + нода `location_bible` + хранение рефов в `data/series/.../locations/`.
+**Сделать:** LocationBible + refs в `data/series/.../locations/`.
 
 ---
 
-### F04. Episode Outline Agent
+### F05. Episode Break + Outline (Beat Sheet)  
+**Нода:** `ep_outline`
 
-**Зачем:** структура эпизода до диалогов. Иначе teleplay расползается.
+**Зачем:** комната «ломает» эпизод: A/B/(C) story, emotional turns, **act-outs**. ScreenWeaver/Final Draft: teaser → acts → tag; act-out = decision/reveal/threat в одну строку. Без act-outs outline негоден.
 
-**Вход → выход**  
-- Вход: locked bible, номер эпизода, целевая длина, статус предыдущего cliffhanger.  
-- Выход: `episode.outline` — cold open, акты, A/B plot, mid-point, climax, tag/cliffhanger, список сцен (кратко).
-
-**Когда:** для каждого эпизода отдельно; E(n) после lock финала E(n-1) или хотя бы его cliffhanger.
-
-**Как применять**  
-1. Выбрать эпизод на season board.  
-2. Запустить outline.  
-3. Проверить: есть ли поворот, цена, связка с аркой сезона.  
-4. HITL approve outline → lock.
-
-**Связи:** ← bible, prev cliffhanger; → teleplay, scene list seed.
-
-**Вариации**
-
-| Структура | Применение |
-|-----------|------------|
-| 3 акта | MVP 6–10 мин |
-| Teaser + 4 acts + tag | 20–22 мин |
-| Bottle episode | мало локаций, упор на диалог |
-| Premiere / finale | усиленный cold open / payoff |
-
-**Сделать:**  
-- нода `ep_outline`  
-- промпт с жестким JSON/Markdown контрактом сцен  
-- поле `Episode.outline` + статус `outline_ready`
-
----
-
-### F05. Teleplay + Dialogue Agent *(ключевой пробел)*
-
-**Зачем:** классический сериал = сцены и реплики, не закадровый VO.
-
-**Вход → выход**  
-- Вход: locked outline, character bibles (голос/манера), continuity ledger.  
-- Выход: `teleplay.md` + нормализованные `DialogueLine` + scene headers.
-
-**Формат выхода (контракт):**
+**Контракт outline (обязательные поля):**
 
 ```text
-SCENE 3 - INT. КУХНЯ - НОЧЬ
-Цель сцены: ...
-Поворот: ...
-
-МАША
-Ты снова врёшь.
-(пауза, тише)
-Я видела сообщение.
-
-ИВАН
-(отступает к двери)
-Это не то, что ты думаешь.
+SERIES QUESTION (для пилота) / EPISODE QUESTION
+A STORY / B STORY / C STORY (если есть)
+TEASER: what we see + question raised
+ACT 1: action + emotional shift + ACT-OUT (1 line)
+ACT 2: ...
+ACT 3: ...
+[ACT 4/5 if hour]
+TAG: button / bridge to next episode
+SCENE LIST (1 line each): INT/EXT, LOC, DAY/NIGHT, purpose
 ```
 
-**Когда:** только после approve outline. Не писать диалоги «из головы» без структуры.
-
 **Как применять**  
-1. Lock outline.  
-2. Запустить teleplay (можно в 2 прохода: skeleton scenes → dialogue pass).  
-3. HITL: читать вслух темп; править info-dump.  
-4. Парсер кладёт реплики в БД.  
-5. Lock teleplay перед breakdown.
+1. Подтянуть cliffhanger/ledger предыдущего эп.  
+2. Сгенерировать outline.  
+3. Проверка: каждый act-out читается как «лестница», не плато.  
+4. HITL approve → lock.
 
-**Связи:** → scene/shot breakdown, multi-voice audio, subs; ← cast, continuity.
+**Связи:** ← F02; → teleplay; запрет писать диалоги до lock.
 
-**Вариации**
+**Вариации структуры**
 
-| Режим | Когда |
-|-------|--------|
-| Dialogue-heavy | chamber / drama |
-| Visual-heavy | экшен: короткие реплики, больше action lines |
-| Hybrid | VO-narrator + диалоги (док-драма) |
-| Comedy timing | отдельные блоки пауз/бит |
+| Формат | Модули |
+|--------|--------|
+| Half-hour MVP | Teaser + Act1–3 + Tag |
+| Hour drama | Teaser + Act1–4/5 + Tag |
+| Streaming seamless | те же акты как *emotional modules*, без рекламных пауз |
+| Bottle episode | мало локаций, упор на DX |
+| Premiere / finale | усиленный teaser / payoff season break |
 
-**Сделать:**  
-- **новый** step вместо/рядом с `make_script.py`: `make_teleplay.py`  
-- промпты `ser_02_teleplay`, `ser_03_dialogue_polish`  
-- парсер teleplay → `Scene` + `DialogueLine`  
-- **не** переиспользовать `voiceover_author` как default  
-- HITL `approve_teleplay`
+**Сделать:** нода + валидатор «act-out present»; статус `outline_locked`.
 
 ---
 
-### F06. Dialogue Polish / Character Voice Pass
+### F06. Teleplay / Screenplay Draft  
+**Нода:** `teleplay`
 
-**Зачем:** чтобы все персонажи не говорили одним GPT-голосом.
+**Зачем:** производство читает **screenplay**, не VO. BBC Writersroom: FADE IN; slugline `INT./EXT. LOCATION - DAY/NIGHT`; action только то, что на экране; character + dialogue; parentheticals; (V.O.)/(O.S.); teaser/acts на странице. StudioBinder: TV жёстче feature по act labels.
 
 **Вход → выход**  
-- Вход: teleplay draft + character speech profiles.  
-- Выход: teleplay v2 (отличимые лексика/ритм/длина реплик).
+- Вход: locked outline + character speech profiles + continuity facts.  
+- Выход: teleplay.md (+ нормализованные Scene/DialogueLine).
 
-**Когда:** сразу после F05, до breakdown.
+**Правила применения (из BBC):**  
+- action ≠ мысли персонажа;  
+- абзац action ≈ beat;  
+- новый slugline = новая сцена (для breakdown);  
+- не нумеровать сцены в раннем draft; номера — в shooting script после breakdown.
 
-**Как применять:** авто-пасс + HITL на 2–3 ключевых сцены.
+**Как применять**  
+1. Draft 1 от outline (можно skeleton: sluglines+action, потом DX pass).  
+2. Showrunner notes (HITL).  
+3. Polish (F07).  
+4. Lock teleplay → «blue pages» логика: правки версионировать.
 
-**Связи:** часть F05 или отдельная нода; влияет на TTS emotion tags.
+**Связи:** → breakdown; запрет использовать `voiceover_author` как default series writer.
 
-**Вариации:** soft polish / hard rewrite одной сцены / «убрать exposition».
+**Вариации:** single-camera drama format (default) / multi-cam sitcom (другой формат — later) / hybrid VO+DX.
 
-**Сделать:** нода `dialogue_polish` или режим в teleplay; чеклист в `check_teleplay`.
+**Сделать:** `make_teleplay.py`; промпты `ser_teleplay`; парсер slugline→Scene; HITL `approve_teleplay`.
 
 ---
 
-### F07. Scene Breakdown Agent
+### F07. Dialogue Pass / Character Voice Notes  
+**Нода:** `dialogue_polish`
 
-**Зачем:** превратить сценарий в производственные сцены с целью и участниками.
+**Зачем:** room notes + showrunner pass, чтобы regulars не звучали одним голосом; parentheticals не злоупотреблять.
 
-**Вход → выход**  
-- Вход: locked teleplay.  
-- Выход: записи `Scene` (location, cast, objective, turn, estimated duration).
+**Как применять:** после Draft 1; чеклист: длина реплик, subtext, info-dump, отличимость.
 
-**Когда:** после lock teleplay.
+**Связи:** ← F03 speech profiles; → DX performance tags для TTS.
 
-**Как применять**  
-1. Авторазбор.  
-2. Склеить/разрезать слишком длинные сцены.  
-3. Проставить day/night и continuity tags.
-
-**Связи:** → shot list; ← locations; обновляет continuity candidates.
-
-**Вариации:** coarse (сцена = локация) vs fine (сцена = смена цели).
-
-**Сделать:** `breakdown_scenes.py` + API списка сцен в UI episode.
+**Сделать:** `check_teleplay` + polish agent; опционально rewrite одной сцены.
 
 ---
 
-### F08. Shot List / Coverage / Camera Agent *(логика камеры)*
+### F08. Script Breakdown  
+**Нода:** `script_breakdown`
 
-**Зачем:** классическая съёмка = набор ракурсов, а не один slow push-in на всю сцену.
+**Зачем:** StudioBinder: breakdown помечает элементы сцены для отделов — cast, props, wardrobe, makeup, vehicles, stunts, VFX, sound… Это вход в schedule/stripboard и бюджет.
 
 **Вход → выход**  
-- Вход: Scene + dialogue lines + location ref + style lock.  
-- Выход: список `Shot`: type, framing, movement, action, linked lines, duration_est.
-
-**Минимальный coverage pack на диалоговую сцену (MVP):**
-
-1. Master / wide establishing  
-2. OTS или medium на говорящего A  
-3. Reverse / reaction B  
-4. Insert (руки/предмет) — опционально  
-
-**Когда:** по каждой сцене после breakdown; можно батчом на эпизод.
+- Вход: locked teleplay (consistent sluglines/names!).  
+- Выход: breakdown sheet per scene + element tags.
 
 **Как применять**  
-1. Для сцены выбрать профиль coverage: `dialogue_2shot` / `montage` / `action` / `establishing_only`.  
+1. Авто-tag из teleplay.  
+2. HITL поправить героев-реквизит.  
+3. Сверить имена локаций/персонажей (consistency — требование breakdown).
+
+**Связи:** → stripboard, wardrobe/props prep, shot list inputs, sound spotting candidates.
+
+**Элементы MVP (обязательный минимум):** Cast, Props, Wardrobe state, Day/Night, INT/EXT, Special (VFX/weapons), Sound notes.  
+**Full later:** полный StudioBinder element set.
+
+**Сделать:** `breakdown_scenes.py`; UI scene cards с тегами; не путать с VO-`split`.
+
+---
+
+### F09. Stripboard / Schedule (опционально для AI, важно для стоимости)  
+**Нода:** `stripboard`
+
+**Зачем:** в live-action 1st AD группирует сцены для съёмки (локация, день/ночь, актёры). У AI «съёмка» = генерация; stripboard = **порядок генерации для экономии** (сначала все шоты одной локации/одного героя).
+
+**Как применять:** auto-group by location → estimate gen cost → optional reorder.
+
+**Связи:** ← breakdown; → production queue.
+
+**Вариации:** story order (проще continuity) vs location batch (дешевле/быстрее).
+
+**Сделать:** фаза 1 можно story-order only; stripboard — фаза 2.
+
+---
+
+### F10. Shot List + Coverage Design (Director/DP)  
+**Нода:** `shot_list` / `coverage`
+
+**Зачем:** Coverage = набор ракурсов, дающий editor options ([Tools for Film](https://www.toolsforfilm.com/glossary/coverage)). Shot list = план coverage до «съёмки» ([StudioBinder](https://www.studiobinder.com/blog/shot-list-template-free-download/)).  
+Shot list ≠ coverage: list = намерение, coverage = результат.
+
+**Стандартный dialogue coverage (индустрия):**  
+1. **Master / wide** — география, целиком сцена  
+2. **OTS / dirty single A**  
+3. **Reverse OTS B**  
+4. **Clean CU** на эмоциональные пики (selectively)  
+5. **Reaction** слушающего (ритм монтажа!)  
+6. **Insert/cutaway** по необходимости  
+
+Правила: **180° line**, matching eyelines, matching shot sizes в shot/reverse, не over-cut каждую реплику.
+
+**Поля shot list (минимум как StudioBinder):** scene #, shot #, size/type, movement, description, linked dialogue beat, duration est, setup group.
+
+**Как применять**  
+1. Выбрать профиль coverage на сцену (таблица ниже).  
 2. Сгенерировать shot list.  
-3. HITL: убрать лишние шоты (экономия генераций).  
-4. Lock shot list → image/anim prompts.
+3. HITL: вырезать лишние setups (экономия Veo/Nano).  
+4. Lock → image/anim prompts.  
+5. Учитывать лимит клипа **≤8s**: длинная сцена = много шотов, не один «бесконечный» промпт.
 
-**Связи:** заменяет смысл текущего `split` (VO-split); питает img_pr/anim_pr; задаёт assemble order.
+**Профили coverage**
 
-**Вариации**
+| Условие сцены | Рекомендуемый pack | Можно скипнуть |
+|---------------|-------------------|----------------|
+| 2 pers., конфликт | two-shot → dirty OTS pair → selective CU | clean singles (если не нужна изоляция) |
+| Допрос / власть | clean singles + angle differential | two-shot |
+| 3+ pers. | wide master + singles + consistent eyelines | все возможные two-shots |
+| Walk-and-talk | moving master + CU pickups | static two-shots |
+| Montage / timejump | inserts sequence | dialogue coverage |
+| Directed minimal | один master | всё остальное (высокий риск) |
 
-| Профиль | Шоты |
-|---------|------|
-| `dialogue_2shot` | master + OTS A + OTS B + reaction |
-| `single_performer` | wide + CU + insert |
-| `action` | wide geography + medium action + impact insert |
-| `montage_timejump` | 3–7 inserts без диалога |
-| `cold_open_hook` | 1–3 шока/образа + smash to titles |
+**Связи:** заменяет смысл shorts `split`; питает F12–F14 и editor options в F16.
 
-**Правила камеры (зашить в промпт/валидатор):**  
-- движение камеры мотивировано (взгляд, угроза, тайна), не «для красоты»  
-- 180° / eye-line для диалогов  
-- не менять линзу хаотично внутри бита  
-- Veo ≤8s → длинная сцена = несколько шотов/клипов, не один «длинный» промпт-обман
-
-**Сделать:**  
-- нода `shot_list` (`cam_cov`)  
-- blocks: `camera_coverage_dialogue`, `camera_coverage_action`, …  
-- расширить/заменить узкий `camera_motion/slow_push_in` для series  
-- UI: shot table внутри сцены  
-- маппинг Shot → генерация (см. F09–F11)
+**Сделать:** ноды + blocks `coverage_dialogue`, `coverage_action`, …; UI shot table; валидатор 180°/eyeline warnings.
 
 ---
 
-### F09. Image Prompt Agent (series-aware)
+### F11. Department Look Dev (Costume / Props / Makeup states)  
+**Нода:** `look_continuity_prep`
 
-**Зачем:** кадр из shot list + refs персонажей/локации + continuity.
+**Зачем:** script supervisor + wardrobe/makeup трекают *story day* и деградацию (синяк, грязь, порванная одежда) ([Film Independent](https://www.filmindependent.org/blog/script-supervisor-tips-tricks-and-tools-for-better-continuity-and-careers/), EP interview).
 
-**Вход → выход**  
-- Вход: Shot + Character/Location locks + prev shot context.  
-- Выход: image prompt на шот (аналог R45, но per-shot).
+**Как применять:** из breakdown построить state machine: Character × StoryDay → wardrobe/makeup/props state; прокинуть в image prompts.
 
-**Когда:** после lock shot list (можно scene-by-scene).
+**Связи:** F08, F15, F12.
 
-**Как применять:** как сейчас img_pr, но источник — Shot, не VO-frame; всегда прикладывать hero/location refs.
-
-**Связи:** ← F02/F03/F08; → images; continuity wardrobe/props.
-
-**Вариации:** still plate / keyframe for video / concept only.
-
-**Сделать:** адаптер `generate_image_prompts` series-mode; промпт `ser_06_image_prompts`; писать в Shot.attrs / sheet.
+**Сделать:** ContinuityState таблица; фаза 2 обязательна для «классики», в MVP — ручные notes.
 
 ---
 
-### F10. Images generation
+### F12. Image Prompts + Plates (Camera department stills)  
+**Нода:** series-mode `image_prompts` / `images`
 
-**Зачем:** визуальный ключ шота (уже есть движок Outsee).
+**Зачем:** keyplate/keyframe на каждый shot list item + refs cast/location/look state.
 
-**Применение:** существующий `images` step, вход = series image prompts + multi-ref attach.
+**Как применять:** как текущий img_pr/img, но источник = Shot; всегда multi-ref attach; HITL gallery по сценам.
 
-**Связи:** HITL per scene или per episode pack; backup при reset как сейчас.
+**Связи:** ← F10/F03/F04/F11; → video; visual continuity check.
 
-**Сделать:** batch по `scene_id`; UI галерея сцен; не смешивать shorts Frame API без адаптера.
+**Сделать:** adapter существующих Outsee steps; batch by scene_id.
 
 ---
 
-### F11. Animation Prompt + Videos (series-aware)
+### F13. Animation Prompts + Picture Production (Veo clips)  
+**Нода:** series-mode `anim_pr` / `video`
 
-**Зачем:** движение и «игра» в шоте по camera plan, не универсальный push-in.
-
-**Вход → выход**  
-- Вход: approved image + Shot.camera + action (+ lip-sync policy later).  
-- Выход: anim prompt → Veo clip ≤8s.
-
-**Когда:** после approve images сцены (или эпизода).
+**Зачем:** «principal photography» клипов по coverage; движение камеры из shot list (не глобальный slow push-in).
 
 **Как применять**  
-1. Для диалоговых CU — минимум движения камеры, акцент на performance.  
-2. Для master — медленный dolly/pan по плану.  
-3. Склеивать несколько клипов в сцену на assemble, не пытаться уместить 60с диалога в 1 клип.
+- CU dialogue: минимальное движение, performance  
+- master: мотивированный dolly/pan  
+- reaction: hold / micro move  
+- несколько клипов на сцену → editor выбирает (coverage options)
 
-**Связи:** ← shot list; → assemble; soft retry как `video`/`anim_pr`.
+**Связи:** soft retry как сейчас; Shot.video_artifact_id.
 
-**Вариации:** lock-off talking head; insert motion; establishing drone/pan; silent reaction hold.
-
-**Сделать:**  
-- series шаблоны `ser_07_animation`  
-- запрет дефолта «slow push-in everywhere»  
-- поле Shot.video_artifact_id
+**Сделать:** `ser_animation` templates; запрет default push-in everywhere.
 
 ---
 
-### F12. Continuity Steward
+### F14. Production Sound / Temp DX (guide track)  
+**Нода:** `temp_dialogue` (может совпадать с F19 early)
 
-**Зачем:** сериал убивает деталь (синяк пропал, пистолет в другой руке, герой «забыл» факт).
+**Зачем:** в live-action есть production sound; у нас TTS guide track нужен уже на offline edit (чтобы резать по репликам), даже до финального ADR-pass.
 
-**Вход → выход**  
-- Вход: bible + teleplay + prior ContinuityEntry + новые сцены.  
-- Выход: обновлённый ledger + список нарушений (block/warn).
+**Как применять:** после teleplay lock можно параллельно с F12–F13; на rough cut кладём temp DX.
 
-**Когда:**  
-- после teleplay (story continuity)  
-- после shot/images (visual continuity)  
-- перед assemble (final gate)
+**Связи:** F16 assembly; позже F19 replaces/refines.
+
+---
+
+### F15. Continuity / Script Supervisor Log  
+**Нода:** `continuity_steward`
+
+**Зачем:** scripty — source of truth: dialogue as written, action as written, wardrobe/props/eyeline/emotional entrance ([StudioBinder](https://www.studiobinder.com/blog/script-supervisor-forms-template/), EP). На TV критично из‑за out-of-order; у нас — из‑за раздельной генерации шотов/эпизодов.
+
+**Типы continuity (логировать отдельно):**  
+1. **Story** — факты, knowledge, arcs  
+2. **Visual** — wardrobe, props hands, injuries, set dressing  
+3. **Performance** — emotional state entering scene  
+4. **Screen direction** — 180°, exits/entrances  
+
+**Когда гонять:** после teleplay; после images; перед picture lock; перед стартом E+1.
+
+**Как применять:** report block/warn; critical → стоп генерации.
+
+**Сделать:** ContinuityEntry ledger; checks `story|visual|performance|axis`; экспорт «scripty notes» в UI.
+
+---
+
+### F16. Offline Picture Editorial (Assembly → Rough → Fine)  
+**Нода:** `assemble_offline`
+
+**Зачем:** offline = storytelling cut на proxies/доступных клипах ([Wikipedia Offline editing](https://en.wikipedia.org/wiki/Offline_editing), Fastio workflow). Стадии: **assembly** (все сцены по порядку) → **rough cut** → **fine cut**.
 
 **Как применять**  
-1. Автоскан → report.  
-2. Critical → блок генерации.  
-3. Soft → предупреждение HITL.
+1. Assembly: склеить masters по teleplay order (даже без полной coverage).  
+2. Rough: врезать OTS/CU/reactions; подложить temp DX.  
+3. Fine: ритм, L/J-cut упрощённо, убрать лишнее.  
+4. HITL director/showrunner cut.
 
-**Связи:** читает/пишет ContinuityEntry; связан с costume/day-night.
+**Связи:** нужен cut list из Shot; это **не** текущий VO-align assemble.
 
-**Вариации:** story-only / visual-only / full.
-
-**Сделать:**  
-- `continuity_steward.py`  
-- JSON ledger на сезон  
-- check-ноды `check_continuity_story`, `check_continuity_visual`
+**Сделать:** `assemble_episode.py` режимы `assembly|rough|fine`; timeline JSON.
 
 ---
 
-### F13. Multi-voice Dialogue Audio
+### F17. Picture Lock  
+**Нода:** `picture_lock` (milestone, не «креатив»)
 
-**Зачем:** без этого диалоги на экране = субтитры под музыкой.
+**Зачем:** точка, после которой **не двигают тайминг шотов**; handoff в sound/music/online ([Fastio](https://fast.io/resources/post-production-workflow/), online prep guides). Без lock audio post бессмысленно переделывать.
 
-**Вход → выход**  
-- Вход: DialogueLine + character.voice_id + emotion.  
-- Выход: audio segments per line (+ silence gaps).
+**Как применять:** явный HITL «Lock picture»; после lock — запрет менять cut без unlock+re-spot.
 
-**Когда:** после lock teleplay; можно параллельно с image gen, **до** финального assemble.
+**Связи:** триггер F18 spotting и финальных F19–F22.
 
-**Как применять**  
-1. Проверить casting map.  
-2. Сгенерировать реплики пакетом.  
-3. HITL прослушать сцену.  
-4. Retake одной линии (ADR-lite).
-
-**Связи:** ← F05/F02; → mix/assemble; субтитры из DialogueLine (не только Whisper).
-
-**Вариации:** full cast TTS; 1 narrator + 2 voices; silent film + music (исключение).
-
-**Сделать:**  
-- расширить `generate_audio.py` series-mode  
-- timeline реплик (`start_ms` estimate из shot list)  
-- UI retake line  
-- **не** писать весь эпизод в один `voiceover.txt`
+**Сделать:** Episode.status=`picture_locked`; API guard на timeline mutate.
 
 ---
 
-### F14. Sound Design (Ambience + SFX)
+### F18. Spotting Sessions (Sound + Music + VFX notes)  
+**Нода:** `spotting`
 
-**Зачем:** ощущение места и действия; иначе «видеозвонок в пустоте».
+**Зачем:** до audio work команда смотрит cut и ставит cues ([Post-Super](https://post-super.com/blog/spotting-sessions)): где DX чинить/ADR, где Foley, где music enter/exit, где VFX. Отдельно sound spotting и music spotting.
 
-**Вход → выход**  
-- Вход: Scene.location + action tags из shot list.  
-- Выход: ambience bed + SFX cues (файлы/метки таймлайна).
+**Выход:** spotting notes sheet: timecode/scene, type (DX/SFX/Foley/Music/VFX), intent.
 
-**Когда:** после breakdown; финальный mix перед/внутри assemble.
+**Как применять:** только на near-lock/lock; HITL composer/sound (или один showrunner в соло-режиме).
 
-**Как применять (MVP):** 1 ambience на локацию + 3–10 SFX на эпизод.  
-**Full:** spotting sheet по сценам.
+**Связи:** ← F17; → F19–F22, VFX list.
 
-**Связи:** location bible; assemble stems.
-
-**Вариации:** silence-driven drama (мало SFX); action-heavy.
-
-**Сделать:** нода `sound_design` (фаза 2); каталог beds; пока можно manual upload.
+**Сделать:** нода генерит черновик notes из teleplay+cut; UI edit cues.
 
 ---
 
-### F15. Music Spotting (не одна BGM на всё)
+### F19. Dialogue Edit + ADR  
+**Нода:** `dialogue_edit` / `adr`
 
-**Зачем:** сериальная музыка = тема/напряжение/тишина, не бесконечный луп.
+**Зачем:** в TV **dialogue first** в миксе (industry audio practice). ADR — пересъём негодных/несуществующих линий под picture ([Hurricane Sound](https://hurricanesound.tv/2026/03/audio-post-production-for-tv-and-film-a-complete-guide-to-the-process/)).
 
-**Вход → выход**  
-- Вход: outline + teleplay emotional map.  
-- Выход: cues: `t_start–t_end`, mood, reference; генерация кусков (Suno/Outsee) или библиотека.
+**Как применять у нас**  
+1. Multi-voice TTS по DialogueLine + emotion tags (= production DX / guide).  
+2. Align к picture lock timeline.  
+3. ADR-lite: retake одной линии.  
+4. Dialogue premix levels.
 
-**Когда:** после outline (черновик) и уточнение после teleplay; mix в assemble.
+**Связи:** приоритет над music/SFX в балансе; subs из DX script.
 
-**Как применять:** отметить 4–8 cues на 8–10 мин эпизод; не заливать музыку под весь диалог.
-
-**Связи:** ← F04/F05; → assemble ducking под диалог.
-
-**Вариации:** theme+variations; diegetic source; almost silent.
-
-**Сделать:** расширить `generate_music.py` → cues list; series assemble делает ducking.
+**Сделать:** расширить `generate_audio.py`; line retake UI; series не пишет всё в `voiceover.txt`.
 
 ---
 
-### F16. Episode Assemble (scene timeline)
+### F20. Sound Design + Foley + Ambience  
+**Нода:** `sound_design`
 
-**Зачем:** собрать эпизод как фильм, не `concat` VO-frames.
+**Зачем:** ambience «сажает» DX в локацию; Foley — синхронные бытовые звуки; SFX — story effects. Spotting определяет объём.
 
-**Вход → выход**  
-- Вход: videos по shots + dialogue audio + music cues + SFX + titles.  
-- Выход: `episode_final.mp4` (+ stems optional).
+**MVP:** location ambience bed + ключевые SFX.  
+**Full:** Foley pass (фаза 3).
 
-**Когда:** когда медиа эпизода ready (или scene-complete iterative).
+**Как применять:** после spotting; не глушить DX.
 
-**Как применять**  
-1. Сборка сцены (шоты по cut list).  
-2. Наложение диалогов (J/L-cut упрощённо в MVP можно без).  
-3. Music ducking.  
-4. Subs из DialogueLine.  
-5. Titles / end card.  
-6. HITL final.
-
-**Связи:** зависит от F08–F15; отличается от `assemble.py` shorts.
-
-**Вариации:** rough cut (только picture+dialog) → fine cut (+sound).
-
-**Сделать:**  
-- `assemble_episode.py` (новый)  
-- cut list из Shot order  
-- не использовать VO alignment mapper как единственный тайминг  
-- format profile 16:9
+**Сделать:** нода + библиотека beds; manual upload path.
 
 ---
 
-### F17. Recap / Titles / Credits
+### F21. Music Editorial (cues, не одна BGM)  
+**Нода:** `music_spotting` / `music_edit`
 
-**Зачем:** сериальная упаковка («ранее» / заставка / титры).
+**Зачем:** music spotting задаёт enter/exit и эмоцию cue; music editor кладёт музыку в picture; stems для микса ([Forte](https://www.forte-ai.com/blog/audio-post-production-workflow-from-picture-handoff-to-final-mix)).
 
-**Когда:** после rough cut или параллельно с lock телеplay (текст титров).
+**Как применять:** 4–10 cues на 8–10 мин; тишина — валидный choice; ducking под DX.
 
-**Вариации:** cold open → smash titles; titles first; no recap for E01.
+**Связи:** ← spotting; существующий Suno/Outsee как renderer кусков.
 
-**Сделать:** нода `ep_packaging`; шаблоны длительностей; генерация 1–3 recap шотов из прошлых эпизодов.
-
----
-
-### F18. Showrunner QA Agent
-
-**Зачем:** приёмка эпизода по чеклисту классики.
-
-**Проверяет:** структура, cliffhanger, длина, отличимость голосов, continuity report, громкость, «есть ли цель у каждой сцены».
-
-**Когда:** перед publish / перед стартом следующего outline.
-
-**Сделать:** `check_episode` по аналогии с `check_plan`/`check_script`, но series-критерии (не 30s hook).
+**Сделать:** расширить `generate_music.py` → cue list + stems-ish files.
 
 ---
 
-### F19. Season Board / Episode Queue (продюсерский контур)
+### F22. Re-recording Mix + Stems + M&E  
+**Нода:** `final_mix`
 
-**Зачем:** видеть сезон как производство, а не пачку shorts.
+**Зачем:** баланс DX/Music/FX; print master; **stems** (Dialogue / Music / Effects); **M&E** без диалога для локализации ([Forte](https://www.forte-ai.com/blog/audio-post-production-workflow-from-picture-handoff-to-final-mix)).
 
-**Применение:** статусы `bible → outline → teleplay → breakdown → media → cut → done`.
+**Как применять:** только после picture lock + готовых DX/SFX/music; QC loudness (ориентир broadcast dialnorm — упростить для MVP).
 
-**Сделать:** Studio pages + API; переиспользовать HITL kinds новыми типами.
-
----
-
-### F20. Rerun / Lock policy
-
-**Зачем:** перегенерить 1 сцену, не сжигать сезон.
-
-**Правила:**  
-- lock bible/teleplay по умолчанию  
-- reset scene = backup медиа сцены (как `old/scenes` для img)  
-- soft retry CDP на shot-level  
-
-**Сделать:** `reset_scene` / `reset_shot` API; запрет wipe сезона.
+**Сделать:** FFmpeg stem buses; export master+M&E; фаза 2–3.
 
 ---
 
-## 5. Порядок использования (операционный runbook)
+### F23. Online Finish (conform, color, titles, VFX insert)  
+**Нода:** `online_finish`
 
-### 5.1. Старт сезона (один раз)
+**Зачем:** после offline lock — полный quality pass: color, titles/recap/credits, VFX inserts ([offline→online](https://thestudiobridge.com/offline-online-editing-workflow/)).
 
-| Шаг | Функция | HITL | Результат |
-|-----|---------|------|-----------|
-| 1 | Создать Series/Season + format profile | — | контейнер |
-| 2 | F01 Bible | approve_bible | locked bible |
-| 3 | F02 Characters + hero refs + voices | approve_cast | cast lock |
-| 4 | F03 Locations + plates | approve_locations | location lock |
-| 5 | Init continuity ledger | — | пустой/базовый ledger |
+**Как применять:** packaging «Previously on» / main title / end credits; color LUT season lock.
 
-### 5.2. Каждый эпизод (E01…En)
+**Связи:** F17 lock; deliverables.
 
-| Шаг | Функция | Можно параллелить | Стоп-кран |
-|-----|---------|-------------------|-----------|
-| 1 | F04 Outline | нет | без approve нет teleplay |
-| 2 | F05 Teleplay | нет | |
-| 3 | F06 Polish | нет | |
-| 4 | F12 story continuity | нет | critical blockers |
-| 5 | F07 Scene breakdown | нет | |
-| 6 | F08 Shot list (все сцены) | сцены между собой да | урезать лишние шоты |
-| 7 | F09 Image prompts | по сценам да | |
-| 8 | F10 Images | по сценам да | HITL images |
-| 9 | F12 visual continuity | после images | |
-| 10 | F11 Anim + Videos | по ready-сценам да | soft retry |
-| 11 | F13 Dialogue audio | || с 7–10 после teleplay lock | HITL audio |
-| 12 | F15 Music cues | после outline/teleplay | |
-| 13 | F14 SFX/ambience | после breakdown | (фаза 2) |
-| 14 | F16 Assemble rough → fine | нет | |
-| 15 | F17 Packaging | частично || | |
-| 16 | F18 QA | нет | |
-| 17 | HITL final + publish | — | |
-| 18 | Export cliffhanger facts → ledger для E+1 | — | |
-
-### 5.3. Чего никогда не делать
-
-1. Писать диалоги до outline.  
-2. Генерить картинки до cast/location lock (кроме концепт-тестов).  
-3. Один 8s клип на длинную диалоговую сцену.  
-4. Одна BGM на весь эпизод без ducking.  
-5. Считать mass/batch «сезоном».  
-6. Использовать shorts `check_plan` 30s-критерии для серии.
+**Сделать:** `ep_packaging` + optional color preset; recap из prior episode stills.
 
 ---
 
-## 6. Series-граф (конкретная схема нод)
+### F24. QC / Showrunner Acceptance  
+**Нода:** `episode_qc`
 
-Предлагаемый `default_series_graph()` (упрощённо):
+**Зачем:** приёмка: структура (teaser/acts/tag), cliffhanger, DX clarity, continuity report, runtime, loudness, credits.
+
+**Не использовать** shorts `check_plan` (30s hook) как критерий серии.
+
+**Сделать:** `check_episode` + checklist UI.
+
+---
+
+### F25. Delivery + Publish + Bible Archive Update  
+**Нода:** `deliver` / `publish`
+
+**Зачем:** distribution lifecycle (Vitrina stage 4): masters, subs, metadata; обновить writers’ room bible archive (что установили в эп.).
+
+**Как применять:** publish episode; записать ContinuityEntry + season archive notes → разблок F05 для E+1.
+
+**Сделать:** publish adapter; `season_bible` append «aired facts».
+
+---
+
+## 5. Сводный граф (правильный порядок)
 
 ```text
-topic/brief
-  → series_bible → HITL_bible
-  → cast_bible → hero_refs → voice_cast → HITL_cast
-  → location_bible → location_refs → HITL_loc
-  → ep_outline → HITL_outline
-  → teleplay → dialogue_polish → HITL_teleplay
-  → continuity_story
-  → scene_breakdown
-  → shot_list
-  → image_prompts → images → HITL_images
-  → continuity_visual
-  → animation_prompts → videos → HITL_videos
-  → dialogue_audio → HITL_audio
-  → music_spotting
-  → sound_design          # phase 2
-  → assemble_episode → packaging → QA → HITL_final → publish
-```
+DEVELOPMENT
+  brief → series_bible → HITL
+       → season_break
+       → cast_bible → hero_refs → voice_cast → HITL
+       → location_bible → location_refs → HITL
 
-Shorts-граф **не удалять** — переключение по `FormatProfile`.
+PER EPISODE — WRITERS
+  ep_outline → HITL
+  teleplay → dialogue_polish → HITL
+  continuity_story
+
+PRE-PROD
+  script_breakdown → (stripboard)
+  look_continuity_prep
+  shot_list/coverage → HITL
+
+PRODUCTION (GEN)
+  image_prompts → images → HITL → continuity_visual
+  anim_pr → videos → HITL
+  temp_dialogue (parallel after teleplay lock)
+
+POST — PICTURE
+  assemble assembly → rough → fine → HITL → PICTURE_LOCK
+
+POST — SOUND / FINISH
+  spotting
+  dialogue_edit/ADR
+  sound_design
+  music_edit
+  final_mix (stems/M&E)
+  online_finish (color/titles/recap)
+  episode_qc → HITL_final → deliver/publish
+  bible_archive_update
+```
 
 ---
 
-## 7. Фазы внедрения — что конкретно сделать в репо
+## 6. Операционный runbook
 
-### Фаза 0 — Каркас (фундамент)
+### 6.1. Сезон (один раз)
+1. Format profile + series/season records  
+2. Bible → HITL lock  
+3. Season break (A/B/C map)  
+4. Cast + voices + visual lock  
+5. Locations + plates  
+6. Init continuity ledger + story calendar (story days)
 
-**Сделать:**  
-1. `FormatProfile` + флаг `series` в settings/project meta.  
-2. Модели Season/Episode/Scene/Shot/DialogueLine/CharacterBible/LocationBible/ContinuityEntry.  
-3. Миграции БД.  
-4. API CRUD + пустой Season Board в Studio.  
-5. `default_series_graph()` stub (ноды-заглушки).  
-6. Документ контрактов артефактов (этот файл = v1).
+### 6.2. Эпизод
+1. Outline с act-outs → lock  
+2. Teleplay → polish → lock  
+3. Story continuity gate  
+4. Breakdown (+ stripboard optional)  
+5. Coverage shot list → trim → lock  
+6. Plates/images → visual continuity  
+7. Videos per shot  
+8. Temp DX (если ещё нет)  
+9. Offline assembly→rough→fine → **picture lock**  
+10. Spotting  
+11. DX final / ADR retakes  
+12. Ambience/SFX (+ Foley later)  
+13. Music cues  
+14. Mix + stems  
+15. Titles/recap/color  
+16. QC → final HITL → publish  
+17. Archive facts → next outline
 
-**Критерий:** можно создать сезон и 3 эпизода-карточки без генерации.
+### 6.3. Запреты (из практики площадки/поста)
+1. Диалоги до outline lock  
+2. Финальный mix до picture lock  
+3. Генерация «одного клипа на сцену» вместо coverage  
+4. Игнорировать reaction shots (редактор теряет ритм)  
+5. Ломать 180° / eyeline без решения режиссёра  
+6. Считать mass/batch сезонным storytelling  
+7. Одна BGM на весь эп. без spotting  
 
-### Фаза 1 — Series MVP (уже «мини-сериал»)
+---
 
-**Сделать:**  
-1. Промпты+ноды: F01 bible, F04 outline, F05 teleplay, F06 polish.  
-2. Парсер teleplay → scenes/lines.  
-3. F07 breakdown + F08 shot list (профиль `dialogue_2shot`).  
-4. Адаптеры F09–F11 на существующие Outsee steps.  
-5. F13 multi-voice audio (минимум 2–3 голоса).  
-6. F16 `assemble_episode` (picture + dialogue + 1–N music cues, 16:9).  
-7. HITL: bible/outline/teleplay/images/videos/audio/final.  
-8. F12 story continuity (упрощённый ledger).  
-9. Тесты контрактов парсера и graph validate.
+## 7. Маппинг на текущий video-pipeline
 
-**Критерий приёмки MVP:**  
-3 эпизода × 6–8 мин, 3 персонажа, диалоги слышны, cliffhanger E01→E02, одни и те же лица/локации.
+| Сейчас | Индустриальная замена | Действие |
+|--------|----------------------|----------|
+| `plan` (viral 60s) | F01 bible + F02 season break + F05 outline | новые ноды |
+| `script` VO | F06 teleplay + F07 polish | новый writer |
+| `split` | F08 breakdown + F10 coverage | не VO-chunking |
+| `hero`/`items` | F03/F04/F11 | season-scoped |
+| `enrich_*` | optional tools | не ядро |
+| `img_pr`/`img` | F12 | Shot-driven |
+| `anim_pr`/`video` | F13 | coverage-driven |
+| `audio` | F14/F19 | multi-voice DX/ADR |
+| `music` | F18/F21 | cues after spotting |
+| `assemble` | F16→F17→F22→F23 | offline/lock/mix/online |
+| `publish` | F25 | + archive |
+| HITL short kinds | showrunner gates | новые kinds |
+| `BatchProject` | Season board | не использовать как season |
 
-**Осознанно НЕ в MVP:** полный Foley, ADR studio, 45-мин эпизоды, сложный VFX, writers room.
+Якоря кода: `default_graph.py`, `node_registry.py`, `orchestrator/steps/*`, `models.py`, `assembly.py`, `prompts/blocks/camera_*`.
 
-### Фаза 2 — Режиссура и звук
+---
 
-**Сделать:**  
-1. Расширить coverage профили (action/montage).  
-2. F03 location plates day/night.  
-3. F14 ambience/SFX + ducking.  
-4. F15 music spotting полноценно.  
-5. F17 recap/titles.  
-6. Visual continuity checks.  
-7. `reset_scene` / `reset_shot`.
+## 8. Фазы внедрения (что конкретно сделать)
 
-**Критерий:** эпизод звучит как «шоу», не как озвученный слайдшоу.
+### Фаза 0 — Foundation
+- [ ] `FormatProfile` + flag series  
+- [ ] Models: Series, Season, Episode, Scene, Shot, DialogueLine, CharacterBible, LocationBible, ContinuityEntry, SpottingCue, CutVersion  
+- [ ] Alembic + `/api/series/...`  
+- [ ] Season board UI  
+- [ ] `default_series_graph()` stubs  
+- [ ] Feature flag; shorts regression safe  
+
+### Фаза 1 — Writers’ room + Coverage MVP
+- [ ] F01 bible (секции по Final Draft/AIScriptReader)  
+- [ ] F02 season break  
+- [ ] F03 cast+voices+hero  
+- [ ] F05 outline с обязательными act-outs  
+- [ ] F06–F07 teleplay+polish+parser (BBC-like sluglines)  
+- [ ] F08 breakdown (min elements)  
+- [ ] F10 coverage profiles `dialogue_2shot`  
+- [ ] F12–F13 adapters Outsee  
+- [ ] F15 story continuity  
+- [ ] F16 assembly/rough/fine + F17 picture lock  
+- [ ] F19 multi-voice DX + retake  
+- [ ] F21 simple music cues + ducking  
+- [ ] F24 QC checklist  
+- [ ] Tests: teleplay parse, act-out validator, cut order, shorts graph intact  
+
+**Приёмка фазы 1:** 3 эп. × 6–10 мин, 16:9, teaser/acts/tag, слышные диалоги, coverage ≥3 угла на диалоговую сцену, picture lock перед финальным mix, cliffhanger → E02.
+
+### Фаза 2 — Pre-prod depth + Sound
+- [ ] F04 location lookbook day/night  
+- [ ] F09 stripboard cost routing  
+- [ ] F11 wardrobe/story-day states  
+- [ ] F15 visual/axis continuity  
+- [ ] F18 spotting UI  
+- [ ] F20 ambience/SFX  
+- [ ] F22 stems + M&E  
+- [ ] F23 titles/recap/color  
+- [ ] `reset_scene` / `reset_shot` with backup  
 
 ### Фаза 3 — Full classic
-
-**Сделать:**  
-1. A/B/C plot tracker на сезон.  
-2. Costume/day tracker.  
-3. ADR retake UX.  
-4. Stem export, loudness norms.  
-5. Guest cast workflow.  
-6. Delivery package (описания, thumbs, captions).  
-7. Опционально: control-plane вынос промптов (если нужна защита IP).
+- [ ] Foley pass, полноценный ADR UX  
+- [ ] Online color pipeline  
+- [ ] A/B/C tracker dashboard  
+- [ ] Delivery package (loudness, captions, thumbs)  
+- [ ] Multi-cam sitcom format (optional)  
+- [ ] Writers’ room archive automation after each ep  
 
 ---
 
-## 8. Матрица «старый шаг → series»
+## 9. Вариации шоу (выбор до старта)
 
-| Сейчас (shorts) | В series | Действие |
-|-----------------|----------|----------|
-| `plan` | F01 + F04 | заменить смыслом; не использовать viral_60s |
-| `script` | F05 teleplay | новый writer; VO только как variation |
-| `split` | F07 + F08 | scene/shot вместо VO split |
-| `hero` / `items` | F02 / props | season-scoped |
-| `enrich_*` | optional excel tools | не ядро series |
-| `img_pr` / `img` | F09 / F10 | вход Shot |
-| `anim_pr` / `video` | F11 | camera from shot list |
-| `audio` | F13 | multi-voice |
-| `music` | F15 | cues |
-| `assemble` | F16 | новый timeline |
-| `publish` | publish episode | почти как есть |
-| mass/batch | season board | не использовать как замену |
+| Вариант | Индустриальный аналог | Акцент функций |
+|---------|----------------------|----------------|
+| V1 Serialized drama | cable/streamer drama | F02, F06, F10 dialogue coverage, F19 |
+| V2 Procedural | case-of-week | F05 A-plot engine, lighter season mythology |
+| V3 Limited series | mini | сильный F02 tentpoles, короткий season |
+| V4 Hybrid docu | VO+interviews | старый VO writer + partial DX |
+| V5 Vertical mini | Shorts-series | тот же граф, 9:16, урезанный coverage |
+
+Зафиксировать **V1** для первой реализации.
 
 ---
 
-## 9. Вариации продукта (как выбирать режим)
+## 10. Риски и где индустрия « Holдит»
 
-### V1. Диалоговая драма (приоритет для «классики»)
-F05+F06+F08(`dialogue_2shot`)+F13 обязательны; мало экшена.
+| Риск | Почему больно | Митигация |
+|------|----------------|-----------|
+| Нет picture lock | audio/music всегда устаревают | жёсткий milestone F17 |
+| Нет act-outs | «простыня» вместо эпизода | валидатор outline |
+| Нет coverage | editor не режет ритм | min pack + reaction shots |
+| Один голос | не сериал | voice cast lock |
+| Continuity только «на глаз» | сезон разваливается | scripty ledger |
+| Путать mass factory с season | нет арок | отдельные сущности |
 
-### V2. Визуальная сага / фэнтези
-Усилить F03/F08(`action`)/F11; диалоги короче; больше establishing.
-
-### V3. Док-сериал / true crime
-Hybrid: narrator VO (старый skill) + редкие «интервью»-диалоги; проще переход с shorts.
-
-### V4. Вертикальный мини-сериал (Shorts-series)
-9:16, 3–5 мин, те же F01–F16 но урезанный coverage (master+CU).
-
-### V5. Антология
-Слабый season arc, сильный episode bible каждый раз; continuity ledger тонкий.
-
-**Правило выбора:** сначала зафиксировать **V1 или V3** — от этого зависят промпты фазы 1.
+Самый жёсткий **креативный** узел: teleplay + character voice (F06/F07).  
+Самый жёсткий **технический** узел: offline cut + DX align + picture lock (F16/F17/F19).
 
 ---
 
-## 10. Оценка сложности (техническая, не календарь)
+## 11. Шпаргалка оператора (E01)
 
-| Блок | Иinvasiveness | Риск |
-|------|---------------|------|
-| Модели + API + board | средний | низкий |
-| Teleplay/dialogue prompts + parser | средний | средний (качество текста) |
-| Shot list → генерация | высокий | средний (стоимость генераций) |
-| Multi-voice sync assemble | высокий | высокий (тайминг) |
-| Full sound design | высокий | средний |
-| Не ломать shorts | дисциплина feature flag | регрессии |
-
-Самый жёсткий технический узел: **F16 + F13 (тайминг диалогов к шотам)**.  
-Самый жёсткий креативный узел: **F05/F06 (качество диалогов и голосов персонажей)**.
-
----
-
-## 11. Чеклист первой конкретной реализации (фаза 0→1)
-
-### Backend
-- [ ] Модели Season/Episode/Scene/Shot/DialogueLine/…  
-- [ ] Миграция Alembic  
-- [ ] Routers `/api/series/...`  
-- [ ] `make_series_bible.py`, `make_episode_outline.py`, `make_teleplay.py`  
-- [ ] `breakdown_scenes.py`, `make_shot_list.py`  
-- [ ] Series adapters для image/anim/video/audio  
-- [ ] `assemble_episode.py`  
-- [ ] HITL kinds + soft retry на shot-level  
-- [ ] `default_series_graph()` + validate  
-
-### Prompts
-- [ ] `prompts/steps/ser_01_bible/...`  
-- [ ] `ser_02_outline`  
-- [ ] `ser_03_teleplay`  
-- [ ] `ser_04_dialogue_polish`  
-- [ ] `ser_05_shot_list` (+ coverage blocks)  
-- [ ] `ser_06_image_prompts`, `ser_07_animation`  
-- [ ] `check_teleplay`, `check_episode`, `check_continuity_*`  
-
-### Web
-- [ ] Season board  
-- [ ] Episode page: outline / teleplay editor / scenes / shots  
-- [ ] Casting map (voice)  
-- [ ] HITL кнопки series  
-- [ ] Переключатель format shorts|series  
-- [ ] bump Studio version при UI  
-
-### Tests
-- [ ] parser teleplay → lines  
-- [ ] graph series acyclic + required edges  
-- [ ] assemble cut list ordering  
-- [ ] regression: shorts `default_graph` не сломан  
+1. Lock bible + season break + cast/voices + locations  
+2. Outline с act-outs → approve  
+3. Teleplay (BBC-style) → polish → approve  
+4. Continuity story gate  
+5. Breakdown  
+6. Coverage shot list (master+OTS+reaction) → trim  
+7. Images → visual continuity  
+8. Videos per shot  
+9. Temp/final DX voices  
+10. Assembly→rough→fine → **LOCK PICTURE**  
+11. Spotting → music cues → ambience  
+12. Mix → titles → QC → publish  
+13. Archive cliffhanger facts → E02 outline  
 
 ---
 
-## 12. Пример одного «правильного» прогона E01 (шпаргалка оператора)
+## 12. Решение для старта (зафиксировать)
 
-1. Lock bible + cast + locations.  
-2. Outline E01 → approve.  
-3. Teleplay → polish → approve.  
-4. Continuity story (должны появиться факты эпизода).  
-5. Breakdown → shot list (`dialogue_2shot`).  
-6. Выкинуть лишние inserts вручную.  
-7. Image prompts → images → approve.  
-8. Videos по шотам.  
-9. Начитать диалоги голосами персонажей → approve.  
-10. Music cues (4–6).  
-11. Assemble rough → поправить тайминги → fine.  
-12. Titles → QA → final approve.  
-13. Записать cliffhanger в ledger → Outline E02.
+- Format: **16:9**, **6–10 мин**, **5 эпизодов**  
+- Structure: **Teaser + 3 Acts + Tag**  
+- Variation: **V1 serialized drama**  
+- Coverage: **master + OTS pair + selective CU/reaction**  
+- Audio MVP: **multi-voice DX + music cues**, Foley later  
+- Post rule: **no final mix before picture lock**  
+- Shorts pipeline: **не ломать**, только feature flag  
+
+Реализация: **§8 Фаза 0 → Фаза 1**, порядок **§5–§6**.
 
 ---
 
-## 13. Решение для старта (рекомендация)
+## 13. Следующий артефакт после утверждения
 
-Зафиксировать продукт фазы 1 так:
-
-- **Format:** 16:9, 6–8 минут, 5 эпизодов  
-- **Variation:** V1 диалоговая драма  
-- **Coverage:** master + 2 OTS/reaction  
-- **Audio:** 3 голоса + music cues, без Foley  
-- **Не трогать** shorts pipeline кроме feature flag  
-
-Дальше реализация идёт строго по **§7 Фаза 0 → Фаза 1** и runbook **§5**.
+1. RFC схем таблиц БД (поля ContinuityEntry, SpottingCue, CutVersion)  
+2. JSON-контракты: `bible`, `season_break`, `outline`, `teleplay`, `breakdown`, `shot_list`, `cut_timeline`  
+3. Черновик `default_series_graph()` в коде  
 
 ---
 
-## 14. Связь с текущим репо (якоря)
-
-| Тема | Где сейчас |
-|------|------------|
-| Shorts graph | `app/orchestrator/default_graph.py` |
-| Node registry | `app/orchestrator/node_registry.py` |
-| Steps | `app/orchestrator/steps/*.py` |
-| Models | `app/models.py` |
-| VO script | `make_script.py`, `prompts/steps/02_script` |
-| Camera blocks (shallow) | `prompts/blocks/camera_*` |
-| Anim ≤8s | `prompts/_vars.md`, anim templates |
-| Assemble VO | `app/services/assembly.py` |
-| Mass ≠ series | `docs/MASS_CREATION.md`, `BatchProject` |
-| HITL | `app/models.py` HITLKind, web/telegram routers |
-
----
-
-*Версия документа: 1.0 — план апгрейда series. Следующий артефакт после утверждения: RFC по схемам таблиц + JSON-контракты outline/teleplay/shot_list.*
+*Версия документа: 2.0 — индустриальная переработка на основе профессиональных TV/film источников (§0). Заменяет внутреннюю v1 «agent wishlist»-структуру.*
