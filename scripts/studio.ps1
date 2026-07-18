@@ -281,28 +281,12 @@ function Invoke-StudioStart {
     Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
     Start-StudioChromeCdp
-    $job = Start-Job -ScriptBlock {
-        $deadline = (Get-Date).AddSeconds(120)
-        while ((Get-Date) -lt $deadline) {
-            try {
-                $r = Invoke-WebRequest "http://127.0.0.1:8765/api/health" -UseBasicParsing -TimeoutSec 2
-                if ($r.StatusCode -eq 200) {
-                    Start-Process "http://127.0.0.1:8765"
-                    return
-                }
-            } catch { }
-            Start-Sleep -Milliseconds 500
-        }
-    }
+    # Одна вкладка UI: ждём health в Start-StudioBackendWindow, потом Open-StudioBrowser.
+    # (раньше фоновый job дублировал открытие URL)
     if (-not (Start-StudioBackendWindow)) {
-        Stop-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -Force -ErrorAction SilentlyContinue
         return $false
     }
-    Start-Sleep -Seconds 1
     Open-StudioBrowser
-    Stop-Job $job -ErrorAction SilentlyContinue
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
     Write-StudioMsg "Студия: http://127.0.0.1:8765 (Ctrl+F5 в браузере)" "Green"
     return $true
 }
