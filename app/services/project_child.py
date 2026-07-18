@@ -1,9 +1,12 @@
-"""Ручное создание дочернего проекта из родителя (копия данных + закадровый текст)."""
+"""Ручное создание дочернего проекта из родителя.
+
+От родителя наследуются только настройки генерации, промты и тексты для GPT.
+Не копируются: закадровый текст, Excel с данными, результаты генерации.
+"""
 
 from __future__ import annotations
 
 import copy
-import shutil
 from typing import Any
 
 from loguru import logger
@@ -12,27 +15,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
 from app.services.mass_factory import (
+    COPY_META_KEYS,
     COPY_PROJECT_FIELDS,
     STRIP_META_KEYS,
     ensure_child_workflow_from_parent,
+    init_child_data_dir,
     is_mass_factory_child,
     list_mass_children,
 )
-from app.storage import ProjectSheet
 
-MANUAL_CHILD_EXTRA_FIELDS = (
-    "general_plan",
-    "hero_description",
-    "script_text",
+# Meta с настройками UI/промтов (не прогресс генерации).
+_MANUAL_CHILD_META_KEYS = frozenset(
+    {
+        *COPY_META_KEYS,
+        "canvas_graph",
+        "excel_gpt_nodes",
+        "node_step_params",
+        "sidebar_folder_id",
+    }
 )
-
-
-def _child_initial_status(parent: Project) -> ProjectStatus:
-    if (parent.script_text or "").strip():
-        return ProjectStatus.script_ready
-    if (parent.general_plan or "").strip():
-        return ProjectStatus.plan_ready
-    return ProjectStatus.new
 
 
 def build_manual_child_meta(
@@ -45,7 +46,8 @@ def build_manual_child_meta(
     for key, val in parent_meta.items():
         if key in STRIP_META_KEYS:
             continue
-        out[key] = copy.deepcopy(val)
+        if key in _MANUAL_CHILD_META_KEYS or key.startswith("prompt_"):
+            out[key] = copy.deepcopy(val)
     out["mass_parent_id"] = parent_id
     out["mass_lane_position"] = child_index
     out["project_child_manual"] = True
@@ -64,44 +66,13 @@ async def _unique_slug(session: AsyncSession, base: str, slugify) -> str:
     return candidate
 
 
-def _copy_parent_data_dir(parent: Project, child: Project) -> None:
-    src = parent.data_dir
-    dst = child.data_dir
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        shutil.rmtree(dst, ignore_errors=True)
-    if src.is_dir():
-        shutil.copytree(
-            src,
-            dst,
-            ignore=shutil.ignore_patterns("tmp_gpt", "__pycache__"),
-        )
-    else:
-        dst.mkdir(parents=True, exist_ok=True)
-    xlsx = dst / "project.xlsx"
-    if xlsx.is_file():
-        try:
-            sheet = ProjectSheet(file_path=xlsx)
-            sheet.write_general(
-                topic=child.topic,
-                slug=child.slug,
-                hero_mode=child.hero_mode,
-                status=child.status.value,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[#{}] child data_dir: xlsx patch failed: {}", child.id, exc)
-    if (parent.script_text or "").strip():
-        vo = dst / "voiceover.txt"
-        vo.parent.mkdir(parents=True, exist_ok=True)
-        vo.write_text((parent.script_text or "").strip(), encoding="utf-8")
-
-
 async def create_child_from_parent(
     session: AsyncSession,
     parent: Project,
     *,
     slugify,
 ) -> Project:
+    """Создаёт ребёнка: настройки/промты/gpt_text + workflow (без контента)."""
     if is_mass_factory_child(parent):
         raise ValueError("дочерний проект нельзя клонировать — выберите родительский")
     existing = await list_mass_children(session, parent.id)
@@ -110,14 +81,20 @@ async def create_child_from_parent(
     slug = await _unique_slug(session, topic_base, slugify)
 
     kwargs: dict[str, Any] = {}
-    for field in (*COPY_PROJECT_FIELDS, *MANUAL_CHILD_EXTRA_FIELDS):
-        kwargs[field] = getattr(parent, field)
-    kwargs["auto_mode"] = parent.auto_mode
+    for field in COPY_PROJECT_FIELDS:
+        if field == "auto_mode":
+            continue
+        kwargs[field] = copy.deepcopy(getattr(parent, field))
+    # Не тянем auto_mode и контент (script/plan/hero_description).
+    kwargs["auto_mode"] = False
 
     child = Project(
         slug=slug,
         topic=topic_base,
-        status=_child_initial_status(parent),
+        status=ProjectStatus.new,
+        general_plan=None,
+        hero_description=None,
+        script_text=None,
         meta=build_manual_child_meta(
             dict(parent.meta or {}),
             parent_id=parent.id,
@@ -127,15 +104,18 @@ async def create_child_from_parent(
     )
     session.add(child)
     await session.flush()
-    _copy_parent_data_dir(parent, child)
     await ensure_child_workflow_from_parent(session, parent.id, child.id)
     logger.info(
-        "project_child: #{} ← parent #{} (script={} chars)",
+        "project_child: #{} ← parent #{} (settings/prompts only, status=new)",
         child.id,
         parent.id,
-        len(child.script_text or ""),
     )
     return child
+
+
+async def finalize_child_data_dir(_parent: Project, child: Project) -> None:
+    """После commit: пустой data_dir и свежий template.xlsx (не копия родителя)."""
+    await init_child_data_dir(child)
 
 
 async def count_children(session: AsyncSession, parent_id: int) -> int:
