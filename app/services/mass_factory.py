@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -130,7 +131,7 @@ def build_child_meta(
         if key in STRIP_META_KEYS:
             continue
         if key in COPY_META_KEYS or key.startswith("prompt_"):
-            out[key] = val
+            out[key] = copy.deepcopy(val)
     out["mass_parent_id"] = parent_id
     out["mass_lane"] = lane_position
     out["mass_lane_position"] = lane_position
@@ -315,7 +316,7 @@ async def create_mass_child(
     slugify,
 ) -> Project:
     meta_template = dict(template.meta or {})
-    kwargs = {f: getattr(template, f) for f in COPY_PROJECT_FIELDS}
+    kwargs = {f: copy.deepcopy(getattr(template, f)) for f in COPY_PROJECT_FIELDS}
     kwargs["auto_mode"] = True
     slug = await _unique_slug(session, topic, slugify)
     child = Project(
