@@ -244,8 +244,16 @@ function Invoke-StudioPythonHelper {
     $exe = $pyArgs[0]
     $prefix = @()
     if ($pyArgs.Count -gt 1) { $prefix = $pyArgs[1..($pyArgs.Count - 1)] }
-    & $exe @prefix $helperPy @HelperArgs 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    return ($LASTEXITCODE -eq 0)
+    # UTF-8: иначе на cp1251 Windows helper/git сыпет UnicodeDecodeError в консоль.
+    $prevPyIo = $env:PYTHONIOENCODING
+    $env:PYTHONIOENCODING = "utf-8"
+    try {
+        & $exe @prefix $helperPy @HelperArgs 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        if ($null -eq $prevPyIo) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue }
+        else { $env:PYTHONIOENCODING = $prevPyIo }
+    }
 }
 
 function Invoke-StudioBackupPromptsAside {
