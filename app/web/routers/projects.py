@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -291,12 +292,15 @@ async def patch_project(
     from app.services.project_meta import apply_project_meta_patch
 
     was_auto = bool(p.auto_mode)
+    topic_changed = False
     for k, v in payload.items():
         if k == "meta":
             apply_project_meta_patch(p, v, source="patch_project")
             flag_modified(p, "meta")
             continue
         if k in ALLOWED:
+            if k == "topic" and (getattr(p, "topic", None) or "") != (v or ""):
+                topic_changed = True
             setattr(p, k, v)
             if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
@@ -308,6 +312,37 @@ async def patch_project(
         save_voiceover_text(p, p.data_dir / "voiceover.txt", text)
         lock_ui_field(p, "script_text")
         flag_modified(p, "meta")
+    if topic_changed:
+        from app.services.gpt_text_builder import refresh_topic_line_in_text
+        from app.storage.project_sheet import ProjectSheet
+
+        overrides = dict(p.gpt_text_overrides or {})
+        refreshed = False
+        for code, text in list(overrides.items()):
+            if not isinstance(text, str) or not text.strip():
+                continue
+            new_text = refresh_topic_line_in_text(text, p.topic or "")
+            if new_text != text:
+                overrides[code] = new_text
+                refreshed = True
+        if refreshed:
+            p.gpt_text_overrides = overrides
+            flag_modified(p, "gpt_text_overrides")
+        xlsx = p.data_dir / "project.xlsx"
+        if xlsx.is_file():
+            try:
+                ProjectSheet(file_path=xlsx).write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "patch_project #{}: write_general topic failed: {}",
+                    project_id,
+                    exc,
+                )
     if "meta" in payload and canvas_graph_from_meta(
         p.meta if isinstance(p.meta, dict) else {}
     ):

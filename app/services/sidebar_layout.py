@@ -25,7 +25,12 @@ def _now_iso() -> str:
 
 
 def _empty_layout() -> dict[str, Any]:
-    return {"folders": [], "project_layout": {}, "gen_queue": []}
+    return {
+        "folders": [],
+        "project_layout": {},
+        "gen_queue": [],
+        "gen_queue_halted": False,
+    }
 
 
 def load_layout() -> dict[str, Any]:
@@ -46,7 +51,33 @@ def load_layout() -> dict[str, Any]:
         "folders": folders if isinstance(folders, list) else [],
         "project_layout": project_layout if isinstance(project_layout, dict) else {},
         "gen_queue": gen_queue if isinstance(gen_queue, list) else [],
+        "gen_queue_halted": bool(data.get("gen_queue_halted")),
     }
+
+
+def is_gen_queue_halted() -> bool:
+    return bool(load_layout().get("gen_queue_halted"))
+
+
+def set_gen_queue_halted(halted: bool, *, reason: str = "") -> None:
+    """Глобальный стоп очереди: после ⏹ следующий слот сам не стартует."""
+    data = load_layout()
+    prev = bool(data.get("gen_queue_halted"))
+    data["gen_queue_halted"] = bool(halted)
+    save_layout(data)
+    if prev != bool(halted):
+        logger.info(
+            "gen_queue_halted={}{}",
+            bool(halted),
+            f" ({reason})" if reason else "",
+        )
+
+
+def clear_gen_queue_halted(*, reason: str = "manual start") -> bool:
+    if not is_gen_queue_halted():
+        return False
+    set_gen_queue_halted(False, reason=reason)
+    return True
 
 
 def save_layout(data: dict[str, Any]) -> None:

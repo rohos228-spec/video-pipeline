@@ -83,11 +83,21 @@ async def start_step(
         skip_queue_guard = True
         from app.services.project_control import (
             clear_auto_await_manual_start,
+            clear_mass_family_halt,
             clear_user_stop_gate,
         )
+        from app.services.mass_factory import mass_parent_id
+        from app.services.sidebar_layout import clear_gen_queue_halted
 
         clear_user_stop_gate(project)
         clear_auto_await_manual_start(project)
+        # Явный ▶ снимает глобальный halt очереди и family-halt родителя.
+        clear_gen_queue_halted(reason=f"start_step #{project.id}")
+        parent_id = mass_parent_id(project)
+        if parent_id is not None:
+            parent = await session.get(Project, parent_id)
+            if parent is not None:
+                clear_mass_family_halt(parent)
     else:
         # Любой старт шага (очередь / цепочка) тоже снимает «ждать ▶».
         from app.services.project_control import clear_auto_await_manual_start

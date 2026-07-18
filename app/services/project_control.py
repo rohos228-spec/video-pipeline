@@ -6,14 +6,21 @@ from datetime import datetime
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import Project, ProjectStatus
-from app.services.mass_factory import mass_parent_id
+from app.services.mass_factory import (
+    is_mass_factory_parent,
+    list_mass_children,
+    mass_parent_id,
+)
 from app.services.project_state import is_running_status
 from app.services.gen_queue_run import is_user_stopped
 from app.services.step_cancel import clear_stop, is_generation_active, is_stop_requested, request_stop
 from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 from app.telegram.menu import step_by_running_status
+
+MASS_FAMILY_HALTED_KEY = "mass_family_halted"
 
 
 def _set_user_stop_gate(project: Project) -> None:
@@ -30,7 +37,7 @@ def _set_user_stop_gate(project: Project) -> None:
 
 
 def clear_user_stop_gate(project: Project) -> list[str]:
-    """Снять user_stop (например при постановке в gen_queue)."""
+    """Снять user_stop (например при постановке в gen_queue / ручной ▶)."""
     meta = dict(project.meta or {})
     cleared: list[str] = []
     if meta.pop("user_stop", None) is not None:
@@ -41,6 +48,91 @@ def clear_user_stop_gate(project: Project) -> list[str]:
         project.meta = meta
         logger.info("[#{}] cleared {}", project.id, ", ".join(cleared))
     return cleared
+
+
+def clear_mass_family_halt(parent: Project) -> bool:
+    """Снять family-halt с родителя (после явного ▶ на дочернем)."""
+    meta = dict(parent.meta or {})
+    if meta.pop(MASS_FAMILY_HALTED_KEY, None) is None:
+        return False
+    parent.meta = meta
+    flag_modified(parent, "meta")
+    logger.info("[#{}] mass_family_halted снят (ручной ▶)", parent.id)
+    return True
+
+
+def is_mass_family_halted(parent: Project) -> bool:
+    meta = parent.meta if isinstance(parent.meta, dict) else {}
+    return bool(meta.get(MASS_FAMILY_HALTED_KEY))
+
+
+async def _gate_idle_project(project: Project) -> None:
+    meta = dict(project.meta or {})
+    meta["user_stop"] = True
+    if mass_parent_id(project) is not None:
+        meta["mass_lane_user_stop"] = True
+    project.meta = meta
+    flag_modified(project, "meta")
+
+
+async def halt_all_related_generation(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """⏹ STOP = стоп всего: mass-family + вся gen_queue, без автостарта следующего."""
+    from app.services.sidebar_layout import get_gen_queue, set_gen_queue_halted
+
+    set_gen_queue_halted(True, reason=f"STOP #{project.id}")
+
+    parent_id = mass_parent_id(project)
+    parent: Project | None = None
+    if parent_id is not None:
+        parent = await session.get(Project, parent_id)
+    elif is_mass_factory_parent(project):
+        parent = project
+        parent_id = project.id
+
+    if parent is not None and parent_id is not None:
+        pmeta = dict(parent.meta or {})
+        pmeta[MASS_FAMILY_HALTED_KEY] = True
+        parent.meta = pmeta
+        flag_modified(parent, "meta")
+        logger.info(
+            "[#{}] STOP: mass_family_halted на родителе #{} — serial lanes не стартуют",
+            project.id,
+            parent_id,
+        )
+        for child in await list_mass_children(session, parent_id):
+            if child.id == project.id:
+                continue
+            if is_running_status(child.status):
+                await stop_project_running(session, child, cascade=True)
+            else:
+                await _gate_idle_project(child)
+                logger.info(
+                    "[#{}] STOP cascade: sibling #{} user_stop (status={})",
+                    project.id,
+                    child.id,
+                    child.status.value,
+                )
+
+    queue = get_gen_queue()
+    for pid in queue:
+        if pid == project.id:
+            continue
+        peer = await session.get(Project, pid)
+        if peer is None:
+            continue
+        if is_running_status(peer.status):
+            await stop_project_running(session, peer, cascade=True)
+        elif not is_user_stopped(peer):
+            await _gate_idle_project(peer)
+            logger.info(
+                "[#{}] STOP cascade: gen_queue #{} user_stop (status={})",
+                project.id,
+                peer.id,
+                peer.status.value,
+            )
 
 
 # Включение auto_mode само по себе НЕ должно стартовать шаги с *_ready /
@@ -88,9 +180,16 @@ def on_auto_mode_changed(project: Project, *, was_auto: bool, now_auto: bool) ->
 
 
 async def stop_project_running(
-    session: AsyncSession, project: Project
+    session: AsyncSession,
+    project: Project,
+    *,
+    cascade: bool = False,
 ) -> dict[str, str | bool | list[str] | None]:
-    """⏹ STOP: откат running-шага и/или блок автопродвижения (user_stop)."""
+    """⏹ STOP: откат running-шага и/или блок автопродвижения (user_stop).
+
+    Без cascade=True дополнительно гасит всю mass-family и gen_queue —
+    следующий слот/lane сам не стартует.
+    """
     request_stop(project.id)
     from app.services.montage_board_apply_job import cancel_all_montage_jobs
 
@@ -159,8 +258,13 @@ async def stop_project_running(
     project.updated_at = datetime.utcnow()
     await session.flush()
 
+    if not cascade:
+        await halt_all_related_generation(session, project)
+        await session.flush()
+
     logger.info(
-        "[#{}] STOP: user_stop активен — воркер/auto_advance/gen_queue заблокированы до ▶",
+        "[#{}] STOP: user_stop активен — воркер/auto_advance/gen_queue заблокированы до ▶"
+        + (" (cascade)" if cascade else " (+ halt all related)"),
         project.id,
     )
     still_active = is_generation_active(project.id)

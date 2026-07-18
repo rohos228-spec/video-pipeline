@@ -14,7 +14,11 @@ from app.services.step_data_guard import clamp_status_to_data
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
+async def session(tmp_path, monkeypatch) -> AsyncSession:
+    import app.settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

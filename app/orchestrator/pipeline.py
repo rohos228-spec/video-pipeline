@@ -64,6 +64,21 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         status = project.status
         logger.debug("advance #{} status={}", project.id, status.value)
 
+        # UI SSoT: NodeRun → running, иначе на ноде нет «в работе».
+        try:
+            from app.orchestrator.auto_advance import _prepare_node_run_for_status
+
+            await _prepare_node_run_for_status(
+                session, project, status, allow_restart=True
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "advance #{}: prepare NodeRun for {} failed",
+                project.id,
+                status.value,
+                exc_info=True,
+            )
+
         if status is ProjectStatus.planning:
             await make_plan.run(session, project, bot)
             return

@@ -24,6 +24,18 @@ from app.services.mass_factory import (
     list_mass_children,
 )
 
+# Контентные поля — не копируем (иначе ребёнок заново генерит «копию» родителя).
+_MANUAL_CHILD_SKIP_FIELDS = frozenset(
+    {
+        "auto_mode",
+        "hero_descriptions",
+        "hero_variations",
+        "hero_variation_modifiers",
+        "item_descriptions",
+        "item_variations",
+    }
+)
+
 # Meta с настройками UI/промтов (не прогресс генерации).
 _MANUAL_CHILD_META_KEYS = frozenset(
     {
@@ -77,16 +89,32 @@ async def create_child_from_parent(
         raise ValueError("дочерний проект нельзя клонировать — выберите родительский")
     existing = await list_mass_children(session, parent.id)
     child_index = len(existing) + 1
-    topic_base = f"{parent.topic.strip()} · доч. {child_index}"
+    # Тема НЕ от родителя — иначе с теми же промтами получается ремейк/копия.
+    topic_base = f"Новая тема · доч. {child_index}"
     slug = await _unique_slug(session, topic_base, slugify)
 
     kwargs: dict[str, Any] = {}
     for field in COPY_PROJECT_FIELDS:
-        if field == "auto_mode":
+        if field in _MANUAL_CHILD_SKIP_FIELDS:
             continue
         kwargs[field] = copy.deepcopy(getattr(parent, field))
-    # Не тянем auto_mode и контент (script/plan/hero_description).
     kwargs["auto_mode"] = False
+    kwargs["hero_descriptions"] = []
+    kwargs["hero_variations"] = []
+    kwargs["hero_variation_modifiers"] = []
+    kwargs["item_descriptions"] = []
+    kwargs["item_variations"] = []
+    # Overrides с родителя часто уже содержат «Тема ролика: (старое)» — освежить.
+    from app.services.gpt_text_builder import refresh_topic_line_in_text
+
+    overrides = kwargs.get("gpt_text_overrides")
+    if isinstance(overrides, dict) and overrides:
+        kwargs["gpt_text_overrides"] = {
+            code: refresh_topic_line_in_text(text, topic_base)
+            if isinstance(text, str)
+            else text
+            for code, text in overrides.items()
+        }
 
     child = Project(
         slug=slug,

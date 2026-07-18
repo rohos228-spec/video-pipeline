@@ -101,6 +101,35 @@ def inject_topic_placeholders(text: str, topic: str) -> str:
         out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
     return out
 
+
+# Строка «Тема ролика: …» в сопр. сообщении / override — часто устаревает
+# после смены topic у дочернего (override скопирован с родителя).
+_TOPIC_LINE_RE = re.compile(
+    r"(Тема ролика:\s*)([«\"'(\[]?)([^»\"')\]\n]+)([»\"')\]]?)",
+    re.IGNORECASE,
+)
+
+
+def refresh_topic_line_in_text(text: str, topic: str) -> str:
+    """Переписать строку «Тема ролика: …» на актуальную тему проекта."""
+    t = (topic or "").strip()
+    if not t or not text:
+        return text
+
+    def _repl(match: re.Match[str]) -> str:
+        prefix, open_q, _old, close_q = match.groups()
+        if open_q in ("«", '"', "'") and close_q in ("»", '"', "'"):
+            return f"{prefix}{open_q}{t}{close_q}"
+        if open_q == "(" and close_q == ")":
+            return f"{prefix}({t})"
+        if open_q == "[" and close_q == "]":
+            return f"{prefix}[{t}]"
+        if open_q or close_q:
+            return f"{prefix}({t})"
+        return f"{prefix}{t}"
+
+    return _TOPIC_LINE_RE.sub(_repl, text, count=1)
+
 def is_supported(step_code: str) -> bool:
     return step_code in SUPPORTED_STEPS
 
@@ -439,10 +468,17 @@ def get_effective_text(project: Project, step_code: str, **ctx) -> str:
        вернёт его.
     2. Иначе соберёт дефолт из мастер-промта + контекста проекта.
     3. Для plan/script/split — дописывает блок параметров из meta.
+    4. Строка «Тема ролика» всегда синхронизируется с актуальным `project.topic`
+       (и `ctx['topic']`, если передан) — иначе override с родителя шлёт старое имя.
     """
     from app.services.node_step_params import append_step_params_to_gpt_text
 
     body = get_display_text(project, step_code, **ctx)
+    actual_topic = ctx.get("topic")
+    if actual_topic is None:
+        actual_topic = project.topic or ""
+    body = refresh_topic_line_in_text(body, str(actual_topic))
+    body = inject_topic_placeholders(body, str(actual_topic))
     if step_code in ("plan", "script", "split"):
         return append_step_params_to_gpt_text(project, step_code, body)
     return body

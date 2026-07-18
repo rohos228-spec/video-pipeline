@@ -178,6 +178,7 @@ async def bulk_enqueue_gen_queue(body: GenQueueBulkEnqueue) -> dict:
                 target_node_type=body.target_node_type,
             )
         layout_svc.set_gen_queue(body.project_ids)
+        layout_svc.clear_gen_queue_halted(reason="bulk-enqueue")
         await session.commit()
     queue = layout_svc.get_gen_queue()
     positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
@@ -221,6 +222,7 @@ async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
             queue = layout_svc.toggle_gen_queue(body.project_id)
         else:
             queue = layout_svc.get_gen_queue()
+        layout_svc.clear_gen_queue_halted(reason=f"enqueue #{body.project_id}")
         await session.commit()
     positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
     return {

@@ -1428,11 +1428,16 @@ def _mass_parent_id(project: Project) -> int | None:
 async def _mass_lanes_for_parent(
     session: AsyncSession, parent_id: int
 ) -> list[Project]:
+    """Только слоты mass-factory; ручные «+» (project_child_manual) не трогаем."""
     rows = (await session.execute(select(Project))).scalars().all()
     out: list[Project] = []
     for p in rows:
-        if _mass_parent_id(p) == parent_id:
-            out.append(p)
+        if _mass_parent_id(p) != parent_id:
+            continue
+        meta = p.meta if isinstance(p.meta, dict) else {}
+        if meta.get("project_child_manual"):
+            continue
+        out.append(p)
     return out
 
 
@@ -1454,6 +1459,7 @@ async def serial_next_mass_lane(
         if p.status is ProjectStatus.new
         and p.auto_mode
         and not (p.meta or {}).get("mass_lane_user_stop")
+        and not (p.meta or {}).get("user_stop")
     ]
     if not candidates:
         return None
@@ -1462,6 +1468,8 @@ async def serial_next_mass_lane(
 
 async def serial_tick_mass_lanes(session: AsyncSession) -> int:
     """Сериализатор веб-массовых потоков (meta.mass_parent_id)."""
+    from app.services.project_control import is_mass_family_halted
+
     started = 0
     waiting = (
         await session.execute(
@@ -1475,6 +1483,13 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             parent_ids.add(pid)
 
     for parent_id in parent_ids:
+        parent = await session.get(Project, parent_id)
+        if parent is not None and is_mass_family_halted(parent):
+            logger.info(
+                "auto_advance: mass parent #{} halted после ⏹ — lanes не стартуют",
+                parent_id,
+            )
+            continue
         if await serial_busy_in_mass_parent(session, parent_id) is not None:
             continue
         next_p = await serial_next_mass_lane(session, parent_id)
@@ -1485,6 +1500,11 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             continue
         await session.refresh(next_p)
         if next_p.status is not ProjectStatus.new:
+            continue
+        # На всякий случай: sibling с user_stop не должен стартовать.
+        if (next_p.meta or {}).get("user_stop") or (next_p.meta or {}).get(
+            "mass_lane_user_stop"
+        ):
             continue
         next_p.status = ProjectStatus.planning
         await session.flush()

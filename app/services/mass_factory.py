@@ -90,8 +90,15 @@ def is_mass_factory_parent(project: Project) -> bool:
     return bool(meta.get("mass_factory"))
 
 
+def is_manual_project_child(project: Project) -> bool:
+    """Ручной «+» в сайдбаре (не слот очереди фабрики)."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    return bool(meta.get("project_child_manual")) and mass_parent_id(project) is not None
+
+
 def is_mass_factory_child(project: Project) -> bool:
-    return mass_parent_id(project) is not None
+    """Дочерний слот mass-factory (без ручных «+»)."""
+    return mass_parent_id(project) is not None and not is_manual_project_child(project)
 
 
 def mass_parent_id(project: Project) -> int | None:

@@ -22,6 +22,10 @@ async def session(tmp_path, monkeypatch) -> AsyncSession:
             "app.services.gen_queue.get_gen_queue",
             lambda: [7, 8],
         )
+        monkeypatch.setattr(
+            "app.services.gen_queue.is_gen_queue_halted",
+            lambda: False,
+        )
         yield s
     await engine.dispose()
 
