@@ -63,6 +63,7 @@ function Invoke-StudioGit {
         else { $py = "python3" }
     }
     $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    $env:PYTHONIOENCODING = "utf-8"
     if (Test-Path -LiteralPath $pyHelper) {
         Write-StudioLog "> backup prompts/ aside (outside repo)" "Cyan"
         if ($py -eq "py") {

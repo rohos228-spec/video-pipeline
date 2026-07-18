@@ -36,6 +36,8 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -208,3 +210,34 @@ def test_6_studio_scripts_wire_aside_and_python_fallback() -> None:
     helper = HELPER.read_text(encoding="utf-8")
     assert "backup_prompts_aside" in helper
     assert "LOCALAPPDATA" in helper
+    assert 'encoding="utf-8"' in helper
+    assert "_stdout_lines" in helper
+
+
+# ---------------------------------------------------------------------------
+# 7) Windows cp1251 footgun: None stdout + Cyrillic stash messages
+# ---------------------------------------------------------------------------
+def test_7_stash_list_survives_none_stdout_and_cyrillic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _load_helper()
+    repo, _origin = _init_prompt_repo(tmp_path)
+    _plant_user_prompts(repo)
+    _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
+
+    refs = helper.list_studio_stash_refs(repo)
+    assert refs, "must find studio stash with Cyrillic message"
+
+    # Simulate decode failure path that used to raise AttributeError.
+    broken = subprocess.CompletedProcess(
+        args=["git"], returncode=0, stdout=None, stderr=None
+    )
+    monkeypatch.setattr(helper, "_git", lambda *_a, **_k: broken)
+    assert helper.list_studio_stash_refs(repo) == []
+    assert helper.list_prompt_paths_in_stash(repo, "stash@{0}") == ([], [])
+
+    # recover must not crash with NoneType.splitlines
+    monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: tmp_path / "no-aside")
+    report = helper.recover_prompts_on_startup(repo)
+    assert "from_stash" in report
+    assert report["from_stash"].get("ok") is True

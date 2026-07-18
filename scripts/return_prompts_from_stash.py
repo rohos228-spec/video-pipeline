@@ -26,10 +26,14 @@ MANIFEST_NAME = "_vp_aside_manifest.json"
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    # Windows: default text mode uses cp1251 and dies on UTF-8 stash messages
+    # («автосохранение…») → stdout=None → AttributeError on .splitlines().
     return subprocess.run(
         ["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -40,6 +44,14 @@ def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         capture_output=True,
         check=False,
     )
+
+
+def _stdout_lines(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    """Safe lines from git text output (stdout may be None after decode errors)."""
+    raw = proc.stdout
+    if raw is None:
+        return []
+    return raw.splitlines()
 
 
 def _unquote_git_path(raw: str) -> str:
@@ -89,7 +101,7 @@ def list_prompt_paths_in_stash(repo: Path, stash_ref: str) -> tuple[list[str], l
     tracked: list[str] = []
     show = _git(repo, "stash", "show", "--name-only", stash_ref)
     if show.returncode == 0:
-        for line in show.stdout.splitlines():
+        for line in _stdout_lines(show):
             rel = _unquote_git_path(line)
             if rel.startswith("prompts/"):
                 tracked.append(rel)
@@ -98,7 +110,7 @@ def list_prompt_paths_in_stash(repo: Path, stash_ref: str) -> tuple[list[str], l
     if _git(repo, "rev-parse", "--verify", f"{stash_ref}^3").returncode == 0:
         ls = _git(repo, "ls-tree", "-r", "--name-only", f"{stash_ref}^3", "--", "prompts")
         if ls.returncode == 0:
-            for line in ls.stdout.splitlines():
+            for line in _stdout_lines(ls):
                 rel = _unquote_git_path(line)
                 if rel.startswith("prompts/"):
                     untracked.append(rel)
@@ -111,7 +123,7 @@ def list_studio_stash_refs(repo: Path, *, limit: int = 30) -> list[str]:
         return []
     studio: list[str] = []
     others: list[str] = []
-    for line in listed.stdout.splitlines()[:limit]:
+    for line in _stdout_lines(listed)[:limit]:
         if "|" not in line:
             continue
         ref, msg = line.split("|", 1)
@@ -204,7 +216,7 @@ def return_prompts_from_stash(
         if r.returncode == 0:
             restored.append(rel)
         else:
-            errors.append(f"{rel}: {r.stderr.strip() or 'checkout failed'}")
+            errors.append(f"{rel}: {(r.stderr or '').strip() or 'checkout failed'}")
 
     for rel in tracked:
         _apply(rel, untracked_flag=False)
@@ -429,7 +441,7 @@ def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
     aside = backup_prompts_aside(repo)
     status = _git(repo, "status", "--porcelain")
     stashed = False
-    if status.stdout.strip():
+    if (status.stdout or "").strip():
         push = _git(
             repo,
             "stash",
@@ -441,7 +453,7 @@ def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
         if push.returncode != 0:
             return {
                 "ok": False,
-                "errors": [push.stderr.strip() or "stash push failed"],
+                "errors": [(push.stderr or "").strip() or "stash push failed"],
                 "aside": aside,
             }
         stashed = True
@@ -450,7 +462,7 @@ def simulate_studio_update(repo: Path, *, branch_ref: str) -> dict[str, object]:
     if hard.returncode != 0:
         return {
             "ok": False,
-            "errors": [hard.stderr.strip() or "reset failed"],
+            "errors": [(hard.stderr or "").strip() or "reset failed"],
             "stashed": stashed,
             "aside": aside,
         }
