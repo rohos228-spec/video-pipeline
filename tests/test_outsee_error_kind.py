@@ -90,6 +90,20 @@ def test_pre_failure_baseline_ignores_foreign_moderation() -> None:
     )
 
 
+def test_fail_fast_while_generate_disabled_only_moderation_length() -> None:
+    from app.bots.outsee import _fail_fast_while_generate_disabled
+
+    assert (
+        _fail_fast_while_generate_disabled(
+            "Ваш текстовый запрос содержит запрещённое"
+        )
+        is True
+    )
+    assert _fail_fast_while_generate_disabled("Prompt is too long") is True
+    assert _fail_fast_while_generate_disabled("ошибка генерации veo") is False
+    assert _fail_fast_while_generate_disabled("что-то пошло не так") is False
+
+
 def test_generate_blocked_is_not_length_prompt_error() -> None:
     from app.services.outsee_retry import _is_prompt_related_error
 

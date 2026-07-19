@@ -1034,6 +1034,15 @@ def _failure_text_matches_prompt_id(
     return f"[id: {core.lower()}" in low or f"[id:{core.lower()}" in low
 
 
+def _fail_fast_while_generate_disabled(failure_text: str) -> bool:
+    """True — Generate disabled + moderation/length: нечего кликать.
+
+    Если кнопка уже активна, плашку игнорируем: кликаем Generate, а отказ
+    ловим после клика (см. pre_hit baseline в generate_image).
+    """
+    return _outsee_failure_kind(failure_text) in ("moderation", "length")
+
+
 def _normalize_pre_failure_baseline(
     text: str | None,
     *,
@@ -2474,7 +2483,14 @@ class OutseeBot:
     async def _wait_button_enabled(
         self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
     ) -> None:
-        """Ждёт пока кнопка станет активной (не disabled)."""
+        """Ждёт пока кнопка станет активной (не disabled).
+
+        Важно: при активной кнопке НЕ падаем на плашку «запрещённы…» /
+        stale-ошибку — иначе Generate никогда не кликается (баг P47-F43).
+        Caller снимает pre-click baseline и кликает; живую модерацию ловим
+        уже после клика. Fail-fast только если кнопка disabled И есть
+        moderation/length.
+        """
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         effective_timeout = min(timeout_s, _GENERATE_BUTTON_WAIT_SEC)
@@ -2484,34 +2500,42 @@ class OutseeBot:
         while asyncio.get_event_loop().time() < deadline:
             abort_if_cancelled(project_id)
             await _check_outsee_session(page)
-            try:
-                failure = await self._detect_outsee_failure(page)
-                if failure:
-                    ftext = str(failure.get("text") or "")
-                    # Модерация/длина — через _raise_outsee_failure, иначе
-                    # outsee_retry жжёт 3× тот же «запрещённый» промт как
-                    # обычный OutseeImageError и потом зависает на GPT-сжатии.
-                    _raise_outsee_failure(
-                        text=ftext,
-                        gen_id="",
-                        elapsed=asyncio.get_event_loop().time() - start,
-                        in_result=bool(failure.get("in_result")),
-                    )
-            except OutseeImageError:
-                raise
-            except Exception:  # noqa: BLE001
-                pass
+            button_enabled = False
             try:
                 loc = page.locator(selector).first
                 disabled = await loc.get_attribute("disabled")
                 aria = await loc.get_attribute("aria-disabled")
-                if disabled is None and (aria or "").lower() != "true":
-                    if (asyncio.get_event_loop().time() - start) > 1:
-                        logger.info(
-                            "outsee: Generate активен спустя {:.0f} сек",
-                            asyncio.get_event_loop().time() - start,
+                button_enabled = (
+                    disabled is None and (aria or "").lower() != "true"
+                )
+            except Exception:  # noqa: BLE001
+                button_enabled = False
+            if button_enabled:
+                if (asyncio.get_event_loop().time() - start) > 1:
+                    logger.info(
+                        "outsee: Generate активен спустя {:.0f} сек",
+                        asyncio.get_event_loop().time() - start,
+                    )
+                return
+            # Кнопка ещё disabled — только тогда fail-fast по модерации/длине.
+            try:
+                failure = await self._detect_outsee_failure(page)
+                if failure:
+                    ftext = str(failure.get("text") or "")
+                    if _fail_fast_while_generate_disabled(ftext):
+                        logger.warning(
+                            "outsee: Generate disabled + {} — не кликаем: {}",
+                            _outsee_failure_kind(ftext),
+                            ftext[:120],
                         )
-                    return
+                        _raise_outsee_failure(
+                            text=ftext,
+                            gen_id="",
+                            elapsed=asyncio.get_event_loop().time() - start,
+                            in_result=bool(failure.get("in_result")),
+                        )
+            except OutseeImageError:
+                raise
             except Exception:  # noqa: BLE001
                 pass
             now = asyncio.get_event_loop().time()
