@@ -119,6 +119,116 @@ def test_read_image_prompts_r45_only_no_voiceover(tmp_path: Path) -> None:
     }
 
 
+async def test_bootstrap_writes_skippable_marked_prompts(tmp_path: Path, monkeypatch) -> None:
+    """Bootstrap не фильтрует is_skippable — xlsx на диске = истина."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.generation_options import is_skippable_empty_prompt
+    from app.models import Base, Project
+
+    placeholder = (
+        "КАДР 1 / PROMPT_1:\nнет исходных данных для заполнения"
+    )
+    assert is_skippable_empty_prompt(placeholder)
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    proj_dir = tmp_path / "videos" / "ph"
+    proj_dir.mkdir(parents=True)
+    xlsx = proj_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value=placeholder)
+    ws.cell(row=49, column=3, value="voice")
+    wb.save(xlsx)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="ph", topic="")
+        session.add(project)
+        await session.flush()
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx)
+        assert boot.frames_prompt_updated == [1]
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert "нет исходных данных" in (fr.image_prompt or "")
+    await engine.dispose()
+
+
+async def test_apply_prompts_to_many_frames_sekty_like(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """124 кадра в БД, 62 промта в xlsx — apply пишет в кадры 1..62."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.models import Base, Frame, FrameStatus, Project
+    from app.services.xlsx_v8_import import apply_image_prompts_from_xlsx_to_frames
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    xlsx = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    for i in range(62):
+        col = i + 3
+        ws.cell(row=ROW_IMAGE_PROMPT_V8, column=col, value=f"prompt scene {i + 1}")
+        ws.cell(row=49, column=col, value=f"voice {i + 1}")
+    wb.save(xlsx)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="sekty", topic="")
+        session.add(project)
+        await session.flush()
+        for n in range(1, 125):
+            session.add(
+                Frame(
+                    project_id=project.id,
+                    number=n,
+                    voiceover_text=f"v{n}",
+                    status=FrameStatus.failed,
+                    attrs={"fail_reason": "no_image_prompt"},
+                )
+            )
+        await session.flush()
+        frames = (
+            await session.execute(select(Frame).where(Frame.project_id == project.id))
+        ).scalars().all()
+        n = apply_image_prompts_from_xlsx_to_frames(frames, xlsx)
+        assert n >= 62
+        fr1 = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 1)
+            )
+        ).scalar_one()
+        fr62 = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 62)
+            )
+        ).scalar_one()
+        fr63 = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 63)
+            )
+        ).scalar_one()
+        assert fr1.image_prompt == "prompt scene 1"
+        assert fr62.image_prompt == "prompt scene 62"
+        assert not fr63.image_prompt
+        assert fr1.status is FrameStatus.image_prompt_ready
+    await engine.dispose()
+
+
 async def test_bootstrap_manual_xlsx_empty_db(tmp_path: Path, monkeypatch) -> None:
     """Пустая БД + вручную положенный project.xlsx → кадры с промтами."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

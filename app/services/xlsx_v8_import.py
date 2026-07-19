@@ -389,22 +389,54 @@ def describe_image_prompts_xlsx_scan(xlsx_path: Path) -> str:
         wb.close()
 
 
+def _map_prompts_to_frame_numbers(
+    frames: list[Any], prompts: dict[int, str]
+) -> dict[int, str]:
+    """Сопоставить промты xlsx с Frame.number; fallback — по порядку 1:1."""
+    if not prompts or not frames:
+        return {}
+    by_num = {f.number: f for f in frames}
+    direct = {n: t for n, t in prompts.items() if n in by_num and (t or "").strip()}
+    if direct:
+        return direct
+    ordered_frames = sorted(by_num.keys())
+    ordered_texts = [prompts[k] for k in sorted(prompts.keys()) if prompts[k]]
+    return {
+        ordered_frames[i]: ordered_texts[i]
+        for i in range(min(len(ordered_frames), len(ordered_texts)))
+    }
+
+
 def apply_image_prompts_from_xlsx_to_frames(
     frames: list[Any],
     xlsx_path: Path,
+    *,
+    reset_failed: bool = True,
 ) -> int:
-    """Перезаписать frame.image_prompt из project.xlsx (ручная замена файла)."""
-    prompts = read_image_prompts_from_project_xlsx(xlsx_path)
-    if not prompts:
+    """Перезаписать frame.image_prompt из project.xlsx (ручная замена файла).
+
+    xlsx — источник истины: без фильтра is_skippable на этапе записи в БД.
+    """
+    from app.models import FrameStatus
+
+    raw = read_image_prompts_from_project_xlsx(xlsx_path)
+    mapped = _map_prompts_to_frame_numbers(frames, raw)
+    if not mapped:
         return 0
     by_num = {f.number: f for f in frames}
     changed = 0
-    for num, text in prompts.items():
+    for num, text in mapped.items():
         fr = by_num.get(num)
         if fr is None:
             continue
         if fr.image_prompt != text:
             fr.image_prompt = text
+            changed += 1
+        if reset_failed and fr.status is FrameStatus.failed:
+            attrs = dict(fr.attrs or {})
+            if attrs.pop("fail_reason", None) is not None:
+                fr.attrs = attrs
+            fr.status = FrameStatus.image_prompt_ready
             changed += 1
     return changed
 
@@ -548,8 +580,6 @@ async def bootstrap_frames_for_image_step(
 
     for num in frame_nums:
         prompt = prompts_shot1.get(num, "")
-        if is_skippable_empty_prompt(prompt):
-            prompt = ""
         fr = by_number.get(num)
         if fr is None:
             fr = Frame(
