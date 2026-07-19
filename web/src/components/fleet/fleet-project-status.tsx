@@ -43,7 +43,7 @@ export function FleetProjectStatus({ status }: { status: string }) {
 
 export function FleetProjectRow({
   slug,
-  topic,
+  displayName,
   status,
   montageReady,
   montageQueued,
@@ -52,7 +52,7 @@ export function FleetProjectRow({
   onMontage,
 }: {
   slug: string;
-  topic?: string | null;
+  displayName: string;
   status: string;
   montageReady?: boolean;
   montageQueued?: boolean;
@@ -72,10 +72,8 @@ export function FleetProjectRow({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{slug}</div>
-          {topic ? (
-            <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{topic}</div>
-          ) : null}
+          <div className="truncate font-medium">{displayName}</div>
+          <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{slug}</div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <FleetProjectStatus status={status} />
             {montageQueued ? (

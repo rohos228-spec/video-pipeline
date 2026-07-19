@@ -80,10 +80,11 @@ function formatBusEvent(raw: BusEvent): { level: LogLevel; text: string } | null
   }
 
   if (type === "project_created") {
-    const e = raw as { project_id?: number; topic?: string; slug?: string };
+    const e = raw as { project_id?: number; title?: string; topic?: string; slug?: string };
+    const name = e.title?.trim() || e.topic?.trim() || e.slug || "";
     return {
       level: "success",
-      text: `Проект создан #${e.project_id ?? "?"}: ${e.topic ?? e.slug ?? ""}`,
+      text: `Проект создан #${e.project_id ?? "?"}: ${name}`,
     };
   }
 

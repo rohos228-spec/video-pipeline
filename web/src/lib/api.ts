@@ -237,7 +237,7 @@ export const api = {
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
   createProject: (body: {
-    topic: string;
+    title: string;
     hero_mode?: string;
     auto_mode?: boolean;
     sidebar_folder_id?: string | null;

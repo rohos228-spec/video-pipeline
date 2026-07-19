@@ -89,9 +89,9 @@ async def create_child_from_parent(
         raise ValueError("дочерний проект нельзя клонировать — выберите родительский")
     existing = await list_mass_children(session, parent.id)
     child_index = len(existing) + 1
-    # Тема НЕ от родителя — иначе с теми же промтами получается ремейк/копия.
-    topic_base = f"Новая тема · доч. {child_index}"
-    slug = await _unique_slug(session, topic_base, slugify)
+    # Тема пайплайна пустая — пользователь заполнит в ноде «Тема ролика».
+    title_base = f"Доч. {child_index}"
+    slug = await _unique_slug(session, title_base, slugify)
 
     kwargs: dict[str, Any] = {}
     for field in COPY_PROJECT_FIELDS:
@@ -99,6 +99,8 @@ async def create_child_from_parent(
             continue
         kwargs[field] = copy.deepcopy(getattr(parent, field))
     kwargs["auto_mode"] = False
+    kwargs["topic"] = ""
+    kwargs["title"] = title_base
     kwargs["hero_descriptions"] = []
     kwargs["hero_variations"] = []
     kwargs["hero_variation_modifiers"] = []
@@ -110,7 +112,7 @@ async def create_child_from_parent(
     overrides = kwargs.get("gpt_text_overrides")
     if isinstance(overrides, dict) and overrides:
         kwargs["gpt_text_overrides"] = {
-            code: refresh_topic_line_in_text(text, topic_base)
+            code: refresh_topic_line_in_text(text, "")
             if isinstance(text, str)
             else text
             for code, text in overrides.items()
@@ -118,7 +120,6 @@ async def create_child_from_parent(
 
     child = Project(
         slug=slug,
-        topic=topic_base,
         status=ProjectStatus.new,
         general_plan=None,
         hero_description=None,

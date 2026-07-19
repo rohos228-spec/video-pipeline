@@ -207,6 +207,8 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    # Короткое имя в сайдбаре (не путать с topic — тема для шага «Тема ролика»).
+    title: Mapped[str | None] = mapped_column(String(240), default=None)
     topic: Mapped[str] = mapped_column(Text)
     hero_mode: Mapped[str] = mapped_column(String(20), default="auto")  # hero | no_hero | auto
     status: Mapped[ProjectStatus] = mapped_column(

@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ListVideo,
   GripVertical,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -26,6 +27,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
+import { projectDisplayName } from "@/lib/project-display";
 import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
 import { GenQueueDialog } from "@/components/sidebar/gen-queue-dialog";
 import { SidebarResizeHandle } from "@/components/sidebar/sidebar-resize-handle";
@@ -115,7 +117,17 @@ export function ProjectSidebar({
       qc.invalidateQueries({ queryKey: ["projects"] });
       setExpanded((e) => ({ ...e, [`mass:${parentId}`]: true }));
       onSelect(child.id);
-      toast.success(`Дочерний проект создан: ${child.topic}`);
+      toast.success(`Дочерний проект создан: ${projectDisplayName(child)}`);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, title }: { id: number; title: string }) =>
+      api.patchProject(id, { title }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project"] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -332,6 +344,7 @@ export function ProjectSidebar({
   const q = filter.trim().toLowerCase();
   const matchProject = (p: ProjectSummary) =>
     !q ||
+    projectDisplayName(p).toLowerCase().includes(q) ||
     p.topic.toLowerCase().includes(q) ||
     p.slug.toLowerCase().includes(q);
 
@@ -403,6 +416,7 @@ export function ProjectSidebar({
               onSelect={() => onSelect(p.id)}
               onDelete={() => deleteMutation.mutate(p.id)}
               onCreateChild={() => createChildMutation.mutate(p.id)}
+              onRename={(title) => renameMutation.mutate({ id: p.id, title })}
             />
           </div>
         </div>
@@ -422,6 +436,7 @@ export function ProjectSidebar({
                   onToggleQueue={() => handleQueueClick(c)}
                   onSelect={() => onSelect(c.id)}
                   onDelete={() => deleteMutation.mutate(c.id)}
+                  onRename={(title) => renameMutation.mutate({ id: c.id, title })}
                 />
               ) : null,
             )}
@@ -853,6 +868,7 @@ function ProjectRow({
   onSelect,
   onDelete,
   onCreateChild,
+  onRename,
 }: {
   project: ProjectSummary;
   selected: boolean;
@@ -868,7 +884,23 @@ function ProjectRow({
   onSelect: () => void;
   onDelete: () => void;
   onCreateChild?: () => void;
+  onRename?: (title: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(projectDisplayName(project));
+  const displayName = projectDisplayName(project);
+
+  useEffect(() => {
+    if (!editing) setDraftTitle(displayName);
+  }, [displayName, editing]);
+
+  const commitRename = () => {
+    const next = draftTitle.trim();
+    setEditing(false);
+    if (!next || next === displayName) return;
+    onRename?.(next);
+  };
+
   return (
     <div
       role="button"
@@ -945,21 +977,64 @@ function ProjectRow({
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <span
-              className={cn(
-                "min-w-0 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
-                compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
-              )}
-            >
-              {compact && (
-                <ListVideo
-                  className="mr-1 inline h-3 w-3 translate-y-[-1px] text-violet-300/70"
-                  strokeWidth={1.5}
-                />
-              )}
-              {project.topic}
-            </span>
-            <div className="flex shrink-0 flex-col items-center gap-0.5">
+          <div className="flex min-w-0 flex-1 items-start gap-1">
+            {editing ? (
+              <Input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitRename();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setDraftTitle(displayName);
+                    setEditing(false);
+                  }
+                }}
+                onBlur={commitRename}
+                className={cn(
+                  "h-7 min-w-0 flex-1 border-white/10 bg-white/[0.04] px-2 py-0",
+                  compact ? "text-[11px]" : "text-[13px]",
+                )}
+                autoFocus
+              />
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
+                  compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
+                )}
+              >
+                {compact && (
+                  <ListVideo
+                    className="mr-1 inline h-3 w-3 translate-y-[-1px] text-violet-300/70"
+                    strokeWidth={1.5}
+                  />
+                )}
+                {displayName}
+              </span>
+            )}
+            {!editing && onRename ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDraftTitle(displayName);
+                  setEditing(true);
+                }}
+                className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-white/[0.06] hover:text-foreground/80 group-hover:visible"
+                aria-label="Переименовать проект"
+                title="Переименовать"
+              >
+                <Pencil className="h-3 w-3" strokeWidth={1.5} />
+              </button>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 flex-col items-center gap-0.5">
               {canCreateChild && onCreateChild ? (
                 <button
                   type="button"
@@ -983,7 +1058,7 @@ function ProjectRow({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirm(`Удалить проект «${project.topic}»?`)) onDelete();
+                  if (confirm(`Удалить проект «${displayName}»?`)) onDelete();
                 }}
                 className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
                 aria-label="Удалить"

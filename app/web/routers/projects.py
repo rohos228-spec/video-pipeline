@@ -1,12 +1,11 @@
 """REST: /api/projects."""
 
-from __future__ import annotations
-
 import asyncio
 import re
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,12 +133,13 @@ async def get_project(
 
 @router.post("", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)
 async def create_project(
-    payload: CreateProjectRequest,
+    body: Annotated[CreateProjectRequest, Body()],
     session: AsyncSession = Depends(get_session),
 ) -> Project:
-    if not payload.topic or not payload.topic.strip():
-        raise HTTPException(status_code=400, detail="topic is required")
-    base_slug = _slugify(payload.topic)
+    if not body.title or not body.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    display_title = body.title.strip()
+    base_slug = _slugify(display_title)
     # Уникализируем slug.
     slug = base_slug
     suffix = 2
@@ -148,13 +148,14 @@ async def create_project(
     ).scalar_one_or_none() is not None:
         slug = f"{base_slug}-{suffix}"
         suffix += 1
-    auto_mode = payload.auto_mode
-    if not payload.auto_mode and default_auto_mode_for_new_project():
+    auto_mode = body.auto_mode
+    if not body.auto_mode and default_auto_mode_for_new_project():
         auto_mode = True
     p = Project(
         slug=slug,
-        topic=payload.topic.strip(),
-        hero_mode=payload.hero_mode,
+        title=display_title,
+        topic="",
+        hero_mode=body.hero_mode,
         status=ProjectStatus.new,
         auto_mode=auto_mode,
         meta={},
@@ -165,7 +166,7 @@ async def create_project(
         from app.services.project_control import arm_auto_await_manual_start
 
         arm_auto_await_manual_start(p)
-    ensure_project_layout(p.id, folder_id=payload.sidebar_folder_id)
+    ensure_project_layout(p.id, folder_id=body.sidebar_folder_id)
     sheet = ProjectSheet(file_path=p.data_dir / "project.xlsx")
     sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     sheet.write_general(
@@ -178,6 +179,7 @@ async def create_project(
     await session.refresh(p)
     await publish_project_event(p.id, event_type="project_created", payload={
         "slug": p.slug,
+        "title": p.title,
         "topic": p.topic,
     })
     wf_id = await _get_default_workflow_id()
@@ -230,7 +232,7 @@ async def create_child_project(
     await publish_project_event(
         child.id,
         event_type="project_created",
-        payload={"slug": child.slug, "topic": child.topic, "parent_id": project_id},
+        payload={"slug": child.slug, "title": child.title, "topic": child.topic, "parent_id": project_id},
     )
     return project_to_detail(child)
 
@@ -274,7 +276,7 @@ async def patch_project(
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
     ALLOWED = {
-        "topic", "hero_mode", "general_plan", "hero_description", "script_text",
+        "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
         "video_generator", "video_resolution", "video_relax",
         "hero_count", "hero_descriptions", "hero_variations",

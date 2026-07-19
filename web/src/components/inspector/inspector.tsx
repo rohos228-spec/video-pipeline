@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatNodeCategory, formatNodeKeyLabel, formatHeroMode, formatProjectStatus, humanizeSlug } from "@/lib/format-labels";
+import { projectDisplayName } from "@/lib/project-display";
 import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
@@ -69,9 +70,15 @@ export function Inspector({
           {projectId != null && !selectedNodeKey && project.data && (
             <div className="flex flex-col gap-4">
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Тема</div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Название</div>
                 <div className="mt-1 text-sm font-medium leading-snug">
-                  {project.data.topic}
+                  {projectDisplayName(project.data)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Тема ролика</div>
+                <div className="mt-1 text-sm leading-snug text-muted-foreground">
+                  {project.data.topic?.trim() || "— не задана (нода «Тема ролика»)"}
                 </div>
               </div>
               <Row icon={<Hash className="h-3.5 w-3.5" />} label="ID / slug">

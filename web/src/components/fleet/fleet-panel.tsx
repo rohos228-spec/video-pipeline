@@ -14,6 +14,7 @@ import {
 } from "@/lib/fleet-api";
 import { FleetFilesPanel } from "@/components/fleet/fleet-files-panel";
 import { FleetProjectRow } from "@/components/fleet/fleet-project-status";
+import { projectDisplayName } from "@/lib/project-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ type FleetNode = {
 type FleetProject = {
   id: number;
   slug: string;
+  title?: string | null;
   topic?: string | null;
   status: string;
   montage_ready?: boolean;
@@ -268,7 +270,7 @@ export function FleetPanel({
               <FleetProjectRow
                 key={p.id}
                 slug={p.slug}
-                topic={p.topic}
+                displayName={projectDisplayName(p)}
                 status={p.status}
                 montageReady={Boolean(p.montage_ready)}
                 montageQueued={Boolean(p.montage_queued)}

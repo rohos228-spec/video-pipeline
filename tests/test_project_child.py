@@ -80,7 +80,8 @@ async def test_create_child_inherits_settings_not_content(
     assert mass_parent_id(child) == parent.id
     assert child.status is ProjectStatus.new
     assert child.auto_mode is False
-    assert child.topic.startswith("Новая тема")
+    assert child.title == "Доч. 1"
+    assert child.topic == ""
     assert child.script_text is None
     assert child.general_plan is None
     assert child.hero_description is None

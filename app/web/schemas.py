@@ -25,6 +25,7 @@ class _ORM(BaseModel):
 class ProjectSummary(_ORM):
     id: int
     slug: str
+    title: str | None = None
     topic: str
     status: str
     hero_mode: str
@@ -89,7 +90,7 @@ class ProjectDetail(ProjectSummary):
 
 
 class CreateProjectRequest(BaseModel):
-    topic: str
+    title: str
     hero_mode: str = "auto"  # hero | no_hero | auto
     workflow_id: int | None = None  # если None — берём дефолтный
     auto_mode: bool = False

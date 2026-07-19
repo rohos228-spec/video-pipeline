@@ -80,6 +80,7 @@ export interface WorkflowDetail extends WorkflowSummary {
 export interface ProjectSummary {
   id: number;
   slug: string;
+  title?: string | null;
   topic: string;
   status: ProjectStatus;
   hero_mode: string;
