@@ -448,6 +448,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего генерировать")
 
+    xlsx_path = project.data_dir / "project.xlsx"
+    if xlsx_path.exists():
+        from app.services.xlsx_v8_import import apply_v8_image_prompts_from_xlsx
+
+        synced_nums = await apply_v8_image_prompts_from_xlsx(session, project, xlsx_path)
+        if synced_nums:
+            logger.info(
+                "[#{}] generate_images: image_prompt из xlsx → кадры {}",
+                project.id,
+                synced_nums,
+            )
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+
     # Кадры без image_prompt: пробуем АВТО-РЕКАВЕРИ из xlsx (вдруг
     # промты ЕСТЬ в xlsx, но не подтянулись в БД), затем — если всё
     # ещё пусто — НЕ ВАЛИМ ВЕСЬ ШАГ, а помечаем такие кадры как
@@ -573,6 +592,40 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         queued,
         out_dir,
     )
+    if queued == 0:
+        from app.services.scan_frames import scan_missing_frames
+
+        with_prompt = sum(
+            1
+            for fr in frames
+            if not is_skippable_empty_prompt(fr.image_prompt or "")
+        )
+        missing = await scan_missing_frames(session, project)
+        on_disk = sum(
+            1 for fr in frames if disk_has_valid_frame_image(out_dir, fr.number)
+        )
+        logger.warning(
+            "[#{}] generate_images: очередь пуста — кадров в БД={}, "
+            "с image_prompt={}, валидных PNG на диске={}, без PNG но с промтом={}. "
+            "Проверь project.xlsx R45 и «Перечитать xlsx».",
+            project.id,
+            len(frames),
+            with_prompt,
+            on_disk,
+            missing,
+        )
+        if with_prompt == 0:
+            raise RuntimeError(
+                "нет image_prompt в БД и xlsx (строка 45 листа «план») — "
+                "сначала заполни промты или нажми «Перечитать xlsx»"
+            )
+        if not missing and on_disk >= with_prompt:
+            logger.info(
+                "[#{}] generate_images: все {} кадров с промтом уже на диске — "
+                "outsee не нужен",
+                project.id,
+                with_prompt,
+            )
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -749,7 +802,7 @@ async def _all_frames_have_image_or_failed(
         )
     ).scalars().all()
     for fr in frames:
-        if not is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         if fr.status is FrameStatus.failed:
             continue

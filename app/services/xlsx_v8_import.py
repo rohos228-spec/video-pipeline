@@ -176,7 +176,9 @@ def read_v8_active_frame_count(xlsx_path: Path) -> int:
 def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
     """Номер кадра (1..N) → image_prompt из листа «план» (строка R45).
 
-    Порядок кадров совпадает с _read_voiceover_blocks / import_v8_xlsx.
+    Сканирует колонки 3..N по R45 напрямую — не требует voiceover в R49.
+    Это важно для ручного импорта проекта: промты могут быть заполнены,
+    а закадровый текст ещё нет.
     """
     from openpyxl import load_workbook
 
@@ -184,12 +186,16 @@ def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
         return {}
     wb = load_workbook(filename=str(xlsx_path), data_only=True)
     try:
-        fields = _read_frame_fields(wb)
-        return {
-            i: (fields[i - 1].get("image_prompt") or "").strip()
-            for i in range(1, len(fields) + 1)
-            if fields[i - 1].get("image_prompt")
-        }
+        ws = _resolve_plan_sheet(wb)
+        if ws is None:
+            return {}
+        out: dict[int, str] = {}
+        for col in range(3, ws.max_column + 1):
+            prompt = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+            if not prompt:
+                continue
+            out[col - 2] = prompt
+        return out
     finally:
         wb.close()
 
