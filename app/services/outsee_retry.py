@@ -50,6 +50,10 @@ from pathlib import Path
 # Должен быть ≥ timeout в gpt.ask_fresh, иначе сжатие обрывается раньше ответа.
 _GPT_COMPRESS_OUTER_TIMEOUT_S = 620.0
 _GPT_REWRITE_OUTER_TIMEOUT_S = 620.0
+# Модерация: очередь картинок последовательная — длинный GPT = «всё встало».
+# Один rewrite с коротким таймаутом; overrun режем локально, без GPT-сжатия.
+_GPT_MODERATION_REWRITE_OUTER_TIMEOUT_S = 180.0
+_GPT_MODERATION_REWRITE_ASK_TIMEOUT_S = 150.0
 # Хвост uniquify `[… r9a9]` — резерв при расчёте max_body.
 _UNIQUIFY_SUFFIX_RESERVE = 8
 from typing import Any
@@ -87,6 +91,17 @@ def _gpt_moderation_rewrite_meta(body_limit: int) -> str:
         "замени опасные, триггерные слова на синонимы более нейтральные "
         "и пришли только текст промта в ответе."
     )
+
+
+def _hard_truncate_prompt(text: str, body_limit: int) -> str:
+    """Обрезка тела промта по лимиту (по пробелу, если есть)."""
+    if len(text) <= body_limit:
+        return text
+    cut = text[:body_limit]
+    sp = cut.rfind(" ")
+    if sp > int(body_limit * 0.85):
+        cut = cut[:sp]
+    return cut
 
 # Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
@@ -338,15 +353,27 @@ async def _ask_gpt_to_rewrite(
             f"промта (без строки [ID: …]).\n\n"
             f"{original_prompt}{err_hint}"
         )
+    ask_timeout = (
+        _GPT_MODERATION_REWRITE_ASK_TIMEOUT_S if moderation else 600.0
+    )
+    outer_timeout = (
+        _GPT_MODERATION_REWRITE_OUTER_TIMEOUT_S
+        if moderation
+        else _GPT_REWRITE_OUTER_TIMEOUT_S
+    )
     try:
         reply = await asyncio.wait_for(
-            gpt.ask_fresh(full_request, timeout=600, project_id=project_id),
-            timeout=_GPT_REWRITE_OUTER_TIMEOUT_S,
+            gpt.ask_fresh(
+                full_request, timeout=ask_timeout, project_id=project_id
+            ),
+            timeout=outer_timeout,
         )
     except asyncio.TimeoutError:
         logger.error(
-            "outsee_retry: GPT-rewrite таймаут {:.0f}с",
-            _GPT_REWRITE_OUTER_TIMEOUT_S,
+            "outsee_retry: GPT-rewrite таймаут {:.0f}с{} — кадр дальше "
+            "не держим, очередь картинок продолжит",
+            outer_timeout,
+            " (модерация)" if moderation else "",
         )
         return None
     except Exception as e:  # noqa: BLE001
@@ -369,25 +396,32 @@ async def _ask_gpt_to_rewrite(
         len(text), len(original_prompt),
     )
     if len(text) > body_limit:
-        over_full = len(_outsee_full_prompt(text, prefix)) > OUTSEE_PROMPT_MAX_CHARS
-        overrun = len(text) - body_limit
-        # Небольшой overrun (типично GPT чуть раздул rewrite) — режем сразу,
-        # без минутного GPT-сжатия, которое блокирует очередь кадров.
-        if overrun <= max(120, body_limit // 20):
-            cut = text[:body_limit]
-            sp = cut.rfind(" ")
-            if sp > int(body_limit * 0.85):
-                cut = cut[:sp]
+        # После модерации НЕ зовём GPT-сжатие: очередь img последовательная,
+        # сжатие = минуты без единой генерации (как в логе P47-F43).
+        if moderation:
+            cut = _hard_truncate_prompt(text, body_limit)
             logger.warning(
-                "outsee_retry: GPT-rewrite {} симв > лимит {} "
-                "(+{}) — hard-truncate до {} симв",
+                "outsee_retry: GPT-rewrite {} симв > лимит {} — "
+                "hard-truncate до {} (без GPT-сжатия, очередь не блокируем)",
                 len(text),
                 body_limit,
-                overrun,
                 len(cut),
             )
             return cut
-        if moderation or over_full:
+        over_full = len(_outsee_full_prompt(text, prefix)) > OUTSEE_PROMPT_MAX_CHARS
+        overrun = len(text) - body_limit
+        if overrun <= max(120, body_limit // 20) or over_full:
+            if overrun <= max(120, body_limit // 20):
+                cut = _hard_truncate_prompt(text, body_limit)
+                logger.warning(
+                    "outsee_retry: GPT-rewrite {} симв > лимит {} "
+                    "(+{}) — hard-truncate до {} симв",
+                    len(text),
+                    body_limit,
+                    overrun,
+                    len(cut),
+                )
+                return cut
             logger.warning(
                 "outsee_retry: GPT-rewrite {} симв > лимит (body {}, full {}) — сожму",
                 len(text),
@@ -400,10 +434,7 @@ async def _ask_gpt_to_rewrite(
             if compressed:
                 text = compressed
             elif len(text) > body_limit:
-                cut = text[:body_limit]
-                sp = cut.rfind(" ")
-                if sp > int(body_limit * 0.85):
-                    cut = cut[:sp]
+                cut = _hard_truncate_prompt(text, body_limit)
                 logger.warning(
                     "outsee_retry: GPT-сжатие не удалось — hard-truncate "
                     "{} → {} симв",

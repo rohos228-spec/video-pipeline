@@ -156,14 +156,18 @@ async def test_plain_image_error_moderation_banner_failfast(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_ask_gpt_rewrite_hard_truncates_small_overrun(monkeypatch) -> None:
-    """Небольшой overrun после rewrite — hard-truncate, без GPT-сжатия."""
+async def test_ask_gpt_rewrite_moderation_never_calls_compress(monkeypatch) -> None:
+    """После модерации любой overrun — hard-truncate, GPT-сжатие не зовём.
+
+    Иначе очередь img (последовательная) висит минутами без генераций.
+    """
     compress_calls: list[str] = []
+    ask_timeouts: list[float] = []
 
     class FakeGpt:
         async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
-            # Чуть длиннее body_limit (~4868 при prefix) — типичный раздутый rewrite.
-            return "x" * 5000
+            ask_timeouts.append(timeout)
+            return "x" * 5500
 
     async def fake_compress(*args, **kwargs):
         compress_calls.append("called")
@@ -187,3 +191,4 @@ async def test_ask_gpt_rewrite_hard_truncates_small_overrun(monkeypatch) -> None
     assert out is not None
     assert len(out) <= body_limit
     assert compress_calls == []
+    assert ask_timeouts == [mod._GPT_MODERATION_REWRITE_ASK_TIMEOUT_S]
