@@ -2488,9 +2488,15 @@ class OutseeBot:
                 failure = await self._detect_outsee_failure(page)
                 if failure:
                     ftext = str(failure.get("text") or "")
-                    msg = f"outsee: {ftext[:160]}"
-                    _log_outsee_error(kind="generate_ui", text=msg)
-                    raise OutseeImageError(msg, context={"failure": ftext[:200]})
+                    # Модерация/длина — через _raise_outsee_failure, иначе
+                    # outsee_retry жжёт 3× тот же «запрещённый» промт как
+                    # обычный OutseeImageError и потом зависает на GPT-сжатии.
+                    _raise_outsee_failure(
+                        text=ftext,
+                        gen_id="",
+                        elapsed=asyncio.get_event_loop().time() - start,
+                        in_result=bool(failure.get("in_result")),
+                    )
             except OutseeImageError:
                 raise
             except Exception:  # noqa: BLE001

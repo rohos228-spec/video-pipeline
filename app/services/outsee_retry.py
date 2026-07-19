@@ -50,6 +50,10 @@ from pathlib import Path
 # Должен быть ≥ timeout в gpt.ask_fresh, иначе сжатие обрывается раньше ответа.
 _GPT_COMPRESS_OUTER_TIMEOUT_S = 620.0
 _GPT_REWRITE_OUTER_TIMEOUT_S = 620.0
+# Модерация: очередь картинок последовательная — длинный GPT = «всё встало».
+# Один rewrite с коротким таймаутом; overrun режем локально, без GPT-сжатия.
+_GPT_MODERATION_REWRITE_OUTER_TIMEOUT_S = 180.0
+_GPT_MODERATION_REWRITE_ASK_TIMEOUT_S = 150.0
 # Хвост uniquify `[… r9a9]` — резерв при расчёте max_body.
 _UNIQUIFY_SUFFIX_RESERVE = 8
 from typing import Any
@@ -78,13 +82,26 @@ from app.generation_options import (
 from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 from app.services.step_cancel import StepCancelledError
 
-# Meta-промт для GPT-rewrite при модерации outsee (формулировка пользователя).
-_GPT_MODERATION_REWRITE_META = (
-    "измени промт ниже, но сохрани смысл картины и деталей, "
-    f"промт не должен быть больше {OUTSEE_PROMPT_MAX_CHARS} символов, "
-    "замени опасные, триггерные слова на синонимы более нейтральные "
-    "и пришли только текст промта в ответе."
-)
+def _gpt_moderation_rewrite_meta(body_limit: int) -> str:
+    """Meta для GPT-rewrite при модерации — лимит = тело без [ID:], не full."""
+    return (
+        "измени промт ниже, но сохрани смысл картины и деталей, "
+        f"промт не должен быть больше {body_limit} символов "
+        "(это лимит тела без строки [ID: …]), "
+        "замени опасные, триггерные слова на синонимы более нейтральные "
+        "и пришли только текст промта в ответе."
+    )
+
+
+def _hard_truncate_prompt(text: str, body_limit: int) -> str:
+    """Обрезка тела промта по лимиту (по пробелу, если есть)."""
+    if len(text) <= body_limit:
+        return text
+    cut = text[:body_limit]
+    sp = cut.rfind(" ")
+    if sp > int(body_limit * 0.85):
+        cut = cut[:sp]
+    return cut
 
 # Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
@@ -317,7 +334,9 @@ async def _ask_gpt_to_rewrite(
     body_limit = _max_body_for_prefix(prefix)
     moderation = last_error is not None and outsee_error_is_moderation(last_error)
     if moderation:
-        full_request = f"{_GPT_MODERATION_REWRITE_META}\n\n{original_prompt}"
+        full_request = (
+            f"{_gpt_moderation_rewrite_meta(body_limit)}\n\n{original_prompt}"
+        )
     else:
         err_hint = ""
         if last_error is not None:
@@ -334,15 +353,27 @@ async def _ask_gpt_to_rewrite(
             f"промта (без строки [ID: …]).\n\n"
             f"{original_prompt}{err_hint}"
         )
+    ask_timeout = (
+        _GPT_MODERATION_REWRITE_ASK_TIMEOUT_S if moderation else 600.0
+    )
+    outer_timeout = (
+        _GPT_MODERATION_REWRITE_OUTER_TIMEOUT_S
+        if moderation
+        else _GPT_REWRITE_OUTER_TIMEOUT_S
+    )
     try:
         reply = await asyncio.wait_for(
-            gpt.ask_fresh(full_request, timeout=600, project_id=project_id),
-            timeout=_GPT_REWRITE_OUTER_TIMEOUT_S,
+            gpt.ask_fresh(
+                full_request, timeout=ask_timeout, project_id=project_id
+            ),
+            timeout=outer_timeout,
         )
     except asyncio.TimeoutError:
         logger.error(
-            "outsee_retry: GPT-rewrite таймаут {:.0f}с",
-            _GPT_REWRITE_OUTER_TIMEOUT_S,
+            "outsee_retry: GPT-rewrite таймаут {:.0f}с{} — кадр дальше "
+            "не держим, очередь картинок продолжит",
+            outer_timeout,
+            " (модерация)" if moderation else "",
         )
         return None
     except Exception as e:  # noqa: BLE001
@@ -365,8 +396,32 @@ async def _ask_gpt_to_rewrite(
         len(text), len(original_prompt),
     )
     if len(text) > body_limit:
+        # После модерации НЕ зовём GPT-сжатие: очередь img последовательная,
+        # сжатие = минуты без единой генерации (как в логе P47-F43).
+        if moderation:
+            cut = _hard_truncate_prompt(text, body_limit)
+            logger.warning(
+                "outsee_retry: GPT-rewrite {} симв > лимит {} — "
+                "hard-truncate до {} (без GPT-сжатия, очередь не блокируем)",
+                len(text),
+                body_limit,
+                len(cut),
+            )
+            return cut
         over_full = len(_outsee_full_prompt(text, prefix)) > OUTSEE_PROMPT_MAX_CHARS
-        if moderation or over_full:
+        overrun = len(text) - body_limit
+        if overrun <= max(120, body_limit // 20) or over_full:
+            if overrun <= max(120, body_limit // 20):
+                cut = _hard_truncate_prompt(text, body_limit)
+                logger.warning(
+                    "outsee_retry: GPT-rewrite {} симв > лимит {} "
+                    "(+{}) — hard-truncate до {} симв",
+                    len(text),
+                    body_limit,
+                    overrun,
+                    len(cut),
+                )
+                return cut
             logger.warning(
                 "outsee_retry: GPT-rewrite {} симв > лимит (body {}, full {}) — сожму",
                 len(text),
@@ -378,6 +433,15 @@ async def _ask_gpt_to_rewrite(
             )
             if compressed:
                 text = compressed
+            elif len(text) > body_limit:
+                cut = _hard_truncate_prompt(text, body_limit)
+                logger.warning(
+                    "outsee_retry: GPT-сжатие не удалось — hard-truncate "
+                    "{} → {} симв",
+                    len(text),
+                    len(cut),
+                )
+                text = cut
     return text
 
 
@@ -525,7 +589,8 @@ async def generate_image_with_retries(
             except OutseeImageError as e:
                 last_err = e
                 err_kind = _retry_err_label(e)
-                if isinstance(e, OutseeContentRejectedError):
+                is_moderation = outsee_error_is_moderation(e)
+                if is_moderation:
                     logger.warning(
                         "outsee.generate_image [{}] МОДЕРАЦИЯ outsee "
                         "попытка {}/{} (id={}): {}",
@@ -555,7 +620,7 @@ async def generate_image_with_retries(
                     and (
                         isinstance(e, OutseePromptTooLongError)
                         or _is_prompt_related_error(e)
-                        or isinstance(e, OutseeContentRejectedError)
+                        or is_moderation
                     )
                 ):
                     fixed = await _fix_prompt_after_outsee_error(
@@ -567,9 +632,7 @@ async def generate_image_with_retries(
                     )
                     if fixed and fixed.strip() != current_prompt.strip():
                         action = (
-                            "GPT-rewrite"
-                            if outsee_error_is_moderation(e)
-                            else "GPT-сжатие"
+                            "GPT-rewrite" if is_moderation else "GPT-сжатие"
                         )
                         logger.info(
                             "outsee.generate_image [{}]: {} OK "
@@ -581,13 +644,21 @@ async def generate_image_with_retries(
                             err_kind,
                         )
                         current_prompt = fixed
-                    elif isinstance(e, OutseeContentRejectedError):
+                    elif is_moderation:
                         moderation_rewrite_failed = True
                         logger.warning(
                             "outsee.generate_image [{}]: модерация — GPT не "
                             "переписал промт, не повторяю тот же текст",
                             round_label,
                         )
+                elif is_moderation and gpt is None:
+                    # Без GPT бессмысленно долбить тот же banned-промт 3×.
+                    logger.warning(
+                        "outsee.generate_image [{}]: модерация без GPT — "
+                        "не повторяю тот же текст",
+                        round_label,
+                    )
+                    break
                 if moderation_rewrite_failed:
                     break
                 if attempt < max_attempts_per_prompt:

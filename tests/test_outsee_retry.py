@@ -103,3 +103,92 @@ async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
     # 2× original (второй без лишних retry) + 1× rewritten
     assert len(attempts) == 3
     assert rewrite_calls
+
+
+@pytest.mark.asyncio
+async def test_plain_image_error_moderation_banner_failfast(monkeypatch) -> None:
+    """Плашка «содержит запрещённы…» как OutseeImageError — не 3× тот же промт.
+
+    Регрессия: `_wait_button_enabled` раньше кидал голый OutseeImageError
+    без kind=moderation, и retry жег original 3 раза до GPT-rewrite.
+    """
+    attempts: list[str] = []
+    rewrite_calls: list[str] = []
+
+    class FakeOutsee:
+        async def generate_image(self, prompt: str, out_path, **kwargs):
+            attempts.append(prompt)
+            raise OutseeImageError(
+                "outsee: Ваш текстовый запрос содержит запрещённы...",
+                context={
+                    "failure": "Ваш текстовый запрос содержит запрещённы..."
+                },
+            )
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            if "сохрани смысл картины" in ask or "триггерные слова" in ask:
+                rewrite_calls.append(ask)
+                return "neutral rewritten scene prompt " * 4
+            return ask
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+
+    with pytest.raises(OutseeImageError):
+        await mod.generate_image_with_retries(
+            FakeOutsee(),
+            FakeGpt(),
+            prompt="banned original prompt " * 20,
+            out_path=__import__("pathlib").Path("out.png"),
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=1,
+        )
+
+    # Не 3× original: rewrite после 1-й модерации, затем ещё попытки с новым текстом.
+    assert len(attempts) >= 2
+    assert attempts.count("banned original prompt " * 20) == 1
+    assert rewrite_calls
+    assert any("neutral rewritten" in a for a in attempts)
+
+
+@pytest.mark.asyncio
+async def test_ask_gpt_rewrite_moderation_never_calls_compress(monkeypatch) -> None:
+    """После модерации любой overrun — hard-truncate, GPT-сжатие не зовём.
+
+    Иначе очередь img (последовательная) висит минутами без генераций.
+    """
+    compress_calls: list[str] = []
+    ask_timeouts: list[float] = []
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            ask_timeouts.append(timeout)
+            return "x" * 5500
+
+    async def fake_compress(*args, **kwargs):
+        compress_calls.append("called")
+        return None
+
+    monkeypatch.setattr(mod, "_compress_prompt_for_outsee", fake_compress)
+
+    prefix = "[ID: P47-F43-ce5cd469]"
+    body_limit = mod._max_body_for_prefix(prefix)
+    err = OutseeContentRejectedError(
+        "outsee image: контент отклонён модерацией",
+        context={"kind": "moderation"},
+    )
+    out = await mod._ask_gpt_to_rewrite(
+        FakeGpt(),
+        "y" * 4800,
+        project_id=1,
+        last_error=err,
+        prefix=prefix,
+    )
+    assert out is not None
+    assert len(out) <= body_limit
+    assert compress_calls == []
+    assert ask_timeouts == [mod._GPT_MODERATION_REWRITE_ASK_TIMEOUT_S]
