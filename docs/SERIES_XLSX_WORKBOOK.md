@@ -1,6 +1,8 @@
 # Excel для сериала: что заполнять, кто, в каком порядке
 
-Основано на реальном шаблоне `templates/project_template_v8.xlsx`.  
+Основано на шаблоне `templates/project_template_v8.xlsx`.  
+**Актуальный файл для сериала:** `templates/project_template_series_v1.xlsx`  
+Агенты: `prompts/steps/series/README.md`  
 Язык простой. Схемы — ниже.
 
 ---
