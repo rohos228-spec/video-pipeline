@@ -39,6 +39,7 @@ SHEET_PLAN_V8 = "план"
 # В v8-шаблоне «план» каждый кадр — это колонка (col=3..N). Эти строки —
 # поля одного кадра. См. templates/project_template_v8.xlsx (column A):
 ROW_IMAGE_PROMPT_V8 = 45  # «промт для картинки 1»
+ROW_IMAGE_PROMPT_2_V8 = 46  # «промт для картинки 2» (shot_02)
 # R46/R47 — резервные «картинка 2/3» (модель пока одну хранит, см. Frame.image_prompt)
 ROW_VIDEO_PROMPT_V8 = 48  # «промт для видео» (shot_01)
 ROW_VOICEOVER_V8 = 49     # «закадровый текст»
@@ -143,9 +144,23 @@ def _read_general_plan(wb) -> str | None:
     return text if text else None
 
 
+def _resolve_plan_cell(ws, row: int, col: int):
+    """Ячейка листа «план»; для MergedCell — top-left merge (иначе value=None)."""
+    cell = ws.cell(row=row, column=col)
+    if type(cell).__name__ != "MergedCell":
+        return cell
+    merged = getattr(ws, "merged_cells", None)
+    if merged is None:
+        return cell
+    for cr in merged.ranges:
+        if cr.min_row <= row <= cr.max_row and cr.min_col <= col <= cr.max_col:
+            return ws.cell(row=cr.min_row, column=cr.min_col)
+    return cell
+
+
 def _cell_text(ws, row: int, col: int) -> str | None:
     """Прочитать ячейку как trim-string, схлопнув whitespace. None если пусто."""
-    v = ws.cell(row=row, column=col).value
+    v = _resolve_plan_cell(ws, row, col).value
     if v is None:
         return None
     s = str(v).strip()
@@ -209,9 +224,56 @@ def _plan_scene_column_range(ws, row: int) -> range:
     return range(2, end + 1)
 
 
+def _plan_prompt_columns(ws, row: int) -> list[int]:
+    """Колонки с промтом в строке row — одна на merge-range (не дублировать slaves)."""
+    cols: list[int] = []
+    seen_merges: set[tuple[int, int, int, int]] = set()
+    for col in _plan_scene_column_range(ws, row):
+        prompt = _cell_text(ws, row, col)
+        if not prompt or _is_formula_cell_text(prompt):
+            continue
+        merge_key: tuple[int, int, int, int] | None = None
+        merged = getattr(ws, "merged_cells", None)
+        if merged is not None:
+            for cr in merged.ranges:
+                if cr.min_row <= row <= cr.max_row and cr.min_col <= col <= cr.max_col:
+                    merge_key = (cr.min_row, cr.min_col, cr.max_row, cr.max_col)
+                    break
+        if merge_key is not None:
+            if merge_key in seen_merges:
+                continue
+            seen_merges.add(merge_key)
+        cols.append(col)
+    return cols
+
+
+def _plan_scene_columns_ordered(ws) -> list[tuple[int, int]]:
+    """(номер кадра 1..N, колонка Excel) — R49 или уникальные колонки R45/R46."""
+    vo_cols = [
+        c
+        for c in range(2, PLAN_MAX_SCENE_COL + 1)
+        if _cell_text(ws, ROW_VOICEOVER_V8, c)
+    ]
+    if vo_cols:
+        return list(enumerate(vo_cols, start=1))
+    seen: list[int] = []
+    for row in (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8):
+        for col in _plan_prompt_columns(ws, row):
+            if col not in seen:
+                seen.append(col)
+    return list(enumerate(seen, start=1))
+
+
 def _read_plan_image_prompts_ws(ws, *, prompt_row: int | None = None) -> dict[int, str]:
     row = prompt_row or _plan_prompt_row(ws)
     out: dict[int, str] = {}
+    for frame_num, col in _plan_scene_columns_ordered(ws):
+        prompt = _cell_text(ws, row, col)
+        if not prompt or _is_formula_cell_text(prompt):
+            continue
+        out[frame_num] = prompt
+    if out:
+        return out
     for col in _plan_scene_column_range(ws, row):
         prompt = _cell_text(ws, row, col)
         if not prompt or _is_formula_cell_text(prompt):
@@ -299,9 +361,14 @@ def describe_image_prompts_xlsx_scan(xlsx_path: Path) -> str:
     if not xlsx_path.exists():
         return "project.xlsx не найден"
     try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+        st = xlsx_path.stat()
+        size_m = f"{st.st_size} B, mtime={st.st_mtime:.0f}"
+    except OSError:
+        size_m = "stat failed"
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True)
     except Exception as e:  # noqa: BLE001
-        return f"не открыть xlsx: {e}"
+        return f"не открыть xlsx ({size_m}): {e}"
     try:
         sheets = list(wb.sheetnames)
         ws = _resolve_plan_sheet(wb)
@@ -309,17 +376,37 @@ def describe_image_prompts_xlsx_scan(xlsx_path: Path) -> str:
             v7 = "Кадры" in sheets
             norm = [_normalize_sheet_name(s) for s in sheets]
             return (
-                f"лист «план» не найден (имена листов={sheets!r}, norm={norm!r}); "
-                f"v7 Кадры={v7}"
+                f"path={xlsx_path} ({size_m}); лист «план» не найден "
+                f"(имена={sheets!r}, norm={norm!r}); v7 Кадры={v7}"
             )
         row = _plan_prompt_row(ws)
         n = len(_read_plan_image_prompts_ws(ws, prompt_row=row))
         return (
-            f"лист «{ws.title}», строка промта R{row}, найдено {n} промтов; "
-            f"все листы={sheets!r}"
+            f"path={xlsx_path} ({size_m}); лист «{ws.title}», строка R{row}, "
+            f"найдено {n} промтов; листы={sheets!r}"
         )
     finally:
         wb.close()
+
+
+def apply_image_prompts_from_xlsx_to_frames(
+    frames: list[Any],
+    xlsx_path: Path,
+) -> int:
+    """Перезаписать frame.image_prompt из project.xlsx (ручная замена файла)."""
+    prompts = read_image_prompts_from_project_xlsx(xlsx_path)
+    if not prompts:
+        return 0
+    by_num = {f.number: f for f in frames}
+    changed = 0
+    for num, text in prompts.items():
+        fr = by_num.get(num)
+        if fr is None:
+            continue
+        if fr.image_prompt != text:
+            fr.image_prompt = text
+            changed += 1
+    return changed
 
 
 def _cell_float(ws, row: int, col: int) -> float | None:
@@ -427,7 +514,15 @@ async def bootstrap_frames_for_image_step(
     path = xlsx_path or (project.data_dir / "project.xlsx")
     result = ImageStepBootstrapResult()
     if not path.is_file():
+        logger.warning(
+            "[#{}] bootstrap_frames_for_image_step: нет файла {}",
+            project.id,
+            path,
+        )
         return result
+
+    scan = describe_image_prompts_xlsx_scan(path)
+    logger.info("[#{}] bootstrap_frames_for_image_step: {}", project.id, scan)
 
     prompts_shot1 = read_image_prompts_from_project_xlsx(path)
     shot2_map = read_shot2_columns(path)
@@ -438,8 +533,9 @@ async def bootstrap_frames_for_image_step(
     if not frame_nums:
         logger.warning(
             "[#{}] bootstrap_frames_for_image_step: в листе «план» нет промтов "
-            "R45/R46",
+            "R45/R46 — {}",
             project.id,
+            scan,
         )
         return result
 

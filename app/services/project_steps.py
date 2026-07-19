@@ -272,16 +272,17 @@ async def start_step(
         from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
 
         boot = await bootstrap_frames_for_image_step(session, project, proj_xlsx)
-        if boot.prompts_in_xlsx:
-            logger.info(
-                "[#{}] start_step img: xlsx→кадры (промтов {}, создано {}, "
-                "обновлено {}, сброшено статусов {})",
-                project.id,
-                boot.prompts_in_xlsx,
-                boot.frames_created,
-                boot.frames_prompt_updated,
-                boot.frames_status_reset,
-            )
+        logger.info(
+            "[#{}] start_step img: xlsx bootstrap R45={} R46={} created={} "
+            "shot1={} shot2={} reset={}",
+            project.id,
+            boot.prompts_in_xlsx,
+            boot.shot2_in_xlsx,
+            boot.frames_created,
+            boot.frames_prompt_updated,
+            boot.frames_shot2_updated,
+            boot.frames_status_reset,
+        )
     running_status = step.running_status
     if step_code == "excel_gpt":
         from app.orchestrator.graph.planner import load_graph_for_project

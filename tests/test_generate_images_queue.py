@@ -88,6 +88,75 @@ def test_read_image_prompts_v7_kadry_sheet(tmp_path: Path) -> None:
     }
 
 
+def test_read_image_prompts_merged_row45(tmp_path: Path) -> None:
+    """Ручной xlsx: merged A45:E45 — раньше читалось 0 промтов."""
+    xlsx = tmp_path / "merged.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.merge_cells("A45:E45")
+    ws["A45"] = "prompt across merged cells"
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=6, value="second scene prompt")
+    wb.save(xlsx)
+    assert read_image_prompts_from_project_xlsx(xlsx) == {
+        1: "prompt across merged cells",
+        2: "second scene prompt",
+    }
+
+
+def test_read_image_prompts_r45_only_no_voiceover(tmp_path: Path) -> None:
+    """Ручной импорт: только R45, без R49 — кадры по порядку колонок."""
+    xlsx = tmp_path / "manual.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="scene one img")
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=4, value="scene two img")
+    wb.save(xlsx)
+    assert read_image_prompts_from_project_xlsx(xlsx) == {
+        1: "scene one img",
+        2: "scene two img",
+    }
+
+
+async def test_bootstrap_manual_xlsx_empty_db(tmp_path: Path, monkeypatch) -> None:
+    """Пустая БД + вручную положенный project.xlsx → кадры с промтами."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.models import Base, Project
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    proj_dir = tmp_path / "videos" / "manual_only"
+    proj_dir.mkdir(parents=True)
+    xlsx = proj_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="manual prompt A")
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=4, value="manual prompt B")
+    wb.save(xlsx)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="manual_only", topic="")
+        session.add(project)
+        await session.flush()
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx)
+        assert boot.prompts_in_xlsx == 2
+        assert boot.frames_created == [1, 2]
+        frames = (
+            await session.execute(select(Frame).where(Frame.project_id == project.id))
+        ).scalars().all()
+        assert len(frames) == 2
+        assert frames[0].image_prompt == "manual prompt A"
+        assert frames[1].image_prompt == "manual prompt B"
+    await engine.dispose()
+
+
 async def test_all_frames_done_checks_prompted_frames_not_empty_ones(
     tmp_path: Path,
 ) -> None:

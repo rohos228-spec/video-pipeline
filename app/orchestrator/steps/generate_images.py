@@ -443,17 +443,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     xlsx_path = project.data_dir / "project.xlsx"
     from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
 
-    if xlsx_path.exists():
+    if not xlsx_path.is_file():
+        logger.error(
+            "[#{}] generate_images: project.xlsx не найден: {}",
+            project.id,
+            xlsx_path,
+        )
+    else:
         boot = await bootstrap_frames_for_image_step(session, project, xlsx_path)
-        if boot.prompts_in_xlsx:
-            logger.info(
-                "[#{}] generate_images: bootstrap xlsx→БД (промтов в xlsx: {}, "
-                "создано кадров: {}, обновлено: {})",
-                project.id,
-                boot.prompts_in_xlsx,
-                boot.frames_created,
-                boot.frames_prompt_updated,
-            )
+        logger.info(
+            "[#{}] generate_images: bootstrap R45={} R46={} created={} "
+            "shot1={} shot2={}",
+            project.id,
+            boot.prompts_in_xlsx,
+            boot.shot2_in_xlsx,
+            boot.frames_created,
+            boot.frames_prompt_updated,
+            boot.frames_shot2_updated,
+        )
 
     frames = (
         await session.execute(
@@ -556,6 +563,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         await session.flush()
 
     out_dir = project.data_dir / "scenes"
+
+    if xlsx_path.is_file():
+        from app.services.xlsx_v8_import import apply_image_prompts_from_xlsx_to_frames
+
+        n = apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
+        if n:
+            logger.info(
+                "[#{}] generate_images: image_prompt с диска xlsx → {} кадров",
+                project.id,
+                n,
+            )
+            await session.flush()
 
     sheet = _sheet_for_project(project)
     try:

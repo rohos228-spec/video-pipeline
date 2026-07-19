@@ -16,13 +16,13 @@ from openpyxl import load_workbook
 
 from app.generation_options import is_skippable_empty_prompt
 from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_2_V8,
     ROW_IMAGE_PROMPT_V8,
     ROW_VOICEOVER_V8,
     _cell_text,
+    _plan_scene_columns_ordered,
     _resolve_plan_sheet,
 )
-
-ROW_IMAGE_PROMPT_2_V8 = 46
 ROW_VIDEO_PROMPT_2_V8 = 64  # промт для видео shot_02 (аналог R48 для shot_01)
 ROW_SHOT2_ID_SHOT_V8 = 18
 ROW_SHOT2_ACTION_V8 = 29
@@ -77,10 +77,9 @@ def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
             if ws is None:
                 continue
             max_col = ws.max_column or 0
-            if max_col < 3:
+            if max_col < 2:
                 continue
-            for col in range(3, max_col + 1):
-                frame_no = col - 2
+            for frame_no, col in _plan_scene_columns_ordered(ws):
                 voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
                 prompt_1 = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
                 prompt_2 = (_cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or "").strip()
