@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.models import Frame, FrameStatus
 from app.orchestrator.steps.generate_images import _all_frames_have_image_or_failed
 from app.services.scan_frames import frame_needs_shot1_image
+from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8, SHOT2_PROMPT_ATTR, SHOT2_STATUS_ATTR
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
     bootstrap_frames_for_image_step,
@@ -176,4 +177,44 @@ async def test_bootstrap_resets_failed_when_xlsx_has_prompt(
         assert fr.image_prompt == "p1"
         assert fr.status is FrameStatus.image_prompt_ready
         assert "fail_reason" not in (fr.attrs or {})
+    await engine.dispose()
+
+
+async def test_bootstrap_applies_shot2_from_r46(tmp_path: Path, monkeypatch) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.models import Base, Project
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    proj_dir = tmp_path / "videos" / "shot2boot"
+    proj_dir.mkdir(parents=True)
+    xlsx = proj_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="wide establishing shot")
+    ws.cell(row=ROW_IMAGE_PROMPT_2_V8, column=3, value="tight reaction close-up")
+    ws.cell(row=49, column=3, value="voice for scene one")
+    wb.save(xlsx)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="shot2boot", topic="")
+        session.add(project)
+        await session.flush()
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx)
+        assert boot.prompts_in_xlsx == 1
+        assert boot.shot2_in_xlsx == 1
+        assert boot.frames_shot2_updated == [1]
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.attrs[SHOT2_PROMPT_ATTR] == "tight reaction close-up"
+        assert fr.attrs[SHOT2_STATUS_ATTR] == "image_prompt_ready"
     await engine.dispose()

@@ -62,43 +62,52 @@ def _shot2_block_filled(ws, col: int) -> bool:
 
 
 def read_shot2_columns(xlsx_path: Path) -> dict[int, Shot2ColumnInfo]:
-    """frame_number → данные shot_02 из xlsx."""
+    """frame_number → данные shot_02 из xlsx (лист «план», R46, колонки C..N)."""
     out: dict[int, Shot2ColumnInfo] = {}
     if not xlsx_path.is_file():
         return out
-    try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("read_shot2_columns: openpyxl {}: {}", xlsx_path, e)
-        return out
-    try:
-        ws = _resolve_plan_sheet(wb)
-        if ws is None:
-            return out
-        max_col = ws.max_column or 0
-        if max_col < 3:
-            return out
-        frame_no = 0
-        for col in range(3, max_col + 1):
-            voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
-            if voice is None:
+    for data_only in (True, False):
+        try:
+            wb = load_workbook(filename=str(xlsx_path), data_only=data_only)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("read_shot2_columns: openpyxl {}: {}", xlsx_path, e)
+            continue
+        try:
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
                 continue
-            frame_no += 1
-            prompt_2 = (_cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or "").strip()
-            block = _shot2_block_filled(ws, col)
-            has = bool(prompt_2) or block
-            if has and not prompt_2 and block:
-                action = (_cell_text(ws, ROW_SHOT2_ACTION_V8, col) or "").strip()
-                prompt_2 = action
-            if is_skippable_empty_prompt(prompt_2):
-                prompt_2 = ""
-            out[frame_no] = Shot2ColumnInfo(
-                frame_number=frame_no,
-                prompt=prompt_2,
-                has_shot2=bool(prompt_2),
-            )
-    finally:
-        wb.close()
+            max_col = ws.max_column or 0
+            if max_col < 3:
+                continue
+            for col in range(3, max_col + 1):
+                frame_no = col - 2
+                voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
+                prompt_1 = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+                prompt_2 = (_cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or "").strip()
+                block = _shot2_block_filled(ws, col)
+                if (
+                    voice is None
+                    and not prompt_1
+                    and not prompt_2
+                    and not block
+                ):
+                    continue
+                has = bool(prompt_2) or block
+                if has and not prompt_2 and block:
+                    action = (_cell_text(ws, ROW_SHOT2_ACTION_V8, col) or "").strip()
+                    prompt_2 = action
+                if is_skippable_empty_prompt(prompt_2):
+                    prompt_2 = ""
+                prev = out.get(frame_no)
+                if prev is not None and prev.has_shot2 and not prompt_2:
+                    continue
+                out[frame_no] = Shot2ColumnInfo(
+                    frame_number=frame_no,
+                    prompt=prompt_2,
+                    has_shot2=bool(prompt_2),
+                )
+        finally:
+            wb.close()
     return out
 
 

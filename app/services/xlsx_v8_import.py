@@ -227,8 +227,10 @@ def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
 @dataclass
 class ImageStepBootstrapResult:
     prompts_in_xlsx: int = 0
+    shot2_in_xlsx: int = 0
     frames_created: list[int] = field(default_factory=list)
     frames_prompt_updated: list[int] = field(default_factory=list)
+    frames_shot2_updated: list[int] = field(default_factory=list)
     frames_status_reset: list[int] = field(default_factory=list)
 
     @property
@@ -236,6 +238,7 @@ class ImageStepBootstrapResult:
         return sorted(
             set(self.frames_created)
             | set(self.frames_prompt_updated)
+            | set(self.frames_shot2_updated)
             | set(self.frames_status_reset)
         )
 
@@ -247,12 +250,18 @@ async def bootstrap_frames_for_image_step(
     *,
     force_prompts_from_xlsx: bool = True,
 ) -> ImageStepBootstrapResult:
-    """Ручной импорт / шаг «Картинки»: xlsx (R45) + диск scenes/ — источник истины.
+    """Ручной импорт / шаг «Картинки»: xlsx R45/R46 + диск scenes/ — источник истины.
 
-    - создаёт Frame в БД, если в xlsx есть промт, а записи нет;
-    - перезаписывает image_prompt из xlsx (БД не важна);
+    - создаёт Frame в БД, если в xlsx есть промт (R45 и/или R46), а записи нет;
+    - перезаписывает image_prompt из R45 и shot_02 из R46 (БД не важна);
     - сбрасывает failed/planned → image_prompt_ready, если PNG на диске нет.
     """
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_STATUS_ATTR,
+        disk_has_shot2_image,
+        read_shot2_columns,
+    )
     from app.services.scan_frames import disk_has_valid_frame_image
 
     path = xlsx_path or (project.data_dir / "project.xlsx")
@@ -260,11 +269,16 @@ async def bootstrap_frames_for_image_step(
     if not path.is_file():
         return result
 
-    prompts = read_v8_image_prompts_from_path(path)
-    result.prompts_in_xlsx = len(prompts)
-    if not prompts:
+    prompts_shot1 = read_v8_image_prompts_from_path(path)
+    shot2_map = read_shot2_columns(path)
+    shot2_nums = {n for n, info in shot2_map.items() if info.has_shot2}
+    frame_nums = sorted(set(prompts_shot1.keys()) | shot2_nums)
+    result.prompts_in_xlsx = len(prompts_shot1)
+    result.shot2_in_xlsx = len(shot2_nums)
+    if not frame_nums:
         logger.warning(
-            "[#{}] bootstrap_frames_for_image_step: в листе «план» R45 промтов нет",
+            "[#{}] bootstrap_frames_for_image_step: в листе «план» нет промтов "
+            "R45/R46",
             project.id,
         )
         return result
@@ -276,59 +290,73 @@ async def bootstrap_frames_for_image_step(
     ).scalars().all()
     by_number = {f.number: f for f in rows}
 
-    for num in sorted(prompts):
-        prompt = prompts[num]
+    for num in frame_nums:
+        prompt = prompts_shot1.get(num, "")
         if is_skippable_empty_prompt(prompt):
-            continue
+            prompt = ""
         fr = by_number.get(num)
         if fr is None:
             fr = Frame(
                 project_id=project.id,
                 number=num,
                 voiceover_text=voiceovers.get(num) or f"Кадр {num}",
-                image_prompt=prompt,
+                image_prompt=prompt or None,
                 status=FrameStatus.image_prompt_ready,
             )
             session.add(fr)
             by_number[num] = fr
             result.frames_created.append(num)
-            result.frames_prompt_updated.append(num)
+            if prompt:
+                result.frames_prompt_updated.append(num)
             continue
 
-        if force_prompts_from_xlsx:
+        if force_prompts_from_xlsx and prompt:
             fr.image_prompt = prompt
             if num not in result.frames_prompt_updated:
                 result.frames_prompt_updated.append(num)
-        elif not (fr.image_prompt or "").strip():
+        elif prompt and not (fr.image_prompt or "").strip():
             fr.image_prompt = prompt
             result.frames_prompt_updated.append(num)
         vo = voiceovers.get(num)
         if vo and not (fr.voiceover_text or "").strip():
             fr.voiceover_text = vo
 
-        if disk_has_valid_frame_image(scenes_dir, num):
-            continue
+        if not disk_has_valid_frame_image(scenes_dir, num):
+            attrs = dict(fr.attrs or {})
+            if attrs.pop("fail_reason", None) is not None:
+                fr.attrs = attrs
+            if fr.status is not FrameStatus.image_approved:
+                if fr.status is not FrameStatus.image_prompt_ready:
+                    fr.status = FrameStatus.image_prompt_ready
+                    result.frames_status_reset.append(num)
 
+    for num, info in shot2_map.items():
+        if not info.has_shot2:
+            continue
+        fr = by_number.get(num)
+        if fr is None:
+            continue
         attrs = dict(fr.attrs or {})
-        if attrs.pop("fail_reason", None) is not None:
-            fr.attrs = attrs
-
-        if fr.status is FrameStatus.image_approved:
-            continue
-
-        if fr.status is not FrameStatus.image_prompt_ready:
-            fr.status = FrameStatus.image_prompt_ready
-            result.frames_status_reset.append(num)
+        attrs[SHOT2_PROMPT_ATTR] = info.prompt
+        if disk_has_shot2_image(scenes_dir, num):
+            attrs[SHOT2_STATUS_ATTR] = "image_generated"
+        else:
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        fr.attrs = attrs
+        if num not in result.frames_shot2_updated:
+            result.frames_shot2_updated.append(num)
 
     if result.touched:
         await session.flush()
         logger.info(
-            "[#{}] bootstrap_frames_for_image_step: xlsx R45={} created={} "
-            "prompts={} reset_status={}",
+            "[#{}] bootstrap_frames_for_image_step: R45={} R46={} created={} "
+            "shot1={} shot2={} reset_status={}",
             project.id,
             result.prompts_in_xlsx,
+            result.shot2_in_xlsx,
             result.frames_created,
             result.frames_prompt_updated,
+            result.frames_shot2_updated,
             result.frames_status_reset,
         )
     return result
