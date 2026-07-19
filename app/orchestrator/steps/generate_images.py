@@ -471,15 +471,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ).scalars().all()
 
     if not frames:
-        from app.services.xlsx_v8_import import read_v8_image_prompts_from_path
+        from app.services.xlsx_v8_import import (
+            describe_image_prompts_xlsx_scan,
+            read_image_prompts_from_project_xlsx,
+        )
 
-        n_xlsx = len(read_v8_image_prompts_from_path(xlsx_path)) if xlsx_path.exists() else 0
+        n_xlsx = len(read_image_prompts_from_project_xlsx(xlsx_path)) if xlsx_path.exists() else 0
         if n_xlsx:
             raise RuntimeError(
-                f"в project.xlsx найдено {n_xlsx} промтов (R45), но Frame в БД не "
-                "создались — проверь формат листа «план»"
+                f"в project.xlsx найдено {n_xlsx} промтов, но Frame в БД не "
+                f"создались — {describe_image_prompts_xlsx_scan(xlsx_path)}"
             )
-        raise RuntimeError("нет кадров — нечего генерировать")
+        raise RuntimeError(
+            "нет image_prompt в project.xlsx — "
+            f"{describe_image_prompts_xlsx_scan(xlsx_path) if xlsx_path.exists() else 'файл отсутствует'}"
+        )
 
     # Доп. sync v7/v8 (voiceover, animation) — после bootstrap по R45.
     missing_prompts = [
@@ -605,9 +611,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             missing,
         )
         if with_prompt == 0:
+            from app.services.xlsx_v8_import import describe_image_prompts_xlsx_scan
+
+            detail = (
+                describe_image_prompts_xlsx_scan(xlsx_path)
+                if xlsx_path.exists()
+                else "project.xlsx отсутствует"
+            )
             raise RuntimeError(
-                "нет image_prompt в project.xlsx (строка 45 листа «план») — "
-                "положи заполненный Excel в папку проекта и перезапусти шаг"
+                f"нет image_prompt в project.xlsx — {detail}. "
+                "Промты: лист «план» (строка с подписью «промт для картинки») "
+                "или лист «Кадры» R29"
             )
         if missing and xlsx_path.exists():
             await bootstrap_frames_for_image_step(session, project, xlsx_path)

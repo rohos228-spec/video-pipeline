@@ -13,6 +13,7 @@ from app.services.scan_frames import frame_needs_shot1_image
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
     bootstrap_frames_for_image_step,
+    read_image_prompts_from_project_xlsx,
     read_v8_image_prompts_from_path,
 )
 
@@ -39,6 +40,41 @@ def test_read_v8_image_prompts_without_voiceover(tmp_path: Path) -> None:
     )
     got = read_v8_image_prompts_from_path(xlsx)
     assert got == {1: "prompt one", 2: "prompt two"}
+    assert read_image_prompts_from_project_xlsx(xlsx) == got
+
+
+def test_read_image_prompts_by_row_label(tmp_path: Path) -> None:
+    xlsx = tmp_path / "labeled.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=47, column=1, value="промт для картинки 1")
+    ws.cell(row=47, column=3, value="from row 47")
+    ws.cell(row=47, column=4, value="second frame")
+    wb.save(xlsx)
+    assert read_image_prompts_from_project_xlsx(xlsx) == {
+        1: "from row 47",
+        2: "second frame",
+    }
+
+
+def test_read_image_prompts_v7_kadry_sheet(tmp_path: Path) -> None:
+    from app.storage.project_sheet import ROW_HEADER, ROW_IMAGE_PROMPT, SHEET_FRAMES
+
+    xlsx = tmp_path / "v7.xlsx"
+    wb = Workbook()
+    ws_plan = wb.active
+    ws_plan.title = "план"
+    ws = wb.create_sheet(SHEET_FRAMES)
+    ws.cell(row=ROW_HEADER, column=2, value=1)
+    ws.cell(row=ROW_HEADER, column=3, value=2)
+    ws.cell(row=ROW_IMAGE_PROMPT, column=2, value="v7 prompt 1")
+    ws.cell(row=ROW_IMAGE_PROMPT, column=3, value="v7 prompt 2")
+    wb.save(xlsx)
+    assert read_image_prompts_from_project_xlsx(xlsx) == {
+        1: "v7 prompt 1",
+        2: "v7 prompt 2",
+    }
 
 
 async def test_all_frames_done_checks_prompted_frames_not_empty_ones(
