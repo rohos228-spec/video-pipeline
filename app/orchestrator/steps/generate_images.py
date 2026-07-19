@@ -471,16 +471,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ).scalars().all()
 
     if not frames:
-        from app.services.xlsx_v8_import import read_v8_image_prompts_from_path
+        from app.services.xlsx_v8_import import (
+            describe_image_prompts_xlsx_scan,
+            read_image_prompts_from_project_xlsx,
+        )
 
-        n_xlsx = len(read_v8_image_prompts_from_path(xlsx_path)) if xlsx_path.exists() else 0
+        scan = (
+            describe_image_prompts_xlsx_scan(xlsx_path)
+            if xlsx_path.exists()
+            else "project.xlsx не найден"
+        )
+        n_xlsx = (
+            len(read_image_prompts_from_project_xlsx(xlsx_path))
+            if xlsx_path.exists()
+            else 0
+        )
         if n_xlsx:
             raise RuntimeError(
-                f"в project.xlsx (лист «план» R45) {n_xlsx} промтов, "
-                "но кадры в БД не созданы"
+                f"в project.xlsx {n_xlsx} промтов, но кадры в БД не созданы. "
+                f"Диагностика: {scan}"
             )
         raise RuntimeError(
-            "нет кадров и нет промтов в project.xlsx (лист «план», строка 45)"
+            f"нет кадров и нет промтов в project.xlsx. Диагностика: {scan}"
         )
 
     # Доп. sync v7/v8 (voiceover, animation) — после bootstrap по R45.
@@ -607,8 +619,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             missing,
         )
         if with_prompt == 0:
+            from app.services.xlsx_v8_import import describe_image_prompts_xlsx_scan
+
+            scan = describe_image_prompts_xlsx_scan(xlsx_path)
             raise RuntimeError(
-                "нет image_prompt в project.xlsx (лист «план», строка 45)"
+                f"нет image_prompt в project.xlsx. Диагностика: {scan}"
             )
         if missing and xlsx_path.exists():
             await bootstrap_frames_for_image_step(session, project, xlsx_path)

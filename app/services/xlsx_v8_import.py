@@ -45,19 +45,34 @@ ROW_VOICEOVER_V8 = 49     # «закадровый текст»
 ROW_VIDEO_PROMPT_2_V8 = 64  # «промт для видео 2» (shot_02)
 ROW_DURATION_V8 = 50      # «Время на кадр»
 
+# Скан колонок сцен на листе «план» (B=2 .. до 64 = до BL).
+PLAN_MAX_SCENE_COL = 64
+
+# Подписи строки промта shot_01 (колонка A/B) — fallback если R45 пустая.
+_PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
+    "промт для картинки 1",
+    "промт для картинки",
+    "промт картинки",
+    "image prompt 1",
+    "image prompt",
+)
+
 # Длительность кадра — проп. длине voiceover-блока (русская речь ~14 симв/сек).
 CHARS_PER_SEC = 14.0
 MIN_FRAME = 1.5
 MAX_FRAME = 6.0
 
 
+def _normalize_sheet_name(name: str) -> str:
+    """Убрать NBSP/пробелы по краям — Excel часто даёт «план » или «план\\xa0»."""
+    return " ".join(str(name).replace("\xa0", " ").split())
+
+
 def _resolve_plan_sheet(wb):
-    """Лист «план» (v8), без учёта регистра имени."""
-    if SHEET_PLAN_V8 in wb.sheetnames:
-        return wb[SHEET_PLAN_V8]
-    low = SHEET_PLAN_V8.casefold()
+    """Лист «план» (v8): без учёта регистра, с trim/NBSP в имени."""
+    target = _normalize_sheet_name(SHEET_PLAN_V8).casefold()
     for name in wb.sheetnames:
-        if name.casefold() == low:
+        if _normalize_sheet_name(name).casefold() == target:
             return wb[name]
     return None
 
@@ -139,6 +154,174 @@ def _cell_text(ws, row: int, col: int) -> str | None:
     return " ".join(s.split())
 
 
+def _is_formula_cell_text(text: str) -> bool:
+    """Формула без закэшированного значения (data_only=False) — не промт."""
+    return text.lstrip().startswith("=")
+
+
+def _discover_labeled_row(ws, labels: tuple[str, ...]) -> int | None:
+    """Номер строки по подписи в колонках A/B (без учёта регистра)."""
+    max_row = min(ws.max_row or 0, 120)
+    for row in range(1, max_row + 1):
+        for col in (1, 2):
+            raw = _cell_text(ws, row, col)
+            if not raw:
+                continue
+            low = raw.casefold()
+            for label in labels:
+                if label.casefold() in low:
+                    return row
+    return None
+
+
+def _frame_number_for_plan_column(ws, col: int) -> int:
+    """Номер кадра для колонки: id в R4/R3/R2/R1 → иначе col-2 (C=1)."""
+    for header_row in (4, 3, 2, 1):
+        val = _cell_text(ws, header_row, col)
+        if val and val.isdigit():
+            return int(val)
+    if col >= 3:
+        return col - 2
+    if col >= 2:
+        return col - 1
+    return col
+
+
+def _plan_prompt_row(ws) -> int:
+    """Строка image_prompt shot_01: R45, либо по подписи в A/B."""
+    if any(
+        _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+        for col in range(2, PLAN_MAX_SCENE_COL + 1)
+    ):
+        return ROW_IMAGE_PROMPT_V8
+    discovered = _discover_labeled_row(ws, _PLAN_IMAGE_PROMPT_LABELS)
+    return discovered or ROW_IMAGE_PROMPT_V8
+
+
+def _plan_scene_column_range(ws, row: int) -> range:
+    """Колонки B..N для строки промта — не полагаемся только на ws.max_column."""
+    last = ws.max_column or 0
+    for col in range(PLAN_MAX_SCENE_COL, 1, -1):
+        if _cell_text(ws, row, col):
+            last = max(last, col)
+            break
+    end = max(last, 3)
+    return range(2, end + 1)
+
+
+def _read_plan_image_prompts_ws(ws, *, prompt_row: int | None = None) -> dict[int, str]:
+    row = prompt_row or _plan_prompt_row(ws)
+    out: dict[int, str] = {}
+    for col in _plan_scene_column_range(ws, row):
+        prompt = _cell_text(ws, row, col)
+        if not prompt or _is_formula_cell_text(prompt):
+            continue
+        out[_frame_number_for_plan_column(ws, col)] = prompt
+    return out
+
+
+def _read_v7_frames_image_prompts_ws(wb) -> dict[int, str]:
+    """Лист «Кадры» (legacy v7): R29, номера кадров в строке заголовка."""
+    from app.storage.project_sheet import (
+        ROW_HEADER,
+        ROW_IMAGE_PROMPT,
+        SHEET_FRAMES,
+    )
+
+    if SHEET_FRAMES not in wb.sheetnames:
+        return {}
+    ws = wb[SHEET_FRAMES]
+    out: dict[int, str] = {}
+    max_col = ws.max_column or 0
+    col_to_frame: dict[int, int] = {}
+    for col in range(2, max_col + 1):
+        n = ws.cell(row=ROW_HEADER, column=col).value
+        try:
+            col_to_frame[col] = int(n)
+        except (TypeError, ValueError):
+            continue
+    if not col_to_frame:
+        for col in range(2, max_col + 1):
+            col_to_frame[col] = col - 1
+    for col, fnum in col_to_frame.items():
+        prompt = _cell_text(ws, ROW_IMAGE_PROMPT, col)
+        if prompt and not _is_formula_cell_text(prompt):
+            out[fnum] = prompt
+    return out
+
+
+def _read_image_prompts_workbook(wb) -> dict[int, str]:
+    merged: dict[int, str] = {}
+    ws = _resolve_plan_sheet(wb)
+    if ws is not None:
+        for num, text in _read_plan_image_prompts_ws(ws).items():
+            merged[num] = text
+    for num, text in _read_v7_frames_image_prompts_ws(wb).items():
+        merged.setdefault(num, text)
+    return merged
+
+
+def read_image_prompts_from_project_xlsx(xlsx_path: Path) -> dict[int, str]:
+    """image_prompt из project.xlsx: лист «план» R45 (+подпись строки) и «Кадры» v7.
+
+    data_only=True и False — если Excel не пересохраняли, кэш формул может быть пуст.
+    """
+    from openpyxl import load_workbook
+
+    if not xlsx_path.exists():
+        return {}
+    merged: dict[int, str] = {}
+    for data_only in (True, False):
+        try:
+            wb = load_workbook(filename=str(xlsx_path), data_only=data_only)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "read_image_prompts: open {} data_only={}: {}",
+                xlsx_path,
+                data_only,
+                e,
+            )
+            continue
+        try:
+            part = _read_image_prompts_workbook(wb)
+        finally:
+            wb.close()
+        for num, text in part.items():
+            if num not in merged and text:
+                merged[num] = text
+    return merged
+
+
+def describe_image_prompts_xlsx_scan(xlsx_path: Path) -> str:
+    """Краткая диагностика для логов/ошибок generate_images."""
+    from openpyxl import load_workbook
+
+    if not xlsx_path.exists():
+        return "project.xlsx не найден"
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+    except Exception as e:  # noqa: BLE001
+        return f"не открыть xlsx: {e}"
+    try:
+        sheets = list(wb.sheetnames)
+        ws = _resolve_plan_sheet(wb)
+        if ws is None:
+            v7 = "Кадры" in sheets
+            norm = [_normalize_sheet_name(s) for s in sheets]
+            return (
+                f"лист «план» не найден (имена листов={sheets!r}, norm={norm!r}); "
+                f"v7 Кадры={v7}"
+            )
+        row = _plan_prompt_row(ws)
+        n = len(_read_plan_image_prompts_ws(ws, prompt_row=row))
+        return (
+            f"лист «{ws.title}», строка промта R{row}, найдено {n} промтов; "
+            f"все листы={sheets!r}"
+        )
+    finally:
+        wb.close()
+
+
 def _cell_float(ws, row: int, col: int) -> float | None:
     v = ws.cell(row=row, column=col).value
     if v is None or v == "":
@@ -177,30 +360,7 @@ def read_v8_active_frame_count(xlsx_path: Path) -> int:
 
 def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
     """Номер кадра (1..N) → image_prompt с листа «план», строка R45, колонки C..N."""
-    from openpyxl import load_workbook
-
-    if not xlsx_path.exists():
-        return {}
-    out: dict[int, str] = {}
-    for data_only in (True, False):
-        try:
-            wb = load_workbook(filename=str(xlsx_path), data_only=data_only)
-        except Exception:  # noqa: BLE001
-            continue
-        try:
-            ws = _resolve_plan_sheet(wb)
-            if ws is None:
-                continue
-            for col in range(3, (ws.max_column or 0) + 1):
-                prompt = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
-                if not prompt:
-                    continue
-                frame_num = col - 2
-                if frame_num not in out:
-                    out[frame_num] = prompt
-        finally:
-            wb.close()
-    return out
+    return read_image_prompts_from_project_xlsx(xlsx_path)
 
 
 def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
@@ -269,7 +429,7 @@ async def bootstrap_frames_for_image_step(
     if not path.is_file():
         return result
 
-    prompts_shot1 = read_v8_image_prompts_from_path(path)
+    prompts_shot1 = read_image_prompts_from_project_xlsx(path)
     shot2_map = read_shot2_columns(path)
     shot2_nums = {n for n, info in shot2_map.items() if info.has_shot2}
     frame_nums = sorted(set(prompts_shot1.keys()) | shot2_nums)
