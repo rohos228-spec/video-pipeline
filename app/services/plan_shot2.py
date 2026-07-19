@@ -148,6 +148,16 @@ def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
     return candidates[0]
 
 
+def effective_shot_from_artifact(
+    meta: dict | None, path: str | Path
+) -> int:
+    """shot_02 по ``_s2_`` в имени важнее meta (дефолт meta=1 ломал skip shot_01)."""
+    if "_s2_" in Path(path).name:
+        return 2
+    meta_shot = (meta or {}).get("shot", 1)
+    return meta_shot if meta_shot in (1, 2) else 1
+
+
 def apply_shot2_prompts_to_frames(
     frames: list[Any],
     xlsx_path: Path,

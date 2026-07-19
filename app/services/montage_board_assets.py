@@ -12,7 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project
-from app.services.plan_shot2 import shot2_file_pattern, shot2_video_file_pattern
+from app.services.plan_shot2 import (
+    effective_shot_from_artifact,
+    shot2_file_pattern,
+    shot2_video_file_pattern,
+)
 
 
 def _archive_dir(project: Project, sub: str) -> Path:
@@ -139,10 +143,7 @@ async def finalize_scene_video(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            path_shot = 2 if art.path and "_s2_" in art.path else 1
-            effective = meta_shot if meta_shot in (1, 2) else path_shot
-            if effective == shot:
+            if effective_shot_from_artifact(art.meta, art.path or "") == shot:
                 await session.delete(art)
         session.add(
             Artifact(
@@ -228,10 +229,7 @@ async def delete_scene_video(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            path_shot = 2 if art.path and "_s2_" in art.path else 1
-            effective = meta_shot if meta_shot in (1, 2) else path_shot
-            if effective == shot:
+            if effective_shot_from_artifact(art.meta, art.path or "") == shot:
                 await session.delete(art)
                 deleted = True
     await session.flush()

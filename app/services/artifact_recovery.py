@@ -59,10 +59,9 @@ async def recover_scene_videos_from_disk(
         for art in arts:
             if not art.path or not Path(art.path).is_file():
                 continue
-            meta_shot = (art.meta or {}).get("shot", 1)
-            path_shot = 2 if "_s2_" in Path(art.path).name else 1
-            effective = meta_shot if meta_shot in (1, 2) else path_shot
-            if effective == shot:
+            from app.services.plan_shot2 import effective_shot_from_artifact
+
+            if effective_shot_from_artifact(art.meta, art.path) == shot:
                 return True
         return False
 

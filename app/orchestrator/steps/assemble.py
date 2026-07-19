@@ -73,10 +73,9 @@ async def _scene_video_path(
         path = Path(art.path)
         if not path.is_file():
             continue
-        meta_shot = (art.meta or {}).get("shot", 1)
-        path_shot = 2 if "_s2_" in path.name else 1
-        effective = meta_shot if meta_shot in (1, 2) else path_shot
-        if effective == shot:
+        from app.services.plan_shot2 import effective_shot_from_artifact
+
+        if effective_shot_from_artifact(art.meta, path) == shot:
             return path
     return None
 
