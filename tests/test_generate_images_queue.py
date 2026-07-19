@@ -268,7 +268,7 @@ async def test_bootstrap_manual_xlsx_empty_db(tmp_path: Path, monkeypatch) -> No
 
 
 def test_read_sekty_wide_sheet_124_prompts() -> None:
-    """Реальный sekty: >64 колонок, 124 R45 (не 62 из-за PLAN_MAX=64)."""
+    """Реальный sekty: 150 колонок, 124 R45 — без искусственного лимита ширины."""
     from pathlib import Path
 
     p = Path("/home/ubuntu/.cursor/projects/workspace/uploads/sekty-project_54dc.xlsx")
