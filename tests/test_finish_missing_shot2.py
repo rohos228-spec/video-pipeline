@@ -246,3 +246,38 @@ async def test_finish_missing_clears_error_sleep(tmp_path: Path) -> None:
         "generating_images"
     ) is None
 
+
+@pytest.mark.asyncio
+async def test_finish_missing_videos_clears_user_stop(tmp_path: Path) -> None:
+    data_dir = tmp_path / "p46"
+    scenes = data_dir / "scenes"
+    videos = data_dir / "videos"
+    videos.mkdir(parents=True)
+    _valid_png(scenes / "frame_001_abc12345.png")
+    (videos / "clip_001_s2_done.mp4").write_bytes(b"x" * 1000)
+
+    project = _project(data_dir, status=ProjectStatus.animation_prompts_ready)
+    project.id = 46
+    project.meta = {"user_stop": True, "mass_lane_user_stop": True}
+    fr = Frame(
+        project_id=46,
+        number=1,
+        voiceover_text="v",
+        image_prompt="wide",
+        animation_prompt="slow pan",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=lambda: [fr])))
+    )
+    session.flush = AsyncMock()
+    session.get = AsyncMock(return_value=None)
+
+    info = await trigger_finish_missing_videos(session, project)
+    assert info["missing_shot1"] == [1]
+    assert info["queued_shot1"] == 1
+    assert project.status is ProjectStatus.generating_videos
+    assert not (project.meta or {}).get("user_stop")
+    assert not (project.meta or {}).get("mass_lane_user_stop")
+

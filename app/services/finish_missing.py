@@ -26,23 +26,49 @@ from app.services.scan_frames import (
 from app.services.step_cancel import clear_stop
 
 
-def _wake_worker_for_finish(project: Project, running: ProjectStatus) -> bool:
-    """Доделка = явный ручной перезапуск: снять sleep/stop после ошибок шага."""
+async def _prepare_manual_finish_restart(
+    session: AsyncSession,
+    project: Project,
+    running: ProjectStatus,
+) -> list[str]:
+    """Доделка = явный ручной перезапуск: снять stop/sleep/user_stop как у ▶."""
     from loguru import logger
 
+    from app.services.mass_factory import mass_parent_id
+    from app.services.project_control import (
+        clear_auto_await_manual_start,
+        clear_mass_family_halt,
+        clear_user_stop_gate,
+    )
+    from app.services.sidebar_layout import clear_gen_queue_halted
     from app.services.step_failure_policy import clear_failure_backoff_for_manual_start
 
+    actions: list[str] = []
     clear_stop(project.id)
-    cleared = clear_failure_backoff_for_manual_start(
+    actions.append("stop_file")
+    if clear_failure_backoff_for_manual_start(
         project, running_key=running.value
-    )
-    if cleared:
+    ):
+        actions.append("failure_backoff")
+    cleared = clear_user_stop_gate(project)
+    actions.extend(cleared)
+    if clear_auto_await_manual_start(project):
+        actions.append("auto_await_manual")
+    if clear_gen_queue_halted(reason=f"finish_missing #{project.id}"):
+        actions.append("gen_queue_halted")
+    parent_id = mass_parent_id(project)
+    if parent_id is not None:
+        parent = await session.get(Project, parent_id)
+        if parent is not None and clear_mass_family_halt(parent):
+            actions.append(f"mass_family_halted:#{parent_id}")
+    if actions:
         logger.info(
-            "[#{}] finish_missing {}: снята пауза после ошибок",
+            "[#{}] finish_missing {}: сняты блокировки: {}",
             project.id,
             running.value,
+            ", ".join(actions),
         )
-    return cleared
+    return actions
 
 
 async def trigger_finish_missing_images(
@@ -76,7 +102,9 @@ async def trigger_finish_missing_images(
     queued = queued_shot1 + queued_shot2
     if not already and queued:
         project.status = ProjectStatus.generating_images
-    _wake_worker_for_finish(project, ProjectStatus.generating_images)
+    await _prepare_manual_finish_restart(
+        session, project, ProjectStatus.generating_images
+    )
     parts: list[str] = []
     if missing_shot1:
         head1 = ", ".join(str(n) for n in missing_shot1[:20])
@@ -144,10 +172,9 @@ async def trigger_resume_animation_prompts(
             ),
         }
     already = project.status is ProjectStatus.generating_animation_prompts
-    _wake_worker_for_finish(project, ProjectStatus.generating_animation_prompts)
-    meta = dict(project.meta or {})
-    meta.pop("user_stop", None)
-    project.meta = meta
+    await _prepare_manual_finish_restart(
+        session, project, ProjectStatus.generating_animation_prompts
+    )
     if not already:
         project.status = ProjectStatus.generating_animation_prompts
     parts: list[str] = []
@@ -208,9 +235,11 @@ async def trigger_finish_missing_videos(
         session, project, missing_shot2
     )
     queued = queued_shot1 + queued_shot2
-    if not already and queued:
+    if queued and project.status is not ProjectStatus.generating_videos:
         project.status = ProjectStatus.generating_videos
-    _wake_worker_for_finish(project, ProjectStatus.generating_videos)
+    await _prepare_manual_finish_restart(
+        session, project, ProjectStatus.generating_videos
+    )
     parts: list[str] = []
     if missing_shot1:
         head1 = ", ".join(str(n) for n in missing_shot1[:20])
