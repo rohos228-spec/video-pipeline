@@ -20,6 +20,7 @@ v8-шаблон отличается от старого (v7):
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,8 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project
+from app.generation_options import is_skippable_empty_prompt
+from app.models import Frame, FrameStatus, Project
 from app.services.content_locks import is_ui_locked
 from app.services.plan_validation import is_meaningful_general_plan
 
@@ -200,32 +202,140 @@ def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
         wb.close()
 
 
+def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
+    """Номер кадра → voiceover из R49 (если заполнен)."""
+    from openpyxl import load_workbook
+
+    if not xlsx_path.exists():
+        return {}
+    wb = load_workbook(filename=str(xlsx_path), data_only=True)
+    try:
+        ws = _resolve_plan_sheet(wb)
+        if ws is None:
+            return {}
+        out: dict[int, str] = {}
+        for col in range(3, ws.max_column + 1):
+            voice = _cell_text(ws, ROW_VOICEOVER_V8, col)
+            if voice:
+                out[col - 2] = voice
+        return out
+    finally:
+        wb.close()
+
+
+@dataclass
+class ImageStepBootstrapResult:
+    prompts_in_xlsx: int = 0
+    frames_created: list[int] = field(default_factory=list)
+    frames_prompt_updated: list[int] = field(default_factory=list)
+    frames_status_reset: list[int] = field(default_factory=list)
+
+    @property
+    def touched(self) -> list[int]:
+        return sorted(
+            set(self.frames_created)
+            | set(self.frames_prompt_updated)
+            | set(self.frames_status_reset)
+        )
+
+
+async def bootstrap_frames_for_image_step(
+    session: AsyncSession,
+    project: Project,
+    xlsx_path: Path | None = None,
+    *,
+    force_prompts_from_xlsx: bool = True,
+) -> ImageStepBootstrapResult:
+    """Ручной импорт / шаг «Картинки»: xlsx (R45) + диск scenes/ — источник истины.
+
+    - создаёт Frame в БД, если в xlsx есть промт, а записи нет;
+    - перезаписывает image_prompt из xlsx (БД не важна);
+    - сбрасывает failed/planned → image_prompt_ready, если PNG на диске нет.
+    """
+    from app.services.scan_frames import disk_has_valid_frame_image
+
+    path = xlsx_path or (project.data_dir / "project.xlsx")
+    result = ImageStepBootstrapResult()
+    if not path.is_file():
+        return result
+
+    prompts = read_v8_image_prompts_from_path(path)
+    result.prompts_in_xlsx = len(prompts)
+    if not prompts:
+        return result
+
+    voiceovers = read_v8_voiceovers_from_path(path)
+    scenes_dir = project.data_dir / "scenes"
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    by_number = {f.number: f for f in rows}
+
+    for num in sorted(prompts):
+        prompt = prompts[num]
+        if is_skippable_empty_prompt(prompt):
+            continue
+        fr = by_number.get(num)
+        if fr is None:
+            fr = Frame(
+                project_id=project.id,
+                number=num,
+                voiceover_text=voiceovers.get(num) or f"Кадр {num}",
+                image_prompt=prompt,
+                status=FrameStatus.image_prompt_ready,
+            )
+            session.add(fr)
+            by_number[num] = fr
+            result.frames_created.append(num)
+            result.frames_prompt_updated.append(num)
+            continue
+
+        if force_prompts_from_xlsx or not (fr.image_prompt or "").strip():
+            if fr.image_prompt != prompt:
+                fr.image_prompt = prompt
+                result.frames_prompt_updated.append(num)
+        vo = voiceovers.get(num)
+        if vo and not (fr.voiceover_text or "").strip():
+            fr.voiceover_text = vo
+
+        if disk_has_valid_frame_image(scenes_dir, num):
+            continue
+
+        attrs = dict(fr.attrs or {})
+        if attrs.pop("fail_reason", None) is not None:
+            fr.attrs = attrs
+
+        if fr.status is FrameStatus.image_approved:
+            continue
+
+        if fr.status is not FrameStatus.image_prompt_ready:
+            fr.status = FrameStatus.image_prompt_ready
+            result.frames_status_reset.append(num)
+
+    if result.touched:
+        await session.flush()
+        logger.info(
+            "[#{}] bootstrap_frames_for_image_step: xlsx R45={} created={} "
+            "prompts={} reset_status={}",
+            project.id,
+            result.prompts_in_xlsx,
+            result.frames_created,
+            result.frames_prompt_updated,
+            result.frames_status_reset,
+        )
+    return result
+
+
 async def apply_v8_image_prompts_from_xlsx(
     session: AsyncSession,
     project: Project,
     xlsx_path: Path,
 ) -> list[int]:
     """Подтянуть image_prompt из v8-xlsx в Frame по номеру кадра."""
-    prompts = read_v8_image_prompts_from_path(xlsx_path)
-    if not prompts:
-        return []
-    rows = (
-        await session.execute(
-            select(Frame).where(Frame.project_id == project.id)
-        )
-    ).scalars().all()
-    by_number = {f.number: f for f in rows}
-    updated: list[int] = []
-    for num, text in prompts.items():
-        fr = by_number.get(num)
-        if fr is None or not text:
-            continue
-        if fr.image_prompt != text:
-            fr.image_prompt = text
-            updated.append(num)
-    if updated:
-        await session.flush()
-    return updated
+    boot = await bootstrap_frames_for_image_step(
+        session, project, xlsx_path, force_prompts_from_xlsx=True
+    )
+    return boot.touched
 
 
 def _read_frame_fields(wb) -> list[dict[str, Any]]:

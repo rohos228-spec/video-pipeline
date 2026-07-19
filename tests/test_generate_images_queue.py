@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+from sqlalchemy import select
 
 from app.models import Frame, FrameStatus
 from app.orchestrator.steps.generate_images import _all_frames_have_image_or_failed
 from app.services.scan_frames import frame_needs_shot1_image
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
+    bootstrap_frames_for_image_step,
     read_v8_image_prompts_from_path,
 )
 
@@ -88,3 +90,90 @@ def test_failed_frame_skipped_from_queue(tmp_path: Path) -> None:
     fr = Frame(project_id=1, number=1, voiceover_text="v", image_prompt="prompt")
     fr.status = FrameStatus.failed
     assert frame_needs_shot1_image(fr, scenes) is False
+
+
+async def test_bootstrap_creates_frames_from_xlsx_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.models import Base, Project
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    proj_dir = tmp_path / "videos" / "manual"
+    proj_dir.mkdir(parents=True)
+    xlsx = proj_dir / "project.xlsx"
+    _write_plan_xlsx(
+        xlsx,
+        prompts=["first prompt", "second prompt"],
+        voiceovers=["vo1", "vo2"],
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="manual", topic="")
+        session.add(project)
+        await session.flush()
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx)
+        assert boot.prompts_in_xlsx == 2
+        assert boot.frames_created == [1, 2]
+        frames = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id)
+            )
+        ).scalars().all()
+        assert len(frames) == 2
+        assert frames[0].image_prompt == "first prompt"
+        assert frames[0].status is FrameStatus.image_prompt_ready
+    await engine.dispose()
+
+
+async def test_bootstrap_resets_failed_when_xlsx_has_prompt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app import settings as app_settings
+    from app.models import Base, Project
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    proj_dir = tmp_path / "videos" / "t2"
+    proj_dir.mkdir(parents=True)
+    xlsx = proj_dir / "project.xlsx"
+    _write_plan_xlsx(xlsx, prompts=["p1"], voiceovers=["v1"])
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(slug="t2", topic="")
+        session.add(project)
+        await session.flush()
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=1,
+                voiceover_text="v",
+                image_prompt="stale",
+                status=FrameStatus.failed,
+                attrs={"fail_reason": "no_image_prompt"},
+            )
+        )
+        await session.commit()
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx)
+        assert 1 in boot.frames_status_reset
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.image_prompt == "p1"
+        assert fr.status is FrameStatus.image_prompt_ready
+        assert "fail_reason" not in (fr.attrs or {})
+    await engine.dispose()
