@@ -354,9 +354,9 @@ def build_gen_id_prefix(
 
 _PROMPT_ID_LINE_RE = re.compile(r"^\s*\[ID:\s*[^\]]+\]\s*$", re.IGNORECASE)
 
-# Заглушки из шаблонов GPT / xlsx — не отправлять в outsee.
-_EMPTY_PROMPT_MARKERS: tuple[str, ...] = (
-    "нет исходных данных",
+# Заглушки GPT/xlsx — только короткие/чистые placeholder (не подстрока в длинном промте).
+_PLACEHOLDER_PHRASES: tuple[str, ...] = (
+    "нет исходных данных для заполнения",
 )
 
 # Shot_02: обязательная фраза без содержания сцены — не генерация.
@@ -377,9 +377,12 @@ def is_skippable_empty_prompt(prompt: str) -> bool:
     body = strip_prompt_id_lines((prompt or "").strip())
     if not body:
         return True
-    low = body.lower()
-    if any(marker in low for marker in _EMPTY_PROMPT_MARKERS):
+    low = body.lower().strip()
+    if low in ("нет исходных данных", "нет исходных данных для заполнения"):
         return True
+    for phrase in _PLACEHOLDER_PHRASES:
+        if phrase in low and len(body) < 200:
+            return True
     norm = _normalize_prompt_ws(body)
     for prefix in _SHOT2_PREFIX_ONLY:
         pnorm = _normalize_prompt_ws(prefix)
@@ -389,9 +392,9 @@ def is_skippable_empty_prompt(prompt: str) -> bool:
             rest = norm[len(pnorm) :].strip(" ,.;:-")
             if not rest:
                 return True
-            if any(marker in rest for marker in _EMPTY_PROMPT_MARKERS):
+            if any(phrase in rest for phrase in _PLACEHOLDER_PHRASES) and len(rest) < 120:
                 return True
-            if rest.startswith("кадр ") and "prompt_" in rest:
+            if rest.startswith("кадр ") and "prompt_" in rest and len(rest) < 80:
                 return True
     if re.fullmatch(
         r"(кадр\s*\d+\s*/\s*prompt_\d+\s*:?\s*)+",

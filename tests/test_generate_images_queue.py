@@ -267,6 +267,20 @@ async def test_bootstrap_manual_xlsx_empty_db(tmp_path: Path, monkeypatch) -> No
     await engine.dispose()
 
 
+def test_read_sekty_wide_sheet_124_prompts() -> None:
+    """Реальный sekty: >64 колонок, 124 R45 (не 62 из-за PLAN_MAX=64)."""
+    from pathlib import Path
+
+    p = Path("/home/ubuntu/.cursor/projects/workspace/uploads/sekty-project_54dc.xlsx")
+    if not p.is_file():
+        return
+    from app.generation_options import is_skippable_empty_prompt
+
+    prompts = read_image_prompts_from_project_xlsx(p)
+    assert len(prompts) >= 118
+    assert sum(1 for t in prompts.values() if not is_skippable_empty_prompt(t)) >= 118
+
+
 async def test_all_frames_done_checks_prompted_frames_not_empty_ones(
     tmp_path: Path,
 ) -> None:

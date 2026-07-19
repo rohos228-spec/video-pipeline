@@ -46,8 +46,23 @@ ROW_VOICEOVER_V8 = 49     # «закадровый текст»
 ROW_VIDEO_PROMPT_2_V8 = 64  # «промт для видео 2» (shot_02)
 ROW_DURATION_V8 = 50      # «Время на кадр»
 
-# Скан колонок сцен на листе «план» (B=2 .. до 64 = до BL).
-PLAN_MAX_SCENE_COL = 64
+# Минимум колонок сцен; фактическая ширина — ws.max_column (см. _plan_max_scene_col).
+PLAN_MIN_SCENE_COL = 64
+PLAN_SCAN_COL_CAP = 256
+
+
+def _plan_max_scene_col(ws) -> int:
+    """Правая граница колонок сцен на листе «план» (R45/R46/R49)."""
+    last = max(ws.max_column or 0, PLAN_MIN_SCENE_COL)
+    scan_to = min(last, PLAN_SCAN_COL_CAP)
+    for col in range(scan_to, 1, -1):
+        if (
+            _cell_text(ws, ROW_VOICEOVER_V8, col)
+            or _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+            or _cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col)
+        ):
+            return min(col + 2, PLAN_SCAN_COL_CAP)
+    return scan_to
 
 # Подписи строки промта shot_01 (колонка A/B) — fallback если R45 пустая.
 _PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
@@ -206,7 +221,7 @@ def _plan_prompt_row(ws) -> int:
     """Строка image_prompt shot_01: R45, либо по подписи в A/B."""
     if any(
         _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
-        for col in range(2, PLAN_MAX_SCENE_COL + 1)
+        for col in range(2, _plan_max_scene_col(ws) + 1)
     ):
         return ROW_IMAGE_PROMPT_V8
     discovered = _discover_labeled_row(ws, _PLAN_IMAGE_PROMPT_LABELS)
@@ -216,7 +231,8 @@ def _plan_prompt_row(ws) -> int:
 def _plan_scene_column_range(ws, row: int) -> range:
     """Колонки B..N для строки промта — не полагаемся только на ws.max_column."""
     last = ws.max_column or 0
-    for col in range(PLAN_MAX_SCENE_COL, 1, -1):
+    max_col = _plan_max_scene_col(ws)
+    for col in range(max_col, 1, -1):
         if _cell_text(ws, row, col):
             last = max(last, col)
             break
@@ -251,7 +267,7 @@ def _plan_scene_columns_ordered(ws) -> list[tuple[int, int]]:
     """(номер кадра 1..N, колонка Excel) — R49 или уникальные колонки R45/R46."""
     vo_cols = [
         c
-        for c in range(2, PLAN_MAX_SCENE_COL + 1)
+        for c in range(2, _plan_max_scene_col(ws) + 1)
         if _cell_text(ws, ROW_VOICEOVER_V8, c)
     ]
     if vo_cols:
