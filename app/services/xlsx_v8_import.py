@@ -175,154 +175,32 @@ def read_v8_active_frame_count(xlsx_path: Path) -> int:
         wb.close()
 
 
-# Подписи строки с промтом картинки shot_01 на листе «план» (колонка A/B).
-_PLAN_IMAGE_PROMPT_LABELS: tuple[str, ...] = (
-    "промт для картинки 1",
-    "промт для картинки",
-    "промт картинки",
-    "image prompt 1",
-    "image prompt",
-    "промт для картинки 1 (shot",
-)
-
-
-def _discover_labeled_row(ws, labels: tuple[str, ...]) -> int | None:
-    """Ищет номер строки по подписи в колонках A/B (без учёта регистра)."""
-    max_row = min(ws.max_row or 0, 120)
-    for row in range(1, max_row + 1):
-        for col in (1, 2):
-            raw = _cell_text(ws, row, col)
-            if not raw:
-                continue
-            low = raw.casefold()
-            for label in labels:
-                if label.casefold() in low:
-                    return row
-    return None
-
-
-def _frame_number_for_plan_column(ws, col: int) -> int:
-    """Номер кадра для колонки листа «план»: id в R4/R3/R2 → fallback col-2."""
-    for header_row in (4, 3, 2, 1):
-        val = _cell_text(ws, header_row, col)
-        if val and val.isdigit():
-            return int(val)
-    if col >= 3:
-        return col - 2
-    if col >= 2:
-        return col - 1
-    return col
-
-
-def _read_plan_image_prompts_ws(ws, *, prompt_row: int | None = None) -> dict[int, str]:
-    row = prompt_row or _discover_labeled_row(ws, _PLAN_IMAGE_PROMPT_LABELS) or ROW_IMAGE_PROMPT_V8
-    out: dict[int, str] = {}
-    max_col = ws.max_column or 0
-    for col in range(2, max_col + 1):
-        prompt = _cell_text(ws, row, col)
-        if not prompt:
-            continue
-        out[_frame_number_for_plan_column(ws, col)] = prompt
-    return out
-
-
-def _read_v7_frames_image_prompts_ws(wb) -> dict[int, str]:
-    """Лист «Кадры» (legacy): R29, номера кадров в строке заголовка."""
-    from app.storage.project_sheet import (
-        ROW_HEADER,
-        ROW_IMAGE_PROMPT,
-        SHEET_FRAMES,
-    )
-
-    if SHEET_FRAMES not in wb.sheetnames:
-        return {}
-    ws = wb[SHEET_FRAMES]
-    out: dict[int, str] = {}
-    max_col = ws.max_column or 0
-    col_to_frame: dict[int, int] = {}
-    for col in range(2, max_col + 1):
-        n = ws.cell(row=ROW_HEADER, column=col).value
-        try:
-            col_to_frame[col] = int(n)
-        except (TypeError, ValueError):
-            continue
-    if not col_to_frame:
-        for col in range(2, max_col + 1):
-            col_to_frame[col] = col - 1
-    for col, fnum in col_to_frame.items():
-        prompt = _cell_text(ws, ROW_IMAGE_PROMPT, col)
-        if prompt:
-            out[fnum] = prompt
-    return out
-
-
-def _read_image_prompts_workbook(wb) -> dict[int, str]:
-    merged: dict[int, str] = {}
-    ws = _resolve_plan_sheet(wb)
-    if ws is not None:
-        for num, text in _read_plan_image_prompts_ws(ws).items():
-            merged[num] = text
-    for num, text in _read_v7_frames_image_prompts_ws(wb).items():
-        merged.setdefault(num, text)
-    return merged
-
-
-def read_image_prompts_from_project_xlsx(xlsx_path: Path) -> dict[int, str]:
-    """Все image_prompt из project.xlsx: лист «план» (по подписи строки / R45) + «Кадры» v7.
-
-    Пробует data_only=True и False — если Excel не пересохраняли после формул,
-    значения могут быть только во втором режиме.
-    """
+def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
+    """Номер кадра (1..N) → image_prompt с листа «план», строка R45, колонки C..N."""
     from openpyxl import load_workbook
 
     if not xlsx_path.exists():
         return {}
-    merged: dict[int, str] = {}
+    out: dict[int, str] = {}
     for data_only in (True, False):
         try:
             wb = load_workbook(filename=str(xlsx_path), data_only=data_only)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("read_image_prompts: open {} data_only={}: {}", xlsx_path, data_only, e)
+        except Exception:  # noqa: BLE001
             continue
         try:
-            part = _read_image_prompts_workbook(wb)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                continue
+            for col in range(3, (ws.max_column or 0) + 1):
+                prompt = _cell_text(ws, ROW_IMAGE_PROMPT_V8, col)
+                if not prompt:
+                    continue
+                frame_num = col - 2
+                if frame_num not in out:
+                    out[frame_num] = prompt
         finally:
             wb.close()
-        for num, text in part.items():
-            if num not in merged and text:
-                merged[num] = text
-    return merged
-
-
-def describe_image_prompts_xlsx_scan(xlsx_path: Path) -> str:
-    """Краткая диагностика для логов/ошибок."""
-    from openpyxl import load_workbook
-
-    if not xlsx_path.exists():
-        return "project.xlsx не найден"
-    try:
-        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
-    except Exception as e:  # noqa: BLE001
-        return f"не открыть xlsx: {e}"
-    try:
-        sheets = list(wb.sheetnames)
-        ws = _resolve_plan_sheet(wb)
-        if ws is None:
-            v7 = "Кадры" in sheets
-            return f"листы={sheets!r}, «план» нет, v7 Кадры={v7}"
-        row = _discover_labeled_row(ws, _PLAN_IMAGE_PROMPT_LABELS) or ROW_IMAGE_PROMPT_V8
-        n = len(_read_plan_image_prompts_ws(ws, prompt_row=row))
-        return (
-            f"лист «{ws.title}», строка промта R{row}, найдено {n} промтов; "
-            f"все листы={sheets!r}"
-        )
-    finally:
-        wb.close()
-
-
-def read_v8_image_prompts_from_path(xlsx_path: Path) -> dict[int, str]:
-    """Номер кадра (1..N) → image_prompt (план + legacy «Кадры»)."""
-    return read_image_prompts_from_project_xlsx(xlsx_path)
+    return out
 
 
 def read_v8_voiceovers_from_path(xlsx_path: Path) -> dict[int, str]:
@@ -382,13 +260,12 @@ async def bootstrap_frames_for_image_step(
     if not path.is_file():
         return result
 
-    prompts = read_image_prompts_from_project_xlsx(path)
+    prompts = read_v8_image_prompts_from_path(path)
     result.prompts_in_xlsx = len(prompts)
     if not prompts:
         logger.warning(
-            "[#{}] bootstrap_frames_for_image_step: промты не найдены — {}",
+            "[#{}] bootstrap_frames_for_image_step: в листе «план» R45 промтов нет",
             project.id,
-            describe_image_prompts_xlsx_scan(path),
         )
         return result
 
@@ -418,10 +295,13 @@ async def bootstrap_frames_for_image_step(
             result.frames_prompt_updated.append(num)
             continue
 
-        if force_prompts_from_xlsx or not (fr.image_prompt or "").strip():
-            if fr.image_prompt != prompt:
-                fr.image_prompt = prompt
+        if force_prompts_from_xlsx:
+            fr.image_prompt = prompt
+            if num not in result.frames_prompt_updated:
                 result.frames_prompt_updated.append(num)
+        elif not (fr.image_prompt or "").strip():
+            fr.image_prompt = prompt
+            result.frames_prompt_updated.append(num)
         vo = voiceovers.get(num)
         if vo and not (fr.voiceover_text or "").strip():
             fr.voiceover_text = vo
