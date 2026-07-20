@@ -21,6 +21,7 @@ from app.generation_options import (
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS_BY_ID,
     build_gen_id_prefix,
+    clamp_image_resolution_id,
     resolve_image_quality_slug,
 )
 from app.bots.chrome_cdp import fetch_cdp_version
@@ -215,7 +216,11 @@ async def prepare_image_regen(
 
     img_gen = IMAGE_GENERATORS_BY_ID.get(project.image_generator or DEFAULTS["image_generator"])
     ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(project.image_resolution or DEFAULTS["image_resolution"])
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(
+        clamp_image_resolution_id(
+            project.image_generator, project.image_resolution
+        )
+    )
 
     return ImageRegenPrep(
         project_id=project.id,

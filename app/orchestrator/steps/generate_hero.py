@@ -45,6 +45,7 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     OUTSEE_PROMPT_MAX_CHARS,
+    clamp_image_resolution_id,
     resolve_image_quality_slug,
 )
 from app.models import (
@@ -661,7 +662,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # Aspect ratio и Relax для hero жёстко захардкожены: 16:9 + Relax=ON.
         # См. HERO_ASPECT_RATIO / HERO_RELAX в верху файла.
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            project.image_resolution or DEFAULTS["image_resolution"]
+            clamp_image_resolution_id(
+                project.image_generator, project.image_resolution
+            )
         )
         quality_slug = resolve_image_quality_slug(
             project.image_generator, project.image_quality
@@ -1099,7 +1102,9 @@ async def _generate_one_excel_character(
             project.image_generator or DEFAULTS["image_generator"]
         )
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            project.image_resolution or DEFAULTS["image_resolution"]
+            clamp_image_resolution_id(
+                project.image_generator, project.image_resolution
+            )
         )
         quality_slug = resolve_image_quality_slug(
             project.image_generator, project.image_quality

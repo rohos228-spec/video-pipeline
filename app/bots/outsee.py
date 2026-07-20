@@ -514,9 +514,10 @@ async def _select_aspect_ratio(
 
 
 def _resolution_selectors(resolution: str) -> list[str]:
-    """Селекторы для кнопки 1K / 2K / 4K (картинка) или 720p / 1080p (видео)."""
+    """Селекторы для кнопки 1K / 2K / 3K / 4K (картинка) или 720p / 1080p (видео)."""
     return [
         f"button:has-text('{resolution}')",
+        f"button:text-is('{resolution}')",
         f"[data-value='{resolution}']",
         f"[aria-label='{resolution}']",
         f"*:has(> :text-is('{resolution}'))",
@@ -524,13 +525,23 @@ def _resolution_selectors(resolution: str) -> list[str]:
 
 
 def _quality_selectors(quality_label: str) -> list[str]:
-    """Селекторы для кнопок Низкое / Среднее / Высокое (GPT Image)."""
-    return [
+    """Селекторы «Детализация»: Низкое/Среднее/Высокое (+ data-value low/medium/high)."""
+    from app.generation_options import IMAGE_QUALITY_DOM_VALUE
+
+    value = IMAGE_QUALITY_DOM_VALUE.get(quality_label, "")
+    sels = [
         f"button:has-text('{quality_label}')",
-        f"[data-value='{quality_label}']",
+        f"button:text-is('{quality_label}')",
         f"[aria-label='{quality_label}']",
         f"*:has(> :text-is('{quality_label}'))",
     ]
+    if value:
+        sels = [
+            f"button[data-value='{value}']",
+            f"[data-value='{value}']",
+            *sels,
+        ]
+    return sels
 
 
 # Кнопка/тогл «Relax» (для всех картиночных моделей и для veo-3-1-fast).
@@ -879,6 +890,8 @@ class OutseeDuplicateVideoError(OutseeImageError):
 
 # Маркеры видимых плашек ошибок outsee (см. `_detect_outsee_failure`).
 _OUTSEE_LENGTH_MARKERS: tuple[str, ...] = (
+    "промпт слишком длинный",
+    "промт слишком длинный",
     "слишком длин",
     "too long",
     "too many character",
@@ -890,6 +903,7 @@ _OUTSEE_LENGTH_MARKERS: tuple[str, ...] = (
     "character limit",
     "prompt is too",
     "промт слишком",
+    "промпт слишком",
 )
 _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "контент отклон",
@@ -906,20 +920,28 @@ _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "текстовый запрос содержит",
     "некорректный текстовый",
     "нарушает правила",
+    "нарушает политику",
     "policy violation",
     "moderation",
     "отклонён",
     "отклонен",
+    "не прошёл модерацию модели",
+    "не прошел модерацию модели",
+    "попробуйте изменить описание",
+    "попробуйте переформулировать",
 )
 _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "ошибка генера",
     "произошла ошибка",
     "ошибка veo",
     "ошибка kling",
+    "ошибка сервиса генерации",
+    "ошибка сервера",
     "не удалось сгенер",
     "не удалось создать",
     "generation failed",
     "failed to generate",
+    "failed to download",
     "something went wrong",
     "что-то пошло не так",
     "попробуйте снова",
@@ -928,6 +950,11 @@ _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "unable to generate",
     "отказ в генерации",
     "генерация отклон",
+    "сетевая ошибка",
+    "network error",
+    "networkerror",
+    "безлимит занят",
+    "безлимитная генерация уже активна",
 )
 
 
@@ -2027,7 +2054,7 @@ class OutseeBot:
                     project_id=project_id,
                 )
 
-            # 2.5) выбрать разрешение 2K / 4K (best-effort)
+            # 2.5) выбрать разрешение 1K/2K/3K/4K (best-effort + warn если нет кнопки)
             if resolution:
                 res_sel = await _first_visible(
                     page, _resolution_selectors(resolution), timeout_ms=3_000,
@@ -2046,8 +2073,14 @@ class OutseeBot:
                         logger.warning(
                             "resolution {} не кликнулось ({})", resolution, res_sel
                         )
+                else:
+                    logger.warning(
+                        "outsee.generate_image: кнопка разрешения {} не найдена "
+                        "(модель может не поддерживать этот размер)",
+                        resolution,
+                    )
 
-            # 2.6) выбрать качество Низкое / Среднее / Высокое (best-effort)
+            # 2.6) «Детализация» Низкое/Среднее/Высокое (GPT Image)
             if quality:
                 qual_sel = await _first_visible(
                     page, _quality_selectors(quality), timeout_ms=3_000,
@@ -2066,6 +2099,11 @@ class OutseeBot:
                         logger.warning(
                             "quality {} не кликнулось ({})", quality, qual_sel
                         )
+                else:
+                    logger.warning(
+                        "outsee.generate_image: кнопка детализации «{}» не найдена",
+                        quality,
+                    )
 
             # 2.7) Relax (если попросили)
             await _toggle_relax(
@@ -2316,6 +2354,7 @@ class OutseeBot:
         timeout: float = 600,
         gen_id: str | None = None,
         project_id: int | None = None,
+        model_slug: str | None = None,
     ) -> GenerationResult:
         """Жмёт «Повторить» на существующем результате генерации — без ChatGPT,
         без перезаполнения промта. Сайт использует тот же промт и настройки."""
@@ -2333,8 +2372,9 @@ class OutseeBot:
         gen_id = gen_id or _uuid.uuid4().hex
         from app.services.outsee_lane import outsee_lane
 
+        page_url = _image_page_url(model_slug)
         async with outsee_lane(project_id=project_id, op="regenerate_image"):
-            page = await self.session.open_page(settings.outsee_image_url, reuse=True)
+            page = await self.session.open_page(page_url, reuse=True)
             if project_id is not None:
                 register_active_page(project_id, page)
             try:
@@ -4139,7 +4179,8 @@ class OutseeBot:
                 """(args) => {
                     const moderation = args.moderation;
                     const generation = args.generation;
-                    const triggers = moderation.concat(generation);
+                    const length = args.length || [];
+                    const triggers = moderation.concat(generation).concat(length);
                     const queueMode = !!args.queue_mode;
                     const idToken = (args.id_token || '').trim();
 
@@ -4266,6 +4307,7 @@ class OutseeBot:
                 {
                     "moderation": mod_js,
                     "generation": gen_js,
+                    "length": list(_OUTSEE_LENGTH_MARKERS),
                     "queue_mode": queue_mode,
                     "id_token": id_token,
                 },
@@ -4299,7 +4341,8 @@ class OutseeBot:
                     const core = (args.core || '').trim();
                     const moderation = args.moderation;
                     const generation = args.generation;
-                    const triggers = moderation.concat(generation);
+                    const length = args.length || [];
+                    const triggers = moderation.concat(generation).concat(length);
                     if (!core) return null;
 
                     function isTrulyVisible(el) {
@@ -4399,6 +4442,7 @@ class OutseeBot:
                     "core": core,
                     "moderation": mod_js,
                     "generation": gen_js,
+                    "length": list(_OUTSEE_LENGTH_MARKERS),
                 },
             )
             if isinstance(raw, dict) and raw.get("text"):
@@ -4431,7 +4475,8 @@ class OutseeBot:
                 """(markers) => {
                     const moderation = markers.moderation;
                     const generation = markers.generation;
-                    const triggers = moderation.concat(generation);
+                    const length = markers.length || [];
+                    const triggers = moderation.concat(generation).concat(length);
                     const out = [];
                     const seen = new Set();
 
@@ -4520,7 +4565,7 @@ class OutseeBot:
                     scanRootAll(document.body, false);
                     return out;
                 }""",
-                {"moderation": mod_js, "generation": gen_js},
+                {"moderation": mod_js, "generation": gen_js, "length": list(_OUTSEE_LENGTH_MARKERS)},
             )
             if isinstance(raw, list):
                 texts: set[str] = set()

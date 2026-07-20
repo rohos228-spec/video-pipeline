@@ -1108,15 +1108,18 @@ async def _generate_and_send(
         )
 
     # Настройки картинки из проекта (с дефолтами).
+    from app.generation_options import clamp_image_resolution_id
+
     img_gen = IMAGE_GENERATORS_BY_ID.get(
         project.image_generator or DEFAULTS["image_generator"]
     )
     ar = ASPECT_RATIOS_BY_ID.get(
         project.aspect_ratio or DEFAULTS["aspect_ratio"]
     )
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        project.image_resolution or DEFAULTS["image_resolution"]
+    res_id = clamp_image_resolution_id(
+        project.image_generator, project.image_resolution
     )
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(res_id)
     aspect_slug = ar.outsee_slug if ar else "9:16"
     model_slug = img_gen.outsee_slug if img_gen else None
     res_slug = ir.outsee_slug if ir else None
@@ -1159,7 +1162,10 @@ async def _generate_and_send(
         if use_regen_button:
             try:
                 result = await outsee.regenerate_image(
-                    file_path, gen_id=gen_id, project_id=project.id
+                    file_path,
+                    gen_id=gen_id,
+                    project_id=project.id,
+                    model_slug=model_slug,
                 )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая
