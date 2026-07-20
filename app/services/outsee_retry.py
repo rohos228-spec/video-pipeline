@@ -552,13 +552,19 @@ async def generate_image_with_retries(
     gpt_rewrite: bool = True,
     **kwargs: Any,
 ) -> GenerationResult:
-    """Обёртка над `OutseeBot.generate_image` с авто-ретраем и
+    """Обёртка над `OutseeBot.generate_image` / Grsai с авто-ретраем и
     GPT-rewrite. Подробности — в docstring модуля.
 
-    Все `kwargs` пробрасываются как есть в `outsee.generate_image`.
+    Все `kwargs` пробрасываются как есть в `outsee.generate_image`
+    (или в `grsai.generate_image`, если IMAGE_PROVIDER=grsai).
     `prompt_id_prefix` один на весь кадр (все retry и GPT-rewrite) —
     формат `[ID: P12-F3-a7f2b01c]`, где `a7f2b01c` = gen_id этой генерации.
     """
+    from app.bots.grsai import grsai_enabled, generate_image as grsai_generate_image
+    from app.bots.grsai import studio_id_to_grsai_slug
+    from app.settings import settings as _settings
+
+    use_grsai = grsai_enabled()
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -581,6 +587,34 @@ async def generate_image_with_retries(
                     else None,
                     project_id=pid if isinstance(pid, int) else None,
                 )
+                if use_grsai:
+                    from app.bots.grsai import GRSAI_WIRED_IMAGE_MODELS
+
+                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                        _settings, "grsai_default_image_model", None
+                    )
+                    slug = studio_id_to_grsai_slug(
+                        str(raw_slug) if raw_slug else None
+                    )
+                    if slug not in GRSAI_WIRED_IMAGE_MODELS:
+                        slug = studio_id_to_grsai_slug(
+                            getattr(_settings, "grsai_default_image_model", None)
+                        )
+                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
+                        "image_resolution"
+                    )
+                    return await grsai_generate_image(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res) if res else "1K",
+                        reference_image=attempt_kwargs.get("reference_image"),
+                        timeout=float(attempt_kwargs.get("timeout") or 600),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=pid if isinstance(pid, int) else None,
+                    )
                 return await outsee.generate_image(
                     send_prompt, out_path, **attempt_kwargs
                 )

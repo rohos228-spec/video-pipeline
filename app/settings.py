@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
     # Таймаут скачивания результата outsee (сек) — URL и клик «Скачать».
     outsee_download_timeout_s: float = Field(120.0, alias="OUTSEE_DOWNLOAD_TIMEOUT_S")
+
+    # Grsai API (https://grsai.com / https://grsaiapi.com) — картинки без CDP
+    grsai_api_key: str = Field("", alias="GRSAI_API_KEY")
+    grsai_base_url: str = Field("https://grsaiapi.com", alias="GRSAI_BASE_URL")
+    # outsee | grsai — кто рисует img/hero/items
+    image_provider: str = Field("grsai", alias="IMAGE_PROVIDER")
+    grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
+
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )

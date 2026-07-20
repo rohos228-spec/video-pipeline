@@ -47,6 +47,8 @@ export type OutseeImageModel = {
   /** registry.hidden — не в S0 picker */
   hidden?: boolean;
   advanced?: boolean;
+  /** Временно подключено через Grsai API — в меню с «+» */
+  grsaiWired?: boolean;
   chips: OutseeChip[];
   defaults: {
     aspectRatio?: string;
@@ -54,6 +56,18 @@ export type OutseeImageModel = {
     detailLevel?: string;
   };
 };
+
+/** Модели Grsai (dashboard/models) — временно wired, в picker с «+». */
+export const GRSAI_WIRED_SLUGS = new Set([
+  "gpt-image-2",
+  "gpt-image-2-vip",
+  "nano-banana-2",
+  "nano-banana-2-lite",
+  "nano-banana-pro",
+  "nano-banana-fast",
+  "nano-banana",
+  "nano-banana-pro-vt",
+]);
 
 export type OutseeVideoModel = {
   slug: string;
@@ -154,10 +168,11 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     slug: "nano-banana-pro",
     studioId: "nano_banana_pro",
     displayName: "Nano Banana Pro",
-    description: "Лучшая модель на рынке. Идеальна для любых задач. Лучше просто нет.",
+    description: "Grsai · лучшая banana для любых задач.",
     icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
     price: "3",
     isTop: true,
+    grsaiWired: true,
     chips: ["aspect", "resolution", "image-input"],
     defaults: { aspectRatio: "16:9", imageResolution: "2K" },
   },
@@ -165,11 +180,34 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     slug: "nano-banana-2",
     studioId: "nano_banana_2",
     displayName: "Nano Banana 2",
-    description: "Самая новая версия Nano banana.",
+    description: "Grsai · самая новая версия Nano Banana.",
     icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
     price: "3",
+    grsaiWired: true,
     chips: ["aspect", "resolution", "image-input"],
     defaults: { aspectRatio: "16:9", imageResolution: "2K" },
+  },
+  {
+    slug: "nano-banana-2-lite",
+    studioId: "nano_banana_2_lite",
+    displayName: "Nano Banana 2 Lite",
+    description: "Grsai · быстрее и дешевле Nano Banana 2.",
+    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
+    price: "1.5",
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "1K" },
+  },
+  {
+    slug: "nano-banana-fast",
+    studioId: "nano_banana_fast",
+    displayName: "Nano Banana Fast",
+    description: "Grsai · быстрая генерация.",
+    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
+    price: "1",
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "1K" },
   },
   {
     slug: "seedream-4.5",
@@ -206,12 +244,24 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     slug: "gpt-image-2",
     studioId: "gpt_image_2",
     displayName: "GPT Image 2",
-    description: "Новейшая модель OpenAI. Идеальна для постеров и рекламы с текстом. До 4К.",
+    description: "Grsai · постеры и реклама с текстом.",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
-    price: "от 3",
+    price: "от 0.03",
     isNew: true,
-    chips: ["aspect", "resolution", "detail", "image-input"],
-    defaults: { aspectRatio: "16:9", imageResolution: "2K", detailLevel: "medium" },
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "1K" },
+  },
+  {
+    slug: "gpt-image-2-vip",
+    studioId: "gpt_image_2_vip",
+    displayName: "GPT Image 2 VIP",
+    description: "Grsai · VIP до 4K (пиксели).",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
+    price: "от 0.06",
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "2K" },
   },
   {
     slug: "topaz-image-upscale",
@@ -225,30 +275,44 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     chips: [],
     defaults: {},
   },
-  // hidden в registry — оставляем для маппинга проекта / если уже выбрано
   {
     slug: "nano-banana",
     studioId: "nano_banana",
     displayName: "Nano Banana",
-    description: "Быстрая и точная. Хороша для точечного редактирования ваших фото.",
+    description: "Grsai · быстрая и точная.",
     icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
     price: "1.2",
-    hidden: true,
-    chips: ["aspect", "image-input"],
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "1K" },
+  },
+  {
+    slug: "nano-banana-pro-vt",
+    studioId: null,
+    displayName: "Nano Banana Pro VT",
+    description: "Grsai · Pro VT (временное подключение).",
+    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
+    price: "3",
+    grsaiWired: true,
+    chips: ["aspect", "resolution", "image-input"],
     defaults: { aspectRatio: "16:9", imageResolution: "2K" },
   },
   {
     slug: "gpt-image-1.5",
     studioId: "gpt_image_1_5",
     displayName: "GPT Image 1.5",
-    description: "Флагманская модель OpenAI. Универсальна и надёжна.",
+    description: "Outsee · флагман OpenAI (без Grsai +).",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
     price: "3",
-    hidden: true,
     chips: ["aspect", "resolution", "image-input"],
     defaults: { aspectRatio: "16:9", imageResolution: "2K" },
   },
 ];
+
+/** Модель временно подключена через Grsai — в меню с «+». */
+export function isGrsaiWiredSlug(slug: string): boolean {
+  return GRSAI_WIRED_SLUGS.has(slug);
+}
 
 /**
  * Порядок picker video = Object.values(o) type=video !hidden.
@@ -523,14 +587,18 @@ export const OUTSEE_AUDIO_MODELS: OutseeAudioModel[] = [
  * Порядок picker image как ej на /create (все модели, включая «hidden»).
  */
 const IMAGE_PICKER_ORDER = [
+  "gpt-image-2",
+  "gpt-image-2-vip",
   "nano-banana-2",
+  "nano-banana-2-lite",
   "nano-banana-pro",
+  "nano-banana-fast",
+  "nano-banana",
+  "nano-banana-pro-vt",
   "seedream-4.5",
   "seedream-5-pro",
   "seedream-5-lite",
-  "nano-banana",
   "gpt-image-1.5",
-  "gpt-image-2",
   "topaz-image-upscale",
 ] as const;
 
@@ -593,19 +661,27 @@ export function chipOptions(slug: string, chip: OutseeChip): string[] {
   if (image) {
     if (chip === "aspect") {
       if (slug === "gpt-image-1.5") return ["1:1", "3:2", "2:3"];
-      if (slug === "gpt-image-2") return [...GPT_IMAGE_2_ASPECTS];
+      if (slug === "gpt-image-2" || slug === "gpt-image-2-vip") return [...GPT_IMAGE_2_ASPECTS];
       if (slug.startsWith("nano-banana")) return [...NANO_BANANA_ASPECTS];
       return [...SEEDREAM_ASPECTS];
     }
     if (chip === "resolution") {
-      if (slug === "nano-banana-2" || slug === "nano-banana-pro" || slug === "seedream-4.5") {
-        return ["2K", "4K"];
+      if (slug === "gpt-image-2") return ["1K"];
+      if (slug === "gpt-image-2-vip") return ["1K", "2K", "4K"];
+      if (
+        slug === "nano-banana-2" ||
+        slug === "nano-banana-pro" ||
+        slug === "nano-banana-pro-vt"
+      ) {
+        return ["1K", "2K", "4K"];
       }
+      if (slug === "nano-banana-2-lite" || slug === "nano-banana-fast" || slug === "nano-banana") {
+        return ["1K", "2K"];
+      }
+      if (slug === "seedream-4.5") return ["2K", "4K"];
       if (slug === "seedream-5-pro") return ["1K", "2K"];
       if (slug === "seedream-5-lite") return ["2K", "3K"];
       if (slug === "gpt-image-1.5") return ["2K"];
-      if (slug === "gpt-image-2") return ["1K", "2K", "4K"];
-      if (slug === "nano-banana") return ["2K"];
       return ["1K", "2K"];
     }
   }
