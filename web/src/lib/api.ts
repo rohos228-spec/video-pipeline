@@ -905,6 +905,35 @@ export const api = {
         badge: string;
       }[];
     }>(`/api/grsai/models`),
+  grsaiQuote: (params: {
+    media: "image" | "video" | "audio";
+    model: string;
+    resolution?: string;
+    duration?: number;
+    size?: string;
+    catalog_price?: string;
+  }) => {
+    const q = new URLSearchParams({
+      media: params.media,
+      model: params.model,
+    });
+    if (params.resolution) q.set("resolution", params.resolution);
+    if (params.duration != null) q.set("duration", String(params.duration));
+    if (params.size) q.set("size", params.size);
+    if (params.catalog_price) q.set("catalog_price", params.catalog_price);
+    return http<{
+      media: string;
+      model: string;
+      tokens: number;
+      usd: number;
+      token_usd: number;
+      label: string;
+      label_short: string;
+      usd_label: string;
+      grsai_credits: number | null;
+      source: string;
+    }>(`/api/grsai/quote?${q.toString()}`);
+  },
   grsaiGenerate: (body: {
     prompt: string;
     model?: string;
@@ -922,6 +951,12 @@ export const api = {
       preview_url: string;
       raw_url?: string | null;
       bytes: number;
+      sidecar?: string;
+      quote?: {
+        tokens: number;
+        usd: number;
+        label: string;
+      };
     }>(`/api/grsai/generate`, {
       method: "POST",
       body: JSON.stringify(body),

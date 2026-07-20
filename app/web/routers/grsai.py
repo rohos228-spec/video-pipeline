@@ -1,8 +1,7 @@
-"""REST для Grsai: статус, каталог wired-моделей, генерация image/video из Create."""
+"""REST для Grsai: статус, каталог, quote цены, генерация image/video из Create."""
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -23,6 +22,8 @@ from app.bots.grsai import (
     grsai_key_configured,
     grsai_video_enabled,
 )
+from app.services.generation_storage import build_generation_path, write_sidecar
+from app.services.grsai_pricing import TOKEN_USD, quote_generation
 from app.settings import settings
 
 router = APIRouter(prefix="/grsai", tags=["grsai"])
@@ -36,6 +37,15 @@ class GrsaiGenerateBody(BaseModel):
     media: str = "image"  # image | video | audio
     duration: int | None = 10
     size: str = "small"  # sora: small|large
+
+
+class GrsaiQuoteBody(BaseModel):
+    media: str = "image"
+    model: str = "gpt-image-2"
+    resolution: str | None = "1K"
+    duration: int | None = 10
+    size: str | None = "small"
+    catalog_price: str | None = None
 
 
 def _model_dict(m: Any) -> dict[str, Any]:
@@ -70,6 +80,7 @@ async def grsai_status() -> dict[str, Any]:
         "wired_models": list(GRSAI_WIRED_IMAGE_MODELS),
         "wired_video_models": list(GRSAI_WIRED_VIDEO_MODELS),
         "wired_audio_models": list(GRSAI_WIRED_AUDIO_MODELS),
+        "token_usd": TOKEN_USD,
         "audio_note": (
             None
             if GRSAI_WIRED_AUDIO_MODELS
@@ -87,14 +98,50 @@ async def grsai_models() -> dict[str, Any]:
     }
 
 
+@router.post("/quote")
+async def grsai_quote(body: GrsaiQuoteBody) -> dict[str, Any]:
+    """Цена за выбранные параметры: 1 ток = $0.10."""
+    return quote_generation(
+        media=body.media,
+        model=body.model,
+        resolution=body.resolution,
+        duration=body.duration,
+        size=body.size,
+        catalog_price=body.catalog_price,
+    )
+
+
+@router.get("/quote")
+async def grsai_quote_get(
+    media: str = "image",
+    model: str = "gpt-image-2",
+    resolution: str = "1K",
+    duration: int = 10,
+    size: str = "small",
+    catalog_price: str | None = None,
+) -> dict[str, Any]:
+    return quote_generation(
+        media=media,
+        model=model,
+        resolution=resolution,
+        duration=duration,
+        size=size,
+        catalog_price=catalog_price,
+    )
+
+
 @router.post("/generate")
 async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
     if not grsai_key_configured():
         raise HTTPException(status_code=400, detail="GRSAI_API_KEY не задан в .env")
 
     media = (body.media or "image").strip().lower()
-    out_dir = settings.data_dir / "grsai_history"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    params = {
+        "aspect": body.aspect,
+        "resolution": body.resolution,
+        "duration": body.duration,
+        "size": body.size,
+    }
 
     try:
         if media == "video":
@@ -103,7 +150,7 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
                 or getattr(settings, "grsai_default_video_model", None)
                 or "sora-2"
             ).strip()
-            out_path = out_dir / f"{uuid.uuid4().hex}.mp4"
+            out_path = build_generation_path(media="video", model=model, ext=".mp4")
             result = await generate_video(
                 body.prompt,
                 out_path,
@@ -115,11 +162,11 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
             )
         elif media == "audio":
             model = (body.model or "audio").strip()
-            out_path = out_dir / f"{uuid.uuid4().hex}.mp3"
+            out_path = build_generation_path(media="audio", model=model, ext=".mp3")
             result = await generate_audio(body.prompt, out_path, model_slug=model)
         else:
             model = (body.model or settings.grsai_default_image_model or "gpt-image-2").strip()
-            out_path = out_dir / f"{uuid.uuid4().hex}.png"
+            out_path = build_generation_path(media="image", model=model, ext=".png")
             result = await generate_image(
                 body.prompt,
                 out_path,
@@ -131,14 +178,34 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(getattr(e, "reason", None) or e)) from e
 
+    quote = quote_generation(
+        media=media,
+        model=model,
+        resolution=body.resolution,
+        duration=body.duration,
+        size=body.size,
+    )
+    side = write_sidecar(
+        result.file_path,
+        media=media,
+        model=model,
+        prompt=body.prompt,
+        params=params,
+        raw_url=result.raw_url,
+        quote=quote,
+        provider="grsai",
+    )
+
     rel = result.file_path
-    preview = f"/api/files?path={rel}"
+    preview = f"/api/files?path={rel.resolve()}"
     return {
         "ok": True,
         "media": media,
         "model": model,
-        "path": str(rel),
+        "path": str(rel.resolve()),
         "preview_url": preview,
         "raw_url": result.raw_url,
         "bytes": rel.stat().st_size if rel.is_file() else 0,
+        "sidecar": str(side.resolve()),
+        "quote": quote,
     }
