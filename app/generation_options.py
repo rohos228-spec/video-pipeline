@@ -178,6 +178,22 @@ def clamp_image_resolution_id(
 
 VIDEO_GENERATORS: list[OptionChoice] = [
     OptionChoice(
+        "sora_2", "+ Sora 2", "sora-2",
+        "Grsai · OpenAI Sora 2 (10/15с, звук)",
+    ),
+    OptionChoice(
+        "veo_3_1_lite", "+ Veo 3.1 Lite", "veo-3-1-lite",
+        "Grsai · alias veo3.1-fast",
+    ),
+    OptionChoice(
+        "veo_3_1_fast", "+ Veo 3.1 Fast", "veo-3-1-fast",
+        "Grsai · veo3.1-fast",
+    ),
+    OptionChoice(
+        "veo_3_fast", "+ Veo 3 Fast", "veo-3-fast",
+        "Grsai · alias veo3.1-fast (исторический id)",
+    ),
+    OptionChoice(
         "kling_3", "Kling 3.0", "kling-3-0",
         "Новейшая Kling (TOP). Гибкая длительность, нативное аудио, мультишот",
     ),
@@ -208,18 +224,6 @@ VIDEO_GENERATORS: list[OptionChoice] = [
     OptionChoice(
         "seedance_pro_1_5", "Seedance Pro 1.5", "seedance-pro-1-5",
         "Отличное соотношение цена-качество, идеально для базовых задач",
-    ),
-    OptionChoice(
-        "veo_3_fast", "Veo 3 Fast", "veo-3-fast",
-        "Стабильная Veo 3 Fast (исторический дефолт). Image-to-video поддерживается",
-    ),
-    OptionChoice(
-        "veo_3_1_fast", "Veo 3.1 Fast", "veo-3-1-fast",
-        "Вторая по популярности модель. Идеальная генерация русской речи",
-    ),
-    OptionChoice(
-        "veo_3_1_lite", "Veo 3.1 Lite", "veo-3-1-lite",
-        "Лёгкая версия Veo 3.1, пришедшая на замену Veo 3.1 Fast",
     ),
     OptionChoice(
         "wan_2_6", "Wan 2.6", "wan-2-6",

@@ -44,6 +44,7 @@ import {
   pickerModelsForType,
   slugToStudioId,
   supportsRelax,
+  toGrsaiVideoModel,
   type OutseeChip,
   type OutseeFeedKind,
   type OutseeMediaType,
@@ -86,6 +87,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [imageProvider, setImageProvider] = useState<"grsai" | "outsee">("grsai");
+  const [videoProvider, setVideoProvider] = useState<"grsai" | "outsee">("grsai");
+  const [soraSize, setSoraSize] = useState<"small" | "large">("small");
   const [modelOpen, setModelOpen] = useState(false);
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -133,6 +136,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setInstrumental(Boolean(s.instrumental));
     setPrompt(String(s.prompt || ""));
     setImageProvider(s.image_provider === "outsee" ? "outsee" : "grsai");
+    setVideoProvider(s.video_provider === "outsee" ? "outsee" : "grsai");
+    setSoraSize(s.sora_size === "large" ? "large" : "small");
     setSettingsHydrated(true);
   }, [open, settingsQ.data, settingsHydrated]);
 
@@ -173,12 +178,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       : mediaType === "video"
         ? videoModel.displayName
         : audioModel.displayName;
-  const currentWired = mediaType === "image" && isGrsaiWiredSlug(imageSlug);
+  const currentWired = isGrsaiWiredSlug(activeSlug, mediaType);
   const canGrsaiDirect =
-    mediaType === "image" &&
-    imageProvider === "grsai" &&
-    currentWired &&
-    Boolean(grsaiStatusQ.data?.configured);
+    Boolean(grsaiStatusQ.data?.configured) &&
+    ((mediaType === "image" && imageProvider === "grsai" && currentWired) ||
+      (mediaType === "video" && videoProvider === "grsai" && currentWired));
   const currentIcon =
     mediaType === "image"
       ? imageModel.icon
@@ -262,6 +266,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     instrumental,
     prompt,
     image_provider: imageProvider,
+    video_provider: videoProvider,
+    sora_size: soraSize,
   });
 
   const saveGlobal = useMutation({
@@ -310,11 +316,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         throw new Error("GRSAI_API_KEY не задан в .env — перезапустите бэкенд");
       }
       await api.putOutseeCreateSettings(settingsPayload());
+      if (mediaType === "video") {
+        return api.grsaiGenerate({
+          prompt: text,
+          model: toGrsaiVideoModel(videoSlug),
+          aspect,
+          media: "video",
+          duration: Number(duration) || 10,
+          size: soraSize,
+        });
+      }
       return api.grsaiGenerate({
         prompt: text,
         model: imageSlug,
         aspect,
         resolution,
+        media: "image",
       });
     },
     onSuccess: (res) => {
@@ -754,7 +771,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     )}
 
                   <div className="ml-auto flex flex-wrap items-center gap-2">
-                    {mediaType === "image" && (
+                    {(mediaType === "image" || mediaType === "video") && (
                       <div
                         className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5"
                         title={
@@ -767,10 +784,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <button
                             key={p}
                             type="button"
-                            onClick={() => setImageProvider(p)}
+                            onClick={() =>
+                              mediaType === "image" ? setImageProvider(p) : setVideoProvider(p)
+                            }
                             className={cn(
                               "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wide",
-                              imageProvider === p
+                              (mediaType === "image" ? imageProvider : videoProvider) === p
                                 ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
                                 : "text-white/40 hover:text-white/70",
                             )}
@@ -780,6 +799,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         ))}
                       </div>
                     )}
+                    {mediaType === "video" &&
+                      (videoSlug === "sora-2" ||
+                        videoSlug === "sora2-portrait" ||
+                        videoSlug === "sora2-landscape") && (
+                        <div className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5">
+                          {(["small", "large"] as const).map((sz) => (
+                            <button
+                              key={sz}
+                              type="button"
+                              onClick={() => setSoraSize(sz)}
+                              className={cn(
+                                "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase",
+                                soraSize === sz
+                                  ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
+                                  : "text-white/40",
+                              )}
+                            >
+                              {sz}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     <button
                       type="button"
                       disabled={saveGlobal.isPending}
@@ -802,7 +843,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       disabled={
                         runStep.isPending ||
                         grsaiGenerate.isPending ||
-                        mediaType === "audio" ||
                         (!canGrsaiDirect && projectId == null) ||
                         (canGrsaiDirect && !prompt.trim())
                       }
@@ -812,7 +852,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       title={
                         canGrsaiDirect
                           ? "Сгенерировать через Grsai API (без проекта)"
-                          : "Запустить шаг пайплайна для выбранного проекта"
+                          : mediaType === "audio"
+                            ? "Запустить шаг audio для выбранного проекта (все аудиомодели)"
+                            : "Запустить шаг пайплайна для выбранного проекта"
                       }
                     >
                       {runStep.isPending || grsaiGenerate.isPending ? (

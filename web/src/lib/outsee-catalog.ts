@@ -31,6 +31,8 @@ export type OutseeAudioModel = {
   price: string;
   isTop?: boolean;
   isNew?: boolean;
+  /** Временно подключено через Grsai API — в меню с «+» (сейчас пусто) */
+  grsaiWired?: boolean;
   chips: OutseeChip[];
   defaults: { instrumental?: boolean; voice?: string; speed?: number };
 };
@@ -57,7 +59,7 @@ export type OutseeImageModel = {
   };
 };
 
-/** Модели Grsai (dashboard/models) — временно wired, в picker с «+». */
+/** Image: Grsai dashboard/models — временно wired, в picker с «+». */
 export const GRSAI_WIRED_SLUGS = new Set([
   "gpt-image-2",
   "gpt-image-2-vip",
@@ -67,7 +69,30 @@ export const GRSAI_WIRED_SLUGS = new Set([
   "nano-banana-fast",
   "nano-banana",
   "nano-banana-pro-vt",
+  "nano-banana-pro-cl",
+  "nano-banana-2-cl",
+  "nano-banana-2-2k-cl",
+  "nano-banana-2-4k-cl",
+  "nano-banana-pro-vip",
+  "nano-banana-pro-4k-vip",
 ]);
+
+/** Video: Grsai Sora2 / Veo docs — в picker с «+». */
+export const GRSAI_WIRED_VIDEO_SLUGS = new Set([
+  "sora-2",
+  "sora2-portrait",
+  "sora2-landscape",
+  "veo3.1-fast",
+  "veo3.1-pro",
+  "veo-3-1-lite",
+  "veo-3-fast",
+]);
+
+/**
+ * Audio: на Grsai моделей нет — Set пустой.
+ * Все модели Create (Suno / ElevenLabs) доступны через пайплайн.
+ */
+export const GRSAI_WIRED_AUDIO_SLUGS = new Set<string>([]);
 
 export type OutseeVideoModel = {
   slug: string;
@@ -80,6 +105,8 @@ export type OutseeVideoModel = {
   isNew?: boolean;
   hidden?: boolean;
   advanced?: boolean;
+  /** Временно подключено через Grsai API — в меню с «+» */
+  grsaiWired?: boolean;
   chips: OutseeChip[];
   defaults: {
     aspectRatio?: string;
@@ -87,6 +114,8 @@ export type OutseeVideoModel = {
     duration?: number;
     generateAudio?: boolean;
     motionQuality?: string;
+    /** sora size small|large */
+    soraSize?: string;
   };
   /** Nn table (если пусто — HH вернёт [] / override) */
   nn: {
@@ -310,8 +339,24 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
 ];
 
 /** Модель временно подключена через Grsai — в меню с «+». */
-export function isGrsaiWiredSlug(slug: string): boolean {
+export function isGrsaiWiredSlug(slug: string, media: OutseeMediaType = "image"): boolean {
+  if (media === "video") return GRSAI_WIRED_VIDEO_SLUGS.has(slug);
+  if (media === "audio") return GRSAI_WIRED_AUDIO_SLUGS.has(slug);
   return GRSAI_WIRED_SLUGS.has(slug);
+}
+
+/** Create slug → Grsai API model id */
+export function toGrsaiVideoModel(slug: string): string {
+  const map: Record<string, string> = {
+    "veo-3-1-lite": "veo3.1-fast",
+    "veo-3-fast": "veo3.1-fast",
+    "veo3.1-fast": "veo3.1-fast",
+    "veo3.1-pro": "veo3.1-pro",
+    "sora-2": "sora-2",
+    "sora2-portrait": "sora2-portrait",
+    "sora2-landscape": "sora2-landscape",
+  };
+  return map[slug] || "sora-2";
 }
 
 /**
@@ -319,6 +364,71 @@ export function isGrsaiWiredSlug(slug: string): boolean {
  * Nn options — module 90228; UI aspect override для veo/omni — из HH/d.
  */
 export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
+  {
+    slug: "sora-2",
+    studioId: null,
+    displayName: "Sora 2",
+    description: "Grsai · OpenAI Sora 2, звук + физика. 10/15с.",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
+    price: "от 0.08",
+    isTop: true,
+    grsaiWired: true,
+    chips: ["aspect", "duration"],
+    defaults: { aspectRatio: "9:16", duration: 10, soraSize: "small" },
+    nn: {
+      resolutions: [],
+      durations: [10, 15],
+      aspectRatios: ["9:16", "16:9"],
+    },
+  },
+  {
+    slug: "sora2-portrait",
+    studioId: null,
+    displayName: "Sora 2 Portrait",
+    description: "Grsai · Sora 2 вертикаль 9:16.",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
+    price: "от 0.08",
+    grsaiWired: true,
+    chips: ["duration"],
+    defaults: { aspectRatio: "9:16", duration: 10, soraSize: "small" },
+    nn: { resolutions: [], durations: [10, 15], aspectRatios: ["9:16"] },
+  },
+  {
+    slug: "sora2-landscape",
+    studioId: null,
+    displayName: "Sora 2 Landscape",
+    description: "Grsai · Sora 2 горизонталь 16:9.",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
+    price: "от 0.08",
+    grsaiWired: true,
+    chips: ["duration"],
+    defaults: { aspectRatio: "16:9", duration: 10, soraSize: "small" },
+    nn: { resolutions: [], durations: [10, 15], aspectRatios: ["16:9"] },
+  },
+  {
+    slug: "veo3.1-fast",
+    studioId: null,
+    displayName: "Veo 3.1 Fast",
+    description: "Grsai · Google Veo 3.1 Fast.",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
+    price: "от 0.4",
+    grsaiWired: true,
+    chips: ["aspect"],
+    defaults: { aspectRatio: "16:9", duration: 8 },
+    nn: { resolutions: [], durations: [8], aspectRatios: ["16:9", "9:16"] },
+  },
+  {
+    slug: "veo3.1-pro",
+    studioId: null,
+    displayName: "Veo 3.1 Pro",
+    description: "Grsai · Google Veo 3.1 Pro.",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
+    price: "от 0.4",
+    grsaiWired: true,
+    chips: ["aspect"],
+    defaults: { aspectRatio: "16:9", duration: 8 },
+    nn: { resolutions: [], durations: [8], aspectRatios: ["16:9", "9:16"] },
+  },
   {
     slug: "seedance-1-5-pro",
     studioId: "seedance_pro_1_5",
@@ -386,9 +496,10 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     slug: "veo-3-1-lite",
     studioId: "veo_3_1_lite",
     displayName: "Veo 3.1 Lite",
-    description: "Лёгкая версия Veo 3.1. Хорошая генерация русской речи.",
+    description: "Grsai · alias veo3.1-fast. Хорошая генерация русской речи.",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
-    price: "от 13",
+    price: "от 0.4",
+    grsaiWired: true,
     chips: ["aspect", "duration"],
     defaults: { aspectRatio: "16:9", duration: 8 },
     nn: {
@@ -544,10 +655,11 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     slug: "veo-3-fast",
     studioId: "veo_3_fast",
     displayName: "Veo 3 Fast",
-    description: "Вторая по популярности модель. Хорошая генерация русской речи.",
+    description: "Grsai · alias veo3.1-fast.",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
-    price: "от 13",
+    price: "от 0.4",
     hidden: true,
+    grsaiWired: true,
     chips: ["aspect", "duration"],
     defaults: { aspectRatio: "16:9", duration: 8 },
     nn: {
@@ -558,7 +670,10 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
   },
 ];
 
-/** Аудио — eN + registry o (suno / elevenlabs). */
+/**
+ * Аудио — все модели Create (Suno / ElevenLabs).
+ * На Grsai audio API нет → без «+»; «Генерировать» запускает пайплайн audio.
+ */
 export const OUTSEE_AUDIO_MODELS: OutseeAudioModel[] = [
   {
     slug: "suno-5-5",
