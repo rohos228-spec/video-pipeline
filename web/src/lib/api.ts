@@ -853,6 +853,46 @@ export const api = {
       }[]
     >(`/api/outsee-create/history?kind=${kind}`),
 
+  getGrsaiStatus: () =>
+    http<{
+      enabled: boolean;
+      configured: boolean;
+      provider: string;
+      base_url: string;
+      default_model: string;
+      key_suffix: string | null;
+      wired_models: string[];
+    }>(`/api/grsai/status`),
+  listGrsaiModels: () =>
+    http<{
+      models: {
+        slug: string;
+        display_name: string;
+        wired: boolean;
+        family: string;
+        resolutions: string[];
+        aspects: string[];
+        badge: string;
+      }[];
+    }>(`/api/grsai/models`),
+  grsaiGenerate: (body: {
+    prompt: string;
+    model?: string;
+    aspect?: string;
+    resolution?: string;
+  }) =>
+    http<{
+      ok: boolean;
+      model: string;
+      path: string;
+      preview_url: string;
+      raw_url?: string | null;
+      bytes: number;
+    }>(`/api/grsai/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];

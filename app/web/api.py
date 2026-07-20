@@ -47,6 +47,9 @@ from app.web.routers import (
     outsee_create as outsee_create_router,
 )
 from app.web.routers import (
+    grsai as grsai_router,
+)
+from app.web.routers import (
     project_ops as project_ops_router,
 )
 from app.web.routers import (
@@ -186,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
     app.include_router(outsee_create_router.router, prefix=API_PREFIX)
+    app.include_router(grsai_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)

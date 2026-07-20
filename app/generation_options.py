@@ -40,36 +40,48 @@ class OptionChoice:
 
 IMAGE_GENERATORS: list[OptionChoice] = [
     OptionChoice(
-        "nano_banana_2", "Nano Banana 2", "nano-banana-2",
-        "Самая новая версия Nano banana",
+        "nano_banana_2", "+ Nano Banana 2", "nano-banana-2",
+        "Grsai · Самая новая версия Nano banana",
     ),
     OptionChoice(
-        "nano_banana", "Nano Banana", "nano-banana",
-        "Быстрая и точная. Хороша для точечного редактирования ваших фото",
+        "nano_banana_2_lite", "+ Nano Banana 2 Lite", "nano-banana-2-lite",
+        "Grsai · быстрая/дешёвая Banana 2",
     ),
     OptionChoice(
-        "nano_banana_pro", "Nano Banana Pro", "nano-banana-pro",
-        "Лучшая модель на рынке (TOP). Идеальна для любых задач",
+        "nano_banana_pro", "+ Nano Banana Pro", "nano-banana-pro",
+        "Grsai · Лучшая модель на рынке (TOP)",
+    ),
+    OptionChoice(
+        "nano_banana_fast", "+ Nano Banana Fast", "nano-banana-fast",
+        "Grsai · быстрый Nano Banana",
+    ),
+    OptionChoice(
+        "nano_banana", "+ Nano Banana", "nano-banana",
+        "Grsai · быстрая и точная",
+    ),
+    OptionChoice(
+        "gpt_image_2", "+ GPT Image 2", "gpt-image-2",
+        "Grsai · постеры и реклама с текстом",
+    ),
+    OptionChoice(
+        "gpt_image_2_vip", "+ GPT Image 2 VIP", "gpt-image-2-vip",
+        "Grsai · VIP до 4K (пиксели)",
     ),
     OptionChoice(
         "seedream_4_5", "Seedream 4.5", "seedream-4.5",
-        "Продвинутая модель от TikTok. Подходит для всего. 4K",
+        "Outsee · TikTok Seedream 4K",
     ),
     OptionChoice(
         "seedream_5_0_lite", "Seedream 5.0 Lite", "seedream-5-lite",
-        "Новейшая версия Seedream. Быстрая генерация в высоком качестве",
+        "Outsee · Seedream 5 Lite",
     ),
     OptionChoice(
         "seedream_5_pro", "Seedream 5 Pro", "seedream-5-pro",
-        "Флагман Seedream. Высокая точность, до 10 референсов",
+        "Outsee · Seedream 5 Pro",
     ),
     OptionChoice(
         "gpt_image_1_5", "GPT Image 1.5", "gpt-image-1.5",
-        "Флагманская модель OpenAI. Универсальна и надёжна",
-    ),
-    OptionChoice(
-        "gpt_image_2", "GPT Image 2", "gpt-image-2",
-        "Новейшая модель OpenAI. Идеальна для постеров и рекламы с текстом. До 4K",
+        "Outsee · GPT Image 1.5",
     ),
 ]
 
@@ -101,14 +113,17 @@ IMAGE_RESOLUTIONS: list[OptionChoice] = [
 
 # Какие кнопки разрешения реально есть у модели на outsee.io/image (из UI JS).
 IMAGE_RESOLUTIONS_BY_GENERATOR: dict[str, tuple[str, ...]] = {
-    "nano_banana_2": ("2k", "4k"),
-    "nano_banana_pro": ("2k", "4k"),
-    "nano_banana": ("2k",),
+    "nano_banana_2": ("1k", "2k", "4k"),
+    "nano_banana_2_lite": ("1k", "2k"),
+    "nano_banana_pro": ("1k", "2k", "4k"),
+    "nano_banana_fast": ("1k", "2k"),
+    "nano_banana": ("1k", "2k"),
     "seedream_4_5": ("2k", "4k"),
     "seedream_5_0_lite": ("2k", "3k"),
     "seedream_5_pro": ("1k", "2k"),
     "gpt_image_1_5": ("2k",),
-    "gpt_image_2": ("1k", "2k", "4k"),
+    "gpt_image_2": ("1k",),
+    "gpt_image_2_vip": ("1k", "2k", "4k"),
 }
 
 

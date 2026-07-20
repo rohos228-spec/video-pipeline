@@ -39,6 +39,7 @@ import {
   getAudioModel,
   getImageModel,
   getVideoModel,
+  isGrsaiWiredSlug,
   outseeCreateUrl,
   pickerModelsForType,
   slugToStudioId,
@@ -84,6 +85,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [motionQuality, setMotionQuality] = useState("std");
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [imageProvider, setImageProvider] = useState<"grsai" | "outsee">("grsai");
   const [modelOpen, setModelOpen] = useState(false);
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,6 +96,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     queryKey: ["outsee-create-settings"],
     queryFn: api.getOutseeCreateSettings,
     enabled: open,
+  });
+
+  const grsaiStatusQ = useQuery({
+    queryKey: ["grsai-status"],
+    queryFn: api.getGrsaiStatus,
+    enabled: open,
+    staleTime: 30_000,
   });
 
   const historyQ = useQuery({
@@ -123,6 +132,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setMotionQuality(String(s.motion_quality || "std"));
     setInstrumental(Boolean(s.instrumental));
     setPrompt(String(s.prompt || ""));
+    setImageProvider(s.image_provider === "outsee" ? "outsee" : "grsai");
     setSettingsHydrated(true);
   }, [open, settingsQ.data, settingsHydrated]);
 
@@ -163,6 +173,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       : mediaType === "video"
         ? videoModel.displayName
         : audioModel.displayName;
+  const currentWired = mediaType === "image" && isGrsaiWiredSlug(imageSlug);
+  const canGrsaiDirect =
+    mediaType === "image" &&
+    imageProvider === "grsai" &&
+    currentWired &&
+    Boolean(grsaiStatusQ.data?.configured);
   const currentIcon =
     mediaType === "image"
       ? imageModel.icon
@@ -245,6 +261,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     motion_quality: motionQuality,
     instrumental,
     prompt,
+    image_provider: imageProvider,
   });
 
   const saveGlobal = useMutation({
@@ -285,15 +302,41 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const grsaiGenerate = useMutation({
+    mutationFn: async () => {
+      const text = prompt.trim();
+      if (!text) throw new Error("Введите промпт");
+      if (!grsaiStatusQ.data?.configured) {
+        throw new Error("GRSAI_API_KEY не задан в .env — перезапустите бэкенд");
+      }
+      await api.putOutseeCreateSettings(settingsPayload());
+      return api.grsaiGenerate({
+        prompt: text,
+        model: imageSlug,
+        aspect,
+        resolution,
+      });
+    },
+    onSuccess: (res) => {
+      toast.success(`Grsai: ${res.model} готово`);
+      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+      if (res.preview_url) setSelectedId(`grsai-${res.path.split("/").pop()}`);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const runStep = useMutation({
     mutationFn: async () => {
+      if (canGrsaiDirect) {
+        return grsaiGenerate.mutateAsync();
+      }
       if (projectId == null) throw new Error("Для запуска пайплайна выберите проект");
       await applyToProject.mutateAsync();
       const step = mediaType === "video" ? "video" : mediaType === "audio" ? "audio" : "img";
       return api.runProjectStep(projectId, step);
     },
     onSuccess: () => {
-      toast.success("Шаг запущен");
+      if (!canGrsaiDirect) toast.success("Шаг запущен");
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -555,7 +598,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         height={18}
                         className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
                       />
-                      <span className="font-medium">{currentName}</span>
+                      <span className="font-medium">
+                        {currentWired ? (
+                          <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
+                        ) : null}
+                        {currentName}
+                      </span>
                       <ChevronDown className="h-3 w-3 opacity-60" />
                     </ChipButton>
                     {modelOpen && (
@@ -706,6 +754,32 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     )}
 
                   <div className="ml-auto flex flex-wrap items-center gap-2">
+                    {mediaType === "image" && (
+                      <div
+                        className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5"
+                        title={
+                          grsaiStatusQ.data?.configured
+                            ? `Grsai …${grsaiStatusQ.data.key_suffix || ""}`
+                            : "Задайте GRSAI_API_KEY в .env"
+                        }
+                      >
+                        {(["grsai", "outsee"] as const).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setImageProvider(p)}
+                            className={cn(
+                              "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wide",
+                              imageProvider === p
+                                ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
+                                : "text-white/40 hover:text-white/70",
+                            )}
+                          >
+                            {p === "grsai" ? "Grsai+" : "Outsee"}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <button
                       type="button"
                       disabled={saveGlobal.isPending}
@@ -725,16 +799,29 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </button>
                     <button
                       type="button"
-                      disabled={runStep.isPending || projectId == null || mediaType === "audio"}
+                      disabled={
+                        runStep.isPending ||
+                        grsaiGenerate.isPending ||
+                        mediaType === "audio" ||
+                        (!canGrsaiDirect && projectId == null) ||
+                        (canGrsaiDirect && !prompt.trim())
+                      }
                       onClick={() => runStep.mutate()}
                       className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
                       style={{ backgroundColor: OUTSEE_ACCENT }}
+                      title={
+                        canGrsaiDirect
+                          ? "Сгенерировать через Grsai API (без проекта)"
+                          : "Запустить шаг пайплайна для выбранного проекта"
+                      }
                     >
-                      {runStep.isPending ? (
+                      {runStep.isPending || grsaiGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           …
                         </>
+                      ) : canGrsaiDirect ? (
+                        "Генерировать +"
                       ) : (
                         "Генерировать"
                       )}
@@ -909,6 +996,7 @@ function ModelPickerPopover({
       >
         {models.map((m) => {
           const active = m.slug === selectedSlug;
+          const wired = "grsaiWired" in m && Boolean(m.grsaiWired);
           const badge = m.isTop
             ? { tone: "top" as const, label: "ТОП" }
             : m.isNew
@@ -926,6 +1014,15 @@ function ModelPickerPopover({
                   : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
               )}
             >
+              {wired && (
+                <span
+                  className="absolute -top-1.5 left-2 z-10 rounded-md px-1.5 py-0.5 font-mono text-[11px] font-bold leading-none text-black"
+                  style={{ backgroundColor: OUTSEE_ACCENT }}
+                  title="Временно подключено через Grsai"
+                >
+                  +
+                </span>
+              )}
               {badge && (
                 <span
                   className={cn(
@@ -955,6 +1052,9 @@ function ModelPickerPopover({
                   className="truncate text-[12px] font-medium"
                   style={{ color: active ? OUTSEE_ACCENT : "white" }}
                 >
+                  {wired ? (
+                    <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
+                  ) : null}
                   {m.displayName}
                 </p>
                 <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">

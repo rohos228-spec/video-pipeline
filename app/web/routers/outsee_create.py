@@ -25,7 +25,7 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "video_slug": "kling-3-0",
     "audio_slug": "suno-5-5",
     "aspect": "16:9",
-    "image_resolution": "2K",
+    "image_resolution": "1K",
     "image_quality": "medium",
     "image_relax": False,
     "video_resolution": "1080p",
@@ -36,6 +36,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "motion_quality": "std",
     "instrumental": False,
     "prompt": "",
+    # grsai | outsee — для кнопки «Генерировать» в Create
+    "image_provider": "grsai",
 }
 
 
@@ -171,6 +173,31 @@ async def list_outsee_create_history(
                 ),
             }
         )
+
+    # Глобальная история Grsai Create
+    if kind in ("all", "image"):
+        gdir = settings.data_dir / "grsai_history"
+        if gdir.is_dir():
+            try:
+                files = sorted(gdir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                files = []
+            for fp in files[:80]:
+                out.insert(
+                    0,
+                    {
+                        "id": f"grsai-{fp.name}",
+                        "kind": "image",
+                        "artifact_kind": "grsai",
+                        "preview_url": f"/api/files?path={fp.resolve()}",
+                        "path": str(fp),
+                        "label": fp.stem[:12],
+                        "project_id": None,
+                        "project_slug": "grsai",
+                        "frame_id": None,
+                        "prompt": None,
+                    },
+                )
 
     # Disk fallback: scenes/videos across projects if DB sparse
     if len(out) < 40:
