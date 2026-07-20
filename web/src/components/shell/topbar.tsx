@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity, Network } from "lucide-react";
+import { Sparkles, Activity, Network, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -10,6 +10,7 @@ import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
 interface UiState {
   framesProjectId: number | null;
   openFrames: (projectId: number) => void;
+  openOutsee: (projectId?: number | null) => void;
 }
 
 const UiContext = createContext<UiState | null>(null);
@@ -30,8 +31,16 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
     setFramesOpen(true);
   };
 
+  const openOutsee = (projectId?: number | null) => {
+    window.dispatchEvent(
+      new CustomEvent("studio-open-outsee", {
+        detail: { projectId: projectId ?? null },
+      }),
+    );
+  };
+
   return (
-    <UiContext.Provider value={{ framesProjectId, openFrames }}>
+    <UiContext.Provider value={{ framesProjectId, openFrames, openOutsee }}>
       <div className="flex h-full min-h-0 w-full flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/30 px-4 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
@@ -49,6 +58,16 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => openOutsee()}
+            className="gap-2 text-xs font-semibold"
+            title="Полный интерфейс генерации outsee"
+          >
+            <Wand2 className="h-3.5 w-3.5" />
+            Генерация
+          </Button>
           <Button
             variant="ghost"
             size="sm"
