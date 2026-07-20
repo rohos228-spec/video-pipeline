@@ -7,7 +7,9 @@
  * Не выдумывать опции: только то, что отдаёт HH(model, chip).
  */
 
-export type OutseeMediaType = "image" | "video";
+export type OutseeMediaType = "image" | "video" | "audio";
+
+export type OutseeFeedKind = "all" | "image" | "video" | "audio";
 
 export type OutseeChip =
   | "aspect"
@@ -17,7 +19,21 @@ export type OutseeChip =
   | "audio"
   | "orientation"
   | "quality"
+  | "instrumental"
   | "image-input";
+
+export type OutseeAudioModel = {
+  slug: string;
+  studioId: string | null;
+  displayName: string;
+  description: string;
+  icon: string;
+  price: string;
+  isTop?: boolean;
+  isNew?: boolean;
+  chips: OutseeChip[];
+  defaults: { instrumental?: boolean; voice?: string; speed?: number };
+};
 
 export type OutseeImageModel = {
   slug: string;
@@ -109,7 +125,23 @@ export const OUTSEE_CHIP_LABELS: Record<string, string> = {
   audio: "Звук",
   orientation: "Ориентация",
   quality: "Качество",
+  instrumental: "Вокал",
 };
+
+/** Вертикальный typetoggle create (ep=). */
+export const OUTSEE_TYPE_TABS: { id: OutseeMediaType; label: string }[] = [
+  { id: "image", label: "Фото" },
+  { id: "video", label: "Видео" },
+  { id: "audio", label: "Аудио" },
+];
+
+/** Фильтр истории create (aJ=). */
+export const OUTSEE_FEED_TABS: { id: OutseeFeedKind; label: string }[] = [
+  { id: "all", label: "Все" },
+  { id: "image", label: "Фото" },
+  { id: "video", label: "Видео" },
+  { id: "audio", label: "Аудио" },
+];
 
 export const OUTSEE_ACCENT = "#D1FE17";
 
@@ -431,6 +463,18 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     defaults: { aspectRatio: "16:9", motionQuality: "std" },
     nn: { resolutions: ["std", "pro"], durations: [1], aspectRatios: [] },
   },
+  {
+    slug: "topaz-video-upscale",
+    studioId: null,
+    displayName: "Topaz Video Upscale",
+    description: "AI-апскейл видео до 4K · Starlight · Proteus · Astra · от 5 ток",
+    icon: `${OUTSEE_ORIGIN}/videomobilepreview/topaz.webp`,
+    price: "от 5",
+    advanced: true,
+    chips: [],
+    defaults: {},
+    nn: { resolutions: ["1080p", "4k"], durations: [1], aspectRatios: [] },
+  },
   // hidden alias veo-3-fast → same as lite UI
   {
     slug: "veo-3-fast",
@@ -450,18 +494,67 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
   },
 ];
 
-/** Модели в picker (без hidden). */
+/** Аудио — eN + registry o (suno / elevenlabs). */
+export const OUTSEE_AUDIO_MODELS: OutseeAudioModel[] = [
+  {
+    slug: "suno-5-5",
+    studioId: null,
+    displayName: "Suno 5.5",
+    description: "Улучшенное качество и персонализация.",
+    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/suno.webp`,
+    price: "2.5",
+    chips: ["instrumental"],
+    defaults: { instrumental: false },
+  },
+  {
+    slug: "elevenlabs-v3",
+    studioId: null,
+    displayName: "ElevenLabs",
+    description: "Реалистичная озвучка текста. Сотни голосов, десятки языков.",
+    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/elevenlabs.webp`,
+    price: "от 0.1",
+    isNew: true,
+    chips: [],
+    defaults: { voice: "Rachel", speed: 1 },
+  },
+];
+
+/**
+ * Порядок picker image как ej на /create (все модели, включая «hidden»).
+ */
+const IMAGE_PICKER_ORDER = [
+  "nano-banana-2",
+  "nano-banana-pro",
+  "seedream-4.5",
+  "seedream-5-pro",
+  "seedream-5-lite",
+  "nano-banana",
+  "gpt-image-1.5",
+  "gpt-image-2",
+  "topaz-image-upscale",
+] as const;
+
 export function pickerImageModels(): OutseeImageModel[] {
-  return OUTSEE_IMAGE_MODELS.filter((m) => !m.hidden);
+  const by = new Map(OUTSEE_IMAGE_MODELS.map((m) => [m.slug, m]));
+  return IMAGE_PICKER_ORDER.map((s) => by.get(s)).filter(Boolean) as OutseeImageModel[];
 }
 
 export function pickerVideoModels(): OutseeVideoModel[] {
-  return OUTSEE_VIDEO_MODELS.filter((m) => !m.hidden && !m.advanced);
+  return OUTSEE_VIDEO_MODELS.filter((m) => !m.hidden);
 }
 
 export function pickerVideoModelsAll(): OutseeVideoModel[] {
-  // create page S0 includes advanced too (lip-sync, motion) — они в Object.values
   return OUTSEE_VIDEO_MODELS.filter((m) => !m.hidden);
+}
+
+export function pickerAudioModels(): OutseeAudioModel[] {
+  return [...OUTSEE_AUDIO_MODELS];
+}
+
+export function pickerModelsForType(type: OutseeMediaType) {
+  if (type === "image") return pickerImageModels();
+  if (type === "video") return pickerVideoModelsAll();
+  return pickerAudioModels();
 }
 
 /**
@@ -529,6 +622,11 @@ export const DOCK_CHIP_ORDER: OutseeChip[] = [
 ];
 
 export function dockChipsForModel(slug: string, mediaType: OutseeMediaType): OutseeChip[] {
+  if (mediaType === "audio") {
+    const model = OUTSEE_AUDIO_MODELS.find((m) => m.slug === slug);
+    if (!model) return [];
+    return (["instrumental"] as OutseeChip[]).filter((c) => model.chips.includes(c));
+  }
   const model =
     mediaType === "image"
       ? OUTSEE_IMAGE_MODELS.find((m) => m.slug === slug)
@@ -538,7 +636,10 @@ export function dockChipsForModel(slug: string, mediaType: OutseeMediaType): Out
 }
 
 export function getImageModel(slug: string): OutseeImageModel {
-  return OUTSEE_IMAGE_MODELS.find((m) => m.slug === slug) ?? OUTSEE_IMAGE_MODELS[5]!;
+  return (
+    OUTSEE_IMAGE_MODELS.find((m) => m.slug === slug) ??
+    OUTSEE_IMAGE_MODELS.find((m) => m.slug === "gpt-image-2")!
+  );
 }
 
 export function getVideoModel(slug: string): OutseeVideoModel {
@@ -548,17 +649,26 @@ export function getVideoModel(slug: string): OutseeVideoModel {
   );
 }
 
+export function getAudioModel(slug: string): OutseeAudioModel {
+  return OUTSEE_AUDIO_MODELS.find((m) => m.slug === slug) ?? OUTSEE_AUDIO_MODELS[0]!;
+}
+
 export function studioIdToSlug(studioId: string | null | undefined, kind: OutseeMediaType): string {
-  if (!studioId) return kind === "image" ? "gpt-image-2" : "kling-3-0";
+  if (!studioId) {
+    if (kind === "image") return "gpt-image-2";
+    if (kind === "audio") return "suno-5-5";
+    return "kling-3-0";
+  }
+  if (kind === "audio") return studioId.replace(/_/g, "-");
   const list = kind === "image" ? OUTSEE_IMAGE_MODELS : OUTSEE_VIDEO_MODELS;
   const hit = list.find((m) => m.studioId === studioId);
   if (hit) return hit.slug;
-  // legacy studio ids
   if (studioId === "veo_3_1_fast") return "veo-3-1-lite";
   return studioId.replace(/_/g, "-");
 }
 
 export function slugToStudioId(slug: string, kind: OutseeMediaType): string | null {
+  if (kind === "audio") return null;
   const list = kind === "image" ? OUTSEE_IMAGE_MODELS : OUTSEE_VIDEO_MODELS;
   return list.find((m) => m.slug === slug)?.studioId ?? null;
 }
@@ -590,7 +700,8 @@ export function studioResToLabel(id: string | null | undefined, slug?: string): 
 }
 
 export function outseeCreateUrl(type: OutseeMediaType, slug: string): string {
-  return `${OUTSEE_ORIGIN}/create?type=${type}&model=${encodeURIComponent(slug)}`;
+  const t = type === "audio" ? "audio" : type;
+  return `${OUTSEE_ORIGIN}/create?type=${t}&model=${encodeURIComponent(slug)}`;
 }
 
 export function outseeImageUrl(slug: string): string {

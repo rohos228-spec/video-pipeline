@@ -830,6 +830,29 @@ export const api = {
       queued_after_current?: boolean;
     }>;
   },
+  getOutseeCreateSettings: () =>
+    http<Record<string, unknown>>(`/api/outsee-create/settings`),
+  putOutseeCreateSettings: (body: Record<string, unknown>) =>
+    http<Record<string, unknown>>(`/api/outsee-create/settings`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  listOutseeCreateHistory: (kind: "all" | "image" | "video" | "audio" = "all") =>
+    http<
+      {
+        id: string;
+        kind: string;
+        artifact_kind?: string;
+        preview_url: string | null;
+        path: string | null;
+        label: string;
+        project_id: number | null;
+        project_slug: string | null;
+        frame_id: number | null;
+        prompt: string | null;
+      }[]
+    >(`/api/outsee-create/history?kind=${kind}`),
+
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
