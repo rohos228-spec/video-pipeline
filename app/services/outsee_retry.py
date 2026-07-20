@@ -604,7 +604,7 @@ async def generate_image_with_retries(
                     res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
                         "image_resolution"
                     )
-                    return await grsai_generate_image(
+                    result = await grsai_generate_image(
                         send_prompt,
                         out_path,
                         model_slug=slug,
@@ -615,6 +615,33 @@ async def generate_image_with_retries(
                         gen_id=attempt_kwargs.get("gen_id"),
                         project_id=pid if isinstance(pid, int) else None,
                     )
+                    # Метаданные рядом с файлом на диске (папка проекта уже создана)
+                    try:
+                        from app.services.generation_storage import write_sidecar
+                        from app.services.grsai_pricing import quote_generation
+
+                        write_sidecar(
+                            result.file_path,
+                            media="image",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res) if res else "1K",
+                                "project_id": pid,
+                                "gen_id": attempt_kwargs.get("gen_id"),
+                            },
+                            raw_url=result.raw_url,
+                            quote=quote_generation(
+                                media="image",
+                                model=slug,
+                                resolution=str(res) if res else "1K",
+                            ),
+                            provider="grsai",
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("grsai sidecar write skipped", exc_info=True)
+                    return result
                 return await outsee.generate_image(
                     send_prompt, out_path, **attempt_kwargs
                 )

@@ -176,39 +176,13 @@ async def list_outsee_create_history(
             }
         )
 
-    # Глобальная история Grsai Create (image + video)
-    if kind in ("all", "image", "video"):
-        gdir = settings.data_dir / "grsai_history"
-        if gdir.is_dir():
-            patterns: list[str] = []
-            if kind in ("all", "image"):
-                patterns.extend(["*.png", "*.jpg", "*.jpeg", "*.webp"])
-            if kind in ("all", "video"):
-                patterns.extend(["*.mp4", "*.webm"])
-            files: list[Path] = []
-            try:
-                for pat in patterns:
-                    files.extend(gdir.glob(pat))
-                files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
-            except OSError:
-                files = []
-            for fp in files[:80]:
-                media = "video" if fp.suffix.lower() in {".mp4", ".webm"} else "image"
-                out.insert(
-                    0,
-                    {
-                        "id": f"grsai-{fp.name}",
-                        "kind": media,
-                        "artifact_kind": "grsai",
-                        "preview_url": f"/api/files?path={fp.resolve()}",
-                        "path": str(fp),
-                        "label": fp.stem[:12],
-                        "project_id": None,
-                        "project_slug": "grsai",
-                        "frame_id": None,
-                        "prompt": None,
-                    },
-                )
+    # Локальные результаты Create: data/generations/... (+ legacy grsai_history)
+    from app.services.generation_storage import list_generation_files
+
+    for item in list_generation_files(kind=kind, limit=80):
+        if any(x["id"] == item["id"] for x in out):
+            continue
+        out.insert(0, item)
 
     # Disk fallback: scenes/videos across projects if DB sparse
     if len(out) < 40:

@@ -49,6 +49,7 @@ import {
   type OutseeFeedKind,
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
+import { estimateCreatePrice } from "@/lib/create-pricing";
 
 type Props = {
   open: boolean;
@@ -61,6 +62,7 @@ type HistoryItem = {
   id: string;
   kind: string;
   preview_url: string | null;
+  path?: string | null;
   label: string;
   project_id: number | null;
   project_slug: string | null;
@@ -189,6 +191,49 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       : mediaType === "video"
         ? videoModel.icon
         : audioModel.icon;
+  const currentCatalogPrice =
+    mediaType === "image"
+      ? imageModel.price
+      : mediaType === "video"
+        ? videoModel.price
+        : audioModel.price;
+
+  const quoteModel =
+    mediaType === "video" && canGrsaiDirect ? toGrsaiVideoModel(videoSlug) : activeSlug;
+
+  const quoteQ = useQuery({
+    queryKey: [
+      "grsai-quote",
+      mediaType,
+      quoteModel,
+      resolution,
+      duration,
+      soraSize,
+      currentCatalogPrice,
+    ],
+    queryFn: () =>
+      api.grsaiQuote({
+        media: mediaType,
+        model: quoteModel,
+        resolution,
+        duration: Number(duration) || 10,
+        size: soraSize,
+        catalog_price: currentCatalogPrice,
+      }),
+    enabled: open,
+    staleTime: 5_000,
+  });
+
+  const priceLabel =
+    quoteQ.data?.label ||
+    estimateCreatePrice({
+      media: mediaType,
+      model: quoteModel,
+      resolution,
+      duration: Number(duration) || 10,
+      size: soraSize,
+      catalogPrice: currentCatalogPrice,
+    }).label;
 
   useEffect(() => {
     if (mediaType === "image") {
@@ -458,7 +503,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               </div>
             ) : historyItems.length === 0 ? (
               <div className="px-2 py-8 text-center text-[11px] text-white/35">
-                Пока нет генераций ни в одном проекте
+                Пока нет файлов. Результаты сохраняются в{" "}
+                <span className="font-mono text-white/50">data/generations/</span>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-1.5">
@@ -512,34 +558,46 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               Результат генерации
             </h2>
           </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center px-4 pb-[230px] lg:px-6">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
             {selected?.preview_url ? (
-              selected.kind === "video" ? (
-                <video
-                  src={selected.preview_url}
-                  controls
-                  className="max-h-[calc(100vh-300px)] max-w-full rounded-xl border border-white/[0.06] bg-black"
-                />
-              ) : selected.kind === "audio" ? (
-                <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8">
-                  <Music className="h-8 w-8 text-white/40" />
-                  <div className="text-sm text-white/70">{selected.label}</div>
-                  <audio src={selected.preview_url} controls className="w-full" />
-                </div>
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={selected.preview_url}
-                  alt=""
-                  className="max-h-[calc(100vh-300px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
-                />
-              )
+              <>
+                {selected.kind === "video" ? (
+                  <video
+                    src={selected.preview_url}
+                    controls
+                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] bg-black"
+                  />
+                ) : selected.kind === "audio" ? (
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8">
+                    <Music className="h-8 w-8 text-white/40" />
+                    <div className="text-sm text-white/70">{selected.label}</div>
+                    <audio src={selected.preview_url} controls className="w-full" />
+                  </div>
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={selected.preview_url}
+                    alt=""
+                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
+                  />
+                )}
+                {selected.path && (
+                  <div
+                    className="max-w-full truncate px-2 font-mono text-[10px] text-white/35"
+                    title={selected.path}
+                  >
+                    {selected.path}
+                  </div>
+                )}
+              </>
             ) : (
               <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-10 text-center">
                 <ImageIcon className="h-8 w-8 text-white/30" />
                 <div className="text-sm text-white/70">Нет результата</div>
                 <div className="text-[12px] text-white/40">
-                  Выбери тип слева (Фото / Видео / Аудио), модель в списке и сохрани настройки.
+                  Файлы пишутся в{" "}
+                  <span className="font-mono text-white/55">data/generations/</span> на этом
+                  компьютере.
                 </div>
               </div>
             )}
@@ -838,6 +896,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     >
                       В проект
                     </button>
+                    <div
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/75"
+                      title="1 токен = $0.10 (10¢). Цена за выбранные параметры."
+                    >
+                      <Coins className="h-3 w-3 text-[rgba(209,254,23,0.85)]" strokeWidth={2.5} />
+                      <span>{priceLabel}</span>
+                    </div>
                     <button
                       type="button"
                       disabled={
@@ -851,10 +916,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       style={{ backgroundColor: OUTSEE_ACCENT }}
                       title={
                         canGrsaiDirect
-                          ? "Сгенерировать через Grsai API (без проекта)"
+                          ? `Сгенерировать через Grsai · ${priceLabel}`
                           : mediaType === "audio"
-                            ? "Запустить шаг audio для выбранного проекта (все аудиомодели)"
-                            : "Запустить шаг пайплайна для выбранного проекта"
+                            ? `Запустить шаг audio · ${priceLabel}`
+                            : `Запустить шаг пайплайна · ${priceLabel}`
                       }
                     >
                       {runStep.isPending || grsaiGenerate.isPending ? (
