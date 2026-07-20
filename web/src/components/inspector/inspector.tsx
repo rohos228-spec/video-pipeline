@@ -12,6 +12,7 @@ import { formatRelativeTime } from "@/lib/utils";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { ProjectSettingsPanel } from "@/components/inspector/project-settings";
+import { OutseeGenPanel } from "@/components/inspector/outsee-gen-panel";
 import { TopicEditor } from "@/components/inspector/topic-editor";
 import { MontageHandoffCard } from "@/components/fleet/montage-handoff-card";
 import { useUi } from "@/components/shell/topbar";
@@ -59,6 +60,11 @@ export function Inspector({
           {selectedNodeKey && (
             <div className="flex flex-col gap-3">
               <NodeInspector nodeKey={selectedNodeKey} projectId={projectId} />
+              {project.data &&
+                (nodeTypeFromKey(selectedNodeKey) === "images" ||
+                  nodeTypeFromKey(selectedNodeKey) === "videos") && (
+                  <OutseeGenPanel project={project.data} />
+                )}
               {project.data ? <MontageHandoffCard project={project.data} /> : null}
               {onOpenNodeStudio && nodeTypeFromKey(selectedNodeKey) !== "topic" && (
                 <Button size="sm" variant="default" className="w-full" onClick={onOpenNodeStudio}>
@@ -69,6 +75,7 @@ export function Inspector({
           )}
           {projectId != null && !selectedNodeKey && project.data && (
             <div className="flex flex-col gap-4">
+              <OutseeGenPanel project={project.data} />
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Название</div>
                 <div className="mt-1 text-sm font-medium leading-snug">
