@@ -22,7 +22,7 @@ _SETTINGS_FILE = "outsee_create_settings.json"
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "media_type": "image",
     "image_slug": "gpt-image-2",
-    "video_slug": "kling-3-0",
+    "video_slug": "sora-2",
     "audio_slug": "suno-5-5",
     "aspect": "16:9",
     "image_resolution": "1K",
@@ -38,6 +38,8 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "prompt": "",
     # grsai | outsee — для кнопки «Генерировать» в Create
     "image_provider": "grsai",
+    "video_provider": "grsai",
+    "sora_size": "small",
 }
 
 
@@ -174,20 +176,29 @@ async def list_outsee_create_history(
             }
         )
 
-    # Глобальная история Grsai Create
-    if kind in ("all", "image"):
+    # Глобальная история Grsai Create (image + video)
+    if kind in ("all", "image", "video"):
         gdir = settings.data_dir / "grsai_history"
         if gdir.is_dir():
+            patterns: list[str] = []
+            if kind in ("all", "image"):
+                patterns.extend(["*.png", "*.jpg", "*.jpeg", "*.webp"])
+            if kind in ("all", "video"):
+                patterns.extend(["*.mp4", "*.webm"])
+            files: list[Path] = []
             try:
-                files = sorted(gdir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                for pat in patterns:
+                    files.extend(gdir.glob(pat))
+                files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
             except OSError:
                 files = []
             for fp in files[:80]:
+                media = "video" if fp.suffix.lower() in {".mp4", ".webm"} else "image"
                 out.insert(
                     0,
                     {
                         "id": f"grsai-{fp.name}",
-                        "kind": "image",
+                        "kind": media,
                         "artifact_kind": "grsai",
                         "preview_url": f"/api/files?path={fp.resolve()}",
                         "path": str(fp),

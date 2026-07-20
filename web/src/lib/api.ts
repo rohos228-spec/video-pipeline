@@ -856,12 +856,19 @@ export const api = {
   getGrsaiStatus: () =>
     http<{
       enabled: boolean;
+      video_enabled: boolean;
+      audio_enabled: boolean;
       configured: boolean;
       provider: string;
+      video_provider: string;
       base_url: string;
       default_model: string;
+      default_video_model: string;
       key_suffix: string | null;
       wired_models: string[];
+      wired_video_models: string[];
+      wired_audio_models: string[];
+      audio_note?: string | null;
     }>(`/api/grsai/status`),
   listGrsaiModels: () =>
     http<{
@@ -870,8 +877,31 @@ export const api = {
         display_name: string;
         wired: boolean;
         family: string;
+        media: string;
         resolutions: string[];
         aspects: string[];
+        durations: number[];
+        sizes: string[];
+        badge: string;
+      }[];
+      video_models: {
+        slug: string;
+        display_name: string;
+        wired: boolean;
+        family: string;
+        media: string;
+        resolutions: string[];
+        aspects: string[];
+        durations: number[];
+        sizes: string[];
+        badge: string;
+      }[];
+      audio_models: {
+        slug: string;
+        display_name: string;
+        wired: boolean;
+        family: string;
+        media: string;
         badge: string;
       }[];
     }>(`/api/grsai/models`),
@@ -880,9 +910,13 @@ export const api = {
     model?: string;
     aspect?: string;
     resolution?: string;
+    media?: "image" | "video" | "audio";
+    duration?: number;
+    size?: string;
   }) =>
     http<{
       ok: boolean;
+      media: string;
       model: string;
       path: string;
       preview_url: string;

@@ -1,8 +1,8 @@
-"""Клиент Grsai API (https://grsaiapi.com) — картинки без CDP/outsee.
+"""Клиент Grsai API (https://grsaiapi.com) — image / video без CDP.
 
-Документация: POST /v1/api/generate (+ replyType=json|async),
-GET /v1/api/result?id=…
-Модели: gpt-image-2, nano-banana-2, nano-banana-pro, …
+Image: POST /v1/api/generate (+ replyType=json|async), GET /v1/api/result?id=
+Video: POST /v1/video/sora-video | /v1/video/veo, poll POST /v1/draw/result
+Audio: на Grsai моделей нет (каталог getModelList пуст) — см. GRSAI_WIRED_AUDIO_MODELS.
 """
 
 from __future__ import annotations
@@ -37,8 +37,23 @@ GRSAI_WIRED_IMAGE_MODELS: tuple[str, ...] = (
     "nano-banana-pro-4k-vip",
 )
 
+# Docs: sora-2; status API также знает sora2-landscape / sora2-portrait.
+# Veo docs: veo3.1-fast / veo3.1-pro.
+GRSAI_WIRED_VIDEO_MODELS: tuple[str, ...] = (
+    "sora-2",
+    "sora2-portrait",
+    "sora2-landscape",
+    "veo3.1-fast",
+    "veo3.1-pro",
+)
+
+# Grsai getModelList / endpoints — аудио-моделей нет (обновлять при появлении).
+GRSAI_WIRED_AUDIO_MODELS: tuple[str, ...] = ()
+
 # gpt-image-2: aspectRatio как "9:16" или пиксели; banana: aspectRatio + imageSize
 _GPT_IMAGE_FAMILY = frozenset({"gpt-image-2", "gpt-image-2-vip"})
+_SORA_FAMILY = frozenset({"sora-2", "sora2-portrait", "sora2-landscape"})
+_VEO_FAMILY = frozenset({"veo3.1-fast", "veo3.1-pro", "veo3-fast", "veo3-pro"})
 
 
 @dataclass
@@ -46,62 +61,122 @@ class GrsaiModelInfo:
     slug: str
     display_name: str
     wired: bool
-    family: str  # gpt-image | nano-banana
-    resolutions: tuple[str, ...]
-    aspects: tuple[str, ...]
+    family: str  # gpt-image | nano-banana | sora | veo | audio
+    resolutions: tuple[str, ...] = ()
+    aspects: tuple[str, ...] = ()
+    durations: tuple[int, ...] = ()
+    sizes: tuple[str, ...] = ()  # sora: small|large
+    media: str = "image"  # image | video | audio
 
+
+_BANANA_ASPECTS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9")
+_GPT_ASPECTS = _BANANA_ASPECTS
 
 GRSAI_IMAGE_CATALOG: list[GrsaiModelInfo] = [
+    GrsaiModelInfo("gpt-image-2", "GPT Image 2", True, "gpt-image", ("1K",), _GPT_ASPECTS),
     GrsaiModelInfo(
-        "gpt-image-2", "GPT Image 2", True, "gpt-image",
-        ("1K",), ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "gpt-image-2-vip", "GPT Image 2 VIP", True, "gpt-image", ("1K", "2K", "4K"), _GPT_ASPECTS
     ),
     GrsaiModelInfo(
-        "gpt-image-2-vip", "GPT Image 2 VIP", True, "gpt-image",
-        ("1K", "2K", "4K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "nano-banana-2", "Nano Banana 2", True, "nano-banana", ("1K", "2K", "4K"), _BANANA_ASPECTS
     ),
     GrsaiModelInfo(
-        "nano-banana-2", "Nano Banana 2", True, "nano-banana",
-        ("1K", "2K", "4K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "nano-banana-2-lite", "Nano Banana 2 Lite", True, "nano-banana", ("1K", "2K"), _BANANA_ASPECTS
     ),
     GrsaiModelInfo(
-        "nano-banana-2-lite", "Nano Banana 2 Lite", True, "nano-banana",
-        ("1K", "2K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "nano-banana-pro", "Nano Banana Pro", True, "nano-banana", ("1K", "2K", "4K"), _BANANA_ASPECTS
     ),
     GrsaiModelInfo(
-        "nano-banana-pro", "Nano Banana Pro", True, "nano-banana",
-        ("1K", "2K", "4K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "nano-banana-fast", "Nano Banana Fast", True, "nano-banana", ("1K", "2K"), _BANANA_ASPECTS
     ),
     GrsaiModelInfo(
-        "nano-banana-fast", "Nano Banana Fast", True, "nano-banana",
-        ("1K", "2K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
-    ),
-    GrsaiModelInfo(
-        "nano-banana", "Nano Banana", True, "nano-banana",
-        ("1K", "2K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        "nano-banana", "Nano Banana", True, "nano-banana", ("1K", "2K"), _BANANA_ASPECTS
     ),
     GrsaiModelInfo(
         "nano-banana-pro-vt", "Nano Banana Pro VT", True, "nano-banana",
-        ("1K", "2K", "4K"),
-        ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"),
+        ("1K", "2K", "4K"), _BANANA_ASPECTS,
     ),
 ]
+
+GRSAI_VIDEO_CATALOG: list[GrsaiModelInfo] = [
+    GrsaiModelInfo(
+        slug="sora-2",
+        display_name="Sora 2",
+        wired=True,
+        family="sora",
+        aspects=("9:16", "16:9"),
+        durations=(10, 15),
+        sizes=("small", "large"),
+        media="video",
+    ),
+    GrsaiModelInfo(
+        slug="sora2-portrait",
+        display_name="Sora 2 Portrait",
+        wired=True,
+        family="sora",
+        aspects=("9:16",),
+        durations=(10, 15),
+        sizes=("small", "large"),
+        media="video",
+    ),
+    GrsaiModelInfo(
+        slug="sora2-landscape",
+        display_name="Sora 2 Landscape",
+        wired=True,
+        family="sora",
+        aspects=("16:9",),
+        durations=(10, 15),
+        sizes=("small", "large"),
+        media="video",
+    ),
+    GrsaiModelInfo(
+        slug="veo3.1-fast",
+        display_name="Veo 3.1 Fast",
+        wired=True,
+        family="veo",
+        aspects=("16:9", "9:16"),
+        durations=(8,),
+        media="video",
+    ),
+    GrsaiModelInfo(
+        slug="veo3.1-pro",
+        display_name="Veo 3.1 Pro",
+        wired=True,
+        family="veo",
+        aspects=("16:9", "9:16"),
+        durations=(8,),
+        media="video",
+    ),
+]
+
+# Placeholder: когда Grsai добавит Suno/TTS — заполнить и пометить UI «+».
+GRSAI_AUDIO_CATALOG: list[GrsaiModelInfo] = []
 
 
 class GrsaiError(OutseeImageError):
     """Ошибка Grsai — совместима с outsee retry (isinstance OutseeImageError)."""
 
 
+def grsai_key_configured() -> bool:
+    return bool((settings.grsai_api_key or "").strip())
+
+
 def grsai_enabled() -> bool:
-    return bool((settings.grsai_api_key or "").strip()) and (
+    """Image path: ключ + IMAGE_PROVIDER=grsai."""
+    return grsai_key_configured() and (
         (settings.image_provider or "grsai").lower() == "grsai"
     )
+
+
+def grsai_video_enabled() -> bool:
+    return grsai_key_configured() and (
+        (getattr(settings, "video_provider", None) or "grsai").lower() == "grsai"
+    )
+
+
+def grsai_audio_enabled() -> bool:
+    """True только если есть ключ и хотя бы одна wired audio-модель."""
+    return grsai_key_configured() and bool(GRSAI_WIRED_AUDIO_MODELS)
 
 
 def _base_url() -> str:
@@ -338,6 +413,7 @@ async def generate_image(
 
 
 async def _poll_result(task_id: str, *, timeout: float = 600) -> dict[str, Any]:
+    """Poll image async result (GET /v1/api/result)."""
     deadline = asyncio.get_event_loop().time() + timeout
     url = f"{_base_url()}/v1/api/result"
     last: dict[str, Any] = {}
@@ -360,6 +436,212 @@ async def _poll_result(task_id: str, *, timeout: float = 600) -> dict[str, Any]:
     )
 
 
+async def _poll_draw_result(task_id: str, *, timeout: float = 900) -> dict[str, Any]:
+    """Poll video result (POST /v1/draw/result {id})."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    url = f"{_base_url()}/v1/draw/result"
+    last: dict[str, Any] = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        while asyncio.get_event_loop().time() < deadline:
+            r = await client.post(url, headers=_headers(), json={"id": task_id})
+            if r.status_code >= 400:
+                raise GrsaiError(
+                    f"grsai draw/result HTTP {r.status_code}: {r.text[:300]}",
+                    context={"task_id": task_id},
+                )
+            last = r.json()
+            # wrapped {code,data:{status,results}} or flat
+            if isinstance(last.get("data"), dict):
+                st = str(last["data"].get("status") or "")
+                if st in {"succeeded", "failed", "violation"}:
+                    return last["data"]
+                if last.get("code", 0) not in (0, None) and last.get("msg"):
+                    # immediate error like insufficient credits on poll
+                    if st:
+                        return last["data"]
+            st = _status_of(last)
+            if st in {"succeeded", "failed", "violation"}:
+                return last if not isinstance(last.get("data"), dict) else last["data"]
+            await asyncio.sleep(5.0)
+    raise GrsaiError(
+        f"grsai video poll timeout task={task_id}",
+        context={"task_id": task_id, "last": last},
+    )
+
+
+def build_video_body(
+    *,
+    model: str,
+    prompt: str,
+    aspect_ratio: str = "9:16",
+    duration: int | None = 10,
+    size: str = "small",
+    reference_url: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Вернуть (endpoint_path, json_body) для video generate."""
+    aspect = _normalize_aspect(aspect_ratio)
+    if model in _SORA_FAMILY or model.startswith("sora"):
+        # portrait/landscape variants: force aspect
+        if model == "sora2-portrait":
+            aspect = "9:16"
+        elif model == "sora2-landscape":
+            aspect = "16:9"
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "aspectRatio": aspect,
+            "duration": int(duration or 10),
+            "size": (size or "small").lower() if (size or "small").lower() in {"small", "large"} else "small",
+            "webHook": "-1",
+            "shutProgress": True,
+        }
+        if reference_url:
+            body["url"] = reference_url
+        return "/v1/video/sora-video", body
+    if model in _VEO_FAMILY or model.startswith("veo"):
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "aspectRatio": aspect if aspect in {"16:9", "9:16"} else "16:9",
+            "webHook": "-1",
+            "shutProgress": True,
+        }
+        if reference_url:
+            body["firstFrameUrl"] = reference_url
+        return "/v1/video/veo", body
+    raise GrsaiError(f"grsai: неизвестная video-модель {model}")
+
+
+def _unwrap_submit(payload: dict[str, Any]) -> dict[str, Any]:
+    """Нормализовать ответ submit: {code,data,msg} → data или payload."""
+    if payload.get("code") not in (None, 0) and payload.get("data") is None:
+        msg = payload.get("msg") or payload.get("error") or str(payload)
+        raise GrsaiError(f"grsai video submit: {msg}", context={"payload": payload})
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return data
+    return payload
+
+
+async def generate_video(
+    prompt: str,
+    out_path: Path,
+    *,
+    model_slug: str | None = None,
+    aspect_ratio: str = "9:16",
+    duration: int | None = 10,
+    size: str = "small",
+    reference_url: str | None = None,
+    timeout: float = 900,
+    gen_id: str | None = None,
+    project_id: int | None = None,
+    **_kwargs: Any,
+) -> GenerationResult:
+    """Сгенерировать видео через Grsai (Sora2 / Veo) и сохранить в out_path."""
+    model = (model_slug or getattr(settings, "grsai_default_video_model", None) or "sora-2").strip()
+    path, body = build_video_body(
+        model=model,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        duration=duration,
+        size=size,
+        reference_url=reference_url,
+    )
+    url = f"{_base_url()}{path}"
+    logger.info(
+        "grsai.generate_video model={} aspect={} duration={} project={} out={}",
+        model,
+        body.get("aspectRatio"),
+        body.get("duration"),
+        project_id,
+        out_path.name,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=min(timeout, 120)) as client:
+            resp = await client.post(url, headers=_headers(), json=body)
+            if resp.status_code >= 400:
+                raise GrsaiError(
+                    f"grsai video HTTP {resp.status_code}: {resp.text[:400]}",
+                    context={"status_code": resp.status_code, "model": model},
+                )
+            payload = resp.json()
+    except httpx.TimeoutException as e:
+        raise GrsaiError(
+            f"grsai video timeout submit model={model}",
+            context={"model": model, "error_kind": "timeout"},
+        ) from e
+    except GrsaiError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise GrsaiError(
+            f"grsai video request failed: {type(e).__name__}: {e}",
+            context={"model": model},
+        ) from e
+
+    data = _unwrap_submit(payload if isinstance(payload, dict) else {})
+    status = str(data.get("status") or "")
+    task_id = str(data.get("id") or payload.get("id") or "")
+    if status in {"", "running", "pending"} or (task_id and status not in {"succeeded", "failed", "violation"}):
+        if not task_id:
+            # sometimes immediate result
+            if status == "succeeded":
+                pass
+            else:
+                raise GrsaiError("grsai video: нет id задачи", context={"payload": payload})
+        else:
+            data = await _poll_draw_result(task_id, timeout=timeout)
+            status = str(data.get("status") or "")
+
+    if status == "violation":
+        raise GrsaiError(
+            f"grsai video moderation: {data.get('error') or 'violation'}",
+            context={"model": model, "error_kind": "moderation"},
+        )
+    if status != "succeeded":
+        raise GrsaiError(
+            f"grsai video failed status={status}: {data.get('error') or data}",
+            context={"model": model, "status": status},
+        )
+
+    result_url = _extract_result_url(data)
+    if not result_url:
+        raise GrsaiError("grsai video succeeded без url", context={"model": model, "data": data})
+
+    try:
+        await _download(result_url, out_path, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        raise GrsaiError(
+            f"grsai video download failed: {e}",
+            context={"url": result_url, "model": model},
+        ) from e
+
+    if not out_path.is_file() or out_path.stat().st_size < 32:
+        raise GrsaiError("grsai video: пустой файл", context={"path": str(out_path)})
+
+    logger.info(
+        "grsai.generate_video OK model={} bytes={} gen_id={}",
+        model,
+        out_path.stat().st_size,
+        gen_id,
+    )
+    return GenerationResult(file_path=out_path, raw_url=result_url, gen_id=gen_id)
+
+
+async def generate_audio(
+    prompt: str,
+    out_path: Path,
+    *,
+    model_slug: str | None = None,
+    **_kwargs: Any,
+) -> GenerationResult:
+    """Заглушка: на Grsai пока нет audio-моделей."""
+    raise GrsaiError(
+        "grsai: аудио-моделей нет в каталоге (getModelList). "
+        f"Запрошено: {model_slug or '—'}. Используй ElevenLabs/Suno через пайплайн.",
+        context={"model": model_slug},
+    )
+
+
 def studio_id_to_grsai_slug(studio_id: str | None) -> str:
     """Project.image_generator → grsai model slug."""
     if not studio_id:
@@ -378,3 +660,22 @@ def studio_id_to_grsai_slug(studio_id: str | None) -> str:
         "gpt_image_1_5": "gpt-image-2",  # fallback
     }
     return mapping.get(studio_id, studio_id.replace("_", "-"))
+
+
+def studio_id_to_grsai_video_slug(studio_id: str | None) -> str:
+    """Project.video_generator / create slug → grsai video model."""
+    default = getattr(settings, "grsai_default_video_model", None) or "sora-2"
+    if not studio_id:
+        return default
+    if studio_id in GRSAI_WIRED_VIDEO_MODELS or studio_id in {m.slug for m in GRSAI_VIDEO_CATALOG}:
+        return studio_id
+    mapping = {
+        "veo_3_1_lite": "veo3.1-fast",
+        "veo_3_1_fast": "veo3.1-fast",
+        "veo_3_fast": "veo3.1-fast",
+        "veo-3-1-lite": "veo3.1-fast",
+        "veo-3-fast": "veo3.1-fast",
+        "sora_2": "sora-2",
+        "sora-2": "sora-2",
+    }
+    return mapping.get(studio_id, default)
