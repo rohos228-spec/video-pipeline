@@ -24,18 +24,25 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import { cn } from "@/lib/utils";
 import {
   OUTSEE_ACCENT,
+  OUTSEE_CHIP_LABELS,
   OUTSEE_DETAIL_LEVELS,
-  OUTSEE_IMAGE_MODELS,
-  OUTSEE_VIDEO_MODELS,
   aspectToStudioId,
+  chipOptions,
+  clampToOptions,
+  detailLabel,
+  dockChipsForModel,
   getImageModel,
   getVideoModel,
   outseeCreateUrl,
+  pickerImageModels,
+  pickerVideoModelsAll,
   resToStudioId,
   slugToStudioId,
   studioAspectToLabel,
   studioIdToSlug,
   studioResToLabel,
+  supportsRelax,
+  type OutseeChip,
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
 
@@ -49,18 +56,20 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const qc = useQueryClient();
   const [mediaType, setMediaType] = useState<OutseeMediaType>("image");
   const [imageSlug, setImageSlug] = useState("gpt-image-2");
-  const [videoSlug, setVideoSlug] = useState("veo-3-fast");
-  const [aspect, setAspect] = useState("9:16");
+  const [videoSlug, setVideoSlug] = useState("kling-3-0");
+  const [aspect, setAspect] = useState("16:9");
   const [resolution, setResolution] = useState("2K");
   const [detail, setDetail] = useState("medium");
   const [relax, setRelax] = useState(false);
   const [videoResolution, setVideoResolution] = useState("1080p");
   const [videoRelax, setVideoRelax] = useState(false);
+  const [duration, setDuration] = useState("5");
+  const [generateAudio, setGenerateAudio] = useState(false);
+  const [orientation, setOrientation] = useState<"video" | "image">("video");
+  const [motionQuality, setMotionQuality] = useState("std");
   const [prompt, setPrompt] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
-  const [aspectOpen, setAspectOpen] = useState(false);
-  const [resOpen, setResOpen] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const modelRef = useRef<HTMLDivElement>(null);
 
@@ -88,22 +97,26 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   useEffect(() => {
     if (!open || !project.data) return;
     const p = project.data;
-    setImageSlug(studioIdToSlug(p.image_generator, "image"));
-    setVideoSlug(studioIdToSlug(p.video_generator, "video"));
+    const iSlug = studioIdToSlug(p.image_generator, "image");
+    const vSlug = studioIdToSlug(p.video_generator, "video");
+    setImageSlug(iSlug);
+    setVideoSlug(vSlug);
     setAspect(studioAspectToLabel(p.aspect_ratio));
-    setResolution(studioResToLabel(p.image_resolution));
+    setResolution(studioResToLabel(p.image_resolution, iSlug));
     setDetail(p.image_quality || "medium");
     setRelax(Boolean(p.image_relax));
-    setVideoResolution(p.video_resolution || "1080p");
+    setVideoResolution(studioResToLabel(p.video_resolution, vSlug) || "1080p");
     setVideoRelax(Boolean(p.video_relax));
+    const vm = getVideoModel(vSlug);
+    setDuration(String(vm.defaults.duration ?? 5));
+    setGenerateAudio(Boolean(vm.defaults.generateAudio));
+    setMotionQuality(vm.defaults.motionQuality || "std");
   }, [open, project.data?.id, project.dataUpdatedAt]);
 
   useEffect(() => {
     if (!open) {
       setModelOpen(false);
-      setAspectOpen(false);
-      setResOpen(false);
-      setDetailOpen(false);
+      setOpenChip(null);
     }
   }, [open]);
 
@@ -127,16 +140,60 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
   const imageModel = getImageModel(imageSlug);
   const videoModel = getVideoModel(videoSlug);
+  const activeSlug = mediaType === "image" ? imageSlug : videoSlug;
+  const dockChips = dockChipsForModel(activeSlug, mediaType);
 
+  /** Clamp текущих значений к опциям модели (без навязывания defaults). */
   useEffect(() => {
-    if (mediaType !== "image") return;
-    if (imageModel.resolutions.length && !imageModel.resolutions.includes(resolution)) {
-      setResolution(imageModel.resolutions.includes("2K") ? "2K" : imageModel.resolutions[0]!);
+    if (mediaType === "image") {
+      const aspects = chipOptions(imageSlug, "aspect");
+      const resolutions = chipOptions(imageSlug, "resolution");
+      if (aspects.length) setAspect((a) => clampToOptions(a, aspects, "16:9"));
+      if (resolutions.length) setResolution((r) => clampToOptions(r, resolutions, "2K"));
+      return;
     }
-    if (imageModel.aspects.length && !imageModel.aspects.includes(aspect)) {
-      setAspect(imageModel.aspects.includes("9:16") ? "9:16" : imageModel.aspects[0]!);
+    const aspects = chipOptions(videoSlug, "aspect");
+    const resolutions = chipOptions(videoSlug, "resolution");
+    const durations = chipOptions(videoSlug, "duration");
+    if (aspects.length) setAspect((a) => clampToOptions(a, aspects, "16:9"));
+    if (resolutions.length) {
+      setVideoResolution((r) => clampToOptions(r, resolutions, resolutions[0]));
     }
-  }, [imageSlug, mediaType, imageModel, resolution, aspect]);
+    if (durations.length) {
+      setDuration((d) => clampToOptions(d, durations, durations[0]));
+    }
+  }, [imageSlug, videoSlug, mediaType]);
+
+  const applyModelDefaults = (slug: string, kind: OutseeMediaType) => {
+    if (kind === "image") {
+      const m = getImageModel(slug);
+      const d = m.defaults;
+      const aspects = chipOptions(slug, "aspect");
+      const resolutions = chipOptions(slug, "resolution");
+      if (d.aspectRatio) setAspect(clampToOptions(d.aspectRatio, aspects, "16:9"));
+      if (d.imageResolution && resolutions.length) {
+        setResolution(clampToOptions(d.imageResolution, resolutions, "2K"));
+      }
+      if (m.chips.includes("detail")) setDetail(d.detailLevel || "medium");
+      return;
+    }
+    const m = getVideoModel(slug);
+    const d = m.defaults;
+    const aspects = chipOptions(slug, "aspect");
+    const resolutions = chipOptions(slug, "resolution");
+    const durations = chipOptions(slug, "duration");
+    if (d.aspectRatio && aspects.length) {
+      setAspect(clampToOptions(d.aspectRatio, aspects, "16:9"));
+    }
+    if (d.resolution && resolutions.length) {
+      setVideoResolution(clampToOptions(d.resolution, resolutions, resolutions[0]));
+    }
+    if (d.duration != null && durations.length) {
+      setDuration(clampToOptions(String(d.duration), durations, durations[0]));
+    }
+    if (m.chips.includes("audio")) setGenerateAudio(Boolean(d.generateAudio));
+    if (m.chips.includes("quality")) setMotionQuality(d.motionQuality || "std");
+  };
 
   const historyItems = useMemo(() => {
     const fromReview = (mediaReview.data ?? [])
@@ -192,15 +249,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         body.image_generator = imgStudio;
         body.aspect_ratio = aspectToStudioId(aspect);
         body.image_resolution = resToStudioId(resolution);
-        if (imageModel.hasDetail) body.image_quality = detail;
+        if (imageModel.chips.includes("detail")) body.image_quality = detail;
         body.image_relax = relax;
       }
       if (vidStudio) {
         body.video_generator = vidStudio;
-        if (videoResolution === "720p" || videoResolution === "1080p") {
-          body.video_resolution = videoResolution;
+        const vr = videoResolution.toLowerCase();
+        if (vr === "720p" || vr === "1080p") {
+          body.video_resolution = vr;
         }
-        body.video_relax = videoSlug.includes("veo") ? videoRelax : false;
+        body.video_relax = supportsRelax(videoSlug, "video") ? videoRelax : false;
       }
       return api.patchProject(projectId, body);
     },
@@ -449,9 +507,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     active={modelOpen}
                     onClick={() => {
                       setModelOpen((v) => !v);
-                      setAspectOpen(false);
-                      setResOpen(false);
-                      setDetailOpen(false);
+                      setOpenChip(null);
                     }}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -473,96 +529,143 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       onSelect={(slug) => {
                         if (mediaType === "image") setImageSlug(slug);
                         else setVideoSlug(slug);
+                        applyModelDefaults(slug, mediaType);
                         setModelOpen(false);
                       }}
                     />
                   )}
                 </div>
 
-                {mediaType === "image" && imageModel.chips.includes("aspect") && (
-                  <OptionDropdown
-                    label="Соотношение"
-                    value={aspect}
-                    open={aspectOpen}
-                    onOpenChange={(v) => {
-                      setAspectOpen(v);
-                      if (v) {
-                        setModelOpen(false);
-                        setResOpen(false);
-                        setDetailOpen(false);
-                      }
-                    }}
-                    options={imageModel.aspects.map((a) => ({ id: a, label: a }))}
-                    onSelect={setAspect}
-                    mono
-                  />
-                )}
-
-                {mediaType === "image" &&
-                  imageModel.chips.includes("resolution") &&
-                  imageModel.resolutions.length > 0 && (
-                    <OptionDropdown
-                      label="Разрешение"
-                      value={resolution}
-                      open={resOpen}
-                      onOpenChange={(v) => {
-                        setResOpen(v);
-                        if (v) {
-                          setModelOpen(false);
-                          setAspectOpen(false);
-                          setDetailOpen(false);
+                {/* orientation (motion control) */}
+                {mediaType === "video" && videoModel.chips.includes("orientation") && (
+                  <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    {(["video", "image"] as const).map((o) => (
+                      <button
+                        key={o}
+                        type="button"
+                        onClick={() => setOrientation(o)}
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-[11px] font-medium transition",
+                          orientation === o
+                            ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
+                            : "text-white/45 hover:text-white/80",
+                        )}
+                        title={
+                          o === "video"
+                            ? "Перенос движения с вашего видео-референса"
+                            : "Перенос движения со старт-кадра"
                         }
+                      >
+                        {o === "video" ? "По видео" : "По картинке"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* quality std/pro (motion control) */}
+                {mediaType === "video" && videoModel.chips.includes("quality") && (
+                  <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    {chipOptions(videoSlug, "quality").map((q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        onClick={() => setMotionQuality(q)}
+                        className={cn(
+                          "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium uppercase transition",
+                          motionQuality === q
+                            ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
+                            : "text-white/45 hover:text-white/80",
+                        )}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* dock chips — порядок и опции как HH на outsee create */}
+                {dockChips.map((chip) => {
+                  if (chip === "audio") {
+                    return (
+                      <button
+                        key="audio"
+                        type="button"
+                        onClick={() => setGenerateAudio((v) => !v)}
+                        className={cn(
+                          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition",
+                          generateAudio
+                            ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] text-white"
+                            : "border-white/10 bg-[#222] text-white/70",
+                        )}
+                        aria-pressed={generateAudio}
+                      >
+                        {OUTSEE_CHIP_LABELS.audio}
+                        <span className="font-mono text-[10px] text-white/40">
+                          {generateAudio ? "on" : "off"}
+                        </span>
+                      </button>
+                    );
+                  }
+
+                  const opts = chipOptions(activeSlug, chip);
+                  if (!opts.length) return null;
+
+                  let value = aspect;
+                  let display = aspect;
+                  let onSelect = setAspect;
+                  if (chip === "resolution") {
+                    value = mediaType === "image" ? resolution : videoResolution;
+                    display = value;
+                    onSelect = mediaType === "image" ? setResolution : setVideoResolution;
+                  } else if (chip === "detail") {
+                    value = detail;
+                    display = detailLabel(detail);
+                    onSelect = setDetail;
+                  } else if (chip === "duration") {
+                    value = duration;
+                    display = `${duration}с`;
+                    onSelect = setDuration;
+                  }
+
+                  const options =
+                    chip === "detail"
+                      ? OUTSEE_DETAIL_LEVELS.map((d) => ({
+                          id: d.id,
+                          label: d.label,
+                          hint: d.hint,
+                        }))
+                      : chip === "duration"
+                        ? opts.map((d) => ({ id: d, label: `${d}с` }))
+                        : opts.map((o) => ({ id: o, label: o }));
+
+                  return (
+                    <OptionDropdown
+                      key={chip}
+                      label={OUTSEE_CHIP_LABELS[chip] || chip}
+                      value={display}
+                      open={openChip === chip}
+                      onOpenChange={(v) => {
+                        setOpenChip(v ? chip : null);
+                        if (v) setModelOpen(false);
                       }}
-                      options={imageModel.resolutions.map((r) => ({ id: r, label: r }))}
-                      onSelect={setResolution}
-                      mono
+                      options={options}
+                      onSelect={onSelect}
+                      mono={chip === "aspect" || chip === "resolution" || chip === "duration"}
                     />
-                  )}
+                  );
+                })}
 
-                {mediaType === "image" && imageModel.hasDetail && (
-                  <OptionDropdown
-                    label="Детализация"
-                    value={
-                      OUTSEE_DETAIL_LEVELS.find((d) => d.id === detail)?.label ?? "Среднее"
-                    }
-                    open={detailOpen}
-                    onOpenChange={(v) => {
-                      setDetailOpen(v);
-                      if (v) {
-                        setModelOpen(false);
-                        setAspectOpen(false);
-                        setResOpen(false);
-                      }
-                    }}
-                    options={OUTSEE_DETAIL_LEVELS.map((d) => ({
-                      id: d.id,
-                      label: d.label,
-                      hint: d.hint,
-                    }))}
-                    onSelect={setDetail}
+                {supportsRelax(activeSlug, mediaType) && (
+                  <LimitToggle
+                    on={mediaType === "image" ? relax : videoRelax}
+                    onChange={mediaType === "image" ? setRelax : setVideoRelax}
                   />
                 )}
 
-                {mediaType === "video" && videoModel.resolutions.length > 0 && (
-                  <OptionDropdown
-                    label="Разрешение"
-                    value={videoResolution}
-                    open={resOpen}
-                    onOpenChange={(v) => {
-                      setResOpen(v);
-                      if (v) setModelOpen(false);
-                    }}
-                    options={videoModel.resolutions.map((r) => ({ id: r, label: r }))}
-                    onSelect={setVideoResolution}
-                    mono
-                  />
-                )}
-
-                {mediaType === "image" && (
-                  <LimitToggle on={relax} onChange={setRelax} />
-                )}
-                {mediaType === "video" && videoSlug.includes("veo") && (
-                  <LimitToggle on={videoRelax} onChange={setVideoRelax} />
+                {(mediaType === "image" ? imageModel.advanced : videoModel.advanced) && (
+                  <span className="text-[10px] text-white/35">
+                    advanced · открой на outsee.io
+                  </span>
                 )}
 
                 <div className="ml-auto flex items-center gap-2">
@@ -744,26 +847,34 @@ function ModelPickerPopover({
   onSelect: (slug: string) => void;
 }) {
   const title = mediaType === "image" ? "Модели изображений" : "Модели видео";
-  const models =
-    mediaType === "image"
-      ? OUTSEE_IMAGE_MODELS.map((m) => ({
-          id: m.slug,
-          displayName: m.displayName,
-          description: m.description,
-          icon: m.icon,
-          price: m.price,
-          isTop: m.isTop,
-          isNew: m.isNew,
-        }))
-      : OUTSEE_VIDEO_MODELS.map((m) => ({
-          id: m.slug,
-          displayName: m.displayName,
-          description: m.description,
-          icon: m.icon,
-          price: m.price,
-          isTop: m.isTop,
-          isNew: m.isNew,
-        }));
+  const base =
+    mediaType === "image" ? pickerImageModels() : pickerVideoModelsAll();
+  // если в проекте скрытая модель — покажем её в списке
+  const models = (() => {
+    const list = base.map((m) => ({
+      id: m.slug,
+      displayName: m.displayName,
+      description: m.description,
+      icon: m.icon,
+      price: m.price,
+      isTop: m.isTop,
+      isNew: m.isNew,
+    }));
+    if (!list.some((m) => m.id === selectedSlug)) {
+      const extra =
+        mediaType === "image" ? getImageModel(selectedSlug) : getVideoModel(selectedSlug);
+      list.unshift({
+        id: extra.slug,
+        displayName: extra.displayName,
+        description: extra.description,
+        icon: extra.icon,
+        price: extra.price,
+        isTop: extra.isTop,
+        isNew: extra.isNew,
+      });
+    }
+    return list;
+  })();
 
   return (
     <div
