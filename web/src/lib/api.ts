@@ -833,6 +833,7 @@ export const api = {
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
+      image_resolutions_by_generator?: Record<string, string[]>;
     }>(`/api/generation-options/wizard`),
   listGenerationConfigPresets: () =>
     http<{

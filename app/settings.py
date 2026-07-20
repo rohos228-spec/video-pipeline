@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Service URLs
     outsee_image_url: str = Field(
-        "https://outsee.io/image?model=nano-banana-2", alias="OUTSEE_IMAGE_URL"
+        "https://outsee.io/image?model=gpt-image-2", alias="OUTSEE_IMAGE_URL"
     )
     outsee_video_url: str = Field(
         "https://outsee.io/video?model=veo-3-fast", alias="OUTSEE_VIDEO_URL"

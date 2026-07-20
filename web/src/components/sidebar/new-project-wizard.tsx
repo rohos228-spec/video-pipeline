@@ -99,17 +99,35 @@ export function NewProjectWizard({
 
   const wizardQuestions = useMemo(() => {
     const qs = catalog.data?.questions ?? [];
-    return qs.filter((q) => {
-      if (q.field === "image_quality") {
+    const byGen = catalog.data?.image_resolutions_by_generator ?? {};
+    return qs
+      .filter((q) => {
+        if (q.field === "image_quality") {
+          const g = answers.image_generator;
+          if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
+        }
+        if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
+          return false;
+        }
+        return true;
+      })
+      .map((q) => {
+        if (q.field !== "image_resolution") return q;
         const g = answers.image_generator;
-        if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
-      }
-      if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
-        return false;
-      }
-      return true;
-    });
-  }, [catalog.data?.questions, answers.video_generator, answers.image_generator]);
+        const allowed = g ? byGen[g] : undefined;
+        if (!allowed?.length) return q;
+        return {
+          ...q,
+          choices: q.choices.filter((c) => allowed.includes(c.id)),
+          cols: Math.min(q.cols, Math.max(allowed.length, 1)),
+        };
+      });
+  }, [
+    catalog.data?.questions,
+    catalog.data?.image_resolutions_by_generator,
+    answers.video_generator,
+    answers.image_generator,
+  ]);
 
   const deletePreset = useMutation({
     mutationFn: (id: string) => api.deleteGenerationConfigPreset(id),
@@ -453,10 +471,26 @@ export function NewProjectWizard({
                   size="sm"
                   className="h-auto min-h-9 whitespace-normal py-2 text-xs"
                   onClick={() =>
-                    setAnswers((a) => ({
-                      ...a,
-                      [currentWizQ.field]: ch.id,
-                    }))
+                    setAnswers((a) => {
+                      const next: WizardAnswers = {
+                        ...a,
+                        [currentWizQ.field]: ch.id,
+                      };
+                      if (currentWizQ.field === "image_generator") {
+                        const allowed =
+                          catalog.data?.image_resolutions_by_generator?.[ch.id] ?? [];
+                        if (
+                          allowed.length &&
+                          next.image_resolution &&
+                          !allowed.includes(next.image_resolution)
+                        ) {
+                          next.image_resolution = allowed.includes("2k")
+                            ? "2k"
+                            : allowed[0];
+                        }
+                      }
+                      return next;
+                    })
                   }
                 >
                   {ch.label}
@@ -471,7 +505,7 @@ export function NewProjectWizard({
                 <Input
                   value={savePresetName}
                   onChange={(e) => setSavePresetName(e.target.value)}
-                  placeholder="Например: GPT Image 2 — 16:9 — Relax"
+                  placeholder="Например: GPT Image 2 — 16:9 — Безлимит"
                 />
               </div>
             )}

@@ -35,6 +35,7 @@ from app.generation_options import (
     DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
+    clamp_image_resolution_id,
     resolve_image_quality_slug,
 )
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
@@ -105,9 +106,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     img_gen = IMAGE_GENERATORS_BY_ID.get(
         project.image_generator or DEFAULTS["image_generator"]
     )
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        project.image_resolution or DEFAULTS["image_resolution"]
-    )
+        ir = IMAGE_RESOLUTIONS_BY_ID.get(
+            clamp_image_resolution_id(
+                project.image_generator, project.image_resolution
+            )
+        )
     quality_slug = resolve_image_quality_slug(
         project.image_generator, project.image_quality
     )

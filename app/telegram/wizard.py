@@ -139,8 +139,8 @@ _QUESTIONS: list[WizardQuestion] = [
     WizardQuestion(
         field="image_relax",
         title=(
-            "5/8. <b>Relax-режим картинок</b>?\n"
-            "Если «Да» — outsee включит «Безлимит» перед генерацией."
+            "5/8. <b>Безлимит</b> для картинок?\n"
+            "Если «Да» — outsee включит тогл «Безлимит» перед генерацией."
         ),
         choices=BOOLEAN_CHOICES,
         image_path=None,

@@ -1,24 +1,16 @@
 """Каталог вариантов генерации для мастера настроек проекта.
 
-5 вопросов, которые бот задаёт после создания проекта:
-  1. Генератор картинок (7 опций)
-  2. Соотношение сторон (8 опций)
-  3. Разрешение картинки (2 опции — 2K / 4K)
-  4. Видео-генератор (13 опций)
-  5. Разрешение видео (2 опции — 720p / 1080p)
+8 вопросов (Studio / Telegram wizard):
+  1. Генератор картинок
+  2. Соотношение сторон
+  3. Разрешение картинки (зависит от модели — см. IMAGE_RESOLUTIONS_BY_GENERATOR)
+  4. Качество / «Детализация» (только GPT Image)
+  5. Безлимит картинок (outsee Relax)
+  6–8. Видео: генератор / разрешение / relax
 
-Эти настройки:
-  • хранятся в Project.image_generator / aspect_ratio / image_resolution /
-    video_generator / video_resolution (TEXT колонки)
-  • включаются в контекст master-промтов к ChatGPT (чтобы он стилизовал
-    промты под возможности конкретного генератора)
-  • используются в outsee.py для выбора правильной модели / aspect / 2K/4K
-  • пишутся в xlsx (лист General) чтобы пользователь мог их увидеть/поправить
-
-Значения `outsee_slug` — это часть URL `https://outsee.io/image?model=<slug>`
-или `https://outsee.io/video?model=<slug>`. Реальный список slug'ов outsee
-публично не задокументирован; мы используем «интуитивные» slug'и. Если
-какой-то не сработает — его легко поправить здесь, не трогая остальной код.
+`outsee_slug` сверстан с live UI outsee.io/image (июль 2026):
+  gpt-image-2, gpt-image-1.5, nano-banana-2, seedream-4.5, seedream-5-lite, …
+URL: `https://outsee.io/image?model=<slug>` (также есть /create?type=image&model=…).
 """
 
 from __future__ import annotations
@@ -60,15 +52,19 @@ IMAGE_GENERATORS: list[OptionChoice] = [
         "Лучшая модель на рынке (TOP). Идеальна для любых задач",
     ),
     OptionChoice(
-        "seedream_4_5", "Seedream 4.5", "seedream-4-5",
+        "seedream_4_5", "Seedream 4.5", "seedream-4.5",
         "Продвинутая модель от TikTok. Подходит для всего. 4K",
     ),
     OptionChoice(
-        "seedream_5_0_lite", "Seedream 5.0 Lite", "seedream-5-0-lite",
+        "seedream_5_0_lite", "Seedream 5.0 Lite", "seedream-5-lite",
         "Новейшая версия Seedream. Быстрая генерация в высоком качестве",
     ),
     OptionChoice(
-        "gpt_image_1_5", "GPT Image 1.5", "gpt-image-1-5",
+        "seedream_5_pro", "Seedream 5 Pro", "seedream-5-pro",
+        "Флагман Seedream. Высокая точность, до 10 референсов",
+    ),
+    OptionChoice(
+        "gpt_image_1_5", "GPT Image 1.5", "gpt-image-1.5",
         "Флагманская модель OpenAI. Универсальна и надёжна",
     ),
     OptionChoice(
@@ -78,7 +74,7 @@ IMAGE_GENERATORS: list[OptionChoice] = [
 ]
 
 
-# ---- 2. Соотношения сторон -------------------------------------------------
+# ---- 2. Соотношения сторон (outsee image UI) --------------------------------
 
 ASPECT_RATIOS: list[OptionChoice] = [
     OptionChoice("1_1", "1:1", "1:1", "Квадрат (Instagram-пост)"),
@@ -89,31 +85,78 @@ ASPECT_RATIOS: list[OptionChoice] = [
     OptionChoice("2_3", "2:3", "2:3", "Вертикальный (портрет-фото)"),
     OptionChoice("3_2", "3:2", "3:2", "Горизонтальный (DSLR-фото)"),
     OptionChoice("21_9", "21:9", "21:9", "Ультра-широкий (cinematic)"),
+    OptionChoice("5_4", "5:4", "5:4", "Чуть шире квадрата"),
+    OptionChoice("4_5", "4:5", "4:5", "Чуть выше квадрата (портрет)"),
 ]
 
 
 # ---- 3. Разрешение картинки ------------------------------------------------
 
 IMAGE_RESOLUTIONS: list[OptionChoice] = [
-    OptionChoice("1k", "1K", "1K", "1K — компактное разрешение (GPT Image 2)"),
+    OptionChoice("1k", "1K", "1K", "1K — компактное разрешение"),
     OptionChoice("2k", "2K", "2K", "2K — стандартное разрешение"),
+    OptionChoice("3k", "3K", "3K", "3K — Seedream 5 Lite"),
     OptionChoice("4k", "4K", "4K", "4K — максимальное качество"),
 ]
 
+# Какие кнопки разрешения реально есть у модели на outsee.io/image (из UI JS).
+IMAGE_RESOLUTIONS_BY_GENERATOR: dict[str, tuple[str, ...]] = {
+    "nano_banana_2": ("2k", "4k"),
+    "nano_banana_pro": ("2k", "4k"),
+    "nano_banana": ("2k",),
+    "seedream_4_5": ("2k", "4k"),
+    "seedream_5_0_lite": ("2k", "3k"),
+    "seedream_5_pro": ("1k", "2k"),
+    "gpt_image_1_5": ("2k",),
+    "gpt_image_2": ("1k", "2k", "4k"),
+}
 
-# ---- 3b. Качество картинки (GPT Image 1.5 / 2 на outsee.io) -----------------
+
+# ---- 3b. Качество / «Детализация» (GPT Image 1.5 / 2) -----------------------
 
 IMAGE_QUALITIES: list[OptionChoice] = [
-    OptionChoice("low", "Низкое", "Низкое", "Низкое качество — быстрее"),
-    OptionChoice("medium", "Среднее", "Среднее", "Среднее качество — баланс"),
-    OptionChoice("high", "Высокое", "Высокое", "Высокое качество — детальнее"),
+    OptionChoice("low", "Низкое", "Низкое", "Детализация: низкая — быстрее"),
+    OptionChoice("medium", "Среднее", "Среднее", "Детализация: средняя — баланс"),
+    OptionChoice("high", "Высокое", "Высокое", "Детализация: высокая — детальнее"),
 ]
+
+# outsee button value=… рядом с русским label.
+IMAGE_QUALITY_DOM_VALUE: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "Низкое": "low",
+    "Среднее": "medium",
+    "Высокое": "high",
+}
 
 GPT_IMAGE_GENERATOR_IDS = frozenset({"gpt_image_1_5", "gpt_image_2"})
 
 
 def is_gpt_image_generator(generator_id: str | None) -> bool:
     return (generator_id or "") in GPT_IMAGE_GENERATOR_IDS
+
+
+def allowed_image_resolution_ids(generator_id: str | None) -> tuple[str, ...]:
+    gid = generator_id or "gpt_image_2"
+    return IMAGE_RESOLUTIONS_BY_GENERATOR.get(gid, ("2k", "4k"))
+
+
+def clamp_image_resolution_id(
+    generator_id: str | None,
+    resolution_id: str | None,
+) -> str:
+    """Если выбранное разрешение недоступно модели — ближайшее из её списка."""
+    allowed = allowed_image_resolution_ids(generator_id)
+    rid = (resolution_id or "2k").lower()
+    if rid in allowed:
+        return rid
+    order = ("1k", "2k", "3k", "4k")
+    try:
+        want = order.index(rid) if rid in order else order.index("2k")
+    except ValueError:
+        want = 1
+    return min(allowed, key=lambda a: abs(order.index(a) - want))
 
 
 # ---- 4. Видео-генераторы (13 штук, без Topaz Video Upscale) ---------------
@@ -272,10 +315,10 @@ def render_settings_summary(
     vg = VIDEO_GENERATORS_BY_ID.get(video_generator or "")
     vr = VIDEO_RESOLUTIONS_BY_ID.get(video_resolution or "")
     img_relax_str = (
-        "Relax" if image_relax else ("—" if image_relax is None else "no Relax")
+        "Безлимит" if image_relax else ("—" if image_relax is None else "без Безлимита")
     )
     vid_relax_str = (
-        "Relax" if video_relax else ("—" if video_relax is None else "no Relax")
+        "Безлимит" if video_relax else ("—" if video_relax is None else "без Безлимита")
     )
     qual_part = f" · {iq.label}" if iq else ""
     return (
