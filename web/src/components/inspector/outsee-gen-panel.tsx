@@ -24,7 +24,7 @@ export function OutseeGenPanel({ project }: { project: ProjectDetail }) {
             <div className="text-[11px] font-semibold tracking-wide text-white/90">
               Outsee · Create
             </div>
-            <div className="text-[10px] text-white/40">полный интерфейс + история</div>
+            <div className="text-[10px] text-white/40">глобально · Фото / Видео / Аудио</div>
           </div>
         </div>
         <a
@@ -39,19 +39,15 @@ export function OutseeGenPanel({ project }: { project: ProjectDetail }) {
       </div>
       <div className="flex flex-col gap-2 p-3">
         <p className="text-[10px] leading-relaxed text-white/40">
-          Модели, соотношения, разрешения, детализация и история генераций — как на
-          outsee.io/create. Сейчас в проекте:{" "}
+          Настройки и история общие для Studio (не привязаны к проекту). В проекте сейчас:{" "}
           <span className="font-mono text-white/60">{slug}</span>
           {project.aspect_ratio ? (
             <>
               {" "}
-              · <span className="font-mono text-white/60">{project.aspect_ratio.replace("_", ":")}</span>
-            </>
-          ) : null}
-          {project.image_resolution ? (
-            <>
-              {" "}
-              · <span className="font-mono text-white/60">{project.image_resolution.toUpperCase()}</span>
+              ·{" "}
+              <span className="font-mono text-white/60">
+                {project.aspect_ratio.replace("_", ":")}
+              </span>
             </>
           ) : null}
         </p>
