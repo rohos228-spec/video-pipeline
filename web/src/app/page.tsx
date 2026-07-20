@@ -8,6 +8,7 @@ import { Inspector } from "@/components/inspector/inspector";
 import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
+import { OutseeCreateWorkspace } from "@/components/outsee/outsee-create-workspace";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -26,6 +27,7 @@ export default function HomePage() {
   );
   const [studioOpen, setStudioOpen] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
+  const [outseeOpen, setOutseeOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
@@ -41,6 +43,16 @@ export default function HomePage() {
     window.addEventListener("studio-open-fleet", openFleet);
     return () => window.removeEventListener("studio-open-fleet", openFleet);
   }, []);
+
+  useEffect(() => {
+    const openOutsee = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ projectId?: number | null }>).detail;
+      if (detail?.projectId != null) setSelectedProjectId(detail.projectId);
+      setOutseeOpen(true);
+    };
+    window.addEventListener("studio-open-outsee", openOutsee);
+    return () => window.removeEventListener("studio-open-outsee", openOutsee);
+  }, [setSelectedProjectId]);
 
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);
@@ -126,6 +138,11 @@ export default function HomePage() {
           }}
         />
       </div>
+      <OutseeCreateWorkspace
+        open={outseeOpen}
+        onOpenChange={setOutseeOpen}
+        projectId={selectedProjectId}
+      />
     </AppShell>
   );
 }
