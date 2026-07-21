@@ -1,7 +1,8 @@
 """Принудительно забрать готовые картинки из истории Outsee в кадры монтажа.
 
-Быстрый путь: скан галереи → CDN download подписанного full PNG → finalize.
-Без повторного cascade на 80 кликов на каждый кадр (из-за него зависала кнопка).
+Кнопка Studio всегда force_replace: скан свежих thumb → клик «Скачать» →
+finalize/замена кадра. CDN guess с подписью thumb→png не используется как
+основной путь (SigV4 path-bound → 403).
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from app.settings import settings
 
 _READY_BYTES = 200_000
 # Клик-скан короткий: иначе кнопка «висит» минутами на чужих thumb'ах.
-_CLICK_SCAN_LIMIT = 16
+_CLICK_SCAN_LIMIT = 24
 _WAIT_THUMBS_S = 8.0
 _ID_IN_TEXT_RE = re.compile(
     r"\[ID:\s*P(\d+)-F(\d+)-([a-f0-9]{8})\](-S2)?",
@@ -376,9 +377,8 @@ async def recover_montage_images_from_outsee(
                 page, project.id, limit=limit
             )
             need = set(frame_filter) if frame_filter else set()
-            have = {(h.frame_number, h.shot) for h in hits}
-            missing_need = need - have if need else set()
-            if click_scan and (force_replace or missing_need or len(hits) < 1):
+            # Всегда кликаем свежие thumb'ы: ID часто только в панели после клика.
+            if click_scan:
                 clicked = await scan_gallery_hits_by_clicking(
                     page,
                     project.id,
