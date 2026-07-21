@@ -1472,8 +1472,14 @@ def _guess_full_png_url_from_thumb(url: str) -> str | None:
 def _all_full_png_url_candidates(url: str) -> list[str]:
     """Все варианты full-PNG URL для thumb/handoff (оба CDN-хоста).
 
-    Важно: сохраняем query/подпись (X-Amz-*) с исходного thumb URL —
-    без неё CDN отвечает 403, файл не сохраняется, Generate уже оплачен.
+    ВАЖНО (SigV4): НЕ копируем `?X-Amz-Signature=…` с thumb.jpg на .png.
+    Подпись AWS/Yandex привязана к Canonical URI (конкретному path объекта).
+    Подпись для `…_thumb.jpg` на `…_0.png` → CDN 403 всегда. Раньше
+    «сохранение подписи» создавало ложное чувство фикса, а скачивание
+    по-прежнему падало. Рабочие пути:
+      1) реальный full PNG URL из DOM / network (своя подпись),
+      2) клик «Скачать» (expect_download),
+      3) unsigned guess (редко, если CDN пускает по cookie — обычно нет).
     """
     if not url:
         return []
@@ -1485,31 +1491,26 @@ def _all_full_png_url_candidates(url: str) -> list[str]:
             seen.add(candidate)
             out.append(candidate)
 
-    query = ""
-    raw = url
-    if "?" in raw:
-        raw, q = raw.split("?", 1)
-        query = "?" + q
-
     path = _strip_url_query(url)
     name = Path(path).name
     png_name = _png_basename_from_thumb_filename(name)
-    if png_name:
-        dir_part = path[: path.rfind("/") + 1] if "/" in path else ""
-        base = f"{dir_part}{png_name}" if dir_part else png_name
-        # Сначала подписанный full — иначе 403 и «не сохраняет».
-        if query:
-            _add(f"{base}{query}")
-        _add(base)
+    if not png_name:
+        # Уже full PNG (не thumb) — сохраняем СОБСТВЕННУЮ подпись URL.
+        if path.lower().endswith(".png"):
+            _add(url)
+            if url != path:
+                _add(path)
+        return out
+
+    dir_part = path[: path.rfind("/") + 1] if "/" in path else ""
+    same_host = f"{dir_part}{png_name}" if dir_part else png_name
+    _add(same_host)
 
     gm = _OUTSEE_GENERATED_PATH_RE.search(path)
-    if gm and png_name:
+    if gm:
         gen_dir = gm.group(1) + "/"
         for host_base in _OUTSEE_CDN_BASES:
-            full = f"{host_base}{gen_dir}{png_name}"
-            if query:
-                _add(f"{full}{query}")
-            _add(full)
+            _add(f"{host_base}{gen_dir}{png_name}")
 
     return out
 
@@ -7511,30 +7512,75 @@ async def _download_via_card_click(
     card = None  # type: ignore[var-annotated]
 
     # Галерея часто появляется позже CDN-URL — ждём thumbs (hero и frames).
+    # Если thumb URL уже есть (recover) — короткая пауза, не 45с.
+    thumbs_wait = 8.0 if img_url else 45.0
     n_thumbs = await _wait_gallery_thumbs(
-        page, min_count=1, timeout_s=45.0, project_id=project_id
+        page, min_count=1, timeout_s=thumbs_wait, project_id=project_id
     )
     if n_thumbs < 1:
         logger.warning(
-            "_download_via_card_click: в галерее нет больших thumb за 45с, "
+            "_download_via_card_click: в галерее нет больших thumb за {}с, "
             "всё равно пробую клики (id={})",
+            int(thumbs_wait),
             prompt_id_prefix,
         )
 
     await _update_download_progress(project_id, "Скачивание… (поиск карточки)")
     t_search = asyncio.get_event_loop().time()
 
-    # --- C: перебор картинок + ID в панели (основная логика бота).
-    card = await _poll_gallery_card(
-        lambda: _find_card_by_clicking_images(
-            page,
-            prompt_id_prefix=prompt_id_prefix,
-            limit=_GALLERY_ID_SCAN_LIMIT,
+    # Когда thumb URL уже известен (montage recover / wait) — сначала
+    # клик по ЭТОМУ thumb и кнопка «Скачать». Стратегия C (до 80 кликов)
+    # раньше шла первой и вешала UI на минуты, часто без результата.
+    if img_url:
+        card = await _find_card_by_img_url_click(
+            page, img_url, project_id=project_id
+        )
+        if card is None:
+            url_path = _strip_url_query(img_url)
+            path_only = re.sub(r"^https?://[^/]+", "", url_path)
+            basename = Path(path_only).name if path_only else ""
+            for fragment in (basename, path_only):
+                if not fragment:
+                    continue
+                try:
+                    img_locator = page.locator(
+                        f'img[src*="{fragment}"]'
+                    ).first
+                    await await_with_cancel(
+                        img_locator.wait_for(state="attached", timeout=5_000),
+                        project_id,
+                    )
+                    candidate = img_locator.locator(
+                        "xpath=ancestor::*[descendant::button"
+                        "[descendant::svg[contains(@class,'lucide-download')]]][1]"
+                    )
+                    if await candidate.count() > 0:
+                        card = candidate
+                        logger.info(
+                            "_download_via_card_click: карточка по img_url "
+                            "ancestor (стратегия A-first) {}",
+                            fragment[-50:],
+                        )
+                        break
+                except (PWTimeoutError, Exception) as e:  # noqa: BLE001
+                    logger.debug(
+                        "_download_via_card_click: A-first '{}': {}",
+                        fragment[-40:],
+                        type(e).__name__,
+                    )
+
+    # --- C: перебор картинок + ID в панели (если URL не помог).
+    if card is None:
+        card = await _poll_gallery_card(
+            lambda: _find_card_by_clicking_images(
+                page,
+                prompt_id_prefix=prompt_id_prefix,
+                limit=_GALLERY_ID_SCAN_LIMIT,
+                project_id=project_id,
+                img_url=img_url,
+            ),
             project_id=project_id,
-            img_url=img_url,
-        ),
-        project_id=project_id,
-    )
+        )
     _log_download_stage(
         stage="find_card",
         duration_s=asyncio.get_event_loop().time() - t_search,
@@ -7543,12 +7589,6 @@ async def _download_via_card_click(
         project_id=project_id,
         extra=f"found={card is not None}",
     )
-
-    # --- D: физический клик по img_url из wait (без ID в панели).
-    if card is None and img_url:
-        card = await _find_card_by_img_url_click(
-            page, img_url, project_id=project_id
-        )
 
     # --- B: get_by_text([ID: …]).
     if card is None:
@@ -7572,40 +7612,6 @@ async def _download_via_card_click(
             logger.warning(
                 "_download_via_card_click: стратегия B не сработала"
             )
-
-    # --- A: якорь по img_url из wait.
-    if card is None and img_url:
-        url_path = _strip_url_query(img_url)
-        path_only = re.sub(r"^https?://[^/]+", "", url_path)
-        basename = Path(path_only).name if path_only else ""
-        for fragment in (basename, path_only):
-            if not fragment:
-                continue
-            try:
-                img_locator = page.locator(
-                    f'img[src*="{fragment}"]'
-                ).first
-                await await_with_cancel(
-                    img_locator.wait_for(state="attached", timeout=5_000),
-                    project_id,
-                )
-                candidate = img_locator.locator(
-                    "xpath=ancestor::*[descendant::button"
-                    "[descendant::svg[contains(@class,'lucide-download')]]][1]"
-                )
-                if await candidate.count() > 0:
-                    card = candidate
-                    logger.info(
-                        "_download_via_card_click: карточка найдена "
-                        "через img_url (стратегия A) {}",
-                        fragment[-50:],
-                    )
-                    break
-            except (PWTimeoutError, Exception) as e:  # noqa: BLE001
-                logger.warning(
-                    "_download_via_card_click: стратегия A '{}' ({})",
-                    fragment[-40:], type(e).__name__,
-                )
 
     if card is None and img_url:
         resolved = _resolve_best_download_url(img_url, net_events=net_events)

@@ -15,7 +15,7 @@ from app.models import Project
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 
 _STALE_RUNNING_ERROR = "прервано перезапуском сервера"
-_JOB_KEYS = ("apply_job", "montage_job")
+_JOB_KEYS = ("apply_job", "montage_job", "recover_outsee_job")
 
 
 def _utc_now() -> str:

@@ -832,6 +832,7 @@ export function AssembleMontageBoard({
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
+  const [recoverRunning, setRecoverRunning] = useState(false);
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -844,6 +845,7 @@ export function AssembleMontageBoard({
   const trimsDirtyRef = useRef(false);
   const lastApplyToastKeyRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
+  const lastRecoverToastKeyRef = useRef("");
 
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
@@ -1019,6 +1021,13 @@ export function AssembleMontageBoard({
   const recoverOutseeMutation = useMutation({
     mutationFn: () => api.recoverMontageFromOutsee(projectId!),
     onSuccess: (res) => {
+      if (res.started || res.already_running || res.job?.status === "running") {
+        lastRecoverToastKeyRef.current = "";
+        setRecoverRunning(true);
+        toast.message(res.message || "Забираем правки из Outsee…");
+        return;
+      }
+      // Совместимость со старым синхронным ответом (если бэкенд ещё не обновлён).
       const n = res.saved_count ?? res.saved?.length ?? 0;
       if (n > 0) {
         toast.success(`Забрано и заменено из Outsee: ${n} кадр(ов)`);
@@ -1044,6 +1053,9 @@ export function AssembleMontageBoard({
     void api.getMontageApplyStatus(projectId).then((st) => {
       if (st.job?.status === "running") setApplyRunning(true);
     }).catch(() => {});
+    void api.getMontageRecoverOutseeStatus(projectId).then((st) => {
+      if (st.job?.status === "running") setRecoverRunning(true);
+    }).catch(() => {});
   }, [open, projectId]);
 
   const handleApplyTerminal = useCallback(
@@ -1063,6 +1075,29 @@ export function AssembleMontageBoard({
       if (status === "done") toast.success("Генерация завершена");
       else if (status === "error") toast.error(errText || "Генерация не удалась");
       else if (status === "cancelled") toast.message("Генерация остановлена");
+      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    },
+    [projectId, queryClient],
+  );
+
+  const handleRecoverTerminal = useCallback(
+    (status: string, errText?: string, savedCount?: number) => {
+      const key = `${status}:${errText || ""}:${savedCount ?? ""}`;
+      if (lastRecoverToastKeyRef.current === key) return;
+      lastRecoverToastKeyRef.current = key;
+      setRecoverRunning(false);
+      const n = savedCount ?? 0;
+      if (status === "done" && n > 0) {
+        toast.success(`Забрано и заменено из Outsee: ${n} кадр(ов)`);
+        localQueueDirtyRef.current = false;
+        setPendingOps([]);
+      } else if (status === "done") {
+        toast.message(errText || "В истории Outsee нет подходящих карточек");
+      } else if (status === "error") {
+        toast.error(errText || "Не удалось забрать из Outsee");
+      } else if (status === "cancelled") {
+        toast.message("Забор из Outsee остановлен");
+      }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
     },
     [projectId, queryClient],
@@ -1092,17 +1127,39 @@ export function AssembleMontageBoard({
           stopped?: boolean;
           montage_board_montage?: boolean;
           montage_board_apply?: boolean;
+          montage_outsee_recover?: boolean;
           status?: string;
           errors?: string[];
           error?: string;
           done_ops?: number;
           total_ops?: number;
+          saved_count?: number;
         };
       };
       if (evt.payload?.stopped) {
         setMontageRunning(false);
         setApplyRunning(false);
+        setRecoverRunning(false);
         setApplyProgress(null);
+        return;
+      }
+      if (evt.payload?.montage_outsee_recover) {
+        const status = evt.payload.status;
+        if (status === "running") {
+          setRecoverRunning(true);
+          lastRecoverToastKeyRef.current = "";
+        } else if (status === "done" || status === "error" || status === "cancelled") {
+          handleRecoverTerminal(
+            status,
+            evt.payload.error ||
+              (Array.isArray(evt.payload.errors)
+                ? evt.payload.errors.join("; ")
+                : undefined),
+            typeof evt.payload.saved_count === "number"
+              ? evt.payload.saved_count
+              : undefined,
+          );
+        }
         return;
       }
       if (evt.payload?.montage_board_apply) {
@@ -1131,7 +1188,7 @@ export function AssembleMontageBoard({
         handleMontageTerminal(status, evt.payload.error);
       }
     });
-  }, [open, projectId, handleApplyTerminal, handleMontageTerminal]);
+  }, [open, projectId, handleApplyTerminal, handleMontageTerminal, handleRecoverTerminal]);
 
   useEffect(() => {
     if (!open || projectId == null || !montageRunning) return;
@@ -1184,6 +1241,32 @@ export function AssembleMontageBoard({
       window.clearInterval(id);
     };
   }, [open, projectId, applyRunning, handleApplyTerminal]);
+
+  useEffect(() => {
+    if (!open || projectId == null || !recoverRunning) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await api.getMontageRecoverOutseeStatus(projectId);
+        const status = st.job?.status;
+        if (cancelled) return;
+        if (status === "running" || !status) return;
+        handleRecoverTerminal(
+          status,
+          st.job?.error || undefined,
+          typeof st.job?.saved_count === "number" ? st.job.saved_count : undefined,
+        );
+      } catch {
+        // Сетевой сбой — не сбрасываем running.
+      }
+    };
+    const id = window.setInterval(() => void poll(), 2000);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, projectId, recoverRunning, handleRecoverTerminal]);
 
   const refreshBoard = useCallback(() => {
     void board.refetch();
@@ -1408,16 +1491,21 @@ export function AssembleMontageBoard({
               size="sm"
               variant="outline"
               className="h-9 gap-1.5 text-xs"
-              disabled={!projectId || recoverOutseeMutation.isPending || applyRunning}
+              disabled={
+                !projectId ||
+                recoverOutseeMutation.isPending ||
+                recoverRunning ||
+                applyRunning
+              }
               title="Скачать из Outsee выделенные правки и заменить кадры"
               onClick={() => recoverOutseeMutation.mutate()}
             >
-              {recoverOutseeMutation.isPending ? (
+              {recoverOutseeMutation.isPending || recoverRunning ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              Забрать правки из Outsee
+              {recoverRunning ? "Забираем из Outsee…" : "Забрать правки из Outsee"}
             </Button>
             <Button
               type="button"
