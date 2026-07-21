@@ -20,12 +20,8 @@ from app.bots.chrome_cdp import fetch_cdp_version
 from app.bots.outsee import (
     OutseeBot,
     _GALLERY_ID_SCAN_LIMIT,
-    _download_via_card_click,
     _image_page_url,
-    _resolve_best_download_url,
-    _validate_downloaded_image,
     _wait_gallery_thumbs,
-    find_img_src_by_prompt_id_in_gallery,
 )
 from app.generation_options import (
     DEFAULTS,
@@ -249,26 +245,19 @@ async def _download_hit(
     project: Project,
     hit: GalleryHit,
 ) -> Path | None:
+    """Скачивание тем же путём, что img-шаг: card-click cascade без img_url."""
+    from app.bots.outsee import download_saved_image_by_prompt_id
+
     dest = _dest_path(project, hit)
     if _ready_file(dest):
         return dest
-    resolved = _resolve_best_download_url(hit.img_src)
     try:
-        # Сначала точный find по ID (свежий src после клика/DOM).
-        by_id = await find_img_src_by_prompt_id_in_gallery(
-            page, hit.prompt_id_prefix, limit=_GALLERY_ID_SCAN_LIMIT
-        )
-        if by_id:
-            resolved = _resolve_best_download_url(by_id)
-        await _download_via_card_click(
+        await download_saved_image_by_prompt_id(
             page,
             prompt_id_prefix=hit.prompt_id_prefix,
             out_path=dest,
             project_id=project.id,
-            img_url=resolved,
-        )
-        _validate_downloaded_image(
-            dest, gen_id=hit.short_uuid, img_url=resolved
+            gen_id=hit.short_uuid,
         )
         return dest
     except Exception as e:  # noqa: BLE001

@@ -2570,13 +2570,14 @@ class OutseeBot:
             last_err: Exception | None = None
             try:
                 if prompt_id_prefix:
-                    await _download_via_card_click(
+                    # Как img-шаг после Generate: cascade по [ID], без verify-gate.
+                    await download_saved_image_by_prompt_id(
                         page,
                         prompt_id_prefix=prompt_id_prefix,
                         out_path=out_path,
                         project_id=project_id,
-                        img_url=resolved_url,
-                        net_events=events,
+                        gen_id=gen_id,
+                        model_slug=model_slug,
                     )
                 elif _outsee_queue_mode():
                     await _download_via_queue_result(
@@ -2587,6 +2588,9 @@ class OutseeBot:
                         net_events=events,
                         project_id=project_id,
                     )
+                    _validate_downloaded_image(
+                        out_path, gen_id=gen_id, img_url=resolved_url
+                    )
                 else:
                     await _download_via_context_candidates(
                         page,
@@ -2595,46 +2599,31 @@ class OutseeBot:
                         net_events=events,
                         project_id=project_id,
                     )
-                _validate_downloaded_image(
-                    out_path, gen_id=gen_id, img_url=resolved_url
-                )
+                    _validate_downloaded_image(
+                        out_path, gen_id=gen_id, img_url=resolved_url
+                    )
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                # Один раз: история галереи Outsee по [ID] — картинка уже готова.
-                if prompt_id_prefix:
+                # Fallback: URL-first с net_events, если ID-cascade не взял.
+                if prompt_id_prefix and resolved_url:
                     try:
-                        hist_url = await find_img_src_by_prompt_id_in_gallery(
-                            page, prompt_id_prefix
+                        await _download_via_card_click(
+                            page,
+                            prompt_id_prefix=prompt_id_prefix,
+                            out_path=out_path,
+                            project_id=project_id,
+                            img_url=resolved_url,
+                            net_events=events,
                         )
-                        if hist_url:
-                            hist_resolved = _resolve_best_download_url(
-                                hist_url, net_events=events
-                            )
-                            logger.info(
-                                "retry_image_download: history [ID] {} → {}",
-                                prompt_id_prefix,
-                                hist_resolved[:120],
-                            )
-                            await _download_via_card_click(
-                                page,
-                                prompt_id_prefix=prompt_id_prefix,
-                                out_path=out_path,
-                                project_id=project_id,
-                                img_url=hist_resolved,
-                                net_events=events,
-                            )
-                            _validate_downloaded_image(
-                                out_path,
-                                gen_id=gen_id,
-                                img_url=hist_resolved,
-                            )
-                            resolved_url = hist_resolved
-                            last_err = None
-                    except Exception as hist_err:  # noqa: BLE001
-                        last_err = hist_err
+                        _validate_downloaded_image(
+                            out_path, gen_id=gen_id, img_url=resolved_url
+                        )
+                        last_err = None
+                    except Exception as url_err:  # noqa: BLE001
+                        last_err = url_err
                         logger.warning(
-                            "retry_image_download: history recover failed: {}",
-                            hist_err,
+                            "retry_image_download: URL fallback failed: {}",
+                            url_err,
                         )
                 if last_err is not None:
                     if isinstance(last_err, OutseeImageError):
@@ -7282,6 +7271,48 @@ async def _download_via_queue_video_result(
         out_path,
         gen_id,
     )
+
+
+async def download_saved_image_by_prompt_id(
+    page: Page,
+    *,
+    prompt_id_prefix: str,
+    out_path: Path,
+    project_id: int | None = None,
+    gen_id: str | None = None,
+    model_slug: str | None = None,
+) -> Path:
+    """Рабочий cold-download по `[ID]` — тот же cascade, что после Generate.
+
+    Без `img_url`: не зовём `verify_img_url_matches_prompt_id_in_gallery`
+    (на холодной галерее ID часто только в панели после клика → verify
+    убивал скачивание до strategy C). Ждём thumbs → `_download_via_card_click`
+    без URL → validate по байтам.
+    """
+    from app.services.step_cancel import abort_if_cancelled
+
+    abort_if_cancelled(project_id)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    await _wait_gallery_thumbs(
+        page, min_count=1, timeout_s=45.0, project_id=project_id
+    )
+    await _download_via_card_click(
+        page,
+        prompt_id_prefix=prompt_id_prefix,
+        out_path=out_path,
+        project_id=project_id,
+        # img_url намеренно НЕ передаём — клик-cascade C→D→B→A как в img-шаге
+        # когда URL ненадёжен / ID только в панели.
+    )
+    gid = gen_id or prompt_id_prefix
+    _validate_downloaded_image(out_path, gen_id=gid, img_url="")
+    logger.info(
+        "download_saved_image_by_prompt_id: {} ← {} ({} B)",
+        out_path.name,
+        prompt_id_prefix,
+        out_path.stat().st_size,
+    )
+    return out_path
 
 
 async def _download_via_card_click(

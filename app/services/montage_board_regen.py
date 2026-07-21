@@ -66,6 +66,7 @@ class ImageRegenPrep:
     file_path: Path
     refs: list[Path] = field(default_factory=list)
     prompt_id_prefix: str = ""
+    gen_id: str = ""
     aspect_slug: str = "9:16"
     model_slug: str | None = None
     res_slug: str | None = None
@@ -206,7 +207,9 @@ async def prepare_image_regen(
         else:
             refs = []
 
-    short_uuid = uuid.uuid4().hex[:8]
+    # Как в generate_images: gen_id и prefix из одного uuid.
+    gen_id = uuid.uuid4().hex
+    short_uuid = gen_id[:8]
     if shot == 2:
         file_path = scenes_dir / f"frame_{frame_number:03d}_s2_{short_uuid}.png"
         prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid) + "-S2"
@@ -230,6 +233,7 @@ async def prepare_image_regen(
         file_path=file_path,
         refs=refs,
         prompt_id_prefix=prompt_id_prefix,
+        gen_id=gen_id,
         aspect_slug=ar.outsee_slug if ar else "9:16",
         model_slug=img_gen.outsee_slug if img_gen else None,
         res_slug=ir.outsee_slug if ir else None,
@@ -259,7 +263,7 @@ async def execute_image_regen(prep: ImageRegenPrep) -> Path:
                 max_attempts_per_prompt=3,
                 gpt_rewrite=True,
                 aspect_ratio=prep.aspect_slug,
-                gen_id=uuid.uuid4().hex,
+                gen_id=prep.gen_id or uuid.uuid4().hex,
                 model_slug=prep.model_slug,
                 resolution=prep.res_slug,
                 quality=prep.quality_slug,
@@ -301,13 +305,10 @@ async def _recover_montage_image_from_history(
     outsee: OutseeBot,
     prep: ImageRegenPrep,
 ) -> Path | None:
-    """Один проход по галерее Outsee: готовая картинка с нашим [ID]."""
+    """Тот же download, что img-шаг: wait thumbs → card-click cascade по [ID]."""
     from app.bots.outsee import (
-        _download_via_card_click,
         _image_page_url,
-        _resolve_best_download_url,
-        _validate_downloaded_image,
-        find_img_src_by_prompt_id_in_gallery,
+        download_saved_image_by_prompt_id,
     )
     from app.services.outsee_lane import outsee_lane
 
@@ -321,30 +322,13 @@ async def _recover_montage_image_from_history(
             page = await outsee.session.open_page(
                 _image_page_url(prep.model_slug), reuse=True
             )
-            hist_url = await find_img_src_by_prompt_id_in_gallery(page, prefix)
-            if not hist_url:
-                logger.warning(
-                    "montage history recover #{} frame {} shot {}: "
-                    "[ID] {} не найден в галерее",
-                    prep.project_id,
-                    prep.frame_number,
-                    prep.shot,
-                    prefix,
-                )
-                return None
-            resolved = _resolve_best_download_url(hist_url)
-            prep.file_path.parent.mkdir(parents=True, exist_ok=True)
-            await _download_via_card_click(
+            await download_saved_image_by_prompt_id(
                 page,
                 prompt_id_prefix=prefix,
                 out_path=prep.file_path,
                 project_id=prep.project_id,
-                img_url=resolved,
-            )
-            _validate_downloaded_image(
-                prep.file_path,
-                gen_id=prefix,
-                img_url=resolved,
+                gen_id=prep.gen_id or prefix,
+                model_slug=prep.model_slug,
             )
             logger.info(
                 "montage history recover #{} frame {} shot {} → {} ({} B)",
