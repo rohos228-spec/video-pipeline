@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -848,7 +848,6 @@ export function AssembleMontageBoard({
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const hBarRef = useRef<HTMLDivElement>(null);
-  const syncingScroll = useRef(false);
 
   const board = useQuery({
     queryKey: ["montage-board", projectId],
@@ -1304,15 +1303,12 @@ export function AssembleMontageBoard({
   }, [frames.length]);
 
   const syncScrollLeft = useCallback((from: HTMLDivElement, to: HTMLDivElement) => {
-    if (syncingScroll.current) return;
-    syncingScroll.current = true;
+    if (Math.abs(to.scrollLeft - from.scrollLeft) < 0.5) return;
     to.scrollLeft = from.scrollLeft;
-    requestAnimationFrame(() => {
-      syncingScroll.current = false;
-    });
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!open) return;
     const tableWrap = tableScrollRef.current;
     const hBar = hBarRef.current;
     if (!tableWrap || !hBar) return;
@@ -1320,13 +1316,15 @@ export function AssembleMontageBoard({
     const onTable = () => syncScrollLeft(tableWrap, hBar);
     const onBar = () => syncScrollLeft(hBar, tableWrap);
 
-    tableWrap.addEventListener("scroll", onTable);
-    hBar.addEventListener("scroll", onBar);
+    tableWrap.addEventListener("scroll", onTable, { passive: true });
+    hBar.addEventListener("scroll", onBar, { passive: true });
+    // Выровнять после mount (после close/reopen listeners иначе мертвы).
+    hBar.scrollLeft = tableWrap.scrollLeft;
     return () => {
       tableWrap.removeEventListener("scroll", onTable);
       hBar.removeEventListener("scroll", onBar);
     };
-  }, [frames.length, syncScrollLeft]);
+  }, [open, frames.length, syncScrollLeft, tableWidthPx]);
 
   useEffect(() => {
     if (!open) return;
