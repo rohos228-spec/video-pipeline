@@ -26,6 +26,8 @@ from loguru import logger
 
 from app.bots.outsee import (
     _MIN_IMAGE_BYTES,
+    _UI_ASSET_MARKERS,
+    _INPUT_REF_MARKERS,
     _find_result_panel_card,
     _is_outsee_thumb_url,
     _outsee_image_stable_key,
@@ -477,7 +479,72 @@ def _ready(path: Path) -> bool:
         return False
 
 
+def _is_junk_download_url(url: str | None) -> bool:
+    """Пресеты UI / не-generated CDN — нельзя сохранять как кадр."""
+    if not url:
+        return True
+    low = url.lower()
+    if any(m in low for m in _UI_ASSET_MARKERS):
+        return True
+    if any(m in low for m in _INPUT_REF_MARKERS):
+        return True
+    # Реальный результат: yandex generated/ или outsee-*.png / image_*.png
+    if "generated/" in low and ("yandexcloud" in low or "outseehistory" in low):
+        return False
+    if "outsee.io/videoexamples" in low or "freepreset" in low:
+        return True
+    if low.endswith(".webp") and "generated/" not in low:
+        return True
+    return False
+
+
+def _is_real_generated_url(url: str | None) -> bool:
+    if not url or _is_junk_download_url(url):
+        return False
+    low = _strip_url_query(url).lower()
+    if "_thumb" in low:
+        return False
+    return "generated/" in low and (
+        low.endswith(".png") or ".png?" in url.lower()
+    )
+
+
+async def _dismiss_content_viewer(page) -> None:
+    """Lightbox data-content-viewer перехватывает клики → Download не срабатывает."""
+    try:
+        has = await page.evaluate(
+            """() => !!document.querySelector('[data-content-viewer="true"]')"""
+        )
+    except Exception:  # noqa: BLE001
+        has = False
+    if not has:
+        return
+    for _ in range(3):
+        with contextlib_suppress():
+            await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        try:
+            still = await page.evaluate(
+                """() => !!document.querySelector('[data-content-viewer="true"]')"""
+            )
+        except Exception:  # noqa: BLE001
+            still = False
+        if not still:
+            logger.info("_dismiss_content_viewer: lightbox закрыт")
+            return
+        close_btn = page.locator(
+            '[data-content-viewer="true"] button:has(svg.lucide-x), '
+            '[data-content-viewer="true"] button[aria-label*="Close" i], '
+            '[data-content-viewer="true"] button[aria-label*="Закрыть" i]'
+        ).first
+        if await close_btn.count() > 0:
+            with contextlib_suppress():
+                await close_btn.click(timeout=1500)
+    logger.warning("_dismiss_content_viewer: lightbox всё ещё открыт")
+
+
 async def _click_thumb(page, img_src: str, *, project_id: int | None) -> bool:
+    await _dismiss_content_viewer(page)
     if not img_src:
         return False
     base = Path(_strip_url_query(img_src)).name
@@ -500,10 +567,12 @@ async def _click_thumb(page, img_src: str, *, project_id: int | None) -> bool:
 async def _expect_download_click(page, btn, out_path: Path, *, project_id: int | None) -> bool:
     from app.services.step_cancel import await_with_cancel
 
+    await _dismiss_content_viewer(page)
     try:
         with contextlib_suppress():
             await btn.scroll_into_view_if_needed(timeout=2000)
-        async with page.expect_download(timeout=45_000) as dl_info:
+        # 8с: если lightbox/не та кнопка — быстро fallback на CDN URL
+        async with page.expect_download(timeout=8_000) as dl_info:
             await _physical_mouse_click(
                 page, btn, project_id=project_id, label="five-dl"
             )
@@ -580,6 +649,9 @@ async def download_d2_result_panel(
 
 async def _best_dom_full_url(page, hit: HitCandidate) -> str | None:
     key = _outsee_image_stable_key(hit.img_src) if hit.img_src else ""
+    # 1) Сам hit.img_src уже full generated PNG (часто после клика в lightbox).
+    if _is_real_generated_url(hit.img_src):
+        return hit.img_src
     try:
         urls = await page.evaluate(
             """(key) => {
@@ -588,20 +660,28 @@ async def _best_dom_full_url(page, hit: HitCandidate) -> str | None:
                     const s = img.currentSrc || img.src || '';
                     if (!s) continue;
                     const r = img.getBoundingClientRect();
+                    const low = s.toLowerCase();
                     out.push({
                         src: s,
                         w: r.width,
                         h: r.height,
                         area: Math.max(0, r.width) * Math.max(0, r.height),
-                        isThumb: s.toLowerCase().includes('_thumb'),
-                        hasKey: key ? s.toLowerCase().includes(key.toLowerCase()) : false,
-                        isPng: s.toLowerCase().includes('.png'),
+                        isThumb: low.includes('_thumb'),
+                        hasKey: key ? low.includes(key.toLowerCase()) : false,
+                        isPng: low.includes('.png'),
+                        isGenerated: low.includes('generated/'),
+                        isJunk: low.includes('freepreset') || low.includes('videoexamples')
+                            || low.includes('gptimage2') || low.includes('/_next/')
+                            || low.includes('/examples/'),
                     });
                 }
                 out.sort((a, b) => {
-                    // non-thumb png with key first, then area
-                    const sa = (a.isThumb ? 1000 : 0) + (a.isPng ? 0 : 50) + (a.hasKey ? 0 : 20);
-                    const sb = (b.isThumb ? 1000 : 0) + (b.isPng ? 0 : 50) + (b.hasKey ? 0 : 20);
+                    const sa = (a.isJunk ? 5000 : 0) + (a.isThumb ? 1000 : 0)
+                        + (a.isGenerated ? 0 : 200) + (a.isPng ? 0 : 50)
+                        + (a.hasKey ? 0 : 20);
+                    const sb = (b.isJunk ? 5000 : 0) + (b.isThumb ? 1000 : 0)
+                        + (b.isGenerated ? 0 : 200) + (b.isPng ? 0 : 50)
+                        + (b.hasKey ? 0 : 20);
                     if (sa !== sb) return sa - sb;
                     return b.area - a.area;
                 });
@@ -615,14 +695,54 @@ async def _best_dom_full_url(page, hit: HitCandidate) -> str | None:
     for u in urls or []:
         if not isinstance(u, str) or not u:
             continue
-        if _is_outsee_thumb_url(u):
+        if _is_junk_download_url(u) or _is_outsee_thumb_url(u):
             continue
-        if ".png" in u.lower() or "signature=" in u.lower():
+        if _is_real_generated_url(u):
             return u
-    for u in urls or []:
-        if isinstance(u, str) and u and not _is_outsee_thumb_url(u):
+        if key and key.lower() in u.lower() and ".png" in u.lower():
             return u
     return None
+
+
+async def download_d0_hit_src_direct(
+    page, hit: HitCandidate, out_path: Path, *, project_id: int | None
+) -> bool:
+    """D0: если hit.img_src уже full generated PNG — качаем без кликов."""
+    from app.bots.outsee import _download_via_context
+
+    url = hit.img_src
+    if not _is_real_generated_url(url):
+        # После клика lightbox часто показывает full PNG — снимем его.
+        await _click_thumb(page, hit.img_src, project_id=project_id)
+        await page.wait_for_timeout(350)
+        try:
+            viewer = await page.evaluate(
+                """() => {
+                    const v = document.querySelector('[data-content-viewer="true"] img');
+                    return v ? (v.currentSrc || v.src || '') : '';
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            viewer = ""
+        if _is_real_generated_url(viewer):
+            url = viewer
+        else:
+            url = await _best_dom_full_url(page, hit)
+    if not _is_real_generated_url(url):
+        return False
+    try:
+        await _download_via_context(
+            page, url, out_path, project_id=project_id, attempts=2
+        )
+        _validate_downloaded_image(out_path, gen_id=hit.short_uuid, img_url=url)
+        if not _ready(out_path):
+            return False
+        logger.info("download_d0_hit_src_direct: OK {} ← {}", out_path.name, url[:90])
+        await _dismiss_content_viewer(page)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("download_d0_hit_src_direct: {}", e)
+        return False
 
 
 async def download_d3_dom_full_request(
@@ -634,12 +754,19 @@ async def download_d3_dom_full_request(
     await _click_thumb(page, hit.img_src, project_id=project_id)
     await page.wait_for_timeout(400)
     url = await _best_dom_full_url(page, hit)
-    if not url:
+    if not url or _is_junk_download_url(url):
+        logger.warning(
+            "download_d3_dom_full_request: reject junk/missing url={}",
+            (url or "")[:100],
+        )
         return False
     try:
         await _download_via_context(page, url, out_path, project_id=project_id, attempts=2)
         _validate_downloaded_image(out_path, gen_id=hit.short_uuid, img_url=url)
+        if not _ready(out_path):
+            return False
         logger.info("download_d3_dom_full_request: OK {} ← {}", out_path.name, url[:80])
+        await _dismiss_content_viewer(page)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("download_d3_dom_full_request: {}", e)
@@ -652,8 +779,8 @@ async def download_d4_page_fetch(
     """D4: fetch в контексте страницы (cookies) → bytes на диск."""
     await _click_thumb(page, hit.img_src, project_id=project_id)
     await page.wait_for_timeout(400)
-    url = await _best_dom_full_url(page, hit) or hit.img_src
-    if not url:
+    url = await _best_dom_full_url(page, hit)
+    if not url or _is_junk_download_url(url):
         return False
     try:
         b64 = await page.evaluate(
@@ -679,7 +806,10 @@ async def download_d4_page_fetch(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(raw)
         _validate_downloaded_image(out_path, gen_id=hit.short_uuid, img_url=url)
+        if not _ready(out_path):
+            return False
         logger.info("download_d4_page_fetch: OK {} ({} B)", out_path.name, len(raw))
+        await _dismiss_content_viewer(page)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("download_d4_page_fetch: {}", e)
@@ -708,6 +838,7 @@ async def download_d5_cascade(
 
 
 DOWNLOAD_MECHANICS = (
+    ("d0_hit_src_direct", download_d0_hit_src_direct),
     ("d1_thumb_button", download_d1_thumb_button),
     ("d2_result_panel", download_d2_result_panel),
     ("d3_dom_full_request", download_d3_dom_full_request),

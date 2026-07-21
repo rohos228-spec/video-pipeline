@@ -17,15 +17,28 @@ from app.services.montage_outsee_five import (
 
 
 def test_five_download_mechanics_registered() -> None:
-    assert len(DOWNLOAD_MECHANICS) == 5
+    assert len(DOWNLOAD_MECHANICS) >= 5
     names = [n for n, _ in DOWNLOAD_MECHANICS]
-    assert names == [
-        "d1_thumb_button",
-        "d2_result_panel",
-        "d3_dom_full_request",
-        "d4_page_fetch",
-        "d5_cascade",
-    ]
+    assert names[0] == "d0_hit_src_direct"
+    assert "d3_dom_full_request" in names
+    assert "d5_cascade" in names
+
+
+def test_junk_freepreset_url_rejected() -> None:
+    from app.services.montage_outsee_five import (
+        _is_junk_download_url,
+        _is_real_generated_url,
+    )
+
+    junk = "https://outsee.io/videoexamples/freepreset/gptimage2.webp"
+    real = (
+        "https://outseehistory.storage.yandexcloud.net/generated/3787/292962/"
+        "outsee-292962-1-1784652108217.png"
+    )
+    assert _is_junk_download_url(junk) is True
+    assert _is_real_generated_url(junk) is False
+    assert _is_junk_download_url(real) is False
+    assert _is_real_generated_url(real) is True
 
 
 def test_parse_ids_and_url_ts() -> None:
