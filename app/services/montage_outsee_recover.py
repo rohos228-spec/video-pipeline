@@ -262,38 +262,59 @@ async def _download_hit(
     force_replace: bool = False,
     allow_cascade: bool = True,
 ) -> Path | None:
-    """Скачать hit всеми 5 механиками скачивания (D1→D5)."""
-    from app.services.montage_outsee_five import (
-        HitCandidate,
-        download_with_all_mechanics,
-    )
+    """Скачать hit ТЕМ ЖЕ путём, что нода generate_image (не D0–D5)."""
+    from app.bots.outsee import download_image_like_generate
 
     dest = _dest_path(project, hit)
     if not force_replace and _ready_file(dest):
         return dest
-    candidate = HitCandidate(
-        frame_number=hit.frame_number,
-        shot=hit.shot,
-        short_uuid=hit.short_uuid,
-        prompt_id_prefix=hit.prompt_id_prefix,
-        img_src=hit.img_src,
-        sources={"legacy_hit"},
-    )
-    ok, mechanic = await download_with_all_mechanics(
-        page, candidate, dest, project_id=project.id
-    )
-    if ok and _ready_file(dest):
-        logger.info(
-            "montage recover P{} F{} shot{} via {}",
+
+    # Lightbox после клик-скана перехватывает клики — закрыть до Download.
+    for _ in range(3):
+        try:
+            has = await page.evaluate(
+                """() => !!document.querySelector('[data-content-viewer="true"]')"""
+            )
+        except Exception:  # noqa: BLE001
+            has = False
+        if not has:
+            break
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:  # noqa: BLE001
+            break
+        await page.wait_for_timeout(120)
+
+    try:
+        await download_image_like_generate(
+            page,
+            out_path=dest,
+            img_url=hit.img_src or "",
+            gen_id=hit.short_uuid,
+            prompt_id_prefix=hit.prompt_id_prefix,
+            project_id=project.id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage recover P{} F{} shot{} download_image_like_generate: {}",
             project.id,
             hit.frame_number,
             hit.shot,
-            mechanic,
+            e,
+        )
+        if not allow_cascade:
+            return None if not _ready_file(dest) else dest
+        return None if not _ready_file(dest) else dest
+
+    if _ready_file(dest):
+        logger.info(
+            "montage recover P{} F{} shot{} via download_image_like_generate",
+            project.id,
+            hit.frame_number,
+            hit.shot,
         )
         return dest
-    if not allow_cascade:
-        return None if not _ready_file(dest) else dest
-    return None if not _ready_file(dest) else dest
+    return None
 
 
 async def recover_montage_images_from_outsee(
@@ -586,7 +607,9 @@ async def recover_before_regen_ops(
         project,
         frame_filter=frame_filter,
         click_scan=True,
-        force_replace=True,
+        # НЕ force_replace: перед Generate не затираем живые кадры
+        # мусором из галереи (gptimage2.webp). Только дырки/stub.
+        force_replace=False,
         limit=30,
     )
     saved_keys = {

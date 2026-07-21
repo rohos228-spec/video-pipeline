@@ -1,4 +1,4 @@
-"""После Generate с prompt_id — сначала queue Download, не CDN cascade."""
+"""После Generate с prompt_id — единый download_image_like_generate."""
 
 from __future__ import annotations
 
@@ -7,18 +7,23 @@ import inspect
 from app.bots import outsee as outsee_mod
 
 
-def test_generate_image_download_tries_queue_before_id_cascade() -> None:
-    src = inspect.getsource(outsee_mod.OutseeBot._generate_image_on_page)
-    # Порядок: queue_mode Download раньше card_click / download_saved.
+def test_download_image_like_generate_order() -> None:
+    src = inspect.getsource(outsee_mod.download_image_like_generate)
     q = src.find("await _download_via_queue_result(")
     c = src.find("await _download_via_card_click(")
     d = src.find("await download_saved_image_by_prompt_id(")
-    assert q >= 0, "queue download missing after Generate"
-    assert c >= 0 and d >= 0
-    assert q < c < d, (
-        f"wrong order: queue@{q} card@{c} saved@{d} — "
-        "montage prompt_id must not skip queue Download"
+    ctx = src.find("await _download_via_context_candidates(")
+    assert q >= 0, "queue download missing"
+    assert c >= 0 and d >= 0 and ctx >= 0
+    assert q < c < d < ctx, (
+        f"wrong order: queue@{q} card@{c} saved@{d} ctx@{ctx}"
     )
+
+
+def test_generate_image_uses_shared_download() -> None:
+    src = inspect.getsource(outsee_mod.OutseeBot._generate_image_on_page)
+    assert "await download_image_like_generate(" in src
+    assert "download_image_like_generate" in src
 
 
 def test_retry_image_download_tries_queue_first() -> None:

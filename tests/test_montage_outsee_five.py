@@ -1,27 +1,38 @@
-"""Тесты 5 механик поиска / сортировки / скачивания."""
+"""Тесты поиска / сортировки; скачивание = download_image_like_generate."""
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services import montage_outsee_recover as recover_mod
 from app.services.montage_outsee_five import (
-    DOWNLOAD_MECHANICS,
     HitCandidate,
     _parse_ids,
     _url_ts,
+    download_with_all_mechanics,
     sort_m5_pending_priority,
     search_m1_dom_scan,
 )
 
 
-def test_five_download_mechanics_registered() -> None:
-    assert len(DOWNLOAD_MECHANICS) >= 5
-    names = [n for n, _ in DOWNLOAD_MECHANICS]
-    assert names[0] == "d0_hit_src_direct"
-    assert "d3_dom_full_request" in names
-    assert "d5_cascade" in names
+def test_download_wrapper_uses_generate_path() -> None:
+    src = inspect.getsource(download_with_all_mechanics)
+    assert "download_image_like_generate" in src
+    assert "DOWNLOAD_MECHANICS" not in src
+
+
+def test_recover_download_hit_uses_generate_path() -> None:
+    src = inspect.getsource(recover_mod._download_hit)
+    assert "download_image_like_generate" in src
+    assert "download_with_all_mechanics" not in src
+
+
+def test_recover_before_regen_does_not_force_wipe() -> None:
+    src = inspect.getsource(recover_mod.recover_before_regen_ops)
+    assert "force_replace=False" in src
 
 
 def test_junk_freepreset_url_rejected() -> None:
@@ -63,7 +74,6 @@ def test_sort_m5_pending_priority_orders() -> None:
         pending_keys={(2, 1)},
     )
     assert [h.frame_number for h in ordered] == [2, 3]
-    # pending F2 first
     assert ordered[0].frame_number == 2
 
 

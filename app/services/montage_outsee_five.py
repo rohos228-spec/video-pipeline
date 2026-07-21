@@ -1,18 +1,7 @@
-"""5 механик поиска / скачивания / сортировки Outsee → кадры монтажа.
+"""5 механик ПОИСКА Outsee → кадры монтажа.
 
-Все пять задействуются на каждый recover:
-  1. DOM-scan       — поиск [ID] в тексте вокруг thumb, сорт по Y (сверху=новее)
-  2. Click-panel    — клик thumb → ID в панели, сорт по индексу галереи
-  3. get_by_text    — поиск видимого [ID] на странице, сорт по длине матча
-  4. URL-timestamp  — поиск по basename/thumb URL, сорт по ts в имени файла
-  5. Pending-prio   — сорт: pending кадры первыми, затем frame, затем freshness
-
-Скачивание (5 путей, пока файл не валиден):
-  D1 expect_download по кнопке у thumb/карточки
-  D2 expect_download в панели «Результат»
-  D3 context.request реального full PNG из DOM (своя подпись)
-  D4 page.evaluate fetch(arrayBuffer) того же full URL (cookies браузера)
-  D5 cold cascade download_saved_image_by_prompt_id
+Поиск (M1–M5) остаётся здесь. Скачивание — ТОЛЬКО
+`app.bots.outsee.download_image_like_generate` (тот же путь, что нода img).
 """
 
 from __future__ import annotations
@@ -854,42 +843,39 @@ async def download_with_all_mechanics(
     *,
     project_id: int | None,
 ) -> tuple[bool, str]:
-    """Пробует D1→D5 пока файл не валиден. Возвращает (ok, mechanic_name)."""
+    """DEPRECATED wrapper: тот же путь, что нода generate_image.
+
+    Отдельные D0–D5 больше не вызываются — только download_image_like_generate.
+    """
+    from app.bots.outsee import download_image_like_generate
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    errors: list[str] = []
-    for name, fn in DOWNLOAD_MECHANICS:
-        if _ready(out_path):
-            return True, name
-        try:
-            if out_path.exists() and out_path.stat().st_size < _READY:
-                out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            ok = await fn(page, hit, out_path, project_id=project_id)
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"{name}:{e}")
-            ok = False
-        if ok and _ready(out_path):
-            try:
-                _validate_downloaded_image(
-                    out_path, gen_id=hit.short_uuid, img_url=hit.img_src
-                )
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{name}:validate:{e}")
-                try:
-                    out_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                continue
-            return True, name
-        errors.append(f"{name}:fail")
-    logger.error(
-        "download_with_all_mechanics FAILED F{} shot{}: {}",
-        hit.frame_number,
-        hit.shot,
-        "; ".join(errors[-8:]),
-    )
+    if _ready(out_path):
+        return True, "already"
+    try:
+        if out_path.exists() and out_path.stat().st_size < _READY:
+            out_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        await download_image_like_generate(
+            page,
+            out_path=out_path,
+            img_url=hit.img_src or "",
+            gen_id=hit.short_uuid,
+            prompt_id_prefix=hit.prompt_id_prefix,
+            project_id=project_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "download_with_all_mechanics FAILED F{} shot{}: {}",
+            hit.frame_number,
+            hit.shot,
+            e,
+        )
+        return False, "none"
+    if _ready(out_path):
+        return True, "download_image_like_generate"
     return False, "none"
 
 
