@@ -163,6 +163,10 @@ async def apply_montage_board(
             highlight = result.get("highlight")
             if highlight:
                 add_highlight(board, str(highlight))
+            # Сужаем очередь по ходу — cancel/restart не вернёт уже сделанное.
+            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
+            set_montage_meta(project, board)
+            await session.flush()
             if on_progress is not None:
                 await on_progress(idx + 1, total, result)
         except Exception as exc:  # noqa: BLE001
@@ -176,6 +180,9 @@ async def apply_montage_board(
             errors.append(msg)
             results.append({"ok": False, "error": msg, "op": op})
             remaining.append(op)
+            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
+            set_montage_meta(project, board)
+            await session.flush()
             if on_progress is not None:
                 await on_progress(idx + 1, total, {"ok": False, "error": msg})
 

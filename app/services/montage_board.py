@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from loguru import logger
 from openpyxl import load_workbook
@@ -19,17 +21,17 @@ from app.orchestrator.steps.generate_images import (
 )
 from app.services.excel_characters import parse_persons_sheet
 from app.services.montage_board_cache import (
-    cached_probe_video_duration,
     get_cached_plan_excel_cells,
     get_cached_shot2_columns,
     probe_video_durations_parallel,
 )
 from app.services.montage_board_meta import montage_meta, public_board_meta
-from app.services.montage_board_regen import (
-    image_prompt_from_excel,
-    video_prompt_from_excel,
-)
 from app.services.plan_shot2 import (
+    MIN_SHOT2_VIDEO_PROMPT_LEN,
+    ROW_IMAGE_PROMPT_2_V8,
+    ROW_VIDEO_PROMPT_2_V8,
+    SHOT2_PROMPT_ATTR,
+    SHOT2_VIDEO_PROMPT_ATTR,
     find_shot1_image,
     find_shot2_image,
     plan_column_for_frame,
@@ -37,6 +39,8 @@ from app.services.plan_shot2 import (
 )
 from app.services.shot2_timeline import split_voiceover_duration
 from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
     _cell_text,
 )
@@ -45,7 +49,8 @@ from app.services.xlsx_v8_import import (
 def _preview_url(path: Path | None) -> str | None:
     if path is None or not path.is_file():
         return None
-    return f"/api/files?path={path}"
+    # Кодируем path целиком — пробелы/кириллица иначе ломают <img>/<video>.
+    return f"/api/files?path={quote(str(path), safe='')}"
 
 
 def _find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
@@ -163,6 +168,87 @@ def _scene_use_durations(
     return round(float(scene_seconds), 3), None
 
 
+def _read_source_prompts_once(
+    xlsx_path: Path,
+    frames: list[Frame],
+) -> dict[int, dict[str, str]]:
+    """Один openpyxl-проход: R45/R46/R48/R64 для всех кадров.
+
+    Раньше на каждый кадр × 4 вызывался load_workbook → таймаут 30с / зависание UI.
+    """
+    out: dict[int, dict[str, str]] = {
+        fr.number: {
+            "image_prompt_shot1": "",
+            "image_prompt_shot2": "",
+            "animation_prompt_shot1": "",
+            "animation_prompt_shot2": "",
+        }
+        for fr in frames
+    }
+    if not frames or not xlsx_path.is_file():
+        for fr in frames:
+            attrs = dict(fr.attrs or {})
+            out[fr.number] = {
+                "image_prompt_shot1": (fr.image_prompt or "").strip(),
+                "image_prompt_shot2": (attrs.get(SHOT2_PROMPT_ATTR) or "").strip(),
+                "animation_prompt_shot1": (fr.animation_prompt or "").strip(),
+                "animation_prompt_shot2": (
+                    attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or ""
+                ).strip(),
+            }
+        return out
+
+    excel: dict[int, dict[str, str]] = {n: dict(v) for n, v in out.items()}
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: prompts openpyxl {}: {}", xlsx_path, e)
+        wb = None
+    if wb is not None:
+        try:
+            ws = _resolve_plan_sheet(wb)
+            if ws is not None:
+                for fr in frames:
+                    col = plan_column_for_frame(fr.number)
+                    excel[fr.number] = {
+                        "image_prompt_shot1": (
+                            _cell_text(ws, ROW_IMAGE_PROMPT_V8, col) or ""
+                        ).strip(),
+                        "image_prompt_shot2": (
+                            _cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or ""
+                        ).strip(),
+                        "animation_prompt_shot1": (
+                            _cell_text(ws, ROW_VIDEO_PROMPT_V8, col) or ""
+                        ).strip(),
+                        "animation_prompt_shot2": (
+                            _cell_text(ws, ROW_VIDEO_PROMPT_2_V8, col) or ""
+                        ).strip(),
+                    }
+        finally:
+            wb.close()
+
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        cell = excel.get(fr.number) or {}
+        img1 = cell.get("image_prompt_shot1") or (fr.image_prompt or "").strip()
+        img2 = cell.get("image_prompt_shot2") or (
+            attrs.get(SHOT2_PROMPT_ATTR) or ""
+        ).strip()
+        vid1 = cell.get("animation_prompt_shot1") or (
+            fr.animation_prompt or ""
+        ).strip()
+        vid2 = (cell.get("animation_prompt_shot2") or "").strip()
+        if len(vid2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+            vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+        out[fr.number] = {
+            "image_prompt_shot1": img1,
+            "image_prompt_shot2": img2,
+            "animation_prompt_shot1": vid1,
+            "animation_prompt_shot2": vid2,
+        }
+    return out
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
@@ -177,8 +263,14 @@ async def build_montage_board(
 
     xlsx_path = project.data_dir / "project.xlsx"
     chars_dir = project.data_dir / "characters"
-    excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
-    shot2_by = get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    # Excel / prompts — в thread, чтобы не блокировать event loop и WS.
+    excel_by_frame, prompts_by_frame, shot2_by = await asyncio.gather(
+        asyncio.to_thread(_read_plan_excel_cells, xlsx_path, chars_dir=chars_dir),
+        asyncio.to_thread(_read_source_prompts_once, xlsx_path, list(frames)),
+        asyncio.to_thread(
+            lambda: get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+        ),
+    )
     scenes_dir = project.data_dir / "scenes"
     videos_dir = project.data_dir / "videos"
 
@@ -220,6 +312,7 @@ async def build_montage_board(
         )
         shot2_timeline_start = shot1_timeline_end
         shot2_timeline_end = vo_end if has_shot2 else None
+        prompts = prompts_by_frame.get(fr.number) or {}
 
         rows.append(
             {
@@ -245,11 +338,10 @@ async def build_montage_board(
                 "image_shot2_url": _preview_url(img2),
                 "video_shot1_url": _preview_url(vid1),
                 "video_shot2_url": _preview_url(vid2),
-                # Промты исходников — сразу в модалке «Редактировать промт».
-                "image_prompt_shot1": image_prompt_from_excel(project, fr, 1) or "",
-                "image_prompt_shot2": image_prompt_from_excel(project, fr, 2) or "",
-                "animation_prompt_shot1": video_prompt_from_excel(project, fr, 1) or "",
-                "animation_prompt_shot2": video_prompt_from_excel(project, fr, 2) or "",
+                "image_prompt_shot1": prompts.get("image_prompt_shot1") or "",
+                "image_prompt_shot2": prompts.get("image_prompt_shot2") or "",
+                "animation_prompt_shot1": prompts.get("animation_prompt_shot1") or "",
+                "animation_prompt_shot2": prompts.get("animation_prompt_shot2") or "",
                 "plan_column": plan_column_for_frame(fr.number),
             }
         )

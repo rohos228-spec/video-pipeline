@@ -711,7 +711,12 @@ async def montage_board_apply(
     await publish_project_event(
         project_id,
         event_type="project_updated",
-        payload={"montage_board_apply": True, "ok": result.get("ok")},
+        payload={
+            "montage_board_apply": True,
+            "status": "done" if result.get("ok") else "error",
+            "ok": result.get("ok"),
+            "errors": result.get("errors"),
+        },
     )
     return result
 

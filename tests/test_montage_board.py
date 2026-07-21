@@ -162,3 +162,17 @@ async def test_montage_board_prompt_falls_back_to_frame_db(
     assert row["image_prompt_shot1"] == "DB IMAGE PROMPT"
     assert row["image_prompt_shot2"] == "DB IMAGE SHOT2"
     assert row["animation_prompt_shot1"] == "DB VIDEO PROMPT"
+
+
+def test_preview_url_encodes_spaces() -> None:
+    from app.services.montage_board import _preview_url
+
+    p = Path("/tmp/has space/frame_001.png")
+    # Файл может не существовать — тогда None; проверяем encode на существующем.
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"x")
+    url = _preview_url(p)
+    assert url is not None
+    assert " " not in url
+    assert "%20" in url or "%2520" in url or "has%20space" in url
+    p.unlink(missing_ok=True)

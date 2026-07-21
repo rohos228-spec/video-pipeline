@@ -361,7 +361,11 @@ export const api = {
     }),
 
   getMontageBoard: (projectId: number) =>
-    http<MontageBoardDTO>(`/api/projects/${projectId}/montage-board`),
+    http<MontageBoardDTO>(
+      `/api/projects/${projectId}/montage-board`,
+      {},
+      120_000,
+    ),
 
   applyMontageBoard: (
     projectId: number,
