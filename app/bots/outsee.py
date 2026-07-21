@@ -1274,6 +1274,23 @@ def _validate_downloaded_image(
             },
         ) from e
 
+    # UI-пресеты (freepreset/gptimage2.webp) — никогда не кадр монтажа.
+    # _UI_ASSET_MARKERS объявлен ниже в модуле; читаем на вызове.
+    low_url = (img_url or "").lower()
+    if low_url and any(m in low_url for m in _UI_ASSET_MARKERS):  # noqa: F821
+        try:  # noqa: SIM105
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OutseeDownloadError(
+            "outsee image: URL — UI-пресет/пример, не результат генерации",
+            context={
+                "gen_id": gen_id,
+                "img_url": img_url,
+                "size_bytes": size,
+            },
+        )
+
     # Раньше отклоняли любой thumb-URL даже после успешного browser-Download
     # полного PNG → файл удалялся, деньги за генерацию сгорали.
     # Решение: судим по байтам файла. Thumb-URL при полноценном файле — только WARN.
@@ -2303,79 +2320,20 @@ class OutseeBot:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 5) скачиваем. После свежего Generate кнопка «Скачать» в блоке
-        # «Результат» — рабочий путь (как video / regenerate_image).
+        # 5) скачиваем — ЕДИНЫЙ путь (нода img / montage recover / retry).
         # РАНЬШЕ: prompt_id_prefix (всегда у montage) уводил в gallery/CDN
-        # cascade → thumb→unsigned PNG → CDN 403 → файл не сохранялся →
-        # finalize не вызывался → кадр не менялся. Чиним порядок.
-        img_url = _resolve_best_download_url(img_url, net_events=net_events)
+        # cascade → thumb→unsigned PNG → CDN 403 → файл не сохранялся.
         try:
-            downloaded = False
-            if _outsee_queue_mode():
-                try:
-                    await _download_via_queue_result(
-                        page,
-                        img_url=img_url,
-                        out_path=out_path,
-                        gen_id=gen_id,
-                        net_events=net_events,
-                        project_id=project_id,
-                    )
-                    downloaded = True
-                    logger.info(
-                        "outsee.generate_image: queue Download OK id={}",
-                        (prompt_id_prefix or gen_id or "")[:40],
-                    )
-                except Exception as qe:  # noqa: BLE001
-                    logger.warning(
-                        "outsee.generate_image: queue Download fail ({}) — "
-                        "fallback card/cascade id={}",
-                        type(qe).__name__,
-                        prompt_id_prefix or "—",
-                    )
-            if not downloaded and prompt_id_prefix:
-                # Soft verify: не отменяем скачивание.
-                try:
-                    await self._verify_img_url_matches_prompt_id(
-                        page,
-                        img_url,
-                        prompt_id_prefix,
-                        gen_id=gen_id,
-                    )
-                except OutseeImageError as ve:
-                    logger.warning(
-                        "outsee.generate_image: verify soft-fail ({}), "
-                        "download cascade id={}",
-                        ve.reason[:120] if ve.reason else ve,
-                        prompt_id_prefix,
-                    )
-                try:
-                    await _download_via_card_click(
-                        page,
-                        prompt_id_prefix=prompt_id_prefix,
-                        out_path=out_path,
-                        project_id=project_id,
-                        img_url=img_url,
-                        net_events=net_events,
-                    )
-                    downloaded = True
-                except OutseeImageError:
-                    await download_saved_image_by_prompt_id(
-                        page,
-                        prompt_id_prefix=prompt_id_prefix,
-                        out_path=out_path,
-                        project_id=project_id,
-                        gen_id=gen_id,
-                    )
-                    downloaded = True
-            if not downloaded:
-                await _download_via_context_candidates(
-                    page,
-                    img_url,
-                    out_path,
-                    net_events=net_events,
-                    project_id=project_id,
-                )
+            img_url = await download_image_like_generate(
+                page,
+                out_path=out_path,
+                img_url=img_url,
+                gen_id=gen_id,
+                prompt_id_prefix=prompt_id_prefix,
+                project_id=project_id,
+                net_events=net_events,
+                soft_verify=self._verify_img_url_matches_prompt_id,
+            )
         except OutseeDownloadError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("img_url", img_url)
@@ -2401,19 +2359,6 @@ class OutseeBot:
                 },
                 dumps=dumps,
             ) from e
-
-        # 5.1) Валидация скачанного файла. С click-Download через
-        # `expect_download()` подсунуть `topaz.webp` или
-        # `input_*.png` outsee уже не сможет, но базовая проверка
-        # (>50 KB + magic-байты PNG/JPEG/WebP) остаётся — на случай
-        # битого CDN-ответа.
-        try:
-            _validate_downloaded_image(
-                out_path, gen_id=gen_id, img_url=img_url
-            )
-        except OutseeDownloadError as e:
-            e.dumps = list(dumps)
-            raise
 
         logger.info("outsee image saved → {} (gen_id={})", out_path, gen_id[:8])
         return GenerationResult(
@@ -7061,6 +7006,101 @@ async def _find_result_panel_card(page: Page, img_url: str | None) -> Any:
         if await loc.count() > 0:
             return loc
     return None
+
+
+async def download_image_like_generate(
+    page: Page,
+    *,
+    out_path: Path,
+    img_url: str,
+    gen_id: str,
+    prompt_id_prefix: str | None = None,
+    project_id: int | None = None,
+    net_events: list[tuple[float, str]] | None = None,
+    soft_verify: Any | None = None,
+) -> str:
+    """Единое скачивание картинки — тот же порядок, что у ноды `generate_image`.
+
+    Порядок (не менять):
+      1) queue-mode: `_download_via_queue_result` (CDN/URL → «Скачать» в Результате)
+      2) `_download_via_card_click` по `[ID]` (+ img_url)
+      3) `download_saved_image_by_prompt_id` (cold cascade C→D→B→A)
+      4) `_download_via_context_candidates` по URL
+      5) `_validate_downloaded_image`
+
+    Montage recover / history / retry ОБЯЗАНЫ звать эту функцию —
+    отдельные D0–D5 механики запрещены.
+    """
+    resolved = _resolve_best_download_url(img_url or "", net_events=net_events)
+    downloaded = False
+    if _outsee_queue_mode():
+        try:
+            await _download_via_queue_result(
+                page,
+                img_url=resolved or img_url or "",
+                out_path=out_path,
+                gen_id=gen_id,
+                net_events=net_events,
+                project_id=project_id,
+            )
+            downloaded = True
+            logger.info(
+                "download_image_like_generate: queue Download OK id={}",
+                (prompt_id_prefix or gen_id or "")[:40],
+            )
+        except Exception as qe:  # noqa: BLE001
+            logger.warning(
+                "download_image_like_generate: queue fail ({}) — "
+                "fallback card/cascade id={}",
+                type(qe).__name__,
+                prompt_id_prefix or "—",
+            )
+    if not downloaded and prompt_id_prefix:
+        if soft_verify is not None and (resolved or img_url):
+            try:
+                await soft_verify(
+                    page,
+                    resolved or img_url,
+                    prompt_id_prefix,
+                    gen_id=gen_id,
+                )
+            except OutseeImageError as ve:
+                logger.warning(
+                    "download_image_like_generate: verify soft-fail ({}), "
+                    "download cascade id={}",
+                    ve.reason[:120] if ve.reason else ve,
+                    prompt_id_prefix,
+                )
+        try:
+            await _download_via_card_click(
+                page,
+                prompt_id_prefix=prompt_id_prefix,
+                out_path=out_path,
+                project_id=project_id,
+                img_url=resolved or img_url or None,
+                net_events=net_events,
+            )
+            downloaded = True
+        except OutseeImageError:
+            await download_saved_image_by_prompt_id(
+                page,
+                prompt_id_prefix=prompt_id_prefix,
+                out_path=out_path,
+                project_id=project_id,
+                gen_id=gen_id,
+            )
+            downloaded = True
+    if not downloaded:
+        await _download_via_context_candidates(
+            page,
+            resolved or img_url or "",
+            out_path,
+            net_events=net_events,
+            project_id=project_id,
+        )
+    used = resolved or img_url or ""
+    _validate_downloaded_image(out_path, gen_id=gen_id, img_url=used)
+    return used
 
 
 async def _download_via_queue_result(

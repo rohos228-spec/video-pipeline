@@ -315,17 +315,10 @@ async def _recover_montage_image_from_history(
     outsee: OutseeBot,
     prep: ImageRegenPrep,
 ) -> Path | None:
-    """После сбоя download: как regenerate_image — queue «Скачать», не cold ID-hunt.
-
-    Cold cascade по новому [ID] бессмысленен, если Generate не принял промт —
-    карточки с этим ID в галерее нет (см. лог «перебрал 1 картинок»).
-    """
+    """После сбоя download: тот же путь, что generate_image (download_image_like_generate)."""
     from app.bots.outsee import (
-        _download_via_queue_result,
         _image_page_url,
-        _outsee_queue_mode,
-        _validate_downloaded_image,
-        download_saved_image_by_prompt_id,
+        download_image_like_generate,
     )
     from app.services.outsee_lane import outsee_lane
 
@@ -339,40 +332,13 @@ async def _recover_montage_image_from_history(
             page = await outsee.session.open_page(
                 _image_page_url(prep.model_slug), reuse=True
             )
-            # 1) Тот же путь, что после успешного Generate / regenerate_image.
-            if _outsee_queue_mode():
-                try:
-                    await _download_via_queue_result(
-                        page,
-                        img_url="",
-                        out_path=prep.file_path,
-                        gen_id=prep.gen_id or prefix,
-                        project_id=prep.project_id,
-                    )
-                    _validate_downloaded_image(
-                        prep.file_path,
-                        gen_id=prep.gen_id or prefix,
-                        img_url="",
-                    )
-                    logger.info(
-                        "montage history recover #{} F{} shot{} via queue Download",
-                        prep.project_id,
-                        prep.frame_number,
-                        prep.shot,
-                    )
-                    return prep.file_path
-                except Exception as qe:  # noqa: BLE001
-                    logger.warning(
-                        "montage history recover queue fail: {} — ID cascade",
-                        type(qe).__name__,
-                    )
-            await download_saved_image_by_prompt_id(
+            await download_image_like_generate(
                 page,
-                prompt_id_prefix=prefix,
                 out_path=prep.file_path,
-                project_id=prep.project_id,
+                img_url="",
                 gen_id=prep.gen_id or prefix,
-                model_slug=prep.model_slug,
+                prompt_id_prefix=prefix,
+                project_id=prep.project_id,
             )
             logger.info(
                 "montage history recover #{} frame {} shot {} → {} ({} B)",
