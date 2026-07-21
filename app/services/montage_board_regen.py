@@ -190,7 +190,17 @@ async def prepare_image_regen(
         )
         if current is None:
             raise RuntimeError("нет текущего изображения для корректировки")
-        prompt_text = text
+        # Как img-шаг: полный image_prompt из Excel + инструкция правки,
+        # текущий кадр — reference. Раньше слали только короткий correction
+        # → Outsee держал Generate disabled / «промт не принят».
+        base = _image_prompt_from_excel(project, fr, shot).strip()
+        if base:
+            prompt_text = (
+                f"{base}\n\n"
+                f"=== CORRECTION / ПРАВКА ===\n{text}"
+            )
+        else:
+            prompt_text = text
         refs = [current]
     else:
         prompt_text = _image_prompt_from_excel(project, fr, shot)
@@ -305,9 +315,16 @@ async def _recover_montage_image_from_history(
     outsee: OutseeBot,
     prep: ImageRegenPrep,
 ) -> Path | None:
-    """Тот же download, что img-шаг: wait thumbs → card-click cascade по [ID]."""
+    """После сбоя download: как regenerate_image — queue «Скачать», не cold ID-hunt.
+
+    Cold cascade по новому [ID] бессмысленен, если Generate не принял промт —
+    карточки с этим ID в галерее нет (см. лог «перебрал 1 картинок»).
+    """
     from app.bots.outsee import (
+        _download_via_queue_result,
         _image_page_url,
+        _outsee_queue_mode,
+        _validate_downloaded_image,
         download_saved_image_by_prompt_id,
     )
     from app.services.outsee_lane import outsee_lane
@@ -322,6 +339,33 @@ async def _recover_montage_image_from_history(
             page = await outsee.session.open_page(
                 _image_page_url(prep.model_slug), reuse=True
             )
+            # 1) Тот же путь, что после успешного Generate / regenerate_image.
+            if _outsee_queue_mode():
+                try:
+                    await _download_via_queue_result(
+                        page,
+                        img_url="",
+                        out_path=prep.file_path,
+                        gen_id=prep.gen_id or prefix,
+                        project_id=prep.project_id,
+                    )
+                    _validate_downloaded_image(
+                        prep.file_path,
+                        gen_id=prep.gen_id or prefix,
+                        img_url="",
+                    )
+                    logger.info(
+                        "montage history recover #{} F{} shot{} via queue Download",
+                        prep.project_id,
+                        prep.frame_number,
+                        prep.shot,
+                    )
+                    return prep.file_path
+                except Exception as qe:  # noqa: BLE001
+                    logger.warning(
+                        "montage history recover queue fail: {} — ID cascade",
+                        type(qe).__name__,
+                    )
             await download_saved_image_by_prompt_id(
                 page,
                 prompt_id_prefix=prefix,

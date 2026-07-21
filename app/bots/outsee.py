@@ -2061,22 +2061,10 @@ class OutseeBot:
             )
             abort_if_cancelled(project_id)
 
-            gen_probe = await _first_visible(
-                page,
-                GENERATE_BUTTON_SELECTORS[:6],
-                timeout_ms=3_000,
-                project_id=project_id,
-            )
-            if gen_probe and await page.locator(gen_probe).first.is_disabled():
-                raise OutseeImageError(
-                    "outsee: кнопка Generate заблокирована — промт не принят",
-                    context={
-                        "gen_id": gen_id,
-                        "prompt_len": len(prompt),
-                        "composer_len": actual_len,
-                    },
-                    dumps=dumps,
-                )
+            # НЕ проверяем disabled здесь: для montage correction Generate
+            # часто inactive пока не прикреплён reference (текущий кадр).
+            # Раньше ранний raise «промт не принят» убивал apply до attach refs.
+            # Рабочий путь img-шага: настройки → refs → _wait_button_enabled.
 
             # 2) выбрать aspect ratio (поддержка любого W:H, с верификацией)
             if aspect_ratio:
