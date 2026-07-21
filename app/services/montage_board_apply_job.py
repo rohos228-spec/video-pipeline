@@ -11,7 +11,7 @@ from loguru import logger
 from app.db import session_scope
 from app.models import Project
 from app.services.event_bus import publish_project_event
-from app.services.montage_board_apply import apply_montage_board
+from app.services.montage_board_apply import apply_montage_board_by_id
 from app.services.montage_board_job_state import resolve_job_status
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 
@@ -107,21 +107,16 @@ def spawn_apply_job(
                 )
             await _publish(project_id, "running", extra={"total_ops": total_ops, "done_ops": 0})
 
-            # Не держим одну session на весь Outsee Generate (sqlite locked).
+            # Без долгой session на Outsee — иначе UI abort «не ответил за 30 с».
+            result = await apply_montage_board_by_id(
+                project_id,
+                video_trims=video_trims,
+                pending_ops=pending_ops,
+                on_progress=_on_progress,
+            )
+
+            status = "done" if result.get("ok") else "error"
             async with session_scope() as session:
-                project = await session.get(Project, project_id)
-                if project is None:
-                    return
-                result = await apply_montage_board(
-                    session,
-                    project,
-                    video_trims=video_trims,
-                    pending_ops=pending_ops,
-                    on_progress=_on_progress,
-                )
-                status = "done" if result.get("ok") else "error"
-                # project мог быть expired после commit'ов внутри apply —
-                # перечитываем для job status.
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
