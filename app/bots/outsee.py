@@ -1368,6 +1368,13 @@ _UI_ASSET_MARKERS = (
     "topaz.webp",
     "/preview/loader",
     "/skeleton",
+    # Пресеты/примеры на outsee.io — НЕ результат генерации.
+    # Recover d3 ошибочно хватал gptimage2.webp и затирал кадр.
+    "/videoexamples/",
+    "/freepreset/",
+    "gptimage2.webp",
+    "/examples/",
+    "/placeholder",
 )
 
 # Маркеры путей/имён, которые соответствуют ВЫБРАННОМУ ПОЛЬЗОВАТЕЛЕМ
