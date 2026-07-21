@@ -1470,7 +1470,11 @@ def _guess_full_png_url_from_thumb(url: str) -> str | None:
 
 
 def _all_full_png_url_candidates(url: str) -> list[str]:
-    """Все варианты full-PNG URL для thumb/handoff (оба CDN-хоста)."""
+    """Все варианты full-PNG URL для thumb/handoff (оба CDN-хоста).
+
+    Важно: сохраняем query/подпись (X-Amz-*) с исходного thumb URL —
+    без неё CDN отвечает 403, файл не сохраняется, Generate уже оплачен.
+    """
     if not url:
         return []
     out: list[str] = []
@@ -1481,18 +1485,31 @@ def _all_full_png_url_candidates(url: str) -> list[str]:
             seen.add(candidate)
             out.append(candidate)
 
+    query = ""
+    raw = url
+    if "?" in raw:
+        raw, q = raw.split("?", 1)
+        query = "?" + q
+
     path = _strip_url_query(url)
     name = Path(path).name
     png_name = _png_basename_from_thumb_filename(name)
     if png_name:
         dir_part = path[: path.rfind("/") + 1] if "/" in path else ""
-        _add(f"{dir_part}{png_name}" if dir_part else png_name)
+        base = f"{dir_part}{png_name}" if dir_part else png_name
+        # Сначала подписанный full — иначе 403 и «не сохраняет».
+        if query:
+            _add(f"{base}{query}")
+        _add(base)
 
     gm = _OUTSEE_GENERATED_PATH_RE.search(path)
     if gm and png_name:
         gen_dir = gm.group(1) + "/"
-        for base in _OUTSEE_CDN_BASES:
-            _add(f"{base}{gen_dir}{png_name}")
+        for host_base in _OUTSEE_CDN_BASES:
+            full = f"{host_base}{gen_dir}{png_name}"
+            if query:
+                _add(f"{full}{query}")
+            _add(full)
 
     return out
 
@@ -1509,6 +1526,9 @@ def _url_download_priority(url: str) -> tuple[int, int]:
         score -= 30
     if "outseehistory.storage.yandexcloud.net" in low:
         score -= 5  # full PNG чаще на этом хосте, не на storage/…/outseehistory
+    # Подписанный URL переживает CDN auth — важнее голого пути.
+    if "x-amz-signature" in url.lower() or "signature=" in url.lower():
+        score -= 20
     return (score, len(low))
 
 
