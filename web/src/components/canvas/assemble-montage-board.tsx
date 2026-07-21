@@ -1713,6 +1713,7 @@ export function AssembleMontageBoard({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 1,
+                                      prompt: sourcePromptFor("image", fr.number, 1),
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
@@ -1737,6 +1738,7 @@ export function AssembleMontageBoard({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 2,
+                                      prompt: sourcePromptFor("image", fr.number, 2),
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
