@@ -837,6 +837,13 @@ export function AssembleMontageBoard({
   );
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
   pendingOpsRef.current = pendingOps;
+  /** Пользователь набрал очередь локально — не затирать пустым meta с сервера. */
+  const localQueueDirtyRef = useRef(false);
+  /** Мы сами отправили apply (started) — можно чистить/синхронизировать очередь. */
+  const submittedApplyRef = useRef(false);
+  const trimsDirtyRef = useRef(false);
+  const lastApplyToastKeyRef = useRef("");
+  const lastMontageToastKeyRef = useRef("");
 
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
@@ -847,20 +854,83 @@ export function AssembleMontageBoard({
     queryKey: ["montage-board", projectId],
     queryFn: () => api.getMontageBoard(projectId!),
     enabled: open && projectId != null,
-    retry: false,
+    retry: 2,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 
   const frames = board.data?.frames ?? [];
   const meta = board.data?.meta;
+  const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
+
+  const parsePendingOps = useCallback((raw: unknown): MontagePendingOp[] => {
+    if (!Array.isArray(raw)) return [];
+    const restored: MontagePendingOp[] = [];
+    for (const op of raw) {
+      if (!op || typeof op !== "object") continue;
+      const rec = op as Record<string, unknown>;
+      const t = String(rec.type || "");
+      if (
+        t !== "image_regen" &&
+        t !== "image_regen_prompt" &&
+        t !== "image_regen_correction" &&
+        t !== "video_regen" &&
+        t !== "video_regen_prompt"
+      ) {
+        continue;
+      }
+      const frameNumber = Number(rec.frame_number);
+      if (!Number.isFinite(frameNumber) || frameNumber < 1) continue;
+      const shot = rec.shot === 2 ? 2 : 1;
+      restored.push({
+        type: t,
+        frame_number: frameNumber,
+        shot,
+        prompt: typeof rec.prompt === "string" ? rec.prompt : undefined,
+        correction: typeof rec.correction === "string" ? rec.correction : undefined,
+      });
+    }
+    return restored;
+  }, []);
 
   useEffect(() => {
     if (frames.length === 0) return;
-    setTrims(mergeTrimsFromMeta(frames, meta?.video_trims ?? {}));
+    // Ждём settled fetch — иначе stale meta восстанавливает уже сделанные ops.
+    if (board.isFetching) return;
+
     setHighlights(meta?.highlights ?? []);
     setStaleVideos(meta?.stale_videos ?? []);
-  }, [board.dataUpdatedAt, frames.length, meta?.video_trims, meta?.highlights, meta?.stale_videos]);
+    if (!trimsDirtyRef.current) {
+      setTrims(mergeTrimsFromMeta(frames, meta?.video_trims ?? {}));
+    }
+
+    if (applyRunning) return;
+
+    const restored = parsePendingOps(meta?.pending_ops);
+    if (localQueueDirtyRef.current && restored.length === 0) {
+      // Локальная очередь пользователя важнее пустого meta.
+      return;
+    }
+    const nextKey = JSON.stringify(restored);
+    if (nextKey === JSON.stringify(pendingOpsRef.current)) return;
+    pendingOpsRef.current = restored;
+    setPendingOps(restored);
+    localQueueDirtyRef.current = false;
+  }, [
+    board.dataUpdatedAt,
+    board.isFetching,
+    frames.length,
+    meta?.video_trims,
+    meta?.highlights,
+    meta?.stale_videos,
+    pendingOpsKey,
+    applyRunning,
+    parsePendingOps,
+  ]);
 
   const queueOp = useCallback((op: MontagePendingOp) => {
+    localQueueDirtyRef.current = true;
     setPendingOps((prev) => {
       const next = [...prev, op];
       pendingOpsRef.current = next;
@@ -883,22 +953,37 @@ export function AssembleMontageBoard({
     onSuccess: (res) => {
       const queued = pendingOpsRef.current.length;
       if (res.started) {
+        submittedApplyRef.current = true;
+        localQueueDirtyRef.current = false;
+        trimsDirtyRef.current = false;
         setPendingOps([]);
+        pendingOpsRef.current = [];
         setApplyRunning(true);
+        lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций… смотрите outsee.io`);
         return;
       }
       if (res.already_running) {
+        // Чужой/текущий job — НЕ чистим локальную очередь пользователя.
         setApplyRunning(true);
         toast.message("Генерация уже выполняется");
         return;
       }
+      submittedApplyRef.current = false;
+      localQueueDirtyRef.current = false;
+      trimsDirtyRef.current = false;
       setPendingOps([]);
+      pendingOpsRef.current = [];
       if (res.meta) {
         setHighlights(res.meta.highlights ?? []);
         setStaleVideos(res.meta.stale_videos ?? []);
         if (res.meta.video_trims) {
           setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
+        }
+        const restored = parsePendingOps(res.meta.pending_ops);
+        if (restored.length > 0) {
+          pendingOpsRef.current = restored;
+          setPendingOps(restored);
         }
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -924,6 +1009,7 @@ export function AssembleMontageBoard({
         return;
       }
       if (res.started) {
+        lastMontageToastKeyRef.current = "";
         setMontageRunning(true);
         toast.message("Монтаж запущен в фоне");
       }
@@ -940,6 +1026,43 @@ export function AssembleMontageBoard({
       if (st.job?.status === "running") setApplyRunning(true);
     }).catch(() => {});
   }, [open, projectId]);
+
+  const handleApplyTerminal = useCallback(
+    (status: string, errText?: string) => {
+      const key = `${status}:${errText || ""}`;
+      if (lastApplyToastKeyRef.current === key) return;
+      lastApplyToastKeyRef.current = key;
+      setApplyRunning(false);
+      setApplyProgress(null);
+      if (submittedApplyRef.current) {
+        // Очередь подтянется из meta после refetch (remaining / пусто).
+        localQueueDirtyRef.current = false;
+        setPendingOps([]);
+        pendingOpsRef.current = [];
+        submittedApplyRef.current = false;
+      }
+      if (status === "done") toast.success("Генерация завершена");
+      else if (status === "error") toast.error(errText || "Генерация не удалась");
+      else if (status === "cancelled") toast.message("Генерация остановлена");
+      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    },
+    [projectId, queryClient],
+  );
+
+  const handleMontageTerminal = useCallback(
+    (status: string, errText?: string) => {
+      const key = `${status}:${errText || ""}`;
+      if (lastMontageToastKeyRef.current === key) return;
+      lastMontageToastKeyRef.current = key;
+      setMontageRunning(false);
+      if (status === "done") {
+        toast.success("Монтаж завершён");
+        void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+      } else if (status === "error") toast.error(errText || "Монтаж не удался");
+      else if (status === "cancelled") toast.message("Монтаж остановлен");
+    },
+    [projectId, queryClient],
+  );
 
   useEffect(() => {
     if (!open || projectId == null) return;
@@ -972,21 +1095,11 @@ export function AssembleMontageBoard({
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             setApplyProgress({ done: doneOps, total: totalOps });
           }
-        } else if (status === "done") {
-          setApplyRunning(false);
-          setApplyProgress(null);
-          toast.success("Генерация завершена");
-          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-        } else if (status === "error") {
-          setApplyRunning(false);
-          setApplyProgress(null);
-          const err = evt.payload.error || evt.payload.errors?.join("; ");
-          toast.error(err || "Генерация не удалась");
-          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-        } else if (status === "cancelled") {
-          setApplyRunning(false);
-          setApplyProgress(null);
-          toast.message("Генерация остановлена");
+        } else if (status === "done" || status === "error" || status === "cancelled") {
+          const err =
+            evt.payload.error ||
+            (Array.isArray(evt.payload.errors) ? evt.payload.errors.join("; ") : undefined);
+          handleApplyTerminal(status, err);
         }
         return;
       }
@@ -994,21 +1107,12 @@ export function AssembleMontageBoard({
       const status = evt.payload.status;
       if (status === "running") {
         setMontageRunning(true);
-      } else if (status === "done") {
-        setMontageRunning(false);
-        toast.success("Монтаж завершён");
-        void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-      } else if (status === "error") {
-        setMontageRunning(false);
-        void api.getMontageBoardStatus(projectId).then((st) => {
-          toast.error(st.job?.error || "Монтаж не удался");
-        }).catch(() => toast.error("Монтаж не удался"));
-      } else if (status === "cancelled") {
-        setMontageRunning(false);
-        toast.message("Монтаж остановлен");
+        lastMontageToastKeyRef.current = "";
+      } else if (status === "done" || status === "error" || status === "cancelled") {
+        handleMontageTerminal(status, evt.payload.error);
       }
     });
-  }, [open, projectId, queryClient]);
+  }, [open, projectId, handleApplyTerminal, handleMontageTerminal]);
 
   useEffect(() => {
     if (!open || projectId == null || !montageRunning) return;
@@ -1018,18 +1122,10 @@ export function AssembleMontageBoard({
         const st = await api.getMontageBoardStatus(projectId);
         const status = st.job?.status;
         if (cancelled) return;
-        if (status === "running") return;
-        setMontageRunning(false);
-        if (status === "done") {
-          toast.success("Монтаж завершён");
-          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-        } else if (status === "error") {
-          toast.error(st.job?.error || "Монтаж не удался");
-        } else if (status === "cancelled") {
-          toast.message("Монтаж остановлен");
-        }
+        if (status === "running" || !status) return;
+        handleMontageTerminal(status, st.job?.error || undefined);
       } catch {
-        if (!cancelled) setMontageRunning(false);
+        // Сетевой сбой — не сбрасываем running, ждём следующий poll.
       }
     };
     const id = window.setInterval(() => void poll(), 2500);
@@ -1038,7 +1134,7 @@ export function AssembleMontageBoard({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, projectId, montageRunning, queryClient]);
+  }, [open, projectId, montageRunning, handleMontageTerminal]);
 
   useEffect(() => {
     if (!open || projectId == null || !applyRunning) return;
@@ -1056,19 +1152,10 @@ export function AssembleMontageBoard({
           }
           return;
         }
-        setApplyRunning(false);
-        setApplyProgress(null);
-        if (status === "done") {
-          toast.success("Генерация завершена");
-          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-        } else if (status === "error") {
-          toast.error(st.job?.error || "Генерация не удалась");
-          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-        } else if (status === "cancelled") {
-          toast.message("Генерация остановлена");
-        }
+        if (!status) return;
+        handleApplyTerminal(status, st.job?.error || undefined);
       } catch {
-        if (!cancelled) setApplyRunning(false);
+        // Сетевой сбой — не сбрасываем running.
       }
     };
     const id = window.setInterval(() => void poll(), 2500);
@@ -1077,7 +1164,7 @@ export function AssembleMontageBoard({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, projectId, applyRunning, queryClient]);
+  }, [open, projectId, applyRunning, handleApplyTerminal]);
 
   const refreshBoard = useCallback(() => {
     void board.refetch();
@@ -1260,6 +1347,7 @@ export function AssembleMontageBoard({
   };
 
   const updateTrim = (key: string, next: VideoTrim) => {
+    trimsDirtyRef.current = true;
     setTrims((prev) => ({ ...prev, [key]: next }));
   };
 
@@ -1385,9 +1473,23 @@ export function AssembleMontageBoard({
               </div>
             )}
             {!board.isLoading && board.isError && (
-              <div className="flex flex-col items-center gap-3 py-10">
+              <div className="flex flex-col items-center gap-3 py-10 px-4 text-center">
                 <p className="text-sm text-destructive">Не удалось загрузить данные монтажа</p>
-                <Button type="button" size="sm" variant="outline" onClick={() => void board.refetch()}>
+                <p className="max-w-lg text-xs text-muted-foreground break-words whitespace-pre-wrap">
+                  {board.error instanceof Error
+                    ? board.error.message || String(board.error)
+                    : String(board.error ?? "неизвестная ошибка")}
+                  {projectId != null ? `\nproject #${projectId}` : ""}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
+                    void board.refetch();
+                  }}
+                >
                   Повторить
                 </Button>
               </div>

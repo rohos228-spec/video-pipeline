@@ -162,3 +162,170 @@ async def test_montage_board_prompt_falls_back_to_frame_db(
     assert row["image_prompt_shot1"] == "DB IMAGE PROMPT"
     assert row["image_prompt_shot2"] == "DB IMAGE SHOT2"
     assert row["animation_prompt_shot1"] == "DB VIDEO PROMPT"
+
+
+def test_preview_url_encodes_spaces() -> None:
+    from app.services.montage_board import _preview_url
+
+    p = Path("/tmp/has space/frame_001.png")
+    # Файл может не существовать — тогда None; проверяем encode на существующем.
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"x")
+    url = _preview_url(p)
+    assert url is not None
+    assert " " not in url
+    assert "%20" in url or "%2520" in url or "has%20space" in url
+    p.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_build_montage_board_survives_expired_frames(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ORM Frame в to_thread давал MissingGreenlet → UI «не удалось загрузить»."""
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="EXPIRED SAFE PROMPT")
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="db-fallback",
+        animation_prompt="db-anim",
+        status="planned",
+        attrs={"image_prompt_shot2": "db-s2"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    # Имитация: кадры expired после select, пока Excel читается в worker-thread.
+    # Project остаётся hot (как в HTTP-запросе после get_project).
+    from app.services import montage_board as mb
+
+    real_snapshot = mb._snapshot_frames
+
+    def _snapshot_then_expire(frames: list[Frame]) -> list:
+        snaps = real_snapshot(frames)
+        for obj in frames:
+            session.expire(obj)
+        return snaps
+
+    monkeypatch.setattr(mb, "_snapshot_frames", _snapshot_then_expire)
+    board = await build_montage_board(session, montage_project)
+
+    assert board["frame_count"] == 1
+    assert board["frames"][0]["image_prompt_shot1"] == "EXPIRED SAFE PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_read_source_prompts_once_accepts_plain_snapshots(
+    montage_project: Project,
+    tmp_path: Path,
+) -> None:
+    """Worker-thread не должен получать SQLAlchemy Frame."""
+    import asyncio
+
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _read_source_prompts_once,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="THREAD SAFE")
+    wb.save(xlsx)
+
+    snaps = [
+        _FrameBoardSnapshot(
+            id=1,
+            number=1,
+            image_prompt="db",
+            animation_prompt="anim",
+            attrs={},
+        )
+    ]
+    out = await asyncio.to_thread(_read_source_prompts_once, xlsx, snaps)
+    assert out[1]["image_prompt_shot1"] == "THREAD SAFE"
+
+
+@pytest.mark.asyncio
+async def test_load_xlsx_bundle_is_sequential_single_thread(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Параллельные openpyxl на Windows дают lock — bundle должен быть 1× to_thread."""
+    import asyncio
+
+    from app.services import montage_board as mb
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="vo")
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="IMG")
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    calls: list[object] = []
+    real_to_thread = asyncio.to_thread
+
+    async def tracking_to_thread(fn, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(fn)
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(mb.asyncio, "to_thread", tracking_to_thread)
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_count"] == 1
+    assert board["frames"][0]["image_prompt_shot1"] == "IMG"
+    # Ровно один to_thread на Excel-бандл (не 3 параллельных openpyxl).
+    assert calls == [mb._load_montage_xlsx_bundle]
+
+
+def test_load_montage_xlsx_bundle_survives_plan_open_failure(
+    montage_project: Project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _load_montage_xlsx_bundle,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"not-xlsx")
+    snaps = [
+        _FrameBoardSnapshot(
+            id=1,
+            number=1,
+            image_prompt="DB IMG",
+            animation_prompt="DB VID",
+            attrs={},
+        )
+    ]
+    excel, prompts, shot2 = _load_montage_xlsx_bundle(
+        xlsx,
+        chars_dir=montage_project.data_dir / "characters",
+        frames=snaps,
+    )
+    assert excel == {}
+    assert prompts[1]["image_prompt_shot1"] == "DB IMG"
+    assert shot2 == {}

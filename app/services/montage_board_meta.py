@@ -86,6 +86,7 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
         "stale_videos": board.get("stale_videos") or [],
         "highlights": board.get("highlights") or [],
         "corrections": board.get("corrections") or {},
+        "pending_ops": list(board.get("pending_ops") or []),
         "applied_at": board.get("applied_at"),
     }
 

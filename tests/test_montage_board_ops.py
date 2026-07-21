@@ -165,3 +165,120 @@ async def test_regen_failure_keeps_old_image(
         await regen_scene_image(session, montage_project, 1, shot=1)
 
     assert old.is_file()
+
+
+@pytest.mark.asyncio
+async def test_apply_keeps_failed_pending_ops(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="t",
+        status="planned",
+        image_prompt="test prompt for image",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    @asynccontextmanager
+    async def _scope():
+        yield session
+
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
+
+    async def _fail(*_a, **_k):
+        raise RuntimeError("download failed")
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.execute_image_regen",
+        _fail,
+    )
+
+    op = {"type": "image_regen", "frame_number": 1, "shot": 1}
+    result = await apply_montage_board(
+        session,
+        montage_project,
+        pending_ops=[op],
+    )
+    assert result["ok"] is False
+    meta = montage_meta(montage_project)
+    assert meta["pending_ops"] == [op]
+
+
+@pytest.mark.asyncio
+async def test_apply_finalizes_when_file_ready_despite_execute_error(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="t",
+        status="planned",
+        image_prompt="test prompt for image",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    old = scenes / "frame_001_old.png"
+    old.write_bytes(b"x" * 128)
+
+    @asynccontextmanager
+    async def _scope():
+        yield session
+
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
+
+    from app.services.montage_board_regen import ImageRegenPrep
+
+    prep_box: dict[str, ImageRegenPrep] = {}
+
+    async def _fake_prepare(session, project, frame_number, **kwargs):
+        scenes_dir = project.data_dir / "scenes"
+        scenes_dir.mkdir(parents=True, exist_ok=True)
+        new_path = scenes_dir / "frame_001_new.png"
+        prep = ImageRegenPrep(
+            project_id=project.id,
+            frame_number=frame_number,
+            shot=int(kwargs.get("shot") or 1),
+            prompt_text="p",
+            file_path=new_path,
+        )
+        prep_box["prep"] = prep
+        return prep
+
+    async def _fail_after_write(prep: ImageRegenPrep):
+        # Порог finalize-on-error = 200 KB (как outsee-валидация).
+        prep.file_path.write_bytes(b"y" * 220_000)
+        raise RuntimeError("post-download glitch")
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.prepare_image_regen",
+        _fake_prepare,
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.execute_image_regen",
+        _fail_after_write,
+    )
+
+    result = await apply_montage_board(
+        session,
+        montage_project,
+        pending_ops=[{"type": "image_regen", "frame_number": 1, "shot": 1}],
+    )
+    assert result["ok"] is True
+    assert prep_box["prep"].file_path.is_file()
+    assert not old.is_file()
+    assert montage_meta(montage_project).get("pending_ops") == []

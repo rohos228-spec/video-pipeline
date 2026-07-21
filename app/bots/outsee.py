@@ -881,7 +881,7 @@ class OutseePromptTooLongError(OutseeImageError):
 
 
 class OutseeDownloadError(OutseeImageError):
-    """URL ролика уже есть, скачивание не удалось — не нужен новый Generate."""
+    """URL картинки/ролика уже есть, скачивание не удалось — не нужен новый Generate."""
 
 
 class OutseeDuplicateVideoError(OutseeImageError):
@@ -1258,14 +1258,14 @@ def _validate_downloaded_image(
       2) magic-байты PNG/JPEG/WebP — отсекает HTML-страницы и SVG.
 
     На любую неудачу — удаляем «битый» файл (чтобы случайно не
-    отправился в TG) и кидаем `OutseeImageError`. Retry-обёртка
-    (`outsee_retry.generate_image_with_retries`) увидит ошибку и
-    перезапустит генерацию с тем же или переписанным промтом.
+    отправился в TG) и кидаем `OutseeDownloadError`. Retry-обёртка
+    (`outsee_retry.generate_image_with_retries`) делает download-only
+    повтор без нового Generate — картинка уже есть на outsee.
     """
     try:
         size = out_path.stat().st_size
     except OSError as e:
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee image: скачанный файл недоступен после download",
             context={
                 "gen_id": gen_id,
@@ -1279,7 +1279,7 @@ def _validate_downloaded_image(
             out_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee image: скачан thumb вместо full PNG — не принимаем",
             context={
                 "gen_id": gen_id,
@@ -1293,7 +1293,7 @@ def _validate_downloaded_image(
             out_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee image: скачанный файл слишком мал — похоже на "
             "placeholder/skeleton, а не реальную генерацию",
             context={
@@ -1308,7 +1308,7 @@ def _validate_downloaded_image(
         with out_path.open("rb") as f:
             head = f.read(16)
     except OSError as e:
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee image: не удалось прочитать заголовок скачанного файла",
             context={
                 "gen_id": gen_id,
@@ -1325,7 +1325,7 @@ def _validate_downloaded_image(
             out_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee image: скачанный файл не выглядит как PNG/JPEG/WebP "
             "(возможно, error-page или SVG-плейсхолдер)",
             context={
@@ -1688,14 +1688,14 @@ def _validate_downloaded_video(
     try:
         size = out_path.stat().st_size
     except OSError as e:
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: скачанный файл недоступен после download",
             context={"gen_id": gen_id, "video_url": video_url},
         ) from e
     if size < _MIN_VIDEO_BYTES:
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: слишком маленький mp4 (placeholder?)",
             context={"gen_id": gen_id, "video_url": video_url, "bytes": size},
         )
@@ -1704,7 +1704,7 @@ def _validate_downloaded_video(
     if len(head) < 8 or head[4:8] != b"ftyp":
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: файл не похож на mp4",
             context={"gen_id": gen_id, "video_url": video_url},
         )
@@ -2312,13 +2312,23 @@ class OutseeBot:
                 await _download_via_context(
                     page, img_url, out_path, project_id=project_id
                 )
-        except OutseeImageError as e:
+        except OutseeDownloadError as e:
             e.context.setdefault("gen_id", gen_id)
             e.context.setdefault("img_url", img_url)
             e.dumps = list(dumps)
             raise
+        except OutseeImageError as e:
+            e.context.setdefault("gen_id", gen_id)
+            e.context.setdefault("img_url", img_url)
+            e.dumps = list(dumps)
+            reason_l = (e.reason or "").lower()
+            if "скач" in reason_l or "download" in reason_l:
+                raise OutseeDownloadError(
+                    e.reason, context=dict(e.context), dumps=list(dumps)
+                ) from e
+            raise
         except Exception as e:  # noqa: BLE001
-            raise OutseeImageError(
+            raise OutseeDownloadError(
                 "outsee image: скачивание результата упало",
                 context={
                     "gen_id": gen_id,
@@ -2337,7 +2347,7 @@ class OutseeBot:
             _validate_downloaded_image(
                 out_path, gen_id=gen_id, img_url=img_url
             )
-        except OutseeImageError as e:
+        except OutseeDownloadError as e:
             e.dumps = list(dumps)
             raise
 
@@ -2496,7 +2506,7 @@ class OutseeBot:
                             page, img_url, out_path, project_id=project_id
                         )
                 except Exception as e:  # noqa: BLE001
-                    raise OutseeImageError(
+                    raise OutseeDownloadError(
                         "outsee image: скачивание результата (regenerate) упало",
                         context={
                             "gen_id": gen_id,
@@ -2519,6 +2529,67 @@ class OutseeBot:
             finally:
                 if project_id is not None:
                     unregister_active_page(project_id)
+
+    async def retry_image_download(
+        self,
+        *,
+        img_url: str,
+        out_path: Path,
+        gen_id: str,
+        prompt_id_prefix: str | None = None,
+        project_id: int | None = None,
+        model_slug: str | None = None,
+        net_events: list[tuple[float, str]] | None = None,
+    ) -> GenerationResult:
+        """Повтор скачивания без нового Generate (картинка уже на outsee)."""
+        from app.services.outsee_lane import outsee_lane
+        from app.services.step_cancel import abort_if_cancelled
+
+        abort_if_cancelled(project_id)
+        page_url = _image_page_url(model_slug)
+        async with outsee_lane(project_id=project_id, op="retry_image_download"):
+            page = await self.session.open_page(page_url, reuse=True)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if prompt_id_prefix:
+                    await _download_via_card_click(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                        out_path=out_path,
+                        project_id=project_id,
+                        img_url=img_url,
+                        net_events=net_events or [],
+                    )
+                elif _outsee_queue_mode():
+                    await _download_via_queue_result(
+                        page,
+                        img_url=img_url,
+                        out_path=out_path,
+                        gen_id=gen_id,
+                        net_events=net_events or [],
+                        project_id=project_id,
+                    )
+                else:
+                    await _download_via_context(
+                        page, img_url, out_path, project_id=project_id
+                    )
+                _validate_downloaded_image(
+                    out_path, gen_id=gen_id, img_url=img_url
+                )
+            except OutseeImageError as e:
+                e.context.setdefault("gen_id", gen_id)
+                e.context.setdefault("img_url", img_url)
+                raise OutseeDownloadError(
+                    e.reason, context=dict(e.context)
+                ) from e
+        logger.info(
+            "outsee retry_image_download saved → {} (gen_id={})",
+            out_path,
+            gen_id[:8],
+        )
+        return GenerationResult(
+            file_path=out_path, raw_url=img_url, gen_id=gen_id
+        )
 
     async def _wait_button_enabled(
         self, page: Page, selector: str, *, timeout_s: float = 180, project_id: int | None = None
@@ -5210,6 +5281,9 @@ class OutseeBot:
                     gen_id=gen_id,
                     prompt_id_prefix=prompt_id_prefix,
                     project_id=project_id,
+                )
+                _validate_downloaded_video(
+                    out_path, gen_id=gen_id, video_url=video_url
                 )
             except OutseeImageError as e:
                 e.context.setdefault("gen_id", gen_id)

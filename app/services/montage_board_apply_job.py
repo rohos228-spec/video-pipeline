@@ -137,6 +137,8 @@ def spawn_apply_job(
                 async with session_scope() as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
+                        # pending_ops уже сужается в apply_montage_board — не
+                        # затираем полной исходной очередью (иначе re-gen готового).
                         _set_job(
                             project,
                             {
@@ -155,6 +157,10 @@ def spawn_apply_job(
                 async with session_scope() as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
+                        board = montage_meta(project)
+                        if pending_ops and not board.get("pending_ops"):
+                            board["pending_ops"] = list(pending_ops)
+                            set_montage_meta(project, board)
                         _set_job(
                             project,
                             {"status": "error", "error": str(exc), "finished_at": _utc_now()},

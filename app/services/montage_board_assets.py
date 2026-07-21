@@ -35,9 +35,6 @@ def archive_file(path: Path, project: Project, sub: str) -> Path | None:
     return dest
 
 
-    return dest
-
-
 async def _frame(session: AsyncSession, project_id: int, frame_number: int) -> Frame | None:
     return (
         await session.execute(

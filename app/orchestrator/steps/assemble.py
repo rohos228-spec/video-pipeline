@@ -51,33 +51,53 @@ from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 async def _scene_video_path(
     session: AsyncSession,
-    project_id: int,
-    frame_id: int,
+    project: Project,
+    frame: Frame,
     *,
     shot: int = 1,
 ) -> Path | None:
+    """Artifact или newest-on-disk — кто свежее (mtime), тот и в монтаж.
+
+    Иначе после regen без finalize UI показывает новый clip_*, а сборка
+    продолжает mux'ить stale Artifact.
+    """
+    from app.services.artifact_recovery import newest_disk_video
+    from app.services.plan_shot2 import effective_shot_from_artifact
+
     arts = (
         await session.execute(
             select(Artifact)
             .where(
-                Artifact.project_id == project_id,
-                Artifact.frame_id == frame_id,
+                Artifact.project_id == project.id,
+                Artifact.frame_id == frame.id,
                 Artifact.kind == ArtifactKind.scene_video,
             )
             .order_by(Artifact.id.desc())
         )
     ).scalars().all()
+    art_path: Path | None = None
     for art in arts:
         if not art.path:
             continue
         path = Path(art.path)
         if not path.is_file():
             continue
-        from app.services.plan_shot2 import effective_shot_from_artifact
-
         if effective_shot_from_artifact(art.meta, path) == shot:
-            return path
-    return None
+            art_path = path
+            break
+
+    disk_path = newest_disk_video(project.data_dir / "videos", frame.number, shot)
+    candidates = [p for p in (art_path, disk_path) if p is not None and p.is_file()]
+    if not candidates:
+        return None
+    # Unique by resolve, pick newest mtime.
+    by_key: dict[str, Path] = {}
+    for p in candidates:
+        try:
+            by_key[str(p.resolve())] = p
+        except OSError:
+            by_key[str(p)] = p
+    return max(by_key.values(), key=lambda p: p.stat().st_mtime)
 
 
 def _scale_whisper_words(words: list[WordTS], factor: float) -> list[WordTS]:
@@ -337,26 +357,14 @@ async def _assemble_body(
     xlsx_path = project.data_dir / "project.xlsx"
     shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     for fr in frames:
-        p1 = await _scene_video_path(session, project.id, fr.id, shot=1)
+        p1 = await _scene_video_path(session, project, fr, shot=1)
         if p1 is None:
             raise RuntimeError(f"нет клипа shot_01 для кадра {fr.number}")
         shot1_paths[fr.number] = p1
         info = shot2_by.get(fr.number)
         p2 = None
         if info is not None and info.has_shot2:
-            p2 = await _scene_video_path(session, project.id, fr.id, shot=2)
-            if p2 is None:
-                videos_dir = project.data_dir / "videos"
-                from app.services.plan_shot2 import disk_has_shot2_video
-
-                if disk_has_shot2_video(videos_dir, fr.number):
-                    for path in sorted(
-                        videos_dir.glob(f"clip_{fr.number:03d}_s2_*.mp4"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    ):
-                        p2 = path
-                        break
+            p2 = await _scene_video_path(session, project, fr, shot=2)
         shot2_paths[fr.number] = p2
         fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)

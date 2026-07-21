@@ -661,7 +661,16 @@ async def montage_board(
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.montage_board import build_montage_board
 
-    return await build_montage_board(session, p)
+    try:
+        return await build_montage_board(session, p)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("GET /montage-board failed project_id={}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось собрать монтаж: {type(e).__name__}: {e}",
+        ) from e
 
 
 @router.post("/{project_id}/montage-board/apply")
@@ -711,7 +720,12 @@ async def montage_board_apply(
     await publish_project_event(
         project_id,
         event_type="project_updated",
-        payload={"montage_board_apply": True, "ok": result.get("ok")},
+        payload={
+            "montage_board_apply": True,
+            "status": "done" if result.get("ok") else "error",
+            "ok": result.get("ok"),
+            "errors": result.get("errors"),
+        },
     )
     return result
 

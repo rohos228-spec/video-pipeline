@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
@@ -28,6 +29,18 @@ from app.services.montage_board_regen import (
 
 
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
+
+
+# Совпадает с порогами outsee-валидации — не финализируем stub/placeholder.
+_READY_IMAGE_BYTES = 200_000
+_READY_VIDEO_BYTES = 80_000
+
+
+def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size >= min_bytes
+    except OSError:
+        return False
 
 
 async def _run_op_with_short_sessions(
@@ -76,7 +89,22 @@ async def _run_op_with_short_sessions(
             raise RuntimeError(f"неизвестная операция: {op_type}")
 
     if op_type.startswith("image"):
-        new_path = await execute_image_regen(prep)
+        try:
+            new_path = await execute_image_regen(prep)
+        except Exception as exc:  # noqa: BLE001
+            # Outsee мог отдать файл, а пост-шаг упал — всё равно заменяем кадр.
+            if _ready_local_asset(prep.file_path, min_bytes=_READY_IMAGE_BYTES):
+                logger.warning(
+                    "montage apply #{} image frame {} shot {}: "
+                    "execute failed but file ready — finalize: {}",
+                    project_id,
+                    frame_number,
+                    shot,
+                    exc,
+                )
+                new_path = prep.file_path
+            else:
+                raise
         async with session_scope() as session:
             project = await session.get(Project, project_id)
             if project is None:
@@ -85,7 +113,21 @@ async def _run_op_with_short_sessions(
                 session, project, prep, new_path, board=board
             )
 
-    new_path = await execute_video_regen(prep)
+    try:
+        new_path = await execute_video_regen(prep)
+    except Exception as exc:  # noqa: BLE001
+        if _ready_local_asset(prep.file_path, min_bytes=_READY_VIDEO_BYTES):
+            logger.warning(
+                "montage apply #{} video frame {} shot {}: "
+                "execute failed but file ready — finalize: {}",
+                project_id,
+                frame_number,
+                shot,
+                exc,
+            )
+            new_path = prep.file_path
+        else:
+            raise
     async with session_scope() as session:
         project = await session.get(Project, project_id)
         if project is None:
@@ -111,6 +153,7 @@ async def apply_montage_board(
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []
+    remaining: list[dict[str, Any]] = []
     total = len(ops)
 
     for idx, op in enumerate(ops):
@@ -120,6 +163,10 @@ async def apply_montage_board(
             highlight = result.get("highlight")
             if highlight:
                 add_highlight(board, str(highlight))
+            # Сужаем очередь по ходу — cancel/restart не вернёт уже сделанное.
+            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
+            set_montage_meta(project, board)
+            await session.flush()
             if on_progress is not None:
                 await on_progress(idx + 1, total, result)
         except Exception as exc:  # noqa: BLE001
@@ -132,10 +179,15 @@ async def apply_montage_board(
             )
             errors.append(msg)
             results.append({"ok": False, "error": msg, "op": op})
+            remaining.append(op)
+            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
+            set_montage_meta(project, board)
+            await session.flush()
             if on_progress is not None:
                 await on_progress(idx + 1, total, {"ok": False, "error": msg})
 
-    board["pending_ops"] = []
+    # Успешные ops снимаем; упавшие оставляем — можно снова «Применить правки».
+    board["pending_ops"] = remaining
     touch_applied(board)
     set_montage_meta(project, board)
     await session.flush()
