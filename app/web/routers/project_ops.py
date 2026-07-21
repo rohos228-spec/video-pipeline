@@ -834,16 +834,36 @@ async def montage_board_delete_image(
     shot: int = Query(1, ge=1, le=2),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
     from app.services.montage_board_assets import delete_scene_image
-    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+    from app.services.montage_board_meta import (
+        drop_highlight,
+        drop_pending_ops_for_media,
+        mark_media_deleted,
+        mark_stale_videos,
+        montage_meta,
+        set_montage_meta,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
     deleted = await delete_scene_image(session, p, frame_number, shot=shot)
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)
+    dropped = drop_pending_ops_for_media(
+        board, frame_number, shot=shot, media="image"
+    )
+    drop_highlight(board, f"{frame_number}:image{shot}")
+    mark_media_deleted(board, frame_number, shot, media="image")
     set_montage_meta(p, board)
+    flag_modified(p, "meta")
     await session.commit()
-    return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+    return {
+        "ok": deleted,
+        "frame_number": frame_number,
+        "shot": shot,
+        "dropped_pending_ops": dropped,
+    }
 
 
 @router.post("/{project_id}/montage-board/delete-video")
@@ -853,10 +873,26 @@ async def montage_board_delete_video(
     shot: int = Query(1, ge=1, le=2),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
     from app.services.montage_board_assets import delete_scene_video
+    from app.services.montage_board_meta import (
+        drop_highlight,
+        drop_pending_ops_for_media,
+        mark_media_deleted,
+        montage_meta,
+        set_montage_meta,
+        trim_key,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
     deleted = await delete_scene_video(session, p, frame_number, shot=shot)
+    board = montage_meta(p)
+    drop_pending_ops_for_media(board, frame_number, shot=shot, media="video")
+    drop_highlight(board, trim_key(frame_number, shot))
+    mark_media_deleted(board, frame_number, shot, media="video")
+    set_montage_meta(p, board)
+    flag_modified(p, "meta")
     await session.commit()
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
@@ -870,7 +906,13 @@ async def montage_board_upload_image(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_image_upload
-    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+    from app.services.montage_board_meta import (
+        clear_media_deleted,
+        mark_stale_videos,
+        montage_meta,
+        set_montage_meta,
+    )
+    from sqlalchemy.orm.attributes import flag_modified
 
     p = _project_or_404(await session.get(Project, project_id))
     content = await file.read()
@@ -882,7 +924,9 @@ async def montage_board_upload_image(
     )
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)
+    clear_media_deleted(board, frame_number, shot, media="image")
     set_montage_meta(p, board)
+    flag_modified(p, "meta")
     await session.commit()
     return {
         "ok": True,
@@ -902,7 +946,13 @@ async def montage_board_upload_video(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_video_upload
-    from app.services.montage_board_meta import clear_stale_video, montage_meta, set_montage_meta
+    from app.services.montage_board_meta import (
+        clear_media_deleted,
+        clear_stale_video,
+        montage_meta,
+        set_montage_meta,
+    )
+    from sqlalchemy.orm.attributes import flag_modified
 
     p = _project_or_404(await session.get(Project, project_id))
     content = await file.read()
@@ -914,7 +964,9 @@ async def montage_board_upload_video(
     )
     board = montage_meta(p)
     clear_stale_video(board, frame_number, shot)
+    clear_media_deleted(board, frame_number, shot, media="video")
     set_montage_meta(p, board)
+    flag_modified(p, "meta")
     await session.commit()
     return {
         "ok": True,

@@ -121,10 +121,12 @@ def disk_has_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
 
 
 def find_shot2_image(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Последний PNG shot_02 (``frame_NNN_s2_*.png``)."""
+    """Последний кадр shot_02 (``frame_NNN_s2_*.{png,jpg,webp}``)."""
     if not scenes_dir.is_dir():
         return None
-    candidates = list(scenes_dir.glob(shot2_file_pattern(frame_number)))
+    candidates: list[Path] = []
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        candidates.extend(scenes_dir.glob(f"frame_{frame_number:03d}_s2_*{ext}"))
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -142,14 +144,14 @@ def disk_has_shot2_video(videos_dir: Path, frame_number: int) -> bool:
 
 
 def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Последний PNG первого кадра (без ``_s2_`` в имени)."""
+    """Последний кадр shot_01 (без ``_s2_``; png/jpg/webp)."""
     if not scenes_dir.is_dir():
         return None
-    candidates = [
-        p
-        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.png")
-        if "_s2_" not in p.name
-    ]
+    candidates: list[Path] = []
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*{ext}"):
+            if "_s2_" not in p.name:
+                candidates.append(p)
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)

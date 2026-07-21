@@ -123,14 +123,35 @@ async def _run_op_with_short_sessions(
     board: dict[str, Any],
 ) -> dict[str, Any]:
     """Чтение БД → Outsee (без сессии) → запись результата."""
+    from app.services.montage_board_meta import is_media_deleted, montage_meta
+
     op_type = str(op.get("type") or "").strip()
     frame_number = int(op["frame_number"])
     shot = int(op.get("shot") or 1)
+    media = "image" if op_type.startswith("image") else "video"
 
     async with session_scope() as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
+        live = montage_meta(project)
+        if is_media_deleted(live, frame_number, shot, media=media) or is_media_deleted(
+            board, frame_number, shot, media=media
+        ):
+            logger.info(
+                "montage apply #{} skip {} F{} shot {} — user deleted",
+                project_id,
+                op_type,
+                frame_number,
+                shot,
+            )
+            return {
+                "ok": True,
+                "skipped_deleted": True,
+                "frame_number": frame_number,
+                "shot": shot,
+                "kind": media,
+            }
 
         if op_type in ("image_regen", "image_regen_prompt", "image_regen_correction"):
             mode = "same_prompt"
@@ -163,6 +184,7 @@ async def _run_op_with_short_sessions(
             )
         else:
             raise RuntimeError(f"неизвестная операция: {op_type}")
+        await session.commit()
 
     if op_type.startswith("image"):
         try:
@@ -208,11 +230,30 @@ async def apply_montage_board(
     pending_ops: list[dict[str, Any]] | None = None,
     on_progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
+    from app.services.montage_board_meta import clear_media_deleted
+
     board = montage_meta(project)
     if video_trims is not None:
         board["video_trims"] = video_trims
     ops = list(pending_ops or board.get("pending_ops") or [])
     clear_highlights(board)
+    # Пользователь явно отправил эти ops — снимаем Delete-tombstone, иначе skip.
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        try:
+            fn = int(op.get("frame_number") or 0)
+            sh = int(op.get("shot") or 1)
+        except (TypeError, ValueError):
+            continue
+        t = str(op.get("type") or "")
+        if t.startswith("image"):
+            clear_media_deleted(board, fn, sh, media="image")
+        elif t.startswith("video"):
+            clear_media_deleted(board, fn, sh, media="video")
+    set_montage_meta(project, board)
+    await session.flush()
+    await session.commit()
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []

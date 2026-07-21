@@ -91,6 +91,7 @@ async function http<T>(
   try {
     const res = await fetch(path, {
       ...options,
+      cache: options.cache ?? "no-store",
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
@@ -441,15 +442,17 @@ export const api = {
     ),
 
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
-    http<{ ok: boolean }>(
+    http<{ ok: boolean; dropped_pending_ops?: number }>(
       `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
       { method: "POST" },
+      90_000,
     ),
 
   deleteMontageVideo: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
       `/api/projects/${projectId}/montage-board/delete-video?frame_number=${frameNumber}&shot=${shot}`,
       { method: "POST" },
+      90_000,
     ),
 
   uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {

@@ -282,3 +282,78 @@ async def test_apply_finalizes_when_file_ready_despite_execute_error(
     assert prep_box["prep"].file_path.is_file()
     assert not old.is_file()
     assert montage_meta(montage_project).get("pending_ops") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_scene_image_removes_webp(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr = Frame(project_id=montage_project.id, number=3, voiceover_text="t", status="planned")
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    img = scenes / "frame_003_abc.webp"
+    img.write_bytes(b"w" * 128)
+
+    deleted = await delete_scene_image(session, montage_project, 3, shot=1)
+    assert deleted is True
+    assert not img.is_file()
+    assert list((montage_project.data_dir / "old" / "scenes").glob("*frame_003*"))
+
+
+@pytest.mark.asyncio
+async def test_delete_drops_pending_ops_and_tombstone_skips_finalize(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    from app.services.montage_board_meta import (
+        is_media_deleted,
+        mark_media_deleted,
+        montage_meta,
+        set_montage_meta,
+    )
+    from app.services.montage_board_regen import ImageRegenPrep, finalize_image_regen
+
+    fr = Frame(project_id=montage_project.id, number=4, voiceover_text="t", status="planned")
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = {
+        "pending_ops": [
+            {"type": "image_regen", "frame_number": 4, "shot": 1},
+            {"type": "image_regen", "frame_number": 5, "shot": 1},
+        ]
+    }
+    from app.services.montage_board_meta import drop_pending_ops_for_media
+
+    dropped = drop_pending_ops_for_media(board, 4, shot=1, media="image")
+    assert dropped == 1
+    assert len(board["pending_ops"]) == 1
+    assert board["pending_ops"][0]["frame_number"] == 5
+
+    mark_media_deleted(board, 4, shot=1, media="image")
+    set_montage_meta(montage_project, board)
+    await session.flush()
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    new_path = scenes / "frame_004_regen.png"
+    new_path.write_bytes(b"z" * 128)
+    prep = ImageRegenPrep(
+        project_id=montage_project.id,
+        frame_number=4,
+        shot=1,
+        prompt_text="p",
+        file_path=new_path,
+    )
+    result = await finalize_image_regen(
+        session, montage_project, prep, new_path, board=montage_meta(montage_project)
+    )
+    assert result.get("skipped_deleted") is True
+    assert not new_path.is_file()
+    assert is_media_deleted(montage_meta(montage_project), 4, 1, media="image")

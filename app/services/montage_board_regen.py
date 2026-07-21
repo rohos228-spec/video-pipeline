@@ -368,11 +368,50 @@ async def finalize_image_regen(
     *,
     board: dict | None = None,
 ) -> dict:
+    from app.services.montage_board_assets import archive_file
+    from app.services.montage_board_meta import (
+        clear_media_deleted,
+        is_media_deleted,
+        montage_meta,
+    )
+
+    # tombstone из свежего project.meta (Delete мог пройти во время Outsee)
+    live_board = montage_meta(project)
+    if is_media_deleted(live_board, prep.frame_number, prep.shot, media="image") or is_media_deleted(
+        board, prep.frame_number, prep.shot, media="image"
+    ):
+        # Пользователь нажал Delete пока шёл apply — не возвращаем файл на доску.
+        try:
+            archive_file(new_path, project, "scenes")
+        except RuntimeError:
+            try:
+                new_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.info(
+            "montage regen image #{} frame {} shot {}: skipped — user deleted",
+            project.id,
+            prep.frame_number,
+            prep.shot,
+        )
+        return {
+            "ok": True,
+            "kind": "image",
+            "frame_number": prep.frame_number,
+            "shot": prep.shot,
+            "skipped_deleted": True,
+        }
+
     await finalize_scene_image(
         session, project, prep.frame_number, shot=prep.shot, new_path=new_path
     )
     if board is not None:
         mark_stale_videos(board, prep.frame_number, shot=prep.shot)
+        clear_media_deleted(board, prep.frame_number, prep.shot, media="image")
+    clear_media_deleted(live_board, prep.frame_number, prep.shot, media="image")
+    from app.services.montage_board_meta import set_montage_meta
+
+    set_montage_meta(project, {"deleted_media": live_board.get("deleted_media") or []})
     await session.flush()
     logger.info(
         "montage regen image #{} frame {} shot {} → {}",
@@ -517,11 +556,47 @@ async def finalize_video_regen(
     *,
     board: dict | None = None,
 ) -> dict:
+    from app.services.montage_board_assets import archive_file
+    from app.services.montage_board_meta import (
+        clear_media_deleted,
+        is_media_deleted,
+        montage_meta,
+        set_montage_meta,
+    )
+
+    live_board = montage_meta(project)
+    if is_media_deleted(live_board, prep.frame_number, prep.shot, media="video") or is_media_deleted(
+        board, prep.frame_number, prep.shot, media="video"
+    ):
+        try:
+            archive_file(new_path, project, "videos")
+        except RuntimeError:
+            try:
+                new_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.info(
+            "montage regen video #{} frame {} shot {}: skipped — user deleted",
+            project.id,
+            prep.frame_number,
+            prep.shot,
+        )
+        return {
+            "ok": True,
+            "kind": "video",
+            "frame_number": prep.frame_number,
+            "shot": prep.shot,
+            "skipped_deleted": True,
+        }
+
     await finalize_scene_video(
         session, project, prep.frame_number, shot=prep.shot, new_path=new_path
     )
     if board is not None:
         clear_stale_video(board, prep.frame_number, prep.shot)
+        clear_media_deleted(board, prep.frame_number, prep.shot, media="video")
+    clear_media_deleted(live_board, prep.frame_number, prep.shot, media="video")
+    set_montage_meta(project, {"deleted_media": live_board.get("deleted_media") or []})
     await session.flush()
     logger.info(
         "montage regen video #{} frame {} shot {} → {}",

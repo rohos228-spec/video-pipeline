@@ -284,6 +284,7 @@ function MediaActionBar({
   onRegenWithCorrection,
   onDelete,
   onUpload,
+  busy,
 }: {
   kind: "image" | "video";
   onRegen: () => void;
@@ -291,6 +292,7 @@ function MediaActionBar({
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
+  busy?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const imageActions = [
@@ -299,10 +301,12 @@ function MediaActionBar({
     ...(onRegenWithCorrection
       ? [{ label: "Перегенерация существующего изображения", action: onRegenWithCorrection }]
       : []),
+    { label: "Удалить изображение", action: onDelete },
   ];
   const videoActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
+    { label: "Удалить видео", action: onDelete },
   ];
   const actions = kind === "image" ? imageActions : videoActions;
 
@@ -310,14 +314,27 @@ function MediaActionBar({
     <div className="mt-2 flex items-center gap-1">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="outline" size="sm" className="h-7 flex-1 px-2 text-[10px]">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 flex-1 px-2 text-[10px]"
+            disabled={busy}
+          >
             <MoreHorizontal className="mr-1 h-3.5 w-3.5" />
             Действия
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="z-[10060] min-w-[14rem]">
           {actions.map((item) => (
-            <DropdownMenuItem key={item.label} onSelect={item.action}>
+            <DropdownMenuItem
+              key={item.label}
+              disabled={busy}
+              onSelect={(e) => {
+                e.preventDefault();
+                item.action();
+              }}
+            >
               {item.label}
             </DropdownMenuItem>
           ))}
@@ -329,9 +346,14 @@ function MediaActionBar({
         size="icon"
         className="h-7 w-7 shrink-0 text-destructive/80"
         title="Удалить"
-        onClick={onDelete}
+        disabled={busy}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDelete();
+        }}
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
       </Button>
       <Button
         type="button"
@@ -339,6 +361,7 @@ function MediaActionBar({
         size="icon"
         className="h-7 w-7 shrink-0"
         title="Загрузить с компьютера"
+        disabled={busy}
         onClick={() => inputRef.current?.click()}
       >
         <Upload className="h-3.5 w-3.5" />
@@ -370,6 +393,7 @@ function ClickableMedia({
   onUpload,
   highlighted,
   stale,
+  busy,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -382,6 +406,7 @@ function ClickableMedia({
   onUpload: (file: File) => void;
   highlighted?: boolean;
   stale?: boolean;
+  busy?: boolean;
 }) {
   if (!url) {
     return (
@@ -396,6 +421,7 @@ function ClickableMedia({
           onRegenWithCorrection={onRegenWithCorrection}
           onDelete={onDelete}
           onUpload={onUpload}
+          busy={busy}
         />
       </div>
     );
@@ -450,6 +476,7 @@ function ClickableMedia({
         onRegenWithCorrection={onRegenWithCorrection}
         onDelete={onDelete}
         onUpload={onUpload}
+        busy={busy}
       />
     </div>
   );
@@ -633,6 +660,7 @@ function VideoMediaCell({
   onUpload,
   highlighted,
   stale,
+  busy,
 }: {
   fr: MontageBoardFrame;
   shot: 1 | 2;
@@ -646,6 +674,7 @@ function VideoMediaCell({
   onUpload: (file: File) => void;
   highlighted?: boolean;
   stale?: boolean;
+  busy?: boolean;
 }) {
   const isShot2 = shot === 2;
   const sceneUse = isShot2 ? fr.shot2_use_seconds : fr.shot1_use_seconds;
@@ -671,6 +700,7 @@ function VideoMediaCell({
         onUpload={onUpload}
         highlighted={highlighted}
         stale={stale}
+        busy={busy}
       />
       <VideoTrimSlider
         fileDuration={fileDur}
@@ -827,6 +857,7 @@ export function AssembleMontageBoard({
   const [trims, setTrims] = useState<Record<string, VideoTrim>>({});
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
+  const [deletingKeys, setDeletingKeys] = useState<Set<string>>(new Set());
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
@@ -1288,32 +1319,113 @@ export function AssembleMontageBoard({
     };
   }, [open, projectId, recoverRunning, handleRecoverTerminal]);
 
-  const refreshBoard = useCallback(() => {
-    void board.refetch();
-  }, [board]);
+  const refreshBoard = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+  }, [queryClient, projectId]);
+
+  const clearMediaUrlOptimistic = useCallback(
+    (frameNumber: number, shot: 1 | 2, kind: "image" | "video") => {
+      queryClient.setQueryData(
+        ["montage-board", projectId],
+        (old: { frames?: MontageBoardFrame[]; frame_count?: number; meta?: unknown } | undefined) => {
+          if (!old?.frames) return old;
+          const urlKey =
+            kind === "image"
+              ? shot === 1
+                ? "image_shot1_url"
+                : "image_shot2_url"
+              : shot === 1
+                ? "video_shot1_url"
+                : "video_shot2_url";
+          return {
+            ...old,
+            frames: old.frames.map((fr) =>
+              fr.number === frameNumber ? { ...fr, [urlKey]: null } : fr,
+            ),
+          };
+        },
+      );
+    },
+    [queryClient, projectId],
+  );
 
   const handleDeleteImage = async (frameNumber: number, shot: 1 | 2) => {
     if (!projectId) return;
+    const key = `img:${frameNumber}:${shot}`;
+    if (deletingKeys.has(key)) return;
+    setDeletingKeys((prev) => new Set(prev).add(key));
+    clearMediaUrlOptimistic(frameNumber, shot, "image");
+    setPendingOps((prev) => {
+      const next = prev.filter(
+        (op) =>
+          !(
+            op.frame_number === frameNumber &&
+            op.shot === shot &&
+            op.type.startsWith("image")
+          ),
+      );
+      pendingOpsRef.current = next;
+      return next;
+    });
+    setHighlights((prev) => prev.filter((h) => h !== `${frameNumber}:image${shot}`));
     try {
-      await api.deleteMontageImage(projectId, frameNumber, shot);
+      const res = await api.deleteMontageImage(projectId, frameNumber, shot);
       setStaleVideos((prev) =>
         prev.includes(trimKey(frameNumber, shot)) ? prev : [...prev, trimKey(frameNumber, shot)],
       );
-      refreshBoard();
-      toast.success("Изображение удалено");
+      await refreshBoard();
+      if (res.ok) {
+        toast.success("Изображение удалено");
+      } else {
+        toast.message("Файл уже отсутствовал — ячейка очищена");
+      }
     } catch (e) {
+      await refreshBoard();
       toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setDeletingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
   const handleDeleteVideo = async (frameNumber: number, shot: 1 | 2) => {
     if (!projectId) return;
+    const key = `vid:${frameNumber}:${shot}`;
+    if (deletingKeys.has(key)) return;
+    setDeletingKeys((prev) => new Set(prev).add(key));
+    clearMediaUrlOptimistic(frameNumber, shot, "video");
+    setPendingOps((prev) => {
+      const next = prev.filter(
+        (op) =>
+          !(
+            op.frame_number === frameNumber &&
+            op.shot === shot &&
+            op.type.startsWith("video")
+          ),
+      );
+      pendingOpsRef.current = next;
+      return next;
+    });
     try {
-      await api.deleteMontageVideo(projectId, frameNumber, shot);
-      refreshBoard();
-      toast.success("Видео удалено");
+      const res = await api.deleteMontageVideo(projectId, frameNumber, shot);
+      await refreshBoard();
+      if (res.ok) {
+        toast.success("Видео удалено");
+      } else {
+        toast.message("Файл уже отсутствовал — ячейка очищена");
+      }
     } catch (e) {
+      await refreshBoard();
       toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setDeletingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -1708,7 +1820,10 @@ export function AssembleMontageBoard({
                             <td
                               key={`${fr.frame_id}-${row.key}`}
                               className={cn(
-                                "relative isolate overflow-hidden px-3 py-2 align-top",
+                                "relative isolate px-3 py-2 align-top",
+                                row.key === "video1" || row.key === "video2"
+                                  ? "overflow-hidden"
+                                  : "overflow-visible",
                                 FRAME_COL_CLASS,
                               )}
                             >
@@ -1743,6 +1858,7 @@ export function AssembleMontageBoard({
                                   onDelete={() => void handleDeleteImage(fr.number, 1)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 1, file)}
                                   highlighted={isHighlighted(`${fr.number}:image1`)}
+                                  busy={deletingKeys.has(`img:${fr.number}:1`)}
                                 />
                               ) : row.key === "image2" ? (
                                 !fr.has_shot2 ? (
@@ -1768,6 +1884,7 @@ export function AssembleMontageBoard({
                                   onDelete={() => void handleDeleteImage(fr.number, 2)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
                                   highlighted={isHighlighted(`${fr.number}:image2`)}
+                                  busy={deletingKeys.has(`img:${fr.number}:2`)}
                                 />
                                 )
                               ) : row.key === "video1" ? (
@@ -1790,6 +1907,7 @@ export function AssembleMontageBoard({
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 1))}
                                   stale={isStaleVideo(fr.number, 1)}
+                                  busy={deletingKeys.has(`vid:${fr.number}:1`)}
                                 />
                               ) : (
                                 <VideoMediaCell
@@ -1811,6 +1929,7 @@ export function AssembleMontageBoard({
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 2))}
                                   stale={isStaleVideo(fr.number, 2)}
+                                  busy={deletingKeys.has(`vid:${fr.number}:2`)}
                                 />
                               )}
                             </td>
