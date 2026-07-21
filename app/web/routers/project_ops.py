@@ -778,43 +778,53 @@ async def montage_board_recover_outsee(
     project_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Сканирует последние карточки Outsee и сохраняет/заменяет кадры выделенных правок."""
+    """Запускает фоновый скан Outsee → сохранение/замена кадров (кнопка не зависает)."""
     p = _project_or_404(await session.get(Project, project_id))
-    from app.services.montage_board_meta import montage_meta, public_board_meta
-    from app.services.montage_outsee_recover import (
-        recover_before_regen_ops,
-        recover_montage_images_from_outsee,
+    from app.services.montage_board_meta import public_board_meta, montage_meta
+    from app.services.montage_outsee_recover_job import (
+        get_recover_job,
+        spawn_recover_job,
     )
+    from app.services.outsee_lane import outsee_lane_busy
+    from app.services.step_cancel import clear_stop
 
-    board = montage_meta(p)
-    pending = list(board.get("pending_ops") or [])
-    image_ops = [op for op in pending if str(op.get("type") or "").startswith("image")]
-    try:
-        if image_ops:
-            # Выделенные правки в очереди — только их, с заменой файла.
-            result = await recover_before_regen_ops(session, p, pending)
-        else:
-            result = await recover_montage_images_from_outsee(
-                session, p, click_scan=True, force_replace=False
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("POST recover-outsee failed project_id={}", project_id)
+    job = get_recover_job(p)
+    if job.get("status") == "running":
+        return {
+            "started": False,
+            "already_running": True,
+            "ok": False,
+            "job": job,
+            "meta": public_board_meta(montage_meta(p)),
+            "message": "Уже забираем правки из Outsee",
+        }
+    if outsee_lane_busy():
         raise HTTPException(
-            status_code=500,
-            detail=f"Не удалось забрать из Outsee: {type(e).__name__}: {e}",
-        ) from e
-    await session.commit()
-    await publish_project_event(
-        project_id,
-        event_type="project_updated",
-        payload={
-            "montage_outsee_recover": True,
-            "saved_count": result.get("saved_count"),
-            "ok": result.get("ok"),
-        },
-    )
-    result["meta"] = public_board_meta(montage_meta(p))
-    return result
+            status_code=409,
+            detail=(
+                "Outsee занят Generate/apply — дождитесь окончания и нажмите снова"
+            ),
+        )
+    clear_stop(project_id)
+    spawn_recover_job(project_id)
+    return {
+        "started": True,
+        "ok": True,
+        "job": {"status": "running"},
+        "message": "Забираем правки из Outsee в фоне",
+        "meta": public_board_meta(montage_meta(p)),
+    }
+
+
+@router.get("/{project_id}/montage-board/recover-outsee-status")
+async def montage_board_recover_outsee_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_outsee_recover_job import get_recover_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_recover_job(p)}
 
 
 @router.post("/{project_id}/montage-board/delete-image")

@@ -209,6 +209,8 @@ async def cancel_apply_job(project_id: int) -> bool:
 
 async def cancel_all_montage_jobs(project_id: int) -> None:
     from app.services.montage_board_montage_job import cancel_montage_job
+    from app.services.montage_outsee_recover_job import cancel_recover_job
 
     await cancel_apply_job(project_id)
     await cancel_montage_job(project_id)
+    await cancel_recover_job(project_id)

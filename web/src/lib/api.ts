@@ -405,15 +405,35 @@ export const api = {
 
   recoverMontageFromOutsee: (projectId: number) =>
     http<{
+      started?: boolean;
+      already_running?: boolean;
       ok: boolean;
+      message?: string;
       saved?: Array<{ frame_number: number; shot: number; path?: string }>;
       saved_count?: number;
       errors?: string[];
       hits_scanned?: number;
       meta?: MontageBoardMeta;
+      job?: {
+        status?: string;
+        error?: string | null;
+        saved_count?: number;
+        hits_scanned?: number;
+      };
     }>(`/api/projects/${projectId}/montage-board/recover-outsee`, {
       method: "POST",
-    }, 300_000),
+    }),
+
+  getMontageRecoverOutseeStatus: (projectId: number) =>
+    http<{
+      job: {
+        status?: string;
+        error?: string | null;
+        saved_count?: number;
+        hits_scanned?: number;
+        saved?: Array<{ frame_number: number; shot: number }>;
+      };
+    }>(`/api/projects/${projectId}/montage-board/recover-outsee-status`),
 
   getMontageBoardStatus: (projectId: number) =>
     http<{ job: { status?: string; error?: string | null } }>(

@@ -1,8 +1,7 @@
 """Принудительно забрать готовые картинки из истории Outsee в кадры монтажа.
 
-Пользователь уже оплатил Generate — карточки лежат в галерее outsee, а локально
-файла нет (валидация/download упали). Сканируем последние thumb'ы, достаём
-`[ID: P{project}-F{frame}-…]`, качаем и finaliz'им кадр.
+Быстрый путь: скан галереи → CDN download подписанного full PNG → finalize.
+Без повторного cascade на 80 кликов на каждый кадр (из-за него зависала кнопка).
 """
 
 from __future__ import annotations
@@ -21,7 +20,9 @@ from app.bots.outsee import (
     OutseeBot,
     _GALLERY_ID_SCAN_LIMIT,
     _image_page_url,
+    _validate_downloaded_image,
     _wait_gallery_thumbs,
+    download_saved_image_by_prompt_id,
 )
 from app.generation_options import (
     DEFAULTS,
@@ -31,11 +32,14 @@ from app.generation_options import (
 from app.models import Project
 from app.services.montage_board_assets import finalize_scene_image
 from app.services.montage_board_meta import add_highlight, montage_meta, set_montage_meta
-from app.services.outsee_lane import outsee_lane
+from app.services.outsee_lane import outsee_lane, outsee_lane_busy
 from app.services.plan_shot2 import find_shot1_image, find_shot2_image
 from app.settings import settings
 
 _READY_BYTES = 200_000
+# Клик-скан короткий: иначе кнопка «висит» минутами на чужих thumb'ах.
+_CLICK_SCAN_LIMIT = 16
+_WAIT_THUMBS_S = 8.0
 _ID_IN_TEXT_RE = re.compile(
     r"\[ID:\s*P(\d+)-F(\d+)-([a-f0-9]{8})\](-S2)?",
     re.IGNORECASE,
@@ -69,7 +73,6 @@ def _frame_needs_image(project: Project, frame_number: int, shot: int) -> bool:
 
 
 def _parse_ids_from_text(text: str, *, project_id: int) -> list[tuple[str, int, int, str]]:
-    """→ list of (full_prefix, frame, shot, hex)."""
     out: list[tuple[str, int, int, str]] = []
     seen: set[str] = set()
     for m in _ID_IN_TEXT_RE.finditer(text or ""):
@@ -95,7 +98,6 @@ async def scan_gallery_hits_for_project(
     *,
     limit: int = _GALLERY_ID_SCAN_LIMIT,
 ) -> list[GalleryHit]:
-    """Пассивный скан: `[ID]` в предках последних больших thumb'ов."""
     js = """
     ([projectId, limit, maxLevels]) => {
         const needle = '[ID: P' + projectId + '-F';
@@ -161,10 +163,11 @@ async def scan_gallery_hits_by_clicking(
     page,
     project_id: int,
     *,
-    limit: int = 25,
+    limit: int = _CLICK_SCAN_LIMIT,
     project_db_id: int | None = None,
+    need_keys: set[tuple[int, int]] | None = None,
 ) -> list[GalleryHit]:
-    """Клик по последним thumb'ам — ID часто только в правой панели."""
+    """Клик по свежим thumb'ам. Останавливается, когда найдены все need_keys."""
     from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
     srcs = await page.evaluate(
@@ -180,31 +183,42 @@ async def scan_gallery_hits_by_clicking(
     )
     hits: list[GalleryHit] = []
     seen: set[str] = set()
+    found_keys: set[tuple[int, int]] = set()
     for src in srcs or []:
         if not isinstance(src, str) or not src:
             continue
+        if need_keys is not None and need_keys and need_keys <= found_keys:
+            break
         abort_if_cancelled(project_db_id)
         try:
             loc = page.locator(f'img[src="{src}"]').first
             if await loc.count() == 0:
-                # src мог смениться query — пробуем basename
                 base = Path(src.split("?", 1)[0]).name
                 loc = page.locator(f'img[src*="{base}"]').first
             if await loc.count() == 0:
                 continue
-            await loc.click(timeout=4000)
-            await sleep_cancellable(0.45, project_db_id)
+            await loc.click(timeout=2500)
+            await sleep_cancellable(0.35, project_db_id)
             panel_text = await page.evaluate(
                 """() => {
                     const midX = window.innerWidth * 0.35;
                     let best = '';
                     for (const el of document.querySelectorAll(
-                        'section, aside, div[role="dialog"], textarea, [contenteditable="true"]'
+                        'section, aside, div[role="dialog"], textarea, [contenteditable="true"], p, pre'
                     )) {
                         const r = el.getBoundingClientRect();
-                        if (r.left < midX || r.width < 60) continue;
+                        if (r.width < 40 || r.height < 10) continue;
                         const t = (el.value || el.innerText || el.textContent || '').trim();
-                        if (t.length > best.length && t.length < 15000) best = t;
+                        if (t.includes('[ID:') && t.length > best.length && t.length < 20000) {
+                            best = t;
+                        } else if (r.left >= midX && t.length > best.length && t.length < 15000) {
+                            best = t;
+                        }
+                    }
+                    if (!best.includes('[ID:')) {
+                        const body = (document.body && (document.body.innerText || '')) || '';
+                        const idx = body.indexOf('[ID:');
+                        if (idx >= 0) best = body.slice(Math.max(0, idx - 80), idx + 400);
                     }
                     return best;
                 }"""
@@ -226,6 +240,7 @@ async def scan_gallery_hits_by_clicking(
                         img_src=src,
                     )
                 )
+                found_keys.add((frame, shot))
         except Exception as e:  # noqa: BLE001
             logger.debug("scan_gallery click {}: {}", src[:80], e)
             continue
@@ -244,13 +259,43 @@ async def _download_hit(
     page,
     project: Project,
     hit: GalleryHit,
+    *,
+    force_replace: bool = False,
+    allow_cascade: bool = True,
 ) -> Path | None:
-    """Скачивание тем же путём, что img-шаг: card-click cascade без img_url."""
-    from app.bots.outsee import download_saved_image_by_prompt_id
+    """Скачать hit: кнопка «Скачать» по известному thumb (рабочий путь).
+
+    CDN guess с подписью thumb→png НЕ работает (SigV4 path-bound → 403).
+    """
+    from app.bots.outsee import _download_via_card_click
 
     dest = _dest_path(project, hit)
-    if _ready_file(dest):
+    if not force_replace and _ready_file(dest):
         return dest
+    try:
+        await _download_via_card_click(
+            page,
+            prompt_id_prefix=hit.prompt_id_prefix,
+            out_path=dest,
+            project_id=project.id,
+            img_url=hit.img_src,
+            timeout_s=90.0,
+        )
+        _validate_downloaded_image(
+            dest, gen_id=hit.short_uuid, img_url=hit.img_src
+        )
+        return dest
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage recover card-click fail P{} F{} shot{}: {}",
+            project.id,
+            hit.frame_number,
+            hit.shot,
+            e,
+        )
+    if not allow_cascade:
+        return None if not _ready_file(dest) else dest
+    # Fallback: cold cascade без img_url (медленнее).
     try:
         await download_saved_image_by_prompt_id(
             page,
@@ -277,15 +322,14 @@ async def recover_montage_images_from_outsee(
     *,
     frame_filter: set[tuple[int, int]] | None = None,
     click_scan: bool = True,
-    limit: int = _GALLERY_ID_SCAN_LIMIT,
+    limit: int = 30,
     force_replace: bool = False,
 ) -> dict[str, Any]:
-    """Сканирует историю Outsee и сохраняет недостающие кадры монтажа.
-
-    frame_filter: optional set of (frame_number, shot). None = все hit'ы проекта,
-    у которых локально нет готового файла.
-    force_replace: для выделенных правок — качать и заменять даже если файл есть.
-    """
+    if outsee_lane_busy():
+        raise RuntimeError(
+            "Outsee занят другой операцией — дождитесь окончания Generate/apply "
+            "и нажмите снова"
+        )
     try:
         await fetch_cdp_version(settings.browser_cdp_url)
     except Exception as exc:  # noqa: BLE001
@@ -309,19 +353,38 @@ async def recover_montage_images_from_outsee(
             page = await outsee.session.open_page(
                 _image_page_url(model_slug), reuse=True
             )
-            await _wait_gallery_thumbs(
-                page, min_count=1, timeout_s=30.0, project_id=project.id
+            n = await _wait_gallery_thumbs(
+                page,
+                min_count=1,
+                timeout_s=_WAIT_THUMBS_S,
+                project_id=project.id,
             )
+            if n < 1:
+                return {
+                    "ok": False,
+                    "saved": [],
+                    "saved_count": 0,
+                    "skipped": [],
+                    "errors": [
+                        "В галерее Outsee нет картинок — откройте outsee.io/image "
+                        "в Chrome и убедитесь, что история видна"
+                    ],
+                    "hits_scanned": 0,
+                }
+
             hits = await scan_gallery_hits_for_project(
                 page, project.id, limit=limit
             )
-            # Для выделенных правок всегда кликаем галерею — ID в панели.
-            if click_scan and (force_replace or len(hits) < 3 or frame_filter):
+            need = set(frame_filter) if frame_filter else set()
+            have = {(h.frame_number, h.shot) for h in hits}
+            missing_need = need - have if need else set()
+            if click_scan and (force_replace or missing_need or len(hits) < 1):
                 clicked = await scan_gallery_hits_by_clicking(
                     page,
                     project.id,
-                    limit=min(40, limit),
+                    limit=_CLICK_SCAN_LIMIT,
                     project_db_id=project.id,
+                    need_keys=need or None,
                 )
                 seen = {
                     f"{h.frame_number}:{h.shot}:{h.short_uuid}" for h in hits
@@ -340,24 +403,45 @@ async def recover_montage_images_from_outsee(
                 force_replace,
             )
 
+            # Последний hit для (frame,shot) побеждает — клик-скан идёт
+            # сверху вниз по свежим thumb'ам, но DOM-скан может дать старое.
             chosen: dict[tuple[int, int], GalleryHit] = {}
             for hit in hits:
                 key = (hit.frame_number, hit.shot)
                 if frame_filter is not None and key not in frame_filter:
                     continue
-                if key in chosen:
-                    continue
                 if (
                     not force_replace
                     and not _frame_needs_image(project, hit.frame_number, hit.shot)
                 ):
-                    skipped.append(f"{hit.frame_number}:{hit.shot}=already")
+                    if key not in chosen:
+                        skipped.append(f"{hit.frame_number}:{hit.shot}=already")
                     continue
                 chosen[key] = hit
 
+            if not hits:
+                errors.append(
+                    f"В галерее Outsee нет карточек с [ID: P{project.id}-F…] "
+                    f"(просмотрено thumbs). Откройте outsee.io/image — сверху "
+                    f"должны быть свежие генерации этого проекта"
+                )
+            elif frame_filter and not chosen:
+                errors.append(
+                    f"Не найдены карточки Outsee для кадров "
+                    f"{sorted(frame_filter)} (просмотрено hits={len(hits)}). "
+                    f"Откройте историю outsee.io — сверху должны быть свежие генерации "
+                    f"с [ID: P{project.id}-F…]"
+                )
+
             board = montage_meta(project)
             for key, hit in chosen.items():
-                path = await _download_hit(page, project, hit)
+                path = await _download_hit(
+                    page,
+                    project,
+                    hit,
+                    force_replace=force_replace,
+                    allow_cascade=True,
+                )
                 if path is None or not _ready_file(path):
                     errors.append(
                         f"F{hit.frame_number} shot{hit.shot}: download failed"
@@ -428,7 +512,6 @@ async def recover_before_regen_ops(
     project: Project,
     ops: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Перед Generate: забрать из истории Outsee кадры из image-очереди (замена)."""
     frame_filter: set[tuple[int, int]] = set()
     for op in ops:
         t = str(op.get("type") or "")
@@ -441,13 +524,13 @@ async def recover_before_regen_ops(
     if not frame_filter:
         return {"ok": True, "saved": [], "saved_count": 0, "skipped_ops": ops}
 
-    # Выделенные правки: всегда force_replace — старый файл не блокирует замену.
     result = await recover_montage_images_from_outsee(
         session,
         project,
         frame_filter=frame_filter,
         click_scan=True,
         force_replace=True,
+        limit=30,
     )
     saved_keys = {
         (int(s["frame_number"]), int(s["shot"])) for s in result.get("saved") or []
@@ -470,7 +553,6 @@ async def recover_before_regen_ops(
 
 
 def rebuild_prefix_from_filename(project_id: int, path: Path) -> str | None:
-    """frame_003_a1b2c3d4.png / frame_003_s2_a1b2c3d4.png → [ID: …]."""
     m = re.match(
         r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.png$",
         path.name,
@@ -487,7 +569,6 @@ def rebuild_prefix_from_filename(project_id: int, path: Path) -> str | None:
 
 
 def collect_stub_prefixes(project: Project) -> list[tuple[int, int, str, Path]]:
-    """Недокачанные stub-файлы в scenes → кандидаты на history download."""
     scenes = project.data_dir / "scenes"
     if not scenes.is_dir():
         return []
