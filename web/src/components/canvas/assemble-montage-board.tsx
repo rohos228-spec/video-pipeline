@@ -1470,8 +1470,13 @@ export function AssembleMontageBoard({
               </div>
             )}
             {!board.isLoading && board.isError && (
-              <div className="flex flex-col items-center gap-3 py-10">
+              <div className="flex flex-col items-center gap-3 py-10 px-4 text-center">
                 <p className="text-sm text-destructive">Не удалось загрузить данные монтажа</p>
+                {board.error instanceof Error && board.error.message ? (
+                  <p className="max-w-md text-xs text-muted-foreground break-words">
+                    {board.error.message}
+                  </p>
+                ) : null}
                 <Button type="button" size="sm" variant="outline" onClick={() => void board.refetch()}>
                   Повторить
                 </Button>

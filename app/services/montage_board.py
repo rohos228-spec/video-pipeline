@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -168,13 +169,53 @@ def _scene_use_durations(
     return round(float(scene_seconds), 3), None
 
 
+@dataclass(frozen=True, slots=True)
+class _FrameBoardSnapshot:
+    """Снимок Frame до await/to_thread — без ORM lazy-load / MissingGreenlet."""
+
+    id: int
+    number: int
+    voiceover_text: str = ""
+    start_ts: float | None = None
+    end_ts: float | None = None
+    duration_seconds: float | None = None
+    image_prompt: str = ""
+    animation_prompt: str = ""
+    attrs: dict[str, Any] = field(default_factory=dict)
+
+
+def _snapshot_frames(frames: list[Frame]) -> list[_FrameBoardSnapshot]:
+    """Читает поля Frame в async greenlet ДО asyncio.to_thread / gather."""
+    out: list[_FrameBoardSnapshot] = []
+    for fr in frames:
+        out.append(
+            _FrameBoardSnapshot(
+                id=int(fr.id),
+                number=int(fr.number),
+                voiceover_text=fr.voiceover_text or "",
+                start_ts=float(fr.start_ts) if fr.start_ts is not None else None,
+                end_ts=float(fr.end_ts) if fr.end_ts is not None else None,
+                duration_seconds=(
+                    float(fr.duration_seconds)
+                    if fr.duration_seconds is not None
+                    else None
+                ),
+                image_prompt=(fr.image_prompt or "").strip(),
+                animation_prompt=(fr.animation_prompt or "").strip(),
+                attrs=dict(fr.attrs or {}),
+            )
+        )
+    return out
+
+
 def _read_source_prompts_once(
     xlsx_path: Path,
-    frames: list[Frame],
+    frames: list[_FrameBoardSnapshot],
 ) -> dict[int, dict[str, str]]:
     """Один openpyxl-проход: R45/R46/R48/R64 для всех кадров.
 
     Раньше на каждый кадр × 4 вызывался load_workbook → таймаут 30с / зависание UI.
+    frames — plain snapshots, не SQLAlchemy ORM (иначе MissingGreenlet в to_thread).
     """
     out: dict[int, dict[str, str]] = {
         fr.number: {
@@ -187,11 +228,11 @@ def _read_source_prompts_once(
     }
     if not frames or not xlsx_path.is_file():
         for fr in frames:
-            attrs = dict(fr.attrs or {})
+            attrs = fr.attrs
             out[fr.number] = {
-                "image_prompt_shot1": (fr.image_prompt or "").strip(),
+                "image_prompt_shot1": fr.image_prompt,
                 "image_prompt_shot2": (attrs.get(SHOT2_PROMPT_ATTR) or "").strip(),
-                "animation_prompt_shot1": (fr.animation_prompt or "").strip(),
+                "animation_prompt_shot1": fr.animation_prompt,
                 "animation_prompt_shot2": (
                     attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or ""
                 ).strip(),
@@ -228,15 +269,13 @@ def _read_source_prompts_once(
             wb.close()
 
     for fr in frames:
-        attrs = dict(fr.attrs or {})
+        attrs = fr.attrs
         cell = excel.get(fr.number) or {}
-        img1 = cell.get("image_prompt_shot1") or (fr.image_prompt or "").strip()
+        img1 = cell.get("image_prompt_shot1") or fr.image_prompt
         img2 = cell.get("image_prompt_shot2") or (
             attrs.get(SHOT2_PROMPT_ATTR) or ""
         ).strip()
-        vid1 = cell.get("animation_prompt_shot1") or (
-            fr.animation_prompt or ""
-        ).strip()
+        vid1 = cell.get("animation_prompt_shot1") or fr.animation_prompt
         vid2 = (cell.get("animation_prompt_shot2") or "").strip()
         if len(vid2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
             vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
@@ -253,29 +292,40 @@ async def build_montage_board(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    frames = (
-        await session.execute(
-            select(Frame)
-            .where(Frame.project_id == project.id)
-            .order_by(Frame.number.asc())
-        )
-    ).scalars().all()
+    # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
+    project_id = int(project.id)
+    data_dir = project.data_dir
+    board_meta = public_board_meta(montage_meta(project))
 
-    xlsx_path = project.data_dir / "project.xlsx"
-    chars_dir = project.data_dir / "characters"
+    frames_orm = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project_id)
+                .order_by(Frame.number.asc())
+            )
+        ).scalars().all()
+    )
+    # ORM только здесь; дальше — plain snapshots (to_thread / probe не трогают Session).
+    frames = _snapshot_frames(frames_orm)
+
+    xlsx_path = data_dir / "project.xlsx"
+    chars_dir = data_dir / "characters"
     # Excel / prompts — в thread, чтобы не блокировать event loop и WS.
     excel_by_frame, prompts_by_frame, shot2_by = await asyncio.gather(
         asyncio.to_thread(_read_plan_excel_cells, xlsx_path, chars_dir=chars_dir),
-        asyncio.to_thread(_read_source_prompts_once, xlsx_path, list(frames)),
+        asyncio.to_thread(_read_source_prompts_once, xlsx_path, frames),
         asyncio.to_thread(
             lambda: get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
         ),
     )
-    scenes_dir = project.data_dir / "scenes"
-    videos_dir = project.data_dir / "videos"
+    scenes_dir = data_dir / "scenes"
+    videos_dir = data_dir / "videos"
 
     # Собираем пути видео и зондируем параллельно (кэш по mtime/size).
-    frame_videos: list[tuple[Frame, Path | None, Path | None, dict, bool, bool]] = []
+    frame_videos: list[
+        tuple[_FrameBoardSnapshot, Path | None, Path | None, dict, bool, bool]
+    ] = []
     all_vid_paths: list[Path | None] = []
     for fr in frames:
         ex = excel_by_frame.get(fr.number, {})
@@ -295,15 +345,15 @@ async def build_montage_board(
         img1 = find_shot1_image(scenes_dir, fr.number)
         img2 = find_shot2_image(scenes_dir, fr.number)
         scene_seconds = (
-            float(fr.duration_seconds)
+            fr.duration_seconds
             if fr.duration_seconds is not None and fr.duration_seconds > 0
             else None
         )
         shot1_use, shot2_use = _scene_use_durations(scene_seconds, has_shot2=has_shot2_video)
         vid1_dur = next(dur_iter)
         vid2_dur = next(dur_iter)
-        vo_start = float(fr.start_ts) if fr.start_ts is not None else None
-        vo_end = float(fr.end_ts) if fr.end_ts is not None else None
+        vo_start = fr.start_ts
+        vo_end = fr.end_ts
         shot1_timeline_start = vo_start
         shot1_timeline_end = (
             round(vo_start + shot1_use, 3)
@@ -318,7 +368,7 @@ async def build_montage_board(
             {
                 "frame_id": fr.id,
                 "number": fr.number,
-                "voiceover_text": fr.voiceover_text or "",
+                "voiceover_text": fr.voiceover_text,
                 "voiceover_excel": ex.get("voiceover_excel") or "",
                 "characters": ex.get("characters") or "",
                 "character_refs": ex.get("character_refs") or [],
@@ -346,5 +396,4 @@ async def build_montage_board(
             }
         )
 
-    board_meta = public_board_meta(montage_meta(project))
     return {"frames": rows, "frame_count": len(rows), "meta": board_meta}

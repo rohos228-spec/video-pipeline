@@ -176,3 +176,82 @@ def test_preview_url_encodes_spaces() -> None:
     assert " " not in url
     assert "%20" in url or "%2520" in url or "has%20space" in url
     p.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_build_montage_board_survives_expired_frames(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ORM Frame в to_thread давал MissingGreenlet → UI «не удалось загрузить»."""
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="EXPIRED SAFE PROMPT")
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="db-fallback",
+        animation_prompt="db-anim",
+        status="planned",
+        attrs={"image_prompt_shot2": "db-s2"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    # Имитация: кадры expired после select, пока Excel читается в worker-thread.
+    # Project остаётся hot (как в HTTP-запросе после get_project).
+    from app.services import montage_board as mb
+
+    real_snapshot = mb._snapshot_frames
+
+    def _snapshot_then_expire(frames: list[Frame]) -> list:
+        snaps = real_snapshot(frames)
+        for obj in frames:
+            session.expire(obj)
+        return snaps
+
+    monkeypatch.setattr(mb, "_snapshot_frames", _snapshot_then_expire)
+    board = await build_montage_board(session, montage_project)
+
+    assert board["frame_count"] == 1
+    assert board["frames"][0]["image_prompt_shot1"] == "EXPIRED SAFE PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_read_source_prompts_once_accepts_plain_snapshots(
+    montage_project: Project,
+    tmp_path: Path,
+) -> None:
+    """Worker-thread не должен получать SQLAlchemy Frame."""
+    import asyncio
+
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _read_source_prompts_once,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="THREAD SAFE")
+    wb.save(xlsx)
+
+    snaps = [
+        _FrameBoardSnapshot(
+            id=1,
+            number=1,
+            image_prompt="db",
+            animation_prompt="anim",
+            attrs={},
+        )
+    ]
+    out = await asyncio.to_thread(_read_source_prompts_once, xlsx, snaps)
+    assert out[1]["image_prompt_shot1"] == "THREAD SAFE"
