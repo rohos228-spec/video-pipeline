@@ -403,6 +403,18 @@ export const api = {
       { method: "POST" },
     ),
 
+  recoverMontageFromOutsee: (projectId: number) =>
+    http<{
+      ok: boolean;
+      saved?: Array<{ frame_number: number; shot: number; path?: string }>;
+      saved_count?: number;
+      errors?: string[];
+      hits_scanned?: number;
+      meta?: MontageBoardMeta;
+    }>(`/api/projects/${projectId}/montage-board/recover-outsee`, {
+      method: "POST",
+    }, 300_000),
+
   getMontageBoardStatus: (projectId: number) =>
     http<{ job: { status?: string; error?: string | null } }>(
       `/api/projects/${projectId}/montage-board/montage-status`,

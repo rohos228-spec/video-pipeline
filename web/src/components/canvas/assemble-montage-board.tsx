@@ -1016,6 +1016,24 @@ export function AssembleMontageBoard({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const recoverOutseeMutation = useMutation({
+    mutationFn: () => api.recoverMontageFromOutsee(projectId!),
+    onSuccess: (res) => {
+      const n = res.saved_count ?? res.saved?.length ?? 0;
+      if (n > 0) {
+        toast.success(`Забрано из Outsee: ${n} кадр(ов)`);
+      } else if (res.errors?.length) {
+        toast.error(res.errors.join("; "));
+      } else {
+        toast.message(
+          `В истории Outsee нет недостающих кадров (просмотрено ${res.hits_scanned ?? 0})`,
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   useEffect(() => {
     if (!open || projectId == null) return;
     void api.getMontageBoardStatus(projectId).then((st) => {
@@ -1382,6 +1400,22 @@ export function AssembleMontageBoard({
                 : pendingOps.length > 0
                   ? ` (${pendingOps.length})`
                   : ""}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 gap-1.5 text-xs"
+              disabled={!projectId || recoverOutseeMutation.isPending || applyRunning}
+              title="Сканирует последние карточки Outsee и сохраняет недостающие кадры"
+              onClick={() => recoverOutseeMutation.mutate()}
+            >
+              {recoverOutseeMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Забрать из Outsee
             </Button>
             <Button
               type="button"

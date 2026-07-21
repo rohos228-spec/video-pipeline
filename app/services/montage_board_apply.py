@@ -154,7 +154,56 @@ async def apply_montage_board(
     results: list[dict[str, Any]] = []
     errors: list[str] = []
     remaining: list[dict[str, Any]] = []
-    total = len(ops)
+
+    # Сначала — забрать уже готовые карточки из истории Outsee (без нового Generate).
+    image_ops = [op for op in ops if str(op.get("type") or "").startswith("image")]
+    if image_ops:
+        try:
+            from app.services.montage_outsee_recover import recover_before_regen_ops
+
+            recovered = await recover_before_regen_ops(session, project, ops)
+            for item in recovered.get("saved") or []:
+                results.append(
+                    {
+                        "ok": True,
+                        "kind": "image",
+                        "recovered_from_outsee": True,
+                        "frame_number": item.get("frame_number"),
+                        "shot": item.get("shot"),
+                        "path": item.get("path"),
+                        "highlight": (
+                            f"{item.get('frame_number')}:image{item.get('shot')}"
+                        ),
+                    }
+                )
+                hl = results[-1].get("highlight")
+                if hl:
+                    add_highlight(board, str(hl))
+            ops = list(recovered.get("remaining_ops") or ops)
+            if recovered.get("saved_count"):
+                logger.info(
+                    "montage apply #{}: recovered {} images from Outsee history "
+                    "before Generate",
+                    project.id,
+                    recovered["saved_count"],
+                )
+                board["pending_ops"] = list(ops)
+                set_montage_meta(project, board)
+                await session.flush()
+                if on_progress is not None:
+                    await on_progress(
+                        len(results),
+                        max(len(ops) + len(results), 1),
+                        {"ok": True, "recovered": recovered["saved_count"]},
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "montage apply #{}: Outsee history recover skipped: {}",
+                project.id,
+                exc,
+            )
+
+    total = len(ops) + len(results)
 
     for idx, op in enumerate(ops):
         try:
@@ -168,7 +217,7 @@ async def apply_montage_board(
             set_montage_meta(project, board)
             await session.flush()
             if on_progress is not None:
-                await on_progress(idx + 1, total, result)
+                await on_progress(len(results), max(total, 1), result)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             logger.warning(
@@ -184,7 +233,9 @@ async def apply_montage_board(
             set_montage_meta(project, board)
             await session.flush()
             if on_progress is not None:
-                await on_progress(idx + 1, total, {"ok": False, "error": msg})
+                await on_progress(
+                    len(results), max(total, 1), {"ok": False, "error": msg}
+                )
 
     # Успешные ops снимаем; упавшие оставляем — можно снова «Применить правки».
     board["pending_ops"] = remaining

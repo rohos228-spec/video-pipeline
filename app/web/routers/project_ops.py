@@ -773,6 +773,38 @@ async def montage_board_montage_status(
     return {"job": get_montage_job(p)}
 
 
+@router.post("/{project_id}/montage-board/recover-outsee")
+async def montage_board_recover_outsee(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сканирует последние карточки Outsee и сохраняет недостающие кадры монтажа."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board_meta import public_board_meta, montage_meta
+    from app.services.montage_outsee_recover import recover_montage_images_from_outsee
+
+    try:
+        result = await recover_montage_images_from_outsee(session, p, click_scan=True)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("POST recover-outsee failed project_id={}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось забрать из Outsee: {type(e).__name__}: {e}",
+        ) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_outsee_recover": True,
+            "saved_count": result.get("saved_count"),
+            "ok": result.get("ok"),
+        },
+    )
+    result["meta"] = public_board_meta(montage_meta(p))
+    return result
+
+
 @router.post("/{project_id}/montage-board/delete-image")
 async def montage_board_delete_image(
     project_id: int,
