@@ -99,6 +99,7 @@ def spawn_apply_job(
                 )
             await _publish(project_id, "running", extra={"total_ops": total_ops, "done_ops": 0})
 
+            # Не держим одну session на весь Outsee Generate (sqlite locked).
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
                 if project is None:
@@ -111,6 +112,11 @@ def spawn_apply_job(
                     on_progress=_on_progress,
                 )
                 status = "done" if result.get("ok") else "error"
+                # project мог быть expired после commit'ов внутри apply —
+                # перечитываем для job status.
+                project = await session.get(Project, project_id)
+                if project is None:
+                    return
                 _set_job(
                     project,
                     {

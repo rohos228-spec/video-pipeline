@@ -20,7 +20,8 @@ engine = create_async_engine(
     settings.db_url,
     echo=False,
     future=True,
-    connect_args={"timeout": 30},
+    # Montage apply держит короткие сессии; 60с — запас против auto_advance.
+    connect_args={"timeout": 60},
 )
 
 
@@ -28,7 +29,7 @@ def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA busy_timeout=60000")
     cursor.close()
 
 

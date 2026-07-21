@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -43,6 +44,79 @@ def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
         return False
 
 
+def _is_sqlite_locked(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+async def _finalize_image_with_retry(
+    project_id: int,
+    prep: Any,
+    new_path: Path,
+    board: dict[str, Any],
+) -> dict[str, Any]:
+    last: BaseException | None = None
+    for attempt in range(1, 8):
+        try:
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is None:
+                    raise RuntimeError(f"проект #{project_id} не найден")
+                return await finalize_image_regen(
+                    session, project, prep, new_path, board=board
+                )
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_sqlite_locked(exc) and attempt < 7:
+                wait = min(2.0 * attempt, 10.0)
+                logger.warning(
+                    "montage finalize image #{} F{} locked ({}/7), wait {:.1f}s",
+                    project_id,
+                    prep.frame_number,
+                    attempt,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
+async def _finalize_video_with_retry(
+    project_id: int,
+    prep: Any,
+    new_path: Path,
+    board: dict[str, Any],
+) -> dict[str, Any]:
+    last: BaseException | None = None
+    for attempt in range(1, 8):
+        try:
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is None:
+                    raise RuntimeError(f"проект #{project_id} не найден")
+                return await finalize_video_regen(
+                    session, project, prep, new_path, board=board
+                )
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_sqlite_locked(exc) and attempt < 7:
+                wait = min(2.0 * attempt, 10.0)
+                logger.warning(
+                    "montage finalize video #{} F{} locked ({}/7), wait {:.1f}s",
+                    project_id,
+                    prep.frame_number,
+                    attempt,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
 async def _run_op_with_short_sessions(
     project_id: int,
     op: dict[str, Any],
@@ -64,8 +138,6 @@ async def _run_op_with_short_sessions(
                 mode = "edit_prompt"
             elif op_type == "image_regen_correction":
                 mode = "correction"
-            # Промт с UI (то, что видит пользователь на доске) — приоритетнее
-            # повторного чтения Excel, иначе уходит «другой» текст.
             pinned = str(op.get("prompt") or "").strip()
             prep = await prepare_image_regen(
                 session,
@@ -96,7 +168,6 @@ async def _run_op_with_short_sessions(
         try:
             new_path = await execute_image_regen(prep)
         except Exception as exc:  # noqa: BLE001
-            # Outsee мог отдать файл, а пост-шаг упал — всё равно заменяем кадр.
             if _ready_local_asset(prep.file_path, min_bytes=_READY_IMAGE_BYTES):
                 logger.warning(
                     "montage apply #{} image frame {} shot {}: "
@@ -109,13 +180,7 @@ async def _run_op_with_short_sessions(
                 new_path = prep.file_path
             else:
                 raise
-        async with session_scope() as session:
-            project = await session.get(Project, project_id)
-            if project is None:
-                raise RuntimeError(f"проект #{project_id} не найден")
-            return await finalize_image_regen(
-                session, project, prep, new_path, board=board
-            )
+        return await _finalize_image_with_retry(project_id, prep, new_path, board)
 
     try:
         new_path = await execute_video_regen(prep)
@@ -132,13 +197,7 @@ async def _run_op_with_short_sessions(
             new_path = prep.file_path
         else:
             raise
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if project is None:
-            raise RuntimeError(f"проект #{project_id} не найден")
-        return await finalize_video_regen(
-            session, project, prep, new_path, board=board
-        )
+    return await _finalize_video_with_retry(project_id, prep, new_path, board)
 
 
 async def apply_montage_board(
@@ -160,29 +219,31 @@ async def apply_montage_board(
     remaining: list[dict[str, Any]] = []
 
     # НЕ recover_before_regen: нода img идёт сразу в generate_image.
-    # Pre-recover кликал галерею → «безлимит уже активна» → abort до download.
-    # Готовые карточки: кнопка «Забрать» или history recover после OutseeDownloadError.
 
     total = len(ops) + len(results)
+    project_id = int(project.id)
 
     for idx, op in enumerate(ops):
         try:
-            result = await _run_op_with_short_sessions(project.id, op, board)
+            result = await _run_op_with_short_sessions(project_id, op, board)
             results.append(result)
             highlight = result.get("highlight")
             if highlight:
                 add_highlight(board, str(highlight))
-            # Сужаем очередь по ходу — cancel/restart не вернёт уже сделанное.
             board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
             set_montage_meta(project, board)
+            # CRITICAL: commit после каждой op — иначе write-txn висит на весь
+            # Outsee Generate и finalize следующего кадра → database is locked
+            # (лог F38: файл скачан, archive ok, INSERT artifacts locked).
             await session.flush()
+            await session.commit()
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             logger.warning(
                 "montage apply #{} op {} failed: {}",
-                project.id,
+                project_id,
                 op,
                 msg,
             )
@@ -192,16 +253,17 @@ async def apply_montage_board(
             board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
             set_montage_meta(project, board)
             await session.flush()
+            await session.commit()
             if on_progress is not None:
                 await on_progress(
                     len(results), max(total, 1), {"ok": False, "error": msg}
                 )
 
-    # Успешные ops снимаем; упавшие оставляем — можно снова «Применить правки».
     board["pending_ops"] = remaining
     touch_applied(board)
     set_montage_meta(project, board)
     await session.flush()
+    await session.commit()
 
     return {
         "ok": not errors,
