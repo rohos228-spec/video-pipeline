@@ -255,3 +255,77 @@ async def test_read_source_prompts_once_accepts_plain_snapshots(
     ]
     out = await asyncio.to_thread(_read_source_prompts_once, xlsx, snaps)
     assert out[1]["image_prompt_shot1"] == "THREAD SAFE"
+
+
+@pytest.mark.asyncio
+async def test_load_xlsx_bundle_is_sequential_single_thread(
+    montage_project: Project,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Параллельные openpyxl на Windows дают lock — bundle должен быть 1× to_thread."""
+    import asyncio
+
+    from app.services import montage_board as mb
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="vo")
+    ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3, value="IMG")
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    calls: list[object] = []
+    real_to_thread = asyncio.to_thread
+
+    async def tracking_to_thread(fn, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(fn)
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(mb.asyncio, "to_thread", tracking_to_thread)
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_count"] == 1
+    assert board["frames"][0]["image_prompt_shot1"] == "IMG"
+    # Ровно один to_thread на Excel-бандл (не 3 параллельных openpyxl).
+    assert calls == [mb._load_montage_xlsx_bundle]
+
+
+def test_load_montage_xlsx_bundle_survives_plan_open_failure(
+    montage_project: Project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _load_montage_xlsx_bundle,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"not-xlsx")
+    snaps = [
+        _FrameBoardSnapshot(
+            id=1,
+            number=1,
+            image_prompt="DB IMG",
+            animation_prompt="DB VID",
+            attrs={},
+        )
+    ]
+    excel, prompts, shot2 = _load_montage_xlsx_bundle(
+        xlsx,
+        chars_dir=montage_project.data_dir / "characters",
+        frames=snaps,
+    )
+    assert excel == {}
+    assert prompts[1]["image_prompt_shot1"] == "DB IMG"
+    assert shot2 == {}

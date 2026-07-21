@@ -854,7 +854,10 @@ export function AssembleMontageBoard({
     queryKey: ["montage-board", projectId],
     queryFn: () => api.getMontageBoard(projectId!),
     enabled: open && projectId != null,
-    retry: 1,
+    retry: 2,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 
   const frames = board.data?.frames ?? [];
@@ -1472,12 +1475,21 @@ export function AssembleMontageBoard({
             {!board.isLoading && board.isError && (
               <div className="flex flex-col items-center gap-3 py-10 px-4 text-center">
                 <p className="text-sm text-destructive">Не удалось загрузить данные монтажа</p>
-                {board.error instanceof Error && board.error.message ? (
-                  <p className="max-w-md text-xs text-muted-foreground break-words">
-                    {board.error.message}
-                  </p>
-                ) : null}
-                <Button type="button" size="sm" variant="outline" onClick={() => void board.refetch()}>
+                <p className="max-w-lg text-xs text-muted-foreground break-words whitespace-pre-wrap">
+                  {board.error instanceof Error
+                    ? board.error.message || String(board.error)
+                    : String(board.error ?? "неизвестная ошибка")}
+                  {projectId != null ? `\nproject #${projectId}` : ""}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
+                    void board.refetch();
+                  }}
+                >
                   Повторить
                 </Button>
               </div>

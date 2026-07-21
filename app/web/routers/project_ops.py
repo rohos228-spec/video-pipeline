@@ -661,7 +661,16 @@ async def montage_board(
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.montage_board import build_montage_board
 
-    return await build_montage_board(session, p)
+    try:
+        return await build_montage_board(session, p)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("GET /montage-board failed project_id={}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось собрать монтаж: {type(e).__name__}: {e}",
+        ) from e
 
 
 @router.post("/{project_id}/montage-board/apply")

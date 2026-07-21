@@ -33,6 +33,7 @@ from app.services.plan_shot2 import (
     ROW_VIDEO_PROMPT_2_V8,
     SHOT2_PROMPT_ATTR,
     SHOT2_VIDEO_PROMPT_ATTR,
+    Shot2ColumnInfo,
     find_shot1_image,
     find_shot2_image,
     plan_column_for_frame,
@@ -208,65 +209,69 @@ def _snapshot_frames(frames: list[Frame]) -> list[_FrameBoardSnapshot]:
     return out
 
 
+def _empty_prompt_row() -> dict[str, str]:
+    return {
+        "image_prompt_shot1": "",
+        "image_prompt_shot2": "",
+        "animation_prompt_shot1": "",
+        "animation_prompt_shot2": "",
+    }
+
+
+def _prompts_from_frame_db(frames: list[_FrameBoardSnapshot]) -> dict[int, dict[str, str]]:
+    out: dict[int, dict[str, str]] = {}
+    for fr in frames:
+        attrs = fr.attrs
+        out[fr.number] = {
+            "image_prompt_shot1": fr.image_prompt,
+            "image_prompt_shot2": (attrs.get(SHOT2_PROMPT_ATTR) or "").strip(),
+            "animation_prompt_shot1": fr.animation_prompt,
+            "animation_prompt_shot2": (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip(),
+        }
+    return out
+
+
 def _read_source_prompts_once(
     xlsx_path: Path,
     frames: list[_FrameBoardSnapshot],
 ) -> dict[int, dict[str, str]]:
     """Один openpyxl-проход: R45/R46/R48/R64 для всех кадров.
 
-    Раньше на каждый кадр × 4 вызывался load_workbook → таймаут 30с / зависание UI.
     frames — plain snapshots, не SQLAlchemy ORM (иначе MissingGreenlet в to_thread).
     """
-    out: dict[int, dict[str, str]] = {
-        fr.number: {
-            "image_prompt_shot1": "",
-            "image_prompt_shot2": "",
-            "animation_prompt_shot1": "",
-            "animation_prompt_shot2": "",
-        }
-        for fr in frames
-    }
+    out = _prompts_from_frame_db(frames)
     if not frames or not xlsx_path.is_file():
-        for fr in frames:
-            attrs = fr.attrs
-            out[fr.number] = {
-                "image_prompt_shot1": fr.image_prompt,
-                "image_prompt_shot2": (attrs.get(SHOT2_PROMPT_ATTR) or "").strip(),
-                "animation_prompt_shot1": fr.animation_prompt,
-                "animation_prompt_shot2": (
-                    attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or ""
-                ).strip(),
-            }
         return out
 
-    excel: dict[int, dict[str, str]] = {n: dict(v) for n, v in out.items()}
+    excel: dict[int, dict[str, str]] = {
+        fr.number: _empty_prompt_row() for fr in frames
+    }
     try:
         wb = load_workbook(filename=str(xlsx_path), data_only=True, read_only=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("montage_board: prompts openpyxl {}: {}", xlsx_path, e)
-        wb = None
-    if wb is not None:
-        try:
-            ws = _resolve_plan_sheet(wb)
-            if ws is not None:
-                for fr in frames:
-                    col = plan_column_for_frame(fr.number)
-                    excel[fr.number] = {
-                        "image_prompt_shot1": (
-                            _cell_text(ws, ROW_IMAGE_PROMPT_V8, col) or ""
-                        ).strip(),
-                        "image_prompt_shot2": (
-                            _cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or ""
-                        ).strip(),
-                        "animation_prompt_shot1": (
-                            _cell_text(ws, ROW_VIDEO_PROMPT_V8, col) or ""
-                        ).strip(),
-                        "animation_prompt_shot2": (
-                            _cell_text(ws, ROW_VIDEO_PROMPT_2_V8, col) or ""
-                        ).strip(),
-                    }
-        finally:
-            wb.close()
+        return out
+    try:
+        ws = _resolve_plan_sheet(wb)
+        if ws is not None:
+            for fr in frames:
+                col = plan_column_for_frame(fr.number)
+                excel[fr.number] = {
+                    "image_prompt_shot1": (
+                        _cell_text(ws, ROW_IMAGE_PROMPT_V8, col) or ""
+                    ).strip(),
+                    "image_prompt_shot2": (
+                        _cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col) or ""
+                    ).strip(),
+                    "animation_prompt_shot1": (
+                        _cell_text(ws, ROW_VIDEO_PROMPT_V8, col) or ""
+                    ).strip(),
+                    "animation_prompt_shot2": (
+                        _cell_text(ws, ROW_VIDEO_PROMPT_2_V8, col) or ""
+                    ).strip(),
+                }
+    finally:
+        wb.close()
 
     for fr in frames:
         attrs = fr.attrs
@@ -288,6 +293,65 @@ def _read_source_prompts_once(
     return out
 
 
+def _load_montage_xlsx_bundle(
+    xlsx_path: Path,
+    *,
+    chars_dir: Path,
+    frames: list[_FrameBoardSnapshot],
+) -> tuple[
+    dict[int, dict[str, Any]],
+    dict[int, dict[str, str]],
+    dict[int, Shot2ColumnInfo],
+]:
+    """Последовательно читает Excel в ОДНОМ worker-thread.
+
+    Раньше три параллельных openpyxl на один project.xlsx → на Windows
+    PermissionError / lock → API 500 → «Не удалось загрузить данные монтажа».
+    """
+    excel_by_frame: dict[int, dict[str, Any]] = {}
+    prompts_by_frame = _prompts_from_frame_db(frames)
+    shot2_by: dict[int, Shot2ColumnInfo] = {}
+
+    if not xlsx_path.is_file():
+        return excel_by_frame, prompts_by_frame, shot2_by
+
+    try:
+        excel_by_frame = _read_plan_excel_cells(xlsx_path, chars_dir=chars_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: plan excel {}: {}", xlsx_path, e)
+        excel_by_frame = {}
+
+    try:
+        prompts_by_frame = _read_source_prompts_once(xlsx_path, frames)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: prompts excel {}: {}", xlsx_path, e)
+
+    try:
+        shot2_by = get_cached_shot2_columns(xlsx_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: shot2 excel {}: {}", xlsx_path, e)
+        shot2_by = {}
+
+    return excel_by_frame, prompts_by_frame, shot2_by
+
+
+def _json_safe_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    """Убираем из meta всё, что ломает JSONResponse."""
+    import json
+
+    try:
+        return json.loads(json.dumps(meta, default=str))
+    except Exception:  # noqa: BLE001
+        return {
+            "video_trims": {},
+            "stale_videos": [],
+            "highlights": [],
+            "corrections": {},
+            "pending_ops": [],
+            "applied_at": None,
+        }
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
@@ -295,7 +359,11 @@ async def build_montage_board(
     # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
     data_dir = project.data_dir
-    board_meta = public_board_meta(montage_meta(project))
+    try:
+        board_meta = _json_safe_meta(public_board_meta(montage_meta(project)))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: meta project {}: {}", project_id, e)
+        board_meta = _json_safe_meta({})
 
     frames_orm = list(
         (
@@ -306,23 +374,21 @@ async def build_montage_board(
             )
         ).scalars().all()
     )
-    # ORM только здесь; дальше — plain snapshots (to_thread / probe не трогают Session).
+    # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).
     frames = _snapshot_frames(frames_orm)
 
     xlsx_path = data_dir / "project.xlsx"
     chars_dir = data_dir / "characters"
-    # Excel / prompts — в thread, чтобы не блокировать event loop и WS.
-    excel_by_frame, prompts_by_frame, shot2_by = await asyncio.gather(
-        asyncio.to_thread(_read_plan_excel_cells, xlsx_path, chars_dir=chars_dir),
-        asyncio.to_thread(_read_source_prompts_once, xlsx_path, frames),
-        asyncio.to_thread(
-            lambda: get_cached_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
-        ),
+    # Один thread, последовательные openpyxl — без Windows file lock.
+    excel_by_frame, prompts_by_frame, shot2_by = await asyncio.to_thread(
+        _load_montage_xlsx_bundle,
+        xlsx_path,
+        chars_dir=chars_dir,
+        frames=frames,
     )
     scenes_dir = data_dir / "scenes"
     videos_dir = data_dir / "videos"
 
-    # Собираем пути видео и зондируем параллельно (кэш по mtime/size).
     frame_videos: list[
         tuple[_FrameBoardSnapshot, Path | None, Path | None, dict, bool, bool]
     ] = []
@@ -337,7 +403,11 @@ async def build_montage_board(
         frame_videos.append((fr, vid1, vid2, ex, has_shot2, has_shot2_video))
         all_vid_paths.extend([vid1, vid2])
 
-    durations = await probe_video_durations_parallel(all_vid_paths)
+    try:
+        durations = await probe_video_durations_parallel(all_vid_paths)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: ffprobe project {}: {}", project_id, e)
+        durations = [None] * len(all_vid_paths)
     dur_iter = iter(durations)
 
     rows: list[dict[str, Any]] = []
