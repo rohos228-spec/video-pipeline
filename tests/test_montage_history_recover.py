@@ -1,4 +1,4 @@
-"""Montage image regen: history recover after download failure."""
+"""Montage image regen: history recover uses working download path."""
 
 from __future__ import annotations
 
@@ -24,7 +24,8 @@ async def test_recover_montage_image_from_history_downloads(tmp_path: Path) -> N
         prompt_text="x",
         file_path=dest,
         refs=[],
-        prompt_id_prefix="P1-F1-S1-abc",
+        prompt_id_prefix="[ID: P13-F1-abcd1234]",
+        gen_id="abcd1234deadbeef",
         aspect_slug="9:16",
         model_slug=None,
         res_slug=None,
@@ -38,34 +39,31 @@ async def test_recover_montage_image_from_history_downloads(tmp_path: Path) -> N
     async def fake_download(page, **kwargs):
         path = kwargs["out_path"]
         path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"y" * 210_000)
+        return path
 
     with (
         patch(
             "app.services.outsee_lane.outsee_lane",
-            MagicMock(return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=None),
-                __aexit__=AsyncMock(return_value=None),
-            )),
-        ),
-        patch(
-            "app.bots.outsee.find_img_src_by_prompt_id_in_gallery",
-            AsyncMock(
-                return_value=(
-                    "https://storage.yandexcloud.net/outseehistory/generated/"
-                    "1/2/image_9_0_thumb.jpg"
+            MagicMock(
+                return_value=AsyncMock(
+                    __aenter__=AsyncMock(return_value=None),
+                    __aexit__=AsyncMock(return_value=None),
                 )
             ),
         ),
         patch(
-            "app.bots.outsee._download_via_card_click",
+            "app.bots.outsee.download_saved_image_by_prompt_id",
             AsyncMock(side_effect=fake_download),
-        ),
+        ) as dl,
     ):
         got = await _recover_montage_image_from_history(outsee, prep)
 
     assert got == dest
     assert dest.is_file()
     assert dest.stat().st_size >= 200_000
+    # Без img_url — рабочий cascade, не verify-gate.
+    assert dl.await_args.kwargs.get("prompt_id_prefix") == prep.prompt_id_prefix
+    assert "img_url" not in dl.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -80,7 +78,8 @@ async def test_execute_image_regen_uses_history_on_download_fail(
         prompt_text="prompt",
         file_path=dest,
         refs=[],
-        prompt_id_prefix="P1-F2-S1-xyz",
+        prompt_id_prefix="[ID: P13-F2-abcd1234]",
+        gen_id="abcd1234deadbeef",
         aspect_slug="9:16",
         model_slug=None,
         res_slug=None,
@@ -90,6 +89,9 @@ async def test_execute_image_regen_uses_history_on_download_fail(
 
     class Boom(Exception):
         pass
+
+    recovered = tmp_path / "recovered.png"
+    recovered.write_bytes(b"\x89PNG\r\n\x1a\n" + b"z" * 210_000)
 
     with (
         patch(
@@ -105,24 +107,25 @@ async def test_execute_image_regen_uses_history_on_download_fail(
         ),
         patch(
             "app.services.montage_board_regen._recover_montage_image_from_history",
-            AsyncMock(return_value=dest),
+            AsyncMock(return_value=recovered),
         ) as recover,
+        patch("app.services.montage_board_regen.OutseeBot"),
+        patch("app.services.montage_board_regen.ChatGPTBot"),
     ):
-        dest.write_bytes(b"\x89PNG\r\n\x1a\n" + b"z" * 210_000)
-        session = MagicMock()
-        bs_cm.return_value.__aenter__ = AsyncMock(return_value=session)
+        bs_cm.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         bs_cm.return_value.__aexit__ = AsyncMock(return_value=None)
-        with patch("app.services.montage_board_regen.OutseeBot"), patch(
-            "app.services.montage_board_regen.ChatGPTBot"
-        ):
-            # File already ready — should return without needing recover
-            # Clear file to force recover path
-            dest.unlink()
-            recover.return_value = tmp_path / "recovered.png"
-            recover.return_value.write_bytes(
-                b"\x89PNG\r\n\x1a\n" + b"z" * 210_000
-            )
-            out = await execute_image_regen(prep)
+        out = await execute_image_regen(prep)
 
-    assert out == recover.return_value
+    assert out == recovered
     recover.assert_awaited_once()
+
+
+def test_download_saved_image_by_prompt_id_skips_url_verify() -> None:
+    """Контракт: helper не передаёт img_url в card-click."""
+    import inspect
+
+    from app.bots.outsee import download_saved_image_by_prompt_id
+
+    src = inspect.getsource(download_saved_image_by_prompt_id)
+    assert "img_url" not in src.split("_download_via_card_click")[1].split(")")[0]
+    assert "_wait_gallery_thumbs" in src
