@@ -260,7 +260,8 @@ async def test_apply_finalizes_when_file_ready_despite_execute_error(
         return prep
 
     async def _fail_after_write(prep: ImageRegenPrep):
-        prep.file_path.write_bytes(b"y" * 256)
+        # Порог finalize-on-error = 200 KB (как outsee-валидация).
+        prep.file_path.write_bytes(b"y" * 220_000)
         raise RuntimeError("post-download glitch")
 
     monkeypatch.setattr(

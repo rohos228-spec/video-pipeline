@@ -137,6 +137,11 @@ def spawn_apply_job(
                 async with session_scope() as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
+                        board = montage_meta(project)
+                        # Apply мог не дойти до записи remaining — вернём очередь в meta.
+                        if pending_ops and not board.get("pending_ops"):
+                            board["pending_ops"] = list(pending_ops)
+                            set_montage_meta(project, board)
                         _set_job(
                             project,
                             {

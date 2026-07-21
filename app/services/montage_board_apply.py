@@ -31,6 +31,11 @@ from app.services.montage_board_regen import (
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
 
+# Совпадает с порогами outsee-валидации — не финализируем stub/placeholder.
+_READY_IMAGE_BYTES = 200_000
+_READY_VIDEO_BYTES = 80_000
+
+
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
     try:
         return path.is_file() and path.stat().st_size >= min_bytes
@@ -88,7 +93,7 @@ async def _run_op_with_short_sessions(
             new_path = await execute_image_regen(prep)
         except Exception as exc:  # noqa: BLE001
             # Outsee мог отдать файл, а пост-шаг упал — всё равно заменяем кадр.
-            if _ready_local_asset(prep.file_path, min_bytes=64):
+            if _ready_local_asset(prep.file_path, min_bytes=_READY_IMAGE_BYTES):
                 logger.warning(
                     "montage apply #{} image frame {} shot {}: "
                     "execute failed but file ready — finalize: {}",
@@ -111,7 +116,7 @@ async def _run_op_with_short_sessions(
     try:
         new_path = await execute_video_regen(prep)
     except Exception as exc:  # noqa: BLE001
-        if _ready_local_asset(prep.file_path, min_bytes=1024):
+        if _ready_local_asset(prep.file_path, min_bytes=_READY_VIDEO_BYTES):
             logger.warning(
                 "montage apply #{} video frame {} shot {}: "
                 "execute failed but file ready — finalize: {}",

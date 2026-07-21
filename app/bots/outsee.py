@@ -1688,14 +1688,14 @@ def _validate_downloaded_video(
     try:
         size = out_path.stat().st_size
     except OSError as e:
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: скачанный файл недоступен после download",
             context={"gen_id": gen_id, "video_url": video_url},
         ) from e
     if size < _MIN_VIDEO_BYTES:
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: слишком маленький mp4 (placeholder?)",
             context={"gen_id": gen_id, "video_url": video_url, "bytes": size},
         )
@@ -1704,7 +1704,7 @@ def _validate_downloaded_video(
     if len(head) < 8 or head[4:8] != b"ftyp":
         with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
-        raise OutseeImageError(
+        raise OutseeDownloadError(
             "outsee video: файл не похож на mp4",
             context={"gen_id": gen_id, "video_url": video_url},
         )
@@ -5281,6 +5281,9 @@ class OutseeBot:
                     gen_id=gen_id,
                     prompt_id_prefix=prompt_id_prefix,
                     project_id=project_id,
+                )
+                _validate_downloaded_video(
+                    out_path, gen_id=gen_id, video_url=video_url
                 )
             except OutseeImageError as e:
                 e.context.setdefault("gen_id", gen_id)

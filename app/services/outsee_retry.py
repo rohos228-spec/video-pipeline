@@ -685,15 +685,12 @@ async def generate_image_with_retries(
                                 )
                     logger.warning(
                         "outsee.generate_image [{}] download-only retries "
-                        "исчерпаны (id={})",
+                        "исчерпаны (id={}) — без нового Generate",
                         round_label,
                         prefix or "—",
                     )
-                last_err = e
-                if attempt < max_attempts_per_prompt:
-                    await sleep_cancellable(
-                        2.0, pid if isinstance(pid, int) else None
-                    )
+                # Карточка уже на outsee: повторный Generate только orphan'ит результат.
+                raise last_err or e
             except OutseeImageError as e:
                 last_err = e
                 err_kind = _retry_err_label(e)
@@ -929,14 +926,12 @@ async def generate_video_with_retries(
                                 await sleep_cancellable(2.0, project_id)
                     logger.warning(
                         "outsee.generate_video [{}] download-only retries "
-                        "исчерпаны (id={})",
+                        "исчерпаны (id={}) — без нового Generate",
                         round_label,
                         attempt_kwargs.get("prompt_id_prefix") or "—",
                     )
-                last_err = e
-                gen_failures += 1
-                if attempt < max_attempts_per_prompt:
-                    await sleep_cancellable(2.0, project_id)
+                # Ролик уже на outsee — не кликаем Generate снова.
+                raise last_err or e
             except OutseeImageError as e:
                 last_err = e
                 gen_failures += 1

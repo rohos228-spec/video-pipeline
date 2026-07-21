@@ -246,3 +246,50 @@ async def test_image_download_error_retries_download_only(monkeypatch, tmp_path:
     assert result.file_path == out
     assert len(gen_calls) == 1
     assert dl_calls == ["https://cdn.example/result.png"]
+
+
+@pytest.mark.asyncio
+async def test_image_download_exhaustion_does_not_regenerate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """После исчерпания download-only — raise, без второго Generate."""
+    gen_calls: list[str] = []
+    dl_calls = 0
+
+    class FakeOutsee:
+        async def generate_image(self, prompt: str, out_path, **kwargs):
+            gen_calls.append(prompt)
+            raise OutseeDownloadError(
+                "outsee image: скачивание результата упало",
+                context={
+                    "gen_id": "abc12345deadbeef",
+                    "img_url": "https://cdn.example/result.png",
+                },
+            )
+
+        async def retry_image_download(self, *, img_url, out_path, gen_id, **kwargs):
+            nonlocal dl_calls
+            dl_calls += 1
+            raise OutseeDownloadError(
+                "still failing",
+                context={"gen_id": gen_id, "img_url": img_url},
+            )
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+
+    with pytest.raises(OutseeDownloadError):
+        await mod.generate_image_with_retries(
+            FakeOutsee(),
+            None,
+            prompt="scene prompt",
+            out_path=tmp_path / "x.png",
+            max_attempts_per_prompt=3,
+            gpt_rewrite=False,
+            project_id=1,
+        )
+    assert len(gen_calls) == 1
+    assert dl_calls == 2

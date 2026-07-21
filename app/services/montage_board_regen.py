@@ -351,9 +351,10 @@ async def prepare_video_regen(
     short_uuid = uuid.uuid4().hex[:8]
     if shot == 2:
         file_path = videos_dir / f"clip_{frame_number:03d}_s2_{short_uuid}.mp4"
+        prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid) + "-S2"
     else:
         file_path = videos_dir / f"clip_{frame_number:03d}_{short_uuid}.mp4"
-    prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid)
+        prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid)
 
     vg = VIDEO_GENERATORS_BY_ID.get(project.video_generator or DEFAULTS["video_generator"])
     vr_o = VIDEO_RESOLUTIONS_BY_ID.get(project.video_resolution or DEFAULTS["video_resolution"])
@@ -386,6 +387,18 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
         gpt = ChatGPTBot(bs)
+        videos_dir = prep.file_path.parent
+        if prep.shot == 2:
+            dup_globs = list(videos_dir.glob(f"clip_{prep.frame_number:03d}_s2_*.mp4"))
+        else:
+            dup_globs = [
+                p
+                for p in videos_dir.glob(f"clip_{prep.frame_number:03d}_*.mp4")
+                if "_s2_" not in p.name
+            ]
+        duplicate_check_paths = list(
+            dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
+        )
         result = await generate_video_with_retries(
             outsee,
             gpt,
@@ -401,7 +414,7 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
             resolution=prep.video_res_slug,
             relax=prep.video_relax,
             prompt_id_prefix=prep.prompt_id_prefix,
-            duplicate_check_paths=[],
+            duplicate_check_paths=duplicate_check_paths,
         )
     return Path(result.file_path)
 

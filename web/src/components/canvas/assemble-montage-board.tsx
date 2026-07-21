@@ -858,7 +858,44 @@ export function AssembleMontageBoard({
     setTrims(mergeTrimsFromMeta(frames, meta?.video_trims ?? {}));
     setHighlights(meta?.highlights ?? []);
     setStaleVideos(meta?.stale_videos ?? []);
-  }, [board.dataUpdatedAt, frames.length, meta?.video_trims, meta?.highlights, meta?.stale_videos]);
+    // После apply с ошибками ops остаются в meta — поднимаем обратно в UI.
+    if (applyRunning) return;
+    const raw = meta?.pending_ops;
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    if (pendingOpsRef.current.length > 0) return;
+    const restored: MontagePendingOp[] = [];
+    for (const op of raw) {
+      const t = String(op?.type || "");
+      if (
+        t !== "image_regen" &&
+        t !== "image_regen_prompt" &&
+        t !== "image_regen_correction" &&
+        t !== "video_regen" &&
+        t !== "video_regen_prompt"
+      ) {
+        continue;
+      }
+      const shot = op.shot === 2 ? 2 : 1;
+      restored.push({
+        type: t,
+        frame_number: Number(op.frame_number),
+        shot,
+        prompt: op.prompt,
+        correction: op.correction,
+      });
+    }
+    if (restored.length === 0) return;
+    pendingOpsRef.current = restored;
+    setPendingOps(restored);
+  }, [
+    board.dataUpdatedAt,
+    frames.length,
+    meta?.video_trims,
+    meta?.highlights,
+    meta?.stale_videos,
+    meta?.pending_ops,
+    applyRunning,
+  ]);
 
   const queueOp = useCallback((op: MontagePendingOp) => {
     setPendingOps((prev) => {
@@ -976,17 +1013,24 @@ export function AssembleMontageBoard({
           setApplyRunning(false);
           setApplyProgress(null);
           toast.success("Генерация завершена");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "error") {
           setApplyRunning(false);
           setApplyProgress(null);
           const err = evt.payload.error || evt.payload.errors?.join("; ");
           toast.error(err || "Генерация не удалась");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "cancelled") {
           setApplyRunning(false);
           setApplyProgress(null);
           toast.message("Генерация остановлена");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         }
         return;
       }
@@ -1060,12 +1104,19 @@ export function AssembleMontageBoard({
         setApplyProgress(null);
         if (status === "done") {
           toast.success("Генерация завершена");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "error") {
           toast.error(st.job?.error || "Генерация не удалась");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         } else if (status === "cancelled") {
           toast.message("Генерация остановлена");
+          setPendingOps([]);
+          pendingOpsRef.current = [];
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         }
       } catch {
         if (!cancelled) setApplyRunning(false);

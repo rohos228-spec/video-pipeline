@@ -257,6 +257,13 @@ export interface MontageBoardMeta {
   stale_videos: string[];
   highlights: string[];
   corrections: Record<string, string>;
+  pending_ops?: Array<{
+    type: string;
+    frame_number: number;
+    shot?: number;
+    prompt?: string;
+    correction?: string;
+  }>;
   applied_at: string | null;
 }
 
