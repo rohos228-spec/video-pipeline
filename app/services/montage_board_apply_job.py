@@ -65,18 +65,26 @@ def spawn_apply_job(
         total_ops = len(pending_ops)
         board_snapshot: dict[str, Any] = {}
 
-        async def _on_progress(done: int, total: int, _result: dict) -> None:
+        async def _on_progress(done: int, total: int, result: dict) -> None:
             try:
                 async with session_scope() as session:
                     project = await session.get(Project, project_id)
                     if project is None:
                         return
                     _set_job(project, {"done_ops": done, "total_ops": total})
-                await _publish(
-                    project_id,
-                    "running",
-                    extra={"done_ops": done, "total_ops": total},
-                )
+                extra: dict[str, Any] = {
+                    "done_ops": done,
+                    "total_ops": total,
+                    "refresh_board": True,
+                }
+                hl = result.get("highlight")
+                if hl:
+                    extra["highlight"] = hl
+                if result.get("ok") and result.get("path"):
+                    extra["frame_number"] = result.get("frame_number")
+                    extra["shot"] = result.get("shot")
+                    extra["path"] = result.get("path")
+                await _publish(project_id, "running", extra=extra)
             except Exception:  # noqa: BLE001
                 pass
 

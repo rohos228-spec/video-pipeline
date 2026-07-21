@@ -52,7 +52,13 @@ def _preview_url(path: Path | None) -> str | None:
     if path is None or not path.is_file():
         return None
     # Кодируем path целиком — пробелы/кириллица иначе ломают <img>/<video>.
-    return f"/api/files?path={quote(str(path), safe='')}"
+    # v=mtime — иначе после replace браузер/прокси может показать старый PNG
+    # даже при новом uuid, если path совпал или UI держал кэш по query.
+    try:
+        mtime_i = int(path.stat().st_mtime)
+    except OSError:
+        mtime_i = 0
+    return f"/api/files?path={quote(str(path), safe='')}&v={mtime_i}"
 
 
 def _find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
