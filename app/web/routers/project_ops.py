@@ -778,13 +778,25 @@ async def montage_board_recover_outsee(
     project_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Сканирует последние карточки Outsee и сохраняет недостающие кадры монтажа."""
+    """Сканирует последние карточки Outsee и сохраняет/заменяет кадры выделенных правок."""
     p = _project_or_404(await session.get(Project, project_id))
-    from app.services.montage_board_meta import public_board_meta, montage_meta
-    from app.services.montage_outsee_recover import recover_montage_images_from_outsee
+    from app.services.montage_board_meta import montage_meta, public_board_meta
+    from app.services.montage_outsee_recover import (
+        recover_before_regen_ops,
+        recover_montage_images_from_outsee,
+    )
 
+    board = montage_meta(p)
+    pending = list(board.get("pending_ops") or [])
+    image_ops = [op for op in pending if str(op.get("type") or "").startswith("image")]
     try:
-        result = await recover_montage_images_from_outsee(session, p, click_scan=True)
+        if image_ops:
+            # Выделенные правки в очереди — только их, с заменой файла.
+            result = await recover_before_regen_ops(session, p, pending)
+        else:
+            result = await recover_montage_images_from_outsee(
+                session, p, click_scan=True, force_replace=False
+            )
     except Exception as e:  # noqa: BLE001
         logger.exception("POST recover-outsee failed project_id={}", project_id)
         raise HTTPException(
