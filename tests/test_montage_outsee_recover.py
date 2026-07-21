@@ -1,4 +1,4 @@
-"""Тесты скана/парсинга ID из истории Outsee для монтажа."""
+"""Тесты recover монтажа: strategy C + download_image_like_generate."""
 
 from __future__ import annotations
 
@@ -9,25 +9,10 @@ import pytest
 
 from app.services.montage_outsee_recover import (
     GalleryHit,
-    _parse_ids_from_text,
     collect_stub_prefixes,
     rebuild_prefix_from_filename,
     recover_before_regen_ops,
-    scan_gallery_hits_for_project,
 )
-
-
-def test_parse_ids_from_text_project_filter() -> None:
-    text = (
-        "foo [ID: P13-F3-abcdef12] bar "
-        "[ID: P99-F1-11111111] "
-        "[ID: P13-F5-deadbeef]-S2"
-    )
-    got = _parse_ids_from_text(text, project_id=13)
-    assert {(f, s, h) for _, f, s, h in got} == {
-        (3, 1, "abcdef12"),
-        (5, 2, "deadbeef"),
-    }
 
 
 def test_rebuild_prefix_from_filename() -> None:
@@ -56,29 +41,7 @@ def test_collect_stub_prefixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_scan_gallery_hits_for_project() -> None:
-    page = MagicMock()
-    page.evaluate = AsyncMock(
-        return_value=[
-            {
-                "src": "https://cdn/x_thumb.jpg",
-                "text": "prompt [ID: P13-F4-aabbccdd] more",
-            },
-            {
-                "src": "https://cdn/y_thumb.jpg",
-                "text": "other project [ID: P1-F1-00000000]",
-            },
-        ]
-    )
-    hits = await scan_gallery_hits_for_project(page, 13, limit=80)
-    assert len(hits) == 1
-    assert hits[0].frame_number == 4
-    assert hits[0].short_uuid == "aabbccdd"
-    assert hits[0].img_src.endswith("x_thumb.jpg")
-
-
-@pytest.mark.asyncio
-async def test_recover_before_regen_ops_force_replaces_pending() -> None:
+async def test_recover_before_regen_ops_fills_gaps_only() -> None:
     from app.models import Project
 
     project = Project(id=13, slug="n", topic="t", hero_mode="auto")
@@ -99,7 +62,7 @@ async def test_recover_before_regen_ops_force_replaces_pending() -> None:
         ),
     ) as recover:
         res = await recover_before_regen_ops(session, project, ops)
-    assert recover.await_args.kwargs.get("force_replace") is True
+    assert recover.await_args.kwargs.get("force_replace") is False
     assert recover.await_args.kwargs.get("frame_filter") == {(1, 1), (2, 1)}
     assert res["removed_ops"] == 1
     remaining = res["remaining_ops"]

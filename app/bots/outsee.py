@@ -6897,6 +6897,134 @@ async def _find_card_by_clicking_images(
     return None
 
 
+_GALLERY_ID_PARSE_RE = re.compile(
+    r"\[ID:\s*P(\d+)-F(\d+)-([a-f0-9]{8})\](-S2)?",
+    re.IGNORECASE,
+)
+
+
+async def discover_prompt_ids_strategy_c(
+    page: Page,
+    *,
+    project_id: int,
+    limit: int = _GALLERY_ID_SCAN_LIMIT,
+    frame_filter: set[tuple[int, int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Поиск карточек в галерее — тот же обход, что strategy C ноды.
+
+    Алгоритм идентичен `_find_card_by_clicking_images`:
+      `_recent_big_gallery_img_srcs` → physical click → панель → [ID] → Esc.
+    Отличие: собираем все [ID] проекта (для recover), а не match одного prefix.
+    """
+    from app.generation_options import build_gen_id_prefix
+    from app.services.step_cancel import abort_if_cancelled
+
+    srcs = await _recent_big_gallery_img_srcs(page, limit=limit)
+    if not srcs:
+        return []
+
+    logger.info(
+        "discover_prompt_ids_strategy_c: перебор {} thumb (как strategy C)",
+        len(srcs[:limit]),
+    )
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for idx, src in enumerate(srcs[:limit]):
+        abort_if_cancelled(project_id)
+        stripped = _strip_url_query(src)
+        path_only = re.sub(r"^https?://[^/]+", "", stripped)
+        if not path_only:
+            continue
+        basename = Path(path_only).name
+        img_loc = None
+        for fragment in (basename, path_only):
+            loc = page.locator(f'img[src*="{fragment}"]').first
+            if await loc.count() > 0:
+                img_loc = loc
+                break
+        if img_loc is None:
+            continue
+        try:
+            await _physical_mouse_click(
+                page,
+                img_loc,
+                project_id=project_id,
+                label=f"strategy-c discover #{idx}",
+                prefer_cdp=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "discover_prompt_ids_strategy_c: click #{} {}",
+                idx,
+                type(e).__name__,
+            )
+            continue
+        await asyncio.sleep(1.0)
+
+        try:
+            panel_text = await _page_text_excluding_composer(page)
+        except Exception:  # noqa: BLE001
+            panel_text = ""
+        try:
+            extra = await page.evaluate(
+                """() => {
+                    let t = '';
+                    for (const el of document.querySelectorAll(
+                        'textarea, input, [contenteditable="true"]'
+                    )) {
+                        t += '\\n' + (el.value || el.innerText || '');
+                    }
+                    return t;
+                }"""
+            )
+            if isinstance(extra, str):
+                panel_text = f"{panel_text}\n{extra}"
+        except Exception:  # noqa: BLE001
+            pass
+
+        for m in _GALLERY_ID_PARSE_RE.finditer(panel_text or ""):
+            pid = int(m.group(1))
+            if pid != int(project_id):
+                continue
+            frame = int(m.group(2))
+            hex8 = m.group(3).lower()
+            shot = 2 if m.group(4) else 1
+            if frame_filter is not None and (frame, shot) not in frame_filter:
+                continue
+            prefix = build_gen_id_prefix(pid, frame, hex8)
+            if shot == 2:
+                prefix = prefix + "-S2"
+            if prefix in seen:
+                continue
+            seen.add(prefix)
+            out.append(
+                {
+                    "prompt_id_prefix": prefix,
+                    "frame_number": frame,
+                    "shot": shot,
+                    "short_uuid": hex8,
+                    "img_src": src,
+                }
+            )
+            logger.info(
+                "discover_prompt_ids_strategy_c: #{} → {}",
+                idx,
+                prefix,
+            )
+
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        await asyncio.sleep(0.2)
+
+    logger.info(
+        "discover_prompt_ids_strategy_c: найдено {} id (project={})",
+        len(out),
+        project_id,
+    )
+    return out
+
+
 async def _download_via_context_candidates(
     page: Page,
     primary_url: str,

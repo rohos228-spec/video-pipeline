@@ -1,8 +1,8 @@
-"""Принудительно забрать готовые картинки из истории Outsee в кадры монтажа.
+"""Забрать готовые картинки из истории Outsee в кадры монтажа.
 
-Кнопка Studio всегда force_replace: скан свежих thumb → клик «Скачать» →
-finalize/замена кадра. CDN guess с подписью thumb→png не используется как
-основной путь (SigV4 path-bound → 403).
+Поиск = strategy C ноды (`discover_prompt_ids_strategy_c` /
+`_find_card_by_clicking_images`). Скачивание = `download_image_like_generate`
+(тот же путь, что generate_image). Отдельные M1–M5 / D0–D5 запрещены.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from app.bots.outsee import (
     _GALLERY_ID_SCAN_LIMIT,
     _image_page_url,
     _wait_gallery_thumbs,
+    discover_prompt_ids_strategy_c,
+    download_image_like_generate,
 )
 from app.generation_options import (
     DEFAULTS,
@@ -36,13 +38,7 @@ from app.services.plan_shot2 import find_shot1_image, find_shot2_image
 from app.settings import settings
 
 _READY_BYTES = 200_000
-# Клик-скан короткий: иначе кнопка «висит» минутами на чужих thumb'ах.
-_CLICK_SCAN_LIMIT = 24
 _WAIT_THUMBS_S = 8.0
-_ID_IN_TEXT_RE = re.compile(
-    r"\[ID:\s*P(\d+)-F(\d+)-([a-f0-9]{8})\](-S2)?",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -71,181 +67,6 @@ def _frame_needs_image(project: Project, frame_number: int, shot: int) -> bool:
     return not _ready_file(find_shot1_image(scenes, frame_number))
 
 
-def _parse_ids_from_text(text: str, *, project_id: int) -> list[tuple[str, int, int, str]]:
-    out: list[tuple[str, int, int, str]] = []
-    seen: set[str] = set()
-    for m in _ID_IN_TEXT_RE.finditer(text or ""):
-        pid = int(m.group(1))
-        if pid != int(project_id):
-            continue
-        frame = int(m.group(2))
-        hex8 = m.group(3).lower()
-        shot = 2 if m.group(4) else 1
-        prefix = build_gen_id_prefix(pid, frame, hex8)
-        if shot == 2:
-            prefix = prefix + "-S2"
-        if prefix in seen:
-            continue
-        seen.add(prefix)
-        out.append((prefix, frame, shot, hex8))
-    return out
-
-
-async def scan_gallery_hits_for_project(
-    page,
-    project_id: int,
-    *,
-    limit: int = _GALLERY_ID_SCAN_LIMIT,
-) -> list[GalleryHit]:
-    js = """
-    ([projectId, limit, maxLevels]) => {
-        const needle = '[ID: P' + projectId + '-F';
-        const bigImgs = [];
-        for (const img of document.querySelectorAll('img')) {
-            const r = img.getBoundingClientRect();
-            if (r.width >= 180 && r.height >= 180 && img.src) {
-                bigImgs.push(img);
-            }
-        }
-        const out = [];
-        for (const img of bigImgs.slice(0, limit)) {
-            let cur = img;
-            let text = '';
-            for (let i = 0; i < maxLevels && cur; i++) {
-                text += '\\n' + (cur.innerText || cur.textContent || '');
-                const tag = cur.tagName && cur.tagName.toLowerCase();
-                if (tag === 'textarea' || tag === 'input') {
-                    text += '\\n' + (cur.value || '');
-                }
-                cur = cur.parentElement;
-            }
-            if (!text.includes(needle)) continue;
-            out.push({ src: img.src, text: text.slice(0, 8000) });
-        }
-        return out;
-    }
-    """
-    try:
-        rows = await page.evaluate(js, [int(project_id), int(limit), 14])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("scan_gallery_hits_for_project evaluate: {}", e)
-        return []
-
-    hits: list[GalleryHit] = []
-    seen: set[str] = set()
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        src = str(row.get("src") or "")
-        text = str(row.get("text") or "")
-        if not src:
-            continue
-        for prefix, frame, shot, hex8 in _parse_ids_from_text(text, project_id=project_id):
-            key = f"{frame}:{shot}:{hex8}"
-            if key in seen:
-                continue
-            seen.add(key)
-            hits.append(
-                GalleryHit(
-                    project_id=project_id,
-                    frame_number=frame,
-                    shot=shot,
-                    short_uuid=hex8,
-                    prompt_id_prefix=prefix,
-                    img_src=src,
-                )
-            )
-    return hits
-
-
-async def scan_gallery_hits_by_clicking(
-    page,
-    project_id: int,
-    *,
-    limit: int = _CLICK_SCAN_LIMIT,
-    project_db_id: int | None = None,
-    need_keys: set[tuple[int, int]] | None = None,
-) -> list[GalleryHit]:
-    """Клик по свежим thumb'ам. Останавливается, когда найдены все need_keys."""
-    from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
-
-    srcs = await page.evaluate(
-        """(limit) => {
-            const out = [];
-            for (const img of document.querySelectorAll('img')) {
-                const r = img.getBoundingClientRect();
-                if (r.width >= 180 && r.height >= 180 && img.src) out.push(img.src);
-            }
-            return out.slice(0, limit);
-        }""",
-        int(limit),
-    )
-    hits: list[GalleryHit] = []
-    seen: set[str] = set()
-    found_keys: set[tuple[int, int]] = set()
-    for src in srcs or []:
-        if not isinstance(src, str) or not src:
-            continue
-        if need_keys is not None and need_keys and need_keys <= found_keys:
-            break
-        abort_if_cancelled(project_db_id)
-        try:
-            loc = page.locator(f'img[src="{src}"]').first
-            if await loc.count() == 0:
-                base = Path(src.split("?", 1)[0]).name
-                loc = page.locator(f'img[src*="{base}"]').first
-            if await loc.count() == 0:
-                continue
-            await loc.click(timeout=2500)
-            await sleep_cancellable(0.35, project_db_id)
-            panel_text = await page.evaluate(
-                """() => {
-                    const midX = window.innerWidth * 0.35;
-                    let best = '';
-                    for (const el of document.querySelectorAll(
-                        'section, aside, div[role="dialog"], textarea, [contenteditable="true"], p, pre'
-                    )) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 40 || r.height < 10) continue;
-                        const t = (el.value || el.innerText || el.textContent || '').trim();
-                        if (t.includes('[ID:') && t.length > best.length && t.length < 20000) {
-                            best = t;
-                        } else if (r.left >= midX && t.length > best.length && t.length < 15000) {
-                            best = t;
-                        }
-                    }
-                    if (!best.includes('[ID:')) {
-                        const body = (document.body && (document.body.innerText || '')) || '';
-                        const idx = body.indexOf('[ID:');
-                        if (idx >= 0) best = body.slice(Math.max(0, idx - 80), idx + 400);
-                    }
-                    return best;
-                }"""
-            )
-            for prefix, frame, shot, hex8 in _parse_ids_from_text(
-                str(panel_text or ""), project_id=project_id
-            ):
-                key = f"{frame}:{shot}:{hex8}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                hits.append(
-                    GalleryHit(
-                        project_id=project_id,
-                        frame_number=frame,
-                        shot=shot,
-                        short_uuid=hex8,
-                        prompt_id_prefix=prefix,
-                        img_src=src,
-                    )
-                )
-                found_keys.add((frame, shot))
-        except Exception as e:  # noqa: BLE001
-            logger.debug("scan_gallery click {}: {}", src[:80], e)
-            continue
-    return hits
-
-
 def _dest_path(project: Project, hit: GalleryHit) -> Path:
     scenes = project.data_dir / "scenes"
     scenes.mkdir(parents=True, exist_ok=True)
@@ -254,22 +75,52 @@ def _dest_path(project: Project, hit: GalleryHit) -> Path:
     return scenes / f"frame_{hit.frame_number:03d}_{hit.short_uuid}.png"
 
 
+def _hits_from_disk(project: Project) -> list[GalleryHit]:
+    """Prefix с диска — как нода знает [ID] после своей генерации."""
+    scenes = project.data_dir / "scenes"
+    if not scenes.is_dir():
+        return []
+    out: list[GalleryHit] = []
+    for p in scenes.glob("frame_*.png"):
+        prefix = rebuild_prefix_from_filename(project.id, p)
+        if not prefix:
+            continue
+        m = re.match(
+            r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.png$",
+            p.name,
+            re.I,
+        )
+        if not m:
+            continue
+        frame = int(m.group(1))
+        hex8 = m.group(2).lower()
+        shot = 2 if "_s2_" in p.name.lower() else 1
+        out.append(
+            GalleryHit(
+                project_id=project.id,
+                frame_number=frame,
+                shot=shot,
+                short_uuid=hex8,
+                prompt_id_prefix=prefix,
+                img_src="",
+            )
+        )
+    return out
+
+
 async def _download_hit(
     page,
     project: Project,
     hit: GalleryHit,
     *,
     force_replace: bool = False,
-    allow_cascade: bool = True,
 ) -> Path | None:
-    """Скачать hit ТЕМ ЖЕ путём, что нода generate_image (не D0–D5)."""
-    from app.bots.outsee import download_image_like_generate
-
+    """Скачать hit: поиск+download как у ноды (download_image_like_generate)."""
     dest = _dest_path(project, hit)
     if not force_replace and _ready_file(dest):
         return dest
 
-    # Lightbox после клик-скана перехватывает клики — закрыть до Download.
+    # Lightbox после клик-скана — закрыть до Download (как Esc в strategy C).
     for _ in range(3):
         try:
             has = await page.evaluate(
@@ -302,13 +153,12 @@ async def _download_hit(
             hit.shot,
             e,
         )
-        if not allow_cascade:
-            return None if not _ready_file(dest) else dest
         return None if not _ready_file(dest) else dest
 
     if _ready_file(dest):
         logger.info(
-            "montage recover P{} F{} shot{} via download_image_like_generate",
+            "montage recover P{} F{} shot{} via download_image_like_generate "
+            "(search=strategy C / card_click)",
             project.id,
             hit.frame_number,
             hit.shot,
@@ -347,7 +197,6 @@ async def recover_montage_images_from_outsee(
     skipped: list[str] = []
     errors: list[str] = []
     hits: list[GalleryHit] = []
-    five_stats: dict[str, Any] = {}
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -374,118 +223,51 @@ async def recover_montage_images_from_outsee(
                     "hits_scanned": 0,
                 }
 
-            # === 5 МЕХАНИК поиска + сортировки ===
-            from app.services.montage_outsee_five import run_five_mechanics_search
-
-            board_early = montage_meta(project)
-            pending_keys: set[tuple[int, int]] = set()
-            for op in list(board_early.get("pending_ops") or []):
-                if not str(op.get("type") or "").startswith("image"):
-                    continue
-                try:
-                    pending_keys.add(
-                        (int(op["frame_number"]), int(op.get("shot") or 1))
-                    )
-                except (KeyError, TypeError, ValueError):
-                    continue
-
-            five = await run_five_mechanics_search(
-                page,
-                project.id,
-                frame_filter=frame_filter,
-                pending_keys=pending_keys or (frame_filter or None),
-                project_db_id=project.id,
-                limit=max(limit, 40),
-            )
-            five_hits = list(five.get("hits") or [])
-            five_stats = dict(five.get("stats") or {})
-            logger.info(
-                "montage outsee recover #{} five-mechanics stats={}",
-                project.id,
-                five_stats,
-            )
-
-            # Совместимость: также GalleryHit из старых сканов (доп. покрытие).
-            hits = await scan_gallery_hits_for_project(
-                page, project.id, limit=limit
-            )
+            # === ПОИСК = strategy C ноды (не M1–M5) ===
+            scan_limit = max(limit, _GALLERY_ID_SCAN_LIMIT)
             if click_scan:
-                clicked = await scan_gallery_hits_by_clicking(
+                discovered = await discover_prompt_ids_strategy_c(
                     page,
-                    project.id,
-                    limit=_CLICK_SCAN_LIMIT,
-                    project_db_id=project.id,
-                    need_keys=set(frame_filter) if frame_filter else None,
+                    project_id=project.id,
+                    limit=scan_limit,
+                    frame_filter=frame_filter,
                 )
-                seen = {
-                    f"{h.frame_number}:{h.shot}:{h.short_uuid}" for h in hits
-                }
-                for h in clicked:
-                    key = f"{h.frame_number}:{h.shot}:{h.short_uuid}"
-                    if key not in seen:
-                        hits.append(h)
-                        seen.add(key)
+            else:
+                discovered = []
 
-            # Мержим five_hits → GalleryHit
-            for fh in five_hits:
-                key = f"{fh.frame_number}:{fh.shot}:{fh.short_uuid}"
-                if any(
-                    f"{h.frame_number}:{h.shot}:{h.short_uuid}" == key
-                    for h in hits
-                ):
+            by_key: dict[tuple[int, int], GalleryHit] = {}
+            for d in discovered:
+                hit = GalleryHit(
+                    project_id=project.id,
+                    frame_number=int(d["frame_number"]),
+                    shot=int(d["shot"]),
+                    short_uuid=str(d["short_uuid"]),
+                    prompt_id_prefix=str(d["prompt_id_prefix"]),
+                    img_src=str(d.get("img_src") or ""),
+                )
+                by_key[(hit.frame_number, hit.shot)] = hit
+
+            # Prefix с диска — если strategy C не нашла (старая карточка глубже).
+            for disk_hit in _hits_from_disk(project):
+                key = (disk_hit.frame_number, disk_hit.shot)
+                if frame_filter is not None and key not in frame_filter:
                     continue
-                hits.append(
-                    GalleryHit(
-                        project_id=project.id,
-                        frame_number=fh.frame_number,
-                        shot=fh.shot,
-                        short_uuid=fh.short_uuid,
-                        prompt_id_prefix=fh.prompt_id_prefix,
-                        img_src=fh.img_src,
-                    )
-                )
+                if key not in by_key:
+                    by_key[key] = disk_hit
 
+            hits = list(by_key.values())
             logger.info(
-                "montage outsee recover #{}: {} gallery hits (filter={}, force={}, five={})",
+                "montage outsee recover #{}: {} hits via strategy C "
+                "(filter={}, force={})",
                 project.id,
                 len(hits),
                 sorted(frame_filter) if frame_filter else "all-project",
                 force_replace,
-                five_stats.get("mechanics_used"),
             )
 
-            # Порядок из механики 5 (pending/freshness), иначе DOM-порядок.
             chosen: dict[tuple[int, int], GalleryHit] = {}
-            # Сначала в порядке five_hits
-            by_dedupe = {
-                (h.frame_number, h.shot, h.short_uuid): h for h in hits
-            }
-            for fh in five_hits:
-                g = by_dedupe.get((fh.frame_number, fh.shot, fh.short_uuid))
-                if g is None:
-                    g = GalleryHit(
-                        project_id=project.id,
-                        frame_number=fh.frame_number,
-                        shot=fh.shot,
-                        short_uuid=fh.short_uuid,
-                        prompt_id_prefix=fh.prompt_id_prefix,
-                        img_src=fh.img_src,
-                    )
-                key = (g.frame_number, g.shot)
-                if frame_filter is not None and key not in frame_filter:
-                    continue
-                if (
-                    not force_replace
-                    and not _frame_needs_image(project, g.frame_number, g.shot)
-                ):
-                    skipped.append(f"{g.frame_number}:{g.shot}=already")
-                    continue
-                chosen[key] = g
-            # Добиваем остальными hits
             for hit in hits:
                 key = (hit.frame_number, hit.shot)
-                if key in chosen:
-                    continue
                 if frame_filter is not None and key not in frame_filter:
                     continue
                 if (
@@ -499,13 +281,13 @@ async def recover_montage_images_from_outsee(
             if not hits:
                 errors.append(
                     f"В галерее Outsee нет карточек с [ID: P{project.id}-F…] "
-                    f"(просмотрено thumbs). Откройте outsee.io/image — сверху "
+                    f"(strategy C / card_click). Откройте outsee.io/image — сверху "
                     f"должны быть свежие генерации этого проекта"
                 )
             elif frame_filter and not chosen:
                 errors.append(
                     f"Не найдены карточки Outsee для кадров "
-                    f"{sorted(frame_filter)} (просмотрено hits={len(hits)}). "
+                    f"{sorted(frame_filter)} (hits={len(hits)}). "
                     f"Откройте историю outsee.io — сверху должны быть свежие генерации "
                     f"с [ID: P{project.id}-F…]"
                 )
@@ -517,7 +299,6 @@ async def recover_montage_images_from_outsee(
                     project,
                     hit,
                     force_replace=force_replace,
-                    allow_cascade=True,
                 )
                 if path is None or not _ready_file(path):
                     errors.append(
@@ -581,7 +362,7 @@ async def recover_montage_images_from_outsee(
         "skipped": skipped,
         "errors": errors,
         "hits_scanned": len(hits),
-        "five_mechanics": five_stats,
+        "search": "strategy_c",
     }
 
 
@@ -607,8 +388,6 @@ async def recover_before_regen_ops(
         project,
         frame_filter=frame_filter,
         click_scan=True,
-        # НЕ force_replace: перед Generate не затираем живые кадры
-        # мусором из галереи (gptimage2.webp). Только дырки/stub.
         force_replace=False,
         limit=30,
     )
