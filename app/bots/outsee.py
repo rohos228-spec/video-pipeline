@@ -2296,20 +2296,39 @@ class OutseeBot:
         img_url = _resolve_best_download_url(img_url, net_events=net_events)
         try:
             if prompt_id_prefix:
-                await self._verify_img_url_matches_prompt_id(
-                    page,
-                    img_url,
-                    prompt_id_prefix,
-                    gen_id=gen_id,
-                )
-                await _download_via_card_click(
-                    page,
-                    prompt_id_prefix=prompt_id_prefix,
-                    out_path=out_path,
-                    project_id=project_id,
-                    img_url=img_url,
-                    net_events=net_events,
-                )
+                # Soft verify: не отменяем скачивание — cascade найдёт карточку.
+                try:
+                    await self._verify_img_url_matches_prompt_id(
+                        page,
+                        img_url,
+                        prompt_id_prefix,
+                        gen_id=gen_id,
+                    )
+                except OutseeImageError as ve:
+                    logger.warning(
+                        "outsee.generate_image: verify soft-fail ({}), "
+                        "download cascade id={}",
+                        ve.reason[:120] if ve.reason else ve,
+                        prompt_id_prefix,
+                    )
+                try:
+                    await _download_via_card_click(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                        out_path=out_path,
+                        project_id=project_id,
+                        img_url=img_url,
+                        net_events=net_events,
+                    )
+                except OutseeImageError:
+                    # Cascade без URL — как cold recover (ID в панели).
+                    await download_saved_image_by_prompt_id(
+                        page,
+                        prompt_id_prefix=prompt_id_prefix,
+                        out_path=out_path,
+                        project_id=project_id,
+                        gen_id=gen_id,
+                    )
             elif _outsee_queue_mode():
                 await _download_via_queue_result(
                     page,
@@ -5770,18 +5789,23 @@ class OutseeBot:
 
 
 def _prompt_id_search_tokens(prompt_id_prefix: str) -> list[str]:
-    """Токены для поиска карточки по `[ID: …]` (включая retry `r2a1`)."""
+    """Токены для поиска карточки по `[ID: …]` (включая retry `r2a1` и `-S2`)."""
     tokens: list[str] = [prompt_id_prefix]
+    # [ID: P12-F3-a7f2b01c] или [ID: P12-F3-a7f2b01c]-S2
     m = re.search(
-        r"\[ID:\s*([A-Za-z0-9_-]+)(?:\s+r\d+a\d+)?\s*\]",
+        r"\[ID:\s*([A-Za-z0-9_-]+)(?:\s+r\d+a\d+)?\s*\](?:-S2)?",
         prompt_id_prefix,
+        re.I,
     )
     if m:
         inner = m.group(1)
         if inner not in tokens:
             tokens.append(inner)
+        bracket = f"[ID: {inner}]"
+        if bracket not in tokens:
+            tokens.append(bracket)
     m2 = re.search(
-        r"-([0-9a-fA-F]{8})(?:\s+r\d+a\d+)?\]?$",
+        r"-([0-9a-fA-F]{8})(?:\s+r\d+a\d+)?(?:\]|-S2|$)",
         prompt_id_prefix,
     )
     if m2:
@@ -7345,10 +7369,20 @@ async def _download_via_card_click(
     deadline_ms = int(timeout_s * 1000)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Verify по passive-gallery НЕ должен убивать скачивание: ID часто
+    # только в правой панели после клика. Soft: при провале идём в cascade.
     if img_url:
-        await verify_img_url_matches_prompt_id_in_gallery(
-            page, img_url, prompt_id_prefix
-        )
+        try:
+            await verify_img_url_matches_prompt_id_in_gallery(
+                page, img_url, prompt_id_prefix
+            )
+        except OutseeImageError as ve:
+            logger.warning(
+                "_download_via_card_click: verify soft-fail ({}), "
+                "продолжаю card-click cascade id={}",
+                ve.reason[:120] if ve.reason else ve,
+                prompt_id_prefix,
+            )
 
     # Быстрый путь: full PNG из net_events / DOM / guess от thumb (оба CDN).
     if img_url:
@@ -7593,24 +7627,35 @@ async def _download_via_card_click(
     except Exception:  # noqa: BLE001
         card_tag = ""
 
+    async def _card_img_src() -> str | None:
+        try:
+            if card_tag == "img":
+                src = await card.get_attribute("src")
+                return src if isinstance(src, str) and src else None
+            src = await card.locator("img").first.get_attribute("src")
+            return src if isinstance(src, str) and src else None
+        except Exception:  # noqa: BLE001
+            return None
+
     download_btn = card.locator("button:has(svg.lucide-download)").first
     if card_tag == "img" or await download_btn.count() == 0:
-        if img_url:
+        fallback_url = img_url or await _card_img_src()
+        if fallback_url:
             dom_full = await _find_full_png_in_dom(
-                page, _outsee_image_stable_key(img_url)
+                page, _outsee_image_stable_key(fallback_url)
             )
-            extra_urls = list(_all_full_png_url_candidates(img_url))
+            extra_urls = list(_all_full_png_url_candidates(fallback_url))
             if dom_full:
                 extra_urls.append(dom_full)
             resolved = _resolve_best_download_url(
-                img_url,
+                fallback_url,
                 net_events=net_events,
                 extra_urls=extra_urls or None,
             )
             logger.info(
                 "_download_via_card_click: {} — URL-fallback (thumb={})",
                 "карточка=<img>" if card_tag == "img" else "нет кнопки Download",
-                _is_outsee_thumb_url(img_url),
+                _is_outsee_thumb_url(fallback_url),
             )
             used = await _download_via_context_candidates(
                 page,
@@ -7675,20 +7720,40 @@ async def _download_via_card_click(
             project_id=project_id,
         )
         await _update_download_progress(project_id, None)
-    except PWTimeoutError as e:
+    except Exception as e:  # noqa: BLE001
+        # Browser download часто ломается на CDP — CDN с img карточки.
+        fallback_url = img_url or await _card_img_src()
+        if fallback_url:
+            logger.warning(
+                "_download_via_card_click: browser Download упал ({}), "
+                "CDN fallback {}",
+                type(e).__name__,
+                fallback_url[:100],
+            )
+            resolved = _resolve_best_download_url(
+                fallback_url, net_events=net_events
+            )
+            used = await _download_via_context_candidates(
+                page,
+                resolved,
+                out_path,
+                net_events=net_events,
+                project_id=project_id,
+            )
+            _validate_downloaded_image(
+                out_path, gen_id=prompt_id_prefix, img_url=used
+            )
+            await _update_download_progress(project_id, None)
+            logger.info(
+                "_download_via_card_click: сохранил {} (CDN after click fail)",
+                out_path,
+            )
+            return
         raise OutseeImageError(
             "outsee image: не смог скачать файл",
             context={
                 "prompt_id_prefix": prompt_id_prefix,
                 "timeout_s": timeout_s,
-                "err": f"{type(e).__name__}: {e}",
-            },
-        ) from e
-    except Exception as e:  # noqa: BLE001
-        raise OutseeImageError(
-            "outsee image: download через клик по карточке упал",
-            context={
-                "prompt_id_prefix": prompt_id_prefix,
                 "err": f"{type(e).__name__}: {e}",
             },
         ) from e

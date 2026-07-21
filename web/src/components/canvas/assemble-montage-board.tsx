@@ -1021,12 +1021,14 @@ export function AssembleMontageBoard({
     onSuccess: (res) => {
       const n = res.saved_count ?? res.saved?.length ?? 0;
       if (n > 0) {
-        toast.success(`Забрано из Outsee: ${n} кадр(ов)`);
+        toast.success(`Забрано и заменено из Outsee: ${n} кадр(ов)`);
+        localQueueDirtyRef.current = false;
+        setPendingOps([]);
       } else if (res.errors?.length) {
         toast.error(res.errors.join("; "));
       } else {
         toast.message(
-          `В истории Outsee нет недостающих кадров (просмотрено ${res.hits_scanned ?? 0})`,
+          `В истории Outsee нет карточек для выделенных правок (просмотрено ${res.hits_scanned ?? 0})`,
         );
       }
       void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
@@ -1407,7 +1409,7 @@ export function AssembleMontageBoard({
               variant="outline"
               className="h-9 gap-1.5 text-xs"
               disabled={!projectId || recoverOutseeMutation.isPending || applyRunning}
-              title="Сканирует последние карточки Outsee и сохраняет недостающие кадры"
+              title="Скачать из Outsee выделенные правки и заменить кадры"
               onClick={() => recoverOutseeMutation.mutate()}
             >
               {recoverOutseeMutation.isPending ? (
@@ -1415,7 +1417,7 @@ export function AssembleMontageBoard({
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              Забрать из Outsee
+              Забрать правки из Outsee
             </Button>
             <Button
               type="button"

@@ -278,11 +278,13 @@ async def recover_montage_images_from_outsee(
     frame_filter: set[tuple[int, int]] | None = None,
     click_scan: bool = True,
     limit: int = _GALLERY_ID_SCAN_LIMIT,
+    force_replace: bool = False,
 ) -> dict[str, Any]:
     """Сканирует историю Outsee и сохраняет недостающие кадры монтажа.
 
     frame_filter: optional set of (frame_number, shot). None = все hit'ы проекта,
     у которых локально нет готового файла.
+    force_replace: для выделенных правок — качать и заменять даже если файл есть.
     """
     try:
         await fetch_cdp_version(settings.browser_cdp_url)
@@ -313,11 +315,12 @@ async def recover_montage_images_from_outsee(
             hits = await scan_gallery_hits_for_project(
                 page, project.id, limit=limit
             )
-            if click_scan and len(hits) < 3:
+            # Для выделенных правок всегда кликаем галерею — ID в панели.
+            if click_scan and (force_replace or len(hits) < 3 or frame_filter):
                 clicked = await scan_gallery_hits_by_clicking(
                     page,
                     project.id,
-                    limit=min(25, limit),
+                    limit=min(40, limit),
                     project_db_id=project.id,
                 )
                 seen = {
@@ -330,10 +333,11 @@ async def recover_montage_images_from_outsee(
                         seen.add(key)
 
             logger.info(
-                "montage outsee recover #{}: {} gallery hits (filter={})",
+                "montage outsee recover #{}: {} gallery hits (filter={}, force={})",
                 project.id,
                 len(hits),
                 sorted(frame_filter) if frame_filter else "missing-only",
+                force_replace,
             )
 
             chosen: dict[tuple[int, int], GalleryHit] = {}
@@ -343,7 +347,10 @@ async def recover_montage_images_from_outsee(
                     continue
                 if key in chosen:
                     continue
-                if not _frame_needs_image(project, hit.frame_number, hit.shot):
+                if (
+                    not force_replace
+                    and not _frame_needs_image(project, hit.frame_number, hit.shot)
+                ):
                     skipped.append(f"{hit.frame_number}:{hit.shot}=already")
                     continue
                 chosen[key] = hit
@@ -421,7 +428,7 @@ async def recover_before_regen_ops(
     project: Project,
     ops: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Перед Generate: забрать из истории Outsee кадры из image-очереди."""
+    """Перед Generate: забрать из истории Outsee кадры из image-очереди (замена)."""
     frame_filter: set[tuple[int, int]] = set()
     for op in ops:
         t = str(op.get("type") or "")
@@ -434,8 +441,13 @@ async def recover_before_regen_ops(
     if not frame_filter:
         return {"ok": True, "saved": [], "saved_count": 0, "skipped_ops": ops}
 
+    # Выделенные правки: всегда force_replace — старый файл не блокирует замену.
     result = await recover_montage_images_from_outsee(
-        session, project, frame_filter=frame_filter, click_scan=True
+        session,
+        project,
+        frame_filter=frame_filter,
+        click_scan=True,
+        force_replace=True,
     )
     saved_keys = {
         (int(s["frame_number"]), int(s["shot"])) for s in result.get("saved") or []

@@ -78,13 +78,13 @@ async def test_scan_gallery_hits_for_project() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recover_before_regen_ops_removes_saved() -> None:
+async def test_recover_before_regen_ops_force_replaces_pending() -> None:
     from app.models import Project
 
     project = Project(id=13, slug="n", topic="t", hero_mode="auto")
     session = MagicMock()
     ops = [
-        {"type": "image_regen", "frame_number": 1, "shot": 1},
+        {"type": "image_regen_correction", "frame_number": 1, "shot": 1},
         {"type": "image_regen", "frame_number": 2, "shot": 1},
         {"type": "video_regen", "frame_number": 1, "shot": 1},
     ]
@@ -97,8 +97,10 @@ async def test_recover_before_regen_ops_removes_saved() -> None:
                 "saved_count": 1,
             }
         ),
-    ):
+    ) as recover:
         res = await recover_before_regen_ops(session, project, ops)
+    assert recover.await_args.kwargs.get("force_replace") is True
+    assert recover.await_args.kwargs.get("frame_filter") == {(1, 1), (2, 1)}
     assert res["removed_ops"] == 1
     remaining = res["remaining_ops"]
     assert len(remaining) == 2
