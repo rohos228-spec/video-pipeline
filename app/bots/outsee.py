@@ -953,13 +953,21 @@ _OUTSEE_GENERATION_ERROR_MARKERS: tuple[str, ...] = (
     "сетевая ошибка",
     "network error",
     "networkerror",
+)
+
+# Не ошибка генерации: слот безлимита занят — ЖДАТЬ завершения, не fail/GPT-rewrite.
+# Лог: «Безлимитная генерация уже активна. Дождитесь завершения…»
+_OUTSEE_BUSY_MARKERS: tuple[str, ...] = (
     "безлимит занят",
     "безлимитная генерация уже активна",
+    "дождитесь завершения или отключите безлимит",
+    "unlimited generation is already active",
+    "wait for it to finish",
 )
 
 
 def _outsee_failure_kind(text: str) -> str:
-    """`moderation` | `length` | `generation` | `unknown`."""
+    """`moderation` | `length` | `busy` | `generation` | `unknown`."""
     low = text.lower()
     # Модерация важнее: outsee явно пишет «запрещённое» — не путаем с длиной.
     for m in _OUTSEE_MODERATION_MARKERS:
@@ -968,6 +976,9 @@ def _outsee_failure_kind(text: str) -> str:
     for m in _OUTSEE_LENGTH_MARKERS:
         if m in low:
             return "length"
+    for m in _OUTSEE_BUSY_MARKERS:
+        if m in low:
+            return "busy"
     for m in _OUTSEE_GENERATION_ERROR_MARKERS:
         if m in low:
             return "generation"
@@ -1140,6 +1151,10 @@ def _outsee_failure_is_stale(
     if _outsee_failure_text_is_noise(ftext):
         return True
     kind = _outsee_failure_kind(ftext)
+    # «Безлимит уже активна» = слот занят, генерация идёт — ЖДАТЬ, не fail.
+    # Иначе abort на 3-й сек → нет download/replace кадра (лог P47-F18).
+    if kind == "busy":
+        return True
     result_kinds = ("moderation", "generation", "length")
     id_match = card_scoped or bool(
         queue_mode
@@ -3732,31 +3747,48 @@ class OutseeBot:
                         stale_key = _normalize_outsee_failure_text(ftext)[:80]
                         if stale_key not in stale_logged:
                             stale_logged.add(stale_key)
-                            logger.debug(
-                                "_wait_image_url_strict: игнорирую stale "
-                                "плашку (in_result={}, gen_idle={}): {}",
+                            if _outsee_failure_kind(ftext) == "busy":
+                                logger.info(
+                                    "_wait_image_url_strict: безлимит занят — "
+                                    "жду завершения ({:.0f}с): {}",
+                                    elapsed,
+                                    ftext[:100],
+                                )
+                            else:
+                                logger.debug(
+                                    "_wait_image_url_strict: игнорирую stale "
+                                    "плашку (in_result={}, gen_idle={}): {}",
+                                    in_result,
+                                    gen_idle,
+                                    ftext[:80],
+                                )
+                    else:
+                        kind_now = _outsee_failure_kind(ftext)
+                        if kind_now == "busy":
+                            logger.info(
+                                "_wait_image_url_strict: безлимит занят — "
+                                "жду завершения ({:.0f}с): {}",
+                                elapsed,
+                                ftext[:100],
+                            )
+                        else:
+                            logger.info(
+                                "_wait_image_url_strict: ошибка outsee за "
+                                "{:.0f} сек (in_result={}, gen_idle={}, "
+                                "kind={}): {}",
+                                elapsed,
                                 in_result,
                                 gen_idle,
-                                ftext[:80],
+                                kind_now,
+                                ftext[:120],
                             )
-                    else:
-                        logger.info(
-                            "_wait_image_url_strict: ошибка outsee за "
-                            "{:.0f} сек (in_result={}, gen_idle={}, "
-                            "kind={}): {}",
-                            elapsed,
-                            in_result,
-                            gen_idle,
-                            _outsee_failure_kind(ftext),
-                            ftext[:120],
-                        )
-                        _raise_outsee_failure(
-                            text=ftext,
-                            gen_id=gen_id,
-                            elapsed=elapsed,
-                            in_result=in_result,
-                            prompt_len=prompt_len,
-                        )
+                            _raise_outsee_failure(
+                                text=ftext,
+                                gen_id=gen_id,
+                                elapsed=elapsed,
+                                in_result=in_result,
+                                prompt_len=prompt_len,
+                            )
 
             # 1) ВЫСШИЙ приоритет — поиск картинки по `prompt_id_prefix`.
             # Outsee рендерит в карточке результата начало промта, и наш
@@ -4303,7 +4335,8 @@ class OutseeBot:
         (промт + «запрещённое») — ищем маркеры и в коротких, и в длинных блоках.
         """
         mod_js = list(_OUTSEE_MODERATION_MARKERS)
-        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        # busy тоже детектим (чтобы залогировать «жду»), но kind=busy → stale, не abort.
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS) + list(_OUTSEE_BUSY_MARKERS)
         id_token = ""
         if prompt_id_prefix:
             m = re.search(r"P\d+-F\d+-[a-f0-9]+", prompt_id_prefix, re.I)
@@ -4471,7 +4504,8 @@ class OutseeBot:
         if not core:
             return None
         mod_js = list(_OUTSEE_MODERATION_MARKERS)
-        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        # busy тоже детектим (чтобы залогировать «жду»), но kind=busy → stale, не abort.
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS) + list(_OUTSEE_BUSY_MARKERS)
         try:
             raw = await page.evaluate(
                 """(args) => {
@@ -4606,7 +4640,8 @@ class OutseeBot:
     ) -> frozenset[str]:
         """Все видимые плашки ошибок на странице (baseline перед Generate)."""
         mod_js = list(_OUTSEE_MODERATION_MARKERS)
-        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS)
+        # busy тоже детектим (чтобы залогировать «жду»), но kind=busy → stale, не abort.
+        gen_js = list(_OUTSEE_GENERATION_ERROR_MARKERS) + list(_OUTSEE_BUSY_MARKERS)
         try:
             raw = await page.evaluate(
                 """(markers) => {
@@ -5679,21 +5714,30 @@ class OutseeBot:
                                 ftext[:80],
                             )
                     else:
-                        logger.info(
-                            "_wait_video_url_strict: ошибка outsee за {:.0f} сек "
-                            "(in_result={}, kind={}): {}",
-                            elapsed,
-                            in_result,
-                            _outsee_failure_kind(ftext),
-                            ftext[:120],
-                        )
-                        _raise_outsee_failure(
-                            text=ftext,
-                            gen_id=gen_id,
-                            elapsed=elapsed,
-                            in_result=in_result,
-                            prompt_len=prompt_len,
-                        )
+                        kind_now = _outsee_failure_kind(ftext)
+                        if kind_now == "busy":
+                            logger.info(
+                                "_wait_video_url_strict: безлимит занят — "
+                                "жду завершения ({:.0f}с): {}",
+                                elapsed,
+                                ftext[:100],
+                            )
+                        else:
+                            logger.info(
+                                "_wait_video_url_strict: ошибка outsee за {:.0f} сек "
+                                "(in_result={}, kind={}): {}",
+                                elapsed,
+                                in_result,
+                                kind_now,
+                                ftext[:120],
+                            )
+                            _raise_outsee_failure(
+                                text=ftext,
+                                gen_id=gen_id,
+                                elapsed=elapsed,
+                                in_result=in_result,
+                                prompt_len=prompt_len,
+                            )
 
             if elapsed - last_log > 15:
                 last_log = elapsed
