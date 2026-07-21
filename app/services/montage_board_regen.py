@@ -250,24 +250,120 @@ async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
         gpt = ChatGPTBot(bs)
-        result = await generate_image_with_retries(
-            outsee,
-            gpt,
-            prompt=prep.prompt_text,
-            out_path=prep.file_path,
-            max_attempts_per_prompt=3,
-            gpt_rewrite=True,
-            aspect_ratio=prep.aspect_slug,
-            gen_id=uuid.uuid4().hex,
-            model_slug=prep.model_slug,
-            resolution=prep.res_slug,
-            quality=prep.quality_slug,
-            relax=prep.image_relax,
-            prompt_id_prefix=prep.prompt_id_prefix,
-            reference_image=prep.refs if prep.refs else None,
-            project_id=prep.project_id,
+        try:
+            result = await generate_image_with_retries(
+                outsee,
+                gpt,
+                prompt=prep.prompt_text,
+                out_path=prep.file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                aspect_ratio=prep.aspect_slug,
+                gen_id=uuid.uuid4().hex,
+                model_slug=prep.model_slug,
+                resolution=prep.res_slug,
+                quality=prep.quality_slug,
+                relax=prep.image_relax,
+                prompt_id_prefix=prep.prompt_id_prefix,
+                reference_image=prep.refs if prep.refs else None,
+                project_id=prep.project_id,
+            )
+            return Path(result.file_path)
+        except Exception as exc:  # noqa: BLE001
+            # Generate уже оплачен — один раз ищем готовую карточку в истории.
+            if prep.prompt_id_prefix and not _ready_regen_file(prep.file_path):
+                recovered = await _recover_montage_image_from_history(
+                    outsee, prep
+                )
+                if recovered is not None:
+                    return recovered
+            if _ready_regen_file(prep.file_path):
+                logger.warning(
+                    "montage regen image #{} frame {} shot {}: "
+                    "execute failed but file ready: {}",
+                    prep.project_id,
+                    prep.frame_number,
+                    prep.shot,
+                    exc,
+                )
+                return prep.file_path
+            raise
+
+
+def _ready_regen_file(path: Path, *, min_bytes: int = 200_000) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size >= min_bytes
+    except OSError:
+        return False
+
+
+async def _recover_montage_image_from_history(
+    outsee: OutseeBot,
+    prep: ImageRegenPrep,
+) -> Path | None:
+    """Один проход по галерее Outsee: готовая картинка с нашим [ID]."""
+    from app.bots.outsee import (
+        _download_via_card_click,
+        _image_page_url,
+        _resolve_best_download_url,
+        _validate_downloaded_image,
+        find_img_src_by_prompt_id_in_gallery,
+    )
+    from app.services.outsee_lane import outsee_lane
+
+    prefix = prep.prompt_id_prefix
+    if not prefix:
+        return None
+    try:
+        async with outsee_lane(
+            project_id=prep.project_id, op="montage_history_recover"
+        ):
+            page = await outsee.session.open_page(
+                _image_page_url(prep.model_slug), reuse=True
+            )
+            hist_url = await find_img_src_by_prompt_id_in_gallery(page, prefix)
+            if not hist_url:
+                logger.warning(
+                    "montage history recover #{} frame {} shot {}: "
+                    "[ID] {} не найден в галерее",
+                    prep.project_id,
+                    prep.frame_number,
+                    prep.shot,
+                    prefix,
+                )
+                return None
+            resolved = _resolve_best_download_url(hist_url)
+            prep.file_path.parent.mkdir(parents=True, exist_ok=True)
+            await _download_via_card_click(
+                page,
+                prompt_id_prefix=prefix,
+                out_path=prep.file_path,
+                project_id=prep.project_id,
+                img_url=resolved,
+            )
+            _validate_downloaded_image(
+                prep.file_path,
+                gen_id=prefix,
+                img_url=resolved,
+            )
+            logger.info(
+                "montage history recover #{} frame {} shot {} → {} ({} B)",
+                prep.project_id,
+                prep.frame_number,
+                prep.shot,
+                prep.file_path,
+                prep.file_path.stat().st_size,
+            )
+            return prep.file_path
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage history recover #{} frame {} shot {} failed: {}",
+            prep.project_id,
+            prep.frame_number,
+            prep.shot,
+            e,
         )
-    return Path(result.file_path)
+        return None
 
 
 async def finalize_image_regen(

@@ -650,9 +650,16 @@ async def generate_image_with_retries(
                 raise
             except OutseeDownloadError as e:
                 # Generate уже прошёл — только повтор скачивания, без нового Generate.
-                img_url = e.context.get("img_url")
+                raw_url = e.context.get("img_url")
                 gen_id = str(e.context.get("gen_id") or "")
                 prefix = attempt_kwargs.get("prompt_id_prefix")
+                from app.bots.outsee import _resolve_best_download_url
+
+                img_url = (
+                    _resolve_best_download_url(raw_url)
+                    if isinstance(raw_url, str) and raw_url
+                    else raw_url
+                )
                 if isinstance(img_url, str) and img_url and gen_id:
                     for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
                         abort_if_cancelled(

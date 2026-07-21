@@ -1274,7 +1274,10 @@ def _validate_downloaded_image(
             },
         ) from e
 
-    if _is_outsee_thumb_url(img_url):
+    # Раньше отклоняли любой thumb-URL даже после успешного browser-Download
+    # полного PNG → файл удалялся, деньги за генерацию сгорали.
+    # Решение: судим по байтам файла. Thumb-URL при полноценном файле — только WARN.
+    if _is_outsee_thumb_url(img_url) and size < _MIN_IMAGE_BYTES:
         try:  # noqa: SIM105
             out_path.unlink(missing_ok=True)
         except OSError:
@@ -1286,6 +1289,13 @@ def _validate_downloaded_image(
                 "img_url": img_url,
                 "size_bytes": size,
             },
+        )
+    if _is_outsee_thumb_url(img_url) and size >= _MIN_IMAGE_BYTES:
+        logger.warning(
+            "outsee image: wait вернул thumb URL, но файл полный ({} B) — "
+            "принимаем (gen_id={})",
+            size,
+            gen_id[:8] if gen_id else "—",
         )
 
     if size < _MIN_IMAGE_BYTES:
@@ -2283,6 +2293,7 @@ class OutseeBot:
         # плейсхолдерами, которые подсовывал старый URL-путь.
         # Если prompt_id_prefix не передан (legacy / recon-mode) —
         # фолбэк на старую URL-выкачку.
+        img_url = _resolve_best_download_url(img_url, net_events=net_events)
         try:
             if prompt_id_prefix:
                 await self._verify_img_url_matches_prompt_id(
@@ -2309,8 +2320,12 @@ class OutseeBot:
                     project_id=project_id,
                 )
             else:
-                await _download_via_context(
-                    page, img_url, out_path, project_id=project_id
+                await _download_via_context_candidates(
+                    page,
+                    img_url,
+                    out_path,
+                    net_events=net_events,
+                    project_id=project_id,
                 )
         except OutseeDownloadError as e:
             e.context.setdefault("gen_id", gen_id)
@@ -2547,9 +2562,12 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         page_url = _image_page_url(model_slug)
+        events = list(net_events or [])
+        resolved_url = _resolve_best_download_url(img_url, net_events=events)
         async with outsee_lane(project_id=project_id, op="retry_image_download"):
             page = await self.session.open_page(page_url, reuse=True)
             out_path.parent.mkdir(parents=True, exist_ok=True)
+            last_err: Exception | None = None
             try:
                 if prompt_id_prefix:
                     await _download_via_card_click(
@@ -2557,38 +2575,89 @@ class OutseeBot:
                         prompt_id_prefix=prompt_id_prefix,
                         out_path=out_path,
                         project_id=project_id,
-                        img_url=img_url,
-                        net_events=net_events or [],
+                        img_url=resolved_url,
+                        net_events=events,
                     )
                 elif _outsee_queue_mode():
                     await _download_via_queue_result(
                         page,
-                        img_url=img_url,
+                        img_url=resolved_url,
                         out_path=out_path,
                         gen_id=gen_id,
-                        net_events=net_events or [],
+                        net_events=events,
                         project_id=project_id,
                     )
                 else:
-                    await _download_via_context(
-                        page, img_url, out_path, project_id=project_id
+                    await _download_via_context_candidates(
+                        page,
+                        resolved_url,
+                        out_path,
+                        net_events=events,
+                        project_id=project_id,
                     )
                 _validate_downloaded_image(
-                    out_path, gen_id=gen_id, img_url=img_url
+                    out_path, gen_id=gen_id, img_url=resolved_url
                 )
-            except OutseeImageError as e:
-                e.context.setdefault("gen_id", gen_id)
-                e.context.setdefault("img_url", img_url)
-                raise OutseeDownloadError(
-                    e.reason, context=dict(e.context)
-                ) from e
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                # Один раз: история галереи Outsee по [ID] — картинка уже готова.
+                if prompt_id_prefix:
+                    try:
+                        hist_url = await find_img_src_by_prompt_id_in_gallery(
+                            page, prompt_id_prefix
+                        )
+                        if hist_url:
+                            hist_resolved = _resolve_best_download_url(
+                                hist_url, net_events=events
+                            )
+                            logger.info(
+                                "retry_image_download: history [ID] {} → {}",
+                                prompt_id_prefix,
+                                hist_resolved[:120],
+                            )
+                            await _download_via_card_click(
+                                page,
+                                prompt_id_prefix=prompt_id_prefix,
+                                out_path=out_path,
+                                project_id=project_id,
+                                img_url=hist_resolved,
+                                net_events=events,
+                            )
+                            _validate_downloaded_image(
+                                out_path,
+                                gen_id=gen_id,
+                                img_url=hist_resolved,
+                            )
+                            resolved_url = hist_resolved
+                            last_err = None
+                    except Exception as hist_err:  # noqa: BLE001
+                        last_err = hist_err
+                        logger.warning(
+                            "retry_image_download: history recover failed: {}",
+                            hist_err,
+                        )
+                if last_err is not None:
+                    if isinstance(last_err, OutseeImageError):
+                        last_err.context.setdefault("gen_id", gen_id)
+                        last_err.context.setdefault("img_url", resolved_url)
+                        raise OutseeDownloadError(
+                            last_err.reason, context=dict(last_err.context)
+                        ) from last_err
+                    raise OutseeDownloadError(
+                        "outsee image: повторное скачивание упало",
+                        context={
+                            "gen_id": gen_id,
+                            "img_url": resolved_url,
+                            "err": f"{type(last_err).__name__}: {last_err}",
+                        },
+                    ) from last_err
         logger.info(
             "outsee retry_image_download saved → {} (gen_id={})",
             out_path,
             gen_id[:8],
         )
         return GenerationResult(
-            file_path=out_path, raw_url=img_url, gen_id=gen_id
+            file_path=out_path, raw_url=resolved_url, gen_id=gen_id
         )
 
     async def _wait_button_enabled(
@@ -3718,14 +3787,17 @@ class OutseeBot:
                         )
                     )
                     if fresh_ok:
+                        resolved = _resolve_best_download_url(
+                            by_id, net_events=net_events
+                        )
                         logger.info(
                             "_wait_image_url_strict: matched by prompt_id "
                             "{} за {:.0f} сек: {}",
                             prompt_id_prefix,
                             elapsed,
-                            by_id[:140],
+                            resolved[:140],
                         )
-                        return by_id
+                        return resolved
 
             # 1) Параллельно — отслеживаем кандидата по «старой» логике
             # (baseline + net_events). Сохраняем последнего подходящего

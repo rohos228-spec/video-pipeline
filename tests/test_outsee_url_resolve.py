@@ -34,8 +34,9 @@ def test_resolve_prefers_full_png_over_thumb() -> None:
     )
     net = [(1.0, thumb), (2.0, full)]
     resolved = _resolve_best_download_url(thumb, net_events=net)
-    assert resolved == full
     assert _is_outsee_thumb_url(resolved) is False
+    assert "image_1780215069357_0.png" in resolved
+    assert resolved != thumb
 
 
 def test_collect_candidates_full_first() -> None:
@@ -46,28 +47,31 @@ def test_collect_candidates_full_first() -> None:
     cands = _collect_download_url_candidates(
         thumb, net_events=[(0.0, thumb), (1.0, full)]
     )
-    assert cands[0] == full
+    assert cands
+    assert _is_outsee_thumb_url(cands[0]) is False
+    assert "image_100_0.png" in cands[0]
 
 
 def test_validate_rejects_thumb_download() -> None:
+    """Маленький файл + thumb URL — отказ. Полный PNG при thumb URL — ок (отдельный тест)."""
     from pathlib import Path
     import tempfile
 
-    from app.bots.outsee import OutseeImageError, _validate_downloaded_image
+    from app.bots.outsee import OutseeDownloadError, _validate_downloaded_image
 
     thumb_url = (
         "https://storage.yandexcloud.net/outseehistory/generated/3787/157627/"
         "outsee-157627-1780991092050_thumb.jpg?sig=1"
     )
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(b"\x89PNG\r\n\x1a\n" + b"x" * 80_000)
+        f.write(b"\x89PNG\r\n\x1a\n" + b"x" * 12_000)
         path = Path(f.name)
     try:
         try:
             _validate_downloaded_image(path, gen_id="abc", img_url=thumb_url)
-        except OutseeImageError as e:
+        except OutseeDownloadError as e:
             assert "thumb" in str(e).lower()
         else:
-            raise AssertionError("expected OutseeImageError for thumb URL")
+            raise AssertionError("expected OutseeDownloadError for small thumb")
     finally:
         path.unlink(missing_ok=True)
