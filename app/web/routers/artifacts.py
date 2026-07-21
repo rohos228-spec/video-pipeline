@@ -39,7 +39,14 @@ async def serve_data_file(path: str = Query(..., description="Абсолютны
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     mime, _ = mimetypes.guess_type(str(candidate))
-    return FileResponse(candidate, media_type=mime or "application/octet-stream")
+    return FileResponse(
+        candidate,
+        media_type=mime or "application/octet-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @router.get("", response_model=list[ArtifactDTO])

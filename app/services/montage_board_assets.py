@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Artifact, ArtifactKind, Frame, Project
 from app.services.plan_shot2 import (
     effective_shot_from_artifact,
-    shot2_file_pattern,
     shot2_video_file_pattern,
 )
+
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
 def _archive_dir(project: Project, sub: str) -> Path:
@@ -26,13 +27,39 @@ def _archive_dir(project: Project, sub: str) -> Path:
 
 
 def archive_file(path: Path, project: Project, sub: str) -> Path | None:
+    """Перенос в old/… с retry — на Windows файл часто занят /api/files или Defender."""
     if not path.is_file():
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest = _archive_dir(project, sub) / f"{stamp}_{path.name}"
-    shutil.move(str(path), str(dest))
-    logger.info("montage: archived {} → {}", path.name, dest)
-    return dest
+    last_err: BaseException | None = None
+    for attempt in range(1, 6):
+        try:
+            if not path.is_file():
+                return dest if dest.is_file() else None
+            path.replace(dest)
+            logger.info("montage: archived {} → {}", path.name, dest)
+            return dest
+        except OSError as exc:
+            last_err = exc
+            try:
+                if path.is_file():
+                    dest.write_bytes(path.read_bytes())
+                    path.unlink(missing_ok=True)
+                if not path.exists() and dest.is_file():
+                    logger.info(
+                        "montage: archived (copy+unlink) {} → {} (try {})",
+                        path.name,
+                        dest,
+                        attempt,
+                    )
+                    return dest
+            except OSError as exc2:
+                last_err = exc2
+            time.sleep(0.12 * attempt)
+    raise RuntimeError(
+        f"не удалось архивировать {path.name}: {last_err}"
+    ) from last_err
 
 
 async def _frame(session: AsyncSession, project_id: int, frame_number: int) -> Frame | None:
@@ -53,6 +80,32 @@ def _assert_new_file_ready(path: Path, *, min_bytes: int = 64) -> None:
         raise RuntimeError(f"новый файл пустой или слишком мал: {path.name}")
 
 
+def iter_scene_images(scenes: Path, frame_number: int, *, shot: int) -> list[Path]:
+    """Все кадры shot на диске (png/jpg/webp), без путаницы shot_01 ↔ shot_02."""
+    if not scenes.is_dir():
+        return []
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for ext in _IMAGE_EXTS:
+        if shot == 2:
+            pattern = f"frame_{frame_number:03d}_s2_*{ext}"
+            for p in scenes.glob(pattern):
+                key = p.resolve()
+                if key not in seen:
+                    seen.add(key)
+                    found.append(p)
+        else:
+            pattern = f"frame_{frame_number:03d}_*{ext}"
+            for p in scenes.glob(pattern):
+                if "_s2_" in p.name:
+                    continue
+                key = p.resolve()
+                if key not in seen:
+                    seen.add(key)
+                    found.append(p)
+    return found
+
+
 async def finalize_scene_image(
     session: AsyncSession,
     project: Project,
@@ -64,18 +117,11 @@ async def finalize_scene_image(
     """После успешной генерации/upload: архив старых файлов, artifact на new_path."""
     _assert_new_file_ready(new_path)
     scenes = project.data_dir / "scenes"
-    if shot == 2:
-        pattern = shot2_file_pattern(frame_number)
-    else:
-        pattern = f"frame_{frame_number:03d}_*.png"
     new_resolved = new_path.resolve()
-    if scenes.is_dir():
-        for p in list(scenes.glob(pattern)):
-            if shot == 1 and "_s2_" in p.name:
-                continue
-            if p.resolve() == new_resolved:
-                continue
-            archive_file(p, project, "scenes")
+    for p in iter_scene_images(scenes, frame_number, shot=shot):
+        if p.resolve() == new_resolved:
+            continue
+        archive_file(p, project, "scenes")
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (
@@ -88,8 +134,7 @@ async def finalize_scene_image(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
+            if effective_shot_from_artifact(art.meta, art.path or "") == shot:
                 await session.delete(art)
         session.add(
             Artifact(
@@ -163,17 +208,10 @@ async def delete_scene_image(
     shot: int,
 ) -> bool:
     scenes = project.data_dir / "scenes"
-    if shot == 2:
-        pattern = shot2_file_pattern(frame_number)
-    else:
-        pattern = f"frame_{frame_number:03d}_*.png"
     deleted = False
-    if scenes.is_dir():
-        for p in list(scenes.glob(pattern)):
-            if shot == 1 and "_s2_" in p.name:
-                continue
-            archive_file(p, project, "scenes")
-            deleted = True
+    for p in iter_scene_images(scenes, frame_number, shot=shot):
+        archive_file(p, project, "scenes")
+        deleted = True
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (
@@ -186,10 +224,26 @@ async def delete_scene_image(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
-                await session.delete(art)
-                deleted = True
+            if effective_shot_from_artifact(art.meta, art.path or "") != shot:
+                continue
+            # На случай если glob не нашёл (редкое имя / иной суффикс) — архив по path.
+            if art.path:
+                ap = Path(art.path)
+                if ap.is_file():
+                    try:
+                        archive_file(ap, project, "scenes")
+                    except RuntimeError:
+                        logger.warning(
+                            "montage delete: artifact path busy, unlink {}",
+                            ap.name,
+                        )
+                        try:
+                            ap.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    deleted = True
+            await session.delete(art)
+            deleted = True
     await session.flush()
     return deleted
 
@@ -227,6 +281,17 @@ async def delete_scene_video(
         ).scalars().all()
         for art in arts:
             if effective_shot_from_artifact(art.meta, art.path or "") == shot:
+                if art.path:
+                    ap = Path(art.path)
+                    if ap.is_file():
+                        try:
+                            archive_file(ap, project, "videos")
+                        except RuntimeError:
+                            try:
+                                ap.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        deleted = True
                 await session.delete(art)
                 deleted = True
     await session.flush()
