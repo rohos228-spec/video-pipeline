@@ -64,6 +64,9 @@ async def _run_op_with_short_sessions(
                 mode = "edit_prompt"
             elif op_type == "image_regen_correction":
                 mode = "correction"
+            # Промт с UI (то, что видит пользователь на доске) — приоритетнее
+            # повторного чтения Excel, иначе уходит «другой» текст.
+            pinned = str(op.get("prompt") or "").strip()
             prep = await prepare_image_regen(
                 session,
                 project,
@@ -73,6 +76,7 @@ async def _run_op_with_short_sessions(
                 new_prompt=str(op.get("prompt") or ""),
                 correction=str(op.get("correction") or op.get("prompt") or ""),
                 board=board,
+                pinned_prompt=pinned if op_type == "image_regen" and pinned else None,
             )
         elif op_type in ("video_regen", "video_regen_prompt"):
             mode = "edit_prompt" if op_type == "video_regen_prompt" else "same_prompt"

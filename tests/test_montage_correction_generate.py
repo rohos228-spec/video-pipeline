@@ -1,4 +1,4 @@
-"""Correction/montage: не ронять Generate до attach refs; промт как у img-шага."""
+"""Correction: только текст пользователя; same_prompt — промт с доски."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def test_generate_image_no_early_disabled_raise_before_refs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_correction_mode_prepends_excel_prompt(
+async def test_correction_mode_sends_only_user_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.models import Project, Frame
@@ -56,24 +56,17 @@ async def test_correction_mode_prepends_excel_prompt(
         "app.services.montage_board_regen.find_shot1_image",
         lambda *_a, **_k: current,
     )
-    monkeypatch.setattr(
-        "app.services.montage_board_regen._image_prompt_from_excel",
-        lambda *_a, **_k: "base hero standing in street, cinematic",
-    )
-    monkeypatch.setattr(
-        "app.services.montage_board_regen.write_plan_image_prompt",
-        lambda *_a, **_k: True,
-    )
 
+    user_text = "замени клонов персонажа с переднего плана"
     prep = await prepare_image_regen(
         session,
         project,
         18,
         shot=1,
         mode="correction",
-        correction="замени клонов персонажа с переднего плана",
+        correction=user_text,
     )
-    assert "base hero standing in street" in prep.prompt_text
-    assert "замени клонов" in prep.prompt_text
-    assert "CORRECTION" in prep.prompt_text
+    assert prep.prompt_text == user_text
+    assert "base hero" not in prep.prompt_text
+    assert "CORRECTION" not in prep.prompt_text
     assert prep.refs == [current]

@@ -152,6 +152,7 @@ async def prepare_image_regen(
     new_prompt: str | None = None,
     correction: str | None = None,
     board: dict | None = None,
+    pinned_prompt: str | None = None,
 ) -> ImageRegenPrep:
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
@@ -190,20 +191,14 @@ async def prepare_image_regen(
         )
         if current is None:
             raise RuntimeError("нет текущего изображения для корректировки")
-        # Как img-шаг: полный image_prompt из Excel + инструкция правки,
-        # текущий кадр — reference. Раньше слали только короткий correction
-        # → Outsee держал Generate disabled / «промт не принят».
-        base = _image_prompt_from_excel(project, fr, shot).strip()
-        if base:
-            prompt_text = (
-                f"{base}\n\n"
-                f"=== CORRECTION / ПРАВКА ===\n{text}"
-            )
-        else:
-            prompt_text = text
+        # Только текст из модалки + текущий кадр как reference.
+        # НЕ склеивать с Excel — иначе в Outsee уходит «другой» промт.
+        prompt_text = text
         refs = [current]
     else:
-        prompt_text = _image_prompt_from_excel(project, fr, shot)
+        # same_prompt: сначала то, что пришло с доски (UI), иначе Excel/DB.
+        pinned = (pinned_prompt or "").strip()
+        prompt_text = pinned or _image_prompt_from_excel(project, fr, shot)
         if not prompt_text:
             row = "R46" if shot == 2 else "R45"
             raise RuntimeError(
@@ -254,12 +249,17 @@ async def prepare_image_regen(
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     await _ensure_cdp_ready()
+    preview = (prep.prompt_text or "").replace("\n", " ")[:160]
     logger.info(
-        "montage regen image #{} frame {} shot {} → outsee ({} симв.)",
+        "montage regen image #{} frame {} shot {} → outsee "
+        "({} симв., refs={}, prefix={}, preview={!r})",
         prep.project_id,
         prep.frame_number,
         prep.shot,
         len(prep.prompt_text),
+        len(prep.refs),
+        prep.prompt_id_prefix,
+        preview,
     )
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
