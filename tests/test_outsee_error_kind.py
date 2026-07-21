@@ -254,3 +254,39 @@ def test_queue_card_without_id_still_stale_if_not_card_scoped() -> None:
         prompt_id_prefix=prefix,
         card_scoped=False,
     )
+
+
+def test_unlimited_busy_is_busy_kind_not_generation() -> None:
+    from app.bots.outsee import _outsee_failure_kind
+
+    text = (
+        "Безлимитная генерация уже активна. "
+        "Дождитесь завершения или отключите безлимит."
+    )
+    assert _outsee_failure_kind(text) == "busy"
+
+
+def test_unlimited_busy_is_always_stale_keep_waiting() -> None:
+    """Регресс P47-F18: abort на 3с → нет download/replace."""
+    text = (
+        "Безлимитная генерация уже активна. "
+        "Дождитесь завершения или отключите безлимит."
+    )
+    assert _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=True,
+        elapsed=3.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix="[ID: P47-F18-f2a307ba]",
+    )
+    assert _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=True,
+        elapsed=60.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix="[ID: P47-F18-f2a307ba]",
+    )
