@@ -1134,6 +1134,8 @@ export function AssembleMontageBoard({
           done_ops?: number;
           total_ops?: number;
           saved_count?: number;
+          refresh_board?: boolean;
+          highlight?: string;
         };
       };
       if (evt.payload?.stopped) {
@@ -1171,6 +1173,17 @@ export function AssembleMontageBoard({
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             setApplyProgress({ done: doneOps, total: totalOps });
           }
+          // После каждой успешной op — сразу показать новый кадр на доске
+          // (иначе UI держит старый PNG до конца всей очереди).
+          if (evt.payload.refresh_board || typeof doneOps === "number") {
+            void queryClient.invalidateQueries({
+              queryKey: ["montage-board", projectId],
+            });
+          }
+          const hl = evt.payload.highlight;
+          if (typeof hl === "string" && hl) {
+            setHighlights((prev) => (prev.includes(hl) ? prev : [...prev, hl]));
+          }
         } else if (status === "done" || status === "error" || status === "cancelled") {
           const err =
             evt.payload.error ||
@@ -1188,7 +1201,7 @@ export function AssembleMontageBoard({
         handleMontageTerminal(status, evt.payload.error);
       }
     });
-  }, [open, projectId, handleApplyTerminal, handleMontageTerminal, handleRecoverTerminal]);
+  }, [open, projectId, queryClient, handleApplyTerminal, handleMontageTerminal, handleRecoverTerminal]);
 
   useEffect(() => {
     if (!open || projectId == null || !montageRunning) return;
@@ -1215,6 +1228,7 @@ export function AssembleMontageBoard({
   useEffect(() => {
     if (!open || projectId == null || !applyRunning) return;
     let cancelled = false;
+    let lastDone = -1;
     const poll = async () => {
       try {
         const st = await api.getMontageApplyStatus(projectId);
@@ -1225,6 +1239,12 @@ export function AssembleMontageBoard({
         if (status === "running") {
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             setApplyProgress({ done: doneOps, total: totalOps });
+            if (doneOps !== lastDone) {
+              lastDone = doneOps;
+              void queryClient.invalidateQueries({
+                queryKey: ["montage-board", projectId],
+              });
+            }
           }
           return;
         }
@@ -1240,7 +1260,7 @@ export function AssembleMontageBoard({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, projectId, applyRunning, handleApplyTerminal]);
+  }, [open, projectId, applyRunning, handleApplyTerminal, queryClient]);
 
   useEffect(() => {
     if (!open || projectId == null || !recoverRunning) return;
