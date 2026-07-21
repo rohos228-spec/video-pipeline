@@ -21,9 +21,7 @@ from app.bots.outsee import (
     OutseeBot,
     _GALLERY_ID_SCAN_LIMIT,
     _image_page_url,
-    _validate_downloaded_image,
     _wait_gallery_thumbs,
-    download_saved_image_by_prompt_id,
 )
 from app.generation_options import (
     DEFAULTS,
@@ -264,57 +262,38 @@ async def _download_hit(
     force_replace: bool = False,
     allow_cascade: bool = True,
 ) -> Path | None:
-    """Скачать hit: кнопка «Скачать» по известному thumb (рабочий путь).
-
-    CDN guess с подписью thumb→png НЕ работает (SigV4 path-bound → 403).
-    """
-    from app.bots.outsee import _download_via_card_click
+    """Скачать hit всеми 5 механиками скачивания (D1→D5)."""
+    from app.services.montage_outsee_five import (
+        HitCandidate,
+        download_with_all_mechanics,
+    )
 
     dest = _dest_path(project, hit)
     if not force_replace and _ready_file(dest):
         return dest
-    try:
-        await _download_via_card_click(
-            page,
-            prompt_id_prefix=hit.prompt_id_prefix,
-            out_path=dest,
-            project_id=project.id,
-            img_url=hit.img_src,
-            timeout_s=90.0,
-        )
-        _validate_downloaded_image(
-            dest, gen_id=hit.short_uuid, img_url=hit.img_src
-        )
-        return dest
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "montage recover card-click fail P{} F{} shot{}: {}",
+    candidate = HitCandidate(
+        frame_number=hit.frame_number,
+        shot=hit.shot,
+        short_uuid=hit.short_uuid,
+        prompt_id_prefix=hit.prompt_id_prefix,
+        img_src=hit.img_src,
+        sources={"legacy_hit"},
+    )
+    ok, mechanic = await download_with_all_mechanics(
+        page, candidate, dest, project_id=project.id
+    )
+    if ok and _ready_file(dest):
+        logger.info(
+            "montage recover P{} F{} shot{} via {}",
             project.id,
             hit.frame_number,
             hit.shot,
-            e,
+            mechanic,
         )
+        return dest
     if not allow_cascade:
         return None if not _ready_file(dest) else dest
-    # Fallback: cold cascade без img_url (медленнее).
-    try:
-        await download_saved_image_by_prompt_id(
-            page,
-            prompt_id_prefix=hit.prompt_id_prefix,
-            out_path=dest,
-            project_id=project.id,
-            gen_id=hit.short_uuid,
-        )
-        return dest
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "montage outsee recover download P{} F{} shot{}: {}",
-            project.id,
-            hit.frame_number,
-            hit.shot,
-            e,
-        )
-        return None if not _ready_file(dest) else dest
+    return None if not _ready_file(dest) else dest
 
 
 async def recover_montage_images_from_outsee(
@@ -347,6 +326,7 @@ async def recover_montage_images_from_outsee(
     skipped: list[str] = []
     errors: list[str] = []
     hits: list[GalleryHit] = []
+    five_stats: dict[str, Any] = {}
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -373,18 +353,48 @@ async def recover_montage_images_from_outsee(
                     "hits_scanned": 0,
                 }
 
+            # === 5 МЕХАНИК поиска + сортировки ===
+            from app.services.montage_outsee_five import run_five_mechanics_search
+
+            board_early = montage_meta(project)
+            pending_keys: set[tuple[int, int]] = set()
+            for op in list(board_early.get("pending_ops") or []):
+                if not str(op.get("type") or "").startswith("image"):
+                    continue
+                try:
+                    pending_keys.add(
+                        (int(op["frame_number"]), int(op.get("shot") or 1))
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+            five = await run_five_mechanics_search(
+                page,
+                project.id,
+                frame_filter=frame_filter,
+                pending_keys=pending_keys or (frame_filter or None),
+                project_db_id=project.id,
+                limit=max(limit, 40),
+            )
+            five_hits = list(five.get("hits") or [])
+            five_stats = dict(five.get("stats") or {})
+            logger.info(
+                "montage outsee recover #{} five-mechanics stats={}",
+                project.id,
+                five_stats,
+            )
+
+            # Совместимость: также GalleryHit из старых сканов (доп. покрытие).
             hits = await scan_gallery_hits_for_project(
                 page, project.id, limit=limit
             )
-            need = set(frame_filter) if frame_filter else set()
-            # Всегда кликаем свежие thumb'ы: ID часто только в панели после клика.
             if click_scan:
                 clicked = await scan_gallery_hits_by_clicking(
                     page,
                     project.id,
                     limit=_CLICK_SCAN_LIMIT,
                     project_db_id=project.id,
-                    need_keys=need or None,
+                    need_keys=set(frame_filter) if frame_filter else None,
                 )
                 seen = {
                     f"{h.frame_number}:{h.shot}:{h.short_uuid}" for h in hits
@@ -395,27 +405,73 @@ async def recover_montage_images_from_outsee(
                         hits.append(h)
                         seen.add(key)
 
+            # Мержим five_hits → GalleryHit
+            for fh in five_hits:
+                key = f"{fh.frame_number}:{fh.shot}:{fh.short_uuid}"
+                if any(
+                    f"{h.frame_number}:{h.shot}:{h.short_uuid}" == key
+                    for h in hits
+                ):
+                    continue
+                hits.append(
+                    GalleryHit(
+                        project_id=project.id,
+                        frame_number=fh.frame_number,
+                        shot=fh.shot,
+                        short_uuid=fh.short_uuid,
+                        prompt_id_prefix=fh.prompt_id_prefix,
+                        img_src=fh.img_src,
+                    )
+                )
+
             logger.info(
-                "montage outsee recover #{}: {} gallery hits (filter={}, force={})",
+                "montage outsee recover #{}: {} gallery hits (filter={}, force={}, five={})",
                 project.id,
                 len(hits),
-                sorted(frame_filter) if frame_filter else "missing-only",
+                sorted(frame_filter) if frame_filter else "all-project",
                 force_replace,
+                five_stats.get("mechanics_used"),
             )
 
-            # Последний hit для (frame,shot) побеждает — клик-скан идёт
-            # сверху вниз по свежим thumb'ам, но DOM-скан может дать старое.
+            # Порядок из механики 5 (pending/freshness), иначе DOM-порядок.
             chosen: dict[tuple[int, int], GalleryHit] = {}
+            # Сначала в порядке five_hits
+            by_dedupe = {
+                (h.frame_number, h.shot, h.short_uuid): h for h in hits
+            }
+            for fh in five_hits:
+                g = by_dedupe.get((fh.frame_number, fh.shot, fh.short_uuid))
+                if g is None:
+                    g = GalleryHit(
+                        project_id=project.id,
+                        frame_number=fh.frame_number,
+                        shot=fh.shot,
+                        short_uuid=fh.short_uuid,
+                        prompt_id_prefix=fh.prompt_id_prefix,
+                        img_src=fh.img_src,
+                    )
+                key = (g.frame_number, g.shot)
+                if frame_filter is not None and key not in frame_filter:
+                    continue
+                if (
+                    not force_replace
+                    and not _frame_needs_image(project, g.frame_number, g.shot)
+                ):
+                    skipped.append(f"{g.frame_number}:{g.shot}=already")
+                    continue
+                chosen[key] = g
+            # Добиваем остальными hits
             for hit in hits:
                 key = (hit.frame_number, hit.shot)
+                if key in chosen:
+                    continue
                 if frame_filter is not None and key not in frame_filter:
                     continue
                 if (
                     not force_replace
                     and not _frame_needs_image(project, hit.frame_number, hit.shot)
                 ):
-                    if key not in chosen:
-                        skipped.append(f"{hit.frame_number}:{hit.shot}=already")
+                    skipped.append(f"{hit.frame_number}:{hit.shot}=already")
                     continue
                 chosen[key] = hit
 
@@ -504,6 +560,7 @@ async def recover_montage_images_from_outsee(
         "skipped": skipped,
         "errors": errors,
         "hits_scanned": len(hits),
+        "five_mechanics": five_stats,
     }
 
 
