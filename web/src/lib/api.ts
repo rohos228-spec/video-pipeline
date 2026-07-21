@@ -382,10 +382,14 @@ export const api = {
       meta?: MontageBoardMeta;
       errors?: string[];
       job?: { status?: string; total_ops?: number; error?: string | null };
-    }>(`/api/projects/${projectId}/montage-board/apply`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    }>(
+      `/api/projects/${projectId}/montage-board/apply`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      120_000,
+    ),
 
   getMontageApplyStatus: (projectId: number) =>
     http<{
@@ -395,12 +399,13 @@ export const api = {
         total_ops?: number;
         done_ops?: number;
       };
-    }>(`/api/projects/${projectId}/montage-board/apply-status`),
+    }>(`/api/projects/${projectId}/montage-board/apply-status`, {}, 60_000),
 
   runMontageBoard: (projectId: number) =>
     http<{ started: boolean; already_running?: boolean; job?: Record<string, unknown> }>(
       `/api/projects/${projectId}/montage-board/montage`,
       { method: "POST" },
+      120_000,
     ),
 
   recoverMontageFromOutsee: (projectId: number) =>
@@ -420,9 +425,13 @@ export const api = {
         saved_count?: number;
         hits_scanned?: number;
       };
-    }>(`/api/projects/${projectId}/montage-board/recover-outsee`, {
-      method: "POST",
-    }),
+    }>(
+      `/api/projects/${projectId}/montage-board/recover-outsee`,
+      {
+        method: "POST",
+      },
+      120_000,
+    ),
 
   getMontageRecoverOutseeStatus: (projectId: number) =>
     http<{

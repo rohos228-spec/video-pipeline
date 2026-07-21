@@ -200,28 +200,39 @@ async def _run_op_with_short_sessions(
     return await _finalize_video_with_retry(project_id, prep, new_path, board)
 
 
-async def apply_montage_board(
-    session: AsyncSession,
-    project: Project,
+async def _persist_board_meta(project_id: int, board: dict[str, Any]) -> None:
+    """Короткий write — не держим соединение на время Outsee."""
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise RuntimeError(f"проект #{project_id} не найден")
+        set_montage_meta(project, board)
+
+
+async def apply_montage_board_by_id(
+    project_id: int,
     *,
     video_trims: dict[str, dict[str, float]] | None = None,
     pending_ops: list[dict[str, Any]] | None = None,
     on_progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
-    board = montage_meta(project)
-    if video_trims is not None:
-        board["video_trims"] = video_trims
-    ops = list(pending_ops or board.get("pending_ops") or [])
-    clear_highlights(board)
+    """Apply без долгой ORM-сессии — для фонового job (video/image regen)."""
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise RuntimeError(f"проект #{project_id} не найден")
+        board = montage_meta(project)
+        if video_trims is not None:
+            board["video_trims"] = video_trims
+        ops = list(pending_ops or board.get("pending_ops") or [])
+        clear_highlights(board)
+        set_montage_meta(project, board)
+    # session закрыта — дальше только короткие writes + Outsee без DB lock
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []
     remaining: list[dict[str, Any]] = []
-
-    # НЕ recover_before_regen: нода img идёт сразу в generate_image.
-
-    total = len(ops) + len(results)
-    project_id = int(project.id)
+    total = max(len(ops), 1)
 
     for idx, op in enumerate(ops):
         try:
@@ -231,14 +242,9 @@ async def apply_montage_board(
             if highlight:
                 add_highlight(board, str(highlight))
             board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
-            set_montage_meta(project, board)
-            # CRITICAL: commit после каждой op — иначе write-txn висит на весь
-            # Outsee Generate и finalize следующего кадра → database is locked
-            # (лог F38: файл скачан, archive ok, INSERT artifacts locked).
-            await session.flush()
-            await session.commit()
+            await _persist_board_meta(project_id, board)
             if on_progress is not None:
-                await on_progress(len(results), max(total, 1), result)
+                await on_progress(len(results), total, result)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             logger.warning(
@@ -251,23 +257,55 @@ async def apply_montage_board(
             results.append({"ok": False, "error": msg, "op": op})
             remaining.append(op)
             board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
-            set_montage_meta(project, board)
-            await session.flush()
-            await session.commit()
+            await _persist_board_meta(project_id, board)
             if on_progress is not None:
-                await on_progress(
-                    len(results), max(total, 1), {"ok": False, "error": msg}
-                )
+                await on_progress(len(results), total, {"ok": False, "error": msg})
 
     board["pending_ops"] = remaining
     touch_applied(board)
-    set_montage_meta(project, board)
-    await session.flush()
-    await session.commit()
-
+    await _persist_board_meta(project_id, board)
     return {
         "ok": not errors,
         "results": results,
         "errors": errors,
         "meta": public_board_meta(board),
     }
+
+
+async def apply_montage_board(
+    session: AsyncSession,
+    project: Project,
+    *,
+    video_trims: dict[str, dict[str, float]] | None = None,
+    pending_ops: list[dict[str, Any]] | None = None,
+    on_progress: ProgressCb | None = None,
+) -> dict[str, Any]:
+    """HTTP/trim path: короткие ops через by_id; session только для seed commit."""
+    board = montage_meta(project)
+    if video_trims is not None:
+        board["video_trims"] = video_trims
+    ops = list(pending_ops or board.get("pending_ops") or [])
+    clear_highlights(board)
+    set_montage_meta(project, board)
+    await session.flush()
+    await session.commit()
+
+    if not ops:
+        touch_applied(board)
+        set_montage_meta(project, board)
+        await session.flush()
+        await session.commit()
+        return {
+            "ok": True,
+            "results": [],
+            "errors": [],
+            "meta": public_board_meta(board),
+        }
+
+    # Есть regen — не держим HTTP/job session на Outsee.
+    return await apply_montage_board_by_id(
+        int(project.id),
+        video_trims=None,  # уже записаны выше
+        pending_ops=ops,
+        on_progress=on_progress,
+    )

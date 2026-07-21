@@ -680,9 +680,9 @@ async def montage_board_apply(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Сохранить trim и выполнить очередь regen (без remount)."""
-    from app.services.montage_board import build_montage_board
     from app.services.montage_board_apply import apply_montage_board
     from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
+    from app.services.montage_board_meta import montage_meta, public_board_meta
 
     p = _project_or_404(await session.get(Project, project_id))
     ops = list(body.get("pending_ops") or [])
@@ -694,13 +694,13 @@ async def montage_board_apply(
         clear_stop(project_id)
         job = get_apply_job(p)
         if job.get("status") == "running":
-            board = await build_montage_board(session, p)
+            # Не build_montage_board (ffprobe всех клипов) — иначе UI abort 30с.
             return {
                 "started": False,
                 "already_running": True,
                 "ok": False,
                 "job": job,
-                "meta": board["meta"],
+                "meta": public_board_meta(montage_meta(p)),
             }
         spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
         return {
