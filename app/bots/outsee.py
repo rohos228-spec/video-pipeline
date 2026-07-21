@@ -6769,6 +6769,21 @@ async def _find_card_by_img_url_click(
             (basename or path_only)[-48:],
         )
         return candidate
+    # В истории Outsee Download часто в правой панели, не в ancestor thumb.
+    panel = await _find_result_panel_card(page, img_url)
+    if panel is not None:
+        logger.info(
+            "_find_card_by_img_url_click: панель «Результат» после клика thumb ({})",
+            (basename or path_only)[-48:],
+        )
+        return panel
+    any_btn = page.locator("button:has(svg.lucide-download)").first
+    if await any_btn.count() > 0:
+        logger.info(
+            "_find_card_by_img_url_click: видимая кнопка Download на странице ({})",
+            (basename or path_only)[-48:],
+        )
+        return any_btn
     return None
 
 
@@ -6878,6 +6893,22 @@ async def _find_card_by_clicking_images(
             )
             # НЕ закрываем панель — пусть hover-target виден.
             return candidate
+
+        # ID совпал, Download в ancestor нет — панель «Результат» / любая кнопка.
+        panel = await _find_result_panel_card(page, src)
+        if panel is not None:
+            logger.info(
+                "_find_card_by_clicking_images: match #{} → панель Результат",
+                idx,
+            )
+            return panel
+        any_btn = page.locator("button:has(svg.lucide-download)").first
+        if await any_btn.count() > 0:
+            logger.info(
+                "_find_card_by_clicking_images: match #{} → Download на странице",
+                idx,
+            )
+            return any_btn
 
         # src/ID совпали, но кнопки Download в DOM нет — URL-fallback в download_via_card_click.
         logger.info(
@@ -7664,6 +7695,23 @@ async def _download_via_card_click(
             return None
 
     download_btn = card.locator("button:has(svg.lucide-download)").first
+    if card_tag == "button":
+        download_btn = card
+    elif card_tag == "img" or await download_btn.count() == 0:
+        # После клика по галерее Download часто в панели, не в ancestor thumb.
+        panel = await _find_result_panel_card(page, img_url)
+        if panel is not None:
+            panel_btn = panel.locator("button:has(svg.lucide-download)").first
+            if await panel_btn.count() > 0:
+                card = panel
+                download_btn = panel_btn
+                card_tag = "div"
+        if card_tag == "img" or await download_btn.count() == 0:
+            page_btn = page.locator("button:has(svg.lucide-download)").first
+            if await page_btn.count() > 0:
+                download_btn = page_btn
+                card = page_btn
+                card_tag = "button"
     if card_tag == "img" or await download_btn.count() == 0:
         fallback_url = img_url or await _card_img_src()
         if fallback_url:
@@ -7723,7 +7771,14 @@ async def _download_via_card_click(
     # 4) Внутри карточки находим именно кнопку с lucide-download SVG.
     #    Эта же иконка живёт в библиотеке lucide-icons — её класс
     #    `lucide-download` стабилен и не зависит от Tailwind-стилей.
-    download_btn = card.locator("button:has(svg.lucide-download)").first
+    if card_tag == "button":
+        download_btn = card
+    else:
+        nested = card.locator("button:has(svg.lucide-download)").first
+        if await nested.count() > 0:
+            download_btn = nested
+        elif await download_btn.count() == 0:
+            download_btn = page.locator("button:has(svg.lucide-download)").first
 
     await _update_download_progress(project_id, "Скачивание… (клик)")
     t_click = asyncio.get_event_loop().time()

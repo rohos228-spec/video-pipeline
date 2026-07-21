@@ -14,7 +14,6 @@ from app.services.event_bus import publish_project_event
 from app.services.montage_board_job_state import resolve_job_status
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.montage_outsee_recover import (
-    recover_before_regen_ops,
     recover_montage_images_from_outsee,
 )
 
@@ -90,15 +89,57 @@ def spawn_recover_job(project_id: int) -> asyncio.Task[None]:
                     for op in pending
                     if str(op.get("type") or "").startswith("image")
                 ]
+                # Кнопка «Забрать» = всегда ЗАМЕНИТЬ свежими из Outsee.
+                # Раньше без pending было force_replace=False → «already» и 0 файлов.
+                frame_filter: set[tuple[int, int]] | None = None
                 if image_ops:
-                    result = await recover_before_regen_ops(session, project, pending)
-                else:
-                    result = await recover_montage_images_from_outsee(
-                        session,
-                        project,
-                        click_scan=True,
-                        force_replace=False,
-                    )
+                    frame_filter = set()
+                    for op in image_ops:
+                        try:
+                            frame_filter.add(
+                                (
+                                    int(op["frame_number"]),
+                                    int(op.get("shot") or 1),
+                                )
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                    if not frame_filter:
+                        frame_filter = None
+                result = await recover_montage_images_from_outsee(
+                    session,
+                    project,
+                    frame_filter=frame_filter,
+                    click_scan=True,
+                    force_replace=True,
+                    limit=40,
+                )
+                if image_ops and result.get("saved"):
+                    # Снять только успешно забранные image-ops из очереди.
+                    saved_keys = {
+                        (int(s["frame_number"]), int(s["shot"]))
+                        for s in result.get("saved") or []
+                    }
+                    board = montage_meta(project)
+                    new_pending = []
+                    for op in list(board.get("pending_ops") or []):
+                        t = str(op.get("type") or "")
+                        if t.startswith("image"):
+                            try:
+                                key = (
+                                    int(op["frame_number"]),
+                                    int(op.get("shot") or 1),
+                                )
+                            except (KeyError, TypeError, ValueError):
+                                new_pending.append(op)
+                                continue
+                            if key in saved_keys:
+                                continue
+                        new_pending.append(op)
+                    board["pending_ops"] = new_pending
+                    set_montage_meta(project, board)
+                    result["remaining_ops"] = new_pending
+
                 errors = list(result.get("errors") or [])
                 ok = bool(result.get("ok")) and not errors
                 # Частичный успех: есть saved — не error, даже если errors.
