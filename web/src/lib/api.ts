@@ -436,9 +436,13 @@ export const api = {
     }>(`/api/projects/${projectId}/montage-board/recover-outsee-status`),
 
   getMontageBoardStatus: (projectId: number) =>
-    http<{ job: { status?: string; error?: string | null } }>(
-      `/api/projects/${projectId}/montage-board/montage-status`,
-    ),
+    http<{
+      job: {
+        status?: string;
+        error?: string | null;
+        result?: { done?: boolean; final_video?: string | null };
+      };
+    }>(`/api/projects/${projectId}/montage-board/montage-status`, {}, 60_000),
 
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
