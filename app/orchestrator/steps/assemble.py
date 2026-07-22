@@ -141,19 +141,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     frames: list[Frame] = []
     skipped_no_video: list[int] = []
     for fr in frames_all:
-        video_art = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_video,
-                )
-                .order_by(Artifact.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if video_art is not None and Path(video_art.path).is_file():
+        # Нужен shot_01 или хотя бы shot_02 (fallback, если первого нет).
+        p1 = await _scene_video_path(session, project, fr, shot=1)
+        p2 = await _scene_video_path(session, project, fr, shot=2)
+        if p1 is not None or p2 is not None:
             frames.append(fr)
         elif (fr.voiceover_text or "").strip():
             skipped_no_video.append(fr.number)
@@ -358,14 +349,28 @@ async def _assemble_body(
     shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     for fr in frames:
         p1 = await _scene_video_path(session, project, fr, shot=1)
-        if p1 is None:
-            raise RuntimeError(f"нет клипа shot_01 для кадра {fr.number}")
-        shot1_paths[fr.number] = p1
         info = shot2_by.get(fr.number)
         p2 = None
         if info is not None and info.has_shot2:
             p2 = await _scene_video_path(session, project, fr, shot=2)
-        shot2_paths[fr.number] = p2
+        # Нет shot_01 — нормально: подставляем shot_02 на весь слот.
+        if p1 is None:
+            if p2 is None:
+                p2 = await _scene_video_path(session, project, fr, shot=2)
+            if p2 is None:
+                raise RuntimeError(
+                    f"нет клипа shot_01/shot_02 для кадра {fr.number}"
+                )
+            logger.info(
+                "[#{}] assemble: кадр {} — нет shot_01, используем shot_02",
+                project.id,
+                fr.number,
+            )
+            shot1_paths[fr.number] = p2
+            shot2_paths[fr.number] = None
+        else:
+            shot1_paths[fr.number] = p1
+            shot2_paths[fr.number] = p2
         fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)
         fr.duration_seconds = duration_by_frame[fr.number]
