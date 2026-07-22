@@ -914,8 +914,13 @@ _OUTSEE_MODERATION_MARKERS: tuple[str, ...] = (
     "аудиодорожка видео не прошла",
     "аудиодорожка не прошла",
     "содержит запрещ",
-    "запрещён",
-    "запрещен",
+    # «запрещённый контент» — да; голое «запрещено» в промте — нет (см. looks_like_prompt_body).
+    "запрещённ",
+    "запрещенн",
+    "запрещённый контент",
+    "запрещенный контент",
+    # НЕ «запрещен/запрещено» сами по себе: в промтах часто
+    # «запрещено добавлять персонажей» — ложный abort до download.
     "forbidden word",
     "текстовый запрос содержит",
     "некорректный текстовый",
@@ -1115,6 +1120,25 @@ def _outsee_failure_looks_like_prompt_body(text: str) -> bool:
     if "subtitles" in t and "watermarks" in t and "captions" in t:
         return True
     if len(t) > 120 and " duplicated" in t and "logos" in t:
+        return True
+    # Промт монтажа: «…запрещено добавлять…» / хвост UI «…кадреВидео».
+    # Без маркеров «отклонён/модерация/запрещённый контент» это не плашка Outsee.
+    real_mod = (
+        "контент отклон" in t
+        or "отклонён" in t
+        or "отклонен" in t
+        or "модерац" in t
+        or "содержит запрещ" in t
+        or "запрещённ" in t
+        or "запрещенн" in t
+        or "policy violation" in t
+        or "content reject" in t
+    )
+    if real_mod:
+        return False
+    if "запрещено" in t or "кадревидео" in t.replace(" ", ""):
+        return True
+    if t.endswith("видео") and "отклон" not in t and len(t) > 40:
         return True
     return False
 
