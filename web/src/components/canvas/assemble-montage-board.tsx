@@ -1642,7 +1642,11 @@ export function AssembleMontageBoard({
             )}
             {!board.isLoading && !board.isError && frames.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                Кадров нет — пройдите шаги сценария и разбивки.
+                Кадров нет — положите{" "}
+                <code className="text-[11px]">project.xlsx</code> или файлы{" "}
+                <code className="text-[11px]">scenes/frame_NNN_*.png</code> /{" "}
+                <code className="text-[11px]">videos/clip_NNN_*.mp4</code> в папку
+                проекта и обновите доску.
               </p>
             )}
 
