@@ -40,11 +40,25 @@ def _set_job(project: Project, patch: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
-async def _publish_job(project_id: int, status: str) -> None:
+async def _publish_job(
+    project_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+    final_video: str | None = None,
+    done: bool | None = None,
+) -> None:
+    payload: dict[str, Any] = {"montage_board_montage": True, "status": status}
+    if error:
+        payload["error"] = error
+    if final_video is not None:
+        payload["final_video"] = final_video
+    if done is not None:
+        payload["done"] = done
     await publish_project_event(
         project_id,
         event_type="project_updated",
-        payload={"montage_board_montage": True, "status": status},
+        payload=payload,
     )
 
 
@@ -171,20 +185,53 @@ async def run_montage_job(project_id: int) -> None:
                         "finished_at": _utc_now(),
                     },
                 )
-                await _publish_job(project_id, "cancelled")
+                await _publish_job(project_id, "cancelled", error="остановлено пользователем")
                 return
-            if result.get("error") and not result.get("done"):
+
+            ok = bool(result.get("done"))
+            err = str(result.get("error") or "").strip() or None
+            final_video = result.get("final_video")
+            if ok and not final_video:
+                # assemble сказал assembled, но файла нет — для UI это ошибка
+                ok = False
+                err = err or "сборка завершилась без final.mp4 на диске"
+            if not ok:
+                err = err or "монтаж не собрал финальный ролик"
+                logger.warning(
+                    "montage_job #{} failed: {} (result={})",
+                    project_id,
+                    err,
+                    {k: result.get(k) for k in ("error", "done", "final_video", "audio_status", "final_status")},
+                )
                 _set_job(
                     project,
                     {
                         "status": "error",
-                        "error": str(result.get("error")),
+                        "error": err,
                         "finished_at": _utc_now(),
-                        "result": {"done": False},
+                        "result": {
+                            "done": False,
+                            "final_video": final_video,
+                            "summary": {
+                                k: result.get(k)
+                                for k in (
+                                    "voice_file",
+                                    "audio_status",
+                                    "final_status",
+                                    "xlsx_sync_error",
+                                )
+                                if result.get(k) is not None
+                            },
+                        },
                     },
                 )
-                await _publish_job(project_id, "error")
+                await _publish_job(project_id, "error", error=err, done=False)
             else:
+                logger.info(
+                    "montage_job #{} done → {}",
+                    project_id,
+                    final_video,
+                )
                 _set_job(
                     project,
                     {
@@ -192,12 +239,17 @@ async def run_montage_job(project_id: int) -> None:
                         "error": None,
                         "finished_at": _utc_now(),
                         "result": {
-                            "done": bool(result.get("done")),
-                            "final_video": result.get("final_video"),
+                            "done": True,
+                            "final_video": final_video,
                         },
                     },
                 )
-                await _publish_job(project_id, "done")
+                await _publish_job(
+                    project_id,
+                    "done",
+                    final_video=str(final_video) if final_video else None,
+                    done=True,
+                )
     except asyncio.CancelledError:
         logger.info("montage_job #{} task cancelled", project_id)
         try:
@@ -227,6 +279,6 @@ async def run_montage_job(project_id: int) -> None:
                         project,
                         {"status": "error", "error": str(exc), "finished_at": _utc_now()},
                     )
-            await _publish_job(project_id, "error")
+            await _publish_job(project_id, "error", error=str(exc))
         except Exception:  # noqa: BLE001
             pass

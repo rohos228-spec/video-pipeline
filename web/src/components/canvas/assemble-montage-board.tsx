@@ -1104,14 +1104,20 @@ export function AssembleMontageBoard({
   );
 
   const handleMontageTerminal = useCallback(
-    (status: string, errText?: string) => {
-      const key = `${status}:${errText || ""}`;
+    (status: string, errText?: string, finalVideo?: string | null) => {
+      const key = `${status}:${errText || ""}:${finalVideo || ""}`;
       if (lastMontageToastKeyRef.current === key) return;
       lastMontageToastKeyRef.current = key;
       setMontageRunning(false);
       if (status === "done") {
-        toast.success("Монтаж завершён");
+        toast.success(
+          finalVideo
+            ? `Монтаж готов: ${finalVideo.split(/[/\\]/).pop()}`
+            : "Монтаж завершён",
+        );
         void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        void queryClient.invalidateQueries({ queryKey: ["project-assets", projectId] });
+        void queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
       } else if (status === "error") toast.error(errText || "Монтаж не удался");
       else if (status === "cancelled") toast.message("Монтаж остановлен");
     },
@@ -1136,6 +1142,8 @@ export function AssembleMontageBoard({
           saved_count?: number;
           refresh_board?: boolean;
           highlight?: string;
+          final_video?: string;
+          done?: boolean;
         };
       };
       if (evt.payload?.stopped) {
@@ -1198,7 +1206,11 @@ export function AssembleMontageBoard({
         setMontageRunning(true);
         lastMontageToastKeyRef.current = "";
       } else if (status === "done" || status === "error" || status === "cancelled") {
-        handleMontageTerminal(status, evt.payload.error);
+        handleMontageTerminal(
+          status,
+          evt.payload.error,
+          typeof evt.payload.final_video === "string" ? evt.payload.final_video : null,
+        );
       }
     });
   }, [open, projectId, queryClient, handleApplyTerminal, handleMontageTerminal, handleRecoverTerminal]);
@@ -1212,7 +1224,11 @@ export function AssembleMontageBoard({
         const status = st.job?.status;
         if (cancelled) return;
         if (status === "running" || !status) return;
-        handleMontageTerminal(status, st.job?.error || undefined);
+        const finalVideo =
+          typeof st.job?.result?.final_video === "string"
+            ? st.job.result.final_video
+            : null;
+        handleMontageTerminal(status, st.job?.error || undefined, finalVideo);
       } catch {
         // Сетевой сбой — не сбрасываем running, ждём следующий poll.
       }

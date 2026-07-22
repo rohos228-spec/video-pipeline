@@ -50,6 +50,7 @@ async def remount_video(
 ) -> dict[str, Any]:
     """Перемонтировать ролик: заново выровнять озвучку по кадрам и собрать mp4."""
     raise_if_cancelled(project.id)
+    logger.info("[#{}] remount_video start (assemble={})", project.id, run_assemble)
     summary: dict[str, Any] = {
         "project_id": project.id,
         "slug": project.slug,
@@ -65,6 +66,7 @@ async def remount_video(
     ).scalars().all()
     if not frames_before:
         summary["error"] = "нет кадров в БД — сначала шаг «Разбивка»"
+        logger.warning("[#{}] remount_video: {}", project.id, summary["error"])
         return summary
 
     xlsx = project.data_dir / "project.xlsx"
@@ -103,6 +105,7 @@ async def remount_video(
         summary["error"] = (
             "нет готовой озвучки (audio/voice*.mp3) — положите файл или пройдите шаг «Аудио»"
         )
+        logger.warning("[#{}] remount_video: {}", project.id, summary["error"])
         return summary
     summary["voice_file"] = str(voice_path)
 
@@ -146,11 +149,19 @@ async def remount_video(
     raise_if_cancelled(project.id)
 
     if project.status is ProjectStatus.assembled:
-        summary["done"] = True
         out = project.data_dir / "final" / f"{project.slug}.mp4"
-        summary["final_video"] = str(out) if out.is_file() else None
+        if out.is_file() and out.stat().st_size > 1024:
+            summary["done"] = True
+            summary["final_video"] = str(out)
+            logger.info("[#{}] remount_video done → {} ({} B)", project.id, out.name, out.stat().st_size)
+        else:
+            summary["error"] = (
+                f"статус assembled, но нет файла final/{project.slug}.mp4"
+            )
+            logger.warning("[#{}] remount_video: {}", project.id, summary["error"])
     else:
         summary["error"] = f"сборка не завершилась: status={project.status.value}"
+        logger.warning("[#{}] remount_video: {}", project.id, summary["error"])
 
     actual = await compute_actual_status(session, project)
     if project.status != actual:

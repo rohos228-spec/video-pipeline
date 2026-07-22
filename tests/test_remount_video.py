@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -65,7 +66,7 @@ async def test_remount_calls_audio_and_assemble(
     await session.commit()
 
     audio_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.audio_ready))
-    assemble_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.assembled))
+    assemble_run = AsyncMock()
 
     with (
         patch(
@@ -76,6 +77,15 @@ async def test_remount_calls_audio_and_assemble(
         patch("app.orchestrator.steps.generate_audio.run", audio_run),
         patch("app.orchestrator.steps.assemble.run", assemble_run),
     ):
+        # assemble mock ставит status; файл должен появиться как у реального FFmpeg
+        final = p.data_dir / "final" / f"{p.slug}.mp4"
+        final.parent.mkdir(parents=True, exist_ok=True)
+
+        async def _assemble_and_write(s, proj, b):
+            proj.status = ProjectStatus.assembled
+            final.write_bytes(b"\x00" * 2048)
+
+        assemble_run.side_effect = _assemble_and_write
         result = await remount_video(session, p, run_assemble=True)
 
     assert result.get("voice_file")
@@ -83,3 +93,32 @@ async def test_remount_calls_audio_and_assemble(
     assemble_run.assert_awaited_once()
     assert result.get("done") is True
     assert result.get("final_status") == "assembled"
+    assert result.get("final_video")
+    assert Path(result["final_video"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_remount_fails_without_voice(session: AsyncSession, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    p = Project(id=6, slug="no-voice", topic="t", status=ProjectStatus.planning)
+    session.add(p)
+    await session.flush()
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    session.add(
+        Frame(
+            project_id=p.id,
+            number=1,
+            voiceover_text=_VOICEOVER,
+            meaning="",
+            image_prompt="",
+            animation_prompt="",
+        )
+    )
+    await session.commit()
+
+    result = await remount_video(session, p, run_assemble=True)
+    assert result.get("done") is not True
+    assert "озвучк" in (result.get("error") or "")
