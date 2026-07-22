@@ -24,6 +24,7 @@ from app.services.excel_characters import parse_persons_sheet
 from app.services.montage_board_cache import (
     get_cached_plan_excel_cells,
     get_cached_shot2_columns,
+    get_cached_source_prompts,
     probe_video_durations_parallel,
 )
 from app.services.montage_board_meta import montage_meta, public_board_meta
@@ -328,7 +329,12 @@ def _load_montage_xlsx_bundle(
         excel_by_frame = {}
 
     try:
-        prompts_by_frame = _read_source_prompts_once(xlsx_path, frames)
+        frame_sig = ",".join(str(fr.number) for fr in frames)
+        prompts_by_frame = get_cached_source_prompts(
+            xlsx_path,
+            frame_sig=frame_sig,
+            loader=lambda: _read_source_prompts_once(xlsx_path, frames),
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("montage_board: prompts excel {}: {}", xlsx_path, e)
 
