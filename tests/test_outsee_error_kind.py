@@ -225,6 +225,36 @@ def test_prompt_body_not_counted_as_failure_noise() -> None:
     assert _outsee_failure_text_is_noise(prompt) is True
 
 
+def test_prompt_with_zapreshcheno_is_not_moderation() -> None:
+    """Регресс: «запрещено добавлять…» в промте → ложный abort до download."""
+    from app.bots.outsee import _outsee_failure_kind
+
+    text = (
+        "лыжники 9 человек двигаются прямо, запрещено добавлять новых "
+        "персонажей которых нет в кадреВидео"
+    )
+    assert _outsee_failure_kind(text) != "moderation"
+    assert _outsee_failure_looks_like_prompt_body(text) is True
+    assert _outsee_failure_text_is_noise(text) is True
+    assert _outsee_failure_is_stale(
+        text,
+        baseline_failure_texts=frozenset(),
+        in_result=True,
+        elapsed=8.0,
+        gen_idle=False,
+        queue_mode=True,
+        prompt_id_prefix="[ID: P49-F49-dcd64193]",
+    )
+
+
+def test_real_moderation_banner_still_detected() -> None:
+    from app.bots.outsee import _outsee_failure_kind
+
+    text = "Контент отклонён модерацией"
+    assert _outsee_failure_kind(text) == "moderation"
+    assert _outsee_failure_looks_like_prompt_body(text) is False
+
+
 def test_queue_card_rejection_without_id_fail_fast() -> None:
     """Карточка очереди: отказ без [ID: …] в тексте ошибки — fail-fast."""
     text = "Контент отклонён"
