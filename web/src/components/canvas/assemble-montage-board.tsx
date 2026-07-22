@@ -387,6 +387,23 @@ function ClickableMedia({
   highlighted?: boolean;
   stale?: boolean;
 }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
+  const [inView, setInView] = useState(false);
+
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || !url) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setInView(true);
+      },
+      { root: null, rootMargin: "180px 240px", threshold: 0.01 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [url]);
+
   if (!url) {
     return (
       <div className={cn(highlighted && "ring-2 ring-emerald-400/60 rounded-lg")}>
@@ -409,6 +426,7 @@ function ClickableMedia({
 
   return (
     <div
+      ref={hostRef}
       className={cn(
         "rounded-lg",
         highlighted && "ring-2 ring-emerald-400/60",
@@ -422,12 +440,19 @@ function ClickableMedia({
           onClick={open}
           title={`Открыть ${label}`}
         >
-          <video
-            src={url}
-            className="h-full w-full object-cover transition group-hover:brightness-110"
-            preload="metadata"
-            muted
-          />
+          {inView ? (
+            <video
+              src={url}
+              className="h-full w-full object-cover transition group-hover:brightness-110"
+              preload="none"
+              muted
+              playsInline
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-black/40 text-2xl text-white/50">
+              ▶
+            </div>
+          )}
           <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 text-xs font-medium text-white opacity-0 transition group-hover:opacity-100">
             ▶ Открыть
           </span>
@@ -439,12 +464,18 @@ function ClickableMedia({
           onClick={open}
           title={`Открыть ${label}`}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={url}
-            alt={label}
-            className="h-full w-full object-cover transition group-hover:scale-[1.02] group-hover:brightness-110"
-          />
+          {inView ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={url}
+              alt={label}
+              loading="lazy"
+              decoding="async"
+              className="h-full w-full object-cover transition group-hover:scale-[1.02] group-hover:brightness-110"
+            />
+          ) : (
+            <div className="h-full w-full bg-black/30" />
+          )}
         </button>
       )}
       <MediaActionBar
@@ -861,8 +892,9 @@ export function AssembleMontageBoard({
     enabled: open && projectId != null,
     retry: 2,
     retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
-    refetchOnMount: "always",
-    staleTime: 0,
+    // Не долбить API+ffprobe при каждом открытии панели (150+ клипов).
+    refetchOnMount: true,
+    staleTime: 60_000,
   });
 
   const frames = board.data?.frames ?? [];
