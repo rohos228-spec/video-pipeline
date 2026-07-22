@@ -62,6 +62,39 @@ async def ready_status_confirmed_by_data(
     ready_status: ProjectStatus,
 ) -> bool:
     """True если данные в БД подтверждают *_ready (не шаблон/заглушка)."""
+    # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
+    # (нет всех scene_image), но audio_ready уже законно — не откатывать.
+    if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):
+        await recover_audio_from_disk(session, project)
+        from app.services.frame_audio import find_voice_full_on_disk
+
+        voice = find_voice_full_on_disk(
+            project.data_dir,
+            meta=project.meta if isinstance(project.meta, dict) else None,
+        )
+        audio_ok = voice is not None and voice.is_file()
+        if not audio_ok:
+            art = (
+                await session.execute(
+                    select(Artifact)
+                    .where(
+                        Artifact.project_id == project.id,
+                        Artifact.kind == ArtifactKind.audio,
+                    )
+                    .order_by(Artifact.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            audio_ok = bool(
+                art is not None and art.path and Path(art.path).is_file()
+            )
+        if ready_status is ProjectStatus.audio_ready and audio_ok:
+            return True
+        if ready_status is ProjectStatus.music_ready and audio_ok:
+            music_n = await _count_kind(session, project.id, ArtifactKind.music)
+            if music_n > 0:
+                return True
+
     actual = await compute_actual_status(session, project)
     return status_order(actual) >= status_order(ready_status)
 
