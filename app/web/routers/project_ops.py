@@ -931,20 +931,27 @@ async def montage_board_upload_voice(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Сохраняет озвучку как ``audio/voice_full.<ext>`` — так её видит монтаж/assemble."""
+    from sqlalchemy.orm.attributes import flag_modified
+
     p = _project_or_404(await session.get(Project, project_id))
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="пустой файл")
     audio_dir = p.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "voice.mp3").suffix or ".mp3"
-    dest = audio_dir / f"voice_montage{suffix}"
+    suffix = Path(file.filename or "voice.mp3").suffix.lower() or ".mp3"
+    if suffix not in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}:
+        suffix = ".mp3"
+    # Каноническое имя, которое find_voice_full_on_disk / remount подхватывают.
+    dest = audio_dir / f"voice_full{suffix}"
     dest.write_bytes(content)
     meta = dict(p.meta or {})
     meta["montage_voice_path"] = str(dest)
     p.meta = meta
+    flag_modified(p, "meta")
     await session.commit()
-    return {"ok": True, "path": str(dest)}
+    return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
 @router.post("/{project_id}/montage-board/upload-music")
@@ -953,20 +960,26 @@ async def montage_board_upload_music(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Сохраняет BGM как ``music/bgm.<ext>`` — канон для resolve_bgm."""
+    from sqlalchemy.orm.attributes import flag_modified
+
     p = _project_or_404(await session.get(Project, project_id))
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="пустой файл")
     music_dir = p.data_dir / "music"
     music_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "bgm.mp3").suffix or ".mp3"
-    dest = music_dir / f"bgm_montage{suffix}"
+    suffix = Path(file.filename or "bgm.mp3").suffix.lower() or ".mp3"
+    if suffix not in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
+        suffix = ".mp3"
+    dest = music_dir / f"bgm{suffix}"
     dest.write_bytes(content)
     meta = dict(p.meta or {})
     meta["bgm_path"] = str(dest)
     p.meta = meta
+    flag_modified(p, "meta")
     await session.commit()
-    return {"ok": True, "path": str(dest)}
+    return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
 @router.get("/{project_id}/assets")

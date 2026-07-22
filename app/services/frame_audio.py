@@ -26,6 +26,8 @@ _USER_VOICE_BASENAMES = frozenset({
     "voice",
     "voiceover",
     "ozvuchka",
+    # Кнопка панели монтажа раньше писала voice_montage.* — тоже принимаем.
+    "voice_montage",
 })
 
 
@@ -64,8 +66,17 @@ def is_protected_voice_or_music_file(path: Path) -> bool:
     return False
 
 
-def find_voice_full_on_disk(data_dir: Path) -> Path | None:
-    """Готовая озвучка на диске (без 11Labs): audio/voice*.{mp3,wav,...} или в корне."""
+def find_voice_full_on_disk(data_dir: Path, *, meta: dict | None = None) -> Path | None:
+    """Готовая озвучка на диске (без 11Labs): audio/voice*.{mp3,wav,...} или в корне.
+
+    Также учитывает ``meta["montage_voice_path"]`` после upload с панели монтажа.
+    """
+    if meta:
+        hinted = meta.get("montage_voice_path")
+        if hinted:
+            hp = Path(str(hinted))
+            if hp.is_file():
+                return hp
     if not data_dir.is_dir():
         return None
     candidates: list[Path] = []

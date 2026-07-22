@@ -192,7 +192,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     audio_dir = project.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    voice_path = find_voice_full_on_disk(project.data_dir)
+    voice_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
     if voice_path is None:
         audio_art = await _latest_artifact(session, project.id, ArtifactKind.audio)
         if audio_art is not None and audio_art.path and Path(audio_art.path).is_file():

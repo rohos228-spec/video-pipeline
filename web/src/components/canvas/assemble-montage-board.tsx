@@ -175,6 +175,10 @@ function MontageMediaExtras({
   return (
     <div className="mb-4 space-y-2 rounded-lg border border-white/10 bg-black/20 p-3">
       <p className="text-xs font-medium text-foreground">Замена озвучки и музыки</p>
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        Сохраняются как <code className="text-[10px]">audio/voice_full.*</code> и{" "}
+        <code className="text-[10px]">music/bgm.*</code> (имена для монтажа).
+      </p>
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
@@ -1560,7 +1564,7 @@ export function AssembleMontageBoard({
                       onVoiceUpload={async (file) => {
                         try {
                           await api.uploadMontageVoice(projectId, file);
-                          toast.success("Озвучка загружена");
+                          toast.success("Озвучка загружена → audio/voice_full.*");
                         } catch (e) {
                           toast.error(errorMessageFromUnknown(e));
                         }
@@ -1568,7 +1572,7 @@ export function AssembleMontageBoard({
                       onMusicUpload={async (file) => {
                         try {
                           await api.uploadMontageMusic(projectId, file);
-                          toast.success("Музыка загружена");
+                          toast.success("Музыка загружена → music/bgm.*");
                         } catch (e) {
                           toast.error(errorMessageFromUnknown(e));
                         }

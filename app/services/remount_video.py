@@ -84,7 +84,7 @@ async def remount_video(
     else:
         summary["xlsx_sync"] = {"skipped": "no project.xlsx"}
 
-    voice_path = find_voice_full_on_disk(project.data_dir)
+    voice_path = find_voice_full_on_disk(project.data_dir, meta=project.meta if isinstance(project.meta, dict) else None)
     if voice_path is None:
         audio_art = (
             await session.execute(

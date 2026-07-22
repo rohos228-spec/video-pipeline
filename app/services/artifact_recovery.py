@@ -305,7 +305,10 @@ async def recover_audio_from_disk(
     session: AsyncSession, project: Project
 ) -> bool:
     """Зарегистрировать готовую озвучку на диске как ArtifactKind.audio."""
-    full_path = find_voice_full_on_disk(project.data_dir)
+    full_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
     if full_path is None:
         return False
 
