@@ -371,15 +371,49 @@ async def build_montage_board(
         logger.warning("montage_board: meta project {}: {}", project_id, e)
         board_meta = _json_safe_meta({})
 
-    frames_orm = list(
-        (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project_id)
-                .order_by(Frame.number.asc())
-            )
-        ).scalars().all()
-    )
+    async def _load_frames() -> list[Frame]:
+        return list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project_id)
+                    .order_by(Frame.number.asc())
+                )
+            ).scalars().all()
+        )
+
+    frames_orm = await _load_frames()
+    # Ручной перенос scenes/videos в новый проект: без Frame в БД доска пустая.
+    # project.xlsx → sync; иначе создаём кадры по номерам файлов на диске.
+    if not frames_orm:
+        xlsx_boot = data_dir / "project.xlsx"
+        if xlsx_boot.is_file():
+            try:
+                from app.services.chatgpt_xlsx import sync_project_xlsx
+
+                await sync_project_xlsx(
+                    session,
+                    project,
+                    xlsx_boot,
+                    keep_fields=True,
+                    update_frames_voiceover=True,
+                )
+                frames_orm = await _load_frames()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "montage_board: xlsx bootstrap project {}: {}", project_id, e
+                )
+    try:
+        from app.services.ensure_frames_from_disk import ensure_frames_from_disk_media
+
+        created = await ensure_frames_from_disk_media(session, project)
+        if created:
+            frames_orm = await _load_frames()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage_board: disk frames bootstrap project {}: {}", project_id, e
+        )
+
     # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).
     frames = _snapshot_frames(frames_orm)
 
