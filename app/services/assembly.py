@@ -49,6 +49,10 @@ class ClipSpec:
     duration: float  # длительность слота на таймлайне
     trim_start: float = 0.0
     trim_end: float | None = None  # None → до конца файла
+    frame_number: int = 0
+    timeline_start: float = 0.0
+    timeline_end: float = 0.0
+    kind: str = "scene"
 
 
 async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:

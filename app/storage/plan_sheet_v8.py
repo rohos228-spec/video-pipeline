@@ -101,6 +101,44 @@ def voiceover_frame_columns(ws) -> dict[int, int]:
     return mapping
 
 
+def scan_r15_frame_numbers(project: Project) -> list[int]:
+    """Все кадры с непустой меткой в R15 (col 3 = кадр 1, col = frame+2)."""
+    path = project.data_dir / "project.xlsx"
+    if not path.is_file():
+        return []
+    nums: list[int] = []
+    try:
+        with _file_lock(path):
+            wb_values = _load_plan_workbook(path, data_only=True)
+            wb_raw = _load_plan_workbook(path, data_only=False)
+            try:
+                ws_values = _resolve_plan_sheet(wb_values)
+                ws_raw = _resolve_plan_sheet(wb_raw)
+                ws_primary = ws_values or ws_raw
+                if ws_primary is None:
+                    return []
+                col_map = voiceover_frame_columns(ws_primary)
+                if col_map:
+                    for frame_num in sorted(col_map):
+                        col = col_map[frame_num]
+                        label = _read_r15_label(ws_raw, ws_values, ROW_TIMECODE_V8, col)
+                        if (label or "").strip():
+                            nums.append(frame_num)
+                    if nums:
+                        return nums
+                max_col = _scan_row_content_columns(ws_primary, ROW_TIMECODE_V8)
+                for col in range(3, max_col + 1):
+                    label = _read_r15_label(ws_raw, ws_values, ROW_TIMECODE_V8, col)
+                    if (label or "").strip():
+                        nums.append(col - 2)
+            finally:
+                wb_values.close()
+                wb_raw.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] scan_r15_frame_numbers: {}", project.id, exc)
+    return nums
+
+
 def _timestamp_column(frame_number: int, col_map: dict[int, int]) -> int:
     return col_map.get(frame_number, plan_frame_column(frame_number))
 

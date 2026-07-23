@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.artifact_recovery import ensure_whisper_words, recover_before_assemble
-from app.services.assembly import ClipSpec, assemble, make_simple_ass
+from app.services.assembly import assemble, make_simple_ass, subtitles_vf_arg, SUBTITLES_ASS_NAME
 from app.services.bgm import resolve_bgm
 from app.services.frame_audio import (
     _voiceover_cells_for_frames,
@@ -315,6 +317,60 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     from app.services.frame_timeline_sync import timeline_frames_and_cells
 
     _timeline_frames, align_cells = timeline_frames_and_cells(project, frames_all)
+    align_nums = [n for n, _ in align_cells]
+
+    ts_cells: list[tuple[int, str]] | None = None
+    ts_row: int | None = None
+    if not per_frame_tts:
+        from app.services.montage.r15 import resolve_montage_frame_numbers
+        from app.services.plan_timestamps import (
+            count_parsed_timestamp_cells,
+            ensure_r15_from_asr,
+        )
+        from app.services.montage_asr import ensure_montage_words
+
+        montage_frame_numbers = resolve_montage_frame_numbers(project, align_nums)
+        montage_cells = [
+            (n, text) for n, text in align_cells if n in set(montage_frame_numbers)
+        ]
+        if len(montage_cells) < len(montage_frame_numbers):
+            by_num = dict(align_cells)
+            montage_cells = [
+                (n, by_num.get(n, "")) for n in montage_frame_numbers
+            ]
+
+        if not words:
+            words = await ensure_montage_words(
+                session,
+                project,
+                audio_path=audio_path,
+                audio_dir=audio_dir,
+                frame_numbers=montage_frame_numbers,
+            )
+
+        ts_cells, ts_row = await ensure_r15_from_asr(
+            project,
+            frame_numbers=montage_frame_numbers,
+            cells=montage_cells,
+            words=words,
+            voice_full_path=audio_path,
+        )
+        _filled, parsed_n, bad = count_parsed_timestamp_cells(ts_cells)
+        if parsed_n < len(montage_frame_numbers):
+            sample = ", ".join(str(n) for n in bad[:5]) if bad else "—"
+            xlsx_path = project.data_dir / "project.xlsx"
+            raise RuntimeError(
+                f"[#{project.id}] монтаж только по Excel R{ts_row}: "
+                f"прочитано {parsed_n}/{len(montage_frame_numbers)} меток из {xlsx_path}. "
+                f"Сохраните файл, закройте Excel. Битые/пустые: {sample}"
+            )
+        logger.info(
+            "[#{}] preflight Excel R{}: {} меток OK ({})",
+            project.id,
+            ts_row,
+            parsed_n,
+            project.data_dir / "project.xlsx",
+        )
 
     try:
         return await _assemble_body(
@@ -328,12 +384,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             audio_path=audio_path,
             audio_dir=audio_dir,
             frame_numbers=frame_numbers,
+            align_nums=align_nums,
             per_frame_tts=per_frame_tts,
             subs_enabled=subs_enabled,
             words=words,
             whisper_art=whisper_art,
             cells=cells,
             align_cells=align_cells,
+            ts_cells=ts_cells,
+            ts_row=ts_row,
         )
     except Exception:
         if project.status is ProjectStatus.assembling:
@@ -358,15 +417,22 @@ async def _assemble_body(
     audio_path: Path,
     audio_dir: Path,
     frame_numbers: list[int],
+    align_nums: list[int],
     per_frame_tts: bool,
     subs_enabled: bool,
     words: list[WordTS],
     whisper_art,
     cells: list[tuple[int, str]],
     align_cells: list[tuple[int, str]],
+    ts_cells: list[tuple[int, str]] | None = None,
+    ts_row: int | None = None,
 ) -> None:
+    from app.services.montage.variant2 import MONTAGE_ENGINE_V2, run_variant2
+    from app.services.montage.r15 import load_r15_markers, resolve_montage_frame_numbers
+
     timeline_mode = "legacy-stretch"
-    used_r15 = False
+    per_frame_audio = False
+    time_scale = 1.0
 
     if per_frame_tts:
         try:
@@ -383,105 +449,49 @@ async def _assemble_body(
             raise RuntimeError(str(exc)) from exc
         timeline_mode = "per-frame"
     else:
-        from app.services.plan_timestamps import load_assembly_timeline_from_r15
+        montage_frame_numbers = resolve_montage_frame_numbers(project, align_nums)
+        markers, ts_row = load_r15_markers(project, montage_frame_numbers)
+        audio_duration = await probe_duration(audio_path)
+        from app.services.frame_audio import FrameAudioClip
 
-        all_nums = [n for n, _ in align_cells]
-        try:
-            r15_clips, r15_master = await load_assembly_timeline_from_r15(
-                project,
-                all_nums,
-                align_cells,
+        audio_clips = [
+            FrameAudioClip(
+                m.frame_number,
                 audio_path,
+                "",
+                m.start_s,
+                m.end_s,
+                m.duration_s,
             )
-        except RuntimeError:
-            raise
-        allowed = set(frame_numbers)
-        if r15_clips:
-            filtered = [c for c in r15_clips if c.frame_number in allowed]
-            if len(filtered) == len(allowed):
-                audio_clips = filtered
-                audio_duration = float(r15_master or 0.0)
-                time_scale = 1.0
-                per_frame_audio = False
-                timeline_mode = "excel-r15"
-                used_r15 = True
-
-        if not used_r15:
-            try:
-                audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
-                    audio_dir,
-                    audio_path,
-                    frame_numbers,
-                    cells=cells,
-                    align_cells=align_cells,
-                    words=words,
-                    per_frame_tts=False,
-                )
-            except FileNotFoundError as exc:
-                raise RuntimeError(str(exc)) from exc
+            for m in markers
+        ]
+        ts_cells = [(m.frame_number, m.label) for m in markers]
+        time_scale = 1.0
+        per_frame_audio = False
+        timeline_mode = MONTAGE_ENGINE_V2
 
     words = _scale_whisper_words(words, time_scale) if not per_frame_audio else words
-    _ = frames_all, skipped_no_video, audio, whisper_art  # reserved for future diagnostics
-
-    video_duration = sum(c.duration for c in audio_clips)
-    logger.info(
-        "[#{}] assemble: master voice {:.2f}s, {} clips, video {:.2f}s, "
-        "timeline={}, burn_subs={}",
-        project.id,
-        audio_duration,
-        len(audio_clips),
-        video_duration,
-        "per-frame" if per_frame_audio else timeline_mode,
-        subs_enabled,
-    )
-
-    duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
+    _ = frames_all, skipped_no_video, audio, whisper_art, ts_row, ts_cells
     frame_timings = [
         FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
         for c in audio_clips
     ]
+    duration_by_frame = {c.frame_number: c.duration for c in audio_clips}
 
-    shot1_paths: dict[int, Path] = {}
-    shot2_paths: dict[int, Path | None] = {}
-    xlsx_path = project.data_dir / "project.xlsx"
-    shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
-    for fr in frames:
-        p1 = await _scene_video_path(session, project, fr, shot=1)
-        info = shot2_by.get(fr.number)
-        p2 = None
-        if info is not None and info.has_shot2:
-            p2 = await _scene_video_path(session, project, fr, shot=2)
-        # Нет shot_01 — нормально: подставляем shot_02 на весь слот.
-        if p1 is None:
-            if p2 is None:
-                p2 = await _scene_video_path(session, project, fr, shot=2)
-            if p2 is None:
-                raise RuntimeError(
-                    f"нет клипа shot_01/shot_02 для кадра {fr.number}"
-                )
-            logger.info(
-                "[#{}] assemble: кадр {} — нет shot_01, используем shot_02",
-                project.id,
-                fr.number,
-            )
-            shot1_paths[fr.number] = p2
-            shot2_paths[fr.number] = None
-        else:
-            shot1_paths[fr.number] = p1
-            shot2_paths[fr.number] = p2
-        fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
-        fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)
-        fr.duration_seconds = duration_by_frame[fr.number]
+    for fr in frames_all:
+        ac = next((c for c in audio_clips if c.frame_number == fr.number), None)
+        if ac is None:
+            continue
+        fr.start_ts = ac.start_ts
+        fr.end_ts = ac.end_ts
+        fr.duration_seconds = ac.duration
 
-    clips = build_assembly_clip_specs(
-        frames,
-        shot1_paths,
-        shot2_paths,
-        duration_by_frame,
-        video_trims=(montage_meta(project).get("video_trims") or None),
-    )
+    out_dir = project.data_dir / "final"
+    out_path = out_dir / f"{project.slug}.mp4"
+    bgm = resolve_bgm(project)
 
     subs_path: Path | None = None
+    sub_entries: list[tuple[float, float, str]] = []
     if subs_enabled:
         subs_dir = project.data_dir / "subs"
         subs_path = subs_dir / f"subs_{uuid.uuid4().hex[:8]}.ass"
@@ -496,8 +506,6 @@ async def _assemble_body(
         )
         if not sub_entries:
             raise RuntimeError("не удалось построить субтитры из Excel + Whisper")
-        ass_w, ass_h = await probe_video_size(clips[0].src)
-        make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
         session.add(Artifact(
             project_id=project.id, kind=ArtifactKind.subtitle,
             uuid=uuid.uuid4().hex, path=str(subs_path),
@@ -505,18 +513,93 @@ async def _assemble_body(
     else:
         logger.info("[#{}] assemble: субтитры выключены в настройках сборки", project.id)
 
-    out_dir = project.data_dir / "final"
-    out_path = out_dir / f"{project.slug}.mp4"
-    bgm = resolve_bgm(project)
-    tail_seconds = post_voiceover_tail_seconds_for_project(project)
-    await assemble(
-        clips,
-        audio_path,
-        out_path,
-        subtitles_ass=subs_path,
-        max_duration=audio_duration,
-        tail_seconds=tail_seconds,
-        bgm=bgm,
+    if per_frame_tts:
+        shot1_paths: dict[int, Path] = {}
+        shot2_paths: dict[int, Path | None] = {}
+        xlsx_path = project.data_dir / "project.xlsx"
+        shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+        for fr in frames:
+            p1 = await _scene_video_path(session, project, fr, shot=1)
+            info = shot2_by.get(fr.number)
+            p2 = None
+            if info is not None and info.has_shot2:
+                p2 = await _scene_video_path(session, project, fr, shot=2)
+            # Нет shot_01 — нормально: подставляем shot_02 на весь слот.
+            if p1 is None:
+                if p2 is None:
+                    p2 = await _scene_video_path(session, project, fr, shot=2)
+                if p2 is None:
+                    raise RuntimeError(
+                        f"нет клипа shot_01/shot_02 для кадра {fr.number}"
+                    )
+                logger.info(
+                    "[#{}] assemble: кадр {} — нет shot_01, используем shot_02",
+                    project.id,
+                    fr.number,
+                )
+                shot1_paths[fr.number] = p2
+                shot2_paths[fr.number] = None
+            else:
+                shot1_paths[fr.number] = p1
+                shot2_paths[fr.number] = p2
+
+        clips = build_assembly_clip_specs(
+            frames,
+            shot1_paths,
+            shot2_paths,
+            duration_by_frame,
+            video_trims=(montage_meta(project).get("video_trims") or None),
+        )
+        if subs_path is not None:
+            ass_w, ass_h = await probe_video_size(clips[0].src)
+            make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
+        tail_seconds = post_voiceover_tail_seconds_for_project(project)
+        await assemble(
+            clips,
+            audio_path,
+            out_path,
+            subtitles_ass=subs_path,
+            max_duration=audio_duration,
+            tail_seconds=tail_seconds,
+            bgm=bgm,
+        )
+    else:
+        montage_frame_numbers = resolve_montage_frame_numbers(project, align_nums)
+        await run_variant2(
+            project,
+            montage_frame_numbers,
+            audio_path,
+            out_path,
+            bgm=bgm,
+        )
+        if subs_path is not None and subs_path.is_file():
+            ass_w, ass_h = await probe_video_size(out_path)
+            make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
+            with tempfile.TemporaryDirectory(prefix="vp_subs_") as td:
+                tmp = Path(td)
+                tmp_ass = tmp / SUBTITLES_ASS_NAME
+                shutil.copy2(subs_path, tmp_ass)
+                burned = tmp / "burned.mp4"
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(out_path),
+                    "-vf", subtitles_vf_arg(),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
+                    "-c:a", "copy",
+                    "-t", f"{audio_duration:.3f}",
+                    str(burned),
+                    cwd=str(tmp),
+                )
+                await proc.communicate()
+                if proc.returncode != 0:
+                    raise RuntimeError("ffmpeg subtitle burn failed")
+                shutil.copy2(burned, out_path)
+
+    logger.info(
+        "[#{}] assemble done: voice {:.2f}s, engine={}, timeline={}",
+        project.id,
+        audio_duration,
+        MONTAGE_ENGINE_V2 if not per_frame_tts else "per-frame",
+        timeline_mode,
     )
     await session.flush()
 
