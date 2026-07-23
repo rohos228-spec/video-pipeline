@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models import Base, Frame, Project
 from app.services.ensure_frames_from_disk import (
+    bootstrap_project_frames_from_disk,
     discover_frame_numbers_on_disk,
     ensure_frames_from_disk_media,
 )
@@ -98,3 +99,21 @@ async def test_build_montage_board_bootstraps_from_disk_folders(
     assert board["frame_count"] == 1
     assert board["frames"][0]["number"] == 2
     assert board["frames"][0]["video_shot1_url"] is not None
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_project_frames_from_disk(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    session.add(project)
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    videos = project.data_dir / "videos"
+    scenes.mkdir()
+    videos.mkdir()
+    (videos / "clip_004_a.mp4").write_bytes(b"mp4")
+
+    summary = await bootstrap_project_frames_from_disk(session, project)
+    assert summary["frames_created"] == [4]
+    assert summary["disk_frame_numbers"] == [4]

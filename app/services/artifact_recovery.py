@@ -531,6 +531,9 @@ async def recover_music_from_disk(
 
 
 async def recover_before_assemble(session: AsyncSession, project: Project) -> None:
+    from app.services.ensure_frames_from_disk import bootstrap_project_frames_from_disk
+
+    await bootstrap_project_frames_from_disk(session, project, sync_xlsx=True)
     await recover_scene_videos_from_disk(session, project)
     await recover_audio_from_disk(session, project)
     await recover_whisper_from_disk(session, project)

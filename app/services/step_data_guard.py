@@ -129,6 +129,22 @@ async def can_enter_running(
     if target not in _NO_FRAMES_REQUIRED:
         need_frames = await _frames_with_voiceover(session, project)
         if need_frames == 0:
+            from app.services.ensure_frames_from_disk import (
+                discover_frame_numbers_on_disk,
+                ensure_frames_from_disk_media,
+            )
+
+            if discover_frame_numbers_on_disk(project.data_dir):
+                created = await ensure_frames_from_disk_media(session, project)
+                if created:
+                    logger.info(
+                        "[#{}] step_data_guard: создано {} кадров с диска перед {}",
+                        project.id,
+                        len(created),
+                        target.value,
+                    )
+                need_frames = await _frames_with_voiceover(session, project)
+        if need_frames == 0:
             actual = await compute_actual_status(session, project)
             return False, "нет кадров с voiceover", actual
 
@@ -207,6 +223,9 @@ async def can_enter_running(
         return True, "", None
 
     if target is ProjectStatus.assembling:
+        from app.services.ensure_frames_from_disk import ensure_frames_from_disk_media
+
+        await ensure_frames_from_disk_media(session, project)
         await recover_scene_videos_from_disk(session, project)
         await recover_audio_from_disk(session, project)
         vids = await _count_kind(session, project.id, ArtifactKind.scene_video)

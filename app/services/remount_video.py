@@ -56,6 +56,12 @@ async def remount_video(
         "topic": project.topic,
     }
 
+    from app.services.ensure_frames_from_disk import bootstrap_project_frames_from_disk
+
+    boot = await bootstrap_project_frames_from_disk(session, project, sync_xlsx=True)
+    if boot:
+        summary["disk_bootstrap"] = boot
+
     frames_before = (
         await session.execute(
             select(Frame)
@@ -64,7 +70,10 @@ async def remount_video(
         )
     ).scalars().all()
     if not frames_before:
-        summary["error"] = "нет кадров в БД — сначала шаг «Разбивка»"
+        summary["error"] = (
+            "нет кадров в БД — положите clip_*/frame_* в videos/scenes "
+            "или project.xlsx и повторите"
+        )
         return summary
 
     xlsx = project.data_dir / "project.xlsx"
