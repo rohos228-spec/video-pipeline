@@ -236,6 +236,81 @@ def write_plan_timestamps(
     return written
 
 
+def _read_plan_voiceover_cells_raw(
+    project: Project, frame_numbers: list[int]
+) -> list[tuple[int, str]]:
+    """R49 без data_only — если формулы не сохранили cached values."""
+    if not frame_numbers:
+        return []
+    path = project.data_dir / "project.xlsx"
+    if not path.is_file():
+        return [(n, "") for n in frame_numbers]
+
+    out: dict[int, str] = dict.fromkeys(frame_numbers, "")
+    try:
+        with _file_lock(path):
+            wb = _load_plan_workbook(path, data_only=False)
+            ws = _resolve_plan_sheet(wb)
+            if ws is not None:
+                col_map = voiceover_frame_columns(ws)
+                for frame_number in frame_numbers:
+                    col = _timestamp_column(frame_number, col_map)
+                    text = _cell_text(ws, ROW_VOICEOVER_V8, col)
+                    out[frame_number] = (text or "").strip()
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] _read_plan_voiceover_cells_raw failed: {}",
+            project.id,
+            e,
+        )
+    return [(n, out[n]) for n in frame_numbers]
+
+
+async def resolve_plan_voiceover_cells(
+    session,
+    project: Project,
+    frame_numbers: list[int],
+) -> tuple[list[tuple[int, str]], str]:
+    """Текст кадров для монтажа: xlsx R49 → raw xlsx → Frame.voiceover_text в БД."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+
+    cells = read_plan_voiceover_cells(project, frame_numbers)
+    if any(text.strip() for _, text in cells):
+        return cells, "xlsx-r49"
+
+    raw_cells = _read_plan_voiceover_cells_raw(project, frame_numbers)
+    if any(text.strip() for _, text in raw_cells):
+        logger.warning(
+            "[#{}] montage: R49 пуст в data_only — взято из literal/formula xlsx",
+            project.id,
+        )
+        return raw_cells, "xlsx-r49-raw"
+
+    rows = (
+        await session.execute(
+            select(Frame).where(
+                Frame.project_id == project.id,
+                Frame.number.in_(frame_numbers),
+            )
+        )
+    ).scalars().all()
+    by_number = {fr.number: (fr.voiceover_text or "").strip() for fr in rows}
+    db_cells = [(n, by_number.get(n, "")) for n in frame_numbers]
+    filled = sum(1 for _, text in db_cells if text.strip())
+    if filled:
+        logger.warning(
+            "[#{}] montage: лист «план» R49 пуст — текст из БД ({} кадров)",
+            project.id,
+            filled,
+        )
+        return db_cells, "db-frames"
+
+    return cells, "empty"
+
+
 def read_plan_voiceover(project: Project, frame_number: int) -> str | None:
     """Закадровый текст кадра — строка 49 листа «план» (v8)."""
     cells = read_plan_voiceover_cells(project, [frame_number])

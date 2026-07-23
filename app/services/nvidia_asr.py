@@ -532,6 +532,19 @@ def transcribe_words_nvidia(
     return words
 
 
+def looks_like_fake_uniform_timestamps(words: list[WordTS]) -> bool:
+    """Равномерные 0.25 с — старый fallback, не реальный ASR."""
+    if len(words) < 4:
+        return False
+    sample = words[: min(24, len(words))]
+    durs = [round(w.end - w.start, 3) for w in sample]
+    if len(set(durs)) == 1 and durs[0] in (0.25, 0.2):
+        return True
+    if max(durs) - min(durs) < 0.02 and max(durs) <= 0.26:
+        return True
+    return False
+
+
 def transcribe_words_many_nvidia(
     audio_paths: list[Path],
     *,
