@@ -40,7 +40,7 @@ _LOAD_LOCK_TIMEOUT_S = 900.0
 
 
 def normalize_nvidia_asr_model(model_name: str) -> str:
-    """Word-level монтаж — только Parakeet; FastConformer из старого .env игнорируем."""
+    """Parakeet по умолчанию; legacy FastConformer — если .nemo уже на диске, не перекачиваем."""
     name = (model_name or "").strip()
     if not name:
         return _PARAKEET_V3
@@ -48,8 +48,17 @@ def normalize_nvidia_asr_model(model_name: str) -> str:
     if name.startswith("nvidia/") and "parakeet" in lower:
         return name
     if any(marker in lower for marker in _LEGACY_NVIDIA_MARKERS):
+        cache_dir = _cache_root()
+        local = _find_local_nemo_checkpoint(name, cache_dir)
+        if local is not None:
+            logger.info(
+                "nvidia_asr: {} уже на диске ({}) — используем установленную модель",
+                name,
+                local.name,
+            )
+            return name
         logger.warning(
-            "nvidia_asr: {} устарел для word-level монтажа — используем {}",
+            "nvidia_asr: {} не найден на диске — скачаем {} (рекомендуется для word-level монтажа)",
             name,
             _PARAKEET_V3,
         )

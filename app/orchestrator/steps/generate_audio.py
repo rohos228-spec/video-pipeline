@@ -231,7 +231,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.nvidia_asr import ensure_nvidia_asr_ready
 
             logger.info(
-                "[#{}] generate_audio: ждём Parakeet (~2.5 GB при первом запуске) …",
+                "[#{}] generate_audio: ждём загрузку ASR-модели в память …",
                 project.id,
             )
             await asyncio.to_thread(ensure_nvidia_asr_ready)
