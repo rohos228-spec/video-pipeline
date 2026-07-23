@@ -173,7 +173,8 @@ function Start-StudioBackendWindow {
         Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [5]." "Red"
         return $false
     }
-    & $py -c 'from app.web.api import create_app; create_app()' 2>$null | Out-Null
+    Set-StudioNvidiaEnv
+    & $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app()" 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [5] Починить установку." "Red"
         return $false
@@ -280,6 +281,8 @@ function Invoke-StudioStart {
     # Если прошлый [4] оставил кастомные промты в stash — вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
+    Set-StudioNvidiaEnv
+    Invoke-StudioPredownloadNemo | Out-Null
     Start-StudioChromeCdp
     # Одна вкладка UI: ждём health в Start-StudioBackendWindow, потом Open-StudioBrowser.
     # (раньше фоновый job дублировал открытие URL)
@@ -369,14 +372,93 @@ function Test-StudioAsrBackendNvidia {
     return $true
 }
 
+function Set-StudioNvidiaEnv {
+    if (-not (Test-StudioAsrBackendNvidia)) { return }
+    $cacheRoot = Join-Path $Root "data\.cache"
+    $cacheTemp = Join-Path $cacheRoot "temp"
+    $cacheHf = Join-Path $cacheRoot "huggingface"
+    $cacheHfHub = Join-Path $cacheHf "hub"
+    $cacheNemo = Join-Path $cacheRoot "nemo"
+    foreach ($d in @($cacheRoot, $cacheTemp, $cacheHf, $cacheHfHub, $cacheNemo)) {
+        if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    }
+    $env:TEMP = $cacheTemp
+    $env:TMP = $cacheTemp
+    $env:TMPDIR = $cacheTemp
+    $env:HF_HOME = $cacheHf
+    $env:HUGGINGFACE_HUB_CACHE = $cacheHfHub
+    $env:TRANSFORMERS_CACHE = $cacheHfHub
+    $env:NEMO_CACHE_DIR = $cacheNemo
+    $env:HF_HUB_DISABLE_XET = "1"
+    $env:HF_HUB_DISABLE_SYMLINKS = "1"
+    $env:HF_HUB_ENABLE_HF_TRANSFER = "0"
+    $env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
+    $env:HF_HUB_ETAG_TIMEOUT = "60"
+    $env:HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY = "1"
+    $env:TOKENIZERS_PARALLELISM = "false"
+}
+
+function Get-StudioNvidiaAsrModel {
+    $default = "nvidia/parakeet-tdt-0.6b-v3"
+    $envFile = Join-Path $Root ".env"
+    if (-not (Test-Path $envFile)) { return $default }
+    $match = Select-String -Path $envFile -Pattern '^\s*NVIDIA_ASR_MODEL\s*=\s*(\S+)' | Select-Object -First 1
+    if (-not $match) { return $default }
+    return $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+}
+
+function Invoke-StudioPredownloadNemo {
+    if (-not (Test-StudioAsrBackendNvidia)) { return $true }
+    Set-StudioNvidiaEnv
+    $model = Get-StudioNvidiaAsrModel
+    $slug = ($model -replace "/", "--")
+    $nemoDir = Join-Path $Root "data\.cache\nemo"
+    $dest = Join-Path $nemoDir "$slug.nemo"
+    $part = "$dest.part"
+    if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 50000000)) {
+        Write-StudioMsg "OK: NeMo модель уже на диске ($slug.nemo)." "Green"
+        return $true
+    }
+    $fileName = switch ($model) {
+        "nvidia/parakeet-tdt-0.6b-v3" { "parakeet-tdt-0.6b-v3.nemo" }
+        "nvidia/parakeet-tdt-0.6b-v2" { "parakeet-tdt-0.6b-v2.nemo" }
+        default {
+            if ($model -match '\.nemo$') { Split-Path $model -Leaf }
+            else { "$(Split-Path $model -Leaf).nemo" }
+        }
+    }
+    $url = "https://huggingface.co/$model/resolve/main/$fileName"
+    if (-not (Test-Path $nemoDir)) { New-Item -ItemType Directory -Force -Path $nemoDir | Out-Null }
+    Write-StudioMsg "==> Скачивание $fileName (~2.5 GB) через curl, без Python/HF temp…" "Cyan"
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if (-not $curl) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl.exe не найден — скачает Python при старте." "Yellow"
+        return $true
+    }
+    & curl.exe -L -C - -o $part $url
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $part)) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl не докачал модель — повторит Python." "Yellow"
+        return $true
+    }
+    if ((Get-Item $part).Length -lt 50000000) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: файл слишком мал — повторит Python." "Yellow"
+        return $true
+    }
+    Move-Item -Force -Path $part -Destination $dest
+    Write-StudioMsg "OK: $fileName сохранён в data\.cache\nemo\" "Green"
+    return $true
+}
+
 function Invoke-StudioNvidiaDeps {
     if (-not (Test-StudioAsrBackendNvidia)) {
         Write-StudioMsg "ASR_BACKEND не nvidia — пропуск NeMo." "DarkGray"
         return $true
     }
+    Set-StudioNvidiaEnv
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) { return $false }
-    & $py -c "import nemo.collections.asr" 2>$null
+    & $py -m pip uninstall -y hf-xet hf_xet 2>$null | Out-Null
+    & $py -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('nemo.collections.asr') else 1)" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-StudioMsg "OK: NVIDIA NeMo ASR (Parakeet) установлен." "Green"
         return $true
@@ -453,6 +535,7 @@ function Invoke-StudioUpdateAndStart {
         return $false
     }
     if (-not (Invoke-StudioNvidiaDeps)) { return $false }
+    Invoke-StudioPredownloadNemo | Out-Null
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления — запускаю [5] сборку UI..." "Yellow"
         if (-not (Invoke-StudioRepairWeb)) { return $false }

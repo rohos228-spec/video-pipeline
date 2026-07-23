@@ -104,8 +104,11 @@ $env:TOKENIZERS_PARALLELISM = "false"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="
 
+# Bootstrap env до любого import app.*
+& $py -c "import app.bootstrap_env" 2>$null | Out-Null
+
 Write-Host "Проверка create_app() ..." -ForegroundColor Gray
-$preflightOut = @(& $py -c "from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
+$preflightOut = @(& $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
 $preflightOk = ($LASTEXITCODE -eq 0) -and ($preflightOut -match "create_app OK")
 if (-not $preflightOk) {
     Write-Host ""

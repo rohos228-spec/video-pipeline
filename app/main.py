@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import app.bootstrap_env  # noqa: F401  — TEMP/HF env до loguru, nemo, huggingface
+
 import asyncio
 import contextlib
 
@@ -766,10 +768,10 @@ async def _preload_nvidia_asr_on_startup() -> None:
                 '(обновление через STUDIO.cmd [4] ставит ".[nvidia]")'
             )
             return
-        logger.info("nvidia_asr: фоновая предзагрузка Parakeet…")
+        logger.info("nvidia_asr: фоновая предзагрузка {}…", settings.nvidia_asr_model)
         ok = await asyncio.to_thread(preload_nvidia_asr_model)
         if ok:
-            logger.info("nvidia_asr: Parakeet готов к шагу «Аудио»")
+            logger.info("nvidia_asr: {} готов к шагу «Аудио»", settings.nvidia_asr_model)
         else:
             logger.warning(
                 "nvidia_asr: предзагрузка не удалась — повтор при шаге «Аудио»"

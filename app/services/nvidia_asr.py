@@ -11,10 +11,11 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.bootstrap_env import apply_nvidia_env, set_hf_offline
 from app.services.nvidia_asr_env import configure_nvidia_asr_environment
 from app.services.whisper import WordTS
 
-# До любого import nemo/huggingface — иначе останется %TEMP% / включится Xet.
+apply_nvidia_env(force=True)
 configure_nvidia_asr_environment(force=True)
 
 _model_lock = threading.Lock()
@@ -35,12 +36,11 @@ _LOAD_LOCK_TIMEOUT_S = 900.0
 
 
 def nvidia_asr_available() -> bool:
+    """Проверка NeMo без import nemo (import тянет transformers → HF temp manifest)."""
+    import importlib.util
+
     configure_nvidia_asr_environment(force=True)
-    try:
-        import nemo.collections.asr  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("nemo.collections.asr") is not None
 
 
 def _cache_root() -> Path:
@@ -117,12 +117,8 @@ def _release_interprocess_load_lock(lock_file: Path | None) -> None:
             logger.warning("nvidia_asr: не удалось снять lock {}: {}", lock_file, exc)
 
 
-def _hf_cache_slug(model_name: str) -> str:
-    return "models--" + model_name.replace("/", "--")
-
-
 def _find_local_nemo_checkpoint(model_name: str, cache_dir: Path) -> Path | None:
-    """Ищем готовый .nemo — restore_from без HF temp manifest."""
+    """Только стабильный data/.cache/nemo/*.nemo — без HF hub cache."""
     stable = _stable_nemo_path(model_name, cache_dir)
     if _nemo_file_ready(stable):
         return stable
@@ -130,13 +126,15 @@ def _find_local_nemo_checkpoint(model_name: str, cache_dir: Path) -> Path | None
     legacy = cache_dir / "nemo" / f"{slug}.nemo"
     if legacy.is_file() and legacy.resolve() != stable.resolve() and _nemo_file_ready(legacy):
         return legacy
-    hub = cache_dir / "huggingface" / "hub"
-    hf_dir = hub / _hf_cache_slug(model_name)
-    if hf_dir.is_dir():
-        for nemo in hf_dir.rglob("*.nemo"):
-            if _nemo_file_ready(nemo):
-                return nemo
     return None
+
+
+def _ensure_nemo_on_disk(model_name: str, cache_dir: Path) -> Path:
+    """Скачать .nemo по HTTP до любого import nemo/huggingface."""
+    local = _find_local_nemo_checkpoint(model_name, cache_dir)
+    if local is not None:
+        return local
+    return _http_download_nemo(model_name, cache_dir)
 
 
 def _ensure_stable_nemo_copy(model_name: str, cache_dir: Path, source: Path) -> Path:
@@ -236,21 +234,18 @@ def _http_download_nemo(model_name: str, cache_dir: Path) -> Path:
 
 
 def _restore_nemo_model(model_name: str, nemo_path: Path):
+    set_hf_offline(offline=True)
+    configure_nvidia_asr_environment(force=True)
     import nemo.collections.asr as nemo_asr
 
     logger.info("nvidia_asr: restore_from {}", nemo_path)
-    return nemo_asr.models.ASRModel.restore_from(restore_path=str(nemo_path))
+    return nemo_asr.models.ASRModel.restore_from(restore_path=str(nemo_path.resolve()))
 
 
 def _download_model(model_name: str):
     cache_dir = _cache_root()
     configure_nvidia_asr_environment(force=True)
-
-    local = _find_local_nemo_checkpoint(model_name, cache_dir)
-    if local is not None:
-        return _restore_nemo_model(model_name, local)
-
-    nemo_path = _http_download_nemo(model_name, cache_dir)
+    nemo_path = _ensure_nemo_on_disk(model_name, cache_dir)
     return _restore_nemo_model(model_name, nemo_path)
 
 
