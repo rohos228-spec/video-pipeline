@@ -164,6 +164,74 @@ async def test_montage_board_prompt_falls_back_to_frame_db(
     assert row["animation_prompt_shot1"] == "DB VIDEO PROMPT"
 
 
+@pytest.mark.asyncio
+async def test_montage_board_recalculates_stale_timestamps(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """При каждом открытии монтажа таймкоды пересчитываются, а не берутся из БД как есть."""
+    from unittest.mock import patch
+
+    from app.models import Artifact, ArtifactKind
+    from app.services.whisper import WordTS
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="Привет мир")
+    wb.save(xlsx)
+
+    audio = montage_project.data_dir / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    voice = audio / "voice_full.wav"
+    voice.write_bytes(b"\xff" * 100)
+    words_path = audio / "words_test.json"
+    words_path.write_text(
+        '[{"word":"привет","start":0.0,"end":0.5,"prob":0.9},'
+        '{"word":"мир","start":0.5,"end":1.0,"prob":0.9}]',
+        encoding="utf-8",
+    )
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="Привет мир",
+        start_ts=0.0,
+        end_ts=4.24,
+        duration_seconds=4.24,
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    session.add(
+        Artifact(
+            project_id=montage_project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid="w-montage",
+            path=str(words_path),
+        )
+    )
+    await session.flush()
+
+    with (
+        patch(
+            "app.services.frame_timeline_sync.probe_duration",
+            return_value=1.0,
+        ),
+        patch(
+            "app.services.frame_timeline_sync.whisper_words_fresh_for_audio",
+            return_value=True,
+        ),
+    ):
+        board = await build_montage_board(session, montage_project)
+
+    row = board["frames"][0]
+    assert row["start_ts"] == 0.0
+    assert row["end_ts"] == 1.0
+    assert row["duration_seconds"] == 1.0
+
+
 def test_preview_url_encodes_spaces() -> None:
     from app.services.montage_board import _preview_url
 

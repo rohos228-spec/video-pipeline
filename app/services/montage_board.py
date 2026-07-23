@@ -421,9 +421,9 @@ async def build_montage_board(
         )
 
     try:
-        from app.services.frame_timeline_sync import sync_frame_timestamps_if_needed
+        from app.services.frame_timeline_sync import sync_frame_timestamps_from_voice
 
-        sync_info = await sync_frame_timestamps_if_needed(session, project, frames_orm)
+        sync_info = await sync_frame_timestamps_from_voice(session, project, frames_orm)
         if sync_info.get("updated"):
             frames_orm = await _load_frames()
     except Exception as e:  # noqa: BLE001

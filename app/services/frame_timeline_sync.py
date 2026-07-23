@@ -178,7 +178,12 @@ async def sync_frame_timestamps_if_needed(
     project: Project,
     frames: list[Frame] | None = None,
 ) -> dict[str, Any]:
-    """Если у кадров с R49 нет start_ts — пересчитать из whisper/xlsx."""
+    """Если у кадров с R49 нет start_ts — пересчитать из whisper/xlsx.
+
+    Монтажная доска вызывает sync_frame_timestamps_from_voice напрямую
+    (пересчёт при каждом открытии). Эта функция — для шага «Аудио»,
+    когда mp3/whisper уже на диске и таймкоды не нужно затирать без причины.
+    """
     if frames is None:
         frames = list(
             (
