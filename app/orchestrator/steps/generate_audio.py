@@ -30,7 +30,6 @@ from app.services.artifact_recovery import (
 )
 from app.services.frame_audio import (
     FrameAudioClip,
-    _voiceover_cells_for_frames,
     align_existing_voice_full,
     find_voice_full_on_disk,
     synthesize_per_frame_audio,
@@ -215,7 +214,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     cells = read_plan_voiceover_cells(project, [fr.number for fr in frames])
-    cells = _voiceover_cells_for_frames(project, frames, cells)
+    from app.services.frame_timeline_sync import timeline_frames_and_cells
+
+    timeline_frames, cells = timeline_frames_and_cells(project, frames)
+    if not timeline_frames:
+        raise RuntimeError(
+            "нет закадрового текста на листе «план» (R49) — заполните project.xlsx"
+        )
 
     whisper_art = await _latest_artifact(session, project.id, ArtifactKind.whisper_words)
 
@@ -228,7 +233,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             )
             clips, full_audio_path, words = await align_existing_voice_full(
                 project,
-                frames,
+                timeline_frames,
                 cells,
                 voice_path,
                 audio_dir,
@@ -237,7 +242,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await _persist_audio_results(
                 session,
                 project,
-                frames,
+                timeline_frames,
                 clips,
                 full_audio_path,
                 words,
@@ -247,6 +252,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await _finalize_audio_ready(session, project)
             return
 
+        from app.services.frame_timeline_sync import sync_frame_timestamps_if_needed
+
+        sync_info = await sync_frame_timestamps_if_needed(session, project, frames)
+        if sync_info.get("updated"):
+            logger.info(
+                "[#{}] generate_audio: таймкоды кадров из whisper/xlsx: {}",
+                project.id,
+                sync_info,
+            )
         logger.info(
             "[#{}] generate_audio: озвучка и whisper на диске — audio_ready",
             project.id,
@@ -274,7 +288,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         clips, full_audio_path, words = await synthesize_per_frame_audio(
             el,
             project=project,
-            frames=frames,
+            frames=timeline_frames,
             cells=cells,
             audio_dir=audio_dir,
             whisper_model=settings.whisper_model,
@@ -283,7 +297,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await _persist_audio_results(
         session,
         project,
-        frames,
+        timeline_frames,
         clips,
         full_audio_path,
         words,
