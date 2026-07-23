@@ -7,6 +7,8 @@ import re
 import statistics
 from dataclasses import dataclass
 
+from loguru import logger
+
 from app.services.whisper import WordTS
 
 _WORD_RE = re.compile(r"[^\wа-яА-ЯёЁ]+", re.UNICODE)
@@ -329,6 +331,13 @@ def map_frames(
 
     segments = _segment_durations_from_transitions(spans, words, ad)
     if _should_use_token_proportional(spans, words, segments, ad):
+        logger.warning(
+            "map_frames: proportional fallback ({} cells, {} words, whisper_end={:.1f}s, audio={:.1f}s)",
+            len(spans),
+            len(words),
+            float(words[-1].end) if words else 0.0,
+            ad,
+        )
         return _timings_proportional_to_tokens(spans, ad)
 
     out: list[FrameTiming] = []

@@ -252,6 +252,7 @@ async def build_assembly_timeline(
     frame_numbers: list[int],
     *,
     cells: list[tuple[int, str]] | None = None,
+    align_cells: list[tuple[int, str]] | None = None,
     words: list[WordTS] | None = None,
     per_frame_tts: bool = False,
 ) -> tuple[list[FrameAudioClip], float, float, bool]:
@@ -259,6 +260,9 @@ async def build_assembly_timeline(
 
     Per-frame: границы кадров = ffprobe(frame_NNN.mp3), без rescale.
     При расхождении voice_full пересобирается из клипов.
+
+    align_cells — все ячейки R49 для map_frames (полный текст озвучки).
+    cells — то же или подмножество; если align_cells задан, cells только для фильтра выхода.
 
     Returns (clips, master_duration, time_scale, uses_per_frame_clips).
     """
@@ -306,7 +310,8 @@ async def build_assembly_timeline(
             "Сбросьте «Аудио» и перезапустите для per-frame озвучки."
         )
 
-    if not cells or not words:
+    mapping_cells = align_cells if align_cells is not None else cells
+    if not mapping_cells or not words:
         raise FileNotFoundError(
             "нет таймкодов Whisper (words.json) — перезапустите шаг «Аудио» "
             "или включите faster-whisper на сборке"
@@ -316,7 +321,17 @@ async def build_assembly_timeline(
         "сборка по voice_full {:.2f}s + Whisper (legacy stretch субтитры)",
         master,
     )
-    clips = frame_clips_from_whisper(cells, words, master, voice_full_path)
+    all_clips = frame_clips_from_whisper(mapping_cells, words, master, voice_full_path)
+    allowed = set(frame_numbers)
+    clips = [c for c in all_clips if c.frame_number in allowed]
+    if align_cells is not None and len(clips) < len(allowed):
+        missing = sorted(allowed - {c.frame_number for c in clips})
+        logger.warning(
+            "assemble timeline: кадры {} без таймкода (align {} ячеек → {} clips)",
+            missing[:20],
+            len(mapping_cells),
+            len(all_clips),
+        )
     return clips, master, 1.0, False
 
 

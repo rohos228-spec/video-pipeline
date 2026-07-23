@@ -377,26 +377,34 @@ def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
         return False
 
 
+def _nemo_time_stride(model) -> float:
+    """Секунды на один output-frame NeMo: window_stride × subsampling_factor."""
+    window_stride = 0.01
+    subsampling = 8
+    try:
+        window_stride = float(model.cfg.preprocessor.get("window_stride", window_stride))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        enc = model.cfg.get("encoder") or {}
+        subsampling = int(enc.get("subsampling_factor", subsampling))
+    except Exception:  # noqa: BLE001
+        pass
+    return window_stride * subsampling
+
+
 def _word_stamp_seconds(stamp: dict, model) -> tuple[float, float, str]:
     text = str(stamp.get("word") or stamp.get("char") or "").strip()
     if "start" in stamp and "end" in stamp:
         return float(stamp["start"]), float(stamp["end"]), text
-    stride = 0.01
-    try:
-        stride = float(model.cfg.preprocessor.get("window_stride", stride))
-    except Exception:  # noqa: BLE001
-        pass
-    start = float(stamp.get("start_offset", stamp.get("start", 0.0))) * stride
-    end = float(stamp.get("end_offset", stamp.get("end", start))) * stride
-    if "start" in stamp and "start_offset" not in stamp:
-        start = float(stamp["start"])
-    if "end" in stamp and "end_offset" not in stamp:
-        end = float(stamp["end"])
+    stride = _nemo_time_stride(model)
+    start = float(stamp.get("start_offset", 0.0)) * stride
+    end = float(stamp.get("end_offset", start)) * stride
     return start, end, text
 
 
 def _hypothesis_words(hypothesis, model) -> list[WordTS]:
-    ts = getattr(hypothesis, "timestamp", None) or {}
+    ts = getattr(hypothesis, "timestamp", None) or getattr(hypothesis, "timestep", None) or {}
     if not isinstance(ts, dict):
         return []
     raw_words = ts.get("word") or []

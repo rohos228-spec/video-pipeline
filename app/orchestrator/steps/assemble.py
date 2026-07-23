@@ -312,6 +312,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "нет текста для субтитров (строка 49 / voiceover.txt / БД кадров)"
         )
 
+    from app.services.frame_timeline_sync import timeline_frames_and_cells
+
+    _timeline_frames, align_cells = timeline_frames_and_cells(project, frames_all)
+
     try:
         return await _assemble_body(
             session,
@@ -329,6 +333,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             words=words,
             whisper_art=whisper_art,
             cells=cells,
+            align_cells=align_cells,
         )
     except Exception:
         if project.status is ProjectStatus.assembling:
@@ -358,6 +363,7 @@ async def _assemble_body(
     words: list[WordTS],
     whisper_art,
     cells: list[tuple[int, str]],
+    align_cells: list[tuple[int, str]],
 ) -> None:
     try:
         audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
@@ -365,6 +371,7 @@ async def _assemble_body(
             audio_path,
             frame_numbers,
             cells=cells,
+            align_cells=align_cells,
             words=words,
             per_frame_tts=per_frame_tts,
         )
