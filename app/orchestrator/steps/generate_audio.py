@@ -250,14 +250,20 @@ async def run(
             voice_path,
             active_asr_backend(),
         )
-        if active_asr_backend() == "nvidia":
-            from app.services.nvidia_asr import ensure_nvidia_asr_ready
+        cached_words: list[WordTS] | None = None
+        if not force_full_asr:
+            whisper_art = await _latest_artifact(session, project.id, ArtifactKind.whisper_words)
+            if whisper_art is not None and whisper_art.path:
+                wp = Path(whisper_art.path)
+                from app.services.whisper import load_words_json, whisper_words_fresh_for_audio
 
-            logger.info(
-                "[#{}] generate_audio: ждём загрузку ASR-модели в память …",
-                project.id,
-            )
-            await asyncio.to_thread(ensure_nvidia_asr_ready)
+                if wp.is_file() and whisper_words_fresh_for_audio(whisper_art, voice_path):
+                    cached_words = load_words_json(wp)
+                    if cached_words:
+                        logger.info(
+                            "[#{}] generate_audio: words.json актуален — ASR пропущен",
+                            project.id,
+                        )
         clips, full_audio_path, words = await align_existing_voice_full(
             project,
             timeline_frames,
@@ -265,6 +271,7 @@ async def run(
             voice_path,
             audio_dir,
             whisper_model=settings.whisper_model,
+            existing_words=cached_words,
         )
         await _persist_audio_results(
             session,

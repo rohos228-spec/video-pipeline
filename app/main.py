@@ -762,8 +762,14 @@ async def _startup_maintenance() -> None:
 
 
 async def _preload_nvidia_asr_on_startup() -> None:
-    """Фоновая загрузка Parakeet — пользователю достаточно git pull + STUDIO.cmd."""
+    """Фоновая загрузка Parakeet — только если явно включено (иначе +4–8 ГБ RAM)."""
     if (settings.asr_backend or "").strip().lower() != "nvidia":
+        return
+    if not settings.nvidia_asr_preload_on_startup:
+        logger.info(
+            "nvidia_asr: предзагрузка при старте выключена "
+            "(NVIDIA_ASR_PRELOAD_ON_STARTUP=0) — модель загрузится при шаге «Аудио»"
+        )
         return
     try:
         from app.services.nvidia_asr import (

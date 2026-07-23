@@ -529,7 +529,22 @@ def transcribe_words_nvidia(
         elapsed,
         text_preview,
     )
+    _release_transcribe_memory()
     return words
+
+
+def _release_transcribe_memory() -> None:
+    """Освободить VRAM/RAM после inference (веса модели остаются в _model_cache)."""
+    try:
+        import gc
+
+        gc.collect()
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def looks_like_fake_uniform_timestamps(words: list[WordTS]) -> bool:

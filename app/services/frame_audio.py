@@ -537,6 +537,7 @@ async def align_existing_voice_full(
     *,
     whisper_model: str,
     language: str = "ru",
+    existing_words: list[WordTS] | None = None,
 ) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
     """Whisper + таймкоды кадров по готовому mp3 — без 11Labs."""
     voice_path = voice_path.resolve()
@@ -545,19 +546,27 @@ async def align_existing_voice_full(
 
     audio_dir.mkdir(parents=True, exist_ok=True)
     master = await probe_duration(voice_path)
-    logger.info(
-        "[#{}] align_existing_voice_full: {} по {:.2f}s файлу …",
-        project.id,
-        active_asr_backend(),
-        master,
-    )
-    words = await asyncio.to_thread(
-        transcribe_words,
-        voice_path,
-        model_name=whisper_model,
-        language=language,
-        beam_size=1 if master > 300 else 5,
-    )
+    words = list(existing_words or [])
+    if words:
+        logger.info(
+            "[#{}] align_existing_voice_full: {} words из кэша (без повторного ASR)",
+            project.id,
+            len(words),
+        )
+    else:
+        logger.info(
+            "[#{}] align_existing_voice_full: {} по {:.2f}s файлу …",
+            project.id,
+            active_asr_backend(),
+            master,
+        )
+        words = await asyncio.to_thread(
+            transcribe_words,
+            voice_path,
+            model_name=whisper_model,
+            language=language,
+            beam_size=1 if master > 300 else 5,
+        )
     if not words:
         raise RuntimeError(
             f"[#{project.id}] ASR не вернул word-level таймкоды для {voice_path.name} "
