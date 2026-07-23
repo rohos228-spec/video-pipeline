@@ -67,7 +67,10 @@ async def _run_montage(project_id: int) -> None:
         if not frames:
             raise SystemExit("нет кадров в БД")
 
-        voice = find_voice_full_on_disk(project.data_dir / "audio")
+        voice = find_voice_full_on_disk(
+            project.data_dir,
+            meta=project.meta if isinstance(project.meta, dict) else None,
+        )
         if voice is None:
             raise SystemExit("нет voice_full в audio/")
 
