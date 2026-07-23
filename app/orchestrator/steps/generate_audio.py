@@ -30,7 +30,6 @@ from app.services.artifact_recovery import (
 )
 from app.services.frame_audio import (
     FrameAudioClip,
-    _voiceover_cells_for_frames,
     align_existing_voice_full,
     find_voice_full_on_disk,
     synthesize_per_frame_audio,
