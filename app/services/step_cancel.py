@@ -63,9 +63,12 @@ def is_advance_active(project_id: int) -> bool:
 
 
 def is_generation_active(project_id: int) -> bool:
+    from app.services.montage_board_montage_job import is_montage_job_live
     from app.services.xlsx_flow_locks import is_any_xlsx_flow_active
 
     if is_advance_active(project_id):
+        return True
+    if is_montage_job_live(project_id):
         return True
     if is_any_xlsx_flow_active(project_id):
         return True

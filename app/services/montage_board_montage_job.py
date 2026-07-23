@@ -14,10 +14,20 @@ from app.services.event_bus import publish_project_event
 from app.services.montage_board_job_state import resolve_job_status
 from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.remount_video import remount_video
-from app.services.step_cancel import is_stop_requested
+from app.services.step_cancel import (
+    is_stop_requested,
+    register_advance_task,
+    unregister_advance_task,
+)
 
 _JOB_KEY = "montage_job"
 _montage_tasks: dict[int, asyncio.Task[None]] = {}
+
+
+def is_montage_job_live(project_id: int) -> bool:
+    """Фоновый remount «Монтаж» держит проект — worker не должен дублировать шаги."""
+    task = _montage_tasks.get(project_id)
+    return task is not None and not task.done()
 
 
 def _utc_now() -> str:
@@ -54,9 +64,11 @@ def spawn_montage_job(project_id: int) -> asyncio.Task[None]:
         return prev
     task = asyncio.create_task(run_montage_job(project_id), name=f"montage-{project_id}")
     _montage_tasks[project_id] = task
+    register_advance_task(project_id, task)
 
     def _done(t: asyncio.Task[None]) -> None:
         _montage_tasks.pop(project_id, None)
+        unregister_advance_task(project_id)
         if t.cancelled():
             logger.info("montage_job #{} cancelled", project_id)
 
@@ -227,11 +239,39 @@ async def run_montage_job(project_id: int) -> None:
         try:
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
-                if project is not None:
-                    _set_job(
-                        project,
-                        {"status": "error", "error": str(exc), "finished_at": _utc_now()},
+                if project is None:
+                    return
+                if project.status is ProjectStatus.audio_ready:
+                    logger.info(
+                        "[#{}] montage_job: ASR готов — повтор только assemble после {}",
+                        project_id,
+                        type(exc).__name__,
                     )
+                    result = await remount_video(
+                        session, project, run_assemble=True, skip_asr=True
+                    )
+                    if result.get("done"):
+                        _set_job(
+                            project,
+                            {
+                                "status": "done",
+                                "error": None,
+                                "finished_at": _utc_now(),
+                                "result": {
+                                    "done": True,
+                                    "final_video": result.get("final_video"),
+                                    "recovered_after": str(exc)[:500],
+                                },
+                            },
+                        )
+                        await _publish_job(project_id, "done")
+                        return
+                    if result.get("error"):
+                        exc = RuntimeError(str(result.get("error")))
+                _set_job(
+                    project,
+                    {"status": "error", "error": str(exc), "finished_at": _utc_now()},
+                )
             await _publish_job(project_id, "error")
         except Exception:  # noqa: BLE001
             pass

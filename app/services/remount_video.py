@@ -79,6 +79,7 @@ async def remount_video(
     project: Project,
     *,
     run_assemble: bool = True,
+    skip_asr: bool = False,
     bot: Any = None,
 ) -> dict[str, Any]:
     """Перемонтировать ролик: заново выровнять озвучку по кадрам и собрать mp4."""
@@ -158,40 +159,54 @@ async def remount_video(
     summary["assemble_reset"] = reset_info
     raise_if_cancelled(project.id)
 
-    deleted = await _delete_audio_artifacts(session, project)
-    summary["audio_artifacts_removed"] = deleted
-
-    from app.orchestrator.steps import generate_audio
-
     if bot is None:
         from app.telegram.noop_bot import get_worker_bot
 
         bot = get_worker_bot(None)
 
-    project.status = ProjectStatus.generating_audio
-    voice_secs = voice_path.stat().st_size / 1_000_000  # rough; probe below
-    try:
-        from app.services.media_probe import probe_duration
+    if skip_asr:
+        if project.status is not ProjectStatus.audio_ready:
+            actual = await compute_actual_status(session, project)
+            if actual is ProjectStatus.audio_ready:
+                project.status = actual
+                await session.flush()
+            else:
+                summary["error"] = (
+                    f"skip_asr: нужен audio_ready, сейчас {project.status.value}"
+                )
+                return summary
+        summary["audio_status"] = project.status.value
+        summary["asr_skipped"] = True
+    else:
+        deleted = await _delete_audio_artifacts(session, project)
+        summary["audio_artifacts_removed"] = deleted
 
-        voice_secs = await probe_duration(voice_path)
-    except Exception:  # noqa: BLE001
-        pass
-    eta_min = max(5, int(voice_secs / 60 * 0.25))
-    await _publish_remount_progress(
-        session,
-        project,
-        phase="asr",
-        detail=f"полный ASR {voice_secs:.0f}s (~{eta_min}+ мин, не закрывайте backend)",
-    )
-    await generate_audio.run(session, project, bot, force_full_asr=True)
-    summary["audio_status"] = project.status.value
-    raise_if_cancelled(project.id)
+        from app.orchestrator.steps import generate_audio
 
-    if project.status is not ProjectStatus.audio_ready:
-        summary["error"] = (
-            f"выравнивание озвучки не завершилось: status={project.status.value}"
+        project.status = ProjectStatus.generating_audio
+        voice_secs = voice_path.stat().st_size / 1_000_000  # rough; probe below
+        try:
+            from app.services.media_probe import probe_duration
+
+            voice_secs = await probe_duration(voice_path)
+        except Exception:  # noqa: BLE001
+            pass
+        eta_min = max(5, int(voice_secs / 60 * 0.25))
+        await _publish_remount_progress(
+            session,
+            project,
+            phase="asr",
+            detail=f"полный ASR {voice_secs:.0f}s (~{eta_min}+ мин, не закрывайте backend)",
         )
-        return summary
+        await generate_audio.run(session, project, bot, force_full_asr=True)
+        summary["audio_status"] = project.status.value
+        raise_if_cancelled(project.id)
+
+        if project.status is not ProjectStatus.audio_ready:
+            summary["error"] = (
+                f"выравнивание озвучки не завершилось: status={project.status.value}"
+            )
+            return summary
 
     await _publish_remount_progress(session, project, phase="assemble_prep")
 
