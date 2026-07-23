@@ -18,7 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.chatgpt_xlsx import sync_project_xlsx
+from app.services.event_bus import publish_project_event
 from app.services.frame_audio import find_voice_full_on_disk
+from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.project_state import compute_actual_status
 from app.services.reset_step import reset_step
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
@@ -39,6 +41,37 @@ async def _delete_audio_artifacts(session: AsyncSession, project: Project) -> in
     for art in arts:
         await session.delete(art)
     return len(arts)
+
+
+async def _publish_remount_progress(
+    session: AsyncSession,
+    project: Project,
+    *,
+    phase: str,
+    detail: str = "",
+) -> None:
+    """Commit status + phase в meta — UI видит generating_audio/assembling во время ASR."""
+    board = montage_meta(project)
+    job = dict(board.get("montage_job") or {})
+    if job.get("status") == "running":
+        job["phase"] = phase
+        if detail:
+            job["phase_detail"] = detail
+        else:
+            job.pop("phase_detail", None)
+        set_montage_meta(project, {"montage_job": job})
+    await session.flush()
+    await session.commit()
+    await publish_project_event(
+        project.id,
+        event_type="project_updated",
+        payload={
+            "montage_board_montage": True,
+            "status": job.get("status", "running"),
+            "phase": phase,
+            "project_status": project.status.value,
+        },
+    )
 
 
 async def remount_video(
@@ -136,7 +169,20 @@ async def remount_video(
         bot = get_worker_bot(None)
 
     project.status = ProjectStatus.generating_audio
-    await session.flush()
+    voice_secs = voice_path.stat().st_size / 1_000_000  # rough; probe below
+    try:
+        from app.services.media_probe import probe_duration
+
+        voice_secs = await probe_duration(voice_path)
+    except Exception:  # noqa: BLE001
+        pass
+    eta_min = max(5, int(voice_secs / 60 * 0.25))
+    await _publish_remount_progress(
+        session,
+        project,
+        phase="asr",
+        detail=f"полный ASR {voice_secs:.0f}s (~{eta_min}+ мин, не закрывайте backend)",
+    )
     await generate_audio.run(session, project, bot, force_full_asr=True)
     summary["audio_status"] = project.status.value
     raise_if_cancelled(project.id)
@@ -147,6 +193,8 @@ async def remount_video(
         )
         return summary
 
+    await _publish_remount_progress(session, project, phase="assemble_prep")
+
     if not run_assemble:
         summary["done"] = True
         summary["next"] = "запустите шаг «Сборка» (assemble) в Studio"
@@ -155,7 +203,7 @@ async def remount_video(
     from app.orchestrator.steps import assemble as assemble_mod
 
     project.status = ProjectStatus.assembling
-    await session.flush()
+    await _publish_remount_progress(session, project, phase="assemble", detail="FFmpeg сборка")
     try:
         await assemble_mod.run(session, project, bot)
     except Exception as exc:  # noqa: BLE001

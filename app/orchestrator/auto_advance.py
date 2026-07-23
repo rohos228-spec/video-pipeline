@@ -908,6 +908,19 @@ async def maybe_auto_advance(
         )
         return False
 
+    from app.services.montage_board_meta import montage_meta
+
+    board = montage_meta(project)
+    montage_job = board.get("montage_job") if isinstance(board, dict) else None
+    if isinstance(montage_job, dict) and montage_job.get("status") == "running":
+        logger.debug(
+            "auto_advance: #{} — montage_job {} ({}), пропуск",
+            project.id,
+            montage_job.get("phase") or "running",
+            montage_job.get("phase_detail") or "",
+        )
+        return False
+
     if auto_awaits_manual_start(project):
         logger.info(
             "auto_advance: #{} {} — auto_mode ждёт ручной ▶ (без автостарта)",
