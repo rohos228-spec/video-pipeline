@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     whisper_device: str = Field("cuda", alias="WHISPER_DEVICE")
     whisper_compute_type: str = Field("float16", alias="WHISPER_COMPUTE_TYPE")
     nvidia_asr_model: str = Field(
-        "nvidia/parakeet-tdt-0.6b-v2", alias="NVIDIA_ASR_MODEL"
+        "nvidia/parakeet-tdt-0.6b-v3", alias="NVIDIA_ASR_MODEL"
     )
     # Без файла в audio/ — ошибка, а не 11Labs (импорт озвучки с диска)
     audio_use_elevenlabs_fallback: bool = Field(

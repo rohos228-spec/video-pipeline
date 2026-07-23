@@ -11,6 +11,7 @@
 | Task | Command |
 |------|---------|
 | Install deps | `pip install -e ".[dev]"` |
+| ASR NVIDIA (монтаж) | `pip install -e ".[nvidia]"` + `ASR_BACKEND=nvidia` |
 | Lint | `ruff check .` |
 | Tests | `python3 -m pytest tests/ -v` |
 | Type check | `mypy app/ --ignore-missing-imports` |

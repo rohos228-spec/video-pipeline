@@ -736,6 +736,15 @@ async def _proxy_agent_ps_stream(node: FleetNode, body: PowerShellRun) -> AsyncI
                     yield chunk
 
 
+def _nvidia_asr_available() -> bool:
+    try:
+        from app.services.nvidia_asr import nvidia_asr_available
+
+        return nvidia_asr_available()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @router.get("/local/info")
 async def local_info(_auth: AgentAuth = None) -> dict:
     from app.web.studio_version import read_studio_version
@@ -748,6 +757,7 @@ async def local_info(_auth: AgentAuth = None) -> dict:
         "is_main": settings.fleet_is_main,
         "studio_version": ver.get("label") or ver.get("version"),
         "asr_backend": settings.asr_backend,
+        "nvidia_asr_available": _nvidia_asr_available(),
         "data_dir": str(settings.data_dir),
         "pipeline_root": str(_pipeline_root()),
     }

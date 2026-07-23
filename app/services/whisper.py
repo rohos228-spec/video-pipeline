@@ -77,7 +77,7 @@ def _create_model(
     return WhisperModel(model_name, device=dev, compute_type=ctype)
 
 
-def transcribe_words(
+def transcribe_words_whisper(
     audio_path: Path,
     *,
     model_name: str = "medium",
@@ -138,7 +138,7 @@ def transcribe_words(
     return words
 
 
-def transcribe_words_many(
+def transcribe_words_many_whisper(
     audio_paths: list[Path],
     *,
     model_name: str = "medium",
@@ -221,3 +221,16 @@ def load_words_json(path: Path) -> list[WordTS]:
     if isinstance(data, list):
         return [WordTS(**row) for row in data]
     return [WordTS(**row) for row in data["words"]]
+
+
+def transcribe_words(*args, **kwargs) -> list[WordTS]:
+    """См. app.services.asr — маршрут NVIDIA / whisper."""
+    from app.services.asr import transcribe_words as go
+
+    return go(*args, **kwargs)
+
+
+def transcribe_words_many(*args, **kwargs) -> list[list[WordTS]]:
+    from app.services.asr import transcribe_words_many as go
+
+    return go(*args, **kwargs)

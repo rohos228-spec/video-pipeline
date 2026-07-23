@@ -36,6 +36,7 @@ from app.services.frame_audio import (
 )
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
+from app.services.asr import active_asr_backend
 from app.services.whisper import WordTS, dump_words_json
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
@@ -220,9 +221,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     if voice_path is not None and voice_path.is_file():
         logger.info(
-            "[#{}] generate_audio: озвучка на диске → {} — Whisper + align R49",
+            "[#{}] generate_audio: озвучка на диске → {} — {} + align R49",
             project.id,
             voice_path,
+            active_asr_backend(),
         )
         clips, full_audio_path, words = await align_existing_voice_full(
             project,

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project
+from app.services.asr import active_asr_backend
 from app.services.frame_audio import (
     FrameAudioClip,
     _voiceover_cells_for_frames,
@@ -258,10 +259,11 @@ async def sync_frame_timestamps_from_voice(
         if clips_look_equal_split(clips, master):
             logger.warning(
                 "[#{}] frame_timeline_sync: равномерный fallback из words.json "
-                "({} clips, {:.1f}s) — принудительный Whisper",
+                "({} clips, {:.1f}s) — принудительный {} realign",
                 project.id,
                 len(clips),
                 master,
+                active_asr_backend(),
             )
             clips, _words, source = await _realign_with_whisper(
                 session,
@@ -277,14 +279,16 @@ async def sync_frame_timestamps_from_voice(
     if updated:
         await session.flush()
         logger.info(
-            "[#{}] frame_timeline_sync: {} кадров ← {} ({} clips)",
+            "[#{}] frame_timeline_sync: {} кадров ← {}:{} ({} clips)",
             project.id,
             len(updated),
+            active_asr_backend(),
             source,
             len(clips),
         )
     return {
         "source": source,
+        "asr_backend": active_asr_backend(),
         "updated": updated,
         "clip_count": len(clips),
         "voice_seconds": round(master, 2),

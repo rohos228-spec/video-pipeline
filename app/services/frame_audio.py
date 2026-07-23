@@ -15,7 +15,8 @@ from app.services.elevenlabs_voices import resolve_elevenlabs_voice_id
 from app.services.mapper import map_frames
 from app.services.media_probe import probe_duration
 from app.services.voiceover_split_local import split_voiceover_locally
-from app.services.whisper import WordTS, transcribe_words, transcribe_words_many
+from app.services.asr import active_asr_backend, transcribe_words, transcribe_words_many
+from app.services.whisper import WordTS
 
 FRAME_AUDIO_PREFIX = "frame_"
 
@@ -509,8 +510,9 @@ async def align_existing_voice_full(
     audio_dir.mkdir(parents=True, exist_ok=True)
     master = await probe_duration(voice_path)
     logger.info(
-        "[#{}] align_existing_voice_full: whisper по {:.2f}s файлу …",
+        "[#{}] align_existing_voice_full: {} по {:.2f}s файлу …",
         project.id,
+        active_asr_backend(),
         master,
     )
     words = await asyncio.to_thread(
