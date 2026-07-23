@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -12,11 +14,17 @@ from loguru import logger
 from app.services.nvidia_asr_env import configure_nvidia_asr_environment
 from app.services.whisper import WordTS
 
-# До любого import nemo/huggingface — иначе останется %TEMP%.
+# До любого import nemo/huggingface — иначе останется %TEMP% / включится Xet.
 configure_nvidia_asr_environment(force=True)
 
 _model_lock = threading.Lock()
 _model_cache: dict[str, object] = {}
+
+_NEMO_FILENAME_BY_REPO: dict[str, str] = {
+    "nvidia/parakeet-tdt-0.6b-v3": "parakeet-tdt-0.6b-v3.nemo",
+    "nvidia/parakeet-tdt-0.6b-v2": "parakeet-tdt-0.6b-v2.nemo",
+}
+_MIN_NEMO_BYTES = 50_000_000
 
 _NVIDIA_INSTALL_HINT = (
     'pip install -e ".[nvidia]"   # NeMo + Parakeet на ПК монтажа (CUDA)'
@@ -52,23 +60,50 @@ def _is_file_lock_error(exc: BaseException) -> bool:
     )
 
 
-def _with_interprocess_load_lock(cache_dir: Path) -> Path:
-    """Один процесс качает модель — остальные ждут (Studio + worker)."""
+def _nemo_filename(model_name: str) -> str:
+    known = _NEMO_FILENAME_BY_REPO.get(model_name.strip())
+    if known:
+        return known
+    tail = model_name.rsplit("/", 1)[-1]
+    return tail if tail.endswith(".nemo") else f"{tail}.nemo"
+
+
+def _stable_nemo_path(model_name: str, cache_dir: Path) -> Path:
+    slug = model_name.replace("/", "--")
+    return cache_dir / "nemo" / f"{slug}.nemo"
+
+
+def _nemo_file_ready(path: Path | None) -> bool:
+    if path is None or not path.is_file():
+        return False
+    try:
+        return path.stat().st_size >= _MIN_NEMO_BYTES
+    except OSError:
+        return False
+
+
+def _with_interprocess_load_lock(cache_dir: Path, model_name: str) -> Path | None:
+    """Один процесс качает модель — остальные ждут или используют готовый .nemo."""
+    from app.services.nvidia_asr_env import clear_stale_nvidia_load_lock
+
     lock_dir = cache_dir / "locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_file = lock_dir / "parakeet.load.lock"
     deadline = time.monotonic() + _LOAD_LOCK_TIMEOUT_S
     while time.monotonic() < deadline:
+        clear_stale_nvidia_load_lock(cache_dir)
+        if _nemo_file_ready(_find_local_nemo_checkpoint(model_name, cache_dir)):
+            return None
         try:
             fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()}\n".encode())
             os.close(fd)
             return lock_file
         except FileExistsError:
             time.sleep(2.0)
     raise TimeoutError(
         "nvidia_asr: другой процесс загружает Parakeet — таймаут ожидания. "
-        "Закройте все Studio/python, удалите data/.cache/huggingface/locks/ "
-        "и запустите: python scripts/download_nvidia_asr.py"
+        "Закройте все окна Studio/run-backend и перезапустите STUDIO.cmd."
     )
 
 
@@ -87,69 +122,111 @@ def _hf_cache_slug(model_name: str) -> str:
 
 
 def _find_local_nemo_checkpoint(model_name: str, cache_dir: Path) -> Path | None:
-    """Ищем уже скачанный .nemo — restore_from без temp manifest."""
+    """Ищем готовый .nemo — restore_from без HF temp manifest."""
+    stable = _stable_nemo_path(model_name, cache_dir)
+    if _nemo_file_ready(stable):
+        return stable
     slug = model_name.replace("/", "--")
-    nemo_dest = cache_dir / "nemo" / f"{slug}.nemo"
-    if nemo_dest.is_file():
-        return nemo_dest
+    legacy = cache_dir / "nemo" / f"{slug}.nemo"
+    if legacy.is_file() and legacy.resolve() != stable.resolve() and _nemo_file_ready(legacy):
+        return legacy
     hub = cache_dir / "huggingface" / "hub"
     hf_dir = hub / _hf_cache_slug(model_name)
     if hf_dir.is_dir():
         for nemo in hf_dir.rglob("*.nemo"):
-            if nemo.is_file():
+            if _nemo_file_ready(nemo):
                 return nemo
     return None
 
 
-def _snapshot_download_model(model_name: str, cache_dir: Path) -> Path | None:
-    """Скачать HF repo в hub cache; вернуть .nemo если есть."""
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        logger.warning("huggingface_hub не установлен — from_pretrained напрямую")
-        return None
+def _ensure_stable_nemo_copy(model_name: str, cache_dir: Path, source: Path) -> Path:
+    dest = _stable_nemo_path(model_name, cache_dir)
+    if _nemo_file_ready(dest):
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    if part.exists():
+        with contextlib.suppress(OSError):
+            part.unlink()
+    shutil.copy2(source, part)
+    part.replace(dest)
+    return dest
 
+
+def _hf_download_nemo(model_name: str, cache_dir: Path) -> Path:
+    """Скачать один .nemo в стабильный путь — без from_pretrained/snapshot (WinError 32)."""
+    stable = _stable_nemo_path(model_name, cache_dir)
+    if _nemo_file_ready(stable):
+        return stable
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise ImportError(
+            "huggingface_hub не установлен для загрузки Parakeet. "
+            f'{_NVIDIA_INSTALL_HINT}'
+        ) from exc
+
+    filename = _nemo_filename(model_name)
+    configure_nvidia_asr_environment(force=True)
     hub = cache_dir / "huggingface" / "hub"
     hub.mkdir(parents=True, exist_ok=True)
-    configure_nvidia_asr_environment(force=True)
-    local_dir = snapshot_download(
-        repo_id=model_name,
-        cache_dir=str(hub),
-        resume_download=True,
-    )
-    root = Path(local_dir)
-    for nemo in root.rglob("*.nemo"):
-        if nemo.is_file():
-            return nemo
-    return None
+
+    last_exc: BaseException | None = None
+    for attempt in range(1, _LOAD_RETRIES + 1):
+        try:
+            cached = hf_hub_download(
+                repo_id=model_name,
+                filename=filename,
+                cache_dir=str(hub),
+                resume_download=True,
+                force_download=False,
+            )
+            src = Path(cached)
+            if not _nemo_file_ready(src):
+                raise RuntimeError(
+                    f"nvidia_asr: HF вернул неполный .nemo ({src}, "
+                    f"{src.stat().st_size if src.is_file() else 0} bytes)"
+                )
+            if src.resolve() == stable.resolve():
+                return stable
+            return _ensure_stable_nemo_copy(model_name, cache_dir, src)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_file_lock_error(exc) or attempt >= _LOAD_RETRIES:
+                raise
+            wait = _LOAD_RETRY_SLEEP_S * attempt
+            logger.warning(
+                "nvidia_asr: WinError 32 при скачивании (попытка {}/{}), "
+                "повтор через {:.0f}s: {}",
+                attempt,
+                _LOAD_RETRIES,
+                wait,
+                exc,
+            )
+            time.sleep(wait)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"nvidia_asr: не удалось скачать {model_name}")
+
+
+def _restore_nemo_model(model_name: str, nemo_path: Path):
+    import nemo.collections.asr as nemo_asr
+
+    logger.info("nvidia_asr: restore_from {}", nemo_path)
+    return nemo_asr.models.ASRModel.restore_from(restore_path=str(nemo_path))
 
 
 def _download_model(model_name: str):
-    import nemo.collections.asr as nemo_asr
-
     cache_dir = _cache_root()
     configure_nvidia_asr_environment(force=True)
 
     local = _find_local_nemo_checkpoint(model_name, cache_dir)
     if local is not None:
-        logger.info("nvidia_asr: restore_from local {}", local)
-        return nemo_asr.models.ASRModel.restore_from(restore_path=str(local))
+        return _restore_nemo_model(model_name, local)
 
-    try:
-        nemo_path = _snapshot_download_model(model_name, cache_dir)
-        if nemo_path is not None:
-            dest = cache_dir / "nemo" / f"{model_name.replace('/', '--')}.nemo"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if not dest.is_file():
-                dest.write_bytes(nemo_path.read_bytes())
-            logger.info("nvidia_asr: restore_from snapshot {}", dest)
-            return nemo_asr.models.ASRModel.restore_from(restore_path=str(dest))
-    except Exception as exc:  # noqa: BLE001
-        if not _is_file_lock_error(exc):
-            logger.warning("nvidia_asr: snapshot_download failed: {}", exc)
-
-    logger.info("nvidia_asr: from_pretrained fallback {}", model_name)
-    return nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
+    nemo_path = _hf_download_nemo(model_name, cache_dir)
+    return _restore_nemo_model(model_name, nemo_path)
 
 
 def _load_model(model_name: str):
@@ -167,7 +244,7 @@ def _load_model(model_name: str):
         lock_file: Path | None = None
         last_exc: BaseException | None = None
         try:
-            lock_file = _with_interprocess_load_lock(cache_dir)
+            lock_file = _with_interprocess_load_lock(cache_dir, model_name)
             for attempt in range(1, _LOAD_RETRIES + 1):
                 try:
                     model = _download_model(model_name)
@@ -196,7 +273,7 @@ def _load_model(model_name: str):
 
 
 def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
-    """Явная предзагрузка Parakeet (скрипт / первый запуск Studio)."""
+    """Предзагрузка Parakeet (фон при старте Studio или шаг «Аудио»)."""
     from app.settings import settings
 
     configure_nvidia_asr_environment(force=True)

@@ -77,6 +77,31 @@ $env:WEB_PORT = "8765"
 $env:HF_HUB_DISABLE_SYMLINKS = "1"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
 
+# NeMo/HF: до любого python — иначе WinError 32 в %TEMP% (AppData\Local\Temp)
+$cacheRoot = Join-Path $Root "data\.cache"
+$cacheTemp = Join-Path $cacheRoot "temp"
+$cacheHf = Join-Path $cacheRoot "huggingface"
+$cacheHfHub = Join-Path $cacheHf "hub"
+$cacheNemo = Join-Path $cacheRoot "nemo"
+foreach ($d in @($cacheRoot, $cacheTemp, $cacheHf, $cacheHfHub, $cacheNemo)) {
+    if (-not (Test-Path $d)) {
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+    }
+}
+$env:TEMP = $cacheTemp
+$env:TMP = $cacheTemp
+$env:TMPDIR = $cacheTemp
+$env:HF_HOME = $cacheHf
+$env:HUGGINGFACE_HUB_CACHE = $cacheHfHub
+$env:TRANSFORMERS_CACHE = $cacheHfHub
+$env:NEMO_CACHE_DIR = $cacheNemo
+$env:HF_HUB_ENABLE_HF_TRANSFER = "0"
+$env:HF_HUB_DISABLE_XET = "1"
+$env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
+$env:HF_HUB_ETAG_TIMEOUT = "60"
+$env:HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY = "1"
+$env:TOKENIZERS_PARALLELISM = "false"
+
 Write-BackendLogLine "=== backend start PID=$PID ==="
 
 Write-Host "Проверка create_app() ..." -ForegroundColor Gray
