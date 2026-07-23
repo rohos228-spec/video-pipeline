@@ -26,6 +26,24 @@ from app.services.xlsx_versioning import backup_to_old, replace_with, validate_x
 from app.bots.browser import _looks_like_cdp_connect_failure
 
 
+def _sync_had_changes(info: dict | None) -> bool:
+    if not info:
+        return False
+    return bool(
+        info.get("project_fields_changed")
+        or info.get("frames_created")
+        or info.get("frames_updated")
+        or info.get("frames_changed")
+    )
+
+
+def _log_sync_result(project_id: int, label: str, info: dict | None) -> None:
+    if _sync_had_changes(info):
+        logger.info("[#{}] sync_project_xlsx {}: {}", project_id, label, info)
+    else:
+        logger.debug("[#{}] sync_project_xlsx {}: no changes", project_id, label)
+
+
 def project_xlsx_stat(path: Path) -> tuple[float, int]:
     """(mtime, size) для проверки, обновился ли xlsx после GPT."""
     if path.exists():
@@ -331,7 +349,7 @@ async def sync_project_xlsx(
                 keep_fields=keep_fields,
                 update_frames_voiceover=update_frames_voiceover,
             )
-            logger.info("[#{}] sync_project_xlsx v8: {}", project.id, sync_info)
+            _log_sync_result(project.id, "v8", sync_info)
         except Exception as e:  # noqa: BLE001
             v8_error = e
             logger.warning(
@@ -341,7 +359,7 @@ async def sync_project_xlsx(
                 raise RuntimeError(f"xlsx-sync v8: {e}") from e
     try:
         info_v7 = await reload_from_xlsx(session, project, xlsx_path)
-        logger.info("[#{}] sync_project_xlsx v7: {}", project.id, info_v7)
+        _log_sync_result(project.id, "v7", info_v7)
         if sync_info is None:
             sync_info = info_v7
     except Exception as e:  # noqa: BLE001

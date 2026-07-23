@@ -107,11 +107,30 @@ async def _backfill_from_disk() -> None:
     Этот бэкфилл — идемпотентный: если поля уже заполнены и совпадают
     с xlsx, ничего не меняется.
     """
-    from sqlalchemy import select
+    from sqlalchemy import func, select
+    from sqlalchemy.orm.attributes import flag_modified
 
     from app.db import session_scope
-    from app.models import Project
-    from app.services.chatgpt_xlsx import sync_project_xlsx
+    from app.models import Frame, Project
+    from app.services.chatgpt_xlsx import _sync_had_changes, sync_project_xlsx
+    from app.services.ensure_frames_from_disk import (
+        discover_frame_numbers_on_disk,
+        ensure_frames_from_disk_media,
+    )
+
+    def _xlsx_backfill_skip(project: Project, xlsx_path: Path, frame_count: int) -> bool:
+        """Не гонять v8/v7 sync по всем проектам, если xlsx не менялся."""
+        if frame_count <= 0:
+            return False
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        cached = meta.get("backfill_xlsx_mtime")
+        try:
+            mtime = xlsx_path.stat().st_mtime
+        except OSError:
+            return False
+        if cached is None:
+            return False
+        return abs(float(cached) - mtime) < 1.0
 
     try:
         async with session_scope() as s:
@@ -136,17 +155,22 @@ async def _backfill_from_disk() -> None:
                 # keep_fields=True — НЕ перезаписываем непустые
                 # general_plan / script_text. Бэкфилл только заполняет
                 # пустоты.
-                if proj_xlsx.exists():
+                frame_count = (
+                    await s.execute(
+                        select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                    )
+                ).scalar_one() or 0
+
+                if proj_xlsx.exists() and not _xlsx_backfill_skip(p, proj_xlsx, frame_count):
                     try:
                         info = await sync_project_xlsx(
                             s, p, proj_xlsx, keep_fields=True
                         )
-                        if info and (
-                            info.get("project_fields_changed")
-                            or info.get("frames_created")
-                            or info.get("frames_updated")
-                            or info.get("frames_changed")
-                        ):
+                        meta = dict(p.meta or {})
+                        meta["backfill_xlsx_mtime"] = proj_xlsx.stat().st_mtime
+                        p.meta = meta
+                        flag_modified(p, "meta")
+                        if _sync_had_changes(info):
                             logger.info(
                                 "backfill[#{}]: xlsx → DB: {}", p.id, info
                             )
@@ -157,38 +181,24 @@ async def _backfill_from_disk() -> None:
                             e,
                         )
 
-                # 2) voiceover.txt → project.script_text (xlsx-flow шага 2
-                # сохраняет туда, а не в xlsx).
                 if voiceover_txt.exists() and not p.script_text:
                     try:
-                        txt = voiceover_txt.read_text(
-                            encoding="utf-8"
-                        ).strip()
+                        txt = voiceover_txt.read_text(encoding="utf-8").strip()
                         if txt:
                             p.script_text = txt
                             logger.info(
                                 "backfill[#{}]: voiceover.txt → "
                                 "project.script_text ({} симв)",
-                                p.id, len(txt),
+                                p.id,
+                                len(txt),
                             )
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             "backfill[#{}]: voiceover.txt read failed: {}",
-                            p.id, e,
+                            p.id,
+                            e,
                         )
 
-                from app.services.ensure_frames_from_disk import (
-                    discover_frame_numbers_on_disk,
-                    ensure_frames_from_disk_media,
-                )
-                from sqlalchemy import func, select as sa_select
-                from app.models import Frame
-
-                frame_count = (
-                    await s.execute(
-                        sa_select(func.count(Frame.id)).where(Frame.project_id == p.id)
-                    )
-                ).scalar_one() or 0
                 if frame_count == 0 and discover_frame_numbers_on_disk(proj_dir):
                     created = await ensure_frames_from_disk_media(s, p)
                     if created:
@@ -578,10 +588,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         from app.services.gen_queue_run import is_user_stopped
 
                         if is_user_stopped(ap):
-                            logger.debug(
-                                "auto_advance tick: #{} — user_stop, пропуск",
-                                ap.id,
-                            )
                             continue
                         from app.services.gen_queue import (
                             enrich_ready_bypasses_gen_queue,

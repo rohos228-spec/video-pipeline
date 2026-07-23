@@ -767,7 +767,7 @@ async def import_v8_xlsx(
                         project.id, len(new_script), len(blocks),
                     )
         else:
-            logger.info(
+            logger.debug(
                 "[#{}] xlsx-v8→DB: script_text пропущен (заблокирован UI)",
                 project.id,
             )
