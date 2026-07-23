@@ -64,7 +64,7 @@ async def test_remount_calls_audio_and_assemble(
     )
     await session.commit()
 
-    audio_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.audio_ready))
+    audio_run = AsyncMock(side_effect=lambda s, proj, b, **kw: setattr(proj, "status", ProjectStatus.audio_ready))
     assemble_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.assembled))
 
     with (
@@ -111,7 +111,7 @@ async def test_remount_bootstraps_frames_from_disk(
     voice.write_bytes(b"\xff" * 4096)
     await session.commit()
 
-    audio_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.audio_ready))
+    audio_run = AsyncMock(side_effect=lambda s, proj, b, **kw: setattr(proj, "status", ProjectStatus.audio_ready))
     assemble_run = AsyncMock(side_effect=lambda s, proj, b: setattr(proj, "status", ProjectStatus.assembled))
 
     with (

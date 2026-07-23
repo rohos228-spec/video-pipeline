@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -26,7 +25,7 @@ _montage_tasks: dict[int, asyncio.Task[None]] = {}
 
 
 def is_montage_job_live(project_id: int) -> bool:
-    """Фоновый remount «Монтаж» держит проект — worker не должен дублировать шаги."""
+    """Фоновый remount «Монтаж» — worker не дублирует generate_audio (SQLite lock)."""
     task = _montage_tasks.get(project_id)
     return task is not None and not task.done()
 
@@ -121,58 +120,12 @@ async def cancel_montage_job(project_id: int) -> bool:
         return False
 
 
-async def _can_skip_asr_on_remount(
-    session,  # noqa: ANN001
-    project: Project,
-    *,
-    retry_after_error: bool,
-) -> bool:
-    """Повтор «Монтаж» после error на assemble — не гонять ASR заново."""
-    from sqlalchemy import select
-
-    from app.models import Artifact, ArtifactKind
-
-    if not retry_after_error:
-        return False
-    if project.status is not ProjectStatus.audio_ready:
-        return False
-    whisper = (
-        await session.execute(
-            select(Artifact)
-            .where(
-                Artifact.project_id == project.id,
-                Artifact.kind == ArtifactKind.whisper_words,
-            )
-            .order_by(Artifact.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if whisper is None or not whisper.path:
-        return False
-    meta = whisper.meta if isinstance(whisper.meta, dict) else {}
-    words = meta.get("words") or meta.get("word_count")
-    if isinstance(words, list):
-        return len(words) >= 10
-    if isinstance(words, int):
-        return words >= 10
-    return Path(whisper.path).is_file()
-
-
 async def run_montage_job(project_id: int) -> None:
-    retry_after_error = False
     try:
         async with session_scope() as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return
-            from app.services.project_control import clear_user_stop_gate
-            from app.services.step_cancel import clear_stop
-
-            clear_user_stop_gate(project)
-            clear_stop(project_id)
-            board = montage_meta(project)
-            prev_job = board.get(_JOB_KEY) if isinstance(board.get(_JOB_KEY), dict) else {}
-            retry_after_error = prev_job.get("status") == "error"
             if is_stop_requested(project_id):
                 _set_job(
                     project,
@@ -220,17 +173,7 @@ async def run_montage_job(project_id: int) -> None:
                 )
                 await _publish_job(project_id, "cancelled")
                 return
-            skip_asr = await _can_skip_asr_on_remount(
-                session, project, retry_after_error=retry_after_error
-            )
-            if skip_asr:
-                logger.info(
-                    "[#{}] montage_job: audio_ready + whisper в БД — assemble без повторного ASR",
-                    project_id,
-                )
-            result = await remount_video(
-                session, project, run_assemble=True, skip_asr=skip_asr
-            )
+            result = await remount_video(session, project, run_assemble=True)
             if is_stop_requested(project_id):
                 _set_job(
                     project,
@@ -291,39 +234,11 @@ async def run_montage_job(project_id: int) -> None:
         try:
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
-                if project is None:
-                    return
-                if project.status is ProjectStatus.audio_ready:
-                    logger.info(
-                        "[#{}] montage_job: ASR готов — повтор только assemble после {}",
-                        project_id,
-                        type(exc).__name__,
+                if project is not None:
+                    _set_job(
+                        project,
+                        {"status": "error", "error": str(exc), "finished_at": _utc_now()},
                     )
-                    result = await remount_video(
-                        session, project, run_assemble=True, skip_asr=True
-                    )
-                    if result.get("done"):
-                        _set_job(
-                            project,
-                            {
-                                "status": "done",
-                                "error": None,
-                                "finished_at": _utc_now(),
-                                "result": {
-                                    "done": True,
-                                    "final_video": result.get("final_video"),
-                                    "recovered_after": str(exc)[:500],
-                                },
-                            },
-                        )
-                        await _publish_job(project_id, "done")
-                        return
-                    if result.get("error"):
-                        exc = RuntimeError(str(result.get("error")))
-                _set_job(
-                    project,
-                    {"status": "error", "error": str(exc), "finished_at": _utc_now()},
-                )
             await _publish_job(project_id, "error")
         except Exception:  # noqa: BLE001
             pass

@@ -3,7 +3,7 @@
 Не трогает scene_video (клипы Outsee). Делает:
   1. project.xlsx → voiceover_text кадров (строка 49 / лист «план»)
   2. Сброс только шага assemble (удаляет старый final.mp4)
-  3. Повторное выравнивание готовой озвучки (Whisper) по тексту кадров
+  3. Повторное выравнивание готовой озвучки (ASR) по тексту кадров
   4. Новая сборка FFmpeg
 """
 
@@ -18,12 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.chatgpt_xlsx import sync_project_xlsx
-from app.services.event_bus import publish_project_event
 from app.services.frame_audio import find_voice_full_on_disk
-from app.services.montage_board_meta import montage_meta, set_montage_meta
 from app.services.project_state import compute_actual_status
 from app.services.reset_step import reset_step
-from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.step_cancel import raise_if_cancelled
 
 
 async def _delete_audio_artifacts(session: AsyncSession, project: Project) -> int:
@@ -43,43 +41,11 @@ async def _delete_audio_artifacts(session: AsyncSession, project: Project) -> in
     return len(arts)
 
 
-async def _publish_remount_progress(
-    session: AsyncSession,
-    project: Project,
-    *,
-    phase: str,
-    detail: str = "",
-) -> None:
-    """Commit status + phase в meta — UI видит generating_audio/assembling во время ASR."""
-    board = montage_meta(project)
-    job = dict(board.get("montage_job") or {})
-    if job.get("status") == "running":
-        job["phase"] = phase
-        if detail:
-            job["phase_detail"] = detail
-        else:
-            job.pop("phase_detail", None)
-        set_montage_meta(project, {"montage_job": job})
-    await session.flush()
-    await session.commit()
-    await publish_project_event(
-        project.id,
-        event_type="project_updated",
-        payload={
-            "montage_board_montage": True,
-            "status": job.get("status", "running"),
-            "phase": phase,
-            "project_status": project.status.value,
-        },
-    )
-
-
 async def remount_video(
     session: AsyncSession,
     project: Project,
     *,
     run_assemble: bool = True,
-    skip_asr: bool = False,
     bot: Any = None,
 ) -> dict[str, Any]:
     """Перемонтировать ролик: заново выровнять озвучку по кадрам и собрать mp4."""
@@ -127,7 +93,10 @@ async def remount_video(
     else:
         summary["xlsx_sync"] = {"skipped": "no project.xlsx"}
 
-    voice_path = find_voice_full_on_disk(project.data_dir, meta=project.meta if isinstance(project.meta, dict) else None)
+    voice_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
     if voice_path is None:
         audio_art = (
             await session.execute(
@@ -148,67 +117,33 @@ async def remount_video(
         )
         return summary
     summary["voice_file"] = str(voice_path)
-    logger.info(
-        "[#{}] remount: полный ASR + сборка по {} ({:.0f} MB)",
-        project.id,
-        voice_path.name,
-        voice_path.stat().st_size / 1_000_000,
-    )
 
     reset_info = await reset_step(session, project, "assemble")
     summary["assemble_reset"] = reset_info
     raise_if_cancelled(project.id)
+
+    deleted = await _delete_audio_artifacts(session, project)
+    summary["audio_artifacts_removed"] = deleted
+
+    from app.orchestrator.steps import generate_audio
 
     if bot is None:
         from app.telegram.noop_bot import get_worker_bot
 
         bot = get_worker_bot(None)
 
-    if skip_asr:
-        if project.status is not ProjectStatus.audio_ready:
-            actual = await compute_actual_status(session, project)
-            if actual is ProjectStatus.audio_ready:
-                project.status = actual
-                await session.flush()
-            else:
-                summary["error"] = (
-                    f"skip_asr: нужен audio_ready, сейчас {project.status.value}"
-                )
-                return summary
-        summary["audio_status"] = project.status.value
-        summary["asr_skipped"] = True
-    else:
-        deleted = await _delete_audio_artifacts(session, project)
-        summary["audio_artifacts_removed"] = deleted
+    project.status = ProjectStatus.generating_audio
+    await session.flush()
+    # force_full_asr: не подхватывать stale words.json с диска — ASR через текущий backend (nvidia/whisper)
+    await generate_audio.run(session, project, bot, force_full_asr=True)
+    summary["audio_status"] = project.status.value
+    raise_if_cancelled(project.id)
 
-        from app.orchestrator.steps import generate_audio
-
-        project.status = ProjectStatus.generating_audio
-        voice_secs = voice_path.stat().st_size / 1_000_000  # rough; probe below
-        try:
-            from app.services.media_probe import probe_duration
-
-            voice_secs = await probe_duration(voice_path)
-        except Exception:  # noqa: BLE001
-            pass
-        eta_min = max(5, int(voice_secs / 60 * 0.25))
-        await _publish_remount_progress(
-            session,
-            project,
-            phase="asr",
-            detail=f"полный ASR {voice_secs:.0f}s (~{eta_min}+ мин, не закрывайте backend)",
+    if project.status is not ProjectStatus.audio_ready:
+        summary["error"] = (
+            f"выравнивание озвучки не завершилось: status={project.status.value}"
         )
-        await generate_audio.run(session, project, bot, force_full_asr=True)
-        summary["audio_status"] = project.status.value
-        raise_if_cancelled(project.id)
-
-        if project.status is not ProjectStatus.audio_ready:
-            summary["error"] = (
-                f"выравнивание озвучки не завершилось: status={project.status.value}"
-            )
-            return summary
-
-    await _publish_remount_progress(session, project, phase="assemble_prep")
+        return summary
 
     if not run_assemble:
         summary["done"] = True
@@ -218,7 +153,7 @@ async def remount_video(
     from app.orchestrator.steps import assemble as assemble_mod
 
     project.status = ProjectStatus.assembling
-    await _publish_remount_progress(session, project, phase="assemble", detail="FFmpeg сборка")
+    await session.flush()
     try:
         await assemble_mod.run(session, project, bot)
     except Exception as exc:  # noqa: BLE001
