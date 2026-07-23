@@ -760,7 +760,11 @@ async def _preload_nvidia_asr_on_startup() -> None:
     if (settings.asr_backend or "").strip().lower() != "nvidia":
         return
     try:
-        from app.services.nvidia_asr import nvidia_asr_available, preload_nvidia_asr_model
+        from app.services.nvidia_asr import (
+            normalize_nvidia_asr_model,
+            nvidia_asr_available,
+            preload_nvidia_asr_model,
+        )
 
         if not nvidia_asr_available():
             logger.info(
@@ -768,10 +772,11 @@ async def _preload_nvidia_asr_on_startup() -> None:
                 '(обновление через STUDIO.cmd [4] ставит ".[nvidia]")'
             )
             return
-        logger.info("nvidia_asr: фоновая предзагрузка {}…", settings.nvidia_asr_model)
-        ok = await asyncio.to_thread(preload_nvidia_asr_model)
+        model = normalize_nvidia_asr_model(settings.nvidia_asr_model)
+        logger.info("nvidia_asr: фоновая предзагрузка {}…", model)
+        ok = await asyncio.to_thread(preload_nvidia_asr_model, model)
         if ok:
-            logger.info("nvidia_asr: {} готов к шагу «Аудио»", settings.nvidia_asr_model)
+            logger.info("nvidia_asr: {} готов к шагу «Аудио»", model)
         else:
             logger.warning(
                 "nvidia_asr: предзагрузка не удалась — повтор при шаге «Аудио»"
