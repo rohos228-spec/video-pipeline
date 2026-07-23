@@ -362,6 +362,51 @@ def map_frames(
     return out
 
 
+def enforce_monotonic_timings(
+    timings: list[FrameTiming],
+    *,
+    master: float | None = None,
+    min_duration: float = 0.05,
+) -> list[FrameTiming]:
+    """R15/overlay: start каждого кадра >= end предыдущего (без overlap назад)."""
+    if not timings:
+        return []
+    sorted_t = sorted(timings, key=lambda t: t.frame_number)
+    out: list[FrameTiming] = []
+    prev_end = 0.0
+    fixed = 0
+    for t in sorted_t:
+        start = max(float(t.start_ts), prev_end)
+        end = max(float(t.end_ts), start + min_duration)
+        if start > float(t.start_ts) + 0.001:
+            fixed += 1
+        out.append(
+            FrameTiming(
+                t.frame_number,
+                round(start, 3),
+                round(end, 3),
+                round(end - start, 3),
+            )
+        )
+        prev_end = end
+    if master is not None and out:
+        m = max(float(master), prev_end)
+        last = out[-1]
+        if last.end_ts < m - 0.01:
+            out[-1] = FrameTiming(
+                last.frame_number,
+                last.start_ts,
+                round(m, 3),
+                round(m - last.start_ts, 3),
+            )
+    if fixed:
+        logger.info(
+            "map_frames: enforce_monotonic — сдвинуто {} кадров (overlap ASR→R15)",
+            fixed,
+        )
+    return out
+
+
 def normalize_contiguous(timings: list[FrameTiming], audio_duration: float) -> list[FrameTiming]:
     """Склеивает кадры подряд на [0, audio_duration] пропорционально весам Whisper."""
     if not timings:

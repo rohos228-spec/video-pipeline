@@ -9,6 +9,7 @@ from app.services import assembly as asm
 from app.services.mapper import (
     FrameTiming,
     build_frame_word_spans_per_frame,
+    enforce_monotonic_timings,
     map_frames,
     normalize_contiguous,
 )
@@ -26,6 +27,20 @@ def test_normalize_contiguous_fills_full_audio_and_no_gaps() -> None:
     assert out[0].start_ts == 0.0
     assert out[-1].end_ts == 60.0
     assert abs(sum(t.duration for t in out) - 60.0) < 0.01
+
+
+def test_enforce_monotonic_fixes_overlap_from_word_direct_map() -> None:
+    """Как в логе #26: кадр 2 start < end кадра 1 — R15 должна склеиться."""
+    raw = [
+        FrameTiming(1, 0.0, 7.12, 7.12),
+        FrameTiming(2, 6.48, 9.0, 2.52),
+        FrameTiming(3, 8.5, 11.0, 2.5),
+    ]
+    out = enforce_monotonic_timings(raw, master=12.0)
+    assert out[0].start_ts == 0.0
+    assert out[1].start_ts >= out[0].end_ts - 0.001
+    assert out[2].start_ts >= out[1].end_ts - 0.001
+    assert out[-1].end_ts == 12.0
 
 
 def test_map_frames_redistributes_when_whisper_runs_out() -> None:

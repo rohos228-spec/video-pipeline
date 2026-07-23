@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from app.services.mapper import map_frames
+from app.services.mapper import FrameTiming, enforce_monotonic_timings, map_frames
 from app.services.media_probe import probe_duration
 from app.services.whisper import WordTS, load_words_json
 from app.storage.plan_sheet_v8 import read_plan_timestamps_cells, read_plan_voiceover_cells
@@ -404,8 +404,16 @@ async def ensure_r15_from_asr(
     ts_cells, ts_row = read_plan_timestamps_cells(project, frame_numbers)
     _filled, parsed_n, bad = count_parsed_timestamp_cells(ts_cells)
     need = len(frame_numbers)
-    if parsed_n >= need and not bad:
+    from app.services.montage.r15 import r15_cells_monotonic
+
+    if parsed_n >= need and not bad and r15_cells_monotonic(ts_cells):
         return ts_cells, ts_row
+    if parsed_n >= need and not bad:
+        logger.warning(
+            "[#{}] R{}: метки заполнены, но не по порядку — пересчёт из ASR",
+            project.id,
+            ts_row,
+        )
 
     if not words:
         raise RuntimeError(
@@ -423,6 +431,7 @@ async def ensure_r15_from_asr(
         raise RuntimeError(
             f"[#{project.id}] ASR не сопоставил текст кадров — строку 15 не заполнить"
         )
+    timings = enforce_monotonic_timings(timings, master=master)
 
     ranges = [
         (t.frame_number, format_timecode_range(t.start_ts, t.end_ts)) for t in timings
@@ -642,13 +651,20 @@ def write_asr_timestamps_to_r15(project, clips: list) -> int:
     """После ASR: записать реальные метки в строку 15 листа «план»."""
     from app.storage.plan_sheet_v8 import write_plan_timestamps
 
-    ranges = [
-        (c.frame_number, format_timecode_range(c.start_ts, c.end_ts))
+    from app.services.mapper import FrameTiming, enforce_monotonic_timings
+
+    timings = [
+        FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
         for c in clips
         if c.duration > 0
     ]
-    if not ranges:
+    if not timings:
         return 0
+    master = max(c.end_ts for c in clips if c.duration > 0)
+    timings = enforce_monotonic_timings(timings, master=master)
+    ranges = [
+        (t.frame_number, format_timecode_range(t.start_ts, t.end_ts)) for t in timings
+    ]
     written = write_plan_timestamps(project, ranges)
     if written:
         logger.info(

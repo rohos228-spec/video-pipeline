@@ -48,6 +48,26 @@ def resolve_montage_frame_numbers(
     return r15_nums
 
 
+def r15_cells_monotonic(
+    ts_cells: list[tuple[int, str]],
+    *,
+    tolerance: float = 0.02,
+) -> bool:
+    """True если метки R15 идут по шкале без overlap назад."""
+    prev_end = -0.01
+    for _num, label in ts_cells:
+        parsed = parse_timecode_range(label)
+        if parsed is None:
+            return False
+        start, end = parsed
+        if end <= start + 0.01:
+            return False
+        if start < prev_end - tolerance:
+            return False
+        prev_end = end
+    return True
+
+
 def load_r15_markers(project: Project, frame_numbers: list[int]) -> tuple[list[R15Marker], int]:
     """Каждый запуск: свежее чтение project.xlsx с диска."""
     xlsx = project.data_dir / "project.xlsx"
