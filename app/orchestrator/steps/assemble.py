@@ -120,6 +120,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     logger.info("[#{}] assemble starting", project.id)
 
     await recover_before_assemble(session, project)
+
+    from app.services.frame_timeline_sync import sync_frame_timestamps_from_voice
+
+    try:
+        await sync_frame_timestamps_from_voice(session, project)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] assemble: frame_timeline_sync: {}", project.id, exc)
+
     ok, reason, rollback = await can_enter_running(
         session, project, ProjectStatus.assembling
     )
@@ -171,6 +179,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
             skipped_no_video,
         )
+
+    cells_preview = _voiceover_cells_for_frames(
+        project,
+        frames_all,
+        read_plan_voiceover_cells(project, [fr.number for fr in frames_all]),
+    )
+    cell_text = {n: (t or "").strip() for n, t in cells_preview}
+    from app.services.frame_timeline_sync import is_placeholder_voiceover
+
+    frames_with_vo: list[Frame] = []
+    skipped_no_voiceover: list[int] = []
+    for fr in frames:
+        text = cell_text.get(fr.number, "")
+        if text and not is_placeholder_voiceover(text):
+            frames_with_vo.append(fr)
+        else:
+            skipped_no_voiceover.append(fr.number)
+    if skipped_no_voiceover:
+        logger.warning(
+            "[#{}] assemble: кадры {} без текста R49 — не входят в таймлайн",
+            project.id,
+            skipped_no_voiceover[:30],
+        )
+    frames = frames_with_vo
     if not frames:
         raise RuntimeError(
             "нет кадров с видео-клипами — сначала шаг «Видео» "
