@@ -14,6 +14,21 @@ def active_asr_backend() -> str:
     return (settings.asr_backend or "whisper").strip().lower()
 
 
+def _resolve_nvidia_model(explicit: str | None) -> str:
+    """NVIDIA backend всегда берёт Parakeet — не WHISPER_MODEL (large-v3)."""
+    candidate = (explicit or "").strip()
+    if candidate.startswith("nvidia/") or "parakeet" in candidate.lower():
+        return candidate
+    if candidate and candidate != settings.nvidia_asr_model:
+        logger.debug(
+            "nvidia ASR: model_name={!r} — это whisper-модель, "
+            "используем NVIDIA_ASR_MODEL={}",
+            candidate,
+            settings.nvidia_asr_model,
+        )
+    return settings.nvidia_asr_model
+
+
 def transcribe_words(
     audio_path: Path,
     *,
@@ -29,7 +44,7 @@ def transcribe_words(
         from app.services.nvidia_asr import nvidia_asr_available, transcribe_words_nvidia
 
         if nvidia_asr_available():
-            nvidia_model = model_name or settings.nvidia_asr_model
+            nvidia_model = _resolve_nvidia_model(model_name)
             return transcribe_words_nvidia(
                 audio_path,
                 model_name=nvidia_model,
@@ -67,7 +82,7 @@ def transcribe_words_many(
         from app.services.nvidia_asr import nvidia_asr_available, transcribe_words_many_nvidia
 
         if nvidia_asr_available():
-            nvidia_model = model_name or settings.nvidia_asr_model
+            nvidia_model = _resolve_nvidia_model(model_name)
             return transcribe_words_many_nvidia(
                 audio_paths,
                 model_name=nvidia_model,
