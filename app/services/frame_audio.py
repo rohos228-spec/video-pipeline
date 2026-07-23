@@ -232,6 +232,27 @@ def frame_clips_from_whisper(
 ) -> list[FrameAudioClip]:
     """Границы кадров из Whisper + voice_full, когда нет frame_NNN.mp3."""
     text_by_frame = dict(cells)
+    # Сначала word-level индексы ASR (без proportional stretch по audio_duration).
+    direct = map_frames(cells, words)
+    if direct and len(direct) == len(cells):
+        good = sum(1 for t in direct if t.duration > 0.05)
+        if good >= len(cells) * 0.85:
+            if direct[-1].end_ts < master - 0.05:
+                direct[-1].end_ts = round(master, 3)
+                direct[-1].duration = round(
+                    direct[-1].end_ts - direct[-1].start_ts, 3
+                )
+            return [
+                FrameAudioClip(
+                    frame_number=t.frame_number,
+                    path=voice_full_path,
+                    text=text_by_frame.get(t.frame_number, ""),
+                    start_ts=t.start_ts,
+                    end_ts=t.end_ts,
+                    duration=t.duration,
+                )
+                for t in direct
+            ]
     timings = map_frames(cells, words, audio_duration=master)
     return [
         FrameAudioClip(

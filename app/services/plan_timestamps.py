@@ -416,7 +416,9 @@ async def ensure_r15_from_asr(
     if master is None:
         master = await probe_duration(voice_full_path)
 
-    timings = map_frames(cells, words, audio_duration=master)
+    timings = map_frames(cells, words)
+    if not timings or len(timings) != len(frame_numbers):
+        timings = map_frames(cells, words, audio_duration=master)
     if not timings:
         raise RuntimeError(
             f"[#{project.id}] ASR не сопоставил текст кадров — строку 15 не заполнить"

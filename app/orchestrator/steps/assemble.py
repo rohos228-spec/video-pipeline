@@ -123,10 +123,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     await recover_before_assemble(session, project)
 
-    from app.services.frame_timeline_sync import sync_frame_timestamps_from_voice
+    from app.services.frame_timeline_sync import sync_frame_timestamps_if_needed
 
     try:
-        await sync_frame_timestamps_from_voice(session, project)
+        await sync_frame_timestamps_if_needed(session, project)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[#{}] assemble: frame_timeline_sync: {}", project.id, exc)
 

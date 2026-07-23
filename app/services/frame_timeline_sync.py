@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from pathlib import Path
@@ -89,6 +90,25 @@ def clips_look_equal_split(
     return abs(avg - fair) / max(fair, 0.01) < 0.2
 
 
+def _r49_content_hash(cells: list[tuple[int, str]]) -> str:
+    """Хеш текста R49 — меняется только при правке озвучки, не при записи R15."""
+    payload = "\n".join(f"{n}\t{(t or '').strip()}" for n, t in cells)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _r49_changed_since_whisper(
+    whisper_art: Artifact | None,
+    cells: list[tuple[int, str]],
+) -> bool:
+    """True если текст R49 изменился после последнего ASR (не просто запись R15)."""
+    if whisper_art is None:
+        return True
+    stored = (whisper_art.meta or {}).get("r49_hash")
+    if not stored:
+        return False
+    return stored != _r49_content_hash(cells)
+
+
 def _xlsx_newer_than_whisper(project: Project, whisper_art: Artifact | None) -> bool:
     xlsx = project.data_dir / "project.xlsx"
     if not xlsx.is_file():
@@ -141,6 +161,8 @@ async def _persist_whisper_words(
     clips: list[FrameAudioClip],
     words: list[WordTS],
     audio_dir: Path,
+    *,
+    cells: list[tuple[int, str]] | None = None,
 ) -> Path:
     """Сохранить words.json + Artifact после realign."""
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -164,12 +186,16 @@ async def _persist_whisper_words(
     ]
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
     dump_words_json(words, words_path, frames=frame_segments)
+    meta: dict[str, str] = {}
+    if cells:
+        meta["r49_hash"] = _r49_content_hash(cells)
     session.add(
         Artifact(
             project_id=project.id,
             kind=ArtifactKind.whisper_words,
             uuid=uuid.uuid4().hex,
             path=str(words_path),
+            meta=meta or None,
         )
     )
     await session.flush()
@@ -196,7 +222,9 @@ async def _realign_with_whisper(
     )
     source = "whisper_realigned"
     if persist_words:
-        path = await _persist_whisper_words(session, project, clips, words, audio_dir)
+        path = await _persist_whisper_words(
+            session, project, clips, words, audio_dir, cells=cells
+        )
         source = f"whisper_realigned+persist:{path.name}"
     return clips, words, source
 
@@ -238,9 +266,14 @@ async def sync_frame_timestamps_from_voice(
     master = await probe_duration(voice_path)
     whisper_art = await _latest_whisper_artifact(session, project.id)
 
-    need_realign = force_whisper or not whisper_words_fresh_for_audio(
-        whisper_art, voice_path
-    ) or _xlsx_newer_than_whisper(project, whisper_art)
+    whisper_fresh = whisper_words_fresh_for_audio(whisper_art, voice_path)
+    need_realign = force_whisper or not whisper_fresh
+    if not need_realign and _r49_changed_since_whisper(whisper_art, cells):
+        need_realign = True
+    elif not need_realign and whisper_art is not None and (whisper_art.meta or {}).get("r49_hash") is None:
+        # Старые артефакты без r49_hash — fallback на mtime xlsx
+        if _xlsx_newer_than_whisper(project, whisper_art):
+            need_realign = True
 
     if need_realign:
         clips, _words, source = await _realign_with_whisper(
@@ -340,8 +373,8 @@ async def sync_frame_timestamps_if_needed(
         ]
         suspicious = clips_look_equal_split(clips_probe, master)
 
-    if not missing and not suspicious and not _xlsx_newer_than_whisper(
-        project, await _latest_whisper_artifact(session, project.id)
+    if not missing and not suspicious and not _r49_changed_since_whisper(
+        await _latest_whisper_artifact(session, project.id), _cells
     ):
         return {"skipped": "timestamps ok"}
 

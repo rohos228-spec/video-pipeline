@@ -71,6 +71,7 @@ async def _persist_audio_results(
     audio_dir: Path,
     *,
     source: str,
+    cells: list[tuple[int, str]] | None = None,
 ) -> None:
     for fr in frames:
         clip = next(c for c in clips if c.frame_number == fr.number)
@@ -132,11 +133,17 @@ async def _persist_audio_results(
     ]
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
     dump_words_json(words, words_path, frames=frame_segments)
+    whisper_meta: dict[str, str] = {}
+    if cells:
+        from app.services.frame_timeline_sync import _r49_content_hash
+
+        whisper_meta["r49_hash"] = _r49_content_hash(cells)
     session.add(Artifact(
         project_id=project.id,
         kind=ArtifactKind.whisper_words,
         uuid=uuid.uuid4().hex,
         path=str(words_path),
+        meta=whisper_meta or None,
     ))
 
     from app.services.plan_timestamps import write_asr_timestamps_to_r15
@@ -268,6 +275,7 @@ async def run(
             words,
             audio_dir,
             source="disk_whisper",
+            cells=cells,
         )
         await _finalize_audio_ready(session, project)
         return
@@ -306,5 +314,6 @@ async def run(
         words,
         audio_dir,
         source="elevenlabs",
+        cells=cells,
     )
     await _finalize_audio_ready(session, project)
