@@ -18,7 +18,9 @@ def _resolve_nvidia_model(explicit: str | None) -> str:
     """NVIDIA backend всегда берёт Parakeet — не WHISPER_MODEL (large-v3)."""
     candidate = (explicit or "").strip()
     if candidate.startswith("nvidia/") or "parakeet" in candidate.lower():
-        return candidate
+        from app.services.nvidia_asr import normalize_nvidia_asr_model
+
+        return normalize_nvidia_asr_model(candidate)
     if candidate and candidate != settings.nvidia_asr_model:
         logger.debug(
             "nvidia ASR: model_name={!r} — это whisper-модель, "
@@ -26,7 +28,9 @@ def _resolve_nvidia_model(explicit: str | None) -> str:
             candidate,
             settings.nvidia_asr_model,
         )
-    return settings.nvidia_asr_model
+    from app.services.nvidia_asr import normalize_nvidia_asr_model
+
+    return normalize_nvidia_asr_model(settings.nvidia_asr_model)
 
 
 def transcribe_words(

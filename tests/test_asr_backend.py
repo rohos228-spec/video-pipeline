@@ -71,6 +71,35 @@ def test_transcribe_words_ignores_whisper_model_name_for_nvidia(tmp_path: Path) 
         monkeypatch.undo()
 
 
+def test_transcribe_words_redirects_legacy_fastconformer_in_env(tmp_path: Path) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(settings, "asr_backend", "nvidia")
+    monkeypatch.setattr(
+        settings,
+        "nvidia_asr_model",
+        "nvidia/stt_ru_fastconformer_hybrid_large_pc",
+    )
+    audio = tmp_path / "test.wav"
+    audio.write_bytes(b"RIFF")
+    nvidia_words = [WordTS("тест", 0.0, 1.0, 1.0)]
+
+    try:
+        with (
+            patch("app.services.nvidia_asr.nvidia_asr_available", return_value=True),
+            patch(
+                "app.services.nvidia_asr.transcribe_words_nvidia",
+                return_value=nvidia_words,
+            ) as mock_nvidia,
+        ):
+            out = transcribe_words(audio, language="ru")
+
+        assert out == nvidia_words
+        mock_nvidia.assert_called_once()
+        assert mock_nvidia.call_args.kwargs["model_name"] == "nvidia/parakeet-tdt-0.6b-v3"
+    finally:
+        monkeypatch.undo()
+
+
 def test_transcribe_words_fallback_whisper_when_nemo_missing(tmp_path: Path) -> None:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(settings, "asr_backend", "nvidia")
