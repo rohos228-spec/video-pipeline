@@ -420,6 +420,17 @@ async def build_montage_board(
             "montage_board: disk frames bootstrap project {}: {}", project_id, e
         )
 
+    try:
+        from app.services.frame_timeline_sync import sync_frame_timestamps_if_needed
+
+        sync_info = await sync_frame_timestamps_if_needed(session, project, frames_orm)
+        if sync_info.get("updated"):
+            frames_orm = await _load_frames()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage_board: frame_timeline_sync project {}: {}", project_id, e
+        )
+
     # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).
     frames = _snapshot_frames(frames_orm)
 
