@@ -54,21 +54,24 @@ def _is_file_lock_error(exc: BaseException) -> bool:
 
 def _with_interprocess_load_lock(cache_dir: Path) -> Path:
     """Один процесс качает модель — остальные ждут (Studio + worker)."""
+    from app.services.nvidia_asr_env import clear_stale_nvidia_load_lock
+
     lock_dir = cache_dir / "locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_file = lock_dir / "parakeet.load.lock"
     deadline = time.monotonic() + _LOAD_LOCK_TIMEOUT_S
     while time.monotonic() < deadline:
+        clear_stale_nvidia_load_lock(cache_dir)
         try:
             fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()}\n".encode())
             os.close(fd)
             return lock_file
         except FileExistsError:
             time.sleep(2.0)
     raise TimeoutError(
         "nvidia_asr: другой процесс загружает Parakeet — таймаут ожидания. "
-        "Закройте все Studio/python, удалите data/.cache/huggingface/locks/ "
-        "и запустите: python scripts/download_nvidia_asr.py"
+        "Закройте все окна Studio/run-backend и перезапустите STUDIO.cmd."
     )
 
 
@@ -196,7 +199,7 @@ def _load_model(model_name: str):
 
 
 def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
-    """Явная предзагрузка Parakeet (скрипт / первый запуск Studio)."""
+    """Предзагрузка Parakeet (фон при старте Studio или шаг «Аудио»)."""
     from app.settings import settings
 
     configure_nvidia_asr_environment(force=True)

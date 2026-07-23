@@ -357,6 +357,45 @@ function Invoke-StudioGitUpdate {
     return $true
 }
 
+function Test-StudioAsrBackendNvidia {
+    $envFile = Join-Path $Root ".env"
+    if (Test-Path $envFile) {
+        $match = Select-String -Path $envFile -Pattern '^\s*ASR_BACKEND\s*=\s*(\S+)' | Select-Object -First 1
+        if ($match) {
+            $val = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+            return ($val.ToLower() -eq "nvidia")
+        }
+    }
+    return $true
+}
+
+function Invoke-StudioNvidiaDeps {
+    if (-not (Test-StudioAsrBackendNvidia)) {
+        Write-StudioMsg "ASR_BACKEND не nvidia — пропуск NeMo." "DarkGray"
+        return $true
+    }
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path $py)) { return $false }
+    & $py -c "import nemo.collections.asr" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-StudioMsg "OK: NVIDIA NeMo ASR (Parakeet) установлен." "Green"
+        return $true
+    }
+    Write-StudioMsg "==> pip install -e .[nvidia] (Parakeet ASR для таймкодов)…" "Cyan"
+    $spec = (Resolve-Path -LiteralPath $Root).Path
+    $env:PIP_DEFAULT_TIMEOUT = "600"
+    Push-Location -LiteralPath $Root
+    & $py -m pip install --default-timeout=600 -e "${spec}[nvidia]"
+    $code = $LASTEXITCODE
+    Pop-Location
+    if ($code -ne 0) {
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: pip [nvidia] не удался — ASR fallback на whisper." "Yellow"
+        return $true
+    }
+    Write-StudioMsg "OK: NVIDIA NeMo ASR установлен." "Green"
+    return $true
+}
+
 function Invoke-StudioPipInstall {
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
@@ -413,6 +452,7 @@ function Invoke-StudioUpdateAndStart {
         Write-StudioMsg "ОШИБКА: .venv не найден. Сначала install.ps1." "Red"
         return $false
     }
+    if (-not (Invoke-StudioNvidiaDeps)) { return $false }
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления — запускаю [5] сборку UI..." "Yellow"
         if (-not (Invoke-StudioRepairWeb)) { return $false }
@@ -468,6 +508,7 @@ function Invoke-StudioRepair {
         return $false
     }
     if (-not (Invoke-StudioPipInstall)) { return $false }
+    if (-not (Invoke-StudioNvidiaDeps)) { return $false }
     Write-StudioMsg "==> playwright install chromium" "Cyan"
     & $py -m playwright install chromium 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {

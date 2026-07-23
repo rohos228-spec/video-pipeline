@@ -3,12 +3,68 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 from loguru import logger
 
 _configured = False
+_STALE_LOCK_MAX_AGE_S = 900.0
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def clear_stale_nvidia_load_lock(cache_root: Path | None = None) -> bool:
+    """Снять зависший parakeet.load.lock после краша Studio (без ручных действий)."""
+    if cache_root is None:
+        from app.settings import settings
+
+        cache_root = settings.data_dir / ".cache"
+    lock_file = cache_root / "locks" / "parakeet.load.lock"
+    if not lock_file.is_file():
+        return False
+    try:
+        stat = lock_file.stat()
+        age_s = time.time() - stat.st_mtime
+        pid: int | None = None
+        try:
+            raw = lock_file.read_text(encoding="utf-8").strip()
+            if raw:
+                pid = int(raw.split()[0])
+        except (OSError, ValueError):
+            pid = None
+        stale = age_s > _STALE_LOCK_MAX_AGE_S or (pid is not None and not _pid_alive(pid))
+        if not stale:
+            return False
+        lock_file.unlink(missing_ok=True)
+        logger.warning(
+            "nvidia_asr: снят устаревший lock (age={:.0f}s, pid={})",
+            age_s,
+            pid,
+        )
+        return True
+    except OSError as exc:
+        logger.warning("nvidia_asr: не удалось проверить lock {}: {}", lock_file, exc)
+        return False
 
 
 def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
@@ -50,6 +106,8 @@ def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
             os.environ[key] = value
 
     tempfile.tempdir = temp_s
+
+    clear_stale_nvidia_load_lock(cache_root)
 
     if not _configured:
         logger.info(

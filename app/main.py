@@ -748,8 +748,34 @@ async def _startup_maintenance() -> None:
         from app.services.run_sync import reconcile_stale_node_runs_on_startup
 
         await reconcile_stale_node_runs_on_startup()
+        await _preload_nvidia_asr_on_startup()
     except Exception as e:  # noqa: BLE001
         logger.exception("startup maintenance failed: {}", e)
+
+
+async def _preload_nvidia_asr_on_startup() -> None:
+    """Фоновая загрузка Parakeet — пользователю достаточно git pull + STUDIO.cmd."""
+    if (settings.asr_backend or "").strip().lower() != "nvidia":
+        return
+    try:
+        from app.services.nvidia_asr import nvidia_asr_available, preload_nvidia_asr_model
+
+        if not nvidia_asr_available():
+            logger.info(
+                "nvidia_asr: NeMo не установлен — ASR fallback на whisper "
+                '(обновление через STUDIO.cmd [4] ставит ".[nvidia]")'
+            )
+            return
+        logger.info("nvidia_asr: фоновая предзагрузка Parakeet…")
+        ok = await asyncio.to_thread(preload_nvidia_asr_model)
+        if ok:
+            logger.info("nvidia_asr: Parakeet готов к шагу «Аудио»")
+        else:
+            logger.warning(
+                "nvidia_asr: предзагрузка не удалась — повтор при шаге «Аудио»"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nvidia_asr startup preload skipped: {}", exc)
 
 
 async def main() -> None:
