@@ -169,6 +169,28 @@ async def _backfill_from_disk() -> None:
                             "backfill[#{}]: voiceover.txt read failed: {}",
                             p.id, e,
                         )
+
+                from app.services.ensure_frames_from_disk import (
+                    discover_frame_numbers_on_disk,
+                    ensure_frames_from_disk_media,
+                )
+                from sqlalchemy import func, select as sa_select
+                from app.models import Frame
+
+                frame_count = (
+                    await s.execute(
+                        sa_select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                    )
+                ).scalar_one() or 0
+                if frame_count == 0 and discover_frame_numbers_on_disk(proj_dir):
+                    created = await ensure_frames_from_disk_media(s, p)
+                    if created:
+                        logger.info(
+                            "backfill[#{}]: disk → {} Frame(s) {}",
+                            p.id,
+                            len(created),
+                            created[:20] if len(created) > 20 else created,
+                        )
     except Exception as e:  # noqa: BLE001
         logger.warning("backfill on startup failed: {}", e)
 

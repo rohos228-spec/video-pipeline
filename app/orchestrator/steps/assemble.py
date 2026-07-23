@@ -136,7 +136,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
     if not frames_all:
-        raise RuntimeError("нет кадров")
+        from app.services.ensure_frames_from_disk import bootstrap_project_frames_from_disk
+
+        boot = await bootstrap_project_frames_from_disk(session, project, sync_xlsx=True)
+        if boot.get("frames_created"):
+            logger.info(
+                "[#{}] assemble: bootstrap {} кадров с диска",
+                project.id,
+                boot["frames_created"],
+            )
+        frames_all = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        ).scalars().all()
+    if not frames_all:
+        raise RuntimeError(
+            "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
+        )
 
     frames: list[Frame] = []
     skipped_no_video: list[int] = []

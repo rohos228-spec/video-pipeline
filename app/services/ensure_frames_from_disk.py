@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project
@@ -122,3 +123,60 @@ async def ensure_frames_from_disk_media(
         )
 
     return created
+
+
+async def _count_project_frames(session: AsyncSession, project_id: int) -> int:
+    return int(
+        (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project_id)
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
+async def bootstrap_project_frames_from_disk(
+    session: AsyncSession,
+    project: Project,
+    *,
+    sync_xlsx: bool = True,
+) -> dict[str, Any]:
+    """Подтянуть Frame в БД из project.xlsx и/или scenes/videos на диске.
+
+    Идемпотентно: повторный вызов без изменений возвращает пустой summary.
+    """
+    summary: dict[str, Any] = {}
+    frame_count = await _count_project_frames(session, project.id)
+
+    xlsx = project.data_dir / "project.xlsx"
+    if sync_xlsx and xlsx.is_file() and frame_count == 0:
+        try:
+            from app.services.chatgpt_xlsx import sync_project_xlsx
+
+            info = await sync_project_xlsx(
+                session,
+                project,
+                xlsx,
+                keep_fields=True,
+                update_frames_voiceover=True,
+            )
+            summary["xlsx"] = info
+            frame_count = await _count_project_frames(session, project.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[#{}] bootstrap_project_frames_from_disk: xlsx failed: {}",
+                project.id,
+                exc,
+            )
+            summary["xlsx_error"] = str(exc)
+
+    disk_numbers = discover_frame_numbers_on_disk(project.data_dir)
+    if disk_numbers:
+        summary["disk_frame_numbers"] = sorted(disk_numbers)
+
+    created = await ensure_frames_from_disk_media(session, project)
+    if created:
+        summary["frames_created"] = created
+
+    return summary
