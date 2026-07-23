@@ -67,6 +67,35 @@ def clear_stale_nvidia_load_lock(cache_root: Path | None = None) -> bool:
         return False
 
 
+def clear_stale_nemo_temp_dirs(cache_root: Path | None = None) -> int:
+    """Удалить старые tmp* от HF (manifest.json WinError 32 на Windows)."""
+    import shutil
+
+    if cache_root is None:
+        from app.settings import settings
+
+        cache_root = settings.data_dir / ".cache"
+    temp_root = cache_root / "temp"
+    if not temp_root.is_dir():
+        return 0
+    removed = 0
+    now = time.time()
+    for entry in temp_root.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("tmp"):
+            continue
+        try:
+            if now - entry.stat().st_mtime < 1800:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+            if not entry.exists():
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.warning("nvidia_asr: удалено {} старых temp-папок HF", removed)
+    return removed
+
+
 def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
     """Windows: NeMo/HF пишут manifest.json в %TEMP% → WinError 32.
 
@@ -113,6 +142,7 @@ def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
     tempfile.tempdir = temp_s
 
     clear_stale_nvidia_load_lock(cache_root)
+    clear_stale_nemo_temp_dirs(cache_root)
 
     if not _configured:
         logger.info(

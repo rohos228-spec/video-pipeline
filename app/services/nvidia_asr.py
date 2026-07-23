@@ -153,51 +153,76 @@ def _ensure_stable_nemo_copy(model_name: str, cache_dir: Path, source: Path) -> 
     return dest
 
 
-def _hf_download_nemo(model_name: str, cache_dir: Path) -> Path:
-    """Скачать один .nemo в стабильный путь — без from_pretrained/snapshot (WinError 32)."""
+def _http_download_nemo(model_name: str, cache_dir: Path) -> Path:
+    """Скачать .nemo напрямую по HTTP — без huggingface_hub (нет manifest.json в temp)."""
     stable = _stable_nemo_path(model_name, cache_dir)
     if _nemo_file_ready(stable):
         return stable
 
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise ImportError(
-            "huggingface_hub не установлен для загрузки Parakeet. "
-            f'{_NVIDIA_INSTALL_HINT}'
-        ) from exc
+    import httpx
 
     filename = _nemo_filename(model_name)
-    configure_nvidia_asr_environment(force=True)
-    hub = cache_dir / "huggingface" / "hub"
-    hub.mkdir(parents=True, exist_ok=True)
+    url = f"https://huggingface.co/{model_name}/resolve/main/{filename}"
+    part = stable.with_suffix(stable.suffix + ".part")
+    stable.parent.mkdir(parents=True, exist_ok=True)
+
+    resume_from = part.stat().st_size if part.is_file() else 0
+    headers: dict[str, str] = {}
+    if resume_from > 0:
+        headers["Range"] = f"bytes={resume_from}-"
+
+    logger.info(
+        "nvidia_asr: HTTP download {} → {} (resume {:.1f} MB)",
+        url,
+        stable.name,
+        resume_from / 1_000_000,
+    )
 
     last_exc: BaseException | None = None
     for attempt in range(1, _LOAD_RETRIES + 1):
         try:
-            cached = hf_hub_download(
-                repo_id=model_name,
-                filename=filename,
-                cache_dir=str(hub),
-                resume_download=True,
-                force_download=False,
+            timeout = httpx.Timeout(600.0, connect=60.0)
+            with httpx.stream(
+                "GET", url, headers=headers, follow_redirects=True, timeout=timeout,
+            ) as resp:
+                if resp.status_code == 416:
+                    if _nemo_file_ready(part):
+                        part.replace(stable)
+                        return stable
+                    part.unlink(missing_ok=True)
+                    headers.pop("Range", None)
+                    resume_from = 0
+                    continue
+                resp.raise_for_status()
+                mode = "ab" if resume_from > 0 and resp.status_code == 206 else "wb"
+                if mode == "wb" and part.exists():
+                    part.unlink(missing_ok=True)
+                with part.open(mode) as out:
+                    for chunk in resp.iter_bytes(1024 * 1024):
+                        if chunk:
+                            out.write(chunk)
+            if not _nemo_file_ready(part):
+                size = part.stat().st_size if part.is_file() else 0
+                raise RuntimeError(f"nvidia_asr: неполная загрузка .nemo ({size} bytes)")
+            part.replace(stable)
+            logger.info(
+                "nvidia_asr: downloaded {} ({:.2f} GB)",
+                stable.name,
+                stable.stat().st_size / 1_000_000_000,
             )
-            src = Path(cached)
-            if not _nemo_file_ready(src):
-                raise RuntimeError(
-                    f"nvidia_asr: HF вернул неполный .nemo ({src}, "
-                    f"{src.stat().st_size if src.is_file() else 0} bytes)"
-                )
-            if src.resolve() == stable.resolve():
-                return stable
-            return _ensure_stable_nemo_copy(model_name, cache_dir, src)
+            return stable
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            resume_from = part.stat().st_size if part.is_file() else 0
+            if resume_from > 0:
+                headers["Range"] = f"bytes={resume_from}-"
+            else:
+                headers.pop("Range", None)
             if not _is_file_lock_error(exc) or attempt >= _LOAD_RETRIES:
                 raise
             wait = _LOAD_RETRY_SLEEP_S * attempt
             logger.warning(
-                "nvidia_asr: WinError 32 при скачивании (попытка {}/{}), "
+                "nvidia_asr: WinError 32 при HTTP-скачивании (попытка {}/{}), "
                 "повтор через {:.0f}s: {}",
                 attempt,
                 _LOAD_RETRIES,
@@ -225,7 +250,7 @@ def _download_model(model_name: str):
     if local is not None:
         return _restore_nemo_model(model_name, local)
 
-    nemo_path = _hf_download_nemo(model_name, cache_dir)
+    nemo_path = _http_download_nemo(model_name, cache_dir)
     return _restore_nemo_model(model_name, nemo_path)
 
 

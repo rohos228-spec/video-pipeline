@@ -92,5 +92,5 @@ def test_download_model_uses_local_nemo_without_hf_download(
         raise AssertionError("hf download must not run when local .nemo exists")
 
     monkeypatch.setattr(nvidia_asr, "_restore_nemo_model", fake_restore)
-    monkeypatch.setattr(nvidia_asr, "_hf_download_nemo", fail_download)
+    monkeypatch.setattr(nvidia_asr, "_http_download_nemo", fail_download)
     nvidia_asr._download_model(model)
