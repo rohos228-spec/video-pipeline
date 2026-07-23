@@ -21,6 +21,7 @@ import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import { shouldShowStopBar } from "@/lib/project-running";
+import { useMontageBusy } from "@/hooks/use-montage-busy";
 import { isAiControlMode } from "@/lib/control-mode";
 import { HitlModal } from "@/components/hitl/hitl-banner";
 import { hitlKindForNodeType } from "@/components/canvas/node-hitl-badge";
@@ -283,6 +284,8 @@ export function StudioWorkspace({
     refetchInterval: 8000,
   });
 
+  const montageBusy = useMontageBusy(projectId, project.data?.status);
+
   const resultContext = useMemo((): NodeResultContext => {
     const assets = projectAssets.data ?? [];
     const mapMedia = (rows: NonNullable<typeof mediaImages.data>, kind: "images" | "videos") =>
@@ -536,6 +539,7 @@ export function StudioWorkspace({
         setResultPanel({ nodeKey, nodeType });
       },
       montageBoardOpen,
+      montageBusy,
       onOpenMontageBoard: () => setMontageBoardOpen(true),
       onCloseMontageBoard: () => setMontageBoardOpen(false),
       onDownloadPrompts: async (nodeKey: string, nodeType: string) => {
@@ -571,6 +575,7 @@ export function StudioWorkspace({
       aiReview,
       canvasZoom,
       montageBoardOpen,
+      montageBusy,
       getPromptSlots,
       project.data?.meta,
       persistMeta,
@@ -650,6 +655,7 @@ export function StudioWorkspace({
       <AssembleMontageBoard
         open={montageBoardOpen}
         projectId={projectId}
+        montageBusy={montageBusy}
         onClose={() => setMontageBoardOpen(false)}
       />
       <NodeStudio

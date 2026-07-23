@@ -41,6 +41,7 @@ export interface CanvasActions {
   onOpenHitlById: (hitlId: number) => void;
   onOpenNodeResult: (nodeKey: string, nodeType: string) => void;
   montageBoardOpen: boolean;
+  montageBusy: boolean;
   onOpenMontageBoard: () => void;
   onCloseMontageBoard: () => void;
 }

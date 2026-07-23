@@ -70,7 +70,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
         {isAssemble && actions?.projectId && (
           <AssembleMontageTrigger
             active={actions.montageBoardOpen}
+            busy={actions.montageBusy}
             onClick={() => {
+              if (actions.montageBusy) return;
               if (actions.montageBoardOpen) {
                 actions.onCloseMontageBoard();
               } else {

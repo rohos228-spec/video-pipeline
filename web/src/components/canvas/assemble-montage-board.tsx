@@ -850,10 +850,12 @@ function mergeTrimsFromMeta(
 export function AssembleMontageBoard({
   open,
   projectId,
+  montageBusy = false,
   onClose,
 }: {
   open: boolean;
   projectId: number | null;
+  montageBusy?: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -872,6 +874,7 @@ export function AssembleMontageBoard({
     null,
   );
   const pendingOpsRef = useRef<MontagePendingOp[]>([]);
+  const montageActive = montageRunning || montageBusy;
   pendingOpsRef.current = pendingOps;
   /** Пользователь набрал очередь локально — не затирать пустым meta с сервера. */
   const localQueueDirtyRef = useRef(false);
@@ -1568,10 +1571,10 @@ export function AssembleMontageBoard({
               size="sm"
               variant="outline"
               className="h-9 gap-1.5 text-xs"
-              disabled={!projectId || montageMutation.isPending || montageRunning}
+              disabled={!projectId || montageMutation.isPending || montageActive}
               onClick={() => montageMutation.mutate()}
             >
-              {montageMutation.isPending || montageRunning ? (
+              {montageMutation.isPending || montageActive ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Clapperboard className="h-4 w-4" />
@@ -1893,31 +1896,41 @@ export function AssembleMontageBoard({
 export function AssembleMontageTrigger({
   onClick,
   active,
+  busy,
 }: {
   onClick: () => void;
   active?: boolean;
+  busy?: boolean;
 }) {
   return (
     <button
       type="button"
-      title="Панель монтажа"
+      title={busy ? "Монтаж выполняется…" : "Панель монтажа"}
+      disabled={busy}
       className={cn(
         "nodrag nopan nowheel absolute left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold shadow-md backdrop-blur transition",
         "-top-9",
-        active
-          ? "border-amber-400/60 bg-amber-500/25 text-amber-100"
-          : "border-amber-400/40 bg-amber-500/15 text-amber-200 hover:border-amber-300/70 hover:bg-amber-500/25",
+        busy
+          ? "cursor-not-allowed border-amber-400/30 bg-amber-500/10 text-amber-200/70 opacity-80"
+          : active
+            ? "border-amber-400/60 bg-amber-500/25 text-amber-100"
+            : "border-amber-400/40 bg-amber-500/15 text-amber-200 hover:border-amber-300/70 hover:bg-amber-500/25",
       )}
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
+        if (busy) return;
         e.stopPropagation();
         e.preventDefault();
         onClick();
       }}
     >
-      <Clapperboard className="h-3.5 w-3.5" />
-      Монтаж
+      {busy ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Clapperboard className="h-3.5 w-3.5" />
+      )}
+      {busy ? "Монтаж…" : "Монтаж"}
     </button>
   );
 }
