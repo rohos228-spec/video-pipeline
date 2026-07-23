@@ -12,7 +12,7 @@ def test_whisper_words_fresh_when_newer_than_audio(tmp_path: Path) -> None:
     audio = tmp_path / "voice_full.mp3"
     words = tmp_path / "words.json"
     audio.write_bytes(b"a")
-    words.write_text("[]")
+    words.write_text('[{"word":"a","start":0.0,"end":0.5,"prob":1.0}]')
     words.touch()
     import os
     import time
@@ -22,6 +22,15 @@ def test_whisper_words_fresh_when_newer_than_audio(tmp_path: Path) -> None:
 
     art = SimpleNamespace(path=str(words))
     assert whisper_words_fresh_for_audio(art, audio) is True
+
+
+def test_whisper_words_stale_when_empty(tmp_path: Path) -> None:
+    audio = tmp_path / "voice_full.mp3"
+    words = tmp_path / "words.json"
+    audio.write_bytes(b"a")
+    words.write_text("[]")
+    art = SimpleNamespace(path=str(words))
+    assert whisper_words_fresh_for_audio(art, audio) is False
 
 
 def test_whisper_words_stale_when_older_than_audio(tmp_path: Path) -> None:

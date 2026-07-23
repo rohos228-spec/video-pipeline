@@ -114,6 +114,12 @@ async def remount_video(
         )
         return summary
     summary["voice_file"] = str(voice_path)
+    logger.info(
+        "[#{}] remount: полный ASR + сборка по {} ({:.0f} MB)",
+        project.id,
+        voice_path.name,
+        voice_path.stat().st_size / 1_000_000,
+    )
 
     reset_info = await reset_step(session, project, "assemble")
     summary["assemble_reset"] = reset_info
@@ -131,7 +137,7 @@ async def remount_video(
 
     project.status = ProjectStatus.generating_audio
     await session.flush()
-    await generate_audio.run(session, project, bot)
+    await generate_audio.run(session, project, bot, force_full_asr=True)
     summary["audio_status"] = project.status.value
     raise_if_cancelled(project.id)
 

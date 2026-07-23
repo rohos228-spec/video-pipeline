@@ -426,6 +426,7 @@ async def ensure_whisper_words(
         load_words_json,
         transcribe_words,
         whisper_available,
+        whisper_words_fresh_for_audio,
     )
 
     await recover_whisper_from_disk(session, project)
@@ -443,8 +444,10 @@ async def ensure_whisper_words(
     ).scalar_one_or_none()
     if whisper_art is not None and whisper_art.path:
         wp = Path(whisper_art.path)
-        if wp.is_file():
-            return load_words_json(wp)
+        if wp.is_file() and whisper_words_fresh_for_audio(whisper_art, audio_path):
+            words = load_words_json(wp)
+            if words:
+                return words
 
     if not audio_path.is_file():
         return []

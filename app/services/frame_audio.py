@@ -522,6 +522,11 @@ async def align_existing_voice_full(
         language=language,
         beam_size=1 if master > 300 else 5,
     )
+    if not words:
+        raise RuntimeError(
+            f"[#{project.id}] ASR не вернул word-level таймкоды для {voice_path.name} "
+            f"({active_asr_backend()}) — проверьте модель и audio/voice_full"
+        )
     aligned_cells = _voiceover_cells_for_frames(project, frames, cells)
     if any(t for _, t in aligned_cells):
         clips = frame_clips_from_whisper(aligned_cells, words, master, voice_path)

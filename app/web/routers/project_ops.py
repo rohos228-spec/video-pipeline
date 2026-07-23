@@ -752,9 +752,12 @@ async def montage_board_montage(
     from app.services.montage_board_montage_job import get_montage_job, spawn_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
+    from app.services.project_control import clear_user_stop_gate
     from app.services.step_cancel import clear_stop
 
+    clear_user_stop_gate(p)
     clear_stop(project_id)
+    await session.flush()
     job = get_montage_job(p)
     if job.get("status") == "running":
         return {"started": False, "already_running": True, "job": job}

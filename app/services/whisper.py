@@ -188,10 +188,18 @@ def artifact_path_mtime(artifact) -> float | None:
 
 
 def whisper_words_fresh_for_audio(whisper_art, audio_path: Path) -> bool:
-    """True если words.json новее или совпадает по времени с voice_full."""
+    """True если words.json новее voice_full и содержит слова."""
     whisper_mtime = artifact_path_mtime(whisper_art)
     if whisper_mtime is None:
         return False
+    if whisper_art is not None and getattr(whisper_art, "path", None):
+        wp = Path(whisper_art.path)
+        if wp.is_file():
+            try:
+                if not load_words_json(wp):
+                    return False
+            except Exception:  # noqa: BLE001
+                return False
     if not audio_path.is_file():
         return True
     return whisper_mtime >= audio_path.stat().st_mtime

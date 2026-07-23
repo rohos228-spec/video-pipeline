@@ -114,6 +114,11 @@ async def run_montage_job(project_id: int) -> None:
             project = await session.get(Project, project_id)
             if project is None:
                 return
+            from app.services.project_control import clear_user_stop_gate
+            from app.services.step_cancel import clear_stop
+
+            clear_user_stop_gate(project)
+            clear_stop(project_id)
             if is_stop_requested(project_id):
                 _set_job(
                     project,

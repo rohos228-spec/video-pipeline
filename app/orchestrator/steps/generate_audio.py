@@ -169,14 +169,26 @@ async def _finalize_audio_ready(
     return True
 
 
-async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
+async def run(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    *,
+    force_full_asr: bool = False,
+) -> None:
     if project.status is not ProjectStatus.generating_audio:
         return
     logger.info("[#{}] generate_audio starting (per-frame TTS, plan R49)", project.id)
 
     await recover_scene_videos_from_disk(session, project)
     await recover_audio_from_disk(session, project)
-    await recover_whisper_from_disk(session, project)
+    if force_full_asr:
+        logger.info(
+            "[#{}] generate_audio: remount — полный ASR по voice_full, stale words.json игнорируем",
+            project.id,
+        )
+    else:
+        await recover_whisper_from_disk(session, project)
 
     frames = (
         await session.execute(
