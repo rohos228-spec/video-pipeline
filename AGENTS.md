@@ -12,6 +12,7 @@
 |------|---------|
 | Install deps | `pip install -e ".[dev]"` |
 | ASR NVIDIA (монтаж) | `pip install -e ".[nvidia]"` + `ASR_BACKEND=nvidia` |
+| Предзагрузка Parakeet | `python3 scripts/download_nvidia_asr.py` (если WinError 32) |
 | Lint | `ruff check .` |
 | Tests | `python3 -m pytest tests/ -v` |
 | Type check | `mypy app/ --ignore-missing-imports` |

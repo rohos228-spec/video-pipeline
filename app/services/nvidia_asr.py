@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
+import os
 import threading
+import time
 from pathlib import Path
 
 from loguru import logger
 
 from app.services.whisper import WordTS
 
+# Windows: WinError 1314 / HF temp locks — кэш в data/, без symlink.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "0")
+
 _model_lock = threading.Lock()
 _model_cache: dict[str, object] = {}
+_hf_cache_configured = False
 
 _NVIDIA_INSTALL_HINT = (
     'pip install -e ".[nvidia]"   # NeMo + Parakeet на ПК монтажа (CUDA)'
 )
+_LOAD_RETRIES = 5
+_LOAD_RETRY_SLEEP_S = 3.0
+_LOAD_LOCK_TIMEOUT_S = 600.0
 
 
 def nvidia_asr_available() -> bool:
@@ -25,19 +35,122 @@ def nvidia_asr_available() -> bool:
         return False
 
 
+def _ensure_hf_cache_dir() -> Path:
+    """Стабильный HF-кэш в data/ — меньше WinError 32 в %TEMP%."""
+    global _hf_cache_configured
+    from app.settings import settings
+
+    cache_root = settings.data_dir / ".cache" / "huggingface"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    hub = cache_root / "hub"
+    hub.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(cache_root))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(hub))
+    if not _hf_cache_configured:
+        logger.info("nvidia_asr: HF cache → {}", cache_root)
+        _hf_cache_configured = True
+    return cache_root
+
+
+def _is_file_lock_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 32:
+        return True
+    text = str(exc).lower()
+    return "winerror 32" in text or "used by another process" in text
+
+
+def _with_interprocess_load_lock(cache_dir: Path):
+    """Один процесс качает модель — остальные ждут (Studio + worker)."""
+    lock_dir = cache_dir / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / "parakeet.load.lock"
+    deadline = time.monotonic() + _LOAD_LOCK_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return lock_file
+        except FileExistsError:
+            time.sleep(1.5)
+    raise TimeoutError(
+        "nvidia_asr: другой процесс загружает Parakeet — таймаут ожидания. "
+        "Закройте лишние Studio/воркеры и повторите."
+    )
+
+
+def _release_interprocess_load_lock(lock_file: Path | None) -> None:
+    if lock_file is None:
+        return
+    try:
+        lock_file.unlink(missing_ok=True)
+    except OSError as exc:
+        if not _is_file_lock_error(exc):
+            logger.warning("nvidia_asr: не удалось снять lock {}: {}", lock_file, exc)
+
+
+def _download_model(model_name: str):
+    import nemo.collections.asr as nemo_asr
+
+    return nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
+
+
 def _load_model(model_name: str):
     if not nvidia_asr_available():
         raise ImportError(f"NeMo ASR не установлен. {_NVIDIA_INSTALL_HINT}")
-    import nemo.collections.asr as nemo_asr
 
     with _model_lock:
         cached = _model_cache.get(model_name)
         if cached is not None:
             return cached
+
+        cache_dir = _ensure_hf_cache_dir()
         logger.info("nvidia_asr: loading model '{}' …", model_name)
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
-        _model_cache[model_name] = model
-        return model
+
+        lock_file: Path | None = None
+        last_exc: BaseException | None = None
+        try:
+            lock_file = _with_interprocess_load_lock(cache_dir)
+            for attempt in range(1, _LOAD_RETRIES + 1):
+                try:
+                    model = _download_model(model_name)
+                    _model_cache[model_name] = model
+                    logger.info("nvidia_asr: model '{}' ready", model_name)
+                    return model
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    if not _is_file_lock_error(exc) or attempt >= _LOAD_RETRIES:
+                        raise
+                    logger.warning(
+                        "nvidia_asr: WinError 32 при загрузке (попытка {}/{}), "
+                        "повтор через {:.0f}s: {}",
+                        attempt,
+                        _LOAD_RETRIES,
+                        _LOAD_RETRY_SLEEP_S,
+                        exc,
+                    )
+                    time.sleep(_LOAD_RETRY_SLEEP_S * attempt)
+        finally:
+            _release_interprocess_load_lock(lock_file)
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"nvidia_asr: не удалось загрузить {model_name}")
+
+
+def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
+    """Явная предзагрузка Parakeet (скрипт / первый запуск Studio)."""
+    from app.settings import settings
+
+    name = (model_name or settings.nvidia_asr_model).strip()
+    try:
+        _load_model(name)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("nvidia_asr preload failed: {}", exc)
+        return False
 
 
 def _word_stamp_seconds(stamp: dict, model) -> tuple[float, float, str]:
@@ -83,8 +196,6 @@ def transcribe_words_nvidia(
     language: str = "ru",
 ) -> list[WordTS]:
     """Word-level таймкоды через NVIDIA NeMo Parakeet."""
-    import time
-
     if not audio_path.is_file():
         raise FileNotFoundError(f"audio not found: {audio_path}")
 
