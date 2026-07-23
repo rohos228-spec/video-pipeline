@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     bgm_default_enabled: bool = Field(True, alias="BGM_DEFAULT_ENABLED")
     bgm_default_level: int = Field(35, alias="BGM_DEFAULT_LEVEL")  # 0..100
     bgm_path: Path | None = Field(None, alias="BGM_PATH")
+    assembly_voice_gain: float = Field(1.0, alias="ASSEMBLY_VOICE_GAIN")
+    assembly_bgm_mix_ratio: float = Field(0.35, alias="ASSEMBLY_BGM_MIX_RATIO")
 
     # Subtitles — одно слово; опережение озвучки (Whisper системно отстаёт ~0.2–0.3 с)
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
