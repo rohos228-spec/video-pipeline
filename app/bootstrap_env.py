@@ -1,7 +1,4 @@
-"""Самый ранний bootstrap: до loguru/settings/nemo/huggingface.
-
-Windows + NVIDIA ASR: изолированный TEMP на процесс, отключение HF Xet.
-"""
+"""Самый ранний bootstrap: до loguru/settings/nemo/huggingface."""
 
 from __future__ import annotations
 
@@ -12,6 +9,7 @@ from pathlib import Path
 
 _applied = False
 _mkdtemp_patched = False
+_tempdir_patched = False
 
 
 def _repo_root() -> Path:
@@ -39,8 +37,29 @@ def _patch_mkdtemp(pid_temp: str) -> None:
     _mkdtemp_patched = True
 
 
+def _patch_tempdir_cleanup_win32() -> None:
+    """NeMo transcribe() падает → cleanup temp/manifest.json → WinError 32 на Windows."""
+    global _tempdir_patched
+    if _tempdir_patched or sys.platform != "win32":
+        return
+    original_cleanup = tempfile.TemporaryDirectory.cleanup
+
+    def safe_cleanup(self) -> None:  # noqa: ANN001
+        try:
+            original_cleanup(self)
+        except PermissionError:
+            pass
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 32:
+                pass
+            else:
+                raise
+
+    tempfile.TemporaryDirectory.cleanup = safe_cleanup  # type: ignore[method-assign]
+    _tempdir_patched = True
+
+
 def apply_nvidia_env(*, force: bool = True) -> Path:
-    """TEMP/TMP/HF env + temp на процесс (pid-*), чтобы не делить tmp*/manifest.json."""
     global _applied
     cache = _data_dir() / ".cache"
     temp_root = cache / "temp"
@@ -75,6 +94,7 @@ def apply_nvidia_env(*, force: bool = True) -> Path:
 
     tempfile.tempdir = temp_s
     _patch_mkdtemp(temp_s)
+    _patch_tempdir_cleanup_win32()
     _applied = True
     return cache
 
@@ -91,6 +111,5 @@ def apply_if_nvidia_asr(*, force: bool = True) -> None:
         apply_nvidia_env(force=force)
 
 
-# Авто-при import app.bootstrap_env (до остальных модулей app.*)
 if sys.platform == "win32" or (os.environ.get("ASR_BACKEND") or "nvidia").strip().lower() == "nvidia":
     apply_if_nvidia_asr(force=True)

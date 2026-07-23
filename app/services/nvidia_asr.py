@@ -19,6 +19,7 @@ apply_nvidia_env(force=True)
 configure_nvidia_asr_environment(force=True)
 
 _model_lock = threading.Lock()
+_transcribe_lock = threading.Lock()
 _model_cache: dict[str, object] = {}
 
 _NEMO_FILENAME_BY_REPO: dict[str, str] = {
@@ -342,6 +343,59 @@ def _hypothesis_words(hypothesis, model) -> list[WordTS]:
     return out
 
 
+def _probe_audio_channels(path: Path) -> int:
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=channels", "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return 1
+    try:
+        return max(1, int(proc.stdout.strip()))
+    except ValueError:
+        return 1
+
+
+def _ensure_mono_for_nemo(audio_path: Path) -> Path:
+    """NeMo ждёт mono (batch, time). Стерео voice_full → TypeError + WinError 32 на cleanup."""
+    channels = _probe_audio_channels(audio_path)
+    if channels <= 1:
+        return audio_path
+    mono_dir = _cache_root() / "mono"
+    mono_dir.mkdir(parents=True, exist_ok=True)
+    out = mono_dir / f"{audio_path.stem}_mono16k.wav"
+    src_mtime = audio_path.stat().st_mtime
+    if out.is_file() and out.stat().st_mtime >= src_mtime and out.stat().st_size > 1000:
+        logger.info("nvidia_asr: используем mono-кэш {}", out.name)
+        return out
+    import subprocess
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(audio_path.resolve()),
+        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+        str(out.resolve()),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"nvidia_asr: ffmpeg stereo→mono failed for {audio_path.name}: {proc.stderr}"
+        )
+    logger.warning(
+        "nvidia_asr: {} — {} канал(ов), конвертировано в mono {}",
+        audio_path.name,
+        channels,
+        out.name,
+    )
+    return out
+
+
 def transcribe_words_nvidia(
     audio_path: Path,
     *,
@@ -353,18 +407,20 @@ def transcribe_words_nvidia(
         raise FileNotFoundError(f"audio not found: {audio_path}")
 
     model = _load_model(model_name)
+    mono_path = _ensure_mono_for_nemo(audio_path)
     logger.info(
         "nvidia_asr: transcribing {} (model={}, lang={})",
-        audio_path.name,
+        mono_path.name,
         model_name,
         language,
     )
     t0 = time.monotonic()
-    hypotheses = model.transcribe(
-        [str(audio_path.resolve())],
-        timestamps=True,
-        verbose=False,
-    )
+    with _transcribe_lock:
+        hypotheses = model.transcribe(
+            [str(mono_path.resolve())],
+            timestamps=True,
+            verbose=False,
+        )
     if not hypotheses:
         logger.warning("nvidia_asr: empty hypotheses for {}", audio_path.name)
         return []
@@ -391,9 +447,10 @@ def transcribe_words_many_nvidia(
     if not audio_paths:
         return []
     model = _load_model(model_name)
-    paths = [str(p.resolve()) for p in audio_paths if p.is_file()]
-    logger.info("nvidia_asr: batch transcribe {} files", len(paths))
-    hypotheses = model.transcribe(paths, timestamps=True, verbose=False)
+    with _transcribe_lock:
+        paths = [str(_ensure_mono_for_nemo(p).resolve()) for p in audio_paths if p.is_file()]
+        logger.info("nvidia_asr: batch transcribe {} files", len(paths))
+        hypotheses = model.transcribe(paths, timestamps=True, verbose=False)
     out: list[list[WordTS]] = []
     for hyp in hypotheses:
         out.append(_hypothesis_words(hyp, model))
