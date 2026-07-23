@@ -36,7 +36,7 @@ from app.services.frame_audio import (
 )
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.whisper import WordTS, dump_words_json, whisper_words_fresh_for_audio
+from app.services.whisper import WordTS, dump_words_json
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -57,10 +57,6 @@ async def _latest_artifact(
             .limit(1)
         )
     ).scalar_one_or_none()
-
-
-def _whisper_fresh_for_voice(whisper_art: Artifact | None, voice_path: Path) -> bool:
-    return whisper_words_fresh_for_audio(whisper_art, voice_path)
 
 
 async def _persist_audio_results(
@@ -222,51 +218,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "нет закадрового текста на листе «план» (R49) — заполните project.xlsx"
         )
 
-    whisper_art = await _latest_artifact(session, project.id, ArtifactKind.whisper_words)
-
     if voice_path is not None and voice_path.is_file():
-        if not _whisper_fresh_for_voice(whisper_art, voice_path):
-            logger.info(
-                "[#{}] generate_audio: готовый mp3 «{}» — Whisper без 11Labs",
-                project.id,
-                voice_path.name,
-            )
-            clips, full_audio_path, words = await align_existing_voice_full(
-                project,
-                timeline_frames,
-                cells,
-                voice_path,
-                audio_dir,
-                whisper_model=settings.whisper_model,
-            )
-            await _persist_audio_results(
-                session,
-                project,
-                timeline_frames,
-                clips,
-                full_audio_path,
-                words,
-                audio_dir,
-                source="disk_whisper",
-            )
-            await _finalize_audio_ready(session, project)
-            return
-
-        from app.services.frame_timeline_sync import sync_frame_timestamps_if_needed
-
-        sync_info = await sync_frame_timestamps_if_needed(session, project, frames)
-        if sync_info.get("updated"):
-            logger.info(
-                "[#{}] generate_audio: таймкоды кадров из whisper/xlsx: {}",
-                project.id,
-                sync_info,
-            )
         logger.info(
-            "[#{}] generate_audio: озвучка и whisper на диске — audio_ready",
+            "[#{}] generate_audio: озвучка на диске → {} — Whisper + align R49",
             project.id,
+            voice_path,
         )
-        project.status = ProjectStatus.audio_ready
-        await session.flush()
+        clips, full_audio_path, words = await align_existing_voice_full(
+            project,
+            timeline_frames,
+            cells,
+            voice_path,
+            audio_dir,
+            whisper_model=settings.whisper_model,
+        )
+        await _persist_audio_results(
+            session,
+            project,
+            timeline_frames,
+            clips,
+            full_audio_path,
+            words,
+            audio_dir,
+            source="disk_whisper",
+        )
+        await _finalize_audio_ready(session, project)
         return
 
     if not any(text.strip() for _, text in cells):

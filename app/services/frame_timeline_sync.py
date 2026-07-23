@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project
 from app.services.frame_audio import (
+    FrameAudioClip,
     _voiceover_cells_for_frames,
     align_existing_voice_full,
     find_voice_full_on_disk,
     frame_clips_from_whisper,
 )
+from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.whisper import WordTS, load_words_json, whisper_words_fresh_for_audio
+from app.services.whisper import (
+    WordTS,
+    artifact_path_mtime,
+    dump_words_json,
+    load_words_json,
+    whisper_words_fresh_for_audio,
+)
 from app.settings import settings
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -57,6 +66,40 @@ def frames_missing_timestamps(frames: list[Frame]) -> list[int]:
     return missing
 
 
+def clips_look_equal_split(
+    clips: list[FrameAudioClip],
+    master: float,
+    *,
+    tolerance: float = 0.12,
+) -> bool:
+    """True если длительности кадров похожи на равномерный fallback (ошибка align)."""
+    if len(clips) < 4 or master <= 0:
+        return False
+    durations = [c.duration for c in clips if c.duration > 0]
+    if len(durations) < 4:
+        return False
+    avg = sum(durations) / len(durations)
+    if avg <= 0:
+        return False
+    uniform = sum(1 for d in durations if abs(d - avg) / avg < tolerance)
+    if uniform < len(durations) * 0.8:
+        return False
+    fair = master / len(durations)
+    return abs(avg - fair) / max(fair, 0.01) < 0.2
+
+
+def _xlsx_newer_than_whisper(project: Project, whisper_art: Artifact | None) -> bool:
+    xlsx = project.data_dir / "project.xlsx"
+    if not xlsx.is_file():
+        return False
+    if whisper_art is None or not whisper_art.path:
+        return True
+    whisper_mtime = artifact_path_mtime(whisper_art)
+    if whisper_mtime is None:
+        return True
+    return xlsx.stat().st_mtime > whisper_mtime + 1.0
+
+
 async def _latest_whisper_artifact(
     session: AsyncSession,
     project_id: int,
@@ -76,7 +119,7 @@ async def _latest_whisper_artifact(
 
 def _apply_clips_to_frames(
     frames: list[Frame],
-    clips: list,
+    clips: list[FrameAudioClip],
 ) -> list[int]:
     by_num = {c.frame_number: c for c in clips}
     updated: list[int] = []
@@ -91,12 +134,79 @@ def _apply_clips_to_frames(
     return updated
 
 
+async def _persist_whisper_words(
+    session: AsyncSession,
+    project: Project,
+    clips: list[FrameAudioClip],
+    words: list[WordTS],
+    audio_dir: Path,
+) -> Path:
+    """Сохранить words.json + Artifact после realign."""
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    frame_segments = [
+        {
+            "frame_number": clip.frame_number,
+            "start_ts": clip.start_ts,
+            "end_ts": clip.end_ts,
+            "text": clip.text,
+            "words": [
+                {
+                    "word": w.word,
+                    "start": w.start,
+                    "end": w.end,
+                    "prob": w.prob,
+                }
+                for w in extract_local_frame_words(words, clip.start_ts, clip.end_ts)
+            ],
+        }
+        for clip in clips
+    ]
+    words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
+    dump_words_json(words, words_path, frames=frame_segments)
+    session.add(
+        Artifact(
+            project_id=project.id,
+            kind=ArtifactKind.whisper_words,
+            uuid=uuid.uuid4().hex,
+            path=str(words_path),
+        )
+    )
+    await session.flush()
+    return words_path
+
+
+async def _realign_with_whisper(
+    session: AsyncSession,
+    project: Project,
+    timeline_frames: list[Frame],
+    cells: list[tuple[int, str]],
+    voice_path: Path,
+    audio_dir: Path,
+    *,
+    persist_words: bool,
+) -> tuple[list[FrameAudioClip], list[WordTS], str]:
+    clips, _full_path, words = await align_existing_voice_full(
+        project,
+        timeline_frames,
+        cells,
+        voice_path,
+        audio_dir,
+        whisper_model=settings.whisper_model,
+    )
+    source = "whisper_realigned"
+    if persist_words:
+        path = await _persist_whisper_words(session, project, clips, words, audio_dir)
+        source = f"whisper_realigned+persist:{path.name}"
+    return clips, words, source
+
+
 async def sync_frame_timestamps_from_voice(
     session: AsyncSession,
     project: Project,
     frames: list[Frame] | None = None,
     *,
     force_whisper: bool = False,
+    persist_whisper: bool = False,
 ) -> dict[str, Any]:
     """Записать start_ts/end_ts в Frame по voice_full + текст R49 + Whisper."""
     if frames is None:
@@ -125,35 +235,43 @@ async def sync_frame_timestamps_from_voice(
     audio_dir = project.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     master = await probe_duration(voice_path)
+    whisper_art = await _latest_whisper_artifact(session, project.id)
 
-    if force_whisper:
-        clips, _, _words = await align_existing_voice_full(
+    need_realign = force_whisper or not whisper_words_fresh_for_audio(
+        whisper_art, voice_path
+    ) or _xlsx_newer_than_whisper(project, whisper_art)
+
+    if need_realign:
+        clips, _words, source = await _realign_with_whisper(
+            session,
             project,
             timeline_frames,
             cells,
             voice_path,
             audio_dir,
-            whisper_model=settings.whisper_model,
+            persist_words=persist_whisper or force_whisper,
         )
-        source = "whisper_realigned"
     else:
-        whisper_art = await _latest_whisper_artifact(session, project.id)
-        if whisper_art and whisper_art.path and whisper_words_fresh_for_audio(
-            whisper_art, voice_path
-        ):
-            words = load_words_json(Path(whisper_art.path))
-            clips = frame_clips_from_whisper(cells, words, master, voice_path)
-            source = "words_json"
-        else:
-            clips, _, _words = await align_existing_voice_full(
+        words = load_words_json(Path(whisper_art.path))  # type: ignore[arg-type]
+        clips = frame_clips_from_whisper(cells, words, master, voice_path)
+        source = "words_json"
+        if clips_look_equal_split(clips, master):
+            logger.warning(
+                "[#{}] frame_timeline_sync: равномерный fallback из words.json "
+                "({} clips, {:.1f}s) — принудительный Whisper",
+                project.id,
+                len(clips),
+                master,
+            )
+            clips, _words, source = await _realign_with_whisper(
+                session,
                 project,
                 timeline_frames,
                 cells,
                 voice_path,
                 audio_dir,
-                whisper_model=settings.whisper_model,
+                persist_words=True,
             )
-            source = "whisper_realigned"
 
     updated = _apply_clips_to_frames(timeline_frames, clips)
     if updated:
@@ -178,12 +296,7 @@ async def sync_frame_timestamps_if_needed(
     project: Project,
     frames: list[Frame] | None = None,
 ) -> dict[str, Any]:
-    """Если у кадров с R49 нет start_ts — пересчитать из whisper/xlsx.
-
-    Монтажная доска вызывает sync_frame_timestamps_from_voice напрямую
-    (пересчёт при каждом открытии). Эта функция — для шага «Аудио»,
-    когда mp3/whisper уже на диске и таймкоды не нужно затирать без причины.
-    """
+    """Пересчитать таймкоды если NULL или подозрительный equal-split."""
     if frames is None:
         frames = list(
             (
@@ -197,12 +310,50 @@ async def sync_frame_timestamps_if_needed(
     timeline_frames, _cells = timeline_frames_and_cells(project, frames)
     if not timeline_frames:
         return {"skipped": "no timeline frames"}
-    missing = frames_missing_timestamps(timeline_frames)
-    if not missing:
-        return {"skipped": "timestamps ok"}
-    logger.info(
-        "[#{}] frame_timeline_sync: нет таймкодов у кадров {} — пересчёт",
-        project.id,
-        missing[:20] if len(missing) > 20 else missing,
+
+    voice_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
     )
-    return await sync_frame_timestamps_from_voice(session, project, frames)
+    master = 0.0
+    if voice_path is not None and voice_path.is_file():
+        master = await probe_duration(voice_path)
+
+    missing = frames_missing_timestamps(timeline_frames)
+    suspicious = False
+    if not missing and master > 0:
+        clips_probe = [
+            FrameAudioClip(
+                frame_number=fr.number,
+                path=voice_path or Path("."),
+                text="",
+                start_ts=float(fr.start_ts or 0),
+                end_ts=float(fr.end_ts or 0),
+                duration=float(fr.duration_seconds or 0),
+            )
+            for fr in timeline_frames
+            if fr.start_ts is not None and fr.end_ts is not None
+        ]
+        suspicious = clips_look_equal_split(clips_probe, master)
+
+    if not missing and not suspicious and not _xlsx_newer_than_whisper(
+        project, await _latest_whisper_artifact(session, project.id)
+    ):
+        return {"skipped": "timestamps ok"}
+
+    reason = []
+    if missing:
+        reason.append(f"missing:{missing[:10]}")
+    if suspicious:
+        reason.append("equal_split")
+    logger.info(
+        "[#{}] frame_timeline_sync: пересчёт ({})",
+        project.id,
+        ", ".join(reason) or "xlsx_newer",
+    )
+    return await sync_frame_timestamps_from_voice(
+        session,
+        project,
+        frames,
+        persist_whisper=suspicious or bool(missing),
+    )
