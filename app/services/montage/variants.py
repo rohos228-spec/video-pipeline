@@ -11,7 +11,7 @@ MONTAGE_VARIANTS = """
 
 ВАРИАНТ 3 — SLOT+CONCAT (текущий, реализован)
   gap (чёрный) + clip на каждый R15-слот, параллельное кодирование, concat copy.
-  Плюсы: ~5–8 мин, те же абсолютные метки R15, pre_mux backup перед mux.
+  Пропуски запрещены: предыдущий кадр продлевается (tpad clone) до start следующего.
 
 ВАРИАНТ 4 — EDL / JSON TIMELINE
   Генерируем montage.edl из R15, один ffmpeg-script читает EDL.

@@ -47,10 +47,36 @@ class _OverlaySlot:
 
 
 @dataclass(frozen=True)
+class _ContinuousSlot:
+    """Клип на непрерывной шкале: без чёрных пропусков между кадрами."""
+
+    frame_number: int
+    clip: Path
+    kind: str
+    label: str
+    out_start: float
+    out_end: float
+    r15_start: float
+    r15_end: float
+
+    @property
+    def out_duration(self) -> float:
+        return self.out_end - self.out_start
+
+    @property
+    def prefix_pad(self) -> float:
+        return max(0.0, self.r15_start - self.out_start)
+
+    @property
+    def suffix_pad(self) -> float:
+        return max(0.0, self.out_end - self.r15_end)
+
+
+@dataclass(frozen=True)
 class _TimelineSegment:
-    kind: str  # black | clip
+    kind: str  # clip
     duration_s: float
-    slot: _OverlaySlot | None = None
+    slot: _ContinuousSlot
 
 
 def _marker_slots(
@@ -100,7 +126,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         slots.extend(ms)
     if skipped:
         logger.warning(
-            "[#{}] variant2: кадры {} без clip — на шкале R15 остаётся чёрный",
+            "[#{}] variant3: кадры {} без clip — окно закрывает продление предыдущего",
             project.id,
             skipped,
         )
@@ -116,23 +142,53 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
     return slots
 
 
+def build_continuous_slots(
+    slots: list[_OverlaySlot],
+    voice_s: float,
+) -> list[_ContinuousSlot]:
+    """Непрерывная шкала 0…voice_s: каждый клип тянется до start следующего."""
+    ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
+    out: list[_ContinuousSlot] = []
+    for i, slot in enumerate(ordered):
+        out_start = 0.0 if i == 0 else out[-1].out_end
+        out_end = ordered[i + 1].start_s if i + 1 < len(ordered) else voice_s
+        if out_end <= out_start + 0.01:
+            raise RuntimeError(
+                f"кадр {slot.frame_number}: некорректное окно "
+                f"{out_start:.2f}–{out_end:.2f}s после продления"
+            )
+        extended = out_end - slot.end_s
+        if extended > 0.05:
+            logger.debug(
+                "variant3: кадр {} продлён на {:.2f}s → {:.2f}s",
+                slot.frame_number,
+                extended,
+                out_end,
+            )
+        out.append(
+            _ContinuousSlot(
+                frame_number=slot.frame_number,
+                clip=slot.clip,
+                kind=slot.kind,
+                label=slot.label,
+                out_start=out_start,
+                out_end=out_end,
+                r15_start=slot.start_s,
+                r15_end=slot.end_s,
+            )
+        )
+    return out
+
+
 def build_timeline_segments(
     slots: list[_OverlaySlot],
     voice_s: float,
 ) -> list[_TimelineSegment]:
-    """Разбить R15-слоты на чередование gap (чёрный) + clip для concat."""
-    segs: list[_TimelineSegment] = []
-    cursor = 0.0
-    for slot in slots:
-        gap = slot.start_s - cursor
-        if gap > 0.02:
-            segs.append(_TimelineSegment("black", gap))
-        segs.append(_TimelineSegment("clip", slot.duration_s, slot))
-        cursor = slot.end_s
-    tail = voice_s - cursor
-    if tail > 0.02:
-        segs.append(_TimelineSegment("black", tail))
-    return segs
+    """R15-слоты → непрерывные clip-сегменты без чёрных gap."""
+    return [
+        _TimelineSegment("clip", cs.out_duration, cs)
+        for cs in build_continuous_slots(slots, voice_s)
+    ]
 
 
 async def _run(cmd: list[str], *, context: str = "") -> None:
@@ -151,13 +207,23 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
         raise RuntimeError(f"{head}\n" + "\n".join(err.splitlines()[-18:]))
 
 
-def _clip_filter_chain(w: int, h: int, dur: float, src_dur: float) -> str:
+def _clip_filter_chain(
+    w: int,
+    h: int,
+    dur: float,
+    src_dur: float,
+    *,
+    prefix_pad: float = 0.0,
+) -> str:
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
     )
-    if src_dur + 0.05 < dur:
-        chain += f",tpad=stop_mode=clone:stop_duration={dur - src_dur:.3f}"
+    if prefix_pad > 0.02:
+        chain = f"tpad=start_mode=clone:start_duration={prefix_pad:.3f}," + chain
+    content_dur = max(0.05, dur - prefix_pad)
+    if src_dur + 0.05 < content_dur:
+        chain += f",tpad=stop_mode=clone:stop_duration={content_dur - src_dur:.3f}"
     chain += f",trim=duration={dur:.3f},setpts=PTS-STARTPTS"
     return chain
 
@@ -176,51 +242,55 @@ def _write_plan(
         f"markers={marker_count}",
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
+        "gap_policy=extend_previous",
         "",
-        "frame\tkind\texcel\tstart_s\tend_s\tdur\tclip",
+        "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
-    total = 0.0
+    clip_total = 0.0
+    out_total = 0.0
     for s in slots:
-        total += s.duration_s
+        clip_total += s.duration_s
         lines.append(
             f"{s.frame_number}\t{s.kind}\t{s.label}\t{s.start_s:.3f}\t{s.end_s:.3f}\t"
-            f"{s.duration_s:.3f}\t{s.clip.name}"
+            f"\t\t{s.duration_s:.3f}\t{s.clip.name}"
         )
-    lines.append(f"\nclip_slots_total={total:.3f}")
+    for seg in segments:
+        cs = seg.slot
+        out_total += seg.duration_s
+        lines.append(
+            f"{cs.frame_number}\t{cs.kind}\t{cs.label}\t{cs.r15_start:.3f}\t{cs.r15_end:.3f}\t"
+            f"{cs.out_start:.3f}\t{cs.out_end:.3f}\t{seg.duration_s:.3f}\t{cs.clip.name}"
+        )
+    lines.append(f"\nclip_slots_total={clip_total:.3f}")
+    lines.append(f"timeline_out_total={out_total:.3f}")
     lines.append(f"segments={len(segments)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-async def _encode_black_segment(path: Path, *, w: int, h: int, dur: float) -> None:
-    await _run([
-        "ffmpeg", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=black:s={w}x{h}:d={dur:.3f}:r=30",
-        *_X264,
-        "-an",
-        "-t", f"{dur:.3f}",
-        str(path),
-    ], context=f"black slot {dur:.2f}s")
-
-
 async def _encode_clip_segment(
-    slot: _OverlaySlot,
+    slot: _ContinuousSlot,
     path: Path,
     *,
     w: int,
     h: int,
 ) -> None:
     src_dur = await probe_duration(slot.clip)
-    vf = _clip_filter_chain(w, h, slot.duration_s, src_dur)
+    vf = _clip_filter_chain(
+        w,
+        h,
+        slot.out_duration,
+        src_dur,
+        prefix_pad=slot.prefix_pad,
+    )
     await _run([
         "ffmpeg", "-y",
         "-i", str(slot.clip),
         "-vf", vf,
         *_X264,
         "-an",
-        "-t", f"{slot.duration_s:.3f}",
+        "-t", f"{slot.out_duration:.3f}",
         str(path),
-    ], context=f"clip slot f{slot.frame_number} {slot.duration_s:.2f}s")
+    ], context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
 
 
 async def _build_slot_timeline(
@@ -241,11 +311,7 @@ async def _build_slot_timeline(
         nonlocal done
         out = tmp / f"seg_{idx:04d}.mp4"
         async with sem:
-            if seg.kind == "black":
-                await _encode_black_segment(out, w=w, h=h, dur=seg.duration_s)
-            else:
-                assert seg.slot is not None
-                await _encode_clip_segment(seg.slot, out, w=w, h=h)
+            await _encode_clip_segment(seg.slot, out, w=w, h=h)
         paths[idx] = out
         done += 1
         if done % 20 == 0 or done == total:
@@ -348,8 +414,8 @@ async def run_variant2(
     marker_end = markers[-1].end_s
     gap = voice_s - marker_end
     if gap > 1.0:
-        logger.warning(
-            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s (хвост {:.1f}s = чёрный)",
+        logger.info(
+            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s — последний кадр продлится на {:.1f}s",
             project.id,
             marker_end,
             voice_s,
