@@ -17,6 +17,8 @@ def test_thumb_yields_both_cdn_hosts() -> None:
     assert all("_thumb" not in u for u in candidates)
     assert all("image_1780278102477_0.png" in u for u in candidates)
     assert all("_0_0.png" not in u for u in candidates)
+    # Подпись thumb НЕ переносится на png (SigV4 path-bound).
+    assert all("X-Amz-Algorithm" not in u for u in candidates)
 
 
 def test_frame8_style_thumb_not_double_zero() -> None:

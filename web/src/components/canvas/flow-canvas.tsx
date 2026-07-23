@@ -39,7 +39,7 @@ import {
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, subscribeWS } from "@/lib/api";
 import type {
   NodeRunDTO,
   WorkflowDetail,
@@ -75,6 +75,7 @@ import {
   buildCanvasGraph,
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
+import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -147,6 +148,21 @@ export function FlowCanvas({
     refetchInterval: 4000,
   });
 
+  useEffect(() => {
+    if (projectId == null) return;
+    return subscribeWS(`projects.${projectId}`, (raw) => {
+      const evt = raw as { type?: string; payload?: { stopped?: boolean } };
+      if (
+        evt.payload?.stopped ||
+        evt.type === "node_status_changed" ||
+        evt.type === "project_updated"
+      ) {
+        void qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+        void qc.invalidateQueries({ queryKey: ["project", projectId] });
+      }
+    });
+  }, [projectId, qc]);
+
   // Базовая структура графа — из project.meta.canvas_graph (приоритет) или workflow.
   const canvasGraph = useMemo(() => {
     if (!project.data?.meta || !defaultWorkflow?.id) return null;
@@ -165,8 +181,11 @@ export function FlowCanvas({
         edges: canvasGraph.edges,
       };
     }
+    // Не рисуем factory-layout, пока project.meta ещё грузится — иначе
+    // позиции залипают и потом перезаписывают canvas_graph при autosave.
+    if (projectId != null && !project.isFetched) return null;
     return workflow.data;
-  }, [workflow.data, canvasGraph]);
+  }, [workflow.data, canvasGraph, projectId, project.isFetched]);
 
   const baseNodes = useMemo(() => {
     if (!graphSource) return [];
@@ -196,34 +215,35 @@ export function FlowCanvas({
     edgesRef.current = edges;
   }, [edges]);
 
+  // Смена проекта — не тащим позиции/версию соседа с теми же node_key.
+  useEffect(() => {
+    setGraphVersion("");
+  }, [projectId]);
+
   useEffect(() => {
     if (!graphSource) return;
-    const ver = canvasGraph?.saved_at
-      ? `${workflowStructureKey(graphSource)}|${canvasGraph.saved_at}`
-      : workflowStructureKey(graphSource);
+    // Только структура + projectId (без saved_at): drag/autosave не пересобирает граф.
+    // Позиции из source — ждём project.isFetched, чтобы не залипнуть на factory.
+    const ver = `${projectId ?? "none"}|${workflowStructureKey(graphSource)}`;
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
-    setNodes((prev) => {
-      const prevById = new Map(prev.map((n) => [n.id, n]));
-      return (baseNodes as Node<PipelineNodeData>[]).map((n) => {
-        const old = prevById.get(n.id);
-        if (!old) return n;
-        return {
-          ...n,
-          position: old.position,
-          data: {
-            ...n.data,
-            status: old.data.status,
-            progress: old.data.progress,
-            progressText: old.data.progressText,
-            error: old.data.error,
-            attempts: old.data.attempts,
-          },
-        };
-      });
-    });
+    setNodes((prev) =>
+      mergeGraphNodesWithRuntime(
+        baseNodes as Node<PipelineNodeData>[],
+        prev,
+      ) as Node<PipelineNodeData>[],
+    );
     setEdges(baseEdges);
-  }, [graphSource, baseNodes, baseEdges, graphVersion, nodes.length, canvasGraph?.saved_at, setNodes, setEdges]);
+  }, [
+    graphSource,
+    baseNodes,
+    baseEdges,
+    graphVersion,
+    nodes.length,
+    projectId,
+    setNodes,
+    setEdges,
+  ]);
 
   // excel_gpt: подтянуть inputSource/label из project.meta → data ноды (для V-меню).
   useEffect(() => {
@@ -256,18 +276,17 @@ export function FlowCanvas({
     });
   }, [project.data?.meta, nodes.length, setNodes]);
 
-  // Статусы run — отдельно, без сброса позиций нод.
+  // Статусы run — только NodeRun (SSoT). Project.status не вмешивается.
   useEffect(() => {
     if (nodes.length === 0) return;
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
-    const projectStatus = project.data?.status;
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) {
-          const status = inferNodeStatusFromProject(n.data.type, projectStatus);
+          const status = inferNodeStatusFromProject(n.data.type);
           return {
             ...n,
             data: {
@@ -282,8 +301,6 @@ export function FlowCanvas({
         const status = reconcileNodeRunStatus(
           n.data.type,
           nr.status as PipelineNodeData["status"],
-          projectStatus,
-          { slotIndex: n.data.slotIndex as number | undefined },
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -300,7 +317,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
+  }, [run.data, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -318,24 +335,22 @@ export function FlowCanvas({
     });
   }, [selectedNodeKey, setNodes]);
 
-  // WS: обновления статуса нод (event-driven, без ожидания polling).
+  // WS: только по node_key — матч по node_type зажигал все ноды одного типа.
   useRunEvents(run.data?.id ?? null, (evt) => {
     if (
       typeof evt === "object" &&
       evt !== null &&
       (evt as { type?: string }).type === "node_status_changed"
     ) {
-      const e = evt as { node_key?: string; node_type: string; to: string };
+      const e = evt as { node_key?: string; to: string };
+      if (!e.node_key) return;
       setNodes((prev) =>
         prev.map((n) => {
-          const matches =
-            (e.node_key && n.id === e.node_key) ||
-            (!e.node_key && n.data.type === e.node_type);
-          if (!matches) return n;
-          const raw = e.to as PipelineNodeData["status"];
-          const to = reconcileNodeRunStatus(n.data.type, raw, project.data?.status, {
-            slotIndex: n.data.slotIndex as number | undefined,
-          });
+          if (n.id !== e.node_key) return n;
+          const to = reconcileNodeRunStatus(
+            n.data.type,
+            e.to as PipelineNodeData["status"],
+          );
           return {
             ...n,
             data: {
@@ -482,28 +497,6 @@ export function FlowCanvas({
     };
     window.addEventListener("canvas-patch-node-data", onPatch);
     return () => window.removeEventListener("canvas-patch-node-data", onPatch);
-  }, [setNodes]);
-
-  useEffect(() => {
-    const clearRunning = () => {
-      setNodes((prev) =>
-        prev.map((n) => {
-          const d = n.data as PipelineNodeData;
-          if (d.status !== "running") return n;
-          return {
-            ...n,
-            data: {
-              ...d,
-              status: "pending" as PipelineNodeData["status"],
-              progress: 0,
-              progressText: null,
-            },
-          };
-        }),
-      );
-    };
-    window.addEventListener("canvas-stop-clear-running", clearRunning);
-    return () => window.removeEventListener("canvas-stop-clear-running", clearRunning);
   }, [setNodes]);
 
   useEffect(() => {
@@ -881,7 +874,7 @@ export function FlowCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView
+        fitView={!canvasGraph?.saved_at}
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
         minZoom={0.15}
         maxZoom={1.5}
@@ -970,6 +963,7 @@ export function FlowCanvas({
           nodeColor={(node) => {
             const data = node.data as PipelineNodeData;
             if (data.status === "running") return "hsl(var(--primary))";
+            if (data.status === "queued") return "hsl(200 80% 50%)";
             if (data.status === "done") return "hsl(var(--success))";
             if (data.status === "failed") return "hsl(var(--destructive))";
             if (data.status === "waiting_hitl") return "hsl(var(--warning))";
@@ -1300,7 +1294,6 @@ function RunOverlay({
     setBusy(true);
     try {
       const r = await api.stopProject(projectId);
-      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success(r.message || "⏹ Шаг остановлен");
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
@@ -1366,7 +1359,6 @@ function RunOverlay({
     try {
       await api.stopProject(projectId);
       await api.cancelRun(run.id);
-      window.dispatchEvent(new CustomEvent("canvas-stop-clear-running"));
       toast.success("Run остановлен (task.cancel)");
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });

@@ -18,6 +18,27 @@ def test_find_voice_mp3_in_audio_dir(tmp_path: Path) -> None:
     assert found == voice
 
 
+def test_find_voice_montage_legacy_name(tmp_path: Path) -> None:
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    voice = audio / "voice_montage.mp3"
+    voice.write_bytes(b"mp3")
+    found = find_voice_full_on_disk(tmp_path)
+    assert found == voice
+
+
+def test_find_voice_via_montage_meta_hint(tmp_path: Path) -> None:
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    voice = audio / "custom_upload.wav"
+    voice.write_bytes(b"wav")
+    found = find_voice_full_on_disk(
+        tmp_path,
+        meta={"montage_voice_path": str(voice)},
+    )
+    assert found == voice
+
+
 def test_find_voice_wav_voice_full_prefix(tmp_path: Path) -> None:
     audio = tmp_path / "audio"
     audio.mkdir()

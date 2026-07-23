@@ -62,6 +62,39 @@ async def ready_status_confirmed_by_data(
     ready_status: ProjectStatus,
 ) -> bool:
     """True если данные в БД подтверждают *_ready (не шаблон/заглушка)."""
+    # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
+    # (нет всех scene_image), но audio_ready уже законно — не откатывать.
+    if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):
+        await recover_audio_from_disk(session, project)
+        from app.services.frame_audio import find_voice_full_on_disk
+
+        voice = find_voice_full_on_disk(
+            project.data_dir,
+            meta=project.meta if isinstance(project.meta, dict) else None,
+        )
+        audio_ok = voice is not None and voice.is_file()
+        if not audio_ok:
+            art = (
+                await session.execute(
+                    select(Artifact)
+                    .where(
+                        Artifact.project_id == project.id,
+                        Artifact.kind == ArtifactKind.audio,
+                    )
+                    .order_by(Artifact.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            audio_ok = bool(
+                art is not None and art.path and Path(art.path).is_file()
+            )
+        if ready_status is ProjectStatus.audio_ready and audio_ok:
+            return True
+        if ready_status is ProjectStatus.music_ready and audio_ok:
+            music_n = await _count_kind(session, project.id, ArtifactKind.music)
+            if music_n > 0:
+                return True
+
     actual = await compute_actual_status(session, project)
     return status_order(actual) >= status_order(ready_status)
 
@@ -96,10 +129,69 @@ async def can_enter_running(
     if target not in _NO_FRAMES_REQUIRED:
         need_frames = await _frames_with_voiceover(session, project)
         if need_frames == 0:
+            from app.services.ensure_frames_from_disk import (
+                discover_frame_numbers_on_disk,
+                ensure_frames_from_disk_media,
+            )
+
+            if discover_frame_numbers_on_disk(project.data_dir):
+                created = await ensure_frames_from_disk_media(session, project)
+                if created:
+                    logger.info(
+                        "[#{}] step_data_guard: создано {} кадров с диска перед {}",
+                        project.id,
+                        len(created),
+                        target.value,
+                    )
+                need_frames = await _frames_with_voiceover(session, project)
+        if need_frames == 0:
             actual = await compute_actual_status(session, project)
             return False, "нет кадров с voiceover", actual
 
     need_frames = await _frames_with_voiceover(session, project)
+
+    if target is ProjectStatus.generating_images:
+        # Нельзя заходить в img из ранних статусов только из‑за leftover
+        # image_prompt (старый прогон) — иначе auto_advance прыгает через
+        # script/split/hero/... сразу в генерацию картинок.
+        if status_order(project.status) >= status_order(
+            ProjectStatus.image_prompts_ready
+        ):
+            return True, "", None
+        # Soft resume: статус чуть отстаёт (ещё generating_image_prompts),
+        # но промпты на кадрах уже есть.
+        if status_order(project.status) >= status_order(
+            ProjectStatus.generating_image_prompts
+        ):
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            with_prompt = sum(
+                1
+                for fr in frames
+                if (getattr(fr, "image_prompt", None) or "").strip()
+            )
+            if with_prompt > 0:
+                return True, "", None
+        return (
+            False,
+            "нет image prompts (сначала img_pr)",
+            ProjectStatus.generating_image_prompts,
+        )
+
+    if target is ProjectStatus.generating_animation_prompts:
+        imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
+        if imgs == 0:
+            return (
+                False,
+                "нет картинок сцен (сначала img)",
+                ProjectStatus.image_prompts_ready,
+            )
+        return True, "", None
 
     if target is ProjectStatus.generating_videos:
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
@@ -131,6 +223,9 @@ async def can_enter_running(
         return True, "", None
 
     if target is ProjectStatus.assembling:
+        from app.services.ensure_frames_from_disk import ensure_frames_from_disk_media
+
+        await ensure_frames_from_disk_media(session, project)
         await recover_scene_videos_from_disk(session, project)
         await recover_audio_from_disk(session, project)
         vids = await _count_kind(session, project.id, ArtifactKind.scene_video)
@@ -163,6 +258,7 @@ async def clamp_status_to_data(
 ) -> ProjectStatus | None:
     """Если status «впереди» данных — откатить к compute_actual_status."""
     from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_state import clear_stale_downstream_meta
 
     if is_user_stopped(project):
         return None
@@ -171,6 +267,7 @@ async def clamp_status_to_data(
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.
     if is_running_status(project.status):
         return None
+    clear_stale_downstream_meta(project)
     actual = await compute_actual_status(session, project)
     if status_order(project.status) > status_order(actual):
         old = project.status

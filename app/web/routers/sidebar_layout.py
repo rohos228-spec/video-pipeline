@@ -51,6 +51,7 @@ class GenQueueEnqueue(BaseModel):
 async def get_sidebar_layout() -> dict:
     from app.db import session_scope
     from app.models import Project
+    from app.services.gen_queue import get_gen_queue_idle_info
     from sqlalchemy import select
 
     async with session_scope() as session:
@@ -58,7 +59,10 @@ async def get_sidebar_layout() -> dict:
             int(pid)
             for pid in (await session.execute(select(Project.id))).scalars().all()
         }
-    return layout_svc.layout_for_api(ids)
+        payload = layout_svc.layout_for_api(ids)
+        payload["gen_queue_idle"] = await get_gen_queue_idle_info(session)
+        await session.commit()
+    return payload
 
 
 @router.put("")
@@ -174,6 +178,7 @@ async def bulk_enqueue_gen_queue(body: GenQueueBulkEnqueue) -> dict:
                 target_node_type=body.target_node_type,
             )
         layout_svc.set_gen_queue(body.project_ids)
+        layout_svc.clear_gen_queue_halted(reason="bulk-enqueue")
         await session.commit()
     queue = layout_svc.get_gen_queue()
     positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
@@ -217,6 +222,7 @@ async def enqueue_gen_queue(body: GenQueueEnqueue) -> dict:
             queue = layout_svc.toggle_gen_queue(body.project_id)
         else:
             queue = layout_svc.get_gen_queue()
+        layout_svc.clear_gen_queue_halted(reason=f"enqueue #{body.project_id}")
         await session.commit()
     positions = {pid: idx + 1 for idx, pid in enumerate(queue)}
     return {

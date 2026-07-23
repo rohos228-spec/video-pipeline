@@ -36,6 +36,25 @@ def test_map_frames_redistributes_when_whisper_runs_out() -> None:
     assert timings[-1].end_ts == 12.0
 
 
+def test_last_frame_does_not_swallow_most_of_audio_on_bad_alignment() -> None:
+    """Текст R49 равномерный, Whisper сбился — кадры делятся поровну по словам."""
+    cells = [(i, f"кадр {i} одинаковый текст закадровки") for i in range(1, 11)]
+    words = []
+    t = 0.0
+    for i in range(100):
+        words.append(WordTS(f"слово{i}", t, t + 0.5, 1.0))
+        t += 0.5
+    for i in range(30):
+        words.append(WordTS(f"хвост{i}", 400.0 + i * 0.5, 400.0 + (i + 1) * 0.5, 1.0))
+    timings = map_frames(cells, words, audio_duration=454.0)
+    assert len(timings) == 10
+    assert timings[-1].end_ts == 454.0
+    fair = 454.0 / 10
+    for t in timings:
+        assert abs(t.duration - fair) < fair * 0.15
+    assert timings[-1].duration < 454.0 * 0.2
+
+
 def test_one_word_per_cue_uses_next_word_start_as_end() -> None:
     cells = [(1, "Привет мир")]
     words = [

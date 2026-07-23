@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -15,25 +15,45 @@ import {
   ChevronRight,
   ListVideo,
   GripVertical,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
-import type { ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
+import type { GenQueueIdleInfo, ProjectStatus, ProjectSummary, SidebarFolder } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatProjectStatus } from "@/lib/format-labels";
+import { projectDisplayName } from "@/lib/project-display";
 import { NewProjectWizard } from "@/components/sidebar/new-project-wizard";
 import { GenQueueDialog } from "@/components/sidebar/gen-queue-dialog";
 import { SidebarResizeHandle } from "@/components/sidebar/sidebar-resize-handle";
+import { usePersistedState } from "@/hooks/use-persisted-state";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 
 type DragPayload =
   | { kind: "project"; id: number; folderId: string | null }
   | { kind: "folder"; id: string };
+
+function queueIdleShortLabel(idle: GenQueueIdleInfo | null, projectId: number): string | null {
+  if (!idle || idle.project_id !== projectId) return null;
+  const byReason: Record<string, string> = {
+    paused: "пауза",
+    user_stop: "стоп",
+    failed: "ошибка",
+    auto_mode: "нет ИИ",
+    waiting: "ждёт",
+  };
+  return byReason[idle.reason] ?? idle.detail.slice(0, 12);
+}
+
+function queueIdleTooltip(idle: GenQueueIdleInfo | null, projectId: number): string | null {
+  if (!idle || idle.project_id !== projectId) return null;
+  return idle.detail;
+}
 
 function parseDragPayload(raw: string): DragPayload | null {
   try {
@@ -55,8 +75,13 @@ export function ProjectSidebar({
   onToggleCollapsed: () => void;
 }) {
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Свёрнутые папки / mass — в localStorage, не сбрасывать на F5 и refetch.
+  const [expanded, setExpanded] = usePersistedState<Record<string, boolean>>(
+    "vp-studio-sidebar-expanded",
+    {},
+  );
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const lastExpandedForProject = useRef<number | null>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
@@ -72,7 +97,7 @@ export function ProjectSidebar({
   const layout = useQuery({
     queryKey: ["sidebar-layout"],
     queryFn: api.getSidebarLayout,
-    refetchInterval: 15000,
+    refetchInterval: 5000,
   });
   const qc = useQueryClient();
 
@@ -92,7 +117,17 @@ export function ProjectSidebar({
       qc.invalidateQueries({ queryKey: ["projects"] });
       setExpanded((e) => ({ ...e, [`mass:${parentId}`]: true }));
       onSelect(child.id);
-      toast.success(`Дочерний проект создан: ${child.topic}`);
+      toast.success(`Дочерний проект создан: ${projectDisplayName(child)}`);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, title }: { id: number; title: string }) =>
+      api.patchProject(id, { title }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project"] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -135,7 +170,18 @@ export function ProjectSidebar({
 
   const queueToggleMutation = useMutation({
     mutationFn: (projectId: number) => api.toggleGenQueue(projectId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const positions = (data.gen_queue_positions || {}) as Record<string, number>;
+      qc.setQueryData<ProjectSummary[]>(["projects"], (old) => {
+        if (!old) return old;
+        return old.map((p) => {
+          const raw = positions[p.id] ?? positions[String(p.id)];
+          return {
+            ...p,
+            gen_queue_position: typeof raw === "number" ? raw : null,
+          };
+        });
+      });
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
       toast.success("Проект снят с очереди");
@@ -197,6 +243,7 @@ export function ProjectSidebar({
   }, [roots]);
 
   const rootProjects = projectsByFolder.get(null) ?? [];
+  const genQueueIdle = layout.data?.gen_queue_idle ?? null;
 
   const persistProjectLayout = useCallback(
     (
@@ -278,19 +325,26 @@ export function ProjectSidebar({
     onSelect(list[0].id);
   }, [projects.data, selectedProjectId, onSelect]);
 
+  // Раскрывать папку только при СМЕНЕ выбранного проекта — не на каждом
+  // refetch projects (иначе свёрнутая папка снова открывается каждые 5с).
   useEffect(() => {
+    if (selectedProjectId == null) return;
+    if (lastExpandedForProject.current === selectedProjectId) return;
     const sel = projects.data?.find((p) => p.id === selectedProjectId);
-    if (sel?.mass_parent_id != null) {
+    if (!sel) return;
+    lastExpandedForProject.current = selectedProjectId;
+    if (sel.mass_parent_id != null) {
       setExpanded((e) => ({ ...e, [`mass:${sel.mass_parent_id}`]: true }));
     }
-    if (sel?.sidebar_folder_id) {
+    if (sel.sidebar_folder_id) {
       setExpanded((e) => ({ ...e, [`folder:${sel.sidebar_folder_id}`]: true }));
     }
-  }, [selectedProjectId, projects.data]);
+  }, [selectedProjectId, projects.data, setExpanded]);
 
   const q = filter.trim().toLowerCase();
   const matchProject = (p: ProjectSummary) =>
     !q ||
+    projectDisplayName(p).toLowerCase().includes(q) ||
     p.topic.toLowerCase().includes(q) ||
     p.slug.toLowerCase().includes(q);
 
@@ -303,6 +357,8 @@ export function ProjectSidebar({
     const isOpen = expanded[`mass:${p.id}`] ?? isFactory;
     const parentBadge = opts?.badge
       ?? (p.mass_factory ? "шаблон" : children.length > 0 ? `${children.length} доч.` : undefined);
+    const queueIdleShort = queueIdleShortLabel(genQueueIdle, p.id);
+    const queueIdleTip = queueIdleTooltip(genQueueIdle, p.id);
     return (
       <div key={p.id} className="flex flex-col">
         <div
@@ -354,10 +410,13 @@ export function ProjectSidebar({
               canCreateChild={p.mass_parent_id == null}
               creatingChild={createChildMutation.isPending && createChildMutation.variables === p.id}
               queuePosition={p.gen_queue_position ?? null}
+              queueIdleShort={queueIdleShort}
+              queueIdleDetail={queueIdleTip}
               onToggleQueue={() => handleQueueClick(p)}
               onSelect={() => onSelect(p.id)}
               onDelete={() => deleteMutation.mutate(p.id)}
               onCreateChild={() => createChildMutation.mutate(p.id)}
+              onRename={(title) => renameMutation.mutate({ id: p.id, title })}
             />
           </div>
         </div>
@@ -372,9 +431,12 @@ export function ProjectSidebar({
                   compact
                   badge={p.mass_factory ? `#${c.mass_lane_position ?? "?"}` : `доч. ${c.mass_lane_position ?? "?"}`}
                   queuePosition={c.gen_queue_position ?? null}
+                  queueIdleShort={queueIdleShortLabel(genQueueIdle, c.id)}
+                  queueIdleDetail={queueIdleTooltip(genQueueIdle, c.id)}
                   onToggleQueue={() => handleQueueClick(c)}
                   onSelect={() => onSelect(c.id)}
                   onDelete={() => deleteMutation.mutate(c.id)}
+                  onRename={(title) => renameMutation.mutate({ id: c.id, title })}
                 />
               ) : null,
             )}
@@ -800,10 +862,13 @@ function ProjectRow({
   canCreateChild,
   creatingChild,
   queuePosition,
+  queueIdleShort,
+  queueIdleDetail,
   onToggleQueue,
   onSelect,
   onDelete,
   onCreateChild,
+  onRename,
 }: {
   project: ProjectSummary;
   selected: boolean;
@@ -813,11 +878,29 @@ function ProjectRow({
   canCreateChild?: boolean;
   creatingChild?: boolean;
   queuePosition?: number | null;
+  queueIdleShort?: string | null;
+  queueIdleDetail?: string | null;
   onToggleQueue?: () => void;
   onSelect: () => void;
   onDelete: () => void;
   onCreateChild?: () => void;
+  onRename?: (title: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(projectDisplayName(project));
+  const displayName = projectDisplayName(project);
+
+  useEffect(() => {
+    if (!editing) setDraftTitle(displayName);
+  }, [displayName, editing]);
+
+  const commitRename = () => {
+    const next = draftTitle.trim();
+    setEditing(false);
+    if (!next || next === displayName) return;
+    onRename?.(next);
+  };
+
   return (
     <div
       role="button"
@@ -845,19 +928,28 @@ function ProjectRow({
           onToggleQueue?.();
         }}
         className={cn(
-          "absolute top-1.5 right-1.5 z-10 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border px-1 text-[9px] font-normal tabular-nums leading-none transition-all",
+          "absolute top-1.5 right-1.5 z-10 flex h-[18px] min-w-[18px] max-w-[72px] items-center justify-center gap-0.5 rounded-full border px-1 text-[9px] font-normal tabular-nums leading-none transition-all",
           queuePosition
-            ? "border-sky-300/35 bg-sky-400/15 text-sky-100/95 shadow-[0_0_12px_rgba(56,189,248,0.15)]"
+            ? queueIdleShort
+              ? "border-amber-300/40 bg-amber-400/15 text-amber-100/95 shadow-[0_0_12px_rgba(251,191,36,0.12)]"
+              : "border-sky-300/35 bg-sky-400/15 text-sky-100/95 shadow-[0_0_12px_rgba(56,189,248,0.15)]"
             : "border-white/[0.08] bg-white/[0.02] text-transparent opacity-0 hover:border-sky-300/30 hover:text-muted-foreground/50 group-hover:opacity-100",
           queuePosition && "opacity-100",
         )}
         title={
           queuePosition
-            ? `Очередь генерации: ${queuePosition}. Нажмите, чтобы снять.`
+            ? `Очередь генерации: ${queuePosition}${
+                queueIdleDetail ? ` — ${queueIdleDetail}` : ""
+              }. Нажмите, чтобы снять.`
             : "Добавить в очередь генерации"
         }
       >
-        {queuePosition ?? "·"}
+        <span>{queuePosition ?? "·"}</span>
+        {queuePosition && queueIdleShort ? (
+          <span className="max-w-[40px] truncate text-[7px] font-normal normal-case opacity-90">
+            {queueIdleShort}
+          </span>
+        ) : null}
       </button>
 
       <div className="flex items-start gap-1.5 pr-7">
@@ -885,21 +977,64 @@ function ProjectRow({
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <span
-              className={cn(
-                "min-w-0 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
-                compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
-              )}
-            >
-              {compact && (
-                <ListVideo
-                  className="mr-1 inline h-3 w-3 translate-y-[-1px] text-violet-300/70"
-                  strokeWidth={1.5}
-                />
-              )}
-              {project.topic}
-            </span>
-            <div className="flex shrink-0 flex-col items-center gap-0.5">
+          <div className="flex min-w-0 flex-1 items-start gap-1">
+            {editing ? (
+              <Input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitRename();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setDraftTitle(displayName);
+                    setEditing(false);
+                  }
+                }}
+                onBlur={commitRename}
+                className={cn(
+                  "h-7 min-w-0 flex-1 border-white/10 bg-white/[0.04] px-2 py-0",
+                  compact ? "text-[11px]" : "text-[13px]",
+                )}
+                autoFocus
+              />
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 break-words font-normal leading-snug tracking-[0.01em] text-foreground/90",
+                  compact ? "line-clamp-3 text-[11px]" : "line-clamp-3 text-[13px]",
+                )}
+              >
+                {compact && (
+                  <ListVideo
+                    className="mr-1 inline h-3 w-3 translate-y-[-1px] text-violet-300/70"
+                    strokeWidth={1.5}
+                  />
+                )}
+                {displayName}
+              </span>
+            )}
+            {!editing && onRename ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDraftTitle(displayName);
+                  setEditing(true);
+                }}
+                className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-white/[0.06] hover:text-foreground/80 group-hover:visible"
+                aria-label="Переименовать проект"
+                title="Переименовать"
+              >
+                <Pencil className="h-3 w-3" strokeWidth={1.5} />
+              </button>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 flex-col items-center gap-0.5">
               {canCreateChild && onCreateChild ? (
                 <button
                   type="button"
@@ -910,7 +1045,7 @@ function ProjectRow({
                   disabled={creatingChild}
                   className="invisible h-5 w-5 rounded-md text-muted-foreground/50 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400/90 group-hover:visible disabled:opacity-50"
                   aria-label="Создать дочерний проект"
-                  title="Дочерний проект (копия данных и закадрового текста)"
+                  title="Дочерний проект (настройки, промты и текст для GPT — без закадрового, Excel и результатов)"
                 >
                   {creatingChild ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -923,7 +1058,7 @@ function ProjectRow({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirm(`Удалить проект «${project.topic}»?`)) onDelete();
+                  if (confirm(`Удалить проект «${displayName}»?`)) onDelete();
                 }}
                 className="invisible mt-0.5 h-5 w-5 shrink-0 rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive/90 group-hover:visible"
                 aria-label="Удалить"

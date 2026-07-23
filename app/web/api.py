@@ -44,6 +44,12 @@ from app.web.routers import (
     library as library_router,
 )
 from app.web.routers import (
+    outsee_create as outsee_create_router,
+)
+from app.web.routers import (
+    grsai as grsai_router,
+)
+from app.web.routers import (
     project_ops as project_ops_router,
 )
 from app.web.routers import (
@@ -147,6 +153,13 @@ async def _lifespan(app: FastAPI):
         logger.exception("fleet init failed (non-fatal)")
 
     try:
+        from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+
+        await reconcile_stale_montage_jobs_on_startup()
+    except Exception:  # noqa: BLE001
+        logger.exception("montage job reconcile failed (non-fatal)")
+
+    try:
         yield
     finally:
         logger.remove(live_log_sink)
@@ -175,6 +188,8 @@ def create_app() -> FastAPI:
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
+    app.include_router(outsee_create_router.router, prefix=API_PREFIX)
+    app.include_router(grsai_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
@@ -195,7 +210,7 @@ def create_app() -> FastAPI:
 
         raise HTTPException(
             status_code=404,
-            detail="API route not found — перезапустите Studio (start-studio.ps1)",
+            detail="API route not found — перезапустите Studio (STUDIO.cmd → [1])",
         )
 
     # ── WebSocket: live-стрим событий выбранного канала ──

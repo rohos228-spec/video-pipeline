@@ -498,22 +498,92 @@ async def _apply_running_if_data_ok(
     project: Project,
     target: ProjectStatus | None,
 ) -> ProjectStatus | None:
-    """Проверить данные перед переводом в running; при провале — откатить статус."""
+    """Проверить данные перед переводом в running.
+
+    При провале статус проекта НЕ меняем: suggested `fix` из
+    ``can_enter_running`` часто указывает «куда нужно дойти по данным»,
+    а не «безопасный откат». Запись такого fix раньше прыгала вперёд
+    (например plan_ready → frames_ready) и ломала порядок нод.
+    """
     if target is None:
         return None
     ok, reason, fix = await can_enter_running(session, project, target)
     if ok:
         return target
     logger.warning(
-        "auto_advance: #{} не переводим в {} — {}",
+        "auto_advance: #{} не переводим в {} — {} (status остаётся {}, suggested={})",
         project.id,
         target.value,
         reason,
+        project.status.value,
+        fix.value if fix is not None else None,
     )
-    if fix is not None:
-        project.status = fix
-        await session.flush()
     return None
+
+
+async def _prepare_node_run_for_status(
+    session: AsyncSession,
+    project: Project,
+    running_status: ProjectStatus,
+    *,
+    allow_restart: bool = False,
+) -> None:
+    """Синхронизировать NodeRun с Project.status при auto_advance (SSoT)."""
+    from app.orchestrator.node_registry import (
+        NODE_TYPE_TO_STEP_CODE,
+        RUNNING_TO_NODE_TYPE,
+    )
+    from app.services.excel_gpt_node import (
+        EXCEL_GPT_STEP_CODE,
+        resolve_excel_gpt_node_key_for_slot,
+        slot_from_running_status,
+    )
+    from app.services.run_sync import prepare_node_for_step_start
+
+    # enriching_N в реестре → legacy enrich_N, на канвасе ноды type=excel_gpt.
+    slot = slot_from_running_status(running_status)
+    step_code: str | None = None
+    node_key: str | None = None
+    if slot is not None:
+        step_code = EXCEL_GPT_STEP_CODE
+        meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+        node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
+        # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту.
+        if not node_key:
+            node_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+            if node_key:
+                meta["active_excel_gpt_node_key"] = node_key
+                project.meta = meta
+                await session.flush()
+                logger.info(
+                    "auto_advance: #{} excel_gpt slot={} → node_key={}",
+                    project.id,
+                    slot,
+                    node_key,
+                )
+    else:
+        node_type = RUNNING_TO_NODE_TYPE.get(running_status)
+        if node_type is not None:
+            step_code = NODE_TYPE_TO_STEP_CODE.get(node_type)
+    if not step_code:
+        return
+    try:
+        await prepare_node_for_step_start(
+            session,
+            project,
+            step_code,
+            node_key=node_key,
+            strict=False,
+            # regen / повтор шага: разрешаем done → running
+            explicit_ui_start=allow_restart,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "auto_advance: #{} prepare_node for {} failed",
+            project.id,
+            running_status.value,
+            exc_info=True,
+        )
 
 
 async def _apply_approve(
@@ -571,9 +641,32 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
         if nxt is None:
             return
+        # allow_restart: после перезапуска plan нода script часто ещё done —
+        # без этого UI не показывает «в работе», хотя Project.status=scripting.
+        await _prepare_node_run_for_status(
+            session, project, nxt, allow_restart=True
+        )
         project.status = nxt
     else:
-        graph_nxt = await _graph_next_running(session, project, transition.ready_status)
+        # enrich_N_ready: пока на канвасе есть excel_gpt M>N — только туда.
+        # Иначе graph BFS по stale «готово» / кривым рёбрам прыгает на hero.
+        from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+        enrich_nxt = prepare_enrich_chain_for_auto_advance(
+            project, transition.ready_status
+        )
+        if enrich_nxt is not None:
+            graph_nxt = enrich_nxt
+            logger.info(
+                "auto_advance: #{} {} → next excel_gpt {} (canvas slot chain)",
+                project.id,
+                transition.ready_status.value,
+                enrich_nxt.value,
+            )
+        else:
+            graph_nxt = await _graph_next_running(
+                session, project, transition.ready_status
+            )
         if graph_nxt is None:
             logger.warning(
                 "graph: #{} no next step after {} — check canvas edges",
@@ -592,6 +685,9 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
             return
+        await _prepare_node_run_for_status(
+            session, project, nxt, allow_restart=True
+        )
         project.status = nxt
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
@@ -647,6 +743,9 @@ async def _apply_regen(
         )
         project.status = ProjectStatus.paused
     else:
+        await _prepare_node_run_for_status(
+            session, project, back_to, allow_restart=True
+        )
         project.status = back_to
 
     # Передаём fix_hints в gpt_text_override, чтобы шаг увидел их и
@@ -799,6 +898,7 @@ async def maybe_auto_advance(
         pass
 
     from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_control import auto_awaits_manual_start
 
     if is_user_stopped(project):
         logger.debug(
@@ -808,15 +908,32 @@ async def maybe_auto_advance(
         )
         return False
 
-    from app.services.gen_queue import project_gated_by_gen_queue
-
-    if project_gated_by_gen_queue(project.id):
-        logger.debug(
-            "auto_advance: #{} {} — не в gen_queue, пропуск",
+    if auto_awaits_manual_start(project):
+        logger.info(
+            "auto_advance: #{} {} — auto_mode ждёт ручной ▶ (без автостарта)",
             project.id,
             project.status.value,
         )
         return False
+
+    from app.services.gen_queue import project_gated_by_gen_queue
+
+    if project_gated_by_gen_queue(project.id):
+        from app.services.gen_queue import enrich_ready_bypasses_gen_queue
+
+        if enrich_ready_bypasses_gen_queue(project):
+            logger.info(
+                "auto_advance: #{} {} — gen_queue gate bypass (excel_gpt chain)",
+                project.id,
+                project.status.value,
+            )
+        else:
+            logger.info(
+                "auto_advance: #{} {} — не в gen_queue, пропуск",
+                project.id,
+                project.status.value,
+            )
+            return False
 
     await clamp_status_to_data(session, project)
     status = project.status
@@ -1311,11 +1428,16 @@ def _mass_parent_id(project: Project) -> int | None:
 async def _mass_lanes_for_parent(
     session: AsyncSession, parent_id: int
 ) -> list[Project]:
+    """Только слоты mass-factory; ручные «+» (project_child_manual) не трогаем."""
     rows = (await session.execute(select(Project))).scalars().all()
     out: list[Project] = []
     for p in rows:
-        if _mass_parent_id(p) == parent_id:
-            out.append(p)
+        if _mass_parent_id(p) != parent_id:
+            continue
+        meta = p.meta if isinstance(p.meta, dict) else {}
+        if meta.get("project_child_manual"):
+            continue
+        out.append(p)
     return out
 
 
@@ -1337,6 +1459,7 @@ async def serial_next_mass_lane(
         if p.status is ProjectStatus.new
         and p.auto_mode
         and not (p.meta or {}).get("mass_lane_user_stop")
+        and not (p.meta or {}).get("user_stop")
     ]
     if not candidates:
         return None
@@ -1345,6 +1468,8 @@ async def serial_next_mass_lane(
 
 async def serial_tick_mass_lanes(session: AsyncSession) -> int:
     """Сериализатор веб-массовых потоков (meta.mass_parent_id)."""
+    from app.services.project_control import is_mass_family_halted
+
     started = 0
     waiting = (
         await session.execute(
@@ -1358,6 +1483,13 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             parent_ids.add(pid)
 
     for parent_id in parent_ids:
+        parent = await session.get(Project, parent_id)
+        if parent is not None and is_mass_family_halted(parent):
+            logger.info(
+                "auto_advance: mass parent #{} halted после ⏹ — lanes не стартуют",
+                parent_id,
+            )
+            continue
         if await serial_busy_in_mass_parent(session, parent_id) is not None:
             continue
         next_p = await serial_next_mass_lane(session, parent_id)
@@ -1368,6 +1500,11 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             continue
         await session.refresh(next_p)
         if next_p.status is not ProjectStatus.new:
+            continue
+        # На всякий случай: sibling с user_stop не должен стартовать.
+        if (next_p.meta or {}).get("user_stop") or (next_p.meta or {}).get(
+            "mass_lane_user_stop"
+        ):
             continue
         next_p.status = ProjectStatus.planning
         await session.flush()

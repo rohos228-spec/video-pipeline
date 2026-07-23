@@ -29,10 +29,30 @@ _FRAME_IMG_RE = re.compile(r"^frame_(\d{3})_", re.I)
 _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
 
 
+def newest_disk_video(videos_dir: Path, frame_number: int, shot: int) -> Path | None:
+    if shot == 2:
+        candidates = [
+            p
+            for p in videos_dir.glob(f"clip_{frame_number:03d}_s2_*.mp4")
+            if p.is_file()
+        ]
+    else:
+        candidates = [
+            p
+            for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+            if p.is_file() and "_s2_" not in p.name
+        ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 async def recover_scene_videos_from_disk(
     session: AsyncSession, project: Project
 ) -> list[int]:
-    """Привязать clip_XXX_*.mp4 и clip_XXX_s2_*.mp4 из videos/ к Frame."""
+    """Привязать clip_XXX_*.mp4 / clip_XXX_s2_*.mp4; newer-on-disk заменяет stale Artifact."""
+    from app.services.plan_shot2 import effective_shot_from_artifact
+
     videos_dir = project.data_dir / "videos"
     if not videos_dir.is_dir():
         return []
@@ -41,70 +61,73 @@ async def recover_scene_videos_from_disk(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
-    by_number = {f.number: f for f in frames}
     recovered: list[int] = []
 
-    async def _has_video_artifact(frame_id: int, shot: int) -> bool:
-        arts = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == frame_id,
-                    Artifact.kind == ArtifactKind.scene_video,
+    for fr in frames:
+        for shot in (1, 2):
+            newest = newest_disk_video(videos_dir, fr.number, shot)
+            if newest is None:
+                continue
+            arts = (
+                await session.execute(
+                    select(Artifact)
+                    .where(
+                        Artifact.project_id == project.id,
+                        Artifact.frame_id == fr.id,
+                        Artifact.kind == ArtifactKind.scene_video,
+                    )
+                    .order_by(Artifact.id.desc())
                 )
-                .order_by(Artifact.id.desc())
+            ).scalars().all()
+            shot_arts = [
+                a
+                for a in arts
+                if a.path
+                and effective_shot_from_artifact(a.meta, a.path) == shot
+            ]
+            current = next(
+                (a for a in shot_arts if Path(a.path).is_file()),
+                None,
             )
-        ).scalars().all()
-        for art in arts:
-            if not art.path or not Path(art.path).is_file():
-                continue
-            meta_shot = (art.meta or {}).get("shot", 1)
-            path_shot = 2 if "_s2_" in Path(art.path).name else 1
-            effective = meta_shot if meta_shot in (1, 2) else path_shot
-            if effective == shot:
-                return True
-        return False
+            if current is not None:
+                cur_path = Path(current.path)
+                try:
+                    same = cur_path.resolve() == newest.resolve()
+                    newer_disk = newest.stat().st_mtime > cur_path.stat().st_mtime + 0.01
+                except OSError:
+                    same = False
+                    newer_disk = True
+                if same or not newer_disk:
+                    if shot == 1 and fr.status not in (
+                        FrameStatus.video_generated,
+                        FrameStatus.video_approved,
+                        FrameStatus.done,
+                    ):
+                        fr.status = FrameStatus.video_generated
+                    continue
+                for a in shot_arts:
+                    await session.delete(a)
+            elif shot_arts:
+                for a in shot_arts:
+                    await session.delete(a)
 
-    for path in sorted(videos_dir.glob("clip_*.mp4")):
-        m2 = _CLIP_S2_RE.match(path.name)
-        if m2:
-            num = int(m2.group(1))
-            shot = 2
-        else:
-            m = _CLIP_RE.match(path.name)
-            if not m or "_s2_" in path.name:
-                continue
-            num = int(m.group(1))
-            shot = 1
-        fr = by_number.get(num)
-        if fr is None:
-            continue
-        if await _has_video_artifact(fr.id, shot):
+            session.add(
+                Artifact(
+                    project_id=project.id,
+                    frame_id=fr.id,
+                    kind=ArtifactKind.scene_video,
+                    uuid=uuid.uuid4().hex,
+                    path=str(newest.resolve()),
+                    meta={"shot": shot},
+                )
+            )
             if shot == 1 and fr.status not in (
                 FrameStatus.video_generated,
                 FrameStatus.video_approved,
                 FrameStatus.done,
             ):
                 fr.status = FrameStatus.video_generated
-            continue
-        session.add(
-            Artifact(
-                project_id=project.id,
-                frame_id=fr.id,
-                kind=ArtifactKind.scene_video,
-                uuid=uuid.uuid4().hex,
-                path=str(path.resolve()),
-                meta={"shot": shot},
-            )
-        )
-        if shot == 1 and fr.status not in (
-            FrameStatus.video_generated,
-            FrameStatus.video_approved,
-            FrameStatus.done,
-        ):
-            fr.status = FrameStatus.video_generated
-        recovered.append(num)
+            recovered.append(fr.number)
     if recovered:
         await session.flush()
         logger.info(
@@ -118,8 +141,9 @@ async def recover_scene_videos_from_disk(
 async def recover_scene_images_from_disk(
     session: AsyncSession, project: Project
 ) -> list[int]:
-    """Привязать frame_NNN_*.png из scenes/ к Frame как scene_image."""
-    from app.services.scan_frames import is_valid_scene_image, newest_frame_image_path
+    """Привязать frame_NNN_*.png / frame_NNN_s2_*.png; newer-on-disk заменяет stale Artifact."""
+    from app.services.plan_shot2 import find_shot1_image, find_shot2_image
+    from app.services.scan_frames import is_valid_scene_image
 
     scenes_dir = project.data_dir / "scenes"
     if not scenes_dir.is_dir():
@@ -131,37 +155,72 @@ async def recover_scene_images_from_disk(
     ).scalars().all()
     recovered: list[int] = []
     for fr in frames:
-        path = newest_frame_image_path(scenes_dir, fr.number)
-        if path is None or not is_valid_scene_image(path):
-            continue
-        existing = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_image,
+        for shot, finder in ((1, find_shot1_image), (2, find_shot2_image)):
+            path = finder(scenes_dir, fr.number)
+            if path is None:
+                continue
+            if shot == 1 and not is_valid_scene_image(path):
+                continue
+            if shot == 2:
+                try:
+                    if path.stat().st_size < 64:
+                        continue
+                except OSError:
+                    continue
+            arts = (
+                await session.execute(
+                    select(Artifact)
+                    .where(
+                        Artifact.project_id == project.id,
+                        Artifact.frame_id == fr.id,
+                        Artifact.kind == ArtifactKind.scene_image,
+                    )
+                    .order_by(Artifact.id.desc())
                 )
-                .order_by(Artifact.id.desc())
-                .limit(1)
+            ).scalars().all()
+            shot_arts = []
+            for a in arts:
+                meta_shot = (a.meta or {}).get("shot", 1)
+                if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
+                    shot_arts.append(a)
+            current = next(
+                (a for a in shot_arts if a.path and Path(a.path).is_file()),
+                None,
             )
-        ).scalar_one_or_none()
-        if existing is not None and Path(existing.path).is_file():
-            if fr.status is FrameStatus.image_prompt_ready:
+            if current is not None:
+                cur_path = Path(current.path)
+                try:
+                    same = cur_path.resolve() == path.resolve()
+                    newer_disk = path.stat().st_mtime > cur_path.stat().st_mtime + 0.01
+                except OSError:
+                    same = False
+                    newer_disk = True
+                if same or not newer_disk:
+                    if shot == 1 and fr.status is FrameStatus.image_prompt_ready:
+                        fr.status = FrameStatus.image_generated
+                    continue
+                for a in shot_arts:
+                    await session.delete(a)
+            elif shot_arts:
+                for a in shot_arts:
+                    await session.delete(a)
+
+            session.add(
+                Artifact(
+                    project_id=project.id,
+                    frame_id=fr.id,
+                    kind=ArtifactKind.scene_image,
+                    uuid=uuid.uuid4().hex,
+                    path=str(path.resolve()),
+                    meta={"shot": shot},
+                )
+            )
+            if shot == 1 and fr.status in (
+                FrameStatus.image_prompt_ready,
+                FrameStatus.planned,
+            ):
                 fr.status = FrameStatus.image_generated
-            continue
-        session.add(
-            Artifact(
-                project_id=project.id,
-                frame_id=fr.id,
-                kind=ArtifactKind.scene_image,
-                uuid=uuid.uuid4().hex,
-                path=str(path.resolve()),
-            )
-        )
-        if fr.status in (FrameStatus.image_prompt_ready, FrameStatus.planned):
-            fr.status = FrameStatus.image_generated
-        recovered.append(fr.number)
+            recovered.append(fr.number)
     if recovered:
         await session.flush()
         logger.info(
@@ -246,7 +305,10 @@ async def recover_audio_from_disk(
     session: AsyncSession, project: Project
 ) -> bool:
     """Зарегистрировать готовую озвучку на диске как ArtifactKind.audio."""
-    full_path = find_voice_full_on_disk(project.data_dir)
+    full_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
     if full_path is None:
         return False
 
@@ -469,6 +531,9 @@ async def recover_music_from_disk(
 
 
 async def recover_before_assemble(session: AsyncSession, project: Project) -> None:
+    from app.services.ensure_frames_from_disk import bootstrap_project_frames_from_disk
+
+    await bootstrap_project_frames_from_disk(session, project, sync_xlsx=True)
     await recover_scene_videos_from_disk(session, project)
     await recover_audio_from_disk(session, project)
     await recover_whisper_from_disk(session, project)

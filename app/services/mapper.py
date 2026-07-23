@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import statistics
 from dataclasses import dataclass
 
 from app.services.whisper import WordTS
@@ -210,43 +211,146 @@ def build_frame_word_spans_per_frame(
     return spans
 
 
+def _timings_proportional_to_tokens(
+    spans: list[FrameWordSpan],
+    audio_duration: float,
+    *,
+    uniform: bool = False,
+) -> list[FrameTiming]:
+    """Распределение длительностей по числу слов в ячейках R49 (или поровну)."""
+    if uniform:
+        weights = [1.0] * len(spans)
+    else:
+        weights = [max(len(s.lower_words), 1) for s in spans]
+    raw = [
+        FrameTiming(s.frame_number, 0.0, 0.0, float(w))
+        for s, w in zip(spans, weights)
+    ]
+    return normalize_contiguous(raw, audio_duration)
+
+
+def _segment_durations_from_transitions(
+    spans: list[FrameWordSpan],
+    words: list[WordTS],
+    audio_duration: float,
+) -> list[float]:
+    """Длительности кадров по точкам начала следующего кадра в Whisper."""
+    transitions = [0.0]
+    for i in range(1, len(spans)):
+        span = spans[i]
+        if span.whisper_indices and words:
+            wi = max(0, min(min(span.whisper_indices), len(words) - 1))
+            transitions.append(float(words[wi].start))
+        else:
+            transitions.append(transitions[-1])
+    transitions.append(float(audio_duration))
+
+    for i in range(1, len(transitions)):
+        if transitions[i] < transitions[i - 1]:
+            transitions[i] = transitions[i - 1]
+
+    return [
+        max(transitions[i + 1] - transitions[i], 0.0)
+        for i in range(len(spans))
+    ]
+
+
+def _should_use_token_proportional(
+    spans: list[FrameWordSpan],
+    words: list[WordTS],
+    segments: list[float],
+    audio_duration: float,
+) -> bool:
+    if not spans:
+        return True
+    empty = sum(1 for s in spans if not s.lower_words)
+    if empty > max(1, len(spans) // 4):
+        return True
+    if not words:
+        return True
+    whisper_end = float(words[-1].end)
+    if whisper_end < audio_duration * 0.75:
+        return True
+    if len(segments) < 2:
+        return False
+    mx = max(segments)
+    if mx > audio_duration * 0.35:
+        return True
+    if len(segments) >= 3:
+        med = statistics.median(segments)
+        if med > 0 and mx > med * 4:
+            return True
+    return False
+
+
 def map_frames(
     cells: list[tuple[int, str]],
     words: list[WordTS],
     *,
     audio_duration: float | None = None,
 ) -> list[FrameTiming]:
-    """Таймкоды кадров: веса из Whisper, шкала под длительность mp3, без дыр."""
+    """Таймкоды кадров: границы по Whisper, без «последний кадр на 5 минут»."""
     spans = build_frame_word_spans(cells, words)
-    raw: list[FrameTiming] = []
-
-    for span in spans:
-        if not span.lower_words or not span.whisper_indices:
-            raw.append(
-                FrameTiming(span.frame_number, 0.0, 0.0, max(len(span.lower_words), 1) * 0.15)
-            )
-            continue
-        wi_start = min(span.whisper_indices)
-        wi_end = max(span.whisper_indices)
-        wi_start = max(0, min(wi_start, len(words) - 1))
-        wi_end = max(0, min(wi_end, len(words) - 1))
-        start = words[wi_start].start
-        end = words[wi_end].end
-        dur = max(end - start, 0.0)
-        if dur <= 0:
-            dur = max(len(span.lower_words), 1) * 0.15
-        raw.append(
-            FrameTiming(
-                span.frame_number,
-                round(start, 3),
-                round(end, 3),
-                round(dur, 3),
-            )
-        )
+    if not spans:
+        return []
 
     if audio_duration is None:
+        raw: list[FrameTiming] = []
+        for span in spans:
+            if not span.lower_words or not span.whisper_indices or not words:
+                raw.append(
+                    FrameTiming(
+                        span.frame_number,
+                        0.0,
+                        0.0,
+                        max(len(span.lower_words), 1) * 0.15,
+                    )
+                )
+                continue
+            wi_start = max(0, min(min(span.whisper_indices), len(words) - 1))
+            wi_end = max(0, min(max(span.whisper_indices), len(words) - 1))
+            start = words[wi_start].start
+            end = words[wi_end].end
+            dur = max(end - start, max(len(span.lower_words), 1) * 0.15)
+            raw.append(
+                FrameTiming(
+                    span.frame_number,
+                    round(start, 3),
+                    round(end, 3),
+                    round(dur, 3),
+                )
+            )
         return raw
-    return normalize_contiguous(raw, audio_duration)
+
+    ad = max(float(audio_duration), 0.01)
+    empty = sum(1 for s in spans if not s.lower_words)
+    if empty > max(1, len(spans) // 4):
+        return _timings_proportional_to_tokens(spans, ad, uniform=True)
+
+    segments = _segment_durations_from_transitions(spans, words, ad)
+    if _should_use_token_proportional(spans, words, segments, ad):
+        return _timings_proportional_to_tokens(spans, ad)
+
+    out: list[FrameTiming] = []
+    pos = 0.0
+    for span, seg_dur in zip(spans, segments):
+        end = pos + seg_dur
+        out.append(
+            FrameTiming(
+                span.frame_number,
+                round(pos, 3),
+                round(end, 3),
+                round(seg_dur, 3),
+            )
+        )
+        pos = end
+
+    out[-1].end_ts = round(ad, 3)
+    out[-1].duration = round(out[-1].end_ts - out[-1].start_ts, 3)
+    for i in range(1, len(out)):
+        out[i].start_ts = out[i - 1].end_ts
+        out[i].duration = round(out[i].end_ts - out[i].start_ts, 3)
+    return out
 
 
 def normalize_contiguous(timings: list[FrameTiming], audio_duration: float) -> list[FrameTiming]:

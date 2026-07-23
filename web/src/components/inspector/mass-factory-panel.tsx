@@ -71,7 +71,7 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
         1) Excel тем → 2) Запустить очередь. После git pull перезапустите backend
-        (stop-backend.cmd → start-studio.ps1).
+        (stop-backend.cmd → STUDIO.cmd).
       </p>
 
       <input

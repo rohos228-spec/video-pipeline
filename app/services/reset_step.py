@@ -147,19 +147,40 @@ async def _wipe_script(session: AsyncSession, project: Project) -> dict[str, Any
     if project.script_text is not None:
         project.script_text = None
         changed = True
-    # voiceover.txt — артефакт на диске (если есть)
     voice_path = project.data_dir / "voiceover.txt"
-    voice_deleted = False
+    voice_trashed = False
     if voice_path.exists():
+        from app.services.voiceover_recovery import trash_voiceover_file
+
         try:
-            voice_path.unlink()
-            voice_deleted = True
+            trash_voiceover_file(project, voice_path)
+            voice_trashed = True
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "[#{}] reset_step.script: не удалил {}: {}",
-                project.id, voice_path, e,
+                "[#{}] reset_step.script: не переместил {} в .trash: {}",
+                project.id,
+                voice_path,
+                e,
             )
-    return {"script_text_cleared": changed, "voiceover_txt_deleted": voice_deleted}
+    # Downstream meta иначе переживёт сброс script и поднимет enrich_N_ready.
+    meta = dict(project.meta or {})
+    meta_cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            meta_cleared.append(key)
+    if meta_cleared:
+        project.meta = meta
+    return {
+        "script_text_cleared": changed,
+        "voiceover_txt_trashed": voice_trashed,
+        "meta_cleared": meta_cleared,
+    }
 
 
 async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -193,18 +214,54 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     ).scalars().all()
     for fr in frames:
         await session.delete(fr)
-    return {"frames_deleted": len(frames), "frame_artifact_files": files_deleted}
+    meta = dict(project.meta or {})
+    meta_cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            meta_cleared.append(key)
+    if meta_cleared:
+        project.meta = meta
+    return {
+        "frames_deleted": len(frames),
+        "frame_artifact_files": files_deleted,
+        "meta_cleared": meta_cleared,
+    }
 
 
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 4a «Персонажи»: удалить hero_reference артефакты.
+
     Описания героев (project.hero_descriptions) и вариации НЕ трогаем —
     их юзер вводил руками; повторный запуск шага сгенерит ИЗ ЭТИХ ЖЕ
-    описаний. Если нужен полный сброс с описаниями — это делается через
-    отдельное hero_reset_menu_kb («🎨 Сменить стиль»)."""
-    return await _wipe_artifacts_by_kind(
+    описаний. HITL approve_hero сбрасываем — иначе после wipe batch
+    считает персонажей «одобренными» без файлов и крутит missing-ref цикл.
+    """
+    from app.models import HITLDecision, HITLKind, HITLRequest
+
+    details = await _wipe_artifacts_by_kind(
         session, project, ArtifactKind.hero_reference
     )
+    hitl_rows = (
+        await session.execute(
+            select(HITLRequest).where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.kind == HITLKind.approve_hero,
+            )
+        )
+    ).scalars().all()
+    cleared = 0
+    for r in hitl_rows:
+        if r.decision is not HITLDecision.pending:
+            r.decision = HITLDecision.pending
+            cleared += 1
+    details["hitl_hero_reset"] = cleared
+    return details
 
 
 async def _wipe_items(session: AsyncSession, project: Project) -> dict[str, Any]:
@@ -490,9 +547,9 @@ async def _preserve_script_source_on_rerun(
 ) -> dict[str, Any]:
     """Повтор «Закадровый текст»: исходный voiceover остаётся для прикрепления в GPT."""
     _ = session
-    from app.services.chatgpt_xlsx import ensure_source_voiceover
+    from app.services.chatgpt_xlsx import ensure_script_input_voiceover
 
-    path = ensure_source_voiceover(project)
+    path = ensure_script_input_voiceover(project)
     text = (project.script_text or "").strip()
     return {
         "source_voiceover_preserved": True,

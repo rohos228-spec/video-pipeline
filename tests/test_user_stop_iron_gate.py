@@ -14,7 +14,11 @@ from app.services.step_data_guard import clamp_status_to_data
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
+async def session(tmp_path, monkeypatch) -> AsyncSession:
+    import app.settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -117,11 +121,11 @@ async def test_user_stop_blocks_later_in_gen_queue(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_starts_head_despite_stale_user_stop(
+async def test_gen_queue_tick_does_not_autostart_new(
     session: AsyncSession,
     monkeypatch,
 ) -> None:
-    """new+auto_mode в очереди: устаревший user_stop не блокирует автостарт."""
+    """new+auto_mode в очереди: без ручного ▶ статус остаётся new."""
     monkeypatch.setattr(
         "app.services.gen_queue.get_gen_queue",
         lambda: [2, 4],
@@ -145,9 +149,9 @@ async def test_gen_queue_tick_starts_head_despite_stale_user_stop(
     await session.flush()
 
     started = await gen_queue_tick(session)
-    assert started == 1
-    assert p2.status is ProjectStatus.planning
-    assert (p2.meta or {}).get("user_stop") is None
+    assert started == 0
+    assert p2.status is ProjectStatus.new
+    assert p4.status is ProjectStatus.new
 
 
 @pytest.mark.asyncio

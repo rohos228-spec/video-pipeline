@@ -16,7 +16,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Install-Ne
 set ERR=%ERRORLEVEL%
 echo.
 if %ERR%==0 (
-    echo OK. Откройте: %USERPROFILE%\video-pipeline\VideoPipelineStudio.cmd
+    echo OK. Откройте: %USERPROFILE%\video-pipeline\STUDIO.cmd
     echo Браузер: http://127.0.0.1:8765
 ) else (
     echo ОШИБКА %ERR%. Скопируйте текст выше и пришлите разработчику.

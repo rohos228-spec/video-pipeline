@@ -21,22 +21,24 @@ import {
 
 export function NodeResultViewBody({
   projectId,
+  nodeKey,
   nodeType,
   snapshot,
   onHeroReplaced,
 }: {
   projectId: number;
+  nodeKey?: string | null;
   nodeType: string;
   snapshot: NodeResultSnapshot;
   onHeroReplaced?: () => void;
 }) {
   switch (snapshot.viewMode) {
     case "xlsx_general_plan":
-      return <GeneralPlanSheetView projectId={projectId} />;
+      return <GeneralPlanSheetView projectId={projectId} nodeKey={nodeKey} />;
     case "voiceover_wide":
       return <VoiceoverWideView projectId={projectId} snapshot={snapshot} />;
     case "xlsx_split_row":
-      return <SplitRowView projectId={projectId} />;
+      return <SplitRowView projectId={projectId} nodeKey={nodeKey} />;
     case "frame_prompts":
       return <FramePromptsView items={snapshot.items} />;
     case "frame_images":
@@ -53,7 +55,13 @@ export function NodeResultViewBody({
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
     default:
-      return <DefaultResultView projectId={projectId} snapshot={snapshot} />;
+      return (
+        <DefaultResultView
+          projectId={projectId}
+          nodeKey={nodeKey}
+          snapshot={snapshot}
+        />
+      );
   }
 }
 
@@ -76,7 +84,13 @@ function isSplitRowLabel(text: string): boolean {
   );
 }
 
-function XlsxUploadBar({ projectId }: { projectId: number }) {
+function XlsxUploadBar({
+  projectId,
+  nodeKey,
+}: {
+  projectId: number;
+  nodeKey?: string | null;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const upload = useMutation({
@@ -95,7 +109,12 @@ function XlsxUploadBar({ projectId }: { projectId: number }) {
   return (
     <div className="mb-2 flex flex-wrap gap-2">
       <Button size="sm" variant="outline" asChild>
-        <a href={api.downloadProjectXlsx(projectId)} download>
+        <a
+          href={api.downloadProjectXlsx(projectId, {
+            nodeKey: nodeKey ?? undefined,
+          })}
+          download
+        >
           <Download className="h-3.5 w-3.5" />
           Скачать Excel
         </a>
@@ -123,24 +142,35 @@ function XlsxUploadBar({ projectId }: { projectId: number }) {
   );
 }
 
-function GeneralPlanSheetView({ projectId }: { projectId: number }) {
+function GeneralPlanSheetView({
+  projectId,
+  nodeKey,
+}: {
+  projectId: number;
+  nodeKey?: string | null;
+}) {
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
   });
   const meta = useQuery({
-    queryKey: ["xlsx-sheets", projectId],
-    queryFn: () => api.previewProjectXlsx(projectId, { maxRows: 1 }),
+    queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
+    queryFn: () =>
+      api.previewProjectXlsx(projectId, {
+        maxRows: 1,
+        nodeKey: nodeKey ?? undefined,
+      }),
   });
   const sheet = pickGeneralPlanSheet(meta.data?.sheets ?? []);
   const grid = useQuery({
-    queryKey: ["xlsx-general-plan", projectId, sheet],
+    queryKey: ["xlsx-general-plan", projectId, nodeKey ?? "live", sheet],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet,
         raw: true,
         maxRows: 200,
         maxCols: 30,
+        nodeKey: nodeKey ?? undefined,
       }),
     enabled: Boolean(sheet),
   });
@@ -151,7 +181,7 @@ function GeneralPlanSheetView({ projectId }: { projectId: number }) {
     const planText = project.data?.general_plan?.trim();
     return (
       <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} />
+        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
         {planText ? (
           <div className="rounded-lg border border-white/10 bg-black/20 p-4">
             <p className="mb-2 text-xs text-muted-foreground">Текст плана (из БД)</p>
@@ -166,9 +196,16 @@ function GeneralPlanSheetView({ projectId }: { projectId: number }) {
     );
   }
 
+  const snapLabel = grid.data?.xlsx_snapshot || meta.data?.xlsx_snapshot;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} />
+      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+      {snapLabel ? (
+        <p className="mb-1 text-[10px] text-muted-foreground">
+          Снимок ноды: {snapLabel}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
       <table className="min-w-max border-collapse text-left text-xs">
         <tbody>
@@ -297,14 +334,21 @@ function VoiceoverWideView({
   );
 }
 
-function SplitRowView({ projectId }: { projectId: number }) {
+function SplitRowView({
+  projectId,
+  nodeKey,
+}: {
+  projectId: number;
+  nodeKey?: string | null;
+}) {
   const row = useQuery({
-    queryKey: ["xlsx-split-row", projectId],
+    queryKey: ["xlsx-split-row", projectId, nodeKey ?? "live"],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet: SHEET_PLAN_V8,
         row: ROW_VOICEOVER_V8,
         maxCols: 120,
+        nodeKey: nodeKey ?? undefined,
       }),
   });
 
@@ -318,7 +362,7 @@ function SplitRowView({ projectId }: { projectId: number }) {
   if (!frameCells.length) {
     return (
       <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} />
+        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
         <p className="py-8 text-center text-sm text-muted-foreground">
           Строка {ROW_VOICEOVER_V8} листа «{SHEET_PLAN_V8}» пока пуста — сначала выполните разбивку.
         </p>
@@ -328,7 +372,12 @@ function SplitRowView({ projectId }: { projectId: number }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} />
+      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+      {row.data?.xlsx_snapshot ? (
+        <p className="mb-1 text-[10px] text-muted-foreground">
+          Снимок ноды: {row.data.xlsx_snapshot}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden rounded-lg border border-white/10 bg-black/20 p-3">
       <p className="mb-2 text-[11px] text-muted-foreground">
         Лист «{SHEET_PLAN_V8}», строка {ROW_VOICEOVER_V8} — прокрутите вправо для всех кадров
@@ -645,9 +694,11 @@ function TopicEditView({
 
 function DefaultResultView({
   projectId,
+  nodeKey,
   snapshot,
 }: {
   projectId: number;
+  nodeKey?: string | null;
   snapshot: NodeResultSnapshot;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -671,7 +722,15 @@ function DefaultResultView({
       {item.kind === "xlsx" && (
         <div className="flex gap-2">
           <Button size="sm" variant="outline" asChild>
-            <a href={api.downloadProjectXlsx(projectId)} download>
+            <a
+              href={
+                item.downloadUrl ||
+                api.downloadProjectXlsx(projectId, {
+                  nodeKey: nodeKey ?? undefined,
+                })
+              }
+              download
+            >
               <Download className="h-3.5 w-3.5" />
               Скачать Excel
             </a>

@@ -193,22 +193,63 @@ async def validate_after_music(
 async def validate_after_audio(
     session: AsyncSession, project: Project
 ) -> ValidationResult:
+    """Готовая озвучка: master voice_full.* (любое расширение) или per-frame TTS.
+
+    Режим disk_whisper / full_voice не требует ``frame_NNN.mp3`` — границы
+    кадров берутся из Whisper по одному ``voice_full.wav/mp3``.
+    """
     await recover_audio_from_disk(session, project)
+    from app.services.frame_audio import find_voice_full_on_disk
+
     expected = await _expected_frame_count(session, project)
     audio_dir = project.data_dir / "audio"
+    voice = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
+    audio_art = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.audio,
+            )
+            .order_by(Artifact.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    meta = dict(audio_art.meta or {}) if audio_art is not None else {}
+    disk_mode = meta.get("mode") in ("disk_whisper", "full_voice") or meta.get(
+        "source"
+    ) in ("disk_whisper", "full_voice")
+    has_frame_clips = audio_dir.is_dir() and any(audio_dir.glob("frame_*.mp3"))
+    # Master на диске без нарезки frame_*.mp3 — норма для ручной озвучки / Whisper.
+    if voice is not None and voice.is_file() and (
+        disk_mode or meta.get("recovered_from_disk") or not has_frame_clips
+    ):
+        return ValidationResult(
+            ok=True,
+            expected_frames=expected,
+            missing_frame_numbers=[],
+            messages=[],
+        )
+
     missing: list[int] = []
-    if expected > 0:
+    if expected > 0 and audio_dir.is_dir():
         for n in range(1, expected + 1):
             p = audio_dir / f"frame_{n:03d}.mp3"
             if not p.is_file():
                 missing.append(n)
-    voice_full = list(audio_dir.glob("voice_full_*.mp3")) if audio_dir.is_dir() else []
+    voice_full_mp3 = (
+        list(audio_dir.glob("voice_full_*.mp3")) if audio_dir.is_dir() else []
+    )
+    has_master = (voice is not None and voice.is_file()) or bool(voice_full_mp3)
     msgs: list[str] = []
     if missing:
         msgs.append(f"нет frame_*.mp3: {missing}")
-    if not voice_full:
-        msgs.append("нет voice_full_*.mp3")
-    ok = not missing and bool(voice_full)
+    if not has_master:
+        msgs.append("нет voice_full.* (mp3/wav) в audio/")
+    ok = not missing and has_master
     return ValidationResult(
         ok=ok,
         expected_frames=expected,

@@ -148,12 +148,17 @@ export function resolveNodeResult(
   nodeType: string,
   ctx: NodeResultContext,
   nodeStatus?: NodeRunStatus,
+  nodeKey?: string | null,
 ): NodeResultSnapshot {
-  const snapshot = computeNodeResult(nodeType, ctx);
+  const snapshot = computeNodeResult(nodeType, ctx, nodeKey);
   return gateNodeResultVisibility(snapshot, nodeType, nodeStatus);
 }
 
-function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResultSnapshot {
+function computeNodeResult(
+  nodeType: string,
+  ctx: NodeResultContext,
+  nodeKey?: string | null,
+): NodeResultSnapshot {
   const empty = (
     summary: string,
     replaceMode: NodeResultReplaceMode = "none",
@@ -338,16 +343,29 @@ function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResult
     case "enrich": {
       const xlsx = xlsxAsset(ctx.assets);
       if (xlsx && project?.id) {
+        const snapMeta = (
+          project.meta as
+            | { xlsx_snapshots_by_node?: Record<string, { name?: string }> }
+            | undefined
+        )?.xlsx_snapshots_by_node;
+        const snapName =
+          nodeKey && snapMeta?.[nodeKey]?.name
+            ? String(snapMeta[nodeKey].name)
+            : null;
         return ready(
           [
             {
               id: xlsx.id,
-              label: "project.xlsx",
+              label: snapName || "project.xlsx",
               kind: "xlsx",
-              downloadUrl: api.downloadProjectXlsx(project.id),
+              downloadUrl: api.downloadProjectXlsx(project.id, {
+                nodeKey: nodeKey ?? undefined,
+              }),
             },
           ],
-          "Таблица Excel загружена",
+          snapName
+            ? `Снимок Excel: ${snapName}`
+            : "Таблица Excel загружена",
           "xlsx",
         );
       }
@@ -464,7 +482,7 @@ function computeNodeResult(nodeType: string, ctx: NodeResultContext): NodeResult
 
     default: {
       if (isEnrichNode(nodeType)) {
-        return computeNodeResult("enrich_1", ctx);
+        return computeNodeResult("enrich_1", ctx, nodeKey);
       }
       const generic = artifactItems(filterArtifacts(ctx.artifacts, nodeType)).slice(0, 8);
       if (generic.length) return ready(generic, `${generic.length} артефактов`, "studio");

@@ -23,8 +23,10 @@ from app.orchestrator.node_registry import (
 from app.services.excel_gpt_node import (
     EXCEL_GPT_NODE_TYPE,
     completed_node_keys,
+    excel_gpt_force_rerun_slots,
     ready_status_for_slot,
     running_status_for_slot,
+    slot_from_ready_status,
     slot_from_running_status,
     slot_index_from_node,
 )
@@ -160,13 +162,23 @@ class WorkflowGraph:
             for key in self._flow_work_keys(skipped):
                 done.add(self.node_type(key))
         meta = project.meta if isinstance(project.meta, dict) else {}
-        for slot in meta.get("enrich_completed_slots") or []:
-            try:
-                idx = int(slot)
-            except (TypeError, ValueError):
-                continue
-            if 1 <= idx <= 5:
-                done.add(f"enrich_{idx}")
+        # enrich_completed_slots учитываем только после реального split
+        # (split_completed) или когда уже внутри enrich-зоны. Иначе stale
+        # meta на frames_ready пропускает excel_gpt #1/#2.
+        from app.telegram.menu import status_order as _status_ord
+
+        trust_enrich_meta = bool(meta.get("split_completed")) or (
+            status is not None
+            and _status_ord(status) >= _status_ord(ProjectStatus.enriching_1)
+        )
+        if trust_enrich_meta:
+            for slot in meta.get("enrich_completed_slots") or []:
+                try:
+                    idx = int(slot)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= idx <= 5:
+                    done.add(f"enrich_{idx}")
         return done
 
     def _is_ready(self, node_key: str, project: Project, skipped: set[str]) -> bool:
@@ -236,13 +248,42 @@ class WorkflowGraph:
             if not is_work_node_type(typ):
                 queue.extend(self._out.get(key, []))
                 continue
-            if typ in done:
+            n = self._by_id.get(key) or {}
+            if typ == EXCEL_GPT_NODE_TYPE:
+                # excel_gpt в done лежит как enrich_N — typ «excel_gpt» сам
+                # в done не попадает; иначе первые слоты перезапускаются, а
+                # при кривом slotIndex можно сразу уйти в enriching_3.
+                # После enrich_N_ready следующий слот M>N на канвасе — всегда
+                # следующий шаг: stale «готово» не должно прыгать на hero.
+                # Активная цепочка enrich_auto_chain_to: даже done → переген.
+                slot = slot_index_from_node(n)
+                finished_slot = slot_from_ready_status(ready_status)
+                later_after_ready = (
+                    finished_slot is not None and slot > finished_slot
+                )
+                force_rerun = later_after_ready or (
+                    slot in excel_gpt_force_rerun_slots(project)
+                    and (finished_slot is None or slot > finished_slot)
+                )
+                if (
+                    not force_rerun
+                    and (
+                        f"enrich_{slot}" in done
+                        or key in completed_node_keys(project)
+                    )
+                ):
+                    queue.extend(self._out.get(key, []))
+                    continue
+            elif typ in done:
                 queue.extend(self._out.get(key, []))
                 continue
             preds = self._effective_predecessors(key, skipped)
             if all(self._is_ready(p, project, skipped) for p in preds):
-                n = self._by_id.get(key) or {}
-                spec = spec_for_node(n) if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE else spec_for_type(typ)
+                spec = (
+                    spec_for_node(n)
+                    if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+                    else spec_for_type(typ)
+                )
                 if spec:
                     return spec.running_status
             queue.extend(self._out.get(key, []))
@@ -293,10 +334,26 @@ class WorkflowGraph:
             if ntyp in disabled:
                 queue.extend(self._out.get(key, []))
                 continue
+            n = self._by_id.get(key) or {}
+            if ntyp == EXCEL_GPT_NODE_TYPE:
+                slot = slot_index_from_node(n)
+                force_rerun = slot in excel_gpt_force_rerun_slots(project)
+                if (
+                    not force_rerun
+                    and (
+                        f"enrich_{slot}" in done
+                        or key in completed_node_keys(project)
+                    )
+                ):
+                    queue.extend(self._out.get(key, []))
+                    continue
             preds = self._effective_predecessors(key, skipped)
             if all(self.node_type(p) in done for p in preds):
-                n = self._by_id.get(key) or {}
-                spec = spec_for_node(n) if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE else spec_for_type(ntyp)
+                spec = (
+                    spec_for_node(n)
+                    if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE
+                    else spec_for_type(ntyp)
+                )
                 if spec:
                     return spec.running_status
             queue.extend(self._out.get(key, []))
@@ -480,8 +537,14 @@ async def assert_step_allowed_by_graph(
     project: Project,
     step_code: str,
 ) -> None:
-    """Ручной запуск шага не ограничивается связями канваса (no-op)."""
-    _ = session, project, step_code
+    """Ручной запуск ноды всегда разрешён.
+
+    Порядок графа / ``is_step_reachable`` используется только для
+    auto_advance и подсказок UI. Пользователь в Studio/TG может запустить
+    любую ноду в любой момент (если уже не крутится другой running-шаг).
+    """
+    _ = (session, project, step_code)
+    return
 
 
 def sync_skip_disabled(

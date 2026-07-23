@@ -9,8 +9,10 @@ from app.generation_options import (
     IMAGE_GENERATORS,
     IMAGE_QUALITIES,
     IMAGE_RESOLUTIONS,
+    IMAGE_RESOLUTIONS_BY_GENERATOR,
     VIDEO_GENERATORS,
     VIDEO_RESOLUTIONS,
+    allowed_image_resolution_ids,
 )
 from app.telegram import wizard as wiz
 
@@ -42,8 +44,17 @@ async def wizard_catalog() -> dict:
         "image_generators": _choices_to_dict(IMAGE_GENERATORS),
         "aspect_ratios": _choices_to_dict(ASPECT_RATIOS),
         "image_resolutions": _choices_to_dict(IMAGE_RESOLUTIONS),
+        "image_resolutions_by_generator": {
+            gid: list(ids) for gid, ids in IMAGE_RESOLUTIONS_BY_GENERATOR.items()
+        },
         "image_qualities": _choices_to_dict(IMAGE_QUALITIES),
         "video_generators": _choices_to_dict(VIDEO_GENERATORS),
         "video_resolutions": _choices_to_dict(VIDEO_RESOLUTIONS),
         "boolean": _choices_to_dict(wiz.BOOLEAN_CHOICES),
+        "defaults": {
+            "image_generator": "gpt_image_2",
+            "allowed_resolutions_for_default": list(
+                allowed_image_resolution_ids("gpt_image_2")
+            ),
+        },
     }

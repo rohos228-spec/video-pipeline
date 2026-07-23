@@ -53,6 +53,14 @@ def test_real_prompt_not_skipped() -> None:
         is False
     )
     assert is_skippable_empty_prompt("wide cinematic shot of a dark corridor") is False
+    # Длинный R45 (sekty): «нет исходных данных» внутри инструкции — не заглушка
+    assert (
+        is_skippable_empty_prompt(
+            "Create one unified scene. character id: нет исходных данных для "
+            "ID персонажа; do not invent character IDs. Wide shot of corridor."
+        )
+        is False
+    )
 
 
 def test_read_shot2_skips_placeholder_in_row46(tmp_path: Path) -> None:

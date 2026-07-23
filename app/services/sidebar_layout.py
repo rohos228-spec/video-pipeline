@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,12 @@ def _now_iso() -> str:
 
 
 def _empty_layout() -> dict[str, Any]:
-    return {"folders": [], "project_layout": {}, "gen_queue": []}
+    return {
+        "folders": [],
+        "project_layout": {},
+        "gen_queue": [],
+        "gen_queue_halted": False,
+    }
 
 
 def load_layout() -> dict[str, Any]:
@@ -45,19 +51,45 @@ def load_layout() -> dict[str, Any]:
         "folders": folders if isinstance(folders, list) else [],
         "project_layout": project_layout if isinstance(project_layout, dict) else {},
         "gen_queue": gen_queue if isinstance(gen_queue, list) else [],
+        "gen_queue_halted": bool(data.get("gen_queue_halted")),
     }
+
+
+def is_gen_queue_halted() -> bool:
+    return bool(load_layout().get("gen_queue_halted"))
+
+
+def set_gen_queue_halted(halted: bool, *, reason: str = "") -> None:
+    """Глобальный стоп очереди: после ⏹ следующий слот сам не стартует."""
+    data = load_layout()
+    prev = bool(data.get("gen_queue_halted"))
+    data["gen_queue_halted"] = bool(halted)
+    save_layout(data)
+    if prev != bool(halted):
+        logger.info(
+            "gen_queue_halted={}{}",
+            bool(halted),
+            f" ({reason})" if reason else "",
+        )
+
+
+def clear_gen_queue_halted(*, reason: str = "manual start") -> bool:
+    if not is_gen_queue_halted():
+        return False
+    set_gen_queue_halted(False, reason=reason)
+    return True
 
 
 def save_layout(data: dict[str, Any]) -> None:
     path = _layout_path()
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    tmp = path.with_suffix(".json.tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _normalize_gen_queue(raw: list[Any]) -> list[int]:
-    """Уникальные ID в порядке сайдбара (order), затем по ID."""
+    """Уникальные ID в порядке добавления в очередь."""
     out: list[int] = []
     seen: set[int] = set()
     for item in raw:
@@ -69,20 +101,6 @@ def _normalize_gen_queue(raw: list[Any]) -> list[int]:
             continue
         seen.add(pid)
         out.append(pid)
-    layout: dict[str, Any] = dict(load_layout().get("project_layout") or {})
-
-    def _sort_key(pid: int) -> tuple[int, int]:
-        entry = layout.get(str(pid))
-        if isinstance(entry, dict):
-            try:
-                order = int(entry.get("order"))
-            except (TypeError, ValueError):
-                order = 999999
-        else:
-            order = 999999
-        return (order, pid)
-
-    out.sort(key=_sort_key)
     return out
 
 
@@ -244,8 +262,19 @@ def update_layout(
     return data
 
 
-def sync_projects(project_ids: set[int]) -> None:
-    """Добавить отсутствующие root-проекты в layout (корень, конец списка)."""
+def sync_projects(
+    project_ids: set[int],
+    *,
+    batch_subprojects: dict[int, tuple[int, int]] | None = None,
+    batch_names: dict[int, str] | None = None,
+) -> None:
+    """Добавить отсутствующие root-проекты в layout (корень, конец списка).
+
+    Принимает batch_* kwargs (вызов из list_projects после #113) — не падаем.
+    Подпроекты батча в корень не кладём; папки батча — отдельный follow-up.
+    """
+    batch_subprojects = batch_subprojects or {}
+    _ = batch_names
     data = load_layout()
     layout: dict[str, Any] = dict(data.get("project_layout") or {})
     root_orders = [
@@ -256,6 +285,8 @@ def sync_projects(project_ids: set[int]) -> None:
     next_order = max(root_orders, default=-1) + 1
     changed = False
     for pid in sorted(project_ids):
+        if pid in batch_subprojects:
+            continue
         key = str(pid)
         if key in layout:
             continue
@@ -286,3 +317,26 @@ def layout_for_api(project_ids: set[int] | None = None) -> dict[str, Any]:
         "gen_queue": gen_queue,
         "gen_queue_positions": queue_map,
     }
+
+
+PROMPTS_LOG_PATH = Path("logs/prompts.log")
+
+
+def log_prompt_send(
+    *,
+    bot: str,
+    project_id: int | None,
+    node: str,
+    source: str,
+    text: str,
+) -> None:
+    try:
+        PROMPTS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        pid = project_id if project_id is not None else "?"
+        snippet = (text or "").replace("\n", " ")[:80]
+        line = f"{ts}\tproject={pid}\tbot={bot}\tnode={node}\tsource={source}\t{snippet}"
+        with PROMPTS_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        logger.warning("prompts.log write failed: {}", e)

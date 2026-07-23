@@ -21,8 +21,14 @@ def build_assembly_clip_specs(
     shot1_paths: dict[int, Path],
     shot2_paths: dict[int, Path | None],
     duration_by_frame: dict[int, float],
+    *,
+    video_trims: dict[str, dict[str, float]] | None = None,
 ) -> list[ClipSpec]:
-    """Клипы в порядке воспроизведения: для сцены с shot_02 — два клипа на одно окно R49."""
+    """Клипы в порядке воспроизведения: для сцены с shot_02 — два клипа на одно окно R49.
+
+    Если shot_01 нет — нормально: весь слот кадра закрывает shot_02.
+    """
+    trims = video_trims or {}
     clips: list[ClipSpec] = []
     for fr in frames:
         total = duration_by_frame.get(fr.number)
@@ -31,13 +37,54 @@ def build_assembly_clip_specs(
                 f"нет таймлайна аудио для кадра {fr.number} — перезапустите «Аудио»"
             )
         p1 = shot1_paths.get(fr.number)
-        if p1 is None or not p1.is_file():
-            raise RuntimeError(f"нет клипа shot_01 для кадра {fr.number}")
         p2 = shot2_paths.get(fr.number)
-        if p2 is not None and p2.is_file():
+        has_p1 = p1 is not None and p1.is_file()
+        has_p2 = p2 is not None and p2.is_file()
+        if not has_p1 and has_p2:
+            # Нет shot_01 — используем второй клип на всё окно голоса.
+            t2 = trims.get(f"{fr.number}:2") or trims.get(f"{fr.number}:1") or {}
+            clips.append(
+                ClipSpec(
+                    src=p2,  # type: ignore[arg-type]
+                    duration=total,
+                    trim_start=float(t2.get("start", 0.0)),
+                    trim_end=float(t2["end"]) if "end" in t2 else None,
+                )
+            )
+            continue
+        if not has_p1:
+            raise RuntimeError(
+                f"нет клипа shot_01/shot_02 для кадра {fr.number}"
+            )
+        assert p1 is not None
+        if has_p2:
             d1, d2 = split_voiceover_duration(total)
-            clips.append(ClipSpec(src=p1, duration=d1))
-            clips.append(ClipSpec(src=p2, duration=d2))
+            t1 = trims.get(f"{fr.number}:1") or {}
+            t2 = trims.get(f"{fr.number}:2") or {}
+            clips.append(
+                ClipSpec(
+                    src=p1,
+                    duration=d1,
+                    trim_start=float(t1.get("start", 0.0)),
+                    trim_end=float(t1["end"]) if "end" in t1 else None,
+                )
+            )
+            clips.append(
+                ClipSpec(
+                    src=p2,  # type: ignore[arg-type]
+                    duration=d2,
+                    trim_start=float(t2.get("start", 0.0)),
+                    trim_end=float(t2["end"]) if "end" in t2 else None,
+                )
+            )
         else:
-            clips.append(ClipSpec(src=p1, duration=total))
+            t1 = trims.get(f"{fr.number}:1") or {}
+            clips.append(
+                ClipSpec(
+                    src=p1,
+                    duration=total,
+                    trim_start=float(t1.get("start", 0.0)),
+                    trim_end=float(t1["end"]) if "end" in t1 else None,
+                )
+            )
     return clips

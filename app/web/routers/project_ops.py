@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy import select
@@ -18,7 +18,12 @@ from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
 from app.services.project_control import stop_project_running
 from app.services.reset_step import reset_step
-from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
+from app.services.run_sync import (
+    ensure_run_for_project,
+    reset_nodes_from_step,
+    sync_run_for_project,
+    _get_default_workflow_id,
+)
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
@@ -294,7 +299,14 @@ async def reset_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
         raise HTTPException(status_code=400, detail=str(summary["error"]))
+    wf_id = await _get_default_workflow_id()
+    if wf_id is not None:
+        await ensure_run_for_project(project_id, wf_id)
+    await reset_nodes_from_step(session, project_id, step_code)
+    await session.flush()
     await session.commit()
+    await session.refresh(p)
+    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -382,18 +394,24 @@ async def clear_excel_hero(
 
 @router.get("/{project_id}/xlsx")
 async def download_xlsx(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int,
+    node_key: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
+    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+
+    bound = resolve_bound_xlsx_path(p, node_key)
+    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
+    if not xlsx.exists() and bound is None:
         sheet = ProjectSheet(file_path=xlsx)
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         raise HTTPException(status_code=404, detail="project.xlsx not found")
+    fname = bound.name if bound is not None else f"{p.slug}-project.xlsx"
     return FileResponse(
         path=str(xlsx),
-        filename=f"{p.slug}-project.xlsx",
+        filename=fname,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -444,22 +462,64 @@ async def upload_xlsx(
     return p
 
 
+def _cell_str(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _trim_trailing_empty_cols(rows: list[list[str]]) -> list[list[str]]:
+    """Drop trailing all-empty columns — do NOT pad to max_cols."""
+    if not rows:
+        return rows
+    width = max((len(r) for r in rows), default=0)
+    last = -1
+    for c in range(width):
+        if any((r[c] if c < len(r) else "").strip() for r in rows):
+            last = c
+    if last < 0:
+        return [[] for _ in rows]
+    return [(r + [""] * (last + 1 - len(r)))[: last + 1] for r in rows]
+
+
+def _trim_trailing_empty_rows(rows: list[list[str]]) -> list[list[str]]:
+    end = len(rows)
+    while end > 0 and not any(str(c).strip() for c in rows[end - 1]):
+        end -= 1
+    return rows[:end]
+
+
+def _col_letter(index0: int) -> str:
+    """0 → A, 25 → Z, 26 → AA."""
+    n = index0 + 1
+    letters: list[str] = []
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters.append(chr(65 + rem))
+    return "".join(reversed(letters))
+
+
 @router.get("/{project_id}/xlsx/preview")
 async def preview_xlsx(
     project_id: int,
     sheet: str | None = Query(None),
-    max_rows: int = Query(40, ge=1, le=500),
-    max_cols: int = Query(80, ge=1, le=200),
-    start_row: int = Query(1, ge=1, le=500),
-    row: int | None = Query(None, ge=1, le=500),
+    max_rows: int = Query(80, ge=1, le=2000),
+    max_cols: int = Query(40, ge=1, le=500),
+    start_row: int = Query(1, ge=1, le=5000),
+    row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
+    node_key: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
-        sheet = ProjectSheet(file_path=xlsx)
-        sheet.ensure_initialized(project_id=p.id, slug=p.slug)
+    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+
+    bound = resolve_bound_xlsx_path(p, node_key)
+    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
+    snapshot_name = bound.name if bound is not None else None
+    if not xlsx.exists() and bound is None:
+        sheet_obj = ProjectSheet(file_path=xlsx)
+        sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         return {
             "path": str(xlsx),
@@ -468,6 +528,14 @@ async def preview_xlsx(
             "headers": [],
             "rows": [],
             "cells": [],
+            "start_row": start_row,
+            "col_letters": [],
+            "truncated_rows": False,
+            "truncated_cols": False,
+            "sheet_max_row": 0,
+            "sheet_max_col": 0,
+            "node_key": node_key,
+            "xlsx_snapshot": snapshot_name,
         }
     from openpyxl import load_workbook
 
@@ -481,11 +549,9 @@ async def preview_xlsx(
             min_row=row, max_row=row, max_col=max_cols, values_only=True
         )
         row_vals = next(row_iter, None)
-        cells = (
-            ["" if c is None else str(c) for c in row_vals]
-            if row_vals is not None
-            else []
-        )
+        cells = [_cell_str(c) for c in row_vals] if row_vals is not None else []
+        while cells and not cells[-1].strip():
+            cells.pop()
         wb.close()
         return {
             "path": str(xlsx),
@@ -493,43 +559,427 @@ async def preview_xlsx(
             "active_sheet": active,
             "row": row,
             "cells": cells,
+            "col_letters": [_col_letter(i) for i in range(len(cells))],
+            "node_key": node_key,
+            "xlsx_snapshot": snapshot_name,
         }
 
     headers: list[str] = []
     rows: list[list[str]] = []
+    sheet_max_row = 0
+    sheet_max_col = 0
+    truncated_rows = False
+    truncated_cols = False
     if active:
         ws = wb[active]
-        end_row = min(start_row + max_rows - 1, ws.max_row or start_row)
+        # read_only: dimensions may be None — fall back to requested window.
+        dim_row = int(ws.max_row or 0)
+        dim_col = int(ws.max_column or 0)
+        sheet_max_row = dim_row
+        sheet_max_col = dim_col
+        end_row = start_row + max_rows - 1
+        if dim_row > 0:
+            end_row = min(end_row, dim_row)
+        scan_cols = max_cols
+        if dim_col > 0:
+            truncated_cols = dim_col > max_cols
+            scan_cols = min(max_cols, dim_col)
+        else:
+            scan_cols = max_cols
+
+        collected = 0
+        hit_row_cap = False
         for i, row_vals in enumerate(
             ws.iter_rows(
                 min_row=start_row,
                 max_row=end_row,
-                max_col=max_cols,
+                max_col=scan_cols,
                 values_only=True,
             )
         ):
-            cells = ["" if c is None else str(c) for c in row_vals]
-            if len(cells) > max_cols:
-                cells = cells[:max_cols]
-            elif len(cells) < max_cols:
-                cells = cells + [""] * (max_cols - len(cells))
+            cells = [_cell_str(c) for c in (row_vals or ())]
+            # Keep natural width — never pad up to max_cols (that broke the UI banner).
+            if len(cells) > scan_cols:
+                cells = cells[:scan_cols]
+                truncated_cols = True
             if raw:
                 rows.append(cells)
+                collected += 1
             elif i == 0:
                 headers = cells
                 continue
             else:
                 rows.append(cells)
-            if len(rows) >= max_rows:
+                collected += 1
+            if collected >= max_rows:
+                hit_row_cap = True
                 break
+
+        last_loaded = start_row + len(rows) - 1 if rows else start_row - 1
+        if hit_row_cap:
+            truncated_rows = True
+        elif dim_row > 0 and last_loaded < dim_row:
+            truncated_rows = True
+
+        rows = _trim_trailing_empty_rows(rows)
+        rows = _trim_trailing_empty_cols(rows)
+        if headers:
+            headers_trimmed = _trim_trailing_empty_cols([headers])
+            headers = headers_trimmed[0] if headers_trimmed else []
+            width = max((len(r) for r in rows), default=len(headers))
+            if len(headers) < width:
+                headers = headers + [""] * (width - len(headers))
+            else:
+                headers = headers[:width]
+
     wb.close()
+    width = max((len(r) for r in rows), default=len(headers))
+    col_letters = [_col_letter(i) for i in range(width)]
     return {
         "path": str(xlsx),
         "sheets": sheets,
         "active_sheet": active,
         "headers": headers if not raw else [],
         "rows": rows,
+        "start_row": start_row,
+        "col_letters": col_letters,
+        "truncated_rows": truncated_rows,
+        "truncated_cols": truncated_cols,
+        "sheet_max_row": sheet_max_row,
+        "sheet_max_col": sheet_max_col,
+        "node_key": node_key,
+        "xlsx_snapshot": snapshot_name,
     }
+
+
+@router.get("/{project_id}/montage-board")
+async def montage_board(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сетка монтажа: озвучка, персонажи, shot1/2 картинки и видео по кадрам."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board import build_montage_board
+
+    try:
+        return await build_montage_board(session, p)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("GET /montage-board failed project_id={}", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось собрать монтаж: {type(e).__name__}: {e}",
+        ) from e
+
+
+@router.post("/{project_id}/montage-board/apply")
+async def montage_board_apply(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохранить trim и выполнить очередь regen (без remount)."""
+    from app.services.montage_board import build_montage_board
+    from app.services.montage_board_apply import apply_montage_board
+    from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    ops = list(body.get("pending_ops") or [])
+    trims = body.get("video_trims")
+
+    if ops:
+        from app.services.step_cancel import clear_stop
+
+        clear_stop(project_id)
+        job = get_apply_job(p)
+        if job.get("status") == "running":
+            board = await build_montage_board(session, p)
+            return {
+                "started": False,
+                "already_running": True,
+                "ok": False,
+                "job": job,
+                "meta": board["meta"],
+            }
+        spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
+        return {
+            "started": True,
+            "ok": True,
+            "job": {"status": "running", "total_ops": len(ops)},
+            "message": f"Генерация {len(ops)} операций запущена в фоне",
+        }
+
+    result = await apply_montage_board(
+        session,
+        p,
+        video_trims=trims,
+        pending_ops=ops,
+    )
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_board_apply": True,
+            "status": "done" if result.get("ok") else "error",
+            "ok": result.get("ok"),
+            "errors": result.get("errors"),
+        },
+    )
+    return result
+
+
+@router.get("/{project_id}/montage-board/apply-status")
+async def montage_board_apply_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_apply_job import get_apply_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_apply_job(p)}
+
+
+@router.post("/{project_id}/montage-board/montage")
+async def montage_board_montage(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Кнопка «Монтаж» — remount-video в фоне (озвучка + FFmpeg)."""
+    import asyncio
+
+    from app.services.montage_board_montage_job import get_montage_job, spawn_montage_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.step_cancel import clear_stop
+
+    clear_stop(project_id)
+    job = get_montage_job(p)
+    if job.get("status") == "running":
+        return {"started": False, "already_running": True, "job": job}
+    spawn_montage_job(project_id)
+    return {"started": True, "job": {"status": "running"}}
+
+
+@router.get("/{project_id}/montage-board/montage-status")
+async def montage_board_montage_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_montage_job import get_montage_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_montage_job(p)}
+
+
+@router.post("/{project_id}/montage-board/recover-outsee")
+async def montage_board_recover_outsee(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Запускает фоновый скан Outsee → сохранение/замена кадров (кнопка не зависает)."""
+    p = _project_or_404(await session.get(Project, project_id))
+    from app.services.montage_board_meta import public_board_meta, montage_meta
+    from app.services.montage_outsee_recover_job import (
+        get_recover_job,
+        spawn_recover_job,
+    )
+    from app.services.outsee_lane import outsee_lane_busy
+    from app.services.step_cancel import clear_stop
+
+    job = get_recover_job(p)
+    if job.get("status") == "running":
+        return {
+            "started": False,
+            "already_running": True,
+            "ok": False,
+            "job": job,
+            "meta": public_board_meta(montage_meta(p)),
+            "message": "Уже забираем правки из Outsee",
+        }
+    if outsee_lane_busy():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Outsee занят Generate/apply — дождитесь окончания и нажмите снова"
+            ),
+        )
+    clear_stop(project_id)
+    spawn_recover_job(project_id)
+    return {
+        "started": True,
+        "ok": True,
+        "job": {"status": "running"},
+        "message": "Забираем правки из Outsee в фоне",
+        "meta": public_board_meta(montage_meta(p)),
+    }
+
+
+@router.get("/{project_id}/montage-board/recover-outsee-status")
+async def montage_board_recover_outsee_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_outsee_recover_job import get_recover_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return {"job": get_recover_job(p)}
+
+
+@router.post("/{project_id}/montage-board/delete-image")
+async def montage_board_delete_image(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import delete_scene_image
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    deleted = await delete_scene_image(session, p, frame_number, shot=shot)
+    board = montage_meta(p)
+    mark_stale_videos(board, frame_number, shot=shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+
+
+@router.post("/{project_id}/montage-board/delete-video")
+async def montage_board_delete_video(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import delete_scene_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    deleted = await delete_scene_video(session, p, frame_number, shot=shot)
+    await session.commit()
+    return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+
+
+@router.post("/{project_id}/montage-board/upload-image")
+async def montage_board_upload_image(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import save_scene_image_upload
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    suffix = Path(file.filename or "upload.png").suffix or ".png"
+    path = await save_scene_image_upload(
+        session, p, frame_number, shot=shot, content=content, suffix=suffix
+    )
+    board = montage_meta(p)
+    mark_stale_videos(board, frame_number, shot=shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {
+        "ok": True,
+        "path": str(path),
+        "preview_url": f"/api/files?path={path}",
+        "frame_number": frame_number,
+        "shot": shot,
+    }
+
+
+@router.post("/{project_id}/montage-board/upload-video")
+async def montage_board_upload_video(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    shot: int = Query(1, ge=1, le=2),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.montage_board_assets import save_scene_video_upload
+    from app.services.montage_board_meta import clear_stale_video, montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+    path = await save_scene_video_upload(
+        session, p, frame_number, shot=shot, content=content, suffix=suffix
+    )
+    board = montage_meta(p)
+    clear_stale_video(board, frame_number, shot)
+    set_montage_meta(p, board)
+    await session.commit()
+    return {
+        "ok": True,
+        "path": str(path),
+        "preview_url": f"/api/files?path={path}",
+        "frame_number": frame_number,
+        "shot": shot,
+    }
+
+
+@router.post("/{project_id}/montage-board/upload-voice")
+async def montage_board_upload_voice(
+    project_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохраняет озвучку как ``audio/voice_full.<ext>`` — так её видит монтаж/assemble."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    audio_dir = p.data_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "voice.mp3").suffix.lower() or ".mp3"
+    if suffix not in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}:
+        suffix = ".mp3"
+    # Каноническое имя, которое find_voice_full_on_disk / remount подхватывают.
+    dest = audio_dir / f"voice_full{suffix}"
+    dest.write_bytes(content)
+    meta = dict(p.meta or {})
+    meta["montage_voice_path"] = str(dest)
+    p.meta = meta
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "path": str(dest), "filename": dest.name}
+
+
+@router.post("/{project_id}/montage-board/upload-music")
+async def montage_board_upload_music(
+    project_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохраняет BGM как ``music/bgm.<ext>`` — канон для resolve_bgm."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    p = _project_or_404(await session.get(Project, project_id))
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    music_dir = p.data_dir / "music"
+    music_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "bgm.mp3").suffix.lower() or ".mp3"
+    if suffix not in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
+        suffix = ".mp3"
+    dest = music_dir / f"bgm{suffix}"
+    dest.write_bytes(content)
+    meta = dict(p.meta or {})
+    meta["bgm_path"] = str(dest)
+    p.meta = meta
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
 @router.get("/{project_id}/assets")
@@ -778,3 +1228,148 @@ async def remap_excel_gpt_keys(
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "remapped": remapped}
+
+
+@router.post("/parents/disable-auto-mode")
+async def disable_auto_mode_all_parents(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Выключить автопродвижение у всех родительских проектов (воркер перестанет сам жать шаги)."""
+    from app.services.mass_factory import mass_parent_id
+
+    rows = (await session.execute(select(Project))).scalars().all()
+    disabled = 0
+    for p in rows:
+        if mass_parent_id(p) is not None:
+            continue
+        if p.auto_mode:
+            p.auto_mode = False
+            disabled += 1
+            await publish_project_event(
+                p.id,
+                event_type="project_updated",
+                payload={"auto_mode": False},
+            )
+    await session.commit()
+    return {"parents_total": sum(1 for p in rows if mass_parent_id(p) is None), "disabled": disabled}
+
+
+@router.post("/{project_id}/remount-video")
+async def remount_project_video(
+    project_id: int,
+    audio_only: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Перемонтаж: синхрон xlsx→кадры, Whisper по озвучке, новая сборка (видеоклипы не трогаем)."""
+    from app.services.remount_video import remount_video
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await remount_video(session, p, run_assemble=not audio_only)
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "remount_video": True,
+            "done": result.get("done"),
+            "error": result.get("error"),
+            "final_video": result.get("final_video"),
+        },
+    )
+    if result.get("error") and not result.get("done"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/restore-original-voiceover")
+async def restore_all_parents_voiceover(
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover у всех родительских проектов."""
+    from app.services.voiceover_recovery import restore_all_parent_voiceovers
+
+    summary = await restore_all_parent_voiceovers(
+        session, dry_run=dry_run, force=force
+    )
+    if summary.get("restored"):
+        for row in summary.get("results", []):
+            if row.get("restored"):
+                await publish_project_event(
+                    int(row["project_id"]),
+                    event_type="project_updated",
+                    payload={"voiceover_restored": True, "source": row.get("source")},
+                )
+    return summary
+
+
+@router.post("/{project_id}/restore-original-voiceover")
+async def restore_project_voiceover(
+    project_id: int,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Восстановить исходный voiceover одного проекта."""
+    from app.services.voiceover_recovery import restore_original_voiceover
+
+    from app.services.mass_factory import mass_parent_id
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "child_project_skipped",
+                "mass_parent_id": mass_parent_id(p),
+                "hint": "восстановление только для родительских проектов",
+            },
+        )
+    result = await restore_original_voiceover(
+        session, p, dry_run=dry_run, force=force
+    )
+    if result.get("restored"):
+        await session.commit()
+        await publish_project_event(
+            project_id,
+            event_type="project_updated",
+            payload={"voiceover_restored": True, "source": result.get("source")},
+        )
+    return result
+
+
+@router.get("/{project_id}/original-voiceover-preview")
+async def preview_original_voiceover(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Показать, откуда будет взят исходный voiceover (без записи)."""
+    from app.services.voiceover_recovery import find_original_voiceover
+
+    from app.services.voiceover_recovery import is_parent_project
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not is_parent_project(p):
+        raise HTTPException(
+            status_code=400,
+            detail="preview только для родительских проектов",
+        )
+    cand = await find_original_voiceover(session, p)
+    if cand is None:
+        return {
+            "project_id": project_id,
+            "found": False,
+            "preview": None,
+            "source": None,
+            "chars": 0,
+        }
+    return {
+        "project_id": project_id,
+        "found": True,
+        "source": cand.source,
+        "chars": len(cand.text),
+        "preview": cand.text[:500],
+    }
+

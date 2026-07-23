@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -28,50 +29,75 @@ from app.services.frame_audio import (
 )
 from app.services.hitl import send_hitl_video
 from app.services.mapper import FrameTiming
-from app.services.media_probe import probe_video_size
+from app.services.media_probe import probe_duration, probe_video_size
 from app.services.step_data_guard import can_enter_running
 from app.services.subtitles import build_subtitle_cues_from_cells
-from app.services.whisper import WordTS, transcribe_words, whisper_available
+from app.services.whisper import (
+    WordTS,
+    transcribe_words,
+    whisper_available,
+    whisper_words_fresh_for_audio,
+)
 from app.services.node_step_params import (
     post_voiceover_tail_seconds_for_project,
     subtitles_enabled_for_project,
 )
 from app.settings import settings
 from app.services.shot2_timeline import build_assembly_clip_specs
+from app.services.montage_board_meta import montage_meta
 from app.services.plan_shot2 import read_shot2_columns
 from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 
 async def _scene_video_path(
     session: AsyncSession,
-    project_id: int,
-    frame_id: int,
+    project: Project,
+    frame: Frame,
     *,
     shot: int = 1,
 ) -> Path | None:
+    """Artifact или newest-on-disk — кто свежее (mtime), тот и в монтаж.
+
+    Иначе после regen без finalize UI показывает новый clip_*, а сборка
+    продолжает mux'ить stale Artifact.
+    """
+    from app.services.artifact_recovery import newest_disk_video
+    from app.services.plan_shot2 import effective_shot_from_artifact
+
     arts = (
         await session.execute(
             select(Artifact)
             .where(
-                Artifact.project_id == project_id,
-                Artifact.frame_id == frame_id,
+                Artifact.project_id == project.id,
+                Artifact.frame_id == frame.id,
                 Artifact.kind == ArtifactKind.scene_video,
             )
             .order_by(Artifact.id.desc())
         )
     ).scalars().all()
+    art_path: Path | None = None
     for art in arts:
         if not art.path:
             continue
         path = Path(art.path)
         if not path.is_file():
             continue
-        meta_shot = (art.meta or {}).get("shot", 1)
-        path_shot = 2 if "_s2_" in path.name else 1
-        effective = meta_shot if meta_shot in (1, 2) else path_shot
-        if effective == shot:
-            return path
-    return None
+        if effective_shot_from_artifact(art.meta, path) == shot:
+            art_path = path
+            break
+
+    disk_path = newest_disk_video(project.data_dir / "videos", frame.number, shot)
+    candidates = [p for p in (art_path, disk_path) if p is not None and p.is_file()]
+    if not candidates:
+        return None
+    # Unique by resolve, pick newest mtime.
+    by_key: dict[str, Path] = {}
+    for p in candidates:
+        try:
+            by_key[str(p.resolve())] = p
+        except OSError:
+            by_key[str(p)] = p
+    return max(by_key.values(), key=lambda p: p.stat().st_mtime)
 
 
 def _scale_whisper_words(words: list[WordTS], factor: float) -> list[WordTS]:
@@ -110,24 +136,32 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
     if not frames_all:
-        raise RuntimeError("нет кадров")
+        from app.services.ensure_frames_from_disk import bootstrap_project_frames_from_disk
+
+        boot = await bootstrap_project_frames_from_disk(session, project, sync_xlsx=True)
+        if boot.get("frames_created"):
+            logger.info(
+                "[#{}] assemble: bootstrap {} кадров с диска",
+                project.id,
+                boot["frames_created"],
+            )
+        frames_all = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        ).scalars().all()
+    if not frames_all:
+        raise RuntimeError(
+            "нет кадров — положите clip_*/frame_* в videos/scenes или project.xlsx"
+        )
 
     frames: list[Frame] = []
     skipped_no_video: list[int] = []
     for fr in frames_all:
-        video_art = (
-            await session.execute(
-                select(Artifact)
-                .where(
-                    Artifact.project_id == project.id,
-                    Artifact.frame_id == fr.id,
-                    Artifact.kind == ArtifactKind.scene_video,
-                )
-                .order_by(Artifact.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if video_art is not None and Path(video_art.path).is_file():
+        # Нужен shot_01 или хотя бы shot_02 (fallback, если первого нет).
+        p1 = await _scene_video_path(session, project, fr, shot=1)
+        p2 = await _scene_video_path(session, project, fr, shot=2)
+        if p1 is not None or p2 is not None:
             frames.append(fr)
         elif (fr.voiceover_text or "").strip():
             skipped_no_video.append(fr.number)
@@ -173,6 +207,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     subs_enabled = subtitles_enabled_for_project(project)
 
+    words: list[WordTS] = await ensure_whisper_words(
+        session,
+        project,
+        audio_path,
+        whisper_model=settings.whisper_model,
+    )
     whisper_art = (
         await session.execute(
             select(Artifact)
@@ -184,20 +224,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             .limit(1)
         )
     ).scalar_one_or_none()
-    words: list[WordTS] = await ensure_whisper_words(
-        session,
-        project,
-        audio_path,
-        whisper_model=settings.whisper_model,
-    )
 
     if subs_enabled and settings.subtitle_rewhisper_on_assemble and audio_path.is_file():
-        if whisper_available() and not disk_whisper:
-            logger.info("[#{}] assemble: re-whisper voice_full для субтитров (без TTS)", project.id)
-            words = transcribe_words(
+        fresh_words = whisper_words_fresh_for_audio(whisper_art, audio_path)
+        if fresh_words and words:
+            logger.info(
+                "[#{}] assemble: words.json актуален для {} — re-whisper пропущен",
+                project.id,
+                audio_path.name,
+            )
+        elif whisper_available() and not disk_whisper:
+            audio_duration = await probe_duration(audio_path)
+            beam = 1 if audio_duration > 300 else 5
+            logger.info(
+                "[#{}] assemble: re-whisper voice_full для субтитров "
+                "(без TTS, {:.1f}s, beam={})",
+                project.id,
+                audio_duration,
+                beam,
+            )
+            words = await asyncio.to_thread(
+                transcribe_words,
                 audio_path,
                 model_name=settings.whisper_model,
                 language="ru",
+                beam_size=beam,
             )
         elif not words:
             raise RuntimeError(
@@ -314,33 +365,39 @@ async def _assemble_body(
     xlsx_path = project.data_dir / "project.xlsx"
     shot2_by = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
     for fr in frames:
-        p1 = await _scene_video_path(session, project.id, fr.id, shot=1)
-        if p1 is None:
-            raise RuntimeError(f"нет клипа shot_01 для кадра {fr.number}")
-        shot1_paths[fr.number] = p1
+        p1 = await _scene_video_path(session, project, fr, shot=1)
         info = shot2_by.get(fr.number)
         p2 = None
         if info is not None and info.has_shot2:
-            p2 = await _scene_video_path(session, project.id, fr.id, shot=2)
+            p2 = await _scene_video_path(session, project, fr, shot=2)
+        # Нет shot_01 — нормально: подставляем shot_02 на весь слот.
+        if p1 is None:
             if p2 is None:
-                videos_dir = project.data_dir / "videos"
-                from app.services.plan_shot2 import disk_has_shot2_video
-
-                if disk_has_shot2_video(videos_dir, fr.number):
-                    for path in sorted(
-                        videos_dir.glob(f"clip_{fr.number:03d}_s2_*.mp4"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    ):
-                        p2 = path
-                        break
-        shot2_paths[fr.number] = p2
+                p2 = await _scene_video_path(session, project, fr, shot=2)
+            if p2 is None:
+                raise RuntimeError(
+                    f"нет клипа shot_01/shot_02 для кадра {fr.number}"
+                )
+            logger.info(
+                "[#{}] assemble: кадр {} — нет shot_01, используем shot_02",
+                project.id,
+                fr.number,
+            )
+            shot1_paths[fr.number] = p2
+            shot2_paths[fr.number] = None
+        else:
+            shot1_paths[fr.number] = p1
+            shot2_paths[fr.number] = p2
         fr.start_ts = next(c.start_ts for c in audio_clips if c.frame_number == fr.number)
         fr.end_ts = next(c.end_ts for c in audio_clips if c.frame_number == fr.number)
         fr.duration_seconds = duration_by_frame[fr.number]
 
     clips = build_assembly_clip_specs(
-        frames, shot1_paths, shot2_paths, duration_by_frame
+        frames,
+        shot1_paths,
+        shot2_paths,
+        duration_by_frame,
+        video_trims=(montage_meta(project).get("video_trims") or None),
     )
 
     subs_path: Path | None = None

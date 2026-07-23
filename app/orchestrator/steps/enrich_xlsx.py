@@ -77,7 +77,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         return
     running_status, ready_status, legacy_step_code = _SLOT_MAP[slot_idx]
+    from app.services.excel_gpt_node import resolve_excel_gpt_node_key_for_slot
+
     node_key = active_node_key(project)
+    if not node_key:
+        node_key = resolve_excel_gpt_node_key_for_slot(project, slot_idx)
     if not node_key:
         from app.orchestrator.graph.planner import load_graph_for_project
         from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE, slot_index_from_node
@@ -86,12 +90,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         for nid, n in graph._by_id.items():
             if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE and slot_index_from_node(n) == slot_idx:
                 node_key = nid
-                meta = dict(project.meta or {})
-                meta["active_excel_gpt_node_key"] = nid
-                project.meta = meta
-                await session.flush()
                 break
+    if node_key:
+        meta = dict(project.meta or {})
+        if meta.get("active_excel_gpt_node_key") != node_key:
+            meta["active_excel_gpt_node_key"] = node_key
+            project.meta = meta
+            await session.flush()
     prompt_step_code = EXCEL_GPT_STEP_CODE
+    # Слот «main» в Node Studio → meta.prompt_slot_variants[node_key]["main"].
+    # Без node_key все excel_gpt брали один prompt_overrides["excel_gpt"].
+    prompt_slot_id = "main"
     logger.info(
         "[#{}] enrich_xlsx slot={} node={} prompt={} starting",
         project.id,
@@ -117,7 +126,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         download_path = xlsx_path
 
     try:
-        variant, src_path, master = read_resolved_project_prompt(project, prompt_step_code)
+        variant, src_path, master, prompt_source = read_resolved_project_prompt(
+            project,
+            prompt_step_code,
+            node_key=node_key,
+            slot_id=prompt_slot_id if node_key else None,
+        )
     except FileNotFoundError:
         variant = "default"
         src_path = None
@@ -134,11 +148,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     else:
         logger.info(
-            "[#{}] enrich_xlsx slot={}: активный промт variant={!r} "
-            "path={} ({} симв) overrides={!r}",
+            "[#{}] enrich_xlsx slot={} node={!r}: активный промт variant={!r} "
+            "source={} path={} ({} симв) overrides={!r}",
             project.id,
             slot_idx,
+            node_key,
             variant,
+            prompt_source,
             src_path,
             len(master or ""),
             (getattr(project, "prompt_overrides", None) or {}).get(prompt_step_code),
@@ -314,6 +330,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is running_status or _ord(project.status) < _ord(ready_status):
         project.status = ready_status
     await session.flush()
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(
+            session,
+            project,
+            node_key=node_key,
+            node_type="excel_gpt",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] enrich_xlsx slot={} xlsx snapshot bind failed: {}",
+            project.id,
+            slot_idx,
+            e,
+        )
     logger.info(
         "[#{}] enrich_xlsx slot={} → status={}",
         project.id,
@@ -321,29 +353,94 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project.status.value,
     )
 
-    # 6. Auto-chain — если юзер запустил «▶▶ Запустить все слоты подряд»,
-    # `project.meta['enrich_auto_chain_to']` хранит целевой номер слота
-    # (1..5). После завершения этого слота, если есть следующий — сами
-    # переводим статус в `enriching_<i+1>`. Воркер на следующем тике
-    # подхватит и продолжит. При достижении target — чистим флаг.
+    # NodeRun текущей ноды → done ДО переключения active_key на следующий слот.
+    # Иначе complete_active_node / UI видят «в работе» на слоте 1, а слот 3
+    # ошибочно done без применённого xlsx.
+    try:
+        from app.services.run_sync import complete_excel_gpt_node_by_key
+
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[#{}] enrich_xlsx: complete NodeRun slot={} failed",
+            project.id,
+            slot_idx,
+            exc_info=True,
+        )
+
+    # 6. Auto-chain до хвоста excel_gpt на канвасе.
+    # Ручной ▶ одной ноды раньше не ставил enrich_auto_chain_to → после
+    # enrich_2_ready пайплайн зависал (auto_advance режется gen_queue).
+    # Снимаем «готово» со следующих слотов — даже done ноды перегенерируются.
     meta = dict(project.meta or {})
     chain_to = meta.get("enrich_auto_chain_to")
+    if not isinstance(chain_to, int):
+        from app.services.excel_gpt_node import (
+            clear_excel_gpt_tail_completion,
+            ensure_enrich_auto_chain_to,
+        )
+
+        clear_excel_gpt_tail_completion(project, slot_idx + 1)
+        inferred = ensure_enrich_auto_chain_to(project, slot_idx)
+        meta = dict(project.meta or {})
+        chain_to = inferred if inferred is not None else meta.get("enrich_auto_chain_to")
+        if inferred is not None:
+            logger.info(
+                "[#{}] enrich_xlsx: inferred enrich_auto_chain_to={} after slot {}",
+                project.id,
+                inferred,
+                slot_idx,
+            )
+    elif isinstance(chain_to, int) and chain_to > slot_idx:
+        from app.services.excel_gpt_node import clear_excel_gpt_tail_completion
+
+        clear_excel_gpt_tail_completion(project, slot_idx + 1)
     if isinstance(chain_to, int) and chain_to > slot_idx:
         next_slot = slot_idx + 1
         next_running = _SLOT_MAP[next_slot][0]
+        from app.services.excel_gpt_node import resolve_excel_gpt_node_key_for_slot
+        from app.services.run_sync import prepare_node_for_step_start
+
+        next_key = resolve_excel_gpt_node_key_for_slot(project, next_slot)
+        if next_key:
+            meta = dict(project.meta or {})
+            meta["active_excel_gpt_node_key"] = next_key
+            project.meta = meta
+            try:
+                await prepare_node_for_step_start(
+                    session,
+                    project,
+                    EXCEL_GPT_STEP_CODE,
+                    node_key=next_key,
+                    enrich_slot=next_slot,
+                    strict=False,
+                    explicit_ui_start=True,  # done → pending → running
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] enrich_xlsx auto-chain: prepare NodeRun {} failed",
+                    project.id,
+                    next_key,
+                    exc_info=True,
+                )
         project.status = next_running
         await session.flush()
         logger.info(
-            "[#{}] enrich_xlsx auto-chain: {} → {} (target slot #{})",
+            "[#{}] enrich_xlsx auto-chain: {} → {} (next slot #{}, chain_to={}, node={})",
             project.id,
             ready_status.value,
             next_running.value,
+            next_slot,
             chain_to,
+            next_key,
         )
     elif chain_to is not None:
         # Цепочка дошла до target (или вышла за неё). Снимаем флаг,
         # чтобы при ручном повторном запуске одного слота не было
         # неожиданного авто-перехода.
+        meta = dict(project.meta or {})
         meta.pop("enrich_auto_chain_to", None)
         project.meta = meta
         await session.flush()

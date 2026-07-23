@@ -6,6 +6,7 @@ import { ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
+import { projectDisplayName } from "@/lib/project-display";
 import type { GenerationConfigPresetSettings, ProjectSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-type Phase = "topic" | "config" | "hero" | "auto" | "wizard";
+type Phase = "title" | "config" | "hero" | "auto" | "wizard";
 
 type WizardAnswers = Record<string, string>;
 
@@ -71,11 +72,11 @@ export function NewProjectWizard({
   folderId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [phase, setPhase] = useState<Phase>("topic");
+  const [phase, setPhase] = useState<Phase>("title");
   const [wizIndex, setWizIndex] = useState(0);
-  const [topic, setTopic] = useState("");
+  const [projectTitle, setProjectTitle] = useState("");
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const [autoMode, setAutoMode] = useState(true);
+  const [autoMode, setAutoMode] = useState(false);
   const [answers, setAnswers] = useState<WizardAnswers>({});
   const [skipWizard, setSkipWizard] = useState(false);
   const [savePresetAfterCreate, setSavePresetAfterCreate] = useState(false);
@@ -98,17 +99,35 @@ export function NewProjectWizard({
 
   const wizardQuestions = useMemo(() => {
     const qs = catalog.data?.questions ?? [];
-    return qs.filter((q) => {
-      if (q.field === "image_quality") {
+    const byGen = catalog.data?.image_resolutions_by_generator ?? {};
+    return qs
+      .filter((q) => {
+        if (q.field === "image_quality") {
+          const g = answers.image_generator;
+          if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
+        }
+        if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
+          return false;
+        }
+        return true;
+      })
+      .map((q) => {
+        if (q.field !== "image_resolution") return q;
         const g = answers.image_generator;
-        if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
-      }
-      if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
-        return false;
-      }
-      return true;
-    });
-  }, [catalog.data?.questions, answers.video_generator, answers.image_generator]);
+        const allowed = g ? byGen[g] : undefined;
+        if (!allowed?.length) return q;
+        return {
+          ...q,
+          choices: q.choices.filter((c) => allowed.includes(c.id)),
+          cols: Math.min(q.cols, Math.max(allowed.length, 1)),
+        };
+      });
+  }, [
+    catalog.data?.questions,
+    catalog.data?.image_resolutions_by_generator,
+    answers.video_generator,
+    answers.image_generator,
+  ]);
 
   const deletePreset = useMutation({
     mutationFn: (id: string) => api.deleteGenerationConfigPreset(id),
@@ -120,9 +139,9 @@ export function NewProjectWizard({
   });
 
   const reset = () => {
-    setPhase("topic");
+    setPhase("title");
     setWizIndex(0);
-    setTopic("");
+    setProjectTitle("");
     setHeroMode("auto");
     setAutoMode(true);
     setAnswers({});
@@ -152,7 +171,7 @@ export function NewProjectWizard({
   const create = useMutation({
     mutationFn: async () => {
       const p = await api.createProject({
-        topic: topic.trim(),
+        title: projectTitle.trim(),
         hero_mode: heroMode,
         auto_mode: autoMode,
         sidebar_folder_id: folderId,
@@ -177,14 +196,14 @@ export function NewProjectWizard({
       onCreated(p);
       setOpen(false);
       reset();
-      toast.success(`Проект «${p.topic}» создан`);
+      toast.success(`Проект «${projectDisplayName(p)}» создан`);
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const totalSteps = 4 + wizardQuestions.length;
   const currentStepNum =
-    phase === "topic"
+    phase === "title"
       ? 1
       : phase === "config"
         ? 2
@@ -207,9 +226,9 @@ export function NewProjectWizard({
   };
 
   const goNext = () => {
-    if (phase === "topic") {
-      if (!topic.trim()) {
-        toast.error("Введите тему ролика");
+    if (phase === "title") {
+      if (!projectTitle.trim()) {
+        toast.error("Введите название проекта");
         return;
       }
       setPhase("config");
@@ -257,7 +276,7 @@ export function NewProjectWizard({
       return;
     }
     if (phase === "config") {
-      setPhase("topic");
+      setPhase("title");
     }
   };
 
@@ -290,15 +309,18 @@ export function NewProjectWizard({
           </div>
         )}
 
-        {!catalog.isLoading && !presetsQ.isLoading && phase === "topic" && (
+        {!catalog.isLoading && !presetsQ.isLoading && phase === "title" && (
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-muted-foreground">Тема ролика</label>
+            <label className="text-xs font-medium text-muted-foreground">Название проекта</label>
             <Input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="Например: 5 фактов о рачках в стиле киберпанк"
+              value={projectTitle}
+              onChange={(e) => setProjectTitle(e.target.value)}
+              placeholder="Например: Киберпанк — рачки"
               autoFocus
             />
+            <p className="text-[11px] text-muted-foreground">
+              Тема ролика заполняется отдельно в первой ноде графа.
+            </p>
           </div>
         )}
 
@@ -449,10 +471,26 @@ export function NewProjectWizard({
                   size="sm"
                   className="h-auto min-h-9 whitespace-normal py-2 text-xs"
                   onClick={() =>
-                    setAnswers((a) => ({
-                      ...a,
-                      [currentWizQ.field]: ch.id,
-                    }))
+                    setAnswers((a) => {
+                      const next: WizardAnswers = {
+                        ...a,
+                        [currentWizQ.field]: ch.id,
+                      };
+                      if (currentWizQ.field === "image_generator") {
+                        const allowed =
+                          catalog.data?.image_resolutions_by_generator?.[ch.id] ?? [];
+                        if (
+                          allowed.length &&
+                          next.image_resolution &&
+                          !allowed.includes(next.image_resolution)
+                        ) {
+                          next.image_resolution = allowed.includes("2k")
+                            ? "2k"
+                            : allowed[0];
+                        }
+                      }
+                      return next;
+                    })
                   }
                 >
                   {ch.label}
@@ -467,7 +505,7 @@ export function NewProjectWizard({
                 <Input
                   value={savePresetName}
                   onChange={(e) => setSavePresetName(e.target.value)}
-                  placeholder="Например: GPT Image 2 — 16:9 — Relax"
+                  placeholder="Например: GPT Image 2 — 16:9 — Безлимит"
                 />
               </div>
             )}
@@ -480,7 +518,7 @@ export function NewProjectWizard({
             variant="ghost"
             size="sm"
             onClick={goBack}
-            disabled={phase === "topic" || create.isPending}
+            disabled={phase === "title" || create.isPending}
           >
             <ChevronLeft className="h-3.5 w-3.5" />
             Назад

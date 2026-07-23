@@ -68,6 +68,42 @@ def read_plan_animation_prompt_cells(
     return [(n, out[n]) for n in frame_numbers]
 
 
+def read_plan_image_prompt_cells(
+    project: Project,
+    frame_numbers: list[int],
+    *,
+    shot: int = 1,
+) -> list[tuple[int, str]]:
+    """Промт картинки — R45 (shot1) или R46 (shot2) листа «план»."""
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    if not frame_numbers:
+        return []
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return [(n, "") for n in frame_numbers]
+    row = ROW_IMAGE_PROMPT_2_V8 if shot == 2 else ROW_IMAGE_PROMPT_V8
+    out: dict[int, str] = dict.fromkeys(frame_numbers, "")
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = _resolve_plan_sheet(wb)
+            if ws is not None:
+                for frame_number in frame_numbers:
+                    col = plan_frame_column(frame_number)
+                    text = _cell_text(ws, row, col)
+                    out[frame_number] = (text or "").strip()
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] read_plan_image_prompt_cells shot={} failed: {}",
+            project.id,
+            shot,
+            e,
+        )
+    return [(n, out[n]) for n in frame_numbers]
+
+
 def read_plan_voiceover_cells(
     project: Project,
     frame_numbers: list[int],
@@ -126,6 +162,42 @@ def write_plan_image_prompt(
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "[#{}] write_plan_image_prompt frame {} failed: {}",
+            project.id,
+            frame_number,
+            e,
+        )
+        return False
+
+
+def write_plan_image_prompt_shot2(
+    project: Project,
+    frame_number: int,
+    image_prompt: str,
+) -> bool:
+    """Промт картинки shot_02 — строка 46 листа «план» (v8)."""
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return False
+    col = plan_frame_column(frame_number)
+    text = (image_prompt or "").strip()
+    if not text:
+        return False
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return False
+            ws.cell(row=ROW_IMAGE_PROMPT_2_V8, column=col, value=text)
+            wb.save(path)
+            wb.close()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] write_plan_image_prompt_shot2 frame {} failed: {}",
             project.id,
             frame_number,
             e,

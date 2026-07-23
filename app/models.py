@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import JSON, Enum, ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from app.settings import settings
 
@@ -142,6 +142,7 @@ class NodeRunStatus(str, enum.Enum):
     """Состояние одной ноды в рамках WorkflowRun.
 
     pending      — ещё не запущена (ждёт upstream-ы или ручной триггер)
+    queued       — в очереди на запуск (после клика ▶, до взятия воркером)
     running      — выполняется прямо сейчас (воркер взял в работу)
     waiting_hitl — ждёт решения пользователя (HITL-gate)
     done         — успешно завершена
@@ -150,6 +151,7 @@ class NodeRunStatus(str, enum.Enum):
     """
 
     pending = "pending"
+    queued = "queued"
     running = "running"
     waiting_hitl = "waiting_hitl"
     done = "done"
@@ -205,6 +207,8 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    # Короткое имя в сайдбаре (не путать с topic — тема для шага «Тема ролика»).
+    title: Mapped[str | None] = mapped_column(String(240), default=None)
     topic: Mapped[str] = mapped_column(Text)
     hero_mode: Mapped[str] = mapped_column(String(20), default="auto")  # hero | no_hero | auto
     status: Mapped[ProjectStatus] = mapped_column(
@@ -640,6 +644,24 @@ class NodeRun(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
     run: Mapped[WorkflowRun] = relationship(back_populates="node_runs")
+
+    @validates("status")
+    def _validate_status_write(self, _key: str, value: NodeRunStatus) -> NodeRunStatus:
+        from sqlalchemy import inspect
+
+        from app.services.node_status_machine import (
+            guard_direct_status_write,
+            is_status_write_allowed,
+        )
+
+        if isinstance(value, str):
+            value = NodeRunStatus(value)
+        if is_status_write_allowed():
+            return value
+        if inspect(self).transient:
+            return value
+        guard_direct_status_write(self, value)
+        return value
 
 
 # ────────────────────────────────────────────────────────────────────────────

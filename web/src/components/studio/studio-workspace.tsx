@@ -31,6 +31,7 @@ import {
   type NodeResultContext,
 } from "@/lib/node-result-resolver";
 import { NodeResultPanel } from "@/components/canvas/node-result-panel";
+import { AssembleMontageBoard } from "@/components/canvas/assemble-montage-board";
 import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
 
 export function StudioWorkspace({
@@ -79,6 +80,7 @@ export function StudioWorkspace({
     nodeType: string;
     stepCode: string;
   } | null>(null);
+  const [montageBoardOpen, setMontageBoardOpen] = useState(false);
   const suppressStudioOpenUntil = useRef(0);
   const qc = useQueryClient();
 
@@ -109,6 +111,7 @@ export function StudioWorkspace({
     setResultPanel(null);
     setAiReview(null);
     setPromptBuilderCtx(null);
+    setMontageBoardOpen(false);
   }, [projectId]);
 
   const closeStudio = useCallback(() => {
@@ -306,8 +309,11 @@ export function StudioWorkspace({
   }, [project.data, artifacts.data, projectAssets.data, frames.data, mediaImages.data, mediaVideos.data]);
 
   const getNodeResult = useCallback(
-    (nodeType: string, nodeStatus?: import("@/lib/types").NodeRunStatus) =>
-      resolveNodeResult(nodeType, resultContext, nodeStatus),
+    (
+      nodeType: string,
+      nodeStatus?: import("@/lib/types").NodeRunStatus,
+      nodeKey?: string | null,
+    ) => resolveNodeResult(nodeType, resultContext, nodeStatus, nodeKey),
     [resultContext],
   );
 
@@ -451,6 +457,8 @@ export function StudioWorkspace({
           await api.runProjectStep(projectId, step, { nodeKey });
           toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
           qc.invalidateQueries({ queryKey: ["project", projectId] });
+          qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+          await qc.refetchQueries({ queryKey: ["project-run", projectId] });
         } catch (e) {
           toast.error(errorMessageFromUnknown(e));
         }
@@ -527,6 +535,9 @@ export function StudioWorkspace({
       onOpenNodeResult: (nodeKey: string, nodeType: string) => {
         setResultPanel({ nodeKey, nodeType });
       },
+      montageBoardOpen,
+      onOpenMontageBoard: () => setMontageBoardOpen(true),
+      onCloseMontageBoard: () => setMontageBoardOpen(false),
       onDownloadPrompts: async (nodeKey: string, nodeType: string) => {
         if (!projectId) return;
         try {
@@ -559,6 +570,7 @@ export function StudioWorkspace({
       setVMenuNodeKeySynced,
       aiReview,
       canvasZoom,
+      montageBoardOpen,
       getPromptSlots,
       project.data?.meta,
       persistMeta,
@@ -635,6 +647,11 @@ export function StudioWorkspace({
           />
         )}
       </div>
+      <AssembleMontageBoard
+        open={montageBoardOpen}
+        projectId={projectId}
+        onClose={() => setMontageBoardOpen(false)}
+      />
       <NodeStudio
         open={studioOpen}
         onOpenChange={(open) => {
@@ -718,8 +735,13 @@ export function StudioWorkspace({
             if (!o) setResultPanel(null);
           }}
           projectId={projectId}
+          nodeKey={resultPanel.nodeKey}
           nodeType={resultPanel.nodeType}
-          snapshot={getNodeResult(resultPanel.nodeType)}
+          snapshot={getNodeResult(
+            resultPanel.nodeType,
+            undefined,
+            resultPanel.nodeKey,
+          )}
         />
       )}
     </CanvasActionsProvider>

@@ -35,6 +35,38 @@ def list_step_codes() -> list[dict[str, str]]:
     return out
 
 
+async def _preempt_running_for_manual_start(
+    session: AsyncSession,
+    project: Project,
+    target_running: ProjectStatus,
+) -> None:
+    """Остановить текущий running-шаг без user_stop — сразу стартуем другой."""
+    if not is_running_status(project.status) or project.status is target_running:
+        return
+    from app.services.project_control import clear_user_stop_gate
+    from app.services.run_sync import stop_active_running_node
+    from app.services.step_cancel import clear_stop, request_stop
+    from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
+
+    prev = project.status
+    request_stop(project.id)
+    clear_xlsx_flow_locks(project.id)
+    await stop_active_running_node(session, project)
+    clear_stop(project.id)
+    clear_user_stop_gate(project)
+    step = step_by_running_status(prev)
+    if step is not None and step.requires is not None:
+        project.status = step.requires
+    await session.flush()
+    logger.info(
+        "[#{}] start_step: preempt {} → {} перед ручным стартом {}",
+        project.id,
+        prev.value,
+        project.status.value,
+        target_running.value,
+    )
+
+
 async def start_step(
     session: AsyncSession,
     project: Project,
@@ -42,8 +74,35 @@ async def start_step(
     *,
     node_key: str | None = None,
     skip_queue_guard: bool = False,
+    require_node_fsm: bool = False,
+    explicit_ui_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    # Studio/явный UI: очередь и «уже running» не блокируют — preempt + старт.
+    if explicit_ui_start:
+        skip_queue_guard = True
+        from app.services.project_control import (
+            clear_auto_await_manual_start,
+            clear_mass_family_halt,
+            clear_user_stop_gate,
+        )
+        from app.services.mass_factory import mass_parent_id
+        from app.services.sidebar_layout import clear_gen_queue_halted
+
+        clear_user_stop_gate(project)
+        clear_auto_await_manual_start(project)
+        # Явный ▶ снимает глобальный halt очереди и family-halt родителя.
+        clear_gen_queue_halted(reason=f"start_step #{project.id}")
+        parent_id = mass_parent_id(project)
+        if parent_id is not None:
+            parent = await session.get(Project, parent_id)
+            if parent is not None:
+                clear_mass_family_halt(parent)
+    else:
+        # Любой старт шага (очередь / цепочка) тоже снимает «ждать ▶».
+        from app.services.project_control import clear_auto_await_manual_start
+
+        clear_auto_await_manual_start(project)
     if not skip_queue_guard:
         from app.services.gen_queue import assert_can_start_in_queue
 
@@ -63,13 +122,49 @@ async def start_step(
     if step is None:
         raise ValueError(f"unknown step code: {step_code}")
     assert_not_factory_template_for_generation(project)
+
     if is_running_status(project.status) and project.status is not step.running_status:
-        other = step_by_running_status(project.status)
-        other_title = other.title if other is not None else project.status.value
-        raise ValueError(
-            f"сейчас выполняется «{other_title}» ({project.status.value}). "
-            "Остановите ⏹ или дождитесь завершения."
+        cur_step = step_by_running_status(project.status)
+        same_family = cur_step is not None and cur_step.code == step_code
+        if step_code == "excel_gpt":
+            from app.services.excel_gpt_node import slot_from_running_status
+
+            same_family = slot_from_running_status(project.status) is not None
+        if explicit_ui_start and not same_family:
+            await _preempt_running_for_manual_start(
+                session, project, step.running_status
+            )
+        elif not explicit_ui_start:
+            other_title = cur_step.title if cur_step is not None else project.status.value
+            raise ValueError(
+                f"сейчас выполняется «{other_title}» ({project.status.value}). "
+                "Остановите ⏹ или дождитесь завершения."
+            )
+
+    # Ручной старт ранних шагов: сброс stale enrich/split meta + NodeRun
+    # downstream → pending. Иначе канвас показывает ✅ на script/split и
+    # recompute прыгает plan_ready → frames_ready.
+    if explicit_ui_start and step_code in ("plan", "script", "split"):
+        from app.services.project_state import clear_pipeline_progress_meta
+        from app.services.run_sync import reset_nodes_from_step
+
+        cleared = clear_pipeline_progress_meta(project)
+        if cleared:
+            logger.info(
+                "[#{}] start_step {}: cleared progress meta {}",
+                project.id,
+                step_code,
+                cleared,
+            )
+        await reset_nodes_from_step(session, project.id, step_code)
+        logger.info(
+            "[#{}] start_step {}: reset NodeRuns from {} → pending",
+            project.id,
+            step_code,
+            step_code,
         )
+
+    # Ручной старт: порядок нод и data-guard не блокируют запуск.
 
     if step_code == "anim_pr":
         from sqlalchemy import select
@@ -173,6 +268,21 @@ async def start_step(
             step_code,
             e,
         )
+    if step_code == "img" and proj_xlsx.exists():
+        from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
+
+        boot = await bootstrap_frames_for_image_step(session, project, proj_xlsx)
+        logger.info(
+            "[#{}] start_step img: xlsx bootstrap R45={} R46={} created={} "
+            "shot1={} shot2={} reset={}",
+            project.id,
+            boot.prompts_in_xlsx,
+            boot.shot2_in_xlsx,
+            boot.frames_created,
+            boot.frames_prompt_updated,
+            boot.frames_shot2_updated,
+            boot.frames_status_reset,
+        )
     running_status = step.running_status
     if step_code == "excel_gpt":
         from app.orchestrator.graph.planner import load_graph_for_project
@@ -209,7 +319,107 @@ async def start_step(
             )
         running_status = running_status_for_slot(slot_index_from_node(node))
         meta["active_excel_gpt_node_key"] = nk
+        # Цепочка до последней excel_gpt + сброс «готово» у хвоста —
+        # иначе already-done 3-я нода пропускается и не перегенерируется.
+        from app.services.excel_gpt_node import (
+            clear_excel_gpt_tail_completion,
+            ensure_enrich_auto_chain_to,
+        )
+
+        started_slot = slot_index_from_node(node)
         project.meta = meta
+        cleared = clear_excel_gpt_tail_completion(project, started_slot)
+        chain_to = ensure_enrich_auto_chain_to(project, started_slot)
+        if cleared.get("slots_cleared") or cleared.get("keys_cleared"):
+            logger.info(
+                "[#{}] start_step excel_gpt: cleared done for slots>={} "
+                "slots={} keys={}",
+                project.id,
+                started_slot,
+                cleared.get("slots_cleared"),
+                cleared.get("keys_cleared"),
+            )
+        if chain_to is not None:
+            logger.info(
+                "[#{}] start_step excel_gpt: enrich_auto_chain_to={} "
+                "(from slot {}, node={})",
+                project.id,
+                chain_to,
+                started_slot,
+                nk,
+            )
+        # NodeRun done → pending для хвоста, иначе UI/FSM думают «уже готово».
+        try:
+            from app.models import NodeRun, NodeRunStatus, WorkflowRun
+            from app.services.node_status_machine import reset_node_to_pending
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            run = (
+                await session.execute(
+                    select(WorkflowRun)
+                    .where(WorkflowRun.project_id == project.id)
+                    .options(selectinload(WorkflowRun.node_runs))
+                )
+            ).scalar_one_or_none()
+            if run is not None:
+                keys_reset = set(cleared.get("keys_cleared") or [])
+                if nk:
+                    keys_reset.add(nk)
+                for nr in run.node_runs:
+                    if nr.node_key not in keys_reset:
+                        continue
+                    if nr.status in (
+                        NodeRunStatus.done,
+                        NodeRunStatus.failed,
+                        NodeRunStatus.waiting_hitl,
+                        NodeRunStatus.skipped,
+                    ):
+                        reset_node_to_pending(
+                            nr, project_id=project.id, initiator="ui_restart"
+                        )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step excel_gpt: NodeRun reset skipped",
+                project.id,
+                exc_info=True,
+            )
+        try:
+            from app.services.step_data_guard import can_enter_running
+
+            ok, reason, _fix = await can_enter_running(
+                session, project, running_status
+            )
+            if not ok:
+                logger.warning(
+                    "[#{}] start_step excel_gpt: data-guard soft — {} (status={})",
+                    project.id,
+                    reason,
+                    project.status.value,
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step excel_gpt: data-guard skipped",
+                project.id,
+                exc_info=True,
+            )
+    from app.services.run_sync import prepare_node_for_step_start
+
+    prepare_key = node_key
+    if step_code == "excel_gpt":
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        prepare_key = str(
+            node_key or meta.get("active_excel_gpt_node_key") or ""
+        ) or None
+
+    await prepare_node_for_step_start(
+        session,
+        project,
+        step_code,
+        node_key=prepare_key,
+        strict=require_node_fsm,
+        explicit_ui_start=explicit_ui_start,
+    )
     project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()

@@ -302,6 +302,8 @@ async def sync_project_xlsx(
         raise RuntimeError(validation_err)
 
     sync_info: dict | None = None
+    v8_error: Exception | None = None
+    v7_error: Exception | None = None
     try:
         from openpyxl import load_workbook
 
@@ -331,25 +333,44 @@ async def sync_project_xlsx(
             )
             logger.info("[#{}] sync_project_xlsx v8: {}", project.id, sync_info)
         except Exception as e:  # noqa: BLE001
+            v8_error = e
             logger.warning(
                 "[#{}] sync_project_xlsx v8 failed: {}", project.id, e
             )
             if update_frames_voiceover:
-                raise
+                raise RuntimeError(f"xlsx-sync v8: {e}") from e
     try:
         info_v7 = await reload_from_xlsx(session, project, xlsx_path)
         logger.info("[#{}] sync_project_xlsx v7: {}", project.id, info_v7)
         if sync_info is None:
             sync_info = info_v7
     except Exception as e:  # noqa: BLE001
+        v7_error = e
         logger.warning("[#{}] sync_project_xlsx v7 failed: {}", project.id, e)
-    if sync_info and sync_info.get("error") and update_frames_voiceover:
+
+    if sync_info is None:
+        parts: list[str] = []
+        if is_v8 and v8_error is not None:
+            parts.append(f"v8: {v8_error}")
+        if v7_error is not None:
+            parts.append(f"v7: {v7_error}")
+        msg = "xlsx-sync: импорт не удался"
+        if parts:
+            msg += f" ({'; '.join(parts)})"
+        from app.services.run_sync import mark_running_node_failed
+
+        await mark_running_node_failed(
+            session, project, msg[:2000], initiator="worker"
+        )
+        raise RuntimeError(msg)
+
+    if sync_info.get("error") and update_frames_voiceover:
         raise RuntimeError(f"xlsx-sync: {sync_info['error']}")
     return sync_info
 
 
-def ensure_source_voiceover(project: Project) -> Path | None:
-    """Возвращает путь к исходному voiceover.txt, синхронизируя из script_text при необходимости."""
+def _sync_voiceover_from_script_text(project: Project) -> Path | None:
+    """Возвращает путь к voiceover.txt, синхронизируя из script_text / бэкапа при необходимости."""
     voiceover_path = project.data_dir / "voiceover.txt"
     if voiceover_path.is_file() and voiceover_path.stat().st_size > 0:
         return voiceover_path
@@ -358,7 +379,7 @@ def ensure_source_voiceover(project: Project) -> Path | None:
         voiceover_path.parent.mkdir(parents=True, exist_ok=True)
         voiceover_path.write_text(text, encoding="utf-8")
         logger.info(
-            "[#{}] ensure_source_voiceover: voiceover.txt из script_text ({} симв)",
+            "[#{}] ensure_current_voiceover: voiceover.txt из script_text ({} симв)",
             project.id,
             len(text),
         )
@@ -371,12 +392,32 @@ def ensure_source_voiceover(project: Project) -> Path | None:
                 voiceover_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup, voiceover_path)
                 logger.info(
-                    "[#{}] ensure_source_voiceover: voiceover.txt из бэкапа {}",
+                    "[#{}] ensure_current_voiceover: voiceover.txt из бэкапа {}",
                     project.id,
                     backup.name,
                 )
                 return voiceover_path
     return None
+
+
+def ensure_current_voiceover(project: Project) -> Path | None:
+    """Актуальный voiceover для split/music и шагов после script."""
+    return _sync_voiceover_from_script_text(project)
+
+
+def ensure_script_input_voiceover(project: Project) -> Path | None:
+    """Исходный voiceover для шага script — самый ранний бэкап, иначе текущий файл."""
+    from app.services.voiceover_recovery import oldest_voiceover_backup
+
+    oldest = oldest_voiceover_backup(project)
+    if oldest is not None:
+        return oldest
+    return ensure_current_voiceover(project)
+
+
+def ensure_source_voiceover(project: Project) -> Path | None:
+    """Обратная совместимость: актуальный voiceover (не исходный черновик)."""
+    return ensure_current_voiceover(project)
 
 
 def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:

@@ -28,6 +28,16 @@ def test_excel_ref_deps_batch_uses_generated() -> None:
     assert not generate_hero._excel_ref_deps_met(
         ch, approved=set(), generated={"c01"}, batch_auto=False
     )
+    # Stale HITL approved без файла на диске — НЕ deps (после wipe).
+    assert not generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated=set(), batch_auto=True
+    )
+    assert not generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated=set(), batch_auto=False
+    )
+    assert generate_hero._excel_ref_deps_met(
+        ch, approved={"c01"}, generated={"c01"}, batch_auto=False
+    )
 
 
 @pytest.mark.asyncio
@@ -35,8 +45,15 @@ async def test_compute_actual_status_no_hero_no_items_stays_frames_ready() -> No
     """hero_count=0 без excel — не прыгать сразу на items_ready."""
     from unittest.mock import AsyncMock, MagicMock
 
-    p = Project(id=1, topic="t", slug="t", hero_mode="auto", hero_count=0)
-    p.general_plan = "plan"
+    p = Project(
+        id=1,
+        topic="t",
+        slug="t",
+        hero_mode="auto",
+        hero_count=0,
+        status=ProjectStatus.frames_ready,
+    )
+    p.general_plan = "x" * 200
     p.script_text = "script"
     session = AsyncMock()
     call_count = {"n": 0}
@@ -64,6 +81,7 @@ async def test_compute_actual_status_partial_excel_hero() -> None:
         topic="t",
         slug="nicshe",
         hero_mode="auto",
+        status=ProjectStatus.frames_ready,
         meta={
             "excel_hero": {
                 "characters": [
@@ -80,7 +98,7 @@ async def test_compute_actual_status_partial_excel_hero() -> None:
         "app.services.project_state._count_excel_hero_artifacts",
         new=AsyncMock(return_value=1),
     ):
-        p.general_plan = "plan"
+        p.general_plan = "x" * 200
         p.script_text = "script"
 
         call_count = {"n": 0}
@@ -111,9 +129,10 @@ async def test_compute_actual_status_img_pr_done_despite_partial_excel_hero() ->
         topic="t",
         slug="nicshe",
         hero_mode="auto",
+        status=ProjectStatus.image_prompts_ready,
         meta={"excel_hero": {"characters": [{"id": "c01"}, {"id": "c02"}]}},
     )
-    p.general_plan = "plan"
+    p.general_plan = "x" * 200
     p.script_text = "script"
     session = AsyncMock()
 
@@ -151,12 +170,13 @@ async def test_compute_actual_status_enrich_meta_beats_partial_excel_hero() -> N
         topic="t",
         slug="nicshe",
         hero_mode="auto",
+        status=ProjectStatus.enrich_3_ready,
         meta={
             "excel_hero": {"characters": [{"id": "c01"}, {"id": "c02"}]},
             "enrich_completed_slots": [1, 2, 3],
         },
     )
-    p.general_plan = "plan"
+    p.general_plan = "x" * 200
     p.script_text = "script"
     session = AsyncMock()
 
@@ -181,6 +201,7 @@ async def test_compute_actual_status_enrich_meta_beats_partial_excel_hero() -> N
 
         session.execute = mock_execute
         st = await compute_actual_status(session, p)
+        # meta сохраняет enrich_3_ready, но не поднимает ранний status до него
         assert st is ProjectStatus.enrich_3_ready
 
 
@@ -195,11 +216,19 @@ async def test_recompute_status_never_downgrades() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.image_prompts_ready,
+        general_plan="x" * 200,
+        script_text="script",
     )
     session = AsyncMock()
-    with patch(
-        "app.services.project_state.compute_actual_status",
-        new=AsyncMock(return_value=ProjectStatus.hero_ready),
+    with (
+        patch(
+            "app.services.project_state.compute_actual_status",
+            new=AsyncMock(return_value=ProjectStatus.hero_ready),
+        ),
+        patch(
+            "app.services.step_data_guard.ready_status_confirmed_by_data",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         old, new, changed = await recompute_status(session, p)
     assert old is ProjectStatus.image_prompts_ready

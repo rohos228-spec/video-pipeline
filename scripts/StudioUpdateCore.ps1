@@ -1,6 +1,6 @@
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "devin/windows-installer"
-$script:StudioUpdateCoreId = "studio-update-core-v7"
+$script:StudioUpdateCoreId = "studio-update-core-v9"
 
 function Get-StudioRepoRoot {
     param([string]$StartDir = (Get-Location).Path)
@@ -56,15 +56,72 @@ function Invoke-StudioGit {
         return $false
     }
     $br = $script:StudioUpdateBranch
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $py)) {
+        if (Get-Command python -ErrorAction SilentlyContinue) { $py = "python" }
+        elseif (Get-Command py -ErrorAction SilentlyContinue) { $py = "py" }
+        else { $py = "python3" }
+    }
+    $pyHelper = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    $env:PYTHONIOENCODING = "utf-8"
+    if (Test-Path -LiteralPath $pyHelper) {
+        Write-StudioLog "> backup prompts/ aside (outside repo)" "Cyan"
+        if ($py -eq "py") {
+            & py -3 $pyHelper --repo $Root --backup-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        } else {
+            & $py $pyHelper --repo $Root --backup-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        }
+    }
+    $promptsDirty = @((git -C $Root status --porcelain -- prompts 2>$null)).Count -gt 0
+    $stashRef = $null
+    $status = git -C $Root status --porcelain 2>&1
+    if ($status) {
+        $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $msg = "studio: автосохранение перед обновлением $stamp"
+        Write-StudioLog "> git stash push -u ($msg)" "Cyan"
+        git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        if ($LASTEXITCODE -ne 0) {
+            if ($promptsDirty) {
+                Write-StudioLog "FAIL: stash failed and prompts/ has local edits — abort (prompts kept)" "Red"
+                return $false
+            }
+            Write-StudioLog "WARN: stash failed; no dirty prompts/ — continue" "Yellow"
+        } else {
+            $stashRef = 'stash@{0}'
+        }
+    }
     git -C $Root fetch origin $br 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root reset --hard "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
     if ($LASTEXITCODE -ne 0) { return $false }
     git -C $Root checkout -B $br "origin/$br" 2>&1 | ForEach-Object { Write-StudioLog $_ }
+    if (Test-Path -LiteralPath $pyHelper) {
+        if ($stashRef) {
+            Write-StudioLog "> return prompts/ from '$stashRef'" "Cyan"
+            if ($py -eq "py") {
+                & py -3 $pyHelper --repo $Root --stash "$stashRef" --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            } else {
+                & $py $pyHelper --repo $Root --stash "$stashRef" --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            }
+        }
+        Write-StudioLog "> restore prompts/ from aside + stashes" "Cyan"
+        if ($py -eq "py") {
+            & py -3 $pyHelper --repo $Root --restore-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            & py -3 $pyHelper --repo $Root --startup-once --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        } else {
+            & $py $pyHelper --repo $Root --restore-aside --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+            & $py $pyHelper --repo $Root --startup-once --json 2>&1 | ForEach-Object { Write-StudioLog $_ }
+        }
+    } elseif ($stashRef) {
+        $helper = Join-Path $Root "scripts\Return-PromptsFromStash.ps1"
+        if (Test-Path -LiteralPath $helper) {
+            & $helper -Root $Root -StashRef $stashRef
+        }
+    }
     $uiOk = Restore-StudioWebUiFromGit -Root $Root
     Write-StudioLog "OK git $(git -C $Root rev-parse --short HEAD)" "Green"
     if (-not $uiOk) {
-        Write-StudioLog "WARN: web/out stale - run FORCE-UPDATE.cmd from repo root" "Yellow"
+        Write-StudioLog "WARN: web/out stale - run STUDIO.cmd -> [3]" "Yellow"
     }
     return $true
 }
@@ -162,7 +219,7 @@ function Start-StudioBackendWindow {
         Write-StudioLog "FAIL: Python create_app() - backend will crash. git pull required." "Red"
         return $false
     }
-    $rb = Join-Path $Root "run-backend.ps1"
+    $rb = Join-Path $Root "scripts\run-backend.ps1"
     Write-StudioLog "Starting run-backend.ps1 window..." "Gray"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $rb -WorkingDirectory $Root
     $deadline = (Get-Date).AddSeconds(120)

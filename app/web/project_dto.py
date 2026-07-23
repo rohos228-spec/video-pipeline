@@ -25,6 +25,7 @@ def project_to_summary(
     return ProjectSummary(
         id=project.id,
         slug=project.slug,
+        title=project.title,
         topic=project.topic,
         status=project.status.value,
         hero_mode=project.hero_mode,

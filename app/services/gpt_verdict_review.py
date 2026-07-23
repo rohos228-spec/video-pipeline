@@ -262,12 +262,23 @@ def delete_verdict_template(step_code: str, name: str) -> bool:
 
 
 async def attachments_for_step(
-    session: AsyncSession, project: Project, step_code: str, *, node_key: str | None = None
+    session: AsyncSession,
+    project: Project,
+    step_code: str,
+    *,
+    node_key: str | None = None,
+    include_result_artifacts: bool = False,
 ) -> list[Path]:
+    """Файлы-вложения шага.
+
+    По умолчанию — только *входные* (то, что реально уходит в GPT/outsee
+    или читается как источник). Выходные артефакты ноды (hero PNG и т.п.)
+    не включаем — иначе V-меню «Отправляемые файлы» показывает то же, что
+    «получаемые». Для GPT-вердикта передайте ``include_result_artifacts=True``.
+    """
     from app.services.excel_gpt_node import (
         EXCEL_GPT_STEP_CODE,
         attachment_paths,
-        display_attachment_name,
     )
 
     paths: list[Path] = []
@@ -291,11 +302,34 @@ async def attachments_for_step(
     if step_code in ("script", "music", "split"):
         from app.services import chatgpt_xlsx as cx
 
-        voice = cx.ensure_source_voiceover(project)
+        if step_code == "script":
+            voice = cx.ensure_script_input_voiceover(project)
+        else:
+            voice = cx.ensure_current_voiceover(project)
         if voice is not None:
             paths.append(voice)
-    if step_code in ("hero", "items", "images"):
+    # Входы для images: рефы персонажей/предметов (не scene_image — это выход img).
+    if step_code == "images":
+        kinds = [ArtifactKind.hero_reference, ArtifactKind.item_reference]
+        arts = (
+            await session.execute(
+                select(Artifact)
+                .where(
+                    Artifact.project_id == project.id,
+                    Artifact.kind.in_(kinds),
+                )
+                .order_by(Artifact.id.asc())
+                .limit(12)
+            )
+        ).scalars().all()
+        for a in arts:
+            if a.path and Path(a.path).is_file():
+                paths.append(Path(a.path))
+    # Вердикт/ревью: можно приложить уже сгенерированные картинки шага.
+    elif include_result_artifacts and step_code in ("hero", "items", "images"):
         kinds = [ArtifactKind.hero_reference, ArtifactKind.scene_image]
+        if step_code == "items":
+            kinds = [ArtifactKind.item_reference]
         arts = (
             await session.execute(
                 select(Artifact)
@@ -463,7 +497,9 @@ async def run_verdict_review(
             len(check_prompt),
         )
     fix_target = FIX_TARGET_BY_STEP.get(step_code, "excel")
-    files = await attachments_for_step(session, project, step_code)
+    files = await attachments_for_step(
+        session, project, step_code, include_result_artifacts=True
+    )
 
     history: list[str] = []
     last_raw = ""

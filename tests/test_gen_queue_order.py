@@ -22,6 +22,10 @@ async def session(tmp_path, monkeypatch) -> AsyncSession:
             "app.services.gen_queue.get_gen_queue",
             lambda: [7, 8],
         )
+        monkeypatch.setattr(
+            "app.services.gen_queue.is_gen_queue_halted",
+            lambda: False,
+        )
         yield s
     await engine.dispose()
 
@@ -105,7 +109,7 @@ async def test_user_stop_blocks_later_in_queue(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_normalize_sorts_by_sidebar_order(
+async def test_gen_queue_normalize_preserves_insertion_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -119,7 +123,7 @@ async def test_gen_queue_normalize_sorts_by_sidebar_order(
         encoding="utf-8",
     )
     monkeypatch.setattr(sl.settings, "data_dir", tmp_path)
-    assert sl._normalize_gen_queue([4, 1, 3, 2]) == [1, 2, 3, 4]
+    assert sl._normalize_gen_queue([4, 1, 3, 2]) == [4, 1, 3, 2]
 
 
 @pytest.mark.asyncio
@@ -172,18 +176,20 @@ async def test_blocks_later_while_earlier_slot_open_even_if_middle_at_target(
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_starts_next_only_after_earlier_done(
+async def test_gen_queue_tick_does_not_autostart_new_after_earlier_done(
     session: AsyncSession,
 ) -> None:
+    """После закрытия слота #7 следующий #8 (new) не автостартует — нужен ▶."""
     await _add(
         session, 7, status=ProjectStatus.script_ready, until="script"
     )
     await _add(session, 8, status=ProjectStatus.new, until="script")
     started = await gen_queue_tick(session)
-    assert started == 1
+    # #7 на цели → слот закрыт; #8 new — ждём ручной старт
     p8 = await session.get(Project, 8)
     assert p8 is not None
-    assert p8.status is ProjectStatus.planning
+    assert p8.status is ProjectStatus.new
+    assert started == 0
 
 
 @pytest.mark.asyncio
@@ -216,7 +222,7 @@ async def test_auto_advance_skips_project_not_in_gen_queue(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_rolls_back_busy_not_in_queue(
+async def test_reconcile_leaves_busy_project_outside_queue(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -229,8 +235,8 @@ async def test_reconcile_rolls_back_busy_not_in_queue(
     p17 = await _add(session, 17, status=ProjectStatus.splitting, until="script")
     rolled = await gen_queue_reconcile(session)
     await session.refresh(p17)
-    assert rolled >= 1
-    assert p17.status is ProjectStatus.script_ready
+    assert rolled == 0
+    assert p17.status is ProjectStatus.splitting
 
 
 @pytest.mark.asyncio
@@ -277,26 +283,92 @@ async def test_dequeue_script_ready_sets_user_stop_blocks_auto_advance(
 
 
 @pytest.mark.asyncio
-async def test_advance_queue_starts_next_despite_stale_user_stop(
+async def test_advance_queue_does_not_autostart_next_new(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#7 done → #14 new+user_stop должен автостартовать (как в логах пользователя)."""
+    """#7 done → #9 new ждёт ручной ▶ (даже с auto_mode)."""
     from app.services.gen_queue import on_project_timeline_maybe_advance_queue
 
     monkeypatch.setattr(
         "app.services.gen_queue.get_gen_queue",
-        lambda: [7, 14],
+        lambda: [7, 9],
     )
     p7 = await _add(
         session, 7, status=ProjectStatus.script_ready, until="script"
     )
-    p14 = await _add(session, 14, status=ProjectStatus.new, until="script")
-    p14.meta = {**(p14.meta or {}), "user_stop": True}
+    p9 = await _add(session, 9, status=ProjectStatus.new, until="script")
     await session.flush()
 
     started = await on_project_timeline_maybe_advance_queue(session, p7)
+    assert started == 0
+    await session.refresh(p9)
+    assert p9.status is ProjectStatus.new
+
+
+def test_gen_queue_does_not_assign_project_status_directly() -> None:
+    import ast
+    from pathlib import Path
+
+    src = Path("app/services/gen_queue.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "project"
+                and target.attr == "status"
+            ):
+                raise AssertionError(
+                    "gen_queue.py must not assign project.status directly"
+                )
+
+
+@pytest.mark.asyncio
+async def test_failed_project_skipped_next_new_awaits_manual(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.gen_queue_run import gen_queue_slot_skipped
+
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [7, 8],
+    )
+    p7 = await _add(session, 7, status=ProjectStatus.failed, until="script")
+    p7.meta = {
+        **(p7.meta or {}),
+        "step_failure": {"last_error": "test boom"},
+    }
+    await session.flush()
+    await _add(session, 8, status=ProjectStatus.new, until="script")
+    started = await gen_queue_tick(session)
+    assert started == 0
+    await session.refresh(p7)
+    skip = gen_queue_slot_skipped(p7)
+    assert skip is not None
+    assert skip.get("reason") == "failed"
+    p8 = await session.get(Project, 8)
+    assert p8 is not None
+    assert p8.status is ProjectStatus.new
+
+
+@pytest.mark.asyncio
+async def test_gen_queue_tick_advances_ready_project(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.gen_queue.get_gen_queue",
+        lambda: [7],
+    )
+    p7 = await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
+    p7.general_plan = "x" * 500
+    await session.flush()
+    started = await gen_queue_tick(session)
     assert started == 1
-    await session.refresh(p14)
-    assert p14.status is ProjectStatus.planning
-    assert (p14.meta or {}).get("user_stop") is None
+    await session.refresh(p7)
+    assert p7.status is ProjectStatus.scripting

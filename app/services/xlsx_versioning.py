@@ -31,6 +31,18 @@ def old_dir_for(project_xlsx: Path) -> Path:
     return project_xlsx.parent / "old"
 
 
+def _safe_name_token(raw: str, *, max_len: int = 48) -> str:
+    """Имя файла: только безопасные символы (node_key → token)."""
+    import re
+
+    s = (raw or "").strip().replace("\\", "/").split("/")[-1]
+    s = re.sub(r"[^\w.\-]+", "_", s, flags=re.UNICODE)
+    s = re.sub(r"_+", "_", s).strip("._-")
+    if not s:
+        s = "node"
+    return s[:max_len]
+
+
 def backup_to_old(project_xlsx: Path) -> Path | None:
     """Копирует текущий project.xlsx в old/<timestamp>_<orig>.xlsx.
 
@@ -42,8 +54,53 @@ def backup_to_old(project_xlsx: Path) -> Path | None:
     old_dir = old_dir_for(project_xlsx)
     old_dir.mkdir(parents=True, exist_ok=True)
     dest = old_dir / f"{_ts()}_{project_xlsx.name}"
+    # Коллизия в ту же секунду — добавить суффикс.
+    if dest.exists():
+        n = 2
+        while True:
+            alt = old_dir / f"{_ts()}_{n}_{project_xlsx.name}"
+            if not alt.exists():
+                dest = alt
+                break
+            n += 1
     shutil.copy2(project_xlsx, dest)
     logger.info("xlsx_versioning: backup {} -> {}", project_xlsx, dest)
+    return dest
+
+
+def snapshot_node_result_xlsx(
+    project_xlsx: Path,
+    *,
+    node_key: str,
+) -> Path | None:
+    """Снимок *после* обновления: old/<ts>_<node_key>_result_project.xlsx.
+
+    Уникальное имя привязывает Excel к конкретной ноде (не общий live-файл).
+    """
+    project_xlsx = Path(project_xlsx)
+    if not project_xlsx.exists():
+        return None
+    old_dir = old_dir_for(project_xlsx)
+    old_dir.mkdir(parents=True, exist_ok=True)
+    token = _safe_name_token(node_key)
+    stem = project_xlsx.stem or "project"
+    suffix = project_xlsx.suffix or ".xlsx"
+    dest = old_dir / f"{_ts()}_{token}_result_{stem}{suffix}"
+    if dest.exists():
+        n = 2
+        while True:
+            alt = old_dir / f"{_ts()}_{token}_result_{n}_{stem}{suffix}"
+            if not alt.exists():
+                dest = alt
+                break
+            n += 1
+    shutil.copy2(project_xlsx, dest)
+    logger.info(
+        "xlsx_versioning: node snapshot {} → {} (node_key={})",
+        project_xlsx,
+        dest,
+        node_key,
+    )
     return dest
 
 

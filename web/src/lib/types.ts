@@ -39,7 +39,7 @@ export interface ExcelHeroCharacter {
 }
 
 export type NodeRunStatus =
-  | "pending" | "running" | "waiting_hitl"
+  | "pending" | "queued" | "running" | "waiting_hitl"
   | "done" | "failed" | "skipped";
 
 export type WorkflowRunStatus =
@@ -80,6 +80,7 @@ export interface WorkflowDetail extends WorkflowSummary {
 export interface ProjectSummary {
   id: number;
   slug: string;
+  title?: string | null;
   topic: string;
   status: ProjectStatus;
   hero_mode: string;
@@ -102,11 +103,19 @@ export interface SidebarFolder {
   updated_at?: string | null;
 }
 
+export interface GenQueueIdleInfo {
+  project_id: number;
+  position: number;
+  reason: string;
+  detail: string;
+}
+
 export interface SidebarLayout {
   folders: SidebarFolder[];
   project_layout: Record<string, { folder_id: string | null; order: number }>;
   gen_queue: number[];
   gen_queue_positions: Record<number, number>;
+  gen_queue_idle?: GenQueueIdleInfo | null;
 }
 
 export interface GenerationConfigPresetSettings {
@@ -169,6 +178,7 @@ export interface NodeRunDTO {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface WorkflowRunSummary {
@@ -203,6 +213,64 @@ export interface FrameDTO {
   animation_prompt: string | null;
   status: string;
   attrs: Record<string, unknown>;
+}
+
+export interface MontageBoardCharacterRef {
+  id: string;
+  name: string;
+  image_url: string | null;
+}
+
+export interface MontageBoardFrame {
+  frame_id: number;
+  number: number;
+  voiceover_text: string;
+  voiceover_excel: string;
+  characters: string;
+  character_refs: MontageBoardCharacterRef[];
+  start_ts: number | null;
+  end_ts: number | null;
+  duration_seconds: number | null;
+  has_shot2: boolean;
+  shot1_use_seconds: number | null;
+  shot2_use_seconds: number | null;
+  shot1_timeline_start: number | null;
+  shot1_timeline_end: number | null;
+  shot2_timeline_start: number | null;
+  shot2_timeline_end: number | null;
+  video_shot1_duration: number | null;
+  video_shot2_duration: number | null;
+  image_shot1_url: string | null;
+  image_shot2_url: string | null;
+  video_shot1_url: string | null;
+  video_shot2_url: string | null;
+  /** Промт исходного изображения / видео (Excel → Frame), для модалки редактирования. */
+  image_prompt_shot1?: string;
+  image_prompt_shot2?: string;
+  animation_prompt_shot1?: string;
+  animation_prompt_shot2?: string;
+  plan_column: number;
+}
+
+export interface MontageBoardMeta {
+  video_trims: Record<string, { start: number; end: number }>;
+  stale_videos: string[];
+  highlights: string[];
+  corrections: Record<string, string>;
+  pending_ops?: Array<{
+    type: string;
+    frame_number: number;
+    shot?: number;
+    prompt?: string;
+    correction?: string;
+  }>;
+  applied_at: string | null;
+}
+
+export interface MontageBoardDTO {
+  frames: MontageBoardFrame[];
+  frame_count: number;
+  meta: MontageBoardMeta;
 }
 
 export interface PromptDTO {

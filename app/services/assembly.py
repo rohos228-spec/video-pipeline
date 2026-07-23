@@ -22,7 +22,7 @@ from pathlib import Path
 from loguru import logger
 
 from app.services.bgm import BgmConfig
-from app.services.media_probe import probe_video_size
+from app.services.media_probe import probe_duration, probe_video_size
 
 SUBTITLES_ASS_NAME = "subs.ass"
 # запасной размер ASS, если ffprobe недоступен (16:9)
@@ -46,7 +46,9 @@ def subtitle_layout(width: int, height: int) -> tuple[int, int, str]:
 @dataclass
 class ClipSpec:
     src: Path
-    duration: float  # требуемая длительность после обрезки
+    duration: float  # длительность слота на таймлайне
+    trim_start: float = 0.0
+    trim_end: float | None = None  # None → до конца файла
 
 
 async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
@@ -68,22 +70,40 @@ async def _cut_clip(
     duration: float,
     dst: Path,
     *,
+    trim_start: float = 0.0,
+    trim_end: float | None = None,
     target_w: int | None = None,
     target_h: int | None = None,
 ) -> None:
-    """Обрезка по времени; при несовпадении размера — scale+pad под эталон."""
-    cmd: list[str] = [
-        "ffmpeg", "-y",
-        "-i", str(src),
-        "-t", f"{duration:.3f}",
-    ]
+    """Обрезка trim in/out; если отрезок короче слота — замедление (не freeze)."""
+    full_dur = await probe_duration(src)
+    end = float(trim_end) if trim_end is not None else full_dur
+    start = max(0.0, float(trim_start))
+    end = min(max(start + 0.05, end), full_dur)
+    source_span = max(0.05, end - start)
+    target_dur = max(0.05, float(duration))
+
+    vf_parts: list[str] = []
+    if source_span + 0.02 < target_dur:
+        slow = source_span / target_dur
+        vf_parts.append(f"setpts=PTS/{slow:.6f}")
     if target_w is not None and target_h is not None:
-        vf = (
+        vf_parts.append(
             f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
             f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
         )
+    vf = ",".join(vf_parts) if vf_parts else None
+
+    cmd: list[str] = [
+        "ffmpeg", "-y",
+        "-ss", f"{start:.3f}",
+        "-i", str(src),
+        "-t", f"{source_span:.3f}",
+    ]
+    if vf:
         cmd.extend(["-vf", vf])
     cmd.extend([
+        "-t", f"{target_dur:.3f}",
         "-an",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "20",
         str(dst),
@@ -152,6 +172,8 @@ async def assemble(
                 spec.src,
                 spec.duration,
                 dst,
+                trim_start=spec.trim_start,
+                trim_end=spec.trim_end,
                 target_w=scale_to[0],
                 target_h=scale_to[1],
             )

@@ -100,6 +100,7 @@ export function NodeVMenu({
 }) {
   const [mounted, setMounted] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
+  const menuWidth = Math.max(220, Math.min(340, 340 * Math.max(0.35, Math.min(canvasZoom, 1.5))));
 
   useEffect(() => setMounted(true), []);
 
@@ -109,7 +110,17 @@ export function NodeVMenu({
       const el = anchorRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPos({ top: r.bottom + 8, left: r.left + r.width / 2 });
+      const pad = 8;
+      const estHeight = Math.min(window.innerHeight * 0.7, 520);
+      let left = r.left + r.width / 2;
+      let top = r.bottom + 8;
+      // Не уезжать за правый/левый край экрана (меню центрируется translateX(-50%)).
+      const half = menuWidth / 2;
+      left = Math.min(window.innerWidth - pad - half, Math.max(pad + half, left));
+      if (top + estHeight > window.innerHeight - pad) {
+        top = Math.max(pad, r.top - estHeight - 8);
+      }
+      setPos({ top, left });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -123,7 +134,7 @@ export function NodeVMenu({
       window.removeEventListener("resize", update);
       window.clearInterval(tick);
     };
-  }, [open, anchorRef]);
+  }, [open, anchorRef, menuWidth]);
 
   useEffect(() => {
     if (!open) return;
@@ -161,8 +172,7 @@ export function NodeVMenu({
     (s) => s.kind !== "blocks",
   );
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
-  const showExcelPreview =
-    !isExcelGptNode(nodeType) && excelSlot != null && projectId != null;
+  const showExcelPreview = excelSlot != null && projectId != null;
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
@@ -172,7 +182,10 @@ export function NodeVMenu({
       style={{
         top: pos.top,
         left: pos.left,
-        width: Math.max(220, Math.min(340, 340 * zoom)),
+        width: menuWidth,
+        maxHeight: "min(70vh, 560px)",
+        overflowY: "auto",
+        overflowX: "hidden",
         transform: `translateX(-50%) scale(${zoom})`,
         transformOrigin: "top center",
       }}
@@ -317,6 +330,7 @@ export function NodeVMenu({
           <NodeVMenuExcelPreview
             open={open}
             projectId={projectId!}
+            nodeKey={nodeKey}
             nodeType={nodeType}
             onOpen={() => openPromptSlot(excelSlot, onClose, onSelectPrompt)}
           />

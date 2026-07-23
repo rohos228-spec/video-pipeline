@@ -64,3 +64,19 @@ def test_assembly_split_shot2_duration(tmp_path: Path) -> None:
         {1: 4.0},
     )
     assert clips == [ClipSpec(p1, 2.0), ClipSpec(p2, 2.0)]
+
+
+def test_assembly_fallback_to_shot2_when_shot1_missing(tmp_path: Path) -> None:
+    """Нет shot_01 — нормально: весь слот закрывает shot_02."""
+    frames = [Frame(project_id=1, number=9)]
+    p2 = tmp_path / "clip_009_s2_x.mp4"
+    p2.write_bytes(b"x")
+    clips = build_assembly_clip_specs(
+        frames,
+        {},  # shot_01 отсутствует
+        {9: p2},
+        {9: 3.0},
+    )
+    assert len(clips) == 1
+    assert clips[0].src == p2
+    assert clips[0].duration == 3.0

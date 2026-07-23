@@ -60,6 +60,7 @@ async def _init_db() -> None:
             ("batch_position", "INTEGER"),
             ("batch_slug", "VARCHAR(120)"),
             ("auto_mode", "BOOLEAN DEFAULT 0"),
+            ("title", "VARCHAR(240)"),
         ]
         cols_rows = (
             await conn.exec_driver_sql("PRAGMA table_info(projects)")
@@ -167,6 +168,28 @@ async def _backfill_from_disk() -> None:
                         logger.warning(
                             "backfill[#{}]: voiceover.txt read failed: {}",
                             p.id, e,
+                        )
+
+                from app.services.ensure_frames_from_disk import (
+                    discover_frame_numbers_on_disk,
+                    ensure_frames_from_disk_media,
+                )
+                from sqlalchemy import func, select as sa_select
+                from app.models import Frame
+
+                frame_count = (
+                    await s.execute(
+                        sa_select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                    )
+                ).scalar_one() or 0
+                if frame_count == 0 and discover_frame_numbers_on_disk(proj_dir):
+                    created = await ensure_frames_from_disk_media(s, p)
+                    if created:
+                        logger.info(
+                            "backfill[#{}]: disk → {} Frame(s) {}",
+                            p.id,
+                            len(created),
+                            created[:20] if len(created) > 20 else created,
                         )
     except Exception as e:  # noqa: BLE001
         logger.warning("backfill on startup failed: {}", e)
@@ -413,6 +436,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     try:
                         result = await task
                         clear_failure_on_success(p, ProjectStatus(prev_status_value))
+                        from app.services.run_sync import update_active_node_progress_text
+
+                        await update_active_node_progress_text(s, p, None)
                         fail_counts.pop(key, None)
                         if result.new_status is not None:
                             with contextlib.suppress(Exception):
@@ -550,14 +576,25 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 ap.id,
                             )
                             continue
-                        from app.services.gen_queue import project_gated_by_gen_queue
+                        from app.services.gen_queue import (
+                            enrich_ready_bypasses_gen_queue,
+                            project_gated_by_gen_queue,
+                        )
 
                         if project_gated_by_gen_queue(ap.id):
-                            logger.debug(
-                                "auto_advance tick: #{} — не в gen_queue, пропуск",
-                                ap.id,
-                            )
-                            continue
+                            if enrich_ready_bypasses_gen_queue(ap):
+                                logger.info(
+                                    "auto_advance tick: #{} {} — gen_queue bypass "
+                                    "(excel_gpt chain)",
+                                    ap.id,
+                                    ap.status.value,
+                                )
+                            else:
+                                logger.info(
+                                    "auto_advance tick: #{} — не в gen_queue, пропуск",
+                                    ap.id,
+                                )
+                                continue
                         prev = ap.status.value
                         try:
                             advanced = await maybe_auto_advance(s, ap, bot)
@@ -659,6 +696,31 @@ async def _await_background_tasks(tasks: list[asyncio.Task]) -> None:
 async def _startup_maintenance() -> None:
     """Тяжёлая инициализация в фоне — не блокирует /api/health."""
     try:
+        # Safe recover: aside backup (LOCALAPPDATA/TEMP) + studio git stash → prompts/.
+        # Idempotent; does not clobber non-stock local edits. No data/ overlay.
+        try:
+            import importlib.util
+
+            from app.project_root import find_project_root
+
+            _helper = find_project_root() / "scripts" / "return_prompts_from_stash.py"
+            _spec = importlib.util.spec_from_file_location(
+                "return_prompts_from_stash", _helper
+            )
+            if _spec and _spec.loader:
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                stash_report = _mod.recover_prompts_on_startup()
+                n = len(stash_report.get("restored") or [])
+                if n:
+                    logger.warning("prompts recovered on startup: {} file(s)", n)
+                else:
+                    logger.info("prompts startup recover: ok (nothing to restore)")
+            else:
+                logger.warning("prompts recover helper missing: {}", _helper)
+        except Exception as stash_exc:  # noqa: BLE001
+            logger.warning("prompts startup recover skipped: {}", stash_exc)
+
         from app.db import session_scope
         from app.services.local_library import ensure_library_dirs, import_existing_prompts
 
@@ -669,9 +731,18 @@ async def _startup_maintenance() -> None:
         await _backfill_from_disk()
         await _recompute_all_projects()
         await sync_prompts_from_files()
+        from app.services.prompt_history import bootstrap_saved_at_from_history
+
+        bootstrap_saved_at_from_history()
         from app.services.default_project import ensure_default_project
 
         await ensure_default_project()
+        from app.services.montage_board_job_state import reconcile_stale_montage_jobs_on_startup
+
+        await reconcile_stale_montage_jobs_on_startup()
+        from app.services.run_sync import reconcile_stale_node_runs_on_startup
+
+        await reconcile_stale_node_runs_on_startup()
     except Exception as e:  # noqa: BLE001
         logger.exception("startup maintenance failed: {}", e)
 
@@ -761,7 +832,7 @@ async def main() -> None:
     # Локальный веб-UI (FastAPI + WS) — поднимается в этом же процессе.
     web_task: asyncio.Task | None = None
     if settings.web_enabled:
-        from app.services.run_sync import background_sync_loop
+        from app.services.run_sync import background_node_run_reconcile_loop, background_sync_loop
         from app.web import create_app
 
         web_app = create_app()
@@ -778,8 +849,10 @@ async def main() -> None:
         server = uvicorn.Server(config)
         web_task = asyncio.create_task(server.serve())
         sync_task = asyncio.create_task(background_sync_loop())
+        reconcile_task = asyncio.create_task(background_node_run_reconcile_loop())
         tasks.append(web_task)
         tasks.append(sync_task)
+        tasks.append(reconcile_task)
         logger.info(
             "web UI: http://{}:{} (REST на /api/*, WS на /ws/{{channel}}) — "
             "backfill/recompute в фоне",

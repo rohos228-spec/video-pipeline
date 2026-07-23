@@ -45,6 +45,7 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     OUTSEE_PROMPT_MAX_CHARS,
+    clamp_image_resolution_id,
     resolve_image_quality_slug,
 )
 from app.models import (
@@ -229,13 +230,18 @@ def _excel_ref_deps_met(
     generated: set[str],
     batch_auto: bool,
 ) -> bool:
+    """Реф-зависимости: файл рефа должен быть на диске.
+
+    HITL ``approved`` без файла (после wipe на повторном ▶) — НЕ deps:
+    иначе batch-цикл крутит персонажа с missing ref и спамит лог.
+    В ручном режиме дополнительно требуем approve рефа.
+    """
     if not ch.ref_ids:
         return True
     for rid in ch.ref_ids:
-        if batch_auto:
-            if rid not in approved and rid not in generated:
-                return False
-        elif rid not in approved:
+        if rid not in generated:
+            return False
+        if not batch_auto and rid not in approved:
             return False
     return True
 
@@ -656,7 +662,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # Aspect ratio и Relax для hero жёстко захардкожены: 16:9 + Relax=ON.
         # См. HERO_ASPECT_RATIO / HERO_RELAX в верху файла.
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            project.image_resolution or DEFAULTS["image_resolution"]
+            clamp_image_resolution_id(
+                project.image_generator, project.image_resolution
+            )
         )
         quality_slug = resolve_image_quality_slug(
             project.image_generator, project.image_quality
@@ -889,7 +897,9 @@ async def _run_excel(
         approved = await _approved_excel_ids(session, project)
         generated = await _excel_ids_with_artifact(session, project)
 
-        if all(ch.id in approved for ch in chars):
+        # «Все одобрены» только если у всех ещё есть файл (после wipe HITL
+        # может остаться, а PNG уже в old/ — иначе ложный hero_ready).
+        if all(ch.id in approved and ch.id in generated for ch in chars):
             logger.info(
                 "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
                 project.id, len(chars),
@@ -900,13 +910,12 @@ async def _run_excel(
         target: ExcelCharacter | None = None
         skipped: list[ExcelCharacter] = []
         for ch in chars:
-            if ch.id in approved:
+            has_file = ch.id in generated
+            is_regen = await _is_regen_for_excel_id(session, project, ch.id)
+            # Approved/generated без файла после wipe — перегенерируем.
+            if ch.id in approved and has_file and not is_regen:
                 continue
-            if (
-                batch_auto
-                and ch.id in generated
-                and not await _is_regen_for_excel_id(session, project, ch.id)
-            ):
+            if batch_auto and has_file and not is_regen:
                 continue
             if not _excel_ref_deps_met(
                 ch, approved=approved, generated=generated, batch_auto=batch_auto
@@ -954,10 +963,13 @@ async def _run_excel(
             batch_auto=batch_auto,
         )
 
+        await session.refresh(project)
+        # Missing refs / cancel / HITL-pause — не крутить while True.
+        if project.status is not ProjectStatus.generating_hero:
+            return
         if not batch_auto:
             return
 
-        await session.refresh(project)
         meta = dict(project.meta or {})
         cfg = meta.get("excel_hero") or cfg
 
@@ -996,8 +1008,13 @@ async def _generate_one_excel_character(
                 continue
             ref_paths.append(p)
         if not ref_paths:
-            # Все ссылки одобрены, но файлы по ним пропали с диска —
-            # выходим, чтобы юзер понял в чём дело.
+            # Все ссылки «одобрены», но файлы пропали (wipe / old/) —
+            # один ERROR и выход; while True в _run_excel остановится по status.
+            logger.error(
+                "[#{}] excel_hero {}: нет файлов рефов {} — откат frames_ready "
+                "(не крутим batch-цикл)",
+                project.id, ch.id, ch.ref_ids,
+            )
             project.status = ProjectStatus.frames_ready
             await session.flush()
             try:
@@ -1085,7 +1102,9 @@ async def _generate_one_excel_character(
             project.image_generator or DEFAULTS["image_generator"]
         )
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            project.image_resolution or DEFAULTS["image_resolution"]
+            clamp_image_resolution_id(
+                project.image_generator, project.image_resolution
+            )
         )
         quality_slug = resolve_image_quality_slug(
             project.image_generator, project.image_quality

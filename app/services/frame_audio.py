@@ -26,6 +26,8 @@ _USER_VOICE_BASENAMES = frozenset({
     "voice",
     "voiceover",
     "ozvuchka",
+    # Кнопка панели монтажа раньше писала voice_montage.* — тоже принимаем.
+    "voice_montage",
 })
 
 
@@ -64,8 +66,17 @@ def is_protected_voice_or_music_file(path: Path) -> bool:
     return False
 
 
-def find_voice_full_on_disk(data_dir: Path) -> Path | None:
-    """Готовая озвучка на диске (без 11Labs): audio/voice*.{mp3,wav,...} или в корне."""
+def find_voice_full_on_disk(data_dir: Path, *, meta: dict | None = None) -> Path | None:
+    """Готовая озвучка на диске (без 11Labs): audio/voice*.{mp3,wav,...} или в корне.
+
+    Также учитывает ``meta["montage_voice_path"]`` после upload с панели монтажа.
+    """
+    if meta:
+        hinted = meta.get("montage_voice_path")
+        if hinted:
+            hp = Path(str(hinted))
+            if hp.is_file():
+                return hp
     if not data_dir.is_dir():
         return None
     candidates: list[Path] = []
@@ -326,24 +337,43 @@ def _voiceover_cells_for_frames(
     cells: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
     """Ячейки R49; если пусто — voiceover.txt, БД, локальный split."""
-    out = [(n, (t or "").strip()) for n, t in cells]
-    if any(t for _, t in out):
+    cell_map = {n: (t or "").strip() for n, t in cells}
+    frame_by_num = {fr.number: fr for fr in frames}
+    out: list[tuple[int, str]] = []
+    for fr in frames:
+        text = cell_map.get(fr.number, "")
+        if not text:
+            text = (fr.voiceover_text or "").strip()
+        out.append((fr.number, text))
+
+    if all(t for _, t in out):
         return out
-    db_cells = [
-        (fr.number, (fr.voiceover_text or "").strip())
-        for fr in frames
-    ]
-    if any(t for _, t in db_cells):
-        return db_cells
+    if not any(t for _, t in out):
+        full = resolve_full_voiceover_text(project)
+        if not full:
+            return out
+        blocks = split_voiceover_locally(full)
+        if len(blocks) < len(frames):
+            raise RuntimeError(
+                f"voiceover: {len(blocks)} блоков после split, нужно {len(frames)} кадров"
+            )
+        return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+
+    empty_n = sum(1 for _, t in out if not t)
     full = resolve_full_voiceover_text(project)
-    if not full:
-        return out
-    blocks = split_voiceover_locally(full)
-    if len(blocks) < len(frames):
-        raise RuntimeError(
-            f"voiceover: {len(blocks)} блоков после split, нужно {len(frames)} кадров"
-        )
-    return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+    if full:
+        blocks = split_voiceover_locally(full)
+        if len(blocks) >= len(frames):
+            logger.warning(
+                "[#{}] voiceover_cells: R49 частично пуст ({}/{} кадров) — "
+                "тайминги из voiceover.txt",
+                project.id,
+                empty_n,
+                len(frames),
+            )
+            return [(fr.number, blocks[i]) for i, fr in enumerate(frames)]
+
+    return out
 
 
 def frame_clips_equal_duration(
@@ -437,6 +467,7 @@ async def synthesize_per_frame_audio(
         full_path,
         timeout=tts_timeout,
         voice_id=voice_id,
+        project_id=project.id,
     )
 
     master = await probe_duration(full_path)

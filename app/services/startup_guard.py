@@ -22,19 +22,21 @@ def _rollback_running_status(status: ProjectStatus) -> ProjectStatus:
 
 
 async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, Any]:
-    """Rollback/disable any state that would make the worker start work.
+    """Rollback running work on restart — but keep user's auto_mode preference.
 
-    Policy is intentionally strict: after process restart, old pipeline work
-    must wait for an explicit user click. This prevents browser automation and
-    generation from resuming unexpectedly.
+    After process restart, in-flight steps roll back to *_ready and wait for
+    explicit ▶. ``auto_mode`` is NOT cleared: user turned it on intentionally;
+    ``auto_await_manual_start`` blocks autostart until ▶ (see project_control).
     """
     from app.orchestrator.auto_advance import TRANSITIONS
     from app.services.mass_pause import set_active as set_mass_pause
+    from app.services.project_control import arm_auto_await_manual_start
 
     now = datetime.utcnow().isoformat(timespec="seconds")
     stats: dict[str, Any] = {
         "running_projects_rolled_back": 0,
-        "auto_mode_disabled": 0,
+        "auto_mode_disabled": 0,  # legacy counter — always 0 (auto_mode preserved)
+        "auto_await_manual_armed": 0,
         "batches_paused": 0,
         "mass_pause_enabled": False,
     }
@@ -55,31 +57,40 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
             meta["startup_blocked_running_status"] = previous.value
             meta["startup_rollback_to"] = rollback_to.value
             meta.pop("enrich_auto_chain_to", None)
+            # Не гасим auto_mode — только ждём ручной ▶.
+            meta.pop("startup_auto_mode_disabled", None)
+            project.meta = meta
+            if arm_auto_await_manual_start(project):
+                stats["auto_await_manual_armed"] += 1
+            meta = dict(project.meta or {})
             stats["running_projects_rolled_back"] += 1
             changed = True
             logger.warning(
-                "[#{}] STARTUP GUARD: rolled back {} -> {}",
+                "[#{}] STARTUP GUARD: rolled back {} -> {} (auto_mode={} сохранён)",
                 project.id,
                 previous.value,
                 rollback_to.value,
+                project.auto_mode,
             )
 
-        if project.auto_mode and project.status in ready_statuses:
-            project.auto_mode = False
+        elif project.auto_mode and project.status in ready_statuses:
+            # auto_mode оставляем; без ▶ ничего не стартует.
             meta["startup_autorun_blocked"] = True
             meta["startup_blocked_at"] = now
-            meta["startup_auto_mode_disabled"] = True
             meta["startup_blocked_ready_status"] = project.status.value
-            stats["auto_mode_disabled"] += 1
+            meta.pop("startup_auto_mode_disabled", None)
+            project.meta = meta
+            if arm_auto_await_manual_start(project):
+                stats["auto_await_manual_armed"] += 1
             changed = True
-            logger.warning(
-                "[#{}] STARTUP GUARD: disabled auto_mode at {}",
+            logger.info(
+                "[#{}] STARTUP GUARD: auto_mode сохранён at {} — ждём ▶",
                 project.id,
                 project.status.value,
             )
 
         if changed:
-            project.meta = meta
+            project.meta = dict(project.meta or {})
             project.updated_at = datetime.utcnow()
 
     batches = (
@@ -99,7 +110,11 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
 
     if any(
         stats[key]
-        for key in ("running_projects_rolled_back", "auto_mode_disabled", "batches_paused")
+        for key in (
+            "running_projects_rolled_back",
+            "auto_await_manual_armed",
+            "batches_paused",
+        )
     ):
         await session.flush()
 

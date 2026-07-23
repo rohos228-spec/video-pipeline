@@ -440,97 +440,159 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] generate_images starting", project.id)
 
+    xlsx_path = project.data_dir / "project.xlsx"
+    from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
+
+    if not xlsx_path.is_file():
+        logger.error(
+            "[#{}] generate_images: project.xlsx не найден: {}",
+            project.id,
+            xlsx_path,
+        )
+    else:
+        boot = await bootstrap_frames_for_image_step(session, project, xlsx_path)
+        logger.info(
+            "[#{}] generate_images: bootstrap R45={} R46={} created={} "
+            "shot1={} shot2={}",
+            project.id,
+            boot.prompts_in_xlsx,
+            boot.shot2_in_xlsx,
+            boot.frames_created,
+            boot.frames_prompt_updated,
+            boot.frames_shot2_updated,
+        )
+
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
-    if not frames:
-        raise RuntimeError("нет кадров — нечего генерировать")
-
-    # Кадры без image_prompt: пробуем АВТО-РЕКАВЕРИ из xlsx (вдруг
-    # промты ЕСТЬ в xlsx, но не подтянулись в БД), затем — если всё
-    # ещё пусто — НЕ ВАЛИМ ВЕСЬ ШАГ, а помечаем такие кадры как
-    # failed и продолжаем работать с теми, у кого промт есть.
-    missing_prompts = [fr.number for fr in frames if not fr.image_prompt]
-    if missing_prompts:
-        proj_xlsx = project.data_dir / "project.xlsx"
-        if proj_xlsx.exists():
-            try:
-                from app.services.chatgpt_xlsx import sync_project_xlsx
-
-                logger.info(
-                    "[#{}] generate_images: missing image_prompt у {} кадров — "
-                    "пробую sync_project_xlsx из {}",
-                    project.id, len(missing_prompts), proj_xlsx.name,
-                )
-                try:
-                    await sync_project_xlsx(
-                        session, project, proj_xlsx, keep_fields=False
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[#{}] generate_images: sync_project_xlsx failed: {}",
-                        project.id,
-                        e,
-                    )
-                await session.flush()
-                frames = (
-                    await session.execute(
-                        select(Frame)
-                        .where(Frame.project_id == project.id)
-                        .order_by(Frame.number)
-                    )
-                ).scalars().all()
-                missing_prompts = [
-                    fr.number for fr in frames if not fr.image_prompt
-                ]
-            except Exception as e:  # noqa: BLE001
-                logger.exception(
-                    "[#{}] generate_images авто-импорт упал: {}",
-                    project.id, e,
-                )
-
-        if missing_prompts:
-            # Кадры без image_prompt — помечаем failed, остальные
-            # продолжают обрабатываться. Юзер увидит failed-кадры в
-            # TG-меню и сможет их перегенерить вручную (шаг 5 точечно
-            # / правка xlsx и reload).
-            logger.warning(
-                "[#{}] generate_images: у {} кадров нет image_prompt "
-                "ни в БД, ни в xlsx — помечаю как failed, продолжаю с "
-                "остальными {} кадрами. Failed-frames: {}",
-                project.id, len(missing_prompts),
-                len(frames) - len(missing_prompts), missing_prompts,
+    if not frames and xlsx_path.exists():
+        await bootstrap_frames_for_image_step(session, project, xlsx_path)
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
             )
-            failed_count = 0
-            for fr in frames:
-                if not fr.image_prompt and fr.status not in (
-                    FrameStatus.image_approved,
-                    FrameStatus.image_generated,
-                    FrameStatus.failed,
-                ):
-                    fr.status = FrameStatus.failed
-                    attrs = dict(fr.attrs or {})
-                    attrs["fail_reason"] = "no_image_prompt"
-                    fr.attrs = attrs
-                    failed_count += 1
+        ).scalars().all()
+
+    if not frames:
+        from app.services.xlsx_v8_import import (
+            describe_image_prompts_xlsx_scan,
+            read_image_prompts_from_project_xlsx,
+        )
+
+        scan = (
+            describe_image_prompts_xlsx_scan(xlsx_path)
+            if xlsx_path.exists()
+            else "project.xlsx не найден"
+        )
+        n_xlsx = (
+            len(read_image_prompts_from_project_xlsx(xlsx_path))
+            if xlsx_path.exists()
+            else 0
+        )
+        if n_xlsx:
+            raise RuntimeError(
+                f"в project.xlsx {n_xlsx} промтов, но кадры в БД не созданы. "
+                f"Диагностика: {scan}"
+            )
+        raise RuntimeError(
+            f"нет кадров и нет промтов в project.xlsx. Диагностика: {scan}"
+        )
+
+    # Промты с диска → БД (до проверки missing / failed).
+    if xlsx_path.is_file():
+        from app.services.xlsx_v8_import import (
+            apply_image_prompts_from_xlsx_to_frames,
+            read_image_prompts_from_project_xlsx,
+        )
+
+        n = apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
+        if n:
+            logger.info(
+                "[#{}] generate_images: image_prompt с диска xlsx → {} кадров",
+                project.id,
+                n,
+            )
             await session.flush()
-            try:
-                await bot.send_message(
-                    settings.telegram_owner_chat_id,
-                    (
-                        f"⚠️ Проект #{project.id}: у {failed_count} кадров "
-                        f"({missing_prompts[:5]}{'...' if len(missing_prompts) > 5 else ''}) "
-                        f"нет image_prompt. Помечены failed, остальные "
-                        f"{len(frames) - failed_count} кадров пойдут в генерацию. "
-                        "Чтобы догнать — либо впиши промты в xlsx и нажми "
-                        "«🔄 Перечитать xlsx», либо запусти шаг 5 заново "
-                        "(он перегенерит для всех кадров)."
-                    )[:3800],
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
                 )
-            except Exception:  # noqa: BLE001
-                pass
+            ).scalars().all()
+
+    xlsx_prompts: dict[int, str] = (
+        read_image_prompts_from_project_xlsx(xlsx_path)
+        if xlsx_path.is_file()
+        else {}
+    )
+
+    # Доп. sync v7/v8 (voiceover, animation) — после bootstrap по R45.
+    missing_prompts = [
+        fr.number
+        for fr in frames
+        if fr.number in xlsx_prompts
+        and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
+    ]
+    if missing_prompts and xlsx_path.exists():
+        try:
+            from app.services.chatgpt_xlsx import sync_project_xlsx
+
+            logger.info(
+                "[#{}] generate_images: у {} кадров нет image_prompt после "
+                "bootstrap — sync_project_xlsx",
+                project.id,
+                len(missing_prompts),
+            )
+            await sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
+            await bootstrap_frames_for_image_step(session, project, xlsx_path)
+            apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
+            await session.flush()
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            xlsx_prompts = read_image_prompts_from_project_xlsx(xlsx_path)
+            missing_prompts = [
+                fr.number
+                for fr in frames
+                if fr.number in xlsx_prompts
+                and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
+            ]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] generate_images: доп. sync xlsx failed: {}",
+                project.id,
+                e,
+            )
+
+    if missing_prompts:
+        logger.warning(
+            "[#{}] generate_images: у {} кадров в xlsx R45 заглушка/пусто — "
+            "пропускаю (failed): {}",
+            project.id,
+            len(missing_prompts),
+            missing_prompts[:12],
+        )
+        for fr in frames:
+            if fr.number not in missing_prompts:
+                continue
+            if fr.status not in (
+                FrameStatus.image_approved,
+                FrameStatus.image_generated,
+            ):
+                fr.status = FrameStatus.failed
+                attrs = dict(fr.attrs or {})
+                attrs["fail_reason"] = "no_image_prompt"
+                fr.attrs = attrs
+        await session.flush()
 
     out_dir = project.data_dir / "scenes"
 
@@ -563,7 +625,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 bad.stat().st_size,
             )
         if not frame_needs_shot1_image(fr, out_dir):
-            continue
+            if (
+                fr.number in xlsx_prompts
+                and (xlsx_prompts[fr.number] or "").strip()
+                and not is_skippable_empty_prompt(xlsx_prompts[fr.number])
+                and not disk_has_valid_frame_image(out_dir, fr.number)
+            ):
+                fr.image_prompt = xlsx_prompts[fr.number]
+                fr.status = FrameStatus.image_prompt_ready
+                attrs = dict(fr.attrs or {})
+                if attrs.pop("fail_reason", None) is not None:
+                    fr.attrs = attrs
+            else:
+                continue
         fr.status = FrameStatus.image_prompt_ready
         queued += 1
     await session.flush()
@@ -573,6 +647,76 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         queued,
         out_dir,
     )
+    if queued == 0:
+        from app.services.scan_frames import scan_missing_frames
+
+        with_prompt = sum(
+            1
+            for fr in frames
+            if not is_skippable_empty_prompt(fr.image_prompt or "")
+        )
+        missing = await scan_missing_frames(session, project)
+        on_disk = sum(
+            1 for fr in frames if disk_has_valid_frame_image(out_dir, fr.number)
+        )
+        logger.warning(
+            "[#{}] generate_images: очередь пуста — кадров в БД={}, "
+            "с image_prompt={}, валидных PNG на диске={}, без PNG но с промтом={}. "
+            "Проверь project.xlsx R45 и «Перечитать xlsx».",
+            project.id,
+            len(frames),
+            with_prompt,
+            on_disk,
+            missing,
+        )
+        if with_prompt == 0:
+            from app.services.xlsx_v8_import import describe_image_prompts_xlsx_scan
+
+            scan = describe_image_prompts_xlsx_scan(xlsx_path)
+            in_xlsx = len(xlsx_prompts)
+            skippable = sum(
+                1 for p in xlsx_prompts.values() if is_skippable_empty_prompt(p or "")
+            )
+            raise RuntimeError(
+                f"в project.xlsx {in_xlsx} ячеек R45, из них заглушек {skippable}, "
+                f"в БД с промтом 0. Диагностика: {scan}"
+            )
+        if missing and xlsx_path.exists():
+            await bootstrap_frames_for_image_step(session, project, xlsx_path)
+            await session.flush()
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            queued = 0
+            for fr in frames:
+                if disk_has_valid_frame_image(out_dir, fr.number):
+                    continue
+                if not frame_needs_shot1_image(fr, out_dir):
+                    continue
+                fr.status = FrameStatus.image_prompt_ready
+                queued += 1
+            await session.flush()
+            logger.info(
+                "[#{}] generate_images: повторная очередь после bootstrap — {}",
+                project.id,
+                queued,
+            )
+            if queued == 0:
+                raise RuntimeError(
+                    f"в xlsx есть промты, на диске нет картинок, но в outsee "
+                    f"0 кадров (без PNG: {missing}). Проверь scenes/ и статусы кадров"
+                )
+        if not missing and on_disk >= with_prompt:
+            logger.info(
+                "[#{}] generate_images: все {} кадров с промтом уже на диске — "
+                "outsee не нужен",
+                project.id,
+                with_prompt,
+            )
 
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
@@ -749,7 +893,7 @@ async def _all_frames_have_image_or_failed(
         )
     ).scalars().all()
     for fr in frames:
-        if not is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         if fr.status is FrameStatus.failed:
             continue
@@ -964,15 +1108,18 @@ async def _generate_and_send(
         )
 
     # Настройки картинки из проекта (с дефолтами).
+    from app.generation_options import clamp_image_resolution_id
+
     img_gen = IMAGE_GENERATORS_BY_ID.get(
         project.image_generator or DEFAULTS["image_generator"]
     )
     ar = ASPECT_RATIOS_BY_ID.get(
         project.aspect_ratio or DEFAULTS["aspect_ratio"]
     )
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        project.image_resolution or DEFAULTS["image_resolution"]
+    res_id = clamp_image_resolution_id(
+        project.image_generator, project.image_resolution
     )
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(res_id)
     aspect_slug = ar.outsee_slug if ar else "9:16"
     model_slug = img_gen.outsee_slug if img_gen else None
     res_slug = ir.outsee_slug if ir else None
@@ -1015,7 +1162,10 @@ async def _generate_and_send(
         if use_regen_button:
             try:
                 result = await outsee.regenerate_image(
-                    file_path, gen_id=gen_id, project_id=project.id
+                    file_path,
+                    gen_id=gen_id,
+                    project_id=project.id,
+                    model_slug=model_slug,
                 )
             except OutseeImageError:
                 # Если на странице нет предыдущего результата (или другая

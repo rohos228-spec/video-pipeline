@@ -36,9 +36,24 @@ async def validate_project_step_dry_run(
             "Остановите ⏹ или дождитесь завершения."
         )
 
+    from app.services.step_data_guard import can_enter_running
+
+    warnings: list[str] = []
+    try:
+        ok, reason, _fix = await can_enter_running(
+            session, project, step.running_status
+        )
+        if not ok:
+            warnings.append(
+                f"{reason} (статус проекта: {project.status.value})"
+            )
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f"data-guard: {e}")
+
     return {
         "ok": True,
         "step_code": step_code,
         "would_status": step.running_status.value,
         "current_status": project.status.value,
+        "warnings": warnings,
     }

@@ -47,6 +47,18 @@ def test_read_shot2_no_block(tmp_path: Path) -> None:
     assert by_num[1].has_shot2 is False
 
 
+def test_read_shot2_from_row46_without_voiceover(tmp_path: Path) -> None:
+    p = tmp_path / "plan.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=ROW_IMAGE_PROMPT_2_V8, column=3, value="second shot close-up")
+    wb.save(p)
+    info = read_shot2_columns(p)[1]
+    assert info.has_shot2
+    assert info.prompt == "second shot close-up"
+
+
 def test_read_shot2_from_row46(tmp_path: Path) -> None:
     p = tmp_path / "plan.xlsx"
     _write_min_v8(

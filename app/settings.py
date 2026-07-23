@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Service URLs
     outsee_image_url: str = Field(
-        "https://outsee.io/image?model=nano-banana-2", alias="OUTSEE_IMAGE_URL"
+        "https://outsee.io/image?model=gpt-image-2", alias="OUTSEE_IMAGE_URL"
     )
     outsee_video_url: str = Field(
         "https://outsee.io/video?model=veo-3-fast", alias="OUTSEE_VIDEO_URL"
@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     # True = вариант A (image+video): глобальная очередь Outsee, одна новая
     # картинка/ролик после Generate, без перебора галереи по [ID: …].
     outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
+    # Таймаут скачивания результата outsee (сек) — URL и клик «Скачать».
+    outsee_download_timeout_s: float = Field(120.0, alias="OUTSEE_DOWNLOAD_TIMEOUT_S")
+
+    # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP
+    grsai_api_key: str = Field("", alias="GRSAI_API_KEY")
+    grsai_base_url: str = Field("https://grsaiapi.com", alias="GRSAI_BASE_URL")
+    # outsee | grsai — кто рисует img/hero/items
+    image_provider: str = Field("grsai", alias="IMAGE_PROVIDER")
+    # outsee | grsai — кто генерит video в Create / (опц.) пайплайн
+    video_provider: str = Field("grsai", alias="VIDEO_PROVIDER")
+    grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
+    grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
+
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
@@ -98,11 +111,15 @@ class Settings(BaseSettings):
     subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
     subtitle_lead_seconds: float = Field(0.18, alias="SUBTITLE_LEAD_SECONDS")
     subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
-    subtitle_rewhisper_on_assemble: bool = Field(True, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE")
+    subtitle_rewhisper_on_assemble: bool = Field(
+        False, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE"
+    )
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
+    # True — прямая запись NodeRun.status мимо машины состояний → RuntimeError (dev/tests)
+    node_status_strict: bool = Field(False, alias="NODE_STATUS_STRICT")
 
     # Web UI (локальный FastAPI + Next.js)
     web_enabled: bool = Field(True, alias="WEB_ENABLED")

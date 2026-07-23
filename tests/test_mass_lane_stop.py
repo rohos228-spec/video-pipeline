@@ -12,7 +12,11 @@ from app.services.step_cancel import is_stop_requested, request_stop
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
+async def session(tmp_path, monkeypatch) -> AsyncSession:
+    import app.settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

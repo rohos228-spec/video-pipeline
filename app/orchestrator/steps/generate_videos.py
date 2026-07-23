@@ -37,12 +37,14 @@ from app.services.artifact_recovery import (
     recover_scene_images_from_disk,
     recover_scene_videos_from_disk,
 )
-from app.services.scan_frames import is_valid_scene_image, newest_frame_image_path
+from app.services.scan_frames import is_valid_scene_image
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     disk_has_shot2_video,
+    effective_shot_from_artifact,
+    find_shot1_image,
     find_shot2_image,
     read_shot2_columns,
 )
@@ -75,10 +77,7 @@ async def _scene_video_file_on_disk(
         path = Path(art.path)
         if not path.is_file():
             continue
-        meta_shot = (art.meta or {}).get("shot", 1)
-        path_shot = 2 if "_s2_" in path.name else 1
-        effective = meta_shot if meta_shot in (1, 2) else path_shot
-        if effective == shot:
+        if effective_shot_from_artifact(art.meta, path) == shot:
             return path
     return None
 
@@ -89,12 +88,12 @@ def resolve_scene_image_path(
     scenes_dir: Path,
     frame_number: int,
 ) -> Path | None:
-    """Стартовый кадр для outsee: артефакт из БД или актуальный frame_NNN_*.png на диске."""
+    """Стартовый кадр shot_01 для outsee: артефакт из БД или frame_NNN_*.png (не s2)."""
     if artifact_path:
         path = Path(artifact_path)
-        if path.is_file():
+        if path.is_file() and "_s2_" not in path.name:
             return path
-    disk = newest_frame_image_path(scenes_dir, frame_number)
+    disk = find_shot1_image(scenes_dir, frame_number)
     if disk is not None and is_valid_scene_image(disk):
         return disk
     return None
@@ -198,7 +197,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if not fr.animation_prompt:
                     raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
 
-                # найдём картинку этого кадра (scene_image)
+                # shot_01 PNG: не брать последний scene_image — после shot_02 это s2.
                 img = (
                     await session.execute(
                         select(Artifact)
@@ -208,27 +207,36 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             Artifact.kind == ArtifactKind.scene_image,
                         )
                         .order_by(Artifact.id.desc())
-                        .limit(1)
                     )
-                ).scalar_one_or_none()
+                ).scalars().all()
+                shot1_artifact_path: str | None = None
+                for art in img:
+                    if not art.path:
+                        continue
+                    if effective_shot_from_artifact(art.meta, art.path) != 1:
+                        continue
+                    if "_s2_" in Path(art.path).name:
+                        continue
+                    shot1_artifact_path = art.path
+                    break
                 start_frame_path = resolve_scene_image_path(
-                    artifact_path=img.path if img else None,
+                    artifact_path=shot1_artifact_path,
                     scenes_dir=scenes_dir,
                     frame_number=fr.number,
                 )
                 if start_frame_path is None:
                     raise RuntimeError(
-                        f"у кадра {fr.number} нет картинки на диске "
-                        f"(БД: {img.path if img else '—'})"
+                        f"у кадра {fr.number} нет картинки shot_01 на диске "
+                        f"(БД: {shot1_artifact_path or '—'})"
                     )
-                if img is None or Path(img.path) != start_frame_path:
+                if shot1_artifact_path is None or Path(shot1_artifact_path) != start_frame_path:
                     logger.warning(
-                        "[#{}] frame {}: стартовый кадр с диска {} "
+                        "[#{}] frame {}: стартовый кадр shot_01 {} "
                         "(артефакт БД: {})",
                         project.id,
                         fr.number,
                         start_frame_path.name,
-                        Path(img.path).name if img and img.path else "—",
+                        Path(shot1_artifact_path).name if shot1_artifact_path else "—",
                     )
 
                 short_uuid = uuid.uuid4().hex[:8]
@@ -255,8 +263,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # Relax (Безлимит): None = не задан → включаем по умолчанию.
                 # False = пользователь явно отключил.
                 video_relax = project.video_relax is not False
-                # До 3 попыток с исходным animation_prompt; если все 3 провалились
-                # — GPT-rewrite (убирает триггеры модерации) + ещё 3 попытки.
+                # До 3 попыток с моделью проекта; после 3 сбоев — Kling 2.5 / 720p /
+                # «Исходное»; затем опционально GPT-rewrite + ещё 3 попытки.
                 result = await generate_video_with_retries(
                     outsee, gpt,
                     prompt=fr.animation_prompt,
@@ -361,7 +369,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 file_path = out_dir / f"clip_{fr.number:03d}_s2_{short_uuid}.mp4"
                 prompt_id_prefix = build_gen_id_prefix(
                     project.id, fr.number, short_uuid
-                )
+                ) + "-S2"
                 video_relax = project.video_relax is not False
                 result2 = await generate_video_with_retries(
                     outsee,

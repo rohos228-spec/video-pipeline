@@ -1,256 +1,98 @@
-# Как запустить video-pipeline (Windows, без Docker)
+# Как запустить video-pipeline (Windows)
 
-## Установка на новый ПК (утром, ~15–30 мин)
+## Единственная точка входа — `STUDIO.cmd`
 
-Открой **PowerShell от администратора не нужен** — обычный PowerShell и одну команду:
+1. Открой папку `video-pipeline\` в Проводнике.
+2. **Дважды кликни `STUDIO.cmd`**.
+3. Выбери пункт меню:
 
-```powershell
-iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
-```
+| Пункт | Действие |
+|-------|----------|
+| **1** | **Запустить студию** — бэкенд + Chrome CDP :29229 + браузер http://127.0.0.1:8765 |
+| **2** | **Остановить всё** — остановить бэкенд (порт 8765); Chrome с ИИ **не** закрывается |
+| **3** | **Браузер с ИИ** — Chrome CDP :29229 с профилем из `VpBrowserProfile.ps1` / `.env`; вкладки outsee.io и chatgpt.com. Если CDP уже жив — второе окно не открывается |
+| **4** | **Обновить и запустить** — `git stash` → `fetch` → `reset --hard origin/main` → зависимости → пункт 1 |
+| **5** | **Починить установку** — pip, npm build web, Playwright, FFmpeg |
+| **6** | **Диагностика** — версия, git, порты, Chrome-профиль; лог `logs/doctor.log` |
+| **0** | Выход |
 
-Скрипт сам:
-1. Поставит Git, Python 3.11, FFmpeg, Node.js (если нет).
-2. Склонирует репо в папку `video-pipeline\`.
-3. Создаст `.venv`, поставит Python-зависимости (~1 GB).
-4. Соберёт Web UI (`web/out/`).
-5. Создаст `.env` с `TELEGRAM_ENABLED=false` (web-only Studio).
-
-**После установки:**
-1. Зайди в папку `video-pipeline\`.
-2. Двойной клик **`VideoPipelineStudio.cmd`** → кнопка **`* Quick start`** или **`2 Start Studio`**.
-3. Браузер: **http://127.0.0.1:8765** (Ctrl+F5).
-4. Проверка: двойной клик **`verify-update.cmd`** или  
-   `Invoke-RestMethod http://127.0.0.1:8765/api/studio-version` → `pipeline_ok: True`.
-
-**Chrome для ChatGPT/outsee** (перед первым шагом пайплайна):
+Из корня репозитория для автоматизации:
 
 ```powershell
-& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=29229 `
-  --user-data-dir="$env:USERPROFILE\.vp_browser_data"
+.\STUDIO.cmd 1    # запуск
+.\STUDIO.cmd 2    # остановить бэкенд
+.\STUDIO.cmd 3    # браузер с ИИ
 ```
 
-Залогинься в ChatGPT и outsee.io в этом окне Chrome. Окно Chrome держи открытым.
-
-**Telegram (опционально):** открой `.env`, впиши `TELEGRAM_BOT_TOKEN`, поставь `TELEGRAM_ENABLED=true`, запусти `.\start.ps1`.
+Ярлык на рабочий стол (один раз): `create-desktop-shortcut.cmd`
 
 ---
 
-## Веб-студия без Telegram (рекомендуется)
-
-**Продакшен (одно окно, UI на :8765):**
+## Первая установка на новый ПК
 
 ```powershell
-# Двойной клик VideoPipelineStudio.cmd -> 2 Start Studio
-# или вручную:
-.\run-backend.ps1
+iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/main/bootstrap.ps1 -UseBasicParsing | iex
 ```
 
-Браузер: **http://127.0.0.1:8765**
+Или вручную: `install.ps1` в корне репозитория.
 
-**Разработка UI (два окна, hot reload на :3000):**
-
-```powershell
-.\start-studio.ps1
-cd web
-npm install
-npm run dev
-```
-
-Браузер: **http://localhost:3000**
-
-При первом запуске создаётся один пилотный проект,
-`auto_mode` включён — HITL и шаги только в веб-UI. Chrome CDP (`:29229`) нужен,
-когда реально гоняете шаги ChatGPT/outsee.
-
-В `.env`: `TELEGRAM_ENABLED=false`, `TELEGRAM_BOT_TOKEN` пустой.
+После установки — **STUDIO.cmd** → **1**.
 
 ---
 
-## С Telegram-ботом (опционально)
+## Chrome для пайплайна (ChatGPT / outsee)
 
-Telegram-бот оживает при `TELEGRAM_ENABLED=true` и валидном токене.
-Закрыл консоль — процесс останавливается.
+Профиль по умолчанию: `%USERPROFILE%\.vp_browser_data`  
+Переопределение: `BROWSER_USER_DATA_DIR` в `.env` (см. `scripts/VpBrowserProfile.ps1`).
 
----
+**STUDIO.cmd → 3** — запуск Chrome с CDP и вкладками outsee.io + chatgpt.com.  
+Залогинься один раз; сессии сохраняются в профиле. Окно держи открытым во время генерации.
 
-## Быстрый старт установки (один скрипт)
-
-Открой PowerShell **на новом ПК** и выполни **одну команду**:
-
-```powershell
-iwr https://raw.githubusercontent.com/rohos228-spec/video-pipeline/refs/heads/devin/windows-installer/bootstrap.ps1 -UseBasicParsing | iex
-```
-
-Что произойдёт:
-1. Поставит Git (через winget) и склонирует репо в папку `video-pipeline\`.
-2. Поставит Python 3.11, FFmpeg, Node.js.
-3. Создаст venv, поставит все Python-зависимости и соберёт Web UI.
-4. Создаст `.env` с `TELEGRAM_ENABLED=false` (web-only).
-5. Дальше: `VideoPipelineStudio.cmd` → **Quick start** → http://127.0.0.1:8765
-
-**Что нужно от тебя руками** (только это, остальное — скрипт):
-- Токен Telegram-бота от @BotFather (либо у тебя уже есть от `@content1400_bot`).
-- Логин в Chrome в ChatGPT и outsee.io при первом запуске `start.ps1`.
+Пункт **1** также поднимает CDP, если он ещё не запущен.
 
 ---
 
-## Ручная установка (если bootstrap не подошёл)
+## Telegram (опционально)
 
-### 1. Поставь Python 3.11 или 3.12
+В `.env`: `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ENABLED=true`. Запуск с ботом — `python -m app.main` в `.venv`.
 
-Скачай с python.org. При установке поставь галочку «Add Python to PATH».
-
-Проверь в PowerShell:
-```powershell
-python --version
-# Python 3.11.x
-```
-
-### 2. Поставь FFmpeg
-
-- Скачай https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-- Распакуй куда-нибудь (например, `C:\ffmpeg`).
-- Добавь `C:\ffmpeg\bin` в PATH (Система → Переменные среды → Path → Add).
-- Проверь: `ffmpeg -version` в PowerShell.
-
-### 3. (Опционально сейчас, нужно для публикации позже) Поставь MoreLogin
-
-- https://www.morelogin.com/ → скачай клиент для Windows.
-- Создай один браузерный профиль и зайди в нём в:
-  TikTok, YouTube Studio, Instagram, VK, Likee.
-- В настройках MoreLogin включи «Local API» и запомни `profileId` профиля.
-
-Если сейчас тебе это не нужно (публикация отключена по умолчанию) — пропусти шаг.
-
-### 4. Скачай проект
-
-```powershell
-git clone https://github.com/rohos228-spec/video-pipeline.git
-cd video-pipeline
-```
-
-Если git не установлен — на странице репо нажми **Code → Download ZIP**,
-распакуй в любую папку, зайди в неё в терминале.
-
-### 5. Создай виртуальное окружение и поставь зависимости
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
-```
-
-Первая установка скачает ~1 GB (faster-whisper + ffmpeg-python + playwright).
-
-### 6. Создай `.env`
-
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
-
-Заполни:
-```
-TELEGRAM_BOT_TOKEN=  # токен бота от @BotFather (или уже в секретах Devin)
-TELEGRAM_OWNER_CHAT_ID=279887118   # твой chat_id, уже заполнен
-MORELOGIN_PROFILE_ID=              # profileId из MoreLogin — можно оставить пустым
-SOCIAL_PUBLISH_ENABLED=false       # публикация выключена до отдельного решения
-```
-
-### 7. Запусти Chrome с «ремоут-портом» для Playwright
-
-В PowerShell (один раз — пока работает бот):
-
-```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=29229 `
-  --user-data-dir="$env:USERPROFILE\.vp_browser_data"
-```
-
-Откроется **отдельный** Chrome с чистым профилем. **Залогинься в нём руками**
-в:
-- https://chatgpt.com/
-- https://outsee.io/
-- https://elevenlabs.io/ (опционально — пока не трогаем)
-
-Эти логины сохранятся в папке `%USERPROFILE%\.vp_browser_data` и будут подхватываться
-каждый раз, когда ты запускаешь этот Chrome той же командой.
-
-⚠️ Этот Chrome должен быть **открыт** всё время, пока крутится бот.
+Для веб-студии без Telegram: `TELEGRAM_ENABLED=false` (по умолчанию после `install.ps1`).
 
 ---
 
-## Каждый раз (когда хочешь работать)
+## Linux / разработка
 
-### 1. Запусти Chrome (если закрыл)
-
-Тот же командой из пункта 7 выше.
-
-### 2. Запусти бот
-
-```powershell
-cd video-pipeline
-.\.venv\Scripts\Activate.ps1
-python -m app.main
+```bash
+pip install -e ".[dev]"
+python3 -m app.main
 ```
 
-Это стартует Telegram-бот + фоновый воркер. Логи льются в консоль.
-
-### 3. В Telegram пиши своему боту
-
-- `/start` — проверка связи.
-- `/new <тема>` — начать ролик. Примеры:
-  - `/new Как коты завоевали Интернет`
-  - `/new История дружбы кота и собаки --no-hero`
-  - `/new Путешествие кота-космонавта --hero`
-
-Или можно сразу запустить пилотный проект:
-```powershell
-python -m app.seed_pilot
-```
-Это создаст проект «5 фактов о рачках в стиле киберпанк» и воркер начнёт его прогонять.
-
-Дальше бот будет присылать тебе:
-1. **Общий план ролика** → [✅ Одобрить] / [🔁 Перегенерировать] / [❌ Отклонить].
-2. **Сценарий** → кнопка.
-3. **Референс главного героя** (если нужен).
-4. **Готовые картинки кадров** (уведомление, папка — `data/videos/<slug>/scenes/`).
-5. **Готовые 8-сек клипы** (уведомление, папка — `data/videos/<slug>/videos/`).
-6. **Финальный собранный ролик** (mp4 в Telegram) → одобряешь → публикация на 5 площадок (если `SOCIAL_PUBLISH_ENABLED=true`).
-
-### 4. Остановить
-
-Ctrl+C в консоли, где крутится `python -m app.main`.
+Студия: http://127.0.0.1:8765
 
 ---
 
-## Если что-то сломалось
+## Что не трогает обновление (пункт 4)
 
-- **Бот не отвечает в Telegram** → в консоли ищи `ERROR` / `Traceback`. Пришли скрин.
-- **Первый шаг висит, нет плана** → скорее всего не запущен Chrome с `--remote-debugging-port=29229` или ты не залогинен в ChatGPT.
-- **Ошибка про selector** → сайт поменял UI. Запусти режим разведки (см. ниже) и пришли вывод.
-
-### Режим разведки селекторов
-
-В отдельном терминале (бот всё так же должен крутиться):
-```powershell
-cd video-pipeline
-.\.venv\Scripts\Activate.ps1
-python -m app.bots.outsee recon-image "тест"
-python -m app.bots.elevenlabs recon "тест"
-python -m app.bots.publishers recon tiktok
-```
-Скрипт откроет страницу и напечатает все кнопки/textarea с атрибутами.
-Скопируй вывод, пришли в чат — я обновлю селекторы.
+Папки `data/`, `prompts/`, `logs/` и файл `.env` в `.gitignore` — `git reset` их не перезаписывает. Локальные правки в отслеживаемых файлах перед обновлением сохраняются в `git stash`.
 
 ---
 
-## Переезд на другой ПК
+## Архив старых скриптов
 
-1. Скопируй папку `video-pipeline/` на новый ПК.
-2. Скопируй папку с профилем Chrome (`%USERPROFILE%\.vp_browser_data`).
-3. Поставь Python + FFmpeg по пунктам 1-2.
-4. `pip install -e .` → `.env` → запусти Chrome → `python -m app.main`.
+Перенесены в `scripts/legacy/`: `BACKEND.cmd`, `BROWSER-OUTSEE.cmd`, `Diagnose-Chrome.cmd`, `OBNOVIT-I-ZAPUSK.cmd`, `PULL-HOTFIX.cmd` и др.
 
-Готово.
+**Запуск** — только **STUDIO.cmd** (пункты 1–6).
+
+---
+
+## Ошибка парсинга `scripts\studio.ps1`
+
+Обнови репозиторий:
+
+```powershell
+git checkout main
+git pull origin main
+.\STUDIO.cmd
+```
+
+Обходной путь: `.\scripts\run-backend.ps1` → http://127.0.0.1:8765
