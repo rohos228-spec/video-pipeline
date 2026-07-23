@@ -96,6 +96,10 @@ $env:HUGGINGFACE_HUB_CACHE = $cacheHfHub
 $env:TRANSFORMERS_CACHE = $cacheHfHub
 $env:NEMO_CACHE_DIR = $cacheNemo
 $env:HF_HUB_ENABLE_HF_TRANSFER = "0"
+$env:HF_HUB_DISABLE_XET = "1"
+$env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
+$env:HF_HUB_ETAG_TIMEOUT = "60"
+$env:HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY = "1"
 $env:TOKENIZERS_PARALLELISM = "false"
 
 Write-BackendLogLine "=== backend start PID=$PID ==="

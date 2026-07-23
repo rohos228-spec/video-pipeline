@@ -99,6 +99,11 @@ def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
         "HF_HUB_DISABLE_SYMLINKS": "1",
         "HF_HUB_DISABLE_SYMLINKS_WARNING": "0",
         "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        # Xet пишет manifest.json во temp → WinError 32 при параллельной загрузке на Windows
+        "HF_HUB_DISABLE_XET": "1",
+        "HF_HUB_DOWNLOAD_TIMEOUT": "600",
+        "HF_HUB_ETAG_TIMEOUT": "60",
+        "HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY": "1",
         "TOKENIZERS_PARALLELISM": "false",
     }
     for key, value in env_pairs.items():
