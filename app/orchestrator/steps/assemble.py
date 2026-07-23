@@ -365,18 +365,60 @@ async def _assemble_body(
     cells: list[tuple[int, str]],
     align_cells: list[tuple[int, str]],
 ) -> None:
-    try:
-        audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
-            audio_dir,
-            audio_path,
-            frame_numbers,
-            cells=cells,
-            align_cells=align_cells,
-            words=words,
-            per_frame_tts=per_frame_tts,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(str(exc)) from exc
+    timeline_mode = "legacy-stretch"
+    used_r15 = False
+
+    if per_frame_tts:
+        try:
+            audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
+                audio_dir,
+                audio_path,
+                frame_numbers,
+                cells=cells,
+                align_cells=align_cells,
+                words=words,
+                per_frame_tts=True,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(str(exc)) from exc
+        timeline_mode = "per-frame"
+    else:
+        from app.services.plan_timestamps import load_assembly_timeline_from_r15
+
+        all_nums = [n for n, _ in align_cells]
+        try:
+            r15_clips, r15_master = await load_assembly_timeline_from_r15(
+                project,
+                all_nums,
+                align_cells,
+                audio_path,
+            )
+        except RuntimeError:
+            raise
+        allowed = set(frame_numbers)
+        if r15_clips:
+            filtered = [c for c in r15_clips if c.frame_number in allowed]
+            if len(filtered) == len(allowed):
+                audio_clips = filtered
+                audio_duration = float(r15_master or 0.0)
+                time_scale = 1.0
+                per_frame_audio = False
+                timeline_mode = "excel-r15"
+                used_r15 = True
+
+        if not used_r15:
+            try:
+                audio_clips, audio_duration, time_scale, per_frame_audio = await build_assembly_timeline(
+                    audio_dir,
+                    audio_path,
+                    frame_numbers,
+                    cells=cells,
+                    align_cells=align_cells,
+                    words=words,
+                    per_frame_tts=False,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError(str(exc)) from exc
 
     words = _scale_whisper_words(words, time_scale) if not per_frame_audio else words
     _ = frames_all, skipped_no_video, audio, whisper_art  # reserved for future diagnostics
@@ -389,7 +431,7 @@ async def _assemble_body(
         audio_duration,
         len(audio_clips),
         video_duration,
-        "per-frame" if per_frame_audio else "legacy-stretch",
+        "per-frame" if per_frame_audio else timeline_mode,
         subs_enabled,
     )
 

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from loguru import logger
@@ -13,6 +14,7 @@ from openpyxl import load_workbook
 from app.models import Project
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
+    ROW_TIMECODE_V8,
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
@@ -28,6 +30,172 @@ from app.storage.project_sheet import _file_lock
 def plan_frame_column(frame_number: int) -> int:
     """Кадр N (1-based) → колонка на листе «план»."""
     return frame_number + 2
+
+
+def _normalize_timestamp_label(text: str) -> str:
+    raw = (text or "").strip().translate(str.maketrans("–—−", "---"))
+    if not raw:
+        return ""
+    return re.sub(r"\s*-\s*", "-", raw)
+
+
+def _cell_timecode_text(ws, row: int, col: int) -> str:
+    """Ячейка таймкода: строка, datetime/time из Excel, unicode-тире."""
+    v = ws.cell(row=row, column=col).value
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return _normalize_timestamp_label(v)
+    from datetime import datetime, time, timedelta
+
+    if isinstance(v, datetime):
+        sec = v.hour * 3600 + v.minute * 60 + v.second + v.microsecond / 1_000_000
+        minutes = int(sec // 60)
+        return f"{minutes}:{sec - minutes * 60:05.2f}"
+    if isinstance(v, time):
+        sec = v.hour * 3600 + v.minute * 60 + v.second + v.microsecond / 1_000_000
+        minutes = int(sec // 60)
+        return f"{minutes}:{sec - minutes * 60:05.2f}"
+    if isinstance(v, timedelta):
+        sec = max(0.0, v.total_seconds())
+        minutes = int(sec // 60)
+        return f"{minutes}:{sec - minutes * 60:05.2f}"
+    if isinstance(v, (int, float)):
+        if 0 < float(v) < 1:
+            sec = float(v) * 86400.0
+        else:
+            sec = float(v)
+        minutes = int(sec // 60)
+        return f"{minutes}:{sec - minutes * 60:05.2f}"
+    return _normalize_timestamp_label(str(v))
+
+
+def _load_plan_workbook(path: Path, *, data_only: bool):
+    return load_workbook(path, data_only=data_only, read_only=False)
+
+
+def _scan_row_content_columns(ws, row: int, *, start_col: int = 3, limit: int = 400) -> int:
+    reported = int(getattr(ws, "max_column", None) or start_col)
+    last = start_col
+    empty_streak = 0
+    for col in range(start_col, start_col + limit):
+        if _cell_text(ws, row, col):
+            last = col
+            empty_streak = 0
+        else:
+            empty_streak += 1
+            if empty_streak >= 24 and last > start_col:
+                break
+    return max(reported, last)
+
+
+def voiceover_frame_columns(ws) -> dict[int, int]:
+    """Номер кадра → колонка xlsx (порядок непустых ячеек R49)."""
+    mapping: dict[int, int] = {}
+    num = 1
+    max_col = _scan_row_content_columns(ws, ROW_VOICEOVER_V8)
+    for col in range(3, max_col + 1):
+        if _cell_text(ws, ROW_VOICEOVER_V8, col):
+            mapping[num] = col
+            num += 1
+    return mapping
+
+
+def _timestamp_column(frame_number: int, col_map: dict[int, int]) -> int:
+    return col_map.get(frame_number, plan_frame_column(frame_number))
+
+
+def _read_r15_label(ws_raw, ws_values, row: int, col: int) -> str:
+    if ws_values is not None:
+        text = _cell_timecode_text(ws_values, row, col)
+        if text:
+            return text
+    if ws_raw is not None:
+        raw = ws_raw.cell(row=row, column=col).value
+        if isinstance(raw, str):
+            s = raw.strip()
+            if s and not s.startswith("="):
+                return _normalize_timestamp_label(s)
+        text = _cell_timecode_text(ws_raw, row, col)
+        if text:
+            return text
+    return ""
+
+
+def read_plan_timestamps_cells(
+    project: Project,
+    frame_numbers: list[int],
+) -> tuple[list[tuple[int, str]], int]:
+    """Таймкод кадра — строка 15 листа «план»."""
+    ts_row = ROW_TIMECODE_V8
+    if not frame_numbers:
+        return [], ts_row
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return [(n, "") for n in frame_numbers], ts_row
+
+    out: dict[int, str] = dict.fromkeys(frame_numbers, "")
+    try:
+        with _file_lock(path):
+            wb_values = _load_plan_workbook(path, data_only=True)
+            wb_raw = _load_plan_workbook(path, data_only=False)
+            try:
+                ws_values = _resolve_plan_sheet(wb_values)
+                ws_raw = _resolve_plan_sheet(wb_raw)
+                ws_primary = ws_values or ws_raw
+                if ws_primary is not None:
+                    col_map = voiceover_frame_columns(ws_primary)
+                    for frame_number in frame_numbers:
+                        col = _timestamp_column(frame_number, col_map)
+                        out[frame_number] = _read_r15_label(
+                            ws_raw, ws_values, ts_row, col
+                        )
+            finally:
+                wb_values.close()
+                wb_raw.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] read_plan_timestamps_cells failed ({}): {}",
+            project.id,
+            path,
+            e,
+        )
+    return [(n, out[n]) for n in frame_numbers], ts_row
+
+
+def write_plan_timestamps(
+    project: Project,
+    ranges: list[tuple[int, str]],
+) -> int:
+    """Записать таймкоды в строку 15 листа «план». Возвращает число ячеек."""
+    path = project.data_dir / "project.xlsx"
+    if not path.exists() or not ranges:
+        return 0
+    written = 0
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return 0
+            if not (_cell_text(ws, ROW_TIMECODE_V8, 1) or "").strip():
+                ws.cell(row=ROW_TIMECODE_V8, column=1, value="таймкод M:SS.ss")
+            col_map = voiceover_frame_columns(ws)
+            for frame_number, label in ranges:
+                label = (label or "").strip()
+                if not label:
+                    continue
+                col = _timestamp_column(frame_number, col_map)
+                ws.cell(row=ROW_TIMECODE_V8, column=col, value=label)
+                written += 1
+            if written:
+                wb.save(path)
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] write_plan_timestamps failed: {}", project.id, e)
+        return 0
+    return written
 
 
 def read_plan_voiceover(project: Project, frame_number: int) -> str | None:

@@ -139,6 +139,10 @@ async def _persist_audio_results(
         path=str(words_path),
     ))
 
+    from app.services.plan_timestamps import write_asr_timestamps_to_r15
+
+    write_asr_timestamps_to_r15(project, clips)
+
     logger.info(
         "[#{}] generate_audio done: {} frames, {:.2f}s total, {} whisper words ({})",
         project.id,
