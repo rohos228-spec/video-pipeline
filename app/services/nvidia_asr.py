@@ -22,8 +22,11 @@ _model_lock = threading.Lock()
 _transcribe_lock = threading.Lock()
 _model_cache: dict[str, object] = {}
 
+_PARAKEET_V3 = "nvidia/parakeet-tdt-0.6b-v3"
+_LEGACY_NVIDIA_MARKERS = ("fastconformer", "stt_ru_", "conformer_hybrid")
+
 _NEMO_FILENAME_BY_REPO: dict[str, str] = {
-    "nvidia/parakeet-tdt-0.6b-v3": "parakeet-tdt-0.6b-v3.nemo",
+    _PARAKEET_V3: "parakeet-tdt-0.6b-v3.nemo",
     "nvidia/parakeet-tdt-0.6b-v2": "parakeet-tdt-0.6b-v2.nemo",
 }
 _MIN_NEMO_BYTES = 50_000_000
@@ -34,6 +37,24 @@ _NVIDIA_INSTALL_HINT = (
 _LOAD_RETRIES = 8
 _LOAD_RETRY_SLEEP_S = 4.0
 _LOAD_LOCK_TIMEOUT_S = 900.0
+
+
+def normalize_nvidia_asr_model(model_name: str) -> str:
+    """Word-level монтаж — только Parakeet; FastConformer из старого .env игнорируем."""
+    name = (model_name or "").strip()
+    if not name:
+        return _PARAKEET_V3
+    lower = name.lower()
+    if name.startswith("nvidia/") and "parakeet" in lower:
+        return name
+    if any(marker in lower for marker in _LEGACY_NVIDIA_MARKERS):
+        logger.warning(
+            "nvidia_asr: {} устарел для word-level монтажа — используем {}",
+            name,
+            _PARAKEET_V3,
+        )
+        return _PARAKEET_V3
+    return name
 
 
 def nvidia_asr_available() -> bool:
@@ -254,6 +275,8 @@ def _load_model(model_name: str):
     if not nvidia_asr_available():
         raise ImportError(f"NeMo ASR не установлен. {_NVIDIA_INSTALL_HINT}")
 
+    model_name = normalize_nvidia_asr_model(model_name)
+
     with _model_lock:
         cached = _model_cache.get(model_name)
         if cached is not None:
@@ -298,7 +321,7 @@ def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
     from app.settings import settings
 
     configure_nvidia_asr_environment(force=True)
-    name = (model_name or settings.nvidia_asr_model).strip()
+    name = normalize_nvidia_asr_model(model_name or settings.nvidia_asr_model)
     try:
         _load_model(name)
         return True
@@ -406,21 +429,37 @@ def transcribe_words_nvidia(
     if not audio_path.is_file():
         raise FileNotFoundError(f"audio not found: {audio_path}")
 
-    model = _load_model(model_name)
+    resolved_model = normalize_nvidia_asr_model(model_name)
+    model = _load_model(resolved_model)
     mono_path = _ensure_mono_for_nemo(audio_path)
     logger.info(
         "nvidia_asr: transcribing {} (model={}, lang={})",
         mono_path.name,
-        model_name,
+        resolved_model,
         language,
     )
     t0 = time.monotonic()
-    with _transcribe_lock:
-        hypotheses = model.transcribe(
-            [str(mono_path.resolve())],
-            timestamps=True,
-            verbose=False,
-        )
+    stop_heartbeat = threading.Event()
+
+    def _transcribe_heartbeat() -> None:
+        while not stop_heartbeat.wait(30.0):
+            logger.info(
+                "nvidia_asr: transcribe ещё идёт ({:.0f}s) — {} …",
+                time.monotonic() - t0,
+                mono_path.name,
+            )
+
+    heartbeat = threading.Thread(target=_transcribe_heartbeat, daemon=True)
+    heartbeat.start()
+    try:
+        with _transcribe_lock:
+            hypotheses = model.transcribe(
+                [str(mono_path.resolve())],
+                timestamps=True,
+                verbose=False,
+            )
+    finally:
+        stop_heartbeat.set()
     if not hypotheses:
         logger.warning("nvidia_asr: empty hypotheses for {}", audio_path.name)
         return []
