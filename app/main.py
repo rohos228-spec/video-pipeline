@@ -23,6 +23,11 @@ from app.prompts_loader import sync_prompts_from_files
 from app.settings import settings
 from app.telegram.bot import build_bot, dp
 
+if (settings.asr_backend or "").strip().lower() == "nvidia":
+    from app.services.nvidia_asr_env import configure_nvidia_asr_environment
+
+    configure_nvidia_asr_environment(force=True)
+
 
 async def _init_db() -> None:
     from sqlalchemy import text

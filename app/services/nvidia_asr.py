@@ -9,25 +9,25 @@ from pathlib import Path
 
 from loguru import logger
 
+from app.services.nvidia_asr_env import configure_nvidia_asr_environment
 from app.services.whisper import WordTS
 
-# Windows: WinError 1314 / HF temp locks — кэш в data/, без symlink.
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "0")
+# До любого import nemo/huggingface — иначе останется %TEMP%.
+configure_nvidia_asr_environment(force=True)
 
 _model_lock = threading.Lock()
 _model_cache: dict[str, object] = {}
-_hf_cache_configured = False
 
 _NVIDIA_INSTALL_HINT = (
     'pip install -e ".[nvidia]"   # NeMo + Parakeet на ПК монтажа (CUDA)'
 )
-_LOAD_RETRIES = 5
-_LOAD_RETRY_SLEEP_S = 3.0
-_LOAD_LOCK_TIMEOUT_S = 600.0
+_LOAD_RETRIES = 8
+_LOAD_RETRY_SLEEP_S = 4.0
+_LOAD_LOCK_TIMEOUT_S = 900.0
 
 
 def nvidia_asr_available() -> bool:
+    configure_nvidia_asr_environment(force=True)
     try:
         import nemo.collections.asr  # noqa: F401
         return True
@@ -35,22 +35,8 @@ def nvidia_asr_available() -> bool:
         return False
 
 
-def _ensure_hf_cache_dir() -> Path:
-    """Стабильный HF-кэш в data/ — меньше WinError 32 в %TEMP%."""
-    global _hf_cache_configured
-    from app.settings import settings
-
-    cache_root = settings.data_dir / ".cache" / "huggingface"
-    cache_root.mkdir(parents=True, exist_ok=True)
-    hub = cache_root / "hub"
-    hub.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("HF_HOME", str(cache_root))
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub))
-    os.environ.setdefault("TRANSFORMERS_CACHE", str(hub))
-    if not _hf_cache_configured:
-        logger.info("nvidia_asr: HF cache → {}", cache_root)
-        _hf_cache_configured = True
-    return cache_root
+def _cache_root() -> Path:
+    return configure_nvidia_asr_environment(force=True)
 
 
 def _is_file_lock_error(exc: BaseException) -> bool:
@@ -59,10 +45,14 @@ def _is_file_lock_error(exc: BaseException) -> bool:
     if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 32:
         return True
     text = str(exc).lower()
-    return "winerror 32" in text or "used by another process" in text
+    return (
+        "winerror 32" in text
+        or "used by another process" in text
+        or "занят другим процессом" in text
+    )
 
 
-def _with_interprocess_load_lock(cache_dir: Path):
+def _with_interprocess_load_lock(cache_dir: Path) -> Path:
     """Один процесс качает модель — остальные ждут (Studio + worker)."""
     lock_dir = cache_dir / "locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -74,10 +64,11 @@ def _with_interprocess_load_lock(cache_dir: Path):
             os.close(fd)
             return lock_file
         except FileExistsError:
-            time.sleep(1.5)
+            time.sleep(2.0)
     raise TimeoutError(
         "nvidia_asr: другой процесс загружает Parakeet — таймаут ожидания. "
-        "Закройте лишние Studio/воркеры и повторите."
+        "Закройте все Studio/python, удалите data/.cache/huggingface/locks/ "
+        "и запустите: python scripts/download_nvidia_asr.py"
     )
 
 
@@ -91,9 +82,73 @@ def _release_interprocess_load_lock(lock_file: Path | None) -> None:
             logger.warning("nvidia_asr: не удалось снять lock {}: {}", lock_file, exc)
 
 
+def _hf_cache_slug(model_name: str) -> str:
+    return "models--" + model_name.replace("/", "--")
+
+
+def _find_local_nemo_checkpoint(model_name: str, cache_dir: Path) -> Path | None:
+    """Ищем уже скачанный .nemo — restore_from без temp manifest."""
+    slug = model_name.replace("/", "--")
+    nemo_dest = cache_dir / "nemo" / f"{slug}.nemo"
+    if nemo_dest.is_file():
+        return nemo_dest
+    hub = cache_dir / "huggingface" / "hub"
+    hf_dir = hub / _hf_cache_slug(model_name)
+    if hf_dir.is_dir():
+        for nemo in hf_dir.rglob("*.nemo"):
+            if nemo.is_file():
+                return nemo
+    return None
+
+
+def _snapshot_download_model(model_name: str, cache_dir: Path) -> Path | None:
+    """Скачать HF repo в hub cache; вернуть .nemo если есть."""
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        logger.warning("huggingface_hub не установлен — from_pretrained напрямую")
+        return None
+
+    hub = cache_dir / "huggingface" / "hub"
+    hub.mkdir(parents=True, exist_ok=True)
+    configure_nvidia_asr_environment(force=True)
+    local_dir = snapshot_download(
+        repo_id=model_name,
+        cache_dir=str(hub),
+        resume_download=True,
+    )
+    root = Path(local_dir)
+    for nemo in root.rglob("*.nemo"):
+        if nemo.is_file():
+            return nemo
+    return None
+
+
 def _download_model(model_name: str):
     import nemo.collections.asr as nemo_asr
 
+    cache_dir = _cache_root()
+    configure_nvidia_asr_environment(force=True)
+
+    local = _find_local_nemo_checkpoint(model_name, cache_dir)
+    if local is not None:
+        logger.info("nvidia_asr: restore_from local {}", local)
+        return nemo_asr.models.ASRModel.restore_from(restore_path=str(local))
+
+    try:
+        nemo_path = _snapshot_download_model(model_name, cache_dir)
+        if nemo_path is not None:
+            dest = cache_dir / "nemo" / f"{model_name.replace('/', '--')}.nemo"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.is_file():
+                dest.write_bytes(nemo_path.read_bytes())
+            logger.info("nvidia_asr: restore_from snapshot {}", dest)
+            return nemo_asr.models.ASRModel.restore_from(restore_path=str(dest))
+    except Exception as exc:  # noqa: BLE001
+        if not _is_file_lock_error(exc):
+            logger.warning("nvidia_asr: snapshot_download failed: {}", exc)
+
+    logger.info("nvidia_asr: from_pretrained fallback {}", model_name)
     return nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
 
 
@@ -106,7 +161,7 @@ def _load_model(model_name: str):
         if cached is not None:
             return cached
 
-        cache_dir = _ensure_hf_cache_dir()
+        cache_dir = _cache_root()
         logger.info("nvidia_asr: loading model '{}' …", model_name)
 
         lock_file: Path | None = None
@@ -123,15 +178,15 @@ def _load_model(model_name: str):
                     last_exc = exc
                     if not _is_file_lock_error(exc) or attempt >= _LOAD_RETRIES:
                         raise
+                    wait = _LOAD_RETRY_SLEEP_S * attempt
                     logger.warning(
-                        "nvidia_asr: WinError 32 при загрузке (попытка {}/{}), "
-                        "повтор через {:.0f}s: {}",
+                        "nvidia_asr: WinError 32 (попытка {}/{}), повтор через {:.0f}s: {}",
                         attempt,
                         _LOAD_RETRIES,
-                        _LOAD_RETRY_SLEEP_S,
+                        wait,
                         exc,
                     )
-                    time.sleep(_LOAD_RETRY_SLEEP_S * attempt)
+                    time.sleep(wait)
         finally:
             _release_interprocess_load_lock(lock_file)
 
@@ -144,6 +199,7 @@ def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
     """Явная предзагрузка Parakeet (скрипт / первый запуск Studio)."""
     from app.settings import settings
 
+    configure_nvidia_asr_environment(force=True)
     name = (model_name or settings.nvidia_asr_model).strip()
     try:
         _load_model(name)

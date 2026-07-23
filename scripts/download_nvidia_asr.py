@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Предзагрузка NVIDIA Parakeet в data/.cache/huggingface (обход WinError 32)."""
+"""Предзагрузка NVIDIA Parakeet в data/.cache (обход WinError 32)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ from loguru import logger
 
 
 def main() -> int:
+    from app.services.nvidia_asr_env import configure_nvidia_asr_environment
+
+    configure_nvidia_asr_environment(force=True)
     from app.services.asr import active_asr_backend
     from app.services.nvidia_asr import preload_nvidia_asr_model
 
