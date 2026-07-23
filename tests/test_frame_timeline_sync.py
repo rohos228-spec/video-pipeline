@@ -115,7 +115,7 @@ async def test_sync_retries_whisper_on_equal_split_from_words_json(
         patch("app.services.frame_timeline_sync.probe_duration", return_value=5.0),
         patch(
             "app.services.frame_timeline_sync.whisper_words_fresh_for_audio",
-            return_value=True,
+            return_value=False,
         ),
         patch(
             "app.services.frame_timeline_sync.frame_clips_from_whisper",

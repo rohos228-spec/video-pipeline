@@ -106,3 +106,88 @@ async def test_r49_hash_unchanged_after_r15_xlsx_touch(
 
     assert not align_called
     assert info.get("source") == "words_json"
+
+
+@pytest.mark.asyncio
+async def test_fresh_words_skips_equal_split_realign(
+    session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proportional R15 метки ~равные — не запускать ASR повторно если words.json свежий."""
+    monkeypatch.setattr("app.settings.settings.data_dir", tmp_path / "data")
+    p = Project(id=26, slug="vedm", topic="V")
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    audio = p.data_dir / "audio"
+    audio.mkdir()
+    voice = audio / "voice_full.wav"
+    voice.write_bytes(b"\xff" * 100)
+    session.add(p)
+    n = 10
+    master = 120.0
+    step = master / n
+    for i in range(1, n + 1):
+        session.add(
+            Frame(
+                project_id=26,
+                number=i,
+                voiceover_text=f"текст {i}",
+                start_ts=round((i - 1) * step, 3),
+                end_ts=round(i * step, 3),
+                duration_seconds=round(step, 3),
+                status="planned",
+            )
+        )
+    await session.flush()
+
+    cells = [(i, f"текст {i}") for i in range(1, n + 1)]
+    words_path = audio / "words_test.json"
+    words_path.write_text("[]", encoding="utf-8")
+    whisper_art = Artifact(
+        project_id=26,
+        kind=ArtifactKind.whisper_words,
+        uuid="w2",
+        path=str(words_path),
+        meta={"r49_hash": _r49_content_hash(cells)},
+    )
+    session.add(whisper_art)
+    await session.commit()
+
+    equal_clips = [
+        __import__("app.services.frame_audio", fromlist=["FrameAudioClip"]).FrameAudioClip(
+            i, voice, "t", round((i - 1) * step, 3), round(i * step, 3), round(step, 3)
+        )
+        for i in range(1, n + 1)
+    ]
+    align_called = False
+
+    async def _no_align(*_a, **_k):
+        nonlocal align_called
+        align_called = True
+        raise AssertionError("must not realign on equal split when words fresh")
+
+    with (
+        patch(
+            "app.services.frame_timeline_sync.read_plan_voiceover_cells",
+            return_value=cells,
+        ),
+        patch("app.services.frame_timeline_sync.probe_duration", return_value=master),
+        patch(
+            "app.services.frame_timeline_sync.whisper_words_fresh_for_audio",
+            return_value=True,
+        ),
+        patch(
+            "app.services.frame_timeline_sync.load_words_json",
+            return_value=[__import__("app.services.whisper", fromlist=["WordTS"]).WordTS("a", 0.0, 1.0, 1.0)],
+        ),
+        patch(
+            "app.services.frame_timeline_sync.frame_clips_from_whisper",
+            return_value=equal_clips,
+        ),
+        patch(
+            "app.services.frame_timeline_sync.align_existing_voice_full",
+            side_effect=_no_align,
+        ),
+    ):
+        info = await sync_frame_timestamps_from_voice(session, p)
+
+    assert not align_called
+    assert info.get("source") == "words_json"

@@ -289,7 +289,7 @@ async def sync_frame_timestamps_from_voice(
         words = load_words_json(Path(whisper_art.path))  # type: ignore[arg-type]
         clips = frame_clips_from_whisper(cells, words, master, voice_path)
         source = "words_json"
-        if clips_look_equal_split(clips, master):
+        if clips_look_equal_split(clips, master) and not whisper_fresh:
             logger.warning(
                 "[#{}] frame_timeline_sync: равномерный fallback из words.json "
                 "({} clips, {:.1f}s) — принудительный {} realign",
@@ -306,6 +306,11 @@ async def sync_frame_timestamps_from_voice(
                 voice_path,
                 audio_dir,
                 persist_words=True,
+            )
+        elif clips_look_equal_split(clips, master):
+            logger.info(
+                "[#{}] frame_timeline_sync: words.json свежий — equal-split проверку пропускаем",
+                project.id,
             )
 
     updated = _apply_clips_to_frames(timeline_frames, clips)
@@ -357,6 +362,13 @@ async def sync_frame_timestamps_if_needed(
         master = await probe_duration(voice_path)
 
     missing = frames_missing_timestamps(timeline_frames)
+    whisper_art = await _latest_whisper_artifact(session, project.id)
+    whisper_fresh = bool(
+        voice_path is not None
+        and voice_path.is_file()
+        and whisper_art is not None
+        and whisper_words_fresh_for_audio(whisper_art, voice_path)
+    )
     suspicious = False
     if not missing and master > 0:
         clips_probe = [
@@ -373,10 +385,12 @@ async def sync_frame_timestamps_if_needed(
         ]
         suspicious = clips_look_equal_split(clips_probe, master)
 
-    if not missing and not suspicious and not _r49_changed_since_whisper(
-        await _latest_whisper_artifact(session, project.id), _cells
-    ):
+    if not missing and not suspicious and not _r49_changed_since_whisper(whisper_art, _cells):
         return {"skipped": "timestamps ok"}
+    if not missing and suspicious and whisper_fresh and not _r49_changed_since_whisper(
+        whisper_art, _cells
+    ):
+        return {"skipped": "timestamps ok (fresh words)"}
 
     reason = []
     if missing:
