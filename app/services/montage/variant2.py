@@ -25,6 +25,8 @@ from app.settings import settings
 MONTAGE_ENGINE_V2 = "montage-v2-r15-overlay-pts-s2"
 DEFAULT_W, DEFAULT_H = 1920, 1080
 OVERLAY_BATCH = 6
+_DEFAULT_VOICE_GAIN = 1.0
+_DEFAULT_BGM_MIX_RATIO = 0.35
 
 
 @dataclass(frozen=True)
@@ -256,9 +258,15 @@ async def _mux(
     bgm: BgmConfig | None,
 ) -> None:
     cmd: list[str] = ["ffmpeg", "-y", "-i", str(video), "-i", str(voice)]
-    gain = max(float(settings.assembly_voice_gain), 0.1)
+    gain = max(
+        float(getattr(settings, "assembly_voice_gain", _DEFAULT_VOICE_GAIN)),
+        0.1,
+    )
+    bgm_ratio = float(
+        getattr(settings, "assembly_bgm_mix_ratio", _DEFAULT_BGM_MIX_RATIO)
+    )
     if bgm is not None and bgm.path.is_file():
-        bgm_gain = max(bgm.level, 0.0) * max(float(settings.assembly_bgm_mix_ratio), 0.0)
+        bgm_gain = max(bgm.level, 0.0) * max(bgm_ratio, 0.0)
         fc = (
             f"[1:a]volume={gain:.4f}[vox];"
             f"[2:a]volume={bgm_gain:.4f},atrim=0:{voice_s:.3f},asetpts=PTS-STARTPTS[bgm];"
@@ -354,8 +362,13 @@ async def run_variant2(
         video = await _build_overlay_timeline(
             project, slots, w=w, h=h, voice_s=voice_s, tmp=tmp
         )
+        pre_mux = final_dir / "_variant2_pre_mux.mp4"
+        shutil.copy2(video, pre_mux)
+        logger.info("[#{}] variant2: overlay сохранён → {} (перед mux)", project.id, pre_mux)
         out.parent.mkdir(parents=True, exist_ok=True)
         await _mux(video, voice, out, voice_s=voice_s, bgm=bgm)
+        if pre_mux.is_file():
+            pre_mux.unlink(missing_ok=True)
 
     logger.info("[#{}] variant2 done → {}", project.id, out)
     return out
