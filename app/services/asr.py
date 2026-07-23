@@ -21,16 +21,16 @@ def _resolve_nvidia_model(explicit: str | None) -> str:
         from app.services.nvidia_asr import normalize_nvidia_asr_model
 
         return normalize_nvidia_asr_model(candidate)
-    if candidate and candidate != settings.nvidia_asr_model:
-        logger.debug(
-            "nvidia ASR: model_name={!r} — это whisper-модель, "
-            "используем NVIDIA_ASR_MODEL={}",
-            candidate,
-            settings.nvidia_asr_model,
-        )
     from app.services.nvidia_asr import normalize_nvidia_asr_model
 
-    return normalize_nvidia_asr_model(settings.nvidia_asr_model)
+    resolved = normalize_nvidia_asr_model(settings.nvidia_asr_model)
+    if candidate and candidate not in (resolved, settings.nvidia_asr_model):
+        logger.debug(
+            "nvidia ASR: model_name={!r} — whisper-модель, используем {}",
+            candidate,
+            resolved,
+        )
+    return resolved
 
 
 def transcribe_words(

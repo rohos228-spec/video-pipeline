@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -226,6 +227,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             voice_path,
             active_asr_backend(),
         )
+        if active_asr_backend() == "nvidia":
+            from app.services.nvidia_asr import ensure_nvidia_asr_ready
+
+            logger.info(
+                "[#{}] generate_audio: ждём Parakeet (~2.5 GB при первом запуске) …",
+                project.id,
+            )
+            await asyncio.to_thread(ensure_nvidia_asr_ready)
         clips, full_audio_path, words = await align_existing_voice_full(
             project,
             timeline_frames,

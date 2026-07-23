@@ -404,7 +404,13 @@ function Get-StudioNvidiaAsrModel {
     if (-not (Test-Path $envFile)) { return $default }
     $match = Select-String -Path $envFile -Pattern '^\s*NVIDIA_ASR_MODEL\s*=\s*(\S+)' | Select-Object -First 1
     if (-not $match) { return $default }
-    return $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+    $raw = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+    if ($raw -match 'parakeet') { return $raw }
+    if ($raw -match 'fastconformer|stt_ru_|conformer_hybrid') {
+        Write-StudioMsg "NVIDIA_ASR_MODEL=$raw устарел — качаем Parakeet v3 (~2.5 GB)" "Yellow"
+        return $default
+    }
+    return $raw
 }
 
 function Invoke-StudioPredownloadNemo {

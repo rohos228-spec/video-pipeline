@@ -122,6 +122,15 @@ def _with_interprocess_load_lock(cache_dir: Path, model_name: str) -> Path | Non
             os.close(fd)
             return lock_file
         except FileExistsError:
+            waited = _LOAD_LOCK_TIMEOUT_S - (deadline - time.monotonic())
+            if int(waited) % 15 < 2:
+                part = _stable_nemo_path(model_name, cache_dir).with_suffix(".nemo.part")
+                mb = part.stat().st_size / 1_000_000 if part.is_file() else 0.0
+                logger.info(
+                    "nvidia_asr: ждём скачивание Parakeet (~2.5 GB) — {:.0f}s, {:.0f} MB …",
+                    waited,
+                    mb,
+                )
             time.sleep(2.0)
     raise TimeoutError(
         "nvidia_asr: другой процесс загружает Parakeet — таймаут ожидания. "
@@ -217,10 +226,20 @@ def _http_download_nemo(model_name: str, cache_dir: Path) -> Path:
                 mode = "ab" if resume_from > 0 and resp.status_code == 206 else "wb"
                 if mode == "wb" and part.exists():
                     part.unlink(missing_ok=True)
+                downloaded = resume_from
+                last_log = time.monotonic()
                 with part.open(mode) as out:
                     for chunk in resp.iter_bytes(1024 * 1024):
                         if chunk:
                             out.write(chunk)
+                            downloaded += len(chunk)
+                            now = time.monotonic()
+                            if now - last_log >= 15.0:
+                                logger.info(
+                                    "nvidia_asr: скачано {:.0f} MB …",
+                                    downloaded / 1_000_000,
+                                )
+                                last_log = now
             if not _nemo_file_ready(part):
                 size = part.stat().st_size if part.is_file() else 0
                 raise RuntimeError(f"nvidia_asr: неполная загрузка .nemo ({size} bytes)")
@@ -282,38 +301,57 @@ def _load_model(model_name: str):
         if cached is not None:
             return cached
 
-        cache_dir = _cache_root()
+    cache_dir = _cache_root()
+    nemo_path = _find_local_nemo_checkpoint(model_name, cache_dir)
+    if nemo_path is None:
         logger.info("nvidia_asr: loading model '{}' …", model_name)
-
         lock_file: Path | None = None
         last_exc: BaseException | None = None
         try:
             lock_file = _with_interprocess_load_lock(cache_dir, model_name)
             for attempt in range(1, _LOAD_RETRIES + 1):
                 try:
-                    model = _download_model(model_name)
-                    _model_cache[model_name] = model
-                    logger.info("nvidia_asr: model '{}' ready", model_name)
-                    return model
+                    nemo_path = _ensure_nemo_on_disk(model_name, cache_dir)
+                    break
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     if not _is_file_lock_error(exc) or attempt >= _LOAD_RETRIES:
                         raise
                     wait = _LOAD_RETRY_SLEEP_S * attempt
                     logger.warning(
-                        "nvidia_asr: WinError 32 (попытка {}/{}), повтор через {:.0f}s: {}",
+                        "nvidia_asr: WinError 32 при скачивании (попытка {}/{}), "
+                        "повтор через {:.0f}s: {}",
                         attempt,
                         _LOAD_RETRIES,
                         wait,
                         exc,
                     )
                     time.sleep(wait)
+            else:
+                if last_exc is not None:
+                    raise last_exc
+                raise RuntimeError(f"nvidia_asr: не удалось скачать {model_name}")
         finally:
             _release_interprocess_load_lock(lock_file)
+    else:
+        logger.info("nvidia_asr: restore model '{}' from disk …", model_name)
 
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError(f"nvidia_asr: не удалось загрузить {model_name}")
+    with _model_lock:
+        cached = _model_cache.get(model_name)
+        if cached is not None:
+            return cached
+        model = _restore_nemo_model(model_name, nemo_path)
+        _model_cache[model_name] = model
+        logger.info("nvidia_asr: model '{}' ready", model_name)
+        return model
+
+
+def ensure_nvidia_asr_ready(model_name: str | None = None) -> None:
+    """Дождаться скачивания и restore Parakeet — перед transcribe."""
+    from app.settings import settings
+
+    name = normalize_nvidia_asr_model(model_name or settings.nvidia_asr_model)
+    _load_model(name)
 
 
 def preload_nvidia_asr_model(model_name: str | None = None) -> bool:
