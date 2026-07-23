@@ -1905,13 +1905,12 @@ export function AssembleMontageTrigger({
   return (
     <button
       type="button"
-      title={busy ? "Монтаж выполняется…" : "Панель монтажа"}
-      disabled={busy}
+      title={busy ? "Монтаж выполняется — панель можно открыть" : "Панель монтажа"}
       className={cn(
         "nodrag nopan nowheel absolute left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold shadow-md backdrop-blur transition",
         "-top-9",
         busy
-          ? "cursor-not-allowed border-amber-400/30 bg-amber-500/10 text-amber-200/70 opacity-80"
+          ? "border-amber-400/40 bg-amber-500/15 text-amber-200/90"
           : active
             ? "border-amber-400/60 bg-amber-500/25 text-amber-100"
             : "border-amber-400/40 bg-amber-500/15 text-amber-200 hover:border-amber-300/70 hover:bg-amber-500/25",
@@ -1919,7 +1918,6 @@ export function AssembleMontageTrigger({
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
-        if (busy) return;
         e.stopPropagation();
         e.preventDefault();
         onClick();

@@ -408,3 +408,65 @@ async def sync_frame_timestamps_if_needed(
         frames,
         persist_whisper=suspicious or bool(missing),
     )
+
+
+async def sync_frame_timestamps_for_board(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame] | None = None,
+) -> dict[str, Any]:
+    """Обновить Frame.start_ts/end_ts из кэша words.json — без ASR на GET /montage-board."""
+    if frames is None:
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number.asc())
+                )
+            ).scalars().all()
+        )
+    timeline_frames, cells = timeline_frames_and_cells(project, frames)
+    if not timeline_frames:
+        return {"skipped": "no timeline frames"}
+
+    voice_path = find_voice_full_on_disk(
+        project.data_dir,
+        meta=project.meta if isinstance(project.meta, dict) else None,
+    )
+    if voice_path is None or not voice_path.is_file():
+        return {"skipped": "voice_full not on disk"}
+
+    whisper_art = await _latest_whisper_artifact(session, project.id)
+    if whisper_art is None or not whisper_art.path:
+        return {"skipped": "no whisper artifact"}
+    if not whisper_words_fresh_for_audio(whisper_art, voice_path):
+        return {"skipped": "stale words.json"}
+
+    words_path = Path(whisper_art.path)
+    if not words_path.is_file():
+        return {"skipped": "words file missing"}
+
+    master = await probe_duration(voice_path)
+    words = load_words_json(words_path)
+    if not words:
+        return {"skipped": "empty words.json"}
+
+    clips = frame_clips_from_whisper(cells, words, master, voice_path)
+    if not clips:
+        return {"skipped": "map_frames empty"}
+
+    updated = _apply_clips_to_frames(timeline_frames, clips)
+    if updated:
+        await session.flush()
+        logger.info(
+            "[#{}] montage_board sync: {} кадров ← words.json (без ASR)",
+            project.id,
+            len(updated),
+        )
+    return {
+        "source": "words_json",
+        "updated": updated,
+        "clip_count": len(clips),
+        "voice_seconds": round(master, 2),
+    }

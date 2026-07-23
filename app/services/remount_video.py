@@ -159,6 +159,11 @@ async def remount_video(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[#{}] remount: assemble failed", project.id)
         summary["error"] = str(exc)
+        actual = await compute_actual_status(session, project)
+        if project.status != actual:
+            project.status = actual
+            await session.flush()
+            summary["recomputed_status"] = actual.value
         summary["final_status"] = project.status.value
         return summary
     summary["final_status"] = project.status.value

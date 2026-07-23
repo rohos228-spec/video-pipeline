@@ -14,6 +14,8 @@ from loguru import logger
 
 from app.settings import settings
 
+_STALE_LOCK_AGE_SEC = 7200.0
+
 
 def _montage_marker(project_id: int):
     return settings.sqlite_path.parent / f".montage_lane_{project_id}.lock"
@@ -27,7 +29,19 @@ def montage_lane_holder(project_id: int) -> str | None:
 
 
 def montage_lane_owned_by(project_id: int) -> bool:
-    return _montage_marker(project_id).is_file()
+    marker = _montage_marker(project_id)
+    if not marker.is_file():
+        return False
+    age = time.time() - marker.stat().st_mtime
+    if age > _STALE_LOCK_AGE_SEC:
+        logger.warning(
+            "montage_lane: снят зависший lock #{} ({:.0f}s)",
+            project_id,
+            age,
+        )
+        marker.unlink(missing_ok=True)
+        return False
+    return True
 
 
 @contextmanager
@@ -35,11 +49,20 @@ def montage_lane_claim(project_id: int) -> Iterator[None]:
     """Эксклюзивный монтаж одного проекта (direct script vs backend worker)."""
     marker = _montage_marker(project_id)
     if marker.is_file():
-        holder = marker.read_text(encoding="utf-8").strip()
-        raise RuntimeError(
-            f"монтаж #{project_id} уже идёт"
-            + (f" ({holder})" if holder else "")
-        )
+        age = time.time() - marker.stat().st_mtime
+        if age > _STALE_LOCK_AGE_SEC:
+            logger.warning(
+                "montage_lane: удалён зависший lock #{} ({:.0f}s)",
+                project_id,
+                age,
+            )
+            marker.unlink(missing_ok=True)
+        else:
+            holder = marker.read_text(encoding="utf-8").strip()
+            raise RuntimeError(
+                f"монтаж #{project_id} уже идёт"
+                + (f" ({holder})" if holder else "")
+            )
     marker.parent.mkdir(parents=True, exist_ok=True)
     label = f"assemble #{project_id}"
     marker.write_text(label, encoding="utf-8")
