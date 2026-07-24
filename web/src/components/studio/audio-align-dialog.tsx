@@ -97,7 +97,10 @@ export function AudioAlignDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent
+        className="z-[10120] max-w-xl"
+        overlayClassName="z-[10120]"
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AudioLines className="h-4 w-4" />
