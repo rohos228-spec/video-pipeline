@@ -9,9 +9,9 @@ MONTAGE_VARIANTS = """
   filter_complex: overlay каждого clip с setpts offset на start_s из R15.
   Минусы: ~20 мин на 140+ клипов — каждый batch перекодирует всю шкалу.
 
-ВАРИАНТ 3 — OVERLAY+EXTEND (текущий, реализован в variant2.py)
-  Чёрное полотно voice_s; каждый клип overlay на start_s (setpts).
-  display до start следующего; src короче / gap → clone; без slow-mo.
+ВАРИАНТ 3 — SLOT+CONCAT (текущий, реализован)
+  gap (чёрный) + clip на каждый R15-слот, параллельное кодирование, concat copy.
+  Абсолютная R15: окно [start,end] целиком; src короче → slow; src длиннее → trim.
 
 ВАРИАНТ 4 — EDL / JSON TIMELINE
   Генерируем montage.edl из R15, один ffmpeg-script читает EDL.
