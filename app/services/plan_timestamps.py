@@ -674,15 +674,40 @@ def write_asr_timestamps_to_r15(
         timings_have_crumb_durations,
     )
 
-    timings = [
-        FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
-        for c in clips
-        if c.duration > 0
-    ]
+    # Пишем все кадры; нулевую длительность поднимаем до 0.05 чтобы Excel/доска
+    # не теряли колонки (иначе 141/153 и доска откатывается на words.json).
+    timings = []
+    for c in clips:
+        start = float(c.start_ts)
+        end = float(c.end_ts)
+        if end <= start + 0.01:
+            end = start + 0.05
+        timings.append(
+            FrameTiming(
+                c.frame_number,
+                start,
+                end,
+                round(end - start, 3),
+            )
+        )
     if not timings:
         return 0
-    master = max(c.end_ts for c in clips if c.duration > 0)
+    master = max(t.end_ts for t in timings)
     timings = enforce_monotonic_timings(timings, master=master)
+    # После monotonic снова подтянуть нули (схлопнутые старты).
+    fixed: list[FrameTiming] = []
+    for i, t in enumerate(timings):
+        start = float(t.start_ts)
+        end = float(t.end_ts)
+        if end <= start + 0.01:
+            if i + 1 < len(timings):
+                end = max(float(timings[i + 1].start_ts), start + 0.05)
+            else:
+                end = max(master, start + 0.05)
+        fixed.append(
+            FrameTiming(t.frame_number, round(start, 3), round(end, 3), round(end - start, 3))
+        )
+    timings = fixed
     if timings_have_crumb_durations(timings) and not allow_crumbs:
         logger.error(
             "[#{}] plan R15: отказ писать — слишком много кадров ≤0.1s "

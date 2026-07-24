@@ -191,8 +191,14 @@ async def run_audio_align(
     if not run_assemble:
         summary["done"] = True
         summary["next"] = "R15 обновлена — запустите «Монтаж» или assemble"
+        logger.info("[#{}] audio_align: R15 ok, assemble пропущен", project.id)
         return summary
 
+    logger.info(
+        "[#{}] audio_align: R15 записана ({}), запускаем assemble…",
+        project.id,
+        written,
+    )
     reset_info = await reset_step(session, project, "assemble")
     summary["assemble_reset"] = reset_info
 
@@ -222,6 +228,7 @@ async def run_audio_align(
         summary["done"] = True
         out = project.data_dir / "final" / f"{project.slug}.mp4"
         summary["final_video"] = str(out) if out.is_file() else None
+        logger.info("[#{}] audio_align: assemble done → {}", project.id, summary.get("final_video"))
     else:
         summary["error"] = f"сборка не завершилась: status={project.status.value}"
 
