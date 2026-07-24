@@ -50,7 +50,7 @@ class _OverlaySlot:
 
 @dataclass(frozen=True)
 class _ContinuousSlot:
-    """Клип на непрерывной шкале: без чёрных gap между кадрами."""
+    """Плотная склейка: 1x без slow; R15-gap → clone suffix; короткий src → след. сразу."""
 
     frame_number: int
     clip: Path
@@ -60,23 +60,22 @@ class _ContinuousSlot:
     out_end: float
     r15_start: float
     r15_end: float
+    play_dur: float
+    prefix_pad: float
+    suffix_pad: float
     src_dur: float
-
-    @property
-    def out_duration(self) -> float:
-        return self.out_end - self.out_start
 
     @property
     def r15_dur(self) -> float:
         return self.r15_end - self.r15_start
 
     @property
-    def prefix_pad(self) -> float:
-        return max(0.0, self.r15_start - self.out_start)
+    def out_duration(self) -> float:
+        return self.prefix_pad + self.play_dur + self.suffix_pad
 
     @property
-    def suffix_pad(self) -> float:
-        return max(0.0, self.out_end - self.r15_end)
+    def filled_r15(self) -> bool:
+        return self.play_dur >= self.r15_dur - 0.02
 
 
 @dataclass(frozen=True)
@@ -133,7 +132,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         slots.extend(ms)
     if skipped:
         logger.warning(
-            "[#{}] variant3: кадры {} без clip — окно закрывает продление предыдущего",
+            "[#{}] variant3: кадры {} без clip — след. клип сразу после предыдущего",
             project.id,
             skipped,
         )
@@ -149,46 +148,79 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
     return slots
 
 
+def _play_duration(r15_window: float, src_dur: float) -> float:
+    """Естественная длина на 1x: min(R15, src). Без slow-mo."""
+    return max(0.0, min(r15_window, src_dur))
+
+
+def _extend_slot(slot: _ContinuousSlot, gap: float) -> _ContinuousSlot:
+    if gap <= 0.01:
+        return slot
+    return _ContinuousSlot(
+        frame_number=slot.frame_number,
+        clip=slot.clip,
+        kind=slot.kind,
+        label=slot.label,
+        out_start=slot.out_start,
+        out_end=slot.out_end + gap,
+        r15_start=slot.r15_start,
+        r15_end=slot.r15_end,
+        play_dur=slot.play_dur,
+        prefix_pad=slot.prefix_pad,
+        suffix_pad=slot.suffix_pad + gap,
+        src_dur=slot.src_dur,
+    )
+
+
 def build_continuous_slots(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
     voice_s: float,
 ) -> list[_ContinuousSlot]:
-    """Непрерывная шкала 0…voice_s: каждый клип тянется до start следующего."""
+    """1x плотная склейка на шкале озвучки; R15-gap → clone prev; короткий src → след. сразу."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     valid = [s for s in ordered if s.duration_s >= 0.05]
     out: list[_ContinuousSlot] = []
-    for i, slot in enumerate(valid):
-        out_start = 0.0 if i == 0 else out[-1].out_end
-        out_end = valid[i + 1].start_s if i + 1 < len(valid) else voice_s
-        if out_end <= out_start + 0.01:
-            raise RuntimeError(
-                f"кадр {slot.frame_number}: некорректное окно "
-                f"{out_start:.2f}–{out_end:.2f}s после продления"
-            )
+    voice_cursor = 0.0
+
+    for slot in valid:
         src_dur = src_durations[slot.clip]
-        suffix = out_end - slot.end_s
-        if suffix > 0.05:
-            logger.debug(
-                "variant3: кадр {} продлён на {:.2f}s → {:.2f}s (без чёрного gap)",
-                slot.frame_number,
-                suffix,
-                out_end,
-            )
-        if src_dur + 0.02 < slot.duration_s:
-            logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → slow",
+        play = _play_duration(slot.duration_s, src_dur)
+        if play < 0.05:
+            logger.warning(
+                "variant3: кадр {} — клип {:.2f}s короче 0.05s, пропуск",
                 slot.frame_number,
                 src_dur,
-                slot.duration_s,
             )
-        elif src_dur > slot.duration_s + 0.05:
-            logger.debug(
-                "variant3: кадр {} — src {:.2f}s > R15 {:.2f}s → trim",
-                slot.frame_number,
-                src_dur,
-                slot.duration_s,
-            )
+            continue
+
+        prefix_pad = 0.0
+        if not out and slot.start_s > voice_cursor + 0.02:
+            prefix_pad = slot.start_s - voice_cursor
+            voice_cursor = slot.start_s
+        elif out:
+            prev = out[-1]
+            if prev.filled_r15 and voice_cursor + 0.02 < slot.start_s:
+                gap = slot.start_s - voice_cursor
+                out[-1] = _extend_slot(prev, gap)
+                voice_cursor += gap
+                logger.debug(
+                    "variant3: кадр {} продлён на {:.2f}s до R15 start {:.2f}s",
+                    prev.frame_number,
+                    gap,
+                    slot.start_s,
+                )
+            elif not prev.filled_r15 and voice_cursor + 0.02 < slot.start_s:
+                logger.debug(
+                    "variant3: кадр {} короткий → кадр {} с {:.2f}s (не ждём R15 {:.2f}s)",
+                    prev.frame_number,
+                    slot.frame_number,
+                    voice_cursor,
+                    slot.start_s,
+                )
+
+        out_start = voice_cursor - prefix_pad
+        out_end = voice_cursor + play
         out.append(
             _ContinuousSlot(
                 frame_number=slot.frame_number,
@@ -199,9 +231,24 @@ def build_continuous_slots(
                 out_end=out_end,
                 r15_start=slot.start_s,
                 r15_end=slot.end_s,
+                play_dur=play,
+                prefix_pad=prefix_pad,
+                suffix_pad=0.0,
                 src_dur=src_dur,
             )
         )
+        voice_cursor += play
+
+    if out and voice_cursor + 0.02 < voice_s:
+        gap = voice_s - voice_cursor
+        out[-1] = _extend_slot(out[-1], gap)
+        logger.debug(
+            "variant3: последний кадр {} продлён на {:.2f}s до voice {:.2f}s",
+            out[-1].frame_number,
+            gap,
+            voice_s,
+        )
+
     return out
 
 
@@ -236,28 +283,25 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
 def _clip_filter_chain(
     w: int,
     h: int,
-    out_dur: float,
-    r15_dur: float,
+    play_dur: float,
     src_dur: float,
     *,
     prefix_pad: float = 0.0,
     suffix_pad: float = 0.0,
 ) -> str:
-    """R15-окно: slow/trim; gap до следующего кадра → clone suffix (не чёрный)."""
+    """1x без slow-mo: trim если длиннее; gap → clone prefix/suffix."""
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
     )
     if prefix_pad > 0.02:
         chain = f"tpad=start_mode=clone:start_duration={prefix_pad:.3f}," + chain
-    if src_dur + 0.02 < r15_dur:
-        slow = src_dur / r15_dur
-        chain += f",setpts=PTS/{slow:.6f}"
-    elif src_dur > r15_dur + 0.05:
-        chain += f",trim=duration={r15_dur:.3f}"
+    if src_dur > play_dur + 0.05:
+        chain += f",trim=duration={play_dur:.3f}"
     if suffix_pad > 0.02:
         chain += f",tpad=stop_mode=clone:stop_duration={suffix_pad:.3f}"
-    chain += f",trim=duration={out_dur:.3f},setpts=PTS-STARTPTS"
+    total = prefix_pad + play_dur + suffix_pad
+    chain += f",trim=duration={total:.3f},setpts=PTS-STARTPTS"
     return chain
 
 
@@ -275,7 +319,7 @@ def _write_plan(
         f"markers={marker_count}",
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
-        "gap_policy=extend_previous_slow_trim",
+        "gap_policy=dense_stitch_extend_r15_gap",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
@@ -298,7 +342,7 @@ def _write_plan(
         lines.append(
             f"{cs.frame_number}\t{cs.kind}\t{cs.label}\t{cs.r15_start:.3f}\t{cs.r15_end:.3f}\t"
             f"{cs.out_start:.3f}\t{cs.out_end:.3f}\t{seg.duration_s:.3f}\t{cs.clip.name}"
-            f"\tsrc={cs.src_dur:.2f}"
+            f"\tsrc={cs.src_dur:.2f}\tplay={cs.play_dur:.2f}\text={cs.suffix_pad:.2f}"
         )
     lines.append(f"\nclip_slots_total={clip_total:.3f}")
     lines.append(f"timeline_out_total={out_total:.3f}")
@@ -433,8 +477,7 @@ async def _encode_clip_segment(
     vf = _clip_filter_chain(
         w,
         h,
-        slot.out_duration,
-        slot.r15_dur,
+        slot.play_dur,
         slot.src_dur,
         prefix_pad=slot.prefix_pad,
         suffix_pad=slot.suffix_pad,
