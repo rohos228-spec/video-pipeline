@@ -18,7 +18,7 @@ export function AudioAlignPopover({
   onFinished?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [method, setMethod] = useState("direct");
+  const [method, setMethod] = useState("nemo_direct");
   const [forceAsr, setForceAsr] = useState(false);
   const [runAssemble, setRunAssemble] = useState(true);
   const [polling, setPolling] = useState(false);
@@ -104,7 +104,7 @@ export function AudioAlignPopover({
           variant="default"
           className="h-9 gap-1.5 bg-amber-500 text-xs text-black hover:bg-amber-400"
           disabled={!projectId}
-          title="5 методик разбора озвучки → таймкоды R15"
+          title="5 методик разбора речи (NeMo / паузы) → таймкоды R15"
         >
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -121,9 +121,9 @@ export function AudioAlignPopover({
         className="z-[10060] w-[min(96vw,420px)] max-h-[min(80vh,560px)] overflow-y-auto p-3"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <h3 className="mb-1 text-sm font-semibold">Разбор аудио → R15</h3>
+        <h3 className="mb-1 text-sm font-semibold">Разбор речи → R15</h3>
         <p className="mb-3 text-[11px] text-muted-foreground">
-          Одна транскрипция, 5 методик границ. По умолчанию без повторного ASR.
+          5 методик разбора речи (NeMo / паузы). У каждой — свои таймкоды. Без Whisper.
         </p>
 
         {projectId == null ? (
@@ -161,7 +161,7 @@ export function AudioAlignPopover({
                 onChange={(e) => setForceAsr(e.target.checked)}
                 disabled={busy}
               />
-              Пересчитать ASR заново
+              Пересчитать NeMo заново
             </label>
             <label className="flex items-center gap-2 text-xs">
               <input

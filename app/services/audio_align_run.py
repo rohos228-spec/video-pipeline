@@ -1,7 +1,11 @@
-"""Прогон методики разбора аудио → R15 → (опционально) assemble."""
+"""Прогон методики разбора речи → R15 → (опционально) assemble.
+
+Только NeMo / ffmpeg silence — без Whisper.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Any
@@ -11,7 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
-from app.services.audio_align_methods import apply_align_method, resolve_align_method
+from app.services.audio_align_methods import (
+    resolve_align_method,
+    run_speech_align,
+)
 from app.services.frame_audio import (
     FrameAudioClip,
     find_voice_full_on_disk,
@@ -22,13 +29,13 @@ from app.services.project_state import compute_actual_status
 from app.services.reset_step import reset_step
 from app.services.step_cancel import raise_if_cancelled
 from app.services.whisper import dump_words_json, load_words_json
-from app.settings import settings
 
 
 async def _latest_words_artifact(
-    session: AsyncSession, project_id: int
+    session: AsyncSession, project_id: int, *, method_id: str
 ) -> Artifact | None:
-    return (
+    """Кэш слов только той же методики (не чужой words.json)."""
+    rows = (
         await session.execute(
             select(Artifact)
             .where(
@@ -36,9 +43,15 @@ async def _latest_words_artifact(
                 Artifact.kind == ArtifactKind.whisper_words,
             )
             .order_by(Artifact.id.desc())
-            .limit(1)
+            .limit(12)
         )
-    ).scalar_one_or_none()
+    ).scalars().all()
+    for art in rows:
+        meta = art.meta if isinstance(art.meta, dict) else {}
+        if meta.get("align_method") == method_id and meta.get("engine") == "nemo":
+            if art.path and Path(art.path).is_file():
+                return art
+    return None
 
 
 async def run_audio_align(
@@ -50,7 +63,7 @@ async def run_audio_align(
     run_assemble: bool = True,
     bot: Any = None,
 ) -> dict[str, Any]:
-    """Раскладка слов → Frame + R15 выбранной методикой; опционально сборка."""
+    """Speech-pipeline методики → Frame + R15; опционально сборка."""
     raise_if_cancelled(project.id)
     method_id = resolve_align_method(method)
     summary: dict[str, Any] = {
@@ -58,6 +71,7 @@ async def run_audio_align(
         "method": method_id,
         "force_asr": bool(force_asr),
         "run_assemble": bool(run_assemble),
+        "engine": "nemo" if method_id != "silence" else "ffmpeg_silence",
     }
 
     frames = (
@@ -97,52 +111,50 @@ async def run_audio_align(
     audio_dir = project.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    words = []
-    words_source = "none"
-    if not force_asr:
-        art = await _latest_words_artifact(session, project.id)
-        if art and art.path and Path(art.path).is_file():
-            words = load_words_json(Path(art.path))
-            if words:
-                words_source = "words.json"
-    if not words:
-        from app.services.asr import active_asr_backend, transcribe_words
-        import asyncio
+    cached_words = None
+    if method_id != "silence" and not force_asr:
+        art = await _latest_words_artifact(session, project.id, method_id=method_id)
+        if art and art.path:
+            cached_words = load_words_json(Path(art.path))
+            if not cached_words:
+                cached_words = None
 
-        logger.info(
-            "[#{}] audio_align: ASR {} по {:.2f}s …",
-            project.id,
-            active_asr_backend(),
-            master,
-        )
-        words = await asyncio.to_thread(
-            transcribe_words,
+    try:
+        result = await asyncio.to_thread(
+            run_speech_align,
+            method_id,
             voice_path,
-            model_name=settings.whisper_model,
-            language="ru",
-            beam_size=1 if master > 300 else 5,
+            cells,
+            master,
+            cached_words=cached_words,
         )
-        words_source = active_asr_backend()
-        if not words:
-            summary["error"] = "ASR не вернул слова"
-            return summary
-        words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
-        dump_words_json(words, words_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[#{}] audio_align speech failed ({})", project.id, method_id)
+        summary["error"] = str(exc)
+        return summary
+
+    summary["words_source"] = result.speech_source
+    summary["words_n"] = len(result.words)
+
+    if result.words and result.speech_source != "cache":
+        words_path = audio_dir / f"words_{method_id}_{uuid.uuid4().hex[:8]}.json"
+        dump_words_json(result.words, words_path)
         session.add(
             Artifact(
                 project_id=project.id,
                 kind=ArtifactKind.whisper_words,
                 uuid=uuid.uuid4().hex,
                 path=str(words_path),
-                meta={"source": "audio_align", "method": method_id},
+                meta={
+                    "source": "audio_align",
+                    "align_method": method_id,
+                    "engine": "nemo",
+                },
             )
         )
         await session.flush()
 
-    summary["words_source"] = words_source
-    summary["words_n"] = len(words)
-
-    timings = apply_align_method(method_id, cells, words, master)
+    timings = result.timings
     text_by = dict(cells)
     clips = [
         FrameAudioClip(
@@ -180,7 +192,8 @@ async def run_audio_align(
     meta["audio_align_last"] = {
         "method": method_id,
         "crumbs": crumbs,
-        "words_source": words_source,
+        "words_source": result.speech_source,
+        "engine": summary["engine"],
         "master_s": summary["master_s"],
         "r15_written": written,
     }
