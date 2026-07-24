@@ -123,8 +123,8 @@ def test_voiceover_match_no_collapse() -> None:
             t += 0.28
     master = t + 1.0
     bounds = exclusive_asr_word_bounds(cells, words)
-    # Старты строго возрастают
-    starts = [b[1] for b in bounds]
+    # Старты matched-кадров строго возрастают
+    starts = [b[1] for b in bounds if b[1] >= 0]
     assert starts == sorted(starts)
     assert len(set(starts)) == len(starts)
     timings = timings_match_voiceover(cells, words, master, mode="contiguous")
@@ -134,6 +134,67 @@ def test_voiceover_match_no_collapse() -> None:
     assert abs(timings[-1].end_ts - master) < 0.02
     # Середина должна сидеть около реальной речи, не в нуле
     assert timings[14].start_ts > 5.0
+
+
+def test_phantom_intro_does_not_steal_asr_words() -> None:
+    """R49-интро нет в озвучке → не забирает ASR-слова, хвост не ползёт."""
+    from app.services.mapper import (
+        align_script_tokens,
+        exclusive_asr_word_bounds,
+        timings_match_voiceover,
+        tokenize_display,
+    )
+
+    cells = [
+        (1, "титульный кадр которого нет в озвучке совсем"),
+        (2, "ведьмы жили в лесу давно"),
+        (3, "и варили зелье ночью"),
+    ]
+    # Речь начинается с паузы 1.0с; слов интро в ASR нет.
+    words = [
+        WordTS("ведьмы", 1.0, 1.4, 1.0),
+        WordTS("жили", 1.4, 1.8, 1.0),
+        WordTS("в", 1.8, 1.95, 1.0),
+        WordTS("лесу", 1.95, 2.3, 1.0),
+        WordTS("давно", 2.3, 2.7, 1.0),
+        WordTS("и", 2.7, 2.85, 1.0),
+        WordTS("варили", 2.85, 3.3, 1.0),
+        WordTS("зелье", 3.3, 3.7, 1.0),
+        WordTS("ночью", 3.7, 4.2, 1.0),
+    ]
+    master = 5.0
+
+    script: list[str] = []
+    for _fn, text in cells:
+        script.extend(t.lower() for t in tokenize_display(text))
+    aligned = align_script_tokens(script, words)
+    # Ведущие токены интро — insert (-1), не words[0]
+    intro_n = len(tokenize_display(cells[0][1]))
+    assert all(w < 0 for w in aligned[:intro_n]), aligned[:intro_n]
+    assert aligned[intro_n] == 0  # «ведьмы» → первое ASR-слово
+
+    bounds = exclusive_asr_word_bounds(cells, words)
+    assert bounds[0] == (1, -1, -1)
+    assert bounds[1][1] == 0  # кадр 2 владеет словом 0
+    assert bounds[1][2] > bounds[1][1]
+
+    for method_id in ("nemo_direct", "nemo_contiguous", "nemo_auto"):
+        timings = apply_align_method(method_id, cells, words, master)
+        assert len(timings) == 3
+        # Кадр 2 (первая реальная фраза) стартует около 1.0с, не уехал на 2–3с
+        assert abs(timings[1].start_ts - 1.0) < 0.08, (method_id, timings)
+        # Кадр 3 — около «и» / стыка после кадра 2
+        assert timings[2].start_ts >= 2.5, (method_id, timings)
+        assert abs(timings[-1].end_ts - master) < 0.02
+        assert timings[0].start_ts == 0.0
+        # Интро занимает преролл до речи, не кусок озвучки
+        assert timings[0].end_ts <= timings[1].start_ts + 0.001
+        assert timings[0].end_ts <= 1.05
+
+    # Прямой contiguous: интро = [0, 1.0)
+    tv = timings_match_voiceover(cells, words, master, mode="contiguous")
+    assert abs(tv[0].end_ts - 1.0) < 0.05
+    assert abs(tv[1].start_ts - 1.0) < 0.05
 
 
 def test_absorb_eliminates_two_crumbs() -> None:
