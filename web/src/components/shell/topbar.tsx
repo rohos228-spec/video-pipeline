@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity, Network, Wand2 } from "lucide-react";
+import { Sparkles, Activity, Network, Wand2, AudioLines } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -58,6 +58,18 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("studio-open-audio-align"))
+            }
+            className="gap-2 text-xs font-semibold"
+            title="5 методик разбора озвучки → R15"
+          >
+            <AudioLines className="h-3.5 w-3.5" />
+            Разбор аудио
+          </Button>
           <Button
             variant="default"
             size="sm"

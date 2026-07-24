@@ -659,7 +659,12 @@ async def try_timeline_from_xlsx_row15(
     return clips, float(master)
 
 
-def write_asr_timestamps_to_r15(project, clips: list) -> int:
+def write_asr_timestamps_to_r15(
+    project,
+    clips: list,
+    *,
+    allow_crumbs: bool = False,
+) -> int:
     """После ASR: записать реальные метки в строку 15 листа «план»."""
     from app.storage.plan_sheet_v8 import write_plan_timestamps
 
@@ -678,7 +683,7 @@ def write_asr_timestamps_to_r15(project, clips: list) -> int:
         return 0
     master = max(c.end_ts for c in clips if c.duration > 0)
     timings = enforce_monotonic_timings(timings, master=master)
-    if timings_have_crumb_durations(timings):
+    if timings_have_crumb_durations(timings) and not allow_crumbs:
         logger.error(
             "[#{}] plan R15: отказ писать — слишком много кадров ≤0.1s "
             "(сломанный align, {} кадров). Исправьте ASR/текст R49.",
@@ -686,6 +691,12 @@ def write_asr_timestamps_to_r15(project, clips: list) -> int:
             sum(1 for t in timings if t.duration <= 0.1 + 1e-9),
         )
         return 0
+    if timings_have_crumb_durations(timings) and allow_crumbs:
+        logger.warning(
+            "[#{}] plan R15: пишем с крошками (A/B методика), ≤0.1s={}",
+            project.id,
+            sum(1 for t in timings if t.duration <= 0.1 + 1e-9),
+        )
     ranges = [
         (t.frame_number, format_timecode_range(t.start_ts, t.end_ts)) for t in timings
     ]

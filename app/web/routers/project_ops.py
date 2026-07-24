@@ -1257,6 +1257,67 @@ async def disable_auto_mode_all_parents(
     return {"parents_total": sum(1 for p in rows if mass_parent_id(p) is None), "disabled": disabled}
 
 
+@router.get("/audio-align/methods")
+async def audio_align_methods_list() -> dict:
+    """Список методик разбора аудио → R15 (A/B в Studio)."""
+    from app.services.audio_align_methods import list_align_methods
+
+    return {"methods": list_align_methods()}
+
+
+@router.post("/{project_id}/audio-align")
+async def audio_align_start(
+    project_id: int,
+    method: str = Query("auto"),
+    force_asr: bool = Query(False),
+    run_assemble: bool = Query(True),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Кнопка «Разбор аудио» — выбранная методика → R15 → assemble в фоне."""
+    from app.services.audio_align_job import get_audio_align_job, spawn_audio_align_job
+    from app.services.audio_align_methods import resolve_align_method
+    from app.services.project_control import clear_user_stop_gate
+    from app.services.step_cancel import clear_stop
+
+    try:
+        method_id = resolve_align_method(method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    p = _project_or_404(await session.get(Project, project_id))
+    job = get_audio_align_job(p)
+    if job.get("status") == "running":
+        return {"started": False, "already_running": True, "job": job}
+
+    clear_user_stop_gate(p)
+    clear_stop(project_id)
+    await session.flush()
+    spawn_audio_align_job(
+        project_id,
+        method=method_id,
+        force_asr=force_asr,
+        run_assemble=run_assemble,
+    )
+    return {
+        "started": True,
+        "job": {"status": "running", "method": method_id},
+    }
+
+
+@router.get("/{project_id}/audio-align/status")
+async def audio_align_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.audio_align_job import get_audio_align_job
+
+    p = _project_or_404(await session.get(Project, project_id))
+    last = None
+    if isinstance(p.meta, dict):
+        last = p.meta.get("audio_align_last")
+    return {"job": get_audio_align_job(p), "last": last}
+
+
 @router.post("/{project_id}/remount-video")
 async def remount_project_video(
     project_id: int,
