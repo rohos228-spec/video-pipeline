@@ -9,7 +9,6 @@ import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { OutseeCreateWorkspace } from "@/components/outsee/outsee-create-workspace";
-import { AudioAlignDialog } from "@/components/studio/audio-align-dialog";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -29,7 +28,6 @@ export default function HomePage() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
   const [outseeOpen, setOutseeOpen] = useState(false);
-  const [audioAlignOpen, setAudioAlignOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
@@ -44,12 +42,6 @@ export default function HomePage() {
     const openFleet = () => setFleetOpen(true);
     window.addEventListener("studio-open-fleet", openFleet);
     return () => window.removeEventListener("studio-open-fleet", openFleet);
-  }, []);
-
-  useEffect(() => {
-    const openAudioAlign = () => setAudioAlignOpen(true);
-    window.addEventListener("studio-open-audio-align", openAudioAlign);
-    return () => window.removeEventListener("studio-open-audio-align", openAudioAlign);
   }, []);
 
   useEffect(() => {
@@ -149,11 +141,6 @@ export default function HomePage() {
       <OutseeCreateWorkspace
         open={outseeOpen}
         onOpenChange={setOutseeOpen}
-        projectId={selectedProjectId}
-      />
-      <AudioAlignDialog
-        open={audioAlignOpen}
-        onOpenChange={setAudioAlignOpen}
         projectId={selectedProjectId}
       />
     </AppShell>

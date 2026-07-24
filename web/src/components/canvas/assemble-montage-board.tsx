@@ -4,7 +4,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AudioLines,
   ChevronDown,
   ChevronRight,
   Clapperboard,
@@ -30,7 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
-import { AudioAlignDialog } from "@/components/studio/audio-align-dialog";
+import { AudioAlignPopover } from "@/components/studio/audio-align-dialog";
 
 /** Единая ширина колонок кадров (+30% к v215). */
 const FRAME_COL_REM = 15;
@@ -867,7 +866,6 @@ export function AssembleMontageBoard({
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
   const [extrasOpen, setExtrasOpen] = useState(false);
-  const [audioAlignOpen, setAudioAlignOpen] = useState(false);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
@@ -1569,18 +1567,15 @@ export function AssembleMontageBoard({
               )}
               {recoverRunning ? "Забираем из Outsee…" : "Забрать правки из Outsee"}
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              className="h-9 gap-1.5 bg-amber-500 text-xs text-black hover:bg-amber-400"
-              disabled={!projectId}
-              title="5 методик разбора озвучки → таймкоды R15"
-              onClick={() => setAudioAlignOpen(true)}
-            >
-              <AudioLines className="h-4 w-4" />
-              Разбор аудио
-            </Button>
+            <AudioAlignPopover
+              projectId={projectId}
+              onFinished={() => {
+                void queryClient.invalidateQueries({
+                  queryKey: ["montage-board", projectId],
+                });
+                void board.refetch();
+              }}
+            />
             <Button
               type="button"
               size="sm"
@@ -1901,17 +1896,6 @@ export function AssembleMontageBoard({
         onClose={() => setPromptModal(null)}
         onSubmit={submitPromptModal}
         busy={applyMutation.isPending}
-      />
-      <AudioAlignDialog
-        open={audioAlignOpen}
-        onOpenChange={(next) => {
-          setAudioAlignOpen(next);
-          if (!next) {
-            void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
-            void board.refetch();
-          }
-        }}
-        projectId={projectId}
       />
     </>,
     document.body,
