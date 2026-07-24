@@ -18,7 +18,7 @@ export function AudioAlignPopover({
   onFinished?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [method, setMethod] = useState("nemo_direct");
+  const [method, setMethod] = useState("nemo_auto");
   const [forceAsr, setForceAsr] = useState(false);
   const [runAssemble, setRunAssemble] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -133,7 +133,7 @@ export function AudioAlignPopover({
       >
         <h3 className="mb-1 text-sm font-semibold">Разбор речи → R15</h3>
         <p className="mb-3 text-[11px] text-muted-foreground">
-          5 методик NeMo/пауз. Схлопы ASR режутся по весу R49 — без крошек ≤0.1с в R15.
+          Разбор озвучки NeMo: каждому кадру — свой отрезок ASR-слов (как в речи). Рекомендуется «auto».
         </p>
 
         {projectId == null ? (

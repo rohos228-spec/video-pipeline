@@ -45,7 +45,7 @@ class FrameWordSpan:
 
 
 def align_script_tokens(script_tokens: list[str], words: list[WordTS]) -> list[int]:
-    """Индекс whisper-слова для каждого токена сценария."""
+    """Индекс ASR-слова для каждого токена сценария (монотонно по времени)."""
     if not script_tokens:
         return []
     if not words:
@@ -65,21 +65,180 @@ def align_script_tokens(script_tokens: list[str], words: list[WordTS]) -> list[i
             continue
         whisper_len = max(j2 - j1, 0)
         if whisper_len == 0:
-            anchor = max(j1 - 1, 0)
-            for offset in range(script_len):
-                result[i1 + offset] = anchor
+            # Вставка в сценарии без ASR — растянуть между соседями позже
             continue
         for offset in range(script_len):
             wi = j1 + min(int(offset * whisper_len / script_len), whisper_len - 1)
             result[i1 + offset] = wi
 
+    # Заполнить дыры линейной интерполяцией между известными якорями (не одним anchor).
+    known = [(i, wi) for i, wi in enumerate(result) if wi >= 0]
+    if not known:
+        # Полный провал align — равномерно по словам ASR
+        n_s, n_w = len(script_tokens), len(words)
+        return [
+            min(int(i * n_w / max(n_s, 1)), n_w - 1) for i in range(n_s)
+        ]
+    # края
+    first_i, first_w = known[0]
+    for i in range(first_i):
+        result[i] = first_w
+    last_i, last_w = known[-1]
+    for i in range(last_i + 1, len(result)):
+        result[i] = last_w
+    for (a_i, a_w), (b_i, b_w) in zip(known, known[1:]):
+        gap = b_i - a_i
+        if gap <= 1:
+            continue
+        for k in range(1, gap):
+            t = k / gap
+            result[a_i + k] = int(round(a_w + t * (b_w - a_w)))
+
+    # Монотонность индексов (не назад во времени ASR).
     last = 0
     for i, wi in enumerate(result):
-        if wi < 0:
-            result[i] = last
-        else:
-            last = min(wi, len(words) - 1)
+        wi = max(0, min(int(wi), len(words) - 1))
+        if wi < last:
+            wi = last
+        result[i] = wi
+        last = wi
     return result
+
+
+def exclusive_asr_word_bounds(
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+) -> list[tuple[int, int, int]]:
+    """Для каждого кадра — полуинтервал ASR-слов [lo, hi) без пересечений.
+
+    Границы якорятся на difflib-align R49↔ASR, но принудительно монотонны:
+    каждый следующий кадр начинается строго после предыдущего. Так таймкоды
+    следуют реальной озвучке, а не схлопываются в одну точку.
+    """
+    if not cells:
+        return []
+    spans = build_frame_word_spans(cells, words)
+    n = len(spans)
+    w_n = len(words)
+    if w_n <= 0:
+        return [(s.frame_number, 0, 0) for s in spans]
+
+    # Предпочтительный старт = первое сопоставленное слово кадра
+    pref: list[int] = []
+    for span in spans:
+        if span.whisper_indices:
+            pref.append(max(0, min(min(span.whisper_indices), w_n - 1)))
+        else:
+            pref.append(-1)
+
+    # Заполнить пустые старты
+    last = 0
+    for i, p in enumerate(pref):
+        if p < 0:
+            pref[i] = last
+        else:
+            last = p
+
+    # Жадные старты: max(pref[i], prev_end), не выходя за лимит слов
+    starts = [0] * n
+    starts[0] = max(0, min(pref[0], max(w_n - n, 0)))
+    for i in range(1, n):
+        # Сколько слов ещё нужно минимум на хвост (по 1 на кадр)
+        remain_frames = n - i
+        max_start = max(0, w_n - remain_frames)
+        want = max(pref[i], starts[i - 1] + 1)
+        starts[i] = min(want, max_start)
+        if starts[i] <= starts[i - 1]:
+            starts[i] = min(starts[i - 1] + 1, max_start)
+
+    # Если слов меньше кадров — несколько кадров на одно слово (редко)
+    if w_n < n:
+        starts = [min(int(i * w_n / n), w_n - 1) for i in range(n)]
+
+    ends = [0] * n
+    for i in range(n - 1):
+        ends[i] = max(starts[i] + 1, starts[i + 1])
+    ends[-1] = w_n
+
+    # Подтянуть концы по preferred max index, не залезая в следующий кадр
+    for i, span in enumerate(spans):
+        if not span.whisper_indices:
+            continue
+        pref_hi = max(span.whisper_indices) + 1
+        lo = starts[i]
+        hi_cap = ends[i]
+        if pref_hi > lo and pref_hi <= hi_cap:
+            # ok — можно оставить ends как starts следующего
+            pass
+
+    return [
+        (spans[i].frame_number, starts[i], ends[i]) for i in range(n)
+    ]
+
+
+def timings_match_voiceover(
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+    *,
+    mode: str = "contiguous",
+) -> list[FrameTiming]:
+    """Таймкоды кадров строго по словам озвучки (NeMo).
+
+    mode=contiguous: кадр [start_i, start_{i+1}) — без дыр/overlap, границы = речь.
+    mode=direct: start/end = первое/последнее слово кадра, затем monotonic glue.
+    """
+    if not cells:
+        return []
+    ad = max(float(master), 0.01)
+    if not words:
+        raw = [
+            FrameTiming(fn, 0.0, 0.0, float(max(len(tokenize_lower(text)), 1)))
+            for fn, text in cells
+        ]
+        return normalize_contiguous(raw, ad)
+
+    bounds = exclusive_asr_word_bounds(cells, words)
+    out: list[FrameTiming] = []
+    for i, (fn, lo, hi) in enumerate(bounds):
+        lo = max(0, min(lo, len(words) - 1))
+        hi = max(lo + 1, min(hi, len(words)))
+        if mode == "direct":
+            start = float(words[lo].start)
+            end = float(words[hi - 1].end)
+        else:
+            start = float(words[lo].start)
+            if i + 1 < len(bounds):
+                nlo = max(0, min(bounds[i + 1][1], len(words) - 1))
+                end = float(words[nlo].start)
+            else:
+                end = float(words[hi - 1].end)
+            if end <= start:
+                end = float(words[hi - 1].end)
+        out.append(
+            FrameTiming(fn, round(start, 3), round(end, 3), round(max(end - start, 0.0), 3))
+        )
+
+    # Покрытие всей озвучки [0, master] без дыр (паузы в начале/конце и между).
+    if out:
+        out[0] = FrameTiming(out[0].frame_number, 0.0, out[0].end_ts, round(out[0].end_ts, 3))
+        for i in range(1, len(out)):
+            out[i] = FrameTiming(
+                out[i].frame_number,
+                out[i - 1].end_ts,
+                out[i].end_ts,
+                round(out[i].end_ts - out[i - 1].end_ts, 3),
+            )
+        out[-1] = FrameTiming(
+            out[-1].frame_number,
+            out[-1].start_ts,
+            round(ad, 3),
+            round(ad - out[-1].start_ts, 3),
+        )
+        # Крошки после склейки — только если слов << кадров; absorb у соседей.
+        if count_crumb_frames(out) > 0:
+            out = absorb_crumb_durations(out, ad)
+    return out
 
 
 def build_frame_word_spans(
@@ -485,6 +644,31 @@ def absorb_crumb_durations(
         if not progress:
             break
 
+    if count_crumb_frames(out, crumb_s=crumb_s) > 0:
+        # Патологический случай (слов ASR << кадров): растянуть по весам max(dur, target).
+        weights = [max(float(t.duration), target_s) for t in out]
+        total_w = sum(weights) or float(len(weights))
+        pos = 0.0
+        rebuilt: list[FrameTiming] = []
+        for t, w in zip(out, weights):
+            dur = (w / total_w) * ad
+            rebuilt.append(
+                FrameTiming(
+                    t.frame_number,
+                    round(pos, 3),
+                    round(pos + dur, 3),
+                    round(dur, 3),
+                )
+            )
+            pos += dur
+        rebuilt[-1] = FrameTiming(
+            rebuilt[-1].frame_number,
+            rebuilt[-1].start_ts,
+            round(ad, 3),
+            round(ad - rebuilt[-1].start_ts, 3),
+        )
+        out = rebuilt
+
     # Финальная склейка без дыр/overlap
     out[0].start_ts = 0.0
     for i in range(1, len(out)):
@@ -495,7 +679,7 @@ def absorb_crumb_durations(
         t.start_ts = round(t.start_ts, 3)
         t.end_ts = round(t.end_ts, 3)
 
-    if changed:
+    if changed or count_crumb_frames(timings, crumb_s=crumb_s) > 0:
         logger.info(
             "absorb_crumb_durations: crumbs {} → {}",
             count_crumb_frames(timings, crumb_s=crumb_s),

@@ -36,27 +36,27 @@ ALIGN_METHODS: tuple[AlignMethodInfo, ...] = (
     AlignMethodInfo(
         id="nemo_direct",
         title="1. NeMo — слова",
-        summary="Parakeet/FastConformer ASR целиком: старт/конец = первое и последнее слово кадра.",
+        summary="ASR-слова озвучки → каждому кадру свой отрезок слов; start/end = речь кадра.",
     ),
     AlignMethodInfo(
         id="nemo_contiguous",
         title="2. NeMo — до следующего",
-        summary="Тот же full-file NeMo (кэш): кадр до старта следующего. Без повторного ASR.",
+        summary="Те же exclusive ASR-отрезки; кадр до старта следующего (без дыр, по речи).",
     ),
     AlignMethodInfo(
         id="nemo_chunks",
         title="3. NeMo — сегменты",
-        summary="Режем озвучку на ≤8 сегментов по весу R49, ASR каждого сегмента, склеиваем слова.",
+        summary="≤8 сегментов ASR, склейка слов, затем тот же разбор по озвучке.",
     ),
     AlignMethodInfo(
         id="silence",
         title="4. Паузы (ffmpeg)",
-        summary="Острова речи между тишинами; кадры по весу R49 внутри островов (не равномерка).",
+        summary="Острова речи между тишинами; кадры по весу R49 внутри островов.",
     ),
     AlignMethodInfo(
         id="nemo_auto",
         title="5. NeMo — auto",
-        summary="Тот же full-file NeMo (кэш): direct, при крошках — contiguous (production).",
+        summary="Contiguous по exclusive ASR-словам (рекомендуется для совпадения с озвучкой).",
     ),
 )
 
@@ -452,10 +452,9 @@ def _method_direct(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    from app.services.mapper import finalize_align_timings
+    from app.services.mapper import timings_match_voiceover
 
-    mono = enforce_monotonic_timings(map_frames(cells, words), master=master)
-    return finalize_align_timings(mono, cells, words, master)
+    return timings_match_voiceover(cells, words, master, mode="direct")
 
 
 def _method_contiguous(
@@ -463,14 +462,9 @@ def _method_contiguous(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    from app.services.mapper import finalize_align_timings, timings_from_word_transitions
+    from app.services.mapper import timings_match_voiceover
 
-    return finalize_align_timings(
-        timings_from_word_transitions(cells, words, master),
-        cells,
-        words,
-        master,
-    )
+    return timings_match_voiceover(cells, words, master, mode="contiguous")
 
 
 def _method_auto(
@@ -478,20 +472,13 @@ def _method_auto(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    from app.services.mapper import (
-        count_crumb_frames,
-        finalize_align_timings,
-        timings_from_word_transitions,
-    )
+    from app.services.mapper import count_crumb_frames, timings_match_voiceover
 
-    direct = map_frames(cells, words)
-    if direct and len(direct) == len(cells):
-        mono = enforce_monotonic_timings(direct, master=master)
-        out = finalize_align_timings(mono, cells, words, master)
-        if count_crumb_frames(out) == 0:
-            return out
-    contig = timings_from_word_transitions(cells, words, master)
-    return finalize_align_timings(contig, cells, words, master)
+    # Production: contiguous по exclusive ASR-словам (= речь), fallback direct.
+    contig = timings_match_voiceover(cells, words, master, mode="contiguous")
+    if count_crumb_frames(contig) == 0:
+        return contig
+    return timings_match_voiceover(cells, words, master, mode="direct")
 
 
 _TIMING_HANDLERS: dict[

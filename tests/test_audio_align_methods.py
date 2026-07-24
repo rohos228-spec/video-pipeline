@@ -110,6 +110,32 @@ def test_collapsed_asr_no_crumbs(method_id: str) -> None:
     assert abs(timings[-1].end_ts - master) < 0.02
 
 
+def test_voiceover_match_no_collapse() -> None:
+    """153-подобно: много кадров, ASR-слова идут по тексту — границы = речь, 0 крошек."""
+    from app.services.mapper import exclusive_asr_word_bounds, timings_match_voiceover
+
+    cells = [(i, f"кадр{i} говорит фразу номер {i}") for i in range(1, 31)]
+    words: list[WordTS] = []
+    t = 0.0
+    for i in range(1, 31):
+        for tok in [f"кадр{i}", "говорит", "фразу", "номер", str(i)]:
+            words.append(WordTS(tok, t, t + 0.25, 1.0))
+            t += 0.28
+    master = t + 1.0
+    bounds = exclusive_asr_word_bounds(cells, words)
+    # Старты строго возрастают
+    starts = [b[1] for b in bounds]
+    assert starts == sorted(starts)
+    assert len(set(starts)) == len(starts)
+    timings = timings_match_voiceover(cells, words, master, mode="contiguous")
+    assert len(timings) == 30
+    assert count_crumb_frames(timings) == 0
+    assert timings[0].start_ts == 0.0
+    assert abs(timings[-1].end_ts - master) < 0.02
+    # Середина должна сидеть около реальной речи, не в нуле
+    assert timings[14].start_ts > 5.0
+
+
 def test_absorb_eliminates_two_crumbs() -> None:
     from app.services.mapper import absorb_crumb_durations, count_crumb_frames
 
