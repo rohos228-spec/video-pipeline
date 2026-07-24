@@ -1,4 +1,4 @@
-"""Монтаж по Excel R15 — активный вариант 3 (slot+concat)."""
+"""Монтаж по Excel R15 — overlay + extend clone (absolute setpts)."""
 
 from app.services.montage.variant2 import MONTAGE_ENGINE_V2, run_variant2
 from app.services.montage.variants import MONTAGE_VARIANTS
