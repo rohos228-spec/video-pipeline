@@ -16,7 +16,11 @@ from app.services.audio_align_methods import (
     run_speech_align,
     _timings_from_speech_islands,
 )
-from app.services.mapper import count_crumb_frames, timings_from_word_transitions
+from app.services.mapper import (
+    FrameTiming,
+    count_crumb_frames,
+    timings_from_word_transitions,
+)
 from app.services.whisper import WordTS
 
 
@@ -106,7 +110,22 @@ def test_collapsed_asr_no_crumbs(method_id: str) -> None:
     assert abs(timings[-1].end_ts - master) < 0.02
 
 
-def test_word_transitions_splits_identical_starts() -> None:
+def test_absorb_eliminates_two_crumbs() -> None:
+    from app.services.mapper import absorb_crumb_durations, count_crumb_frames
+
+    # Имитация лога: 153 кадра, 2 крошки
+    timings = [
+        FrameTiming(1, 0.0, 5.0, 5.0),
+        FrameTiming(2, 5.0, 5.05, 0.05),
+        FrameTiming(3, 5.05, 10.0, 4.95),
+        FrameTiming(4, 10.0, 10.08, 0.08),
+        FrameTiming(5, 10.08, 20.0, 9.92),
+    ]
+    out = absorb_crumb_durations(timings, 20.0)
+    assert count_crumb_frames(out) == 0
+    assert out[0].start_ts == 0.0
+    assert abs(out[-1].end_ts - 20.0) < 0.02
+
     cells = [(1, "один два"), (2, "три"), (3, "четыре пять шесть")]
     # Все «первые» слова кадров указывают на один start через poor align —
     # симулируем одинаковые таймкоды слов, которые map схлопнет.

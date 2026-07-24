@@ -352,6 +352,16 @@ def timings_from_word_transitions(
         group_end = starts[j] if j < n else ad
         if group_end <= group_start + 1e-6:
             group_end = ad if j >= n else min(ad, group_start + 0.5)
+        # Если окно слишком узкое на N кадров — расширяем до следующего
+        # уникального старта / master (иначе снова крошки).
+        min_span = 0.2 * (j - i)
+        if group_end - group_start < min_span - 1e-9:
+            k = j
+            while k < n and starts[k] - group_start < min_span:
+                k += 1
+            group_end = starts[k] if k < n else ad
+            if group_end - group_start < min_span:
+                group_end = min(ad, group_start + min_span)
         weights = [float(max(len(spans[k].lower_words), 1)) for k in range(i, j)]
         total_w = sum(weights) or float(len(weights))
         pos = group_start
@@ -404,6 +414,96 @@ def timings_from_word_transitions(
     return out
 
 
+def absorb_crumb_durations(
+    timings: list[FrameTiming],
+    master: float,
+    *,
+    crumb_s: float = 0.1,
+    target_s: float = 0.2,
+) -> list[FrameTiming]:
+    """Оставшиеся крошки ≤crumb_s забирают время у соседних длинных кадров.
+
+    Не выдумывает пол: только перераспределяет уже существующий master.
+    """
+    if not timings:
+        return timings
+    ad = max(float(master), 0.01)
+    out = [
+        FrameTiming(t.frame_number, float(t.start_ts), float(t.end_ts), float(t.duration))
+        for t in sorted(timings, key=lambda x: x.frame_number)
+    ]
+    # Склеить в непрерывную ленту на [0, master]
+    out[0].start_ts = 0.0
+    for i in range(1, len(out)):
+        out[i].start_ts = out[i - 1].end_ts
+        out[i].duration = max(0.0, out[i].end_ts - out[i].start_ts)
+    out[-1].end_ts = ad
+    out[-1].duration = max(0.0, out[-1].end_ts - out[-1].start_ts)
+
+    changed = False
+    for _ in range(len(out) * 3):
+        crumbs = [i for i, t in enumerate(out) if t.duration <= crumb_s + 1e-9]
+        if not crumbs:
+            break
+        progress = False
+        for i in crumbs:
+            need = target_s - out[i].duration
+            if need <= 1e-9:
+                continue
+            # Кандидаты: левый / правый сосед с запасом
+            donors: list[tuple[int, float]] = []
+            if i > 0 and out[i - 1].duration > target_s + 0.05:
+                donors.append((i - 1, out[i - 1].duration - target_s))
+            if i + 1 < len(out) and out[i + 1].duration > target_s + 0.05:
+                donors.append((i + 1, out[i + 1].duration - target_s))
+            if not donors:
+                # крайний случай — любой сосед длиннее крошки
+                if i > 0 and out[i - 1].duration > out[i].duration + 0.05:
+                    donors.append((i - 1, out[i - 1].duration * 0.5))
+                if i + 1 < len(out) and out[i + 1].duration > out[i].duration + 0.05:
+                    donors.append((i + 1, out[i + 1].duration * 0.5))
+            if not donors:
+                continue
+            donors.sort(key=lambda x: x[1], reverse=True)
+            di, avail = donors[0]
+            take = min(need, max(0.0, avail))
+            if take <= 1e-9:
+                continue
+            if di < i:
+                # двигаем границу: конец донора раньше → старт крошки раньше
+                out[di].end_ts = round(out[di].end_ts - take, 3)
+                out[di].duration = round(out[di].end_ts - out[di].start_ts, 3)
+                out[i].start_ts = out[di].end_ts
+                out[i].duration = round(out[i].end_ts - out[i].start_ts, 3)
+            else:
+                out[i].end_ts = round(out[i].end_ts + take, 3)
+                out[i].duration = round(out[i].end_ts - out[i].start_ts, 3)
+                out[di].start_ts = out[i].end_ts
+                out[di].duration = round(out[di].end_ts - out[di].start_ts, 3)
+            progress = True
+            changed = True
+        if not progress:
+            break
+
+    # Финальная склейка без дыр/overlap
+    out[0].start_ts = 0.0
+    for i in range(1, len(out)):
+        out[i].start_ts = out[i - 1].end_ts
+    out[-1].end_ts = round(ad, 3)
+    for t in out:
+        t.duration = round(max(0.0, t.end_ts - t.start_ts), 3)
+        t.start_ts = round(t.start_ts, 3)
+        t.end_ts = round(t.end_ts, 3)
+
+    if changed:
+        logger.info(
+            "absorb_crumb_durations: crumbs {} → {}",
+            count_crumb_frames(timings, crumb_s=crumb_s),
+            count_crumb_frames(out, crumb_s=crumb_s),
+        )
+    return out
+
+
 def heal_timings_if_crumbs(
     timings: list[FrameTiming],
     cells: list[tuple[int, str]],
@@ -428,6 +528,38 @@ def heal_timings_if_crumbs(
         )
         return healed
     return timings
+
+
+def finalize_align_timings(
+    timings: list[FrameTiming],
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+) -> list[FrameTiming]:
+    """Гарантия: покрытие master + 0 крошек ≤0.1с (после heal + absorb)."""
+    if not timings:
+        return timings
+    healed = heal_timings_if_crumbs(timings, cells, words, master)
+    out = absorb_crumb_durations(healed, master)
+    if count_crumb_frames(out) > 0 and words:
+        out = absorb_crumb_durations(
+            timings_from_word_transitions(cells, words, master),
+            master,
+        )
+    if count_crumb_frames(out) > 0:
+        spans = build_frame_word_spans(cells, words) if words else []
+        if spans:
+            out = absorb_crumb_durations(
+                _timings_proportional_to_tokens(spans, master, uniform=False),
+                master,
+            )
+        else:
+            raw = [
+                FrameTiming(fn, 0.0, 0.0, float(max(len(tokenize_lower(text)), 1)))
+                for fn, text in cells
+            ]
+            out = absorb_crumb_durations(normalize_contiguous(raw, master), master)
+    return out
 
 
 def map_frames(

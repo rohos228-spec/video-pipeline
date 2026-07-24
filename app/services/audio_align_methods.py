@@ -442,7 +442,9 @@ def _timings_from_speech_islands(
 
     timings = [t for t in raw if t is not None]
     # Склеить в непрерывное покрытие master (тишина уходит в границы соседних кадров).
-    return normalize_contiguous(timings, ad)
+    from app.services.mapper import absorb_crumb_durations
+
+    return absorb_crumb_durations(normalize_contiguous(timings, ad), ad)
 
 
 def _method_direct(
@@ -450,10 +452,10 @@ def _method_direct(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    from app.services.mapper import heal_timings_if_crumbs
+    from app.services.mapper import finalize_align_timings
 
     mono = enforce_monotonic_timings(map_frames(cells, words), master=master)
-    return heal_timings_if_crumbs(mono, cells, words, master)
+    return finalize_align_timings(mono, cells, words, master)
 
 
 def _method_contiguous(
@@ -461,9 +463,14 @@ def _method_contiguous(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    from app.services.mapper import timings_from_word_transitions
+    from app.services.mapper import finalize_align_timings, timings_from_word_transitions
 
-    return timings_from_word_transitions(cells, words, master)
+    return finalize_align_timings(
+        timings_from_word_transitions(cells, words, master),
+        cells,
+        words,
+        master,
+    )
 
 
 def _method_auto(
@@ -473,23 +480,18 @@ def _method_auto(
 ) -> list[FrameTiming]:
     from app.services.mapper import (
         count_crumb_frames,
-        heal_timings_if_crumbs,
+        finalize_align_timings,
         timings_from_word_transitions,
     )
 
     direct = map_frames(cells, words)
     if direct and len(direct) == len(cells):
         mono = enforce_monotonic_timings(direct, master=master)
-        mono = heal_timings_if_crumbs(mono, cells, words, master)
-        if count_crumb_frames(mono) == 0:
-            return mono
+        out = finalize_align_timings(mono, cells, words, master)
+        if count_crumb_frames(out) == 0:
+            return out
     contig = timings_from_word_transitions(cells, words, master)
-    if contig and count_crumb_frames(contig) == 0:
-        return contig
-    return enforce_monotonic_timings(
-        map_frames(cells, words, audio_duration=master),
-        master=master,
-    )
+    return finalize_align_timings(contig, cells, words, master)
 
 
 _TIMING_HANDLERS: dict[
