@@ -1,0 +1,14 @@
+---
+description: ChatGPT attach/DOM evaluate constraints — never break querySelectorAll
+globs: app/bots/chatgpt.py
+alwaysApply: false
+---
+
+# chatgpt.py attach rules
+
+- Attachment counting must stay in **inline** `page.evaluate` inside `_count_attachment_previews` / `_attachments_upload_state`.
+- Never put these into evaluate JS: `div.group/attachment`, `vpComposer*`, `_COMPOSER_ATTACHMENT_DOM_JS`, `_composer_page_eval_js`.
+- `div.group\\/attachment` only in Playwright locators (`FILE_PREVIEW_SELECTORS`).
+- Keep `tests/test_chatgpt_attachment_guard.py` green.
+- After edits: backend restart required; log success looks like `ChatGPT: drag-drop batch` + `все файлы видны`.
+---

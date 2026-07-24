@@ -1,0 +1,14 @@
+---
+description: Studio web UI — version bump and Prompt Builder contracts
+globs: web/**/*
+alwaysApply: false
+---
+
+# Studio web UI
+
+- Before committing UI changes: run `python3 scripts/bump_studio_version.py` and include updated `web/STUDIO_VERSION` + `web/out/`.
+- FastAPI serves `web/out/`; Windows users rely on committed build (no npm required).
+- Prompt Builder: 3 columns (presets / center / catalog); drag into empty slot is add-only; persist via step-presets PATCH APIs.
+- Prefer existing studio components/patterns; do not invent a second prompt-storage path.
+- Avoid editing generated `web/out/` by hand — rebuild via the bump script.
+---
