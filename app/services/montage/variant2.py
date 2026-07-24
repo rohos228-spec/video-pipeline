@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from app.settings import settings
 MONTAGE_ENGINE_V2 = "montage-v3-r15-slots-concat-s2"
 DEFAULT_W, DEFAULT_H = 1920, 1080
 SLOT_ENCODE_PARALLEL = 4
+_TIMELINE_FPS = 30
 _DEFAULT_VOICE_GAIN = 1.0
 _DEFAULT_BGM_MIX_RATIO = 0.35
 
@@ -267,6 +269,111 @@ def _write_plan(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _duration_up_to_frame(seconds: float, *, fps: int = _TIMELINE_FPS) -> float:
+    """Round duration up to the next video frame boundary."""
+    if seconds <= 0.0:
+        return 0.0
+    return math.ceil(seconds * fps - 1e-9) / fps
+
+
+async def _concat_segments(list_file: Path, out: Path, *, voice_s: float) -> None:
+    try:
+        await _run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", str(list_file),
+            "-c", "copy",
+            "-an",
+            "-t", f"{voice_s:.3f}",
+            str(out),
+        ], context="concat copy")
+    except RuntimeError:
+        logger.warning("variant3: concat copy failed — re-encode once")
+        await _run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", str(list_file),
+            *_X264,
+            "-an",
+            "-t", f"{voice_s:.3f}",
+            str(out),
+        ], context="concat re-encode")
+
+
+async def _ensure_timeline_duration(
+    src: Path,
+    dst: Path,
+    *,
+    w: int,
+    h: int,
+    voice_s: float,
+    tmp: Path,
+    project_id: int,
+) -> Path:
+    """Pad or trim so the montage video matches voice length (frame rounding)."""
+    got = await probe_duration(src)
+    if abs(got - voice_s) <= 0.05:
+        if src != dst:
+            shutil.copy2(src, dst)
+        return dst
+
+    if got + 0.05 < voice_s:
+        pad_s = _duration_up_to_frame(voice_s - got)
+        logger.warning(
+            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — black pad {:.3f}s",
+            project_id,
+            got,
+            voice_s,
+            pad_s,
+        )
+        pad_path = tmp / "pad_tail.mp4"
+        await _encode_black_segment(pad_path, w=w, h=h, dur=pad_s)
+        list_file = tmp / "concat_padded.txt"
+        list_file.write_text(
+            "\n".join((f"file '{src.as_posix()}'", f"file '{pad_path.as_posix()}'")),
+            encoding="utf-8",
+        )
+        padded = tmp / "timeline_padded.mp4"
+        await _concat_segments(list_file, padded, voice_s=voice_s)
+        got = await probe_duration(padded)
+        if got + 0.05 < voice_s:
+            extra = _duration_up_to_frame(voice_s - got)
+            pad2 = tmp / "pad_tail2.mp4"
+            await _encode_black_segment(pad2, w=w, h=h, dur=extra)
+            list_file2 = tmp / "concat_padded2.txt"
+            list_file2.write_text(
+                "\n".join((f"file '{padded.as_posix()}'", f"file '{pad2.as_posix()}'")),
+                encoding="utf-8",
+            )
+            padded2 = tmp / "timeline_padded2.mp4"
+            await _concat_segments(list_file2, padded2, voice_s=voice_s)
+            padded = padded2
+            got = await probe_duration(padded)
+        src = padded
+
+    if got > voice_s + 0.05:
+        logger.warning(
+            "[#{}] variant3: timeline {:.2f}s > voice {:.2f}s — trim",
+            project_id,
+            got,
+            voice_s,
+        )
+        await _run([
+            "ffmpeg", "-y",
+            "-i", str(src),
+            "-vf", f"trim=duration={voice_s:.6f},setpts=PTS-STARTPTS",
+            *_X264,
+            "-an",
+            "-t", f"{voice_s:.3f}",
+            str(dst),
+        ], context=f"trim timeline to {voice_s:.2f}s")
+        return dst
+
+    if src != dst:
+        shutil.copy2(src, dst)
+    return dst
+
+
 async def _encode_black_segment(path: Path, *, w: int, h: int, dur: float) -> None:
     await _run([
         "ffmpeg", "-y",
@@ -338,28 +445,18 @@ async def _build_slot_timeline(
         "\n".join(f"file '{p.as_posix()}'" for p in paths if p is not None),
         encoding="utf-8",
     )
+    raw = tmp / "timeline_raw.mp4"
+    await _concat_segments(list_file, raw, voice_s=voice_s)
     out = tmp / "timeline.mp4"
-    try:
-        await _run([
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_file),
-            "-c", "copy",
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(out),
-        ], context="concat copy")
-    except RuntimeError:
-        logger.warning("[#{}] variant3: concat copy failed — re-encode once", project.id)
-        await _run([
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_file),
-            *_X264,
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(out),
-        ], context="concat re-encode")
+    await _ensure_timeline_duration(
+        raw,
+        out,
+        w=w,
+        h=h,
+        voice_s=voice_s,
+        tmp=tmp,
+        project_id=project.id,
+    )
 
     got = await probe_duration(out)
     if abs(got - voice_s) > 0.5:
