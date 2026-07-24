@@ -1,4 +1,4 @@
-"""Dense stitch montage — no slow-mo, extend prev on R15 gap, short src stitches next."""
+"""Absolute R15 montage — extend clone, no slow-mo, no black gaps."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def test_timeline_segments_sum_to_voice() -> None:
     assert all(s.kind == "clip" for s in segs)
 
 
-def test_short_src_stitches_next_immediately() -> None:
+def test_short_src_keeps_r15_start_for_next() -> None:
     slots = [
         _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 2.0, 4.0, Path("b.mp4"), "scene"),
@@ -39,8 +39,21 @@ def test_short_src_stitches_next_immediately() -> None:
     segs = build_timeline_segments(slots, src, voice_s=4.0)
     assert all(s.kind == "clip" for s in segs)
     assert abs(segs[0].slot.play_dur - 1.0) < 0.02
-    assert abs(segs[1].slot.out_start - 1.0) < 0.02
-    assert not segs[0].slot.filled_r15
+    assert abs(segs[0].duration_s - 2.0) < 0.02
+    assert abs(segs[1].slot.out_start - 2.0) < 0.02
+    assert segs[0].slot.suffix_pad > 0.9
+
+
+def test_first_frame_respects_r15_start() -> None:
+    slots = [
+        _OverlaySlot(1, 3.28, 5.76, Path("a.mp4"), "scene"),
+        _OverlaySlot(2, 5.76, 8.72, Path("b.mp4"), "scene"),
+    ]
+    src = {Path("a.mp4"): 2.0, Path("b.mp4"): 2.96}
+    segs = build_timeline_segments(slots, src, voice_s=10.0)
+    assert abs(segs[0].slot.prefix_pad - 3.28) < 0.02
+    assert abs(segs[0].slot.r15_start - 3.28) < 0.02
+    assert abs(segs[1].slot.out_start - 5.76) < 0.02
 
 
 def test_r15_gap_extends_previous_not_black() -> None:
@@ -51,9 +64,9 @@ def test_r15_gap_extends_previous_not_black() -> None:
     src = {Path("a.mp4"): 2.0, Path("b.mp4"): 2.0}
     segs = build_timeline_segments(slots, src, voice_s=4.0)
     assert all(s.kind == "clip" for s in segs)
-    assert segs[0].slot.filled_r15
     assert segs[0].slot.suffix_pad > 0.4
     assert abs(segs[0].duration_s - 2.5) < 0.02
+    assert abs(segs[1].slot.out_start - 2.5) < 0.02
 
 
 def test_missing_frame_extends_previous_no_black() -> None:
@@ -70,9 +83,27 @@ def test_missing_frame_extends_previous_no_black() -> None:
     segs = build_timeline_segments(slots, src, voice_s=110.0)
     assert all(s.kind == "clip" for s in segs)
     frame46 = next(s for s in segs if s.slot and s.slot.frame_number == 46)
-    assert frame46.slot.filled_r15
     assert frame46.slot.suffix_pad > 2.5
     assert abs(frame46.duration_s - 13.0) < 0.02
+    frame48 = next(s for s in segs if s.slot and s.slot.frame_number == 48)
+    assert abs(frame48.slot.out_start - 103.0) < 0.02
+
+
+def test_cumulative_positions_match_r15_starts() -> None:
+    slots = [
+        _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
+        _OverlaySlot(2, 2.0, 4.0, Path("b.mp4"), "scene"),
+        _OverlaySlot(3, 4.5, 7.0, Path("c.mp4"), "scene"),
+    ]
+    src = {Path("a.mp4"): 2.0, Path("b.mp4"): 1.5, Path("c.mp4"): 3.0}
+    segs = build_timeline_segments(slots, src, voice_s=7.0)
+    cursor = 0.0
+    for seg in segs:
+        assert seg.slot is not None
+        assert abs(seg.slot.out_start - cursor) < 0.02
+        assert abs(seg.slot.r15_start - (cursor + seg.slot.prefix_pad)) < 0.02
+        cursor += seg.duration_s
+    assert abs(cursor - 7.0) < 0.02
 
 
 def test_no_black_segments() -> None:
