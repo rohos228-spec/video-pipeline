@@ -11,8 +11,8 @@ MONTAGE_VARIANTS = """
 
 ВАРИАНТ 3 — SLOT+CONCAT (текущий, реализован)
   Параллельное кодирование каждого R15-слота, concat, mux.
-  Абсолютная R15: окно [start,end] на шкале озвучки; src короче → clone (не slow);
-  gap между маркерами → clone prev; src длиннее → trim на 1x.
+  Абсолютная R15 (таймкод = приоритет): out_end = start следующего;
+  src короче → clone в окне; gap → clone suffix; src длиннее → trim на 1x.
 
 ВАРИАНТ 4 — EDL / JSON TIMELINE
   Генерируем montage.edl из R15, один ffmpeg-script читает EDL.
