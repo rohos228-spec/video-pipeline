@@ -1,13 +1,13 @@
 """Вариант 3: R15 → slot encode → concat → mux.
 
-gap_policy=absolute_r15_reverse_fill
+gap_policy=absolute_r15_real_src_reverse_fill
 
 Правила:
-1. Клип жёстко на абсолютном R15: out_start == r15_start.
-2. Окно R15 целиком: если src >= окна → trim; если короче → вперёд, потом
-   обратная перемотка с конца (ping-pong), без freeze / loop / slow-mo / black в окне.
-3. Дыры между маркерами и хвост voice — добор тем же reverse-fill от соседнего клипа.
-4. Dense concat (сдвиг с R15) запрещён — _validate_timeline падает.
+1. Старт клипа = Excel r15_start (привязка к таймкоду).
+2. Длина на таймлайне = до старта следующего кадра (или конца voice), НЕ обрезка
+   по r15_end: пока в файле есть кадры — играем реальный src.
+3. Reverse с конца — ТОЛЬКО если реальный src короче времени до следующего старта.
+4. Нельзя решать «видео кончилось», потому что кончился таймкод Excel.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from app.services.shot2_montage import find_scene_clips, shot2_frame_numbers
 from app.settings import settings
 
 MONTAGE_ENGINE_V2 = "montage-v3-r15-slots-concat-s2"
-GAP_POLICY = "absolute_r15_reverse_fill"
+GAP_POLICY = "absolute_r15_real_src_reverse_fill"
 DEFAULT_W, DEFAULT_H = 1920, 1080
 SLOT_ENCODE_PARALLEL = 4
 _TIMELINE_FPS = 30
@@ -217,55 +217,43 @@ def build_timeline_segments(
     src_durations: dict[Path, float],
     voice_s: float,
 ) -> list[_TimelineSegment]:
-    """Абсолютная R15; короткий src → reverse-fill; дыры → reverse от соседа."""
+    """Старт по R15; длина от реального src до следующего старта; reverse лишь если src мал."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     segs: list[_TimelineSegment] = []
     cursor = 0.0
-    prev_cs: _ContinuousSlot | None = None
 
-    for slot in ordered:
-        window = slot.duration_s
-        if window < 0.05:
-            continue
+    for i, slot in enumerate(ordered):
         src_dur = src_durations[slot.clip]
+        next_start = ordered[i + 1].start_s if i + 1 < len(ordered) else voice_s
+        # Сколько места до ОБЯЗАТЕЛЬНОГО старта следующего кадра / конца voice.
+        available = next_start - slot.start_s
+        if available < 0.05:
+            logger.warning(
+                "variant3: кадр {} — нет места до следующего старта ({:.2f}→{:.2f}), пропуск",
+                slot.frame_number,
+                slot.start_s,
+                next_start,
+            )
+            continue
 
-        # Дыра до r15_start — reverse-fill соседним клипом (не сдвиг R15).
+        # Lead до первого r15_start — reverse-fill первым клипом.
         if slot.start_s > cursor + 0.02:
             gap = slot.start_s - cursor
-            donor = prev_cs if prev_cs is not None else None
-            if donor is None:
-                # lead до первого кадра — reverse/ping-pong первого клипа
-                segs.append(
-                    _fill_segment(
-                        frame_number=slot.frame_number,
-                        clip=slot.clip,
-                        kind=slot.kind,
-                        label=slot.label,
-                        out_start=cursor,
-                        duration=gap,
-                        src_dur=src_dur,
-                        r15_start=slot.start_s,
-                        r15_end=slot.end_s,
-                        start_phase="rev",
-                        bound_to_r15=False,
-                    )
+            segs.append(
+                _fill_segment(
+                    frame_number=slot.frame_number,
+                    clip=slot.clip,
+                    kind=slot.kind,
+                    label=slot.label,
+                    out_start=cursor,
+                    duration=gap,
+                    src_dur=src_dur,
+                    r15_start=slot.start_s,
+                    r15_end=slot.end_s,
+                    start_phase="rev",
+                    bound_to_r15=False,
                 )
-            else:
-                segs.append(
-                    _fill_segment(
-                        frame_number=donor.frame_number,
-                        clip=donor.clip,
-                        kind=donor.kind,
-                        label=donor.label,
-                        out_start=cursor,
-                        duration=gap,
-                        src_dur=donor.src_dur,
-                        r15_start=donor.r15_start,
-                        r15_end=donor.r15_end,
-                        start_phase="rev",
-                        bound_to_r15=False,
-                    )
-                )
+            )
             cursor = slot.start_s
         elif slot.start_s < cursor - _R15_ALIGN_TOL_S:
             raise RuntimeError(
@@ -280,54 +268,75 @@ def build_timeline_segments(
                 f"(cursor={cursor:.3f}, r15_start={slot.start_s:.3f})"
             )
 
-        phase = "fwd"
-        if src_dur + 0.02 < window:
+        # КРИТИЧНО: не режем по r15_end. Режем только по available / реальному src.
+        # Reverse — только если ФАЙЛ короче available, не потому что «таймкод окна кончился».
+        r15_win = max(0.0, slot.end_s - slot.start_s)
+        if src_dur + 0.02 < available:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → fwd+reverse fill",
+                "variant3: кадр {} — реальный src {:.2f}s < места {:.2f}s "
+                "(R15-окно было {:.2f}s) → fwd + reverse",
                 slot.frame_number,
                 src_dur,
-                window,
+                available,
+                r15_win,
             )
+        elif src_dur > r15_win + 0.05 and src_dur <= available + 0.02:
+            logger.debug(
+                "variant3: кадр {} — src {:.2f}s > R15-окно {:.2f}s, "
+                "но файл ещё идёт → играем src до {:.2f}s (не режем по таймкоду конца)",
+                slot.frame_number,
+                src_dur,
+                r15_win,
+                available,
+            )
+
         seg = _fill_segment(
             frame_number=slot.frame_number,
             clip=slot.clip,
             kind=slot.kind,
             label=slot.label,
             out_start=slot.start_s,
-            duration=window,
+            duration=available,
             src_dur=src_dur,
             r15_start=slot.start_s,
             r15_end=slot.end_s,
-            start_phase=phase,
+            start_phase="fwd",
             bound_to_r15=True,
         )
         segs.append(seg)
-        prev_cs = seg.slot
-        cursor = slot.end_s
+        cursor = next_start
 
-    if voice_s > cursor + 0.02 and prev_cs is not None:
+    if voice_s > cursor + 0.02 and segs:
+        last = segs[-1].slot
+        assert last is not None
         segs.append(
             _fill_segment(
-                frame_number=prev_cs.frame_number,
-                clip=prev_cs.clip,
-                kind=prev_cs.kind,
-                label=prev_cs.label,
+                frame_number=last.frame_number,
+                clip=last.clip,
+                kind=last.kind,
+                label=last.label,
                 out_start=cursor,
                 duration=voice_s - cursor,
-                src_dur=prev_cs.src_dur,
-                r15_start=prev_cs.r15_start,
-                r15_end=prev_cs.r15_end,
+                src_dur=last.src_dur,
+                r15_start=last.r15_start,
+                r15_end=last.r15_end,
                 start_phase="rev",
                 bound_to_r15=False,
             )
         )
 
-    _validate_timeline(segs, voice_s)
+    _validate_timeline(segs, voice_s, ordered_starts=[s.start_s for s in ordered])
     return segs
 
 
-def _validate_timeline(segments: list[_TimelineSegment], voice_s: float) -> None:
+def _validate_timeline(
+    segments: list[_TimelineSegment],
+    voice_s: float,
+    *,
+    ordered_starts: list[float] | None = None,
+) -> None:
     cursor = 0.0
+    bound_i = 0
     for seg in segments:
         if seg.kind != "clip" or seg.slot is None:
             raise RuntimeError("ожидался clip-сегмент")
@@ -344,12 +353,18 @@ def _validate_timeline(segments: list[_TimelineSegment], voice_s: float) -> None
                 f"кадр {cs.frame_number}: ОТВЯЗКА от R15 "
                 f"(out_start={cs.out_start:.3f} != r15_start={cs.r15_start:.3f})"
             )
-        if cs.bound_to_r15:
-            r15_win = max(0.0, cs.r15_end - cs.r15_start)
-            if abs(cs.slot_dur - r15_win) > 0.05:
+        # Длина bound-сегмента = до следующего R15-старта, НЕ обязана = r15_end-r15_start.
+        if cs.bound_to_r15 and ordered_starts is not None:
+            if bound_i + 1 < len(ordered_starts):
+                expect = ordered_starts[bound_i + 1] - cs.r15_start
+            else:
+                expect = voice_s - cs.r15_start
+            if abs(cs.slot_dur - expect) > 0.05:
                 raise RuntimeError(
-                    f"кадр {cs.frame_number}: длина {cs.slot_dur:.2f} != R15 {r15_win:.2f}"
+                    f"кадр {cs.frame_number}: длина {cs.slot_dur:.2f} "
+                    f"!= места до следующего старта {expect:.2f}"
                 )
+            bound_i += 1
         if abs(seg.duration_s - cs.out_duration) > 0.03:
             raise RuntimeError(f"кадр {cs.frame_number}: duration mismatch")
         cursor += seg.duration_s
