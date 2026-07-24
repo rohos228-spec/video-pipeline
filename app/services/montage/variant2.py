@@ -120,7 +120,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         slots.extend(ms)
     if skipped:
         logger.warning(
-            "[#{}] variant3: кадры {} без clip — пропуск, след. клип сразу после предыдущего",
+            "[#{}] variant3: кадры {} без clip — чёрный gap до start следующего",
             project.id,
             skipped,
         )
@@ -141,15 +141,22 @@ def _play_duration(r15_window: float, src_dur: float) -> float:
     return max(0.0, min(r15_window, src_dur))
 
 
-def build_continuous_slots(
+def build_timeline_segments(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
-) -> tuple[list[_ContinuousSlot], float]:
-    """Плотный concat: каждый клип = естественная длина (≤ R15), сразу следующий."""
+    voice_s: float,
+) -> list[_TimelineSegment]:
+    """Абсолютная шкала R15 (sync с озвучкой): clip на start, без freeze, gap = чёрный."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
-    out: list[_ContinuousSlot] = []
+    segs: list[_TimelineSegment] = []
     cursor = 0.0
+
     for slot in ordered:
+        if slot.start_s > cursor + 0.02:
+            gap = slot.start_s - cursor
+            segs.append(_TimelineSegment("black", gap))
+            cursor = slot.start_s
+
         src_dur = src_durations[slot.clip]
         play = _play_duration(slot.duration_s, src_dur)
         if play < 0.05:
@@ -161,45 +168,29 @@ def build_continuous_slots(
             continue
         if src_dur + 0.05 < slot.duration_s:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s, без freeze → след. клип",
+                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s, без freeze",
                 slot.frame_number,
                 src_dur,
                 slot.duration_s,
             )
-        out_start = cursor
-        out_end = cursor + play
-        out.append(
-            _ContinuousSlot(
-                frame_number=slot.frame_number,
-                clip=slot.clip,
-                kind=slot.kind,
-                label=slot.label,
-                out_start=out_start,
-                out_end=out_end,
-                r15_start=slot.start_s,
-                r15_end=slot.end_s,
-                play_dur=play,
-                src_dur=src_dur,
-            )
+
+        cs = _ContinuousSlot(
+            frame_number=slot.frame_number,
+            clip=slot.clip,
+            kind=slot.kind,
+            label=slot.label,
+            out_start=slot.start_s,
+            out_end=slot.start_s + play,
+            r15_start=slot.start_s,
+            r15_end=slot.end_s,
+            play_dur=play,
+            src_dur=src_dur,
         )
-        cursor = out_end
-    return out, cursor
+        segs.append(_TimelineSegment("clip", play, cs))
+        cursor = slot.start_s + play
 
-
-def build_timeline_segments(
-    slots: list[_OverlaySlot],
-    src_durations: dict[Path, float],
-    voice_s: float,
-) -> list[_TimelineSegment]:
-    """Клипы подряд без freeze; хвост озвучки — только чёрный filler (не freeze клипа)."""
-    continuous, video_total = build_continuous_slots(slots, src_durations)
-    segs = [
-        _TimelineSegment("clip", cs.play_dur, cs)
-        for cs in continuous
-    ]
-    tail = voice_s - video_total
-    if tail > 0.02:
-        segs.append(_TimelineSegment("black", tail))
+    if voice_s > cursor + 0.02:
+        segs.append(_TimelineSegment("black", voice_s - cursor))
     return segs
 
 
@@ -246,7 +237,7 @@ def _write_plan(
         f"markers={marker_count}",
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
-        "gap_policy=dense_natural_no_freeze",
+        "gap_policy=absolute_r15_no_freeze",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
