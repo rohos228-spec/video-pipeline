@@ -48,7 +48,7 @@ class _OverlaySlot:
 
 @dataclass(frozen=True)
 class _ContinuousSlot:
-    """Клип на плотной шкале concat: без freeze последнего кадра."""
+    """Клип на абсолютной шкале R15: окно = r15_end - r15_start."""
 
     frame_number: int
     clip: Path
@@ -58,12 +58,12 @@ class _ContinuousSlot:
     out_end: float
     r15_start: float
     r15_end: float
-    play_dur: float
+    slot_dur: float
     src_dur: float
 
     @property
     def out_duration(self) -> float:
-        return self.play_dur
+        return self.slot_dur
 
 
 @dataclass(frozen=True)
@@ -136,17 +136,12 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
     return slots
 
 
-def _play_duration(r15_window: float, src_dur: float) -> float:
-    """Длительность клипа на таймлайне: min(R15, src), без freeze."""
-    return max(0.0, min(r15_window, src_dur))
-
-
 def build_timeline_segments(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
     voice_s: float,
 ) -> list[_TimelineSegment]:
-    """Абсолютная шкала R15 (sync с озвучкой): clip на start, без freeze, gap = чёрный."""
+    """Абсолютная R15: клип занимает всё окно [start,end]; src короче → slow."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     segs: list[_TimelineSegment] = []
     cursor = 0.0
@@ -158,20 +153,22 @@ def build_timeline_segments(
             cursor = slot.start_s
 
         src_dur = src_durations[slot.clip]
-        play = _play_duration(slot.duration_s, src_dur)
-        if play < 0.05:
-            logger.warning(
-                "variant3: кадр {} — клип {:.2f}s короче 0.05s, пропуск",
-                slot.frame_number,
-                src_dur,
-            )
+        window = slot.duration_s
+        if window < 0.05:
             continue
-        if src_dur + 0.05 < slot.duration_s:
+        if src_dur + 0.02 < window:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s, без freeze",
+                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → slow (не чёрный gap)",
                 slot.frame_number,
                 src_dur,
-                slot.duration_s,
+                window,
+            )
+        elif src_dur > window + 0.05:
+            logger.debug(
+                "variant3: кадр {} — src {:.2f}s > R15 {:.2f}s → trim",
+                slot.frame_number,
+                src_dur,
+                window,
             )
 
         cs = _ContinuousSlot(
@@ -180,14 +177,14 @@ def build_timeline_segments(
             kind=slot.kind,
             label=slot.label,
             out_start=slot.start_s,
-            out_end=slot.start_s + play,
+            out_end=slot.end_s,
             r15_start=slot.start_s,
             r15_end=slot.end_s,
-            play_dur=play,
+            slot_dur=window,
             src_dur=src_dur,
         )
-        segs.append(_TimelineSegment("clip", play, cs))
-        cursor = slot.start_s + play
+        segs.append(_TimelineSegment("clip", window, cs))
+        cursor = slot.end_s
 
     if voice_s > cursor + 0.02:
         segs.append(_TimelineSegment("black", voice_s - cursor))
@@ -210,16 +207,18 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
         raise RuntimeError(f"{head}\n" + "\n".join(err.splitlines()[-18:]))
 
 
-def _clip_filter_chain(w: int, h: int, play_dur: float, src_dur: float) -> str:
-    """Обрезка по min(R15, src). Без tpad/freeze последнего кадра."""
-    use = min(play_dur, src_dur)
+def _clip_filter_chain(w: int, h: int, slot_dur: float, src_dur: float) -> str:
+    """R15-окно: src короче → slow; src длиннее → trim. Без freeze/tpad."""
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
     )
-    if src_dur > use + 0.05:
-        chain += f",trim=duration={use:.3f}"
-    chain += f",setpts=PTS-STARTPTS"
+    if src_dur + 0.02 < slot_dur:
+        slow = src_dur / slot_dur
+        chain += f",setpts=PTS/{slow:.6f}"
+    elif src_dur > slot_dur + 0.05:
+        chain += f",trim=duration={slot_dur:.3f}"
+    chain += ",setpts=PTS-STARTPTS"
     return chain
 
 
@@ -237,7 +236,7 @@ def _write_plan(
         f"markers={marker_count}",
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
-        "gap_policy=absolute_r15_no_freeze",
+        "gap_policy=absolute_r15_slow_trim",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
@@ -287,16 +286,16 @@ async def _encode_clip_segment(
     w: int,
     h: int,
 ) -> None:
-    vf = _clip_filter_chain(w, h, slot.play_dur, slot.src_dur)
+    vf = _clip_filter_chain(w, h, slot.slot_dur, slot.src_dur)
     await _run([
         "ffmpeg", "-y",
         "-i", str(slot.clip),
         "-vf", vf,
         *_X264,
         "-an",
-        "-t", f"{slot.play_dur:.3f}",
+        "-t", f"{slot.slot_dur:.3f}",
         str(path),
-    ], context=f"clip slot f{slot.frame_number} {slot.play_dur:.2f}s")
+    ], context=f"clip slot f{slot.frame_number} {slot.slot_dur:.2f}s")
 
 
 async def _build_slot_timeline(
