@@ -332,6 +332,7 @@ def _write_plan(
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
         "gap_policy=absolute_r15_extend_clone",
+        "short_src_policy=stream_loop",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
