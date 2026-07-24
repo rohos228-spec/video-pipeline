@@ -440,6 +440,43 @@ export const api = {
       `/api/projects/${projectId}/montage-board/montage-status`,
     ),
 
+  listAudioAlignMethods: () =>
+    http<{ methods: Array<{ id: string; title: string; summary: string }> }>(
+      `/api/projects/audio-align/methods`,
+    ),
+
+  runAudioAlign: (
+    projectId: number,
+    opts: { method: string; force_asr?: boolean; run_assemble?: boolean },
+  ) => {
+    const q = new URLSearchParams({
+      method: opts.method,
+      force_asr: String(Boolean(opts.force_asr)),
+      run_assemble: String(opts.run_assemble !== false),
+    });
+    return http<{
+      started: boolean;
+      already_running?: boolean;
+      job?: Record<string, unknown>;
+    }>(`/api/projects/${projectId}/audio-align?${q}`, { method: "POST" });
+  },
+
+  getAudioAlignStatus: (projectId: number) =>
+    http<{
+      job: {
+        status?: string;
+        error?: string | null;
+        method?: string;
+        result?: {
+          crumbs?: number;
+          words_source?: string;
+          r15_written?: number;
+          final_video?: string | null;
+        };
+      };
+      last?: Record<string, unknown> | null;
+    }>(`/api/projects/${projectId}/audio-align/status`),
+
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
       `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
