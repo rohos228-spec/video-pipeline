@@ -415,7 +415,11 @@ async def sync_frame_timestamps_for_board(
     project: Project,
     frames: list[Frame] | None = None,
 ) -> dict[str, Any]:
-    """Обновить Frame.start_ts/end_ts из кэша words.json — без ASR на GET /montage-board."""
+    """Обновить Frame.start_ts/end_ts для доски монтажа.
+
+    Приоритет: Excel R15 (то, что пишет «Разбор аудио» / remount).
+    Не затирать выбранную методику auto/proportional из words.json.
+    """
     if frames is None:
         frames = list(
             (
@@ -437,6 +441,70 @@ async def sync_frame_timestamps_for_board(
     if voice_path is None or not voice_path.is_file():
         return {"skipped": "voice_full not on disk"}
 
+    master = await probe_duration(voice_path)
+    frame_numbers = [f.number for f in timeline_frames]
+
+    # 1) Excel R15 — источник правды после «Разбор аудио» / generate_audio.
+    try:
+        from app.services.plan_timestamps import (
+            count_parsed_timestamp_cells,
+            parse_timecode_range,
+        )
+        from app.storage.plan_sheet_v8 import read_plan_timestamps_cells
+        from app.services.frame_audio import FrameAudioClip
+
+        ts_cells, _ts_row = read_plan_timestamps_cells(project, frame_numbers)
+        _filled, parsed_n, _bad = count_parsed_timestamp_cells(ts_cells)
+        need = len(frame_numbers)
+        # Достаточно большинства меток — не откатываем на words.json из‑за 1–2 дыр.
+        if parsed_n >= max(1, int(need * 0.85)):
+            text_by = dict(cells)
+            clips: list[FrameAudioClip] = []
+            for num, label in ts_cells:
+                parsed = parse_timecode_range(label or "")
+                if parsed is None:
+                    continue
+                start, end = parsed
+                if end <= start:
+                    continue
+                clips.append(
+                    FrameAudioClip(
+                        frame_number=num,
+                        path=voice_path,
+                        text=text_by.get(num, ""),
+                        start_ts=round(start, 3),
+                        end_ts=round(end, 3),
+                        duration=round(end - start, 3),
+                    )
+                )
+            if clips:
+                updated = _apply_clips_to_frames(timeline_frames, clips)
+                if updated:
+                    await session.flush()
+                    logger.info(
+                        "[#{}] montage_board sync: {} кадров ← Excel R15 "
+                        "(parsed {}/{})",
+                        project.id,
+                        len(updated),
+                        parsed_n,
+                        need,
+                    )
+                return {
+                    "source": "r15",
+                    "updated": updated,
+                    "clip_count": len(clips),
+                    "voice_seconds": round(master, 2),
+                    "r15_parsed": parsed_n,
+                    "r15_need": need,
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "[#{}] montage_board sync: R15 недоступна ({}) — fallback words.json",
+            project.id,
+            exc,
+        )
+
+    # 2) Fallback: words.json → frame_clips_from_whisper (только если R15 пуста).
     whisper_art = await _latest_whisper_artifact(session, project.id)
     if whisper_art is None or not whisper_art.path:
         return {"skipped": "no whisper artifact"}
@@ -447,7 +515,6 @@ async def sync_frame_timestamps_for_board(
     if not words_path.is_file():
         return {"skipped": "words file missing"}
 
-    master = await probe_duration(voice_path)
     words = load_words_json(words_path)
     if not words:
         return {"skipped": "empty words.json"}
