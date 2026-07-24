@@ -1165,7 +1165,14 @@ async def patch_excel_gpt_config(
     meta = dict(p.meta or {})
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
-    for key in ("label", "inputSource", "uploadedFileName", "slotIndex"):
+    for key in (
+        "label",
+        "inputSource",
+        "uploadedFileName",
+        "uploadedPreviewUrl",
+        "slotIndex",
+        "workMode",
+    ):
         if key in payload:
             cur[key] = payload[key]
     configs[node_key] = cur
@@ -1186,22 +1193,37 @@ async def upload_excel_gpt_file(
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.services.excel_gpt_node import upload_dir, upload_file_path
+    from app.services.excel_gpt_node import (
+        is_allowed_upload_filename,
+        upload_dir,
+        upload_file_path,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
         raise HTTPException(status_code=400, detail="need filename")
     safe_name = Path(file.filename).name
+    if not is_allowed_upload_filename(safe_name):
+        raise HTTPException(
+            status_code=400,
+            detail="нужен файл .xlsx / .xls / .txt / .png / .jpg / .webp",
+        )
     dest_dir = upload_dir(p, node_key)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = upload_file_path(p, node_key, safe_name)
     content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty file")
     dest.write_bytes(content)
     meta = dict(p.meta or {})
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
-    cur["inputSource"] = "upload"
+    ext = Path(safe_name).suffix.lower()
+    is_image = ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    preview = f"/api/files?path={dest}" if is_image else None
+    cur["inputSource"] = "image" if is_image else "upload"
     cur["uploadedFileName"] = safe_name
+    cur["uploadedPreviewUrl"] = preview
     cur["label"] = safe_name
     configs[node_key] = cur
     meta["excel_gpt_nodes"] = configs
@@ -1209,7 +1231,13 @@ async def upload_excel_gpt_file(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
-    return {"ok": True, "fileName": safe_name, "path": str(dest)}
+    return {
+        "ok": True,
+        "fileName": safe_name,
+        "path": str(dest),
+        "isImage": is_image,
+        "preview_url": preview,
+    }
 
 
 @router.post("/{project_id}/excel-gpt/remap-keys")

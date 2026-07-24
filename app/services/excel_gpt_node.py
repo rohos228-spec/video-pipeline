@@ -7,11 +7,26 @@ from typing import Any, Literal
 
 from app.models import Project, ProjectStatus
 
-InputSource = Literal["project_xlsx", "upload", "voiceover"]
+InputSource = Literal[
+    "project_xlsx",
+    "upload",
+    "voiceover",
+    "image",
+    "hero_refs",
+    "scene_images",
+]
+WorkMode = Literal["assist", "review", "transform"]
 
 EXCEL_GPT_STEP_CODE = "excel_gpt"
 EXCEL_GPT_NODE_TYPE = "excel_gpt"
 MAX_EXCEL_GPT_SLOTS = 5
+
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_UPLOAD_SUFFIXES = frozenset({".xlsx", ".xls", ".txt", *_IMAGE_SUFFIXES})
+_VALID_SOURCES = frozenset(
+    {"project_xlsx", "upload", "voiceover", "image", "hero_refs", "scene_images"}
+)
+_VALID_WORK_MODES = frozenset({"assist", "review", "transform"})
 
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -260,9 +275,38 @@ def input_source(project: Project, node_key: str | None) -> InputSource:
         return "project_xlsx"
     cfg = node_config(project, node_key)
     raw = str(cfg.get("inputSource") or "project_xlsx")
-    if raw in ("project_xlsx", "upload", "voiceover"):
+    if raw in _VALID_SOURCES:
         return raw  # type: ignore[return-value]
     return "project_xlsx"
+
+
+def work_mode(project: Project, node_key: str | None) -> WorkMode:
+    """Роль ноды: участвует / проверяет результат / преобразует ввод."""
+    if not node_key:
+        return "assist"
+    cfg = node_config(project, node_key)
+    raw = str(cfg.get("workMode") or "assist").strip().lower()
+    if raw in _VALID_WORK_MODES:
+        return raw  # type: ignore[return-value]
+    return "assist"
+
+
+def expects_xlsx_result(project: Project, node_key: str | None) -> bool:
+    """True — round-trip ждёт обновлённый .xlsx; False — достаточно ответа GPT."""
+    src = input_source(project, node_key)
+    if src in ("image", "hero_refs", "scene_images", "voiceover"):
+        return False
+    mode = work_mode(project, node_key)
+    if mode in ("review", "transform") and src == "upload":
+        cfg = node_config(project, node_key) if node_key else {}
+        name = str(cfg.get("uploadedFileName") or "").lower()
+        if Path(name).suffix.lower() in _IMAGE_SUFFIXES:
+            return False
+    return True
+
+
+def is_allowed_upload_filename(filename: str) -> bool:
+    return Path(filename).suffix.lower() in _UPLOAD_SUFFIXES
 
 
 def upload_dir(project: Project, node_key: str) -> Path:
@@ -272,6 +316,23 @@ def upload_dir(project: Project, node_key: str) -> Path:
 def upload_file_path(project: Project, node_key: str, filename: str) -> Path:
     safe = Path(filename).name
     return upload_dir(project, node_key) / safe
+
+
+def _collect_images_under(root: Path, *, limit: int = 12) -> list[Path]:
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue
+        if p.stat().st_size < 256:
+            continue
+        found.append(p)
+        if len(found) >= limit:
+            break
+    return found
 
 
 def completed_node_keys(project: Project) -> set[str]:
@@ -404,10 +465,16 @@ def display_attachment_name(project: Project, node_key: str | None) -> str:
     src = input_source(project, node_key)
     if src == "voiceover":
         return "voiceover.txt"
-    if src == "upload" and node_key:
+    if src == "hero_refs":
+        return "characters/* (рефы персонажей)"
+    if src == "scene_images":
+        return "scenes/* (картинки кадров)"
+    if src in ("upload", "image") and node_key:
         cfg = node_config(project, node_key)
         name = str(cfg.get("uploadedFileName") or "").strip()
-        return name or "upload.xlsx"
+        if name:
+            return name
+        return "image.png" if src == "image" else "upload.xlsx"
     return "project.xlsx"
 
 
@@ -421,18 +488,55 @@ def attachment_paths(project: Project, node_key: str | None = None) -> list[Path
         if voice.is_file():
             paths.append(voice)
         return paths
-    if src == "upload" and key:
+    if src == "hero_refs":
+        return _collect_images_under(project.data_dir / "characters", limit=8)
+    if src == "scene_images":
+        scenes = _collect_images_under(project.data_dir / "scenes", limit=8)
+        if scenes:
+            return scenes
+        return _collect_images_under(project.data_dir / "images", limit=8)
+    if src in ("upload", "image") and key:
         cfg = node_config(project, key)
         fname = str(cfg.get("uploadedFileName") or "").strip()
         if fname:
             p = upload_file_path(project, key, fname)
             if p.is_file():
                 paths.append(p)
+                return paths
+        # Fallback: любой файл в upload-папке ноды.
+        udir = upload_dir(project, key)
+        if udir.is_dir():
+            for p in sorted(udir.iterdir()):
+                if p.is_file() and p.suffix.lower() in _UPLOAD_SUFFIXES:
+                    paths.append(p)
+                    break
         return paths
     xlsx = project.data_dir / "project.xlsx"
     if xlsx.is_file():
         paths.append(xlsx)
     return paths
+
+
+def save_gpt_reply_text(
+    project: Project, node_key: str | None, reply: str
+) -> Path | None:
+    """Сохранить текстовый ответ GPT (режим review/transform / image)."""
+    from datetime import datetime, timezone
+
+    key = (node_key or active_node_key(project) or "default").strip() or "default"
+    out_dir = upload_dir(project, key)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "gpt_reply.txt"
+    path.write_text((reply or "").strip() + "\n", encoding="utf-8")
+    meta = dict(project.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(key) or {})
+    cur["lastReplyPath"] = str(path.relative_to(project.data_dir)).replace("\\", "/")
+    cur["lastReplyAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    configs[key] = cur
+    meta["excel_gpt_nodes"] = configs
+    project.meta = meta
+    return path
 
 
 async def clear_slot_completion_meta(

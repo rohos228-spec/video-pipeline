@@ -32,7 +32,9 @@ import {
   excelGptAttachmentChipTitle,
   excelGptSlotIndex,
   isExcelGptNode,
+  workModeChip,
   type ExcelGptInputSource,
+  type ExcelGptWorkMode,
 } from "@/lib/excel-gpt-config";
 import { Button } from "@/components/ui/button";
 import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
@@ -57,6 +59,7 @@ export function NodeVMenu({
   projectId,
   inputSource,
   uploadedFileName,
+  workMode,
   slotIndex,
   onSelectPrompt,
   onOpenGptText,
@@ -95,6 +98,7 @@ export function NodeVMenu({
   projectId?: number | null;
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
+  workMode?: ExcelGptWorkMode;
   slotIndex?: number;
   canvasZoom?: number;
 }) {
@@ -194,6 +198,16 @@ export function NodeVMenu({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
+        {isExcelGptNode(nodeType) ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            <span className="rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+              {workModeChip(workMode)}
+            </span>
+            <span className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+              {excelAttachmentTitle}: {excelAttachmentName}
+            </span>
+          </div>
+        ) : null}
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Мастер-промты

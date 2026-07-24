@@ -34,6 +34,9 @@ from app.services.excel_gpt_node import (
     active_node_key,
     attachment_paths,
     display_attachment_name,
+    expects_xlsx_result,
+    save_gpt_reply_text,
+    work_mode,
 )
 from app.services.prompt_library import read_resolved_project_prompt
 from app.services.xlsx_versioning import validate_xlsx
@@ -121,9 +124,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             f"enrich_xlsx: нет файла для отправки "
             f"({display_attachment_name(project, node_key)})"
         )
+    want_xlsx = expects_xlsx_result(project, node_key)
+    mode = work_mode(project, node_key)
     download_path = data_paths[0] if data_paths[0].suffix.lower() in {".xlsx", ".xls"} else xlsx_path
     if not download_path.exists():
         download_path = xlsx_path
+    logger.info(
+        "[#{}] enrich_xlsx slot={} mode={} want_xlsx={} attach={}",
+        project.id,
+        slot_idx,
+        mode,
+        want_xlsx,
+        [p.name for p in data_paths],
+    )
 
     try:
         variant, src_path, master, prompt_source = read_resolved_project_prompt(
@@ -188,40 +201,88 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             _MAX_RETRIES,
         )
         try:
-            async def _do() -> str:
-                return await xgf.telegram_style_ask_and_download(
-                    accompanying.strip(),
-                    attach_files,
-                    download_path,
-                    ask_timeout=1200,
-                    download_timeout=600,
-                    project_id=project.id,
-                    validate_xlsx_download=download_path.suffix.lower() in {".xlsx", ".xls"},
-                )
+            if want_xlsx:
+
+                async def _do() -> str:
+                    return await xgf.telegram_style_ask_and_download(
+                        accompanying.strip(),
+                        attach_files,
+                        download_path,
+                        ask_timeout=1200,
+                        download_timeout=600,
+                        project_id=project.id,
+                        validate_xlsx_download=download_path.suffix.lower()
+                        in {".xlsx", ".xls"},
+                    )
+
+            else:
+
+                async def _do() -> str:
+                    from app.bots.browser import browser_session
+                    from app.bots.chatgpt import ChatGPTBot
+
+                    async with browser_session() as bs:
+                        gpt = ChatGPTBot(bs)
+                        await gpt.new_conversation()
+                        return await gpt.ask_with_files(
+                            (accompanying or "").strip()
+                            or "Выполни инструкцию из приложенного промта.",
+                            attach_files,
+                            timeout=1200,
+                            project_id=project.id,
+                            expect_file_download=False,
+                        )
 
             reply = await xgf.run_under_xlsx_lock(
                 project.id, legacy_step_code, _do
             )
             logger.info(
-                "[#{}] enrich_xlsx: получен ответ len={} (try={})",
+                "[#{}] enrich_xlsx: получен ответ len={} (try={}, want_xlsx={})",
                 project.id,
                 len(reply or ""),
                 attempt,
+                want_xlsx,
             )
-            if not download_path.exists() or download_path.stat().st_size < 1024:
-                raise RuntimeError(
-                    f"скачанный файл пустой/слишком маленький "
-                    f"({download_path.stat().st_size if download_path.exists() else 0} байт)"
+            if want_xlsx:
+                if not download_path.exists() or download_path.stat().st_size < 1024:
+                    raise RuntimeError(
+                        f"скачанный файл пустой/слишком маленький "
+                        f"({download_path.stat().st_size if download_path.exists() else 0} байт)"
+                    )
+                logger.info(
+                    "[#{}] enrich_xlsx: файл обновлён {} ({} байт)",
+                    project.id,
+                    download_path.name,
+                    download_path.stat().st_size,
                 )
-            logger.info(
-                "[#{}] enrich_xlsx: файл обновлён {} ({} байт)",
-                project.id,
-                download_path.name,
-                download_path.stat().st_size,
-            )
+            else:
+                if not (reply or "").strip():
+                    raise RuntimeError("GPT вернул пустой ответ (режим без xlsx)")
+                saved = save_gpt_reply_text(project, node_key, reply or "")
+                logger.info(
+                    "[#{}] enrich_xlsx: текстовый ответ сохранён → {}",
+                    project.id,
+                    saved.name if saved else "?",
+                )
             break  # успех
         except Exception as e:  # noqa: BLE001
             last_err = e
+            if not want_xlsx:
+                logger.warning(
+                    "[#{}] enrich_xlsx slot={} text-mode attempt {}/{} FAILED: {}",
+                    project.id,
+                    slot_idx,
+                    attempt,
+                    _MAX_RETRIES,
+                    e,
+                )
+                if attempt >= _MAX_RETRIES:
+                    project.status = running_status
+                    await session.flush()
+                    raise RuntimeError(
+                        f"enrich_xlsx slot={slot_idx}: 3 попытки failed, last err: {e}"
+                    ) from e
+                continue
             xlsx_ok = cx.should_accept_xlsx_after_gpt_error(
                 xlsx_path, xlsx_stat_before_run, e
             )
@@ -268,35 +329,41 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ) from e
             continue
 
-    # 4. Единый импорт xlsx → БД (v8 «план» + fallback v7 «Кадры»).
-    from app.services.chatgpt_xlsx import sync_project_xlsx
+    # 4. Единый импорт xlsx → БД (только если ждали обновлённый Excel).
+    if want_xlsx:
+        from app.services.chatgpt_xlsx import sync_project_xlsx
 
-    try:
-        sync_target = (
-            download_path
-            if download_path.suffix.lower() in {".xlsx", ".xls"}
-            else xlsx_path
-        )
-        sync_info = await sync_project_xlsx(
-            session,
-            project,
-            sync_target,
-            keep_fields=False,
-            update_frames_voiceover=True,
-        )
-        logger.info(
-            "[#{}] enrich_xlsx slot={} sync_project_xlsx: {}",
-            project.id,
-            slot_idx,
-            sync_info,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] enrich_xlsx slot={} sync_project_xlsx failed: {}",
-            project.id,
-            slot_idx,
-            e,
-        )
+        try:
+            sync_target = (
+                download_path
+                if download_path.suffix.lower() in {".xlsx", ".xls"}
+                else xlsx_path
+            )
+            sync_info = await sync_project_xlsx(
+                session,
+                project,
+                sync_target,
+                keep_fields=False,
+                update_frames_voiceover=True,
+            )
+            logger.info(
+                "[#{}] enrich_xlsx slot={} sync_project_xlsx: {}",
+                project.id,
+                slot_idx,
+                sync_info,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] enrich_xlsx slot={} sync_project_xlsx failed: {}",
+                project.id,
+                slot_idx,
+                e,
+            )
+    else:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(project, "meta")
+        await session.flush()
 
     # 5. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
     from app.telegram.menu import status_order as _ord
