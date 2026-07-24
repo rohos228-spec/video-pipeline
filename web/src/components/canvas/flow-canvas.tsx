@@ -268,6 +268,9 @@ export function FlowCanvas({
         if (cfg.uploadedFileName !== undefined && cfg.uploadedFileName !== d.uploadedFileName) {
           patch.uploadedFileName = cfg.uploadedFileName as string;
         }
+        if (cfg.workMode && cfg.workMode !== d.workMode) {
+          patch.workMode = cfg.workMode as PipelineNodeData["workMode"];
+        }
         if (!Object.keys(patch).length) return n;
         changed = true;
         return { ...n, data: { ...d, ...patch } };
@@ -665,6 +668,9 @@ export function FlowCanvas({
           uploadedFileName:
             (srcData.uploadedFileName as string | undefined) ??
             (n.data?.uploadedFileName as string | undefined),
+          workMode:
+            (srcData.workMode as PipelineNodeData["workMode"]) ??
+            (n.data?.workMode as PipelineNodeData["workMode"]),
           status: "pending",
           progress: 0,
           progressText: null,
@@ -707,6 +713,7 @@ export function FlowCanvas({
             inputSource: cfg.inputSource as string | undefined,
             uploadedFileName: cfg.uploadedFileName as string | undefined,
             slotIndex: cfg.slotIndex as number | undefined,
+            workMode: cfg.workMode as string | undefined,
           })
           .catch(() => undefined);
       }
@@ -1568,6 +1575,7 @@ function workflowToReactFlowNodes(
         slotIndex: data.slotIndex as number | undefined,
         inputSource: data.inputSource as PipelineNodeData["inputSource"],
         uploadedFileName: data.uploadedFileName as string | undefined,
+        workMode: data.workMode as PipelineNodeData["workMode"],
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

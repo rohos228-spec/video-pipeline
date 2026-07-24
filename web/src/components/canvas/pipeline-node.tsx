@@ -27,7 +27,13 @@ import { ExcelFeedPanel } from "./excel-feed-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 
-import type { ExcelGptInputSource } from "@/lib/excel-gpt-config";
+import {
+  excelGptAttachmentChipTitle,
+  isExcelGptNode,
+  workModeChip,
+  type ExcelGptInputSource,
+  type ExcelGptWorkMode,
+} from "@/lib/excel-gpt-config";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -37,6 +43,7 @@ export interface PipelineNodeData extends Record<string, unknown> {
   slotIndex?: number;
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
+  workMode?: ExcelGptWorkMode;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -149,6 +156,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               projectId={actions.projectId}
               inputSource={d.inputSource}
               uploadedFileName={d.uploadedFileName}
+              workMode={d.workMode}
               slotIndex={d.slotIndex}
               canvasZoom={actions.canvasZoom}
               hasAssets={assetKind != null}
@@ -215,6 +223,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
             <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
               {spec.description}
             </span>
+            {isExcelGptNode(d.type) ? (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                <span className="rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+                  {workModeChip(d.workMode)}
+                </span>
+                <span className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                  {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
+                </span>
+              </div>
+            ) : null}
             {disabled && (
               <span className="mt-1 text-[9px] font-medium uppercase tracking-wider text-amber-400">
                 отключена

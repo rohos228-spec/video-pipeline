@@ -318,6 +318,7 @@ export const api = {
       inputSource?: string;
       uploadedFileName?: string;
       slotIndex?: number;
+      workMode?: string;
     },
   ) =>
     http<{ ok: boolean; config: Record<string, unknown> }>(
@@ -327,7 +328,13 @@ export const api = {
   uploadExcelGptFile: (projectId: number, nodeKey: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return http<{ ok: boolean; fileName: string; path: string }>(
+    return http<{
+      ok: boolean;
+      fileName: string;
+      path: string;
+      isImage?: boolean;
+      preview_url?: string | null;
+    }>(
       `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}/upload`,
       { method: "POST", body: fd },
     );

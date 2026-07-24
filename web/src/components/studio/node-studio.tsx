@@ -30,7 +30,14 @@ import {
   resolvePromptSlotsForNode,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
-import { excelGptSlotIndex, isExcelGptNode, EXCEL_GPT_STEP_CODE, type ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
+import {
+  excelGptAttachmentChipTitle,
+  excelGptSlotIndex,
+  isExcelGptNode,
+  EXCEL_GPT_STEP_CODE,
+  workModeLabel,
+  type ExcelGptNodeConfig,
+} from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -132,7 +139,11 @@ export function NodeStudio({
       label: cfg.label ?? spec.label,
       inputSource: cfg.inputSource ?? "project_xlsx",
       uploadedFileName: cfg.uploadedFileName,
+      uploadedPreviewUrl: cfg.uploadedPreviewUrl,
       slotIndex,
+      workMode: cfg.workMode ?? "assist",
+      lastReplyPath: cfg.lastReplyPath,
+      lastReplyAt: cfg.lastReplyAt,
     };
   }, [project.data?.meta, nodeKey, nodeType, spec.label]);
 
@@ -491,6 +502,18 @@ export function NodeStudio({
                   <Badge variant="muted" className="text-[10px]">
                     {formatNodeKeyLabel(nodeKey)}
                   </Badge>
+                  {isExcelGptNode(nodeType) ? (
+                    <>
+                      <Badge variant="muted" className="text-[10px] text-violet-200/90">
+                        {workModeLabel(excelConfig.workMode)}
+                      </Badge>
+                      <Badge variant="muted" className="text-[10px] text-emerald-200/90">
+                        {excelGptAttachmentChipTitle(
+                          excelConfig.inputSource ?? "project_xlsx",
+                        )}
+                      </Badge>
+                    </>
+                  ) : null}
                   {promptPaths.legacyDir && (
                     <Badge variant="muted" className="text-[9px] font-mono">
                       prompts/{promptPaths.legacyDir}
