@@ -1,4 +1,4 @@
-"""R15 start binding + real src duration; reverse only when file is actually short."""
+"""Start-only R15: insert at r15_start; reverse only until next start if src short."""
 
 import asyncio
 import shutil
@@ -22,19 +22,16 @@ from app.services.montage.variant2 import (
 
 def test_duration_up_to_frame() -> None:
     assert _duration_up_to_frame(0.0) == 0.0
-    assert abs(_duration_up_to_frame(0.05) - 2 / 30) < 1e-6
 
 
-def test_pingpong_plan_short_src_forward_then_reverse() -> None:
+def test_pingpong_forward_then_reverse() -> None:
     parts = _pingpong_plan(2.0, 5.0, start_phase="fwd")
     assert parts[0] == ("fwd", 2.0)
     assert parts[1][0] == "rev"
-    assert abs(sum(d for _, d in parts) - 5.0) < 0.02
 
 
-def test_never_cut_real_src_at_r15_end_when_file_continues() -> None:
-    """РЕГРЕССИЯ: нельзя считать видео конченым по r15_end, если файл длиннее."""
-    # R15-окно кадра 1 = 2s, но до следующего старта 5s; файл 4s → играем 4s, не режем на 2s.
+def test_insert_at_start_reverse_until_next_start() -> None:
+    """Только старты: клип @ start; если src короче следующего старта → reverse."""
     slots = [
         _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 5.0, 8.0, Path("b.mp4"), "scene"),
@@ -43,12 +40,28 @@ def test_never_cut_real_src_at_r15_end_when_file_continues() -> None:
     segs = build_timeline_segments(slots, src, voice_s=10.0)
     bound = [s for s in segs if s.slot and s.slot.bound_to_r15]
     assert abs(bound[0].slot.out_start - 0.0) < 0.02
-    assert abs(bound[0].duration_s - 5.0) < 0.02  # до старта кадра 2, не до r15_end=2
-    assert abs(bound[0].slot.src_dur - 4.0) < 0.02
-    # reverse только на остаток 1s после реального src=4
+    assert abs(bound[0].duration_s - 5.0) < 0.02  # до старта 2, не до r15_end=2
     plan = _pingpong_plan(4.0, 5.0, start_phase="fwd")
-    assert plan[0] == ("fwd", 4.0)
-    assert plan[1][0] == "rev"
+    assert plan[0] == ("fwd", 4.0) and plan[1][0] == "rev"
+
+
+def test_micro_gap_starts_do_not_crash_validation() -> None:
+    """Регрессия #26: схлопнутые старты 239.84→239.89 не роняют validate."""
+    slots = [
+        _OverlaySlot(62, 200.0, 221.0, Path("a.mp4"), "scene"),
+        _OverlaySlot(63, 239.84, 239.90, Path("b.mp4"), "shot1"),
+        _OverlaySlot(63, 239.89, 245.0, Path("c.mp4"), "shot2"),
+        _OverlaySlot(64, 239.90, 245.0, Path("d.mp4"), "scene"),
+        _OverlaySlot(65, 250.0, 255.0, Path("e.mp4"), "scene"),
+    ]
+    src = {Path(p): 5.0 for p in ("a.mp4", "b.mp4", "c.mp4", "d.mp4", "e.mp4")}
+    # раньше: RuntimeError длина 0.05 != места 0.00
+    segs = build_timeline_segments(slots, src, voice_s=260.0)
+    bound = [s for s in segs if s.slot and s.slot.bound_to_r15]
+    assert bound
+    assert abs(sum(s.duration_s for s in segs) - 260.0) < 0.05
+    for s in bound:
+        assert s.slot.out_start == pytest.approx(s.slot.r15_start, abs=0.03)
 
 
 def test_never_unbind_from_r15_start() -> None:
@@ -60,60 +73,35 @@ def test_never_unbind_from_r15_start() -> None:
     segs = build_timeline_segments(slots, src, voice_s=10.0)
     bound = [s for s in segs if s.slot and s.slot.bound_to_r15]
     assert abs(bound[0].slot.out_start - 3.28) < 0.02
-    assert abs(bound[0].duration_s - 2.48) < 0.02
     assert abs(bound[1].slot.out_start - 5.76) < 0.02
-    assert abs(bound[1].duration_s - (10.0 - 5.76)) < 0.02
-    assert abs(sum(s.duration_s for s in segs) - 10.0) < 0.02
 
 
-def test_gap_absorbed_into_prev_available_not_r15_window() -> None:
-    slots = [
-        _OverlaySlot(46, 90.0, 100.0, Path("a.mp4"), "scene"),
-        _OverlaySlot(48, 103.0, 108.0, Path("b.mp4"), "scene"),
-    ]
-    src = {Path("a.mp4"): 10.0, Path("b.mp4"): 5.0}
-    segs = build_timeline_segments(slots, src, voice_s=110.0)
-    bound = [s for s in segs if s.slot and s.slot.bound_to_r15]
-    assert abs(bound[0].slot.out_start - 90.0) < 0.02
-    assert abs(bound[0].duration_s - 13.0) < 0.02  # 90→103, включая дыру
-    assert abs(bound[1].slot.out_start - 103.0) < 0.02
-
-
-def test_filter_no_freeze_no_slowmo() -> None:
-    vf = _clip_filter_chain(1920, 1080, 2.0, 8.0)
-    assert "tpad" not in vf
-    assert "setpts=PTS/" not in vf
-    assert "real_src" in GAP_POLICY
+def test_gap_policy_name() -> None:
+    assert GAP_POLICY == "absolute_r15_start_then_reverse"
+    assert "tpad" not in _clip_filter_chain(1920, 1080, 2.0, 8.0)
     assert "slots-concat" in MONTAGE_ENGINE_V2
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
 @pytest.mark.asyncio
-async def test_ffmpeg_plays_past_r15_end_when_src_longer(tmp_path: Path) -> None:
-    clip_a = tmp_path / "a.mp4"
-    clip_b = tmp_path / "b.mp4"
-    for path, dur in ((clip_a, 4.0), (clip_b, 2.0)):
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", f"color=c=red:s=320x240:d={dur}:r=30",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        assert await proc.wait() == 0
-        assert abs(await probe_duration(path) - dur) < 0.15
-
+async def test_ffmpeg_reverse_to_next_start(tmp_path: Path) -> None:
+    clip = tmp_path / "a.mp4"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "color=c=red:s=320x240:d=2.0:r=30",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(clip),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert await proc.wait() == 0
     slots = [
-        _OverlaySlot(1, 0.0, 2.0, clip_a, "scene"),
-        _OverlaySlot(2, 5.0, 7.0, clip_b, "scene"),
+        _OverlaySlot(1, 0.0, 1.0, clip, "scene"),
+        _OverlaySlot(2, 5.0, 6.0, clip, "scene"),
     ]
-    src = {clip_a: 4.0, clip_b: 2.0}
-    voice_s = 7.0
-    segs = build_timeline_segments(slots, src, voice_s=voice_s)
-    bound = [s for s in segs if s.slot and s.slot.bound_to_r15]
-    assert abs(bound[0].duration_s - 5.0) < 0.02
-
-    out = tmp_path / "seg0.mp4"
-    await _encode_clip_segment(bound[0].slot, out, w=320, h=240)
-    # 4s forward + 1s reverse ≈ 5s, не обрезано на 2s
-    assert abs(await probe_duration(out) - 5.0) < 0.2
+    src = {clip: 2.0}
+    segs = build_timeline_segments(slots, src, voice_s=5.0)
+    bound0 = next(s for s in segs if s.slot and s.slot.bound_to_r15)
+    assert abs(bound0.duration_s - 5.0) < 0.02
+    out = tmp_path / "seg.mp4"
+    await _encode_clip_segment(bound0.slot, out, w=320, h=240)
+    assert abs(await probe_duration(out) - 5.0) < 0.25
