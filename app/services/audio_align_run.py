@@ -1,19 +1,22 @@
 """Прогон методики разбора речи → R15 → (опционально) assemble.
 
-Только NeMo / ffmpeg silence — без Whisper.
+Фазы короткие: speech без DB → Excel R15 → короткий flush кадров с retry.
+Не держим AsyncSession открытой на NeMo/ffmpeg (иначе SQLite locked).
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import session_scope
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.audio_align_methods import (
     resolve_align_method,
@@ -31,10 +34,14 @@ from app.services.step_cancel import raise_if_cancelled
 from app.services.whisper import dump_words_json, load_words_json
 
 
+def _is_sqlite_locked(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
 async def _latest_words_artifact(
     session: AsyncSession, project_id: int, *, method_id: str
 ) -> Artifact | None:
-    """Кэш слов только той же методики (не чужой words.json)."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -54,26 +61,13 @@ async def _latest_words_artifact(
     return None
 
 
-async def run_audio_align(
+async def _load_align_inputs(
     session: AsyncSession,
     project: Project,
     *,
-    method: str,
-    force_asr: bool = False,
-    run_assemble: bool = True,
-    bot: Any = None,
+    method_id: str,
+    force_asr: bool,
 ) -> dict[str, Any]:
-    """Speech-pipeline методики → Frame + R15; опционально сборка."""
-    raise_if_cancelled(project.id)
-    method_id = resolve_align_method(method)
-    summary: dict[str, Any] = {
-        "project_id": project.id,
-        "method": method_id,
-        "force_asr": bool(force_asr),
-        "run_assemble": bool(run_assemble),
-        "engine": "nemo" if method_id != "silence" else "ffmpeg_silence",
-    }
-
     frames = (
         await session.execute(
             select(Frame)
@@ -82,8 +76,7 @@ async def run_audio_align(
         )
     ).scalars().all()
     if not frames:
-        summary["error"] = "нет кадров в БД"
-        return summary
+        raise RuntimeError("нет кадров в БД")
 
     from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
@@ -93,52 +86,61 @@ async def run_audio_align(
         cells = [(f.number, (f.voiceover_text or "")) for f in frames]
     cells = _voiceover_cells_for_frames(project, frames, cells)
     if not any(t.strip() for _, t in cells):
-        summary["error"] = "нет текста R49 / voiceover для align"
-        return summary
+        raise RuntimeError("нет текста R49 / voiceover для align")
 
     voice_path = find_voice_full_on_disk(
         project.data_dir,
         meta=project.meta if isinstance(project.meta, dict) else None,
     )
     if voice_path is None or not voice_path.is_file():
-        summary["error"] = "нет voice_full на диске"
-        return summary
-    summary["voice_file"] = str(voice_path)
-
-    master = await probe_duration(voice_path)
-    summary["master_s"] = round(master, 3)
-
-    audio_dir = project.data_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
+        raise RuntimeError("нет voice_full на диске")
 
     cached_words = None
     if method_id != "silence" and not force_asr:
         art = await _latest_words_artifact(session, project.id, method_id=method_id)
         if art and art.path:
-            cached_words = load_words_json(Path(art.path))
-            if not cached_words:
-                cached_words = None
+            cached_words = load_words_json(Path(art.path)) or None
 
-    try:
-        result = await asyncio.to_thread(
-            run_speech_align,
-            method_id,
-            voice_path,
-            cells,
-            master,
-            cached_words=cached_words,
+    return {
+        "frame_numbers": [f.number for f in frames],
+        "cells": cells,
+        "voice_path": voice_path,
+        "cached_words": cached_words,
+        "data_dir": project.data_dir,
+        "slug": project.slug,
+    }
+
+
+async def _persist_align_db(
+    session: AsyncSession,
+    project: Project,
+    *,
+    method_id: str,
+    clips: list[FrameAudioClip],
+    words_path: Path | None,
+    speech_source: str,
+    crumbs: int,
+    master_s: float,
+    r15_written: int,
+    engine: str,
+) -> None:
+    """Короткий write: bulk UPDATE кадров + meta + artifact."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for clip in clips:
+        await session.execute(
+            update(Frame)
+            .where(
+                Frame.project_id == project.id,
+                Frame.number == clip.frame_number,
+            )
+            .values(
+                start_ts=float(clip.start_ts),
+                end_ts=float(clip.end_ts),
+                updated_at=now,
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[#{}] audio_align speech failed ({})", project.id, method_id)
-        summary["error"] = str(exc)
-        return summary
 
-    summary["words_source"] = result.speech_source
-    summary["words_n"] = len(result.words)
-
-    if result.words and result.speech_source != "cache":
-        words_path = audio_dir / f"words_{method_id}_{uuid.uuid4().hex[:8]}.json"
-        dump_words_json(result.words, words_path)
+    if words_path is not None:
         session.add(
             Artifact(
                 project_id=project.id,
@@ -152,9 +154,126 @@ async def run_audio_align(
                 },
             )
         )
-        await session.flush()
 
-    timings = result.timings
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    meta["audio_align_last"] = {
+        "method": method_id,
+        "crumbs": crumbs,
+        "words_source": speech_source,
+        "engine": engine,
+        "master_s": master_s,
+        "r15_written": r15_written,
+    }
+    project.meta = meta
+    await session.flush()
+
+
+async def _persist_align_db_with_retry(
+    project_id: int,
+    *,
+    method_id: str,
+    clips: list[FrameAudioClip],
+    words_path: Path | None,
+    speech_source: str,
+    crumbs: int,
+    master_s: float,
+    r15_written: int,
+    engine: str,
+) -> None:
+    last: BaseException | None = None
+    for attempt in range(1, 10):
+        try:
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is None:
+                    raise RuntimeError(f"проект #{project_id} не найден")
+                await _persist_align_db(
+                    session,
+                    project,
+                    method_id=method_id,
+                    clips=clips,
+                    words_path=words_path,
+                    speech_source=speech_source,
+                    crumbs=crumbs,
+                    master_s=master_s,
+                    r15_written=r15_written,
+                    engine=engine,
+                )
+            return
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_sqlite_locked(exc) and attempt < 9:
+                wait = min(1.5 * attempt, 12.0)
+                logger.warning(
+                    "audio_align #{} DB locked при записи кадров ({}/9), wait {:.1f}s",
+                    project_id,
+                    attempt,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
+async def run_audio_align_for_project(
+    project_id: int,
+    *,
+    method: str,
+    force_asr: bool = False,
+    run_assemble: bool = True,
+    bot: Any = None,
+) -> dict[str, Any]:
+    """Полный цикл без долгой сессии на speech."""
+    raise_if_cancelled(project_id)
+    method_id = resolve_align_method(method)
+    summary: dict[str, Any] = {
+        "project_id": project_id,
+        "method": method_id,
+        "force_asr": bool(force_asr),
+        "run_assemble": bool(run_assemble),
+        "engine": "nemo" if method_id != "silence" else "ffmpeg_silence",
+    }
+
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            summary["error"] = "проект не найден"
+            return summary
+        try:
+            inputs = await _load_align_inputs(
+                session, project, method_id=method_id, force_asr=force_asr
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary["error"] = str(exc)
+            return summary
+
+    voice_path: Path = inputs["voice_path"]
+    cells = inputs["cells"]
+    summary["voice_file"] = str(voice_path)
+
+    master = await probe_duration(voice_path)
+    summary["master_s"] = round(master, 3)
+
+    raise_if_cancelled(project_id)
+    try:
+        result = await asyncio.to_thread(
+            run_speech_align,
+            method_id,
+            voice_path,
+            cells,
+            master,
+            cached_words=inputs["cached_words"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[#{}] audio_align speech failed ({})", project_id, method_id)
+        summary["error"] = str(exc)
+        return summary
+
+    summary["words_source"] = result.speech_source
+    summary["words_n"] = len(result.words)
+
     text_by = dict(cells)
     clips = [
         FrameAudioClip(
@@ -165,56 +284,72 @@ async def run_audio_align(
             end_ts=t.end_ts,
             duration=t.duration,
         )
-        for t in timings
+        for t in result.timings
     ]
     crumbs = sum(1 for c in clips if c.duration <= 0.1 + 1e-9)
     summary["crumbs"] = crumbs
     summary["clips_n"] = len(clips)
 
-    by_num = {f.number: f for f in frames}
-    for clip in clips:
-        fr = by_num.get(clip.frame_number)
-        if fr is None:
-            continue
-        fr.start_ts = clip.start_ts
-        fr.end_ts = clip.end_ts
-    await session.flush()
-
+    # Excel R15 — источник правды для доски; пишем ДО DB, чтобы lock не съел результат.
     from app.services.plan_timestamps import write_asr_timestamps_to_r15
 
-    written = write_asr_timestamps_to_r15(project, clips, allow_crumbs=True)
+    # Нужен Project только для data_dir/xlsx — лёгкий stub через session.
+    async with session_scope() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            summary["error"] = "проект не найден"
+            return summary
+        written = write_asr_timestamps_to_r15(project, clips, allow_crumbs=True)
     summary["r15_written"] = written
     if written <= 0:
         summary["error"] = "не удалось записать R15 (закрой Excel?)"
         return summary
 
-    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
-    meta["audio_align_last"] = {
-        "method": method_id,
-        "crumbs": crumbs,
-        "words_source": result.speech_source,
-        "engine": summary["engine"],
-        "master_s": summary["master_s"],
-        "r15_written": written,
-    }
-    project.meta = meta
-    await session.flush()
+    words_path: Path | None = None
+    if result.words and result.speech_source != "cache":
+        audio_dir = Path(inputs["data_dir"]) / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        words_path = audio_dir / f"words_{method_id}_{uuid.uuid4().hex[:8]}.json"
+        dump_words_json(result.words, words_path)
 
-    raise_if_cancelled(project.id)
+    try:
+        await _persist_align_db_with_retry(
+            project_id,
+            method_id=method_id,
+            clips=clips,
+            words_path=words_path,
+            speech_source=result.speech_source,
+            crumbs=crumbs,
+            master_s=summary["master_s"],
+            r15_written=written,
+            engine=summary["engine"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        # R15 уже записан — доска подхватит; DB frames вторичны.
+        logger.warning(
+            "[#{}] audio_align: R15 ok ({}), но DB frames не обновились: {}",
+            project_id,
+            written,
+            exc,
+        )
+        summary["db_frames_error"] = str(exc)
+        if _is_sqlite_locked(exc):
+            summary["db_frames_error"] = (
+                "database is locked — R15 записана, кадры в БД обновятся при следующем sync"
+            )
+
+    raise_if_cancelled(project_id)
     if not run_assemble:
         summary["done"] = True
         summary["next"] = "R15 обновлена — запустите «Монтаж» или assemble"
-        logger.info("[#{}] audio_align: R15 ok, assemble пропущен", project.id)
+        logger.info("[#{}] audio_align: R15 ok ({}), assemble пропущен", project_id, written)
         return summary
 
     logger.info(
         "[#{}] audio_align: R15 записана ({}), запускаем assemble…",
-        project.id,
+        project_id,
         written,
     )
-    reset_info = await reset_step(session, project, "assemble")
-    summary["assemble_reset"] = reset_info
-
     if bot is None:
         from app.telegram.noop_bot import get_worker_bot
 
@@ -222,31 +357,62 @@ async def run_audio_align(
 
     from app.orchestrator.steps import assemble as assemble_mod
 
-    project.status = ProjectStatus.assembling
-    await session.flush()
     try:
-        await assemble_mod.run(session, project, bot)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[#{}] audio_align: assemble failed", project.id)
-        summary["error"] = str(exc)
-        actual = await compute_actual_status(session, project)
-        if project.status != actual:
-            project.status = actual
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                summary["error"] = "проект не найден"
+                return summary
+            reset_info = await reset_step(session, project, "assemble")
+            summary["assemble_reset"] = reset_info
+            project.status = ProjectStatus.assembling
             await session.flush()
-        summary["final_status"] = project.status.value
+            await assemble_mod.run(session, project, bot)
+            summary["final_status"] = project.status.value
+            if project.status is ProjectStatus.assembled:
+                summary["done"] = True
+                out = project.data_dir / "final" / f"{project.slug}.mp4"
+                summary["final_video"] = str(out) if out.is_file() else None
+                logger.info(
+                    "[#{}] audio_align: assemble done → {}",
+                    project_id,
+                    summary.get("final_video"),
+                )
+            else:
+                summary["error"] = f"сборка не завершилась: status={project.status.value}"
+            actual = await compute_actual_status(session, project)
+            if project.status != actual:
+                project.status = actual
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[#{}] audio_align: assemble failed", project_id)
+        summary["error"] = str(exc)
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is not None:
+                actual = await compute_actual_status(session, project)
+                if project.status != actual:
+                    project.status = actual
+                summary["final_status"] = project.status.value
         return summary
 
-    summary["final_status"] = project.status.value
-    if project.status is ProjectStatus.assembled:
-        summary["done"] = True
-        out = project.data_dir / "final" / f"{project.slug}.mp4"
-        summary["final_video"] = str(out) if out.is_file() else None
-        logger.info("[#{}] audio_align: assemble done → {}", project.id, summary.get("final_video"))
-    else:
-        summary["error"] = f"сборка не завершилась: status={project.status.value}"
-
-    actual = await compute_actual_status(session, project)
-    if project.status != actual:
-        project.status = actual
-        await session.flush()
     return summary
+
+
+async def run_audio_align(
+    session: AsyncSession,
+    project: Project,
+    *,
+    method: str,
+    force_asr: bool = False,
+    run_assemble: bool = True,
+    bot: Any = None,
+) -> dict[str, Any]:
+    """Совместимость: игнорирует переданную session, ведёт короткие фазы сам."""
+    _ = session  # не держим чужую долгую сессию
+    return await run_audio_align_for_project(
+        project.id,
+        method=method,
+        force_asr=force_asr,
+        run_assemble=run_assemble,
+        bot=bot,
+    )

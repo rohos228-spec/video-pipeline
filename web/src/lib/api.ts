@@ -472,6 +472,8 @@ export const api = {
           words_source?: string;
           r15_written?: number;
           final_video?: string | null;
+          db_frames_error?: string;
+          engine?: string;
         };
       };
       last?: Record<string, unknown> | null;

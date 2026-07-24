@@ -20,7 +20,7 @@ export function AudioAlignPopover({
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState("nemo_direct");
   const [forceAsr, setForceAsr] = useState(false);
-  const [runAssemble, setRunAssemble] = useState(true);
+  const [runAssemble, setRunAssemble] = useState(false);
   const [polling, setPolling] = useState(false);
   const [notifiedStatus, setNotifiedStatus] = useState<string | null>(null);
 
@@ -53,19 +53,29 @@ export function AudioAlignPopover({
     setNotifiedStatus(st);
     if (st === "done") {
       const crumbs = statusQ.data?.job?.result?.crumbs;
+      const dbErr = statusQ.data?.job?.result?.db_frames_error;
       toast.success(
         crumbs != null
           ? `Разбор аудио готов (крошки ≤0.1с: ${crumbs})`
           : "Разбор аудио готов",
       );
+      if (typeof dbErr === "string" && dbErr) {
+        toast.message("R15 записана; БД кадров занята — доска читает Excel");
+      }
       onFinished?.();
     } else if (st === "error") {
-      toast.error(statusQ.data?.job?.error || "Разбор аудио не удался");
+      const err = statusQ.data?.job?.error || "Разбор аудио не удался";
+      toast.error(
+        /database is locked/i.test(String(err))
+          ? "SQLite занята — подожди 2–3с и запусти ещё раз"
+          : err,
+      );
     }
   }, [
     statusQ.data?.job?.status,
     statusQ.data?.job?.error,
     statusQ.data?.job?.result?.crumbs,
+    statusQ.data?.job?.result?.db_frames_error,
     notifiedStatus,
     onFinished,
   ]);
