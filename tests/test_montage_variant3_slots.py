@@ -93,6 +93,56 @@ def test_filter_chain_uses_clone_not_slowmo() -> None:
     assert "tpad=stop_mode=clone:stop_duration=3.000" in vf_gap
 
 
+def test_filter_chain_prefix_after_slot_trim_not_before() -> None:
+    """prefix до trim съедал префикс при длинном src — сегмент выходил короче R15+gap."""
+    vf = _clip_filter_chain(
+        1920, 1080, slot_dur=2.0, src_dur=8.0, prefix_pad=3.0, suffix_pad=1.0
+    )
+    assert "setpts=PTS/" not in vf
+    trim_at = vf.index("trim=duration=2.000")
+    prefix_at = vf.index("tpad=start_mode=clone:start_duration=3.000")
+    suffix_at = vf.index("tpad=stop_mode=clone:stop_duration=1.000")
+    assert trim_at < prefix_at < suffix_at
+    assert vf.count("trim=duration=6.000") == 1  # final total = 3+2+1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
+@pytest.mark.asyncio
+async def test_ffmpeg_prefix_long_src_keeps_full_duration(tmp_path: Path) -> None:
+    """Long src + leading gap: segment must be prefix+slot, not trim-eaten short."""
+    clip = tmp_path / "long.mp4"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=green:s=320x240:d=4:r=30",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        str(clip),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert await proc.wait() == 0
+
+    slots = [_OverlaySlot(1, 3.0, 5.0, clip, "scene")]
+    src = {clip: 4.0}
+    voice_s = 5.0
+    segs = build_timeline_segments(slots, src, voice_s=voice_s)
+    assert len(segs) == 1
+    assert abs(segs[0].slot.prefix_pad - 3.0) < 0.02
+    assert abs(segs[0].duration_s - 5.0) < 0.02
+
+    out = tmp_path / "seg.mp4"
+    await _encode_clip_segment(segs[0].slot, out, w=320, h=240)
+    got = await probe_duration(out)
+    assert abs(got - 5.0) < 0.08
+
+
 def test_montage_engine_is_v3_slots() -> None:
     assert "slots-concat" in MONTAGE_ENGINE_V2
 
