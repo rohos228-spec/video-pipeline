@@ -17,13 +17,10 @@ from loguru import logger
 
 from app.services.mapper import (
     FrameTiming,
-    build_frame_word_spans,
     enforce_monotonic_timings,
     map_frames,
     normalize_contiguous,
     tokenize_lower,
-    timings_have_crumb_durations,
-    _segment_durations_from_transitions,
 )
 from app.services.whisper import WordTS  # структура слова; движок Whisper не вызываем
 
@@ -54,7 +51,7 @@ ALIGN_METHODS: tuple[AlignMethodInfo, ...] = (
     AlignMethodInfo(
         id="silence",
         title="4. Паузы (ffmpeg)",
-        summary="Режем по самым длинным тишинам (silencedetect) — без ASR.",
+        summary="Острова речи между тишинами; кадры по весу R49 внутри островов (не равномерка).",
     ),
     AlignMethodInfo(
         id="nemo_auto",
@@ -348,11 +345,45 @@ def detect_silences(
     return out
 
 
-def _timings_from_silence_cuts(
+def _speech_islands(
+    master: float,
+    silences: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Интервалы речи = дополнение тишин до [0, master]."""
+    ad = max(float(master), 0.05)
+    islands: list[tuple[float, float]] = []
+    pos = 0.0
+    for s, e in sorted(silences, key=lambda x: x[0]):
+        s = max(0.0, min(float(s), ad))
+        e = max(0.0, min(float(e), ad))
+        if s > pos + 0.03:
+            islands.append((pos, s))
+        pos = max(pos, e)
+    if pos < ad - 0.03:
+        islands.append((pos, ad))
+    if not islands:
+        islands = [(0.0, ad)]
+    # Склеить крошечные
+    merged: list[tuple[float, float]] = [islands[0]]
+    for s, e in islands[1:]:
+        ps, pe = merged[-1]
+        if s <= pe + 0.05:
+            merged[-1] = (ps, max(pe, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _timings_from_speech_islands(
     cells: list[tuple[int, str]],
     master: float,
     silences: list[tuple[float, float]],
 ) -> list[FrameTiming]:
+    """Раскладка кадров по островам речи (тишина не «равномерка»).
+
+    Кадры распределяются по островам пропорционально длине речи и весу R49;
+    внутри острова — по токенам. Затем склеиваем покрытие [0, master].
+    """
     n = len(cells)
     ad = max(float(master), 0.05)
     if n <= 0:
@@ -360,81 +391,58 @@ def _timings_from_silence_cuts(
     if n == 1:
         return [FrameTiming(cells[0][0], 0.0, round(ad, 3), round(ad, 3))]
 
-    candidates: list[tuple[float, float]] = []
-    for s, e in silences:
-        if e - s < 0.15:
+    islands = _speech_islands(ad, silences)
+    island_lens = [max(e - s, 0.05) for s, e in islands]
+    total_speech = sum(island_lens)
+    weights = _token_weights(cells)
+
+    # Сколько «веса» на каждый остров ≈ доля речи.
+    island_capacity = [lens / total_speech for lens in island_lens]
+    # Назначаем кадры островам, заполняя capacity по порядку.
+    assign: list[list[int]] = [[] for _ in islands]
+    isl = 0
+    filled = 0.0
+    for fi, w in enumerate(weights):
+        while isl < len(islands) - 1 and filled + 1e-9 >= sum(island_capacity[: isl + 1]):
+            isl += 1
+        assign[isl].append(fi)
+        filled += w
+
+    # Пустые острова — отдать соседним
+    for i, group in enumerate(assign):
+        if group:
             continue
-        mid = (s + e) / 2.0
-        if mid <= 0.05 or mid >= ad - 0.05:
+        donor = i - 1 if i > 0 and assign[i - 1] else (i + 1 if i + 1 < len(assign) else None)
+        if donor is not None and assign[donor]:
+            # перенос не делаем — просто пропустим остров (тишина между)
+            pass
+
+    raw: list[FrameTiming | None] = [None] * n
+    for i, ((s, e), group) in enumerate(zip(islands, assign)):
+        if not group:
             continue
-        candidates.append((e - s, mid))
-    candidates.sort(key=lambda x: x[0], reverse=True)
+        g_weights = [weights[j] for j in group]
+        g_total = sum(g_weights) or float(len(g_weights))
+        pos = s
+        for j, w in zip(group, g_weights):
+            dur = (w / g_total) * (e - s)
+            fn = cells[j][0]
+            raw[j] = FrameTiming(fn, round(pos, 3), round(pos + dur, 3), round(dur, 3))
+            pos += dur
+        # snap last in group to island end
+        last_j = group[-1]
+        assert raw[last_j] is not None
+        prev = raw[last_j]
+        raw[last_j] = FrameTiming(prev.frame_number, prev.start_ts, round(e, 3), round(e - prev.start_ts, 3))
 
-    cuts: list[float] = []
-    for _, mid in candidates:
-        if len(cuts) >= n - 1:
-            break
-        if any(abs(mid - c) < 0.2 for c in cuts):
-            continue
-        cuts.append(mid)
-    cuts.sort()
+    # Кадры без острова — равномерно в оставшиеся дыры позже через contiguous glue
+    for i, t in enumerate(raw):
+        if t is None:
+            raw[i] = FrameTiming(cells[i][0], 0.0, 0.0, 1.0)
 
-    # Не хватило пауз — добиваем равномерными точками в незанятых зонах.
-    if len(cuts) < n - 1:
-        need = (n - 1) - len(cuts)
-        uniform = [ad * (i + 1) / n for i in range(n - 1)]
-        for u in uniform:
-            if need <= 0:
-                break
-            if any(abs(u - c) < 0.35 for c in cuts):
-                continue
-            cuts.append(u)
-            need -= 1
-        cuts.sort()
-        while len(cuts) < n - 1:
-            cuts.append(ad * (len(cuts) + 1) / n)
-            cuts.sort()
-        cuts = cuts[: n - 1]
-
-    bounds = [0.0, *[round(c, 3) for c in cuts], round(ad, 3)]
-    out: list[FrameTiming] = []
-    for (fn, _), start, end in zip(cells, bounds[:-1], bounds[1:]):
-        out.append(
-            FrameTiming(fn, round(start, 3), round(end, 3), round(end - start, 3))
-        )
-    return enforce_monotonic_timings(out, master=ad)
-
-
-def _timings_contiguous_forced(
-    cells: list[tuple[int, str]],
-    words: list[WordTS],
-    master: float,
-) -> list[FrameTiming]:
-    spans = build_frame_word_spans(cells, words)
-    if not spans:
-        return []
-    ad = max(float(master), 0.01)
-    segments = _segment_durations_from_transitions(spans, words, ad)
-    out: list[FrameTiming] = []
-    pos = 0.0
-    for span, seg_dur in zip(spans, segments):
-        end = pos + max(float(seg_dur), 0.0)
-        out.append(
-            FrameTiming(
-                span.frame_number,
-                round(pos, 3),
-                round(end, 3),
-                round(end - pos, 3),
-            )
-        )
-        pos = end
-    if out:
-        out[-1].end_ts = round(ad, 3)
-        out[-1].duration = round(out[-1].end_ts - out[-1].start_ts, 3)
-        for i in range(1, len(out)):
-            out[i].start_ts = out[i - 1].end_ts
-            out[i].duration = round(out[i].end_ts - out[i].start_ts, 3)
-    return out
+    timings = [t for t in raw if t is not None]
+    # Склеить в непрерывное покрытие master (тишина уходит в границы соседних кадров).
+    return normalize_contiguous(timings, ad)
 
 
 def _method_direct(
@@ -442,7 +450,10 @@ def _method_direct(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    return enforce_monotonic_timings(map_frames(cells, words), master=master)
+    from app.services.mapper import heal_timings_if_crumbs
+
+    mono = enforce_monotonic_timings(map_frames(cells, words), master=master)
+    return heal_timings_if_crumbs(mono, cells, words, master)
 
 
 def _method_contiguous(
@@ -450,10 +461,9 @@ def _method_contiguous(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
-    return enforce_monotonic_timings(
-        _timings_contiguous_forced(cells, words, master),
-        master=master,
-    )
+    from app.services.mapper import timings_from_word_transitions
+
+    return timings_from_word_transitions(cells, words, master)
 
 
 def _method_auto(
@@ -461,13 +471,21 @@ def _method_auto(
     words: list[WordTS],
     master: float,
 ) -> list[FrameTiming]:
+    from app.services.mapper import (
+        count_crumb_frames,
+        heal_timings_if_crumbs,
+        timings_from_word_transitions,
+    )
+
     direct = map_frames(cells, words)
     if direct and len(direct) == len(cells):
-        good = sum(1 for t in direct if t.duration > 0.05)
-        if good >= len(cells) * 0.85:
-            mono = enforce_monotonic_timings(direct, master=master)
-            if not timings_have_crumb_durations(mono):
-                return mono
+        mono = enforce_monotonic_timings(direct, master=master)
+        mono = heal_timings_if_crumbs(mono, cells, words, master)
+        if count_crumb_frames(mono) == 0:
+            return mono
+    contig = timings_from_word_transitions(cells, words, master)
+    if contig and count_crumb_frames(contig) == 0:
+        return contig
     return enforce_monotonic_timings(
         map_frames(cells, words, audio_duration=master),
         master=master,
@@ -479,7 +497,7 @@ _TIMING_HANDLERS: dict[
 ] = {
     "nemo_direct": _method_direct,
     "nemo_contiguous": _method_contiguous,
-    "nemo_chunks": _method_direct,
+    "nemo_chunks": _method_contiguous,  # сегментный ASR → границы по переходам, не raw direct
     "nemo_auto": _method_auto,
 }
 
@@ -505,15 +523,18 @@ def run_speech_align(
 
     if mid == "silence":
         silences = detect_silences(audio_path)
-        timings = _timings_from_silence_cuts(cells, ad, silences)
+        timings = _timings_from_speech_islands(cells, ad, silences)
         if not timings:
             raw = [FrameTiming(fn, 0.0, 0.0, 1.0) for fn, _ in cells]
             timings = normalize_contiguous(raw, ad)
+        crumbs = sum(1 for t in timings if t.duration <= 0.1 + 1e-9)
         logger.info(
-            "audio_align method=silence: {} silences, {} frames, master={:.2f}s",
+            "audio_align method=silence: {} silences, {} islands→frames, "
+            "master={:.2f}s, crumbs≤0.1s={}",
             len(silences),
             len(timings),
             ad,
+            crumbs,
         )
         return SpeechAlignResult(words=[], timings=timings, speech_source="ffmpeg_silence")
 

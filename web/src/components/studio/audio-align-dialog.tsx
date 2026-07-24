@@ -133,7 +133,7 @@ export function AudioAlignPopover({
       >
         <h3 className="mb-1 text-sm font-semibold">Разбор речи → R15</h3>
         <p className="mb-3 text-[11px] text-muted-foreground">
-          5 методик (NeMo / паузы). 1/2/5 делят один full-file ASR. «Сегменты» — ≤8 кусков, не 153.
+          5 методик NeMo/пауз. Схлопы ASR режутся по весу R49 — без крошек ≤0.1с в R15.
         </p>
 
         {projectId == null ? (

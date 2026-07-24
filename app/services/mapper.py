@@ -305,6 +305,131 @@ def timings_have_crumb_durations(
     return crumbs > max(max_absolute, int(len(timings) * max_fraction))
 
 
+def count_crumb_frames(
+    timings: list[FrameTiming],
+    *,
+    crumb_s: float = 0.1,
+) -> int:
+    return sum(1 for t in timings if float(t.duration) <= crumb_s + 1e-9)
+
+
+def timings_from_word_transitions(
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+) -> list[FrameTiming]:
+    """Contiguous по стартам ASR-слов; схлопы (одинаковый start) делим по весу R49.
+
+    Не оставляет нулевых/крошечных кадров: группа с одним start режется
+    по числу токенов до следующего уникального старта (или master).
+    """
+    spans = build_frame_word_spans(cells, words)
+    if not spans:
+        return []
+    ad = max(float(master), 0.01)
+
+    raw_starts: list[float] = []
+    prev = 0.0
+    for span in spans:
+        if span.whisper_indices and words:
+            wi = max(0, min(min(span.whisper_indices), len(words) - 1))
+            s = float(words[wi].start)
+            s = max(s, prev)
+        else:
+            s = prev
+        raw_starts.append(s)
+        prev = s
+
+    starts = list(raw_starts)
+    ends = [0.0] * len(spans)
+    i = 0
+    n = len(spans)
+    while i < n:
+        j = i + 1
+        while j < n and abs(starts[j] - starts[i]) < 1e-4:
+            j += 1
+        group_start = starts[i]
+        group_end = starts[j] if j < n else ad
+        if group_end <= group_start + 1e-6:
+            group_end = ad if j >= n else min(ad, group_start + 0.5)
+        weights = [float(max(len(spans[k].lower_words), 1)) for k in range(i, j)]
+        total_w = sum(weights) or float(len(weights))
+        pos = group_start
+        for k, w in zip(range(i, j), weights):
+            dur = (w / total_w) * (group_end - group_start)
+            starts[k] = pos
+            ends[k] = pos + dur
+            pos += dur
+        ends[j - 1] = group_end
+        for k in range(i, j):
+            starts[k] = round(starts[k], 3)
+            ends[k] = round(ends[k], 3)
+        i = j
+
+    out: list[FrameTiming] = []
+    for span, s, e in zip(spans, starts, ends):
+        if e < s:
+            e = s
+        out.append(
+            FrameTiming(
+                span.frame_number,
+                round(s, 3),
+                round(e, 3),
+                round(e - s, 3),
+            )
+        )
+    if not out:
+        return out
+    # Покрытие [0, master] без дыр.
+    out[0] = FrameTiming(out[0].frame_number, 0.0, out[0].end_ts, round(out[0].end_ts, 3))
+    out[-1] = FrameTiming(
+        out[-1].frame_number,
+        out[-1].start_ts,
+        round(ad, 3),
+        round(ad - out[-1].start_ts, 3),
+    )
+    for i in range(1, len(out)):
+        out[i] = FrameTiming(
+            out[i].frame_number,
+            out[i - 1].end_ts,
+            out[i].end_ts,
+            round(out[i].end_ts - out[i - 1].end_ts, 3),
+        )
+    out[-1] = FrameTiming(
+        out[-1].frame_number,
+        out[-1].start_ts,
+        round(ad, 3),
+        round(ad - out[-1].start_ts, 3),
+    )
+    return out
+
+
+def heal_timings_if_crumbs(
+    timings: list[FrameTiming],
+    cells: list[tuple[int, str]],
+    words: list[WordTS],
+    master: float,
+) -> list[FrameTiming]:
+    """Если после direct остались крошки — contiguous с разрезом схлопов."""
+    if not timings or not words:
+        return timings
+    before = count_crumb_frames(timings)
+    if before == 0:
+        return timings
+    healed = timings_from_word_transitions(cells, words, master)
+    if not healed:
+        return timings
+    after = count_crumb_frames(healed)
+    if after < before:
+        logger.info(
+            "heal_timings_if_crumbs: {} → {} crumbs≤0.1s (contiguous split)",
+            before,
+            after,
+        )
+        return healed
+    return timings
+
+
 def map_frames(
     cells: list[tuple[int, str]],
     words: list[WordTS],

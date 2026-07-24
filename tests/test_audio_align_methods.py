@@ -14,8 +14,9 @@ from app.services.audio_align_methods import (
     list_align_methods,
     resolve_align_method,
     run_speech_align,
-    _timings_from_silence_cuts,
+    _timings_from_speech_islands,
 )
+from app.services.mapper import count_crumb_frames, timings_from_word_transitions
 from app.services.whisper import WordTS
 
 
@@ -27,6 +28,22 @@ def _cells_words():
         words.append(WordTS(f"слово{i}", t, t + 0.4, 1.0))
         words.append(WordTS("фраза", t + 0.4, t + 0.9, 1.0))
         t += 2.0
+    return cells, words, 12.0
+
+
+def _collapsed_align_fixture():
+    """Много кадров R49, но ASR-слова схлопнуты в несколько точек — бывший источник крошек."""
+    cells = [(i, f"кадр{i} текст длиннее") for i in range(1, 21)]
+    words = [
+        WordTS("кадр1", 0.0, 0.4, 1.0),
+        WordTS("текст", 0.4, 0.8, 1.0),
+        WordTS("длиннее", 0.8, 1.2, 1.0),
+        # дальше «схлоп» — мало уникальных стартов на хвост
+        WordTS("кадр10", 5.0, 5.3, 1.0),
+        WordTS("текст", 5.3, 5.6, 1.0),
+        WordTS("кадр20", 9.0, 9.5, 1.0),
+        WordTS("хвост", 9.5, 10.0, 1.0),
+    ]
     return cells, words, 12.0
 
 
@@ -71,26 +88,59 @@ def test_nemo_timing_methods_cover_master(method_id: str) -> None:
     assert abs(timings[-1].end_ts - master) < 0.02
     for prev, cur in zip(timings, timings[1:]):
         assert cur.start_ts >= prev.end_ts - 0.001
+    assert count_crumb_frames(timings) == 0
 
 
-def test_silence_cuts_use_longest_pauses() -> None:
-    cells = [(i, f"кадр{i}") for i in range(1, 4)]
-    silences = [(2.0, 2.8), (5.0, 5.3), (8.0, 9.0)]
-    timings = _timings_from_silence_cuts(cells, 12.0, silences)
-    assert len(timings) == 3
+@pytest.mark.parametrize(
+    "method_id",
+    ["nemo_direct", "nemo_contiguous", "nemo_chunks", "nemo_auto"],
+)
+def test_collapsed_asr_no_crumbs(method_id: str) -> None:
+    cells, words, master = _collapsed_align_fixture()
+    timings = apply_align_method(method_id, cells, words, master)
+    assert len(timings) == len(cells)
+    assert count_crumb_frames(timings) == 0, [
+        (t.frame_number, t.duration) for t in timings if t.duration <= 0.1
+    ]
+    assert timings[0].start_ts == 0.0
+    assert abs(timings[-1].end_ts - master) < 0.02
+
+
+def test_word_transitions_splits_identical_starts() -> None:
+    cells = [(1, "один два"), (2, "три"), (3, "четыре пять шесть")]
+    # Все «первые» слова кадров указывают на один start через poor align —
+    # симулируем одинаковые таймкоды слов, которые map схлопнет.
+    words = [
+        WordTS("один", 1.0, 1.2, 1.0),
+        WordTS("два", 1.2, 1.4, 1.0),
+        WordTS("три", 1.0, 1.1, 1.0),  # тот же start-кластер
+        WordTS("четыре", 1.0, 1.15, 1.0),
+        WordTS("пять", 4.0, 4.3, 1.0),
+        WordTS("шесть", 4.3, 4.6, 1.0),
+    ]
+    timings = timings_from_word_transitions(cells, words, master=10.0)
+    assert count_crumb_frames(timings) == 0
+    assert abs(timings[-1].end_ts - 10.0) < 0.02
+
+
+def test_speech_islands_not_pure_uniform() -> None:
+    cells = [(i, f"кадр{i} " + ("слово " * (i))) for i in range(1, 7)]
+    # Два острова речи: [0-3] и [7-12]; длинная тишина 3-7
+    silences = [(3.0, 7.0)]
+    timings = _timings_from_speech_islands(cells, 12.0, silences)
+    assert len(timings) == 6
     assert timings[0].start_ts == 0.0
     assert abs(timings[-1].end_ts - 12.0) < 0.02
-    # Длинные паузы ~2.4 и ~8.5 должны стать границами
-    cuts = [timings[1].start_ts, timings[2].start_ts]
-    assert any(abs(c - 2.4) < 0.05 for c in cuts)
-    assert any(abs(c - 8.5) < 0.05 for c in cuts)
+    assert count_crumb_frames(timings) == 0
+    # Не чистая равномерка 2.0с — веса разные
+    durs = [t.duration for t in timings]
+    assert max(durs) - min(durs) > 0.2
 
 
 def test_run_speech_align_silence_no_nemo(tmp_path: Path) -> None:
-    # Минимальный валидный wav не обязателен — mock detect_silences
     fake = tmp_path / "voice.wav"
     fake.write_bytes(b"RIFF")
-    cells = [(1, "а"), (2, "б"), (3, "в")]
+    cells = [(1, "а а а"), (2, "б"), (3, "в в")]
     with patch(
         "app.services.audio_align_methods.detect_silences",
         return_value=[(1.0, 1.5), (2.5, 3.5)],
@@ -99,6 +149,7 @@ def test_run_speech_align_silence_no_nemo(tmp_path: Path) -> None:
     assert result.speech_source == "ffmpeg_silence"
     assert result.words == []
     assert len(result.timings) == 3
+    assert count_crumb_frames(result.timings) == 0
 
 
 def test_run_speech_align_uses_nemo_not_whisper(tmp_path: Path) -> None:
@@ -119,6 +170,7 @@ def test_run_speech_align_uses_nemo_not_whisper(tmp_path: Path) -> None:
     nemo.assert_called_once()
     assert result.speech_source == "nemo"
     assert len(result.timings) == 5
+    assert count_crumb_frames(result.timings) == 0
 
 
 def test_detect_silences_parses_ffmpeg_stderr(tmp_path: Path) -> None:
