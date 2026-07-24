@@ -1,11 +1,12 @@
 """Вариант 3 (быстрый): R15 → slot-файлы → concat → mux.
 
-gap_policy=absolute_r15_extend_clone:
-- дыры между R15 / voice tail → clone последнего кадра (tpad suffix/prefix);
-- src короче своего R15-окна → loop клипа (-stream_loop), не freeze и не slow-mo.
+gap_policy=dense_natural_min_r15_src:
+- каждый клип играет play = min(длина_файла, окно_R15);
+- кончился play → сразу следующий клип (без freeze, без loop, без slow-mo);
+- если сумма клипов < озвучки — чёрный хвост только в конце (не заморозка кадра).
 
-Каждый сегмент кодируется только на свою длительность (2–5 с), а не на всю
-шкалу озвучки (~500 с). Для 140+ клипов это ~5–8 мин вместо ~20 мин overlay.
+R15 задаёт потолок длины кадра и порядок; абсолютные дыры между маркерами
+не заливаются клоном — иначе «файл ещё идёт, а картинка уже стоит».
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ class _OverlaySlot:
 
 @dataclass(frozen=True)
 class _ContinuousSlot:
-    """Клип на абсолютной шкале R15: окно = r15_end - r15_start."""
+    """Клип на плотной шкале: play = min(src, R15), без pad."""
 
     frame_number: int
     clip: Path
@@ -64,14 +65,14 @@ class _ContinuousSlot:
     out_end: float
     r15_start: float
     r15_end: float
-    slot_dur: float
+    slot_dur: float  # фактически play_dur
     src_dur: float
     prefix_pad: float = 0.0
     suffix_pad: float = 0.0
 
     @property
     def out_duration(self) -> float:
-        return self.prefix_pad + self.slot_dur + self.suffix_pad
+        return self.slot_dur
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         slots.extend(ms)
     if skipped:
         logger.warning(
-            "[#{}] variant3: кадры {} без clip — gap закрывает продление предыдущего",
+            "[#{}] variant3: кадры {} без clip — пропуск, следующий сразу",
             project.id,
             skipped,
         )
@@ -144,28 +145,9 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
     return slots
 
 
-def _extend_segment(segs: list[_TimelineSegment], gap: float) -> None:
-    prev = segs[-1]
-    assert prev.kind == "clip" and prev.slot is not None
-    cs = prev.slot
-    segs[-1] = _TimelineSegment(
-        "clip",
-        prev.duration_s + gap,
-        _ContinuousSlot(
-            frame_number=cs.frame_number,
-            clip=cs.clip,
-            kind=cs.kind,
-            label=cs.label,
-            out_start=cs.out_start,
-            out_end=cs.out_end + gap,
-            r15_start=cs.r15_start,
-            r15_end=cs.r15_end,
-            slot_dur=cs.slot_dur,
-            src_dur=cs.src_dur,
-            prefix_pad=cs.prefix_pad,
-            suffix_pad=cs.suffix_pad + gap,
-        ),
-    )
+def _play_duration(r15_window: float, src_dur: float) -> float:
+    """Естественная длина на таймлайне: не длиннее R15 и не длиннее файла."""
+    return max(0.0, min(r15_window, src_dur))
 
 
 def build_timeline_segments(
@@ -173,41 +155,34 @@ def build_timeline_segments(
     src_durations: dict[Path, float],
     voice_s: float,
 ) -> list[_TimelineSegment]:
-    """Абсолютная R15: окно [start,end]; gap → clone prev; src короче → clone в окне."""
+    """Плотный concat: play=min(src,R15) → сразу следующий; хвост voice — black."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     segs: list[_TimelineSegment] = []
     cursor = 0.0
-    pending_prefix = 0.0
 
     for slot in ordered:
-        if slot.start_s > cursor + 0.02:
-            gap = slot.start_s - cursor
-            if segs:
-                _extend_segment(segs, gap)
-                logger.debug(
-                    "variant3: кадр {} продлён clone {:.2f}s до R15 {:.2f}s",
-                    segs[-1].slot.frame_number,
-                    gap,
-                    slot.start_s,
-                )
-            else:
-                pending_prefix = gap
-            cursor = slot.start_s
-
         src_dur = src_durations[slot.clip]
         window = slot.duration_s
         if window < 0.05:
             continue
+        play = _play_duration(window, src_dur)
+        if play < 0.05:
+            logger.warning(
+                "variant3: кадр {} — play {:.2f}s слишком короткий, пропуск",
+                slot.frame_number,
+                play,
+            )
+            continue
         if src_dur + 0.02 < window:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → loop в окне",
+                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → play src, сразу следующий",
                 slot.frame_number,
                 src_dur,
                 window,
             )
         elif src_dur > window + 0.05:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s > R15 {:.2f}s → trim",
+                "variant3: кадр {} — src {:.2f}s > R15 {:.2f}s → trim до R15",
                 slot.frame_number,
                 src_dur,
                 window,
@@ -218,25 +193,24 @@ def build_timeline_segments(
             clip=slot.clip,
             kind=slot.kind,
             label=slot.label,
-            out_start=cursor - pending_prefix,
-            out_end=slot.end_s,
+            out_start=cursor,
+            out_end=cursor + play,
             r15_start=slot.start_s,
             r15_end=slot.end_s,
-            slot_dur=window,
+            slot_dur=play,
             src_dur=src_dur,
-            prefix_pad=pending_prefix,
+            prefix_pad=0.0,
+            suffix_pad=0.0,
         )
-        pending_prefix = 0.0
-        segs.append(_TimelineSegment("clip", cs.out_duration, cs))
-        cursor = slot.end_s
+        segs.append(_TimelineSegment("clip", play, cs))
+        cursor = cs.out_end
 
-    if voice_s > cursor + 0.02 and segs:
-        gap = voice_s - cursor
-        _extend_segment(segs, gap)
+    if voice_s > cursor + 0.02:
+        tail = voice_s - cursor
+        segs.append(_TimelineSegment("black", tail))
         logger.debug(
-            "variant3: последний кадр {} продлён clone {:.2f}s до voice {:.2f}s",
-            segs[-1].slot.frame_number,
-            gap,
+            "variant3: чёрный хвост {:.2f}s до voice {:.2f}s (без freeze кадра)",
+            tail,
             voice_s,
         )
 
@@ -247,20 +221,31 @@ def build_timeline_segments(
 def _validate_timeline(segments: list[_TimelineSegment], voice_s: float) -> None:
     cursor = 0.0
     for seg in segments:
-        if seg.kind != "clip" or seg.slot is None:
-            raise RuntimeError("black-сегменты запрещены — только extend clone")
+        if seg.kind == "black":
+            if seg.duration_s <= 0:
+                raise RuntimeError("пустой black-сегмент")
+            cursor += seg.duration_s
+            continue
+        if seg.slot is None:
+            raise RuntimeError("clip-сегмент без slot")
         cs = seg.slot
+        if abs(cs.prefix_pad) > 0.001 or abs(cs.suffix_pad) > 0.001:
+            raise RuntimeError(
+                f"кадр {cs.frame_number}: pad запрещён (prefix/suffix freeze)"
+            )
         if abs(cs.out_start - cursor) > 0.03:
             raise RuntimeError(
                 f"кадр {cs.frame_number}: out_start {cs.out_start:.2f} != {cursor:.2f}"
             )
-        if abs(cs.out_start + cs.prefix_pad - cs.r15_start) > 0.03:
-            raise RuntimeError(
-                f"кадр {cs.frame_number}: r15_start {cs.r15_start:.2f} "
-                f"!= out+prefix {cs.out_start + cs.prefix_pad:.2f}"
-            )
         if abs(seg.duration_s - cs.out_duration) > 0.03:
             raise RuntimeError(f"кадр {cs.frame_number}: duration mismatch")
+        # play не длиннее R15-окна и не длиннее src
+        r15_win = max(0.0, cs.r15_end - cs.r15_start)
+        if cs.slot_dur > r15_win + 0.05 or cs.slot_dur > cs.src_dur + 0.05:
+            raise RuntimeError(
+                f"кадр {cs.frame_number}: play {cs.slot_dur:.2f} "
+                f"> min(r15={r15_win:.2f}, src={cs.src_dur:.2f})"
+            )
         cursor += seg.duration_s
     if abs(cursor - voice_s) > 0.05:
         raise RuntimeError(f"timeline {cursor:.2f}s != voice {voice_s:.2f}s")
@@ -282,11 +267,6 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
         raise RuntimeError(f"{head}\n" + "\n".join(err.splitlines()[-18:]))
 
 
-def _clip_needs_loop(src_dur: float, slot_dur: float) -> bool:
-    """Клип короче R15-окна — на encode нужен -stream_loop, иначе trim обрежет коротко."""
-    return src_dur + 0.02 < slot_dur
-
-
 def _clip_filter_chain(
     w: int,
     h: int,
@@ -296,25 +276,17 @@ def _clip_filter_chain(
     prefix_pad: float = 0.0,
     suffix_pad: float = 0.0,
 ) -> str:
-    """R15-окно → exact slot_dur, затем prefix/suffix только для gap.
-
-    Короткий src заполняется loop на encode (``-stream_loop``), не tpad-freeze.
-    Freeze (tpad clone) только для prefix/suffix gap, где нет своего видео.
-    Slow-mo (setpts=PTS/N) запрещён.
-    """
-    del src_dur  # длина окна всегда slot_dur; loop решает нехватку кадров
-    chain = (
+    """Только trim до play_dur. Без tpad/freeze/loop/slow-mo."""
+    if prefix_pad > 0.001 or suffix_pad > 0.001:
+        raise RuntimeError("prefix/suffix pad запрещены в dense_natural")
+    play = _play_duration(slot_dur, src_dur) if src_dur > 0 else slot_dur
+    # slot_dur сюда уже play; на всякий случай ещё раз min
+    use = max(0.05, min(slot_dur, play if play > 0 else slot_dur))
+    return (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,"
-        f"trim=duration={slot_dur:.3f},setpts=PTS-STARTPTS"
+        f"trim=duration={use:.3f},setpts=PTS-STARTPTS"
     )
-    if prefix_pad > 0.02:
-        chain += f",tpad=start_mode=clone:start_duration={prefix_pad:.3f}"
-    if suffix_pad > 0.02:
-        chain += f",tpad=stop_mode=clone:stop_duration={suffix_pad:.3f}"
-    total = prefix_pad + slot_dur + suffix_pad
-    chain += f",trim=duration={total:.3f},setpts=PTS-STARTPTS"
-    return chain
 
 
 def _write_plan(
@@ -331,8 +303,8 @@ def _write_plan(
         f"markers={marker_count}",
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
-        "gap_policy=absolute_r15_extend_clone",
-        "short_src_policy=stream_loop",
+        "gap_policy=dense_natural_min_r15_src",
+        "short_src_policy=next_clip_immediately",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
@@ -355,7 +327,7 @@ def _write_plan(
         lines.append(
             f"{cs.frame_number}\t{cs.kind}\t{cs.label}\t{cs.r15_start:.3f}\t{cs.r15_end:.3f}\t"
             f"{cs.out_start:.3f}\t{cs.out_end:.3f}\t{seg.duration_s:.3f}\t{cs.clip.name}"
-            f"\tsrc={cs.src_dur:.2f}\tprefix={cs.prefix_pad:.2f}\tsuffix={cs.suffix_pad:.2f}"
+            f"\tsrc={cs.src_dur:.2f}\tplay={cs.slot_dur:.2f}"
         )
     lines.append(f"\nclip_slots_total={clip_total:.3f}")
     lines.append(f"timeline_out_total={out_total:.3f}")
@@ -404,7 +376,7 @@ async def _ensure_timeline_duration(
     tmp: Path,
     project_id: int,
 ) -> Path:
-    """Pad or trim so the montage video matches voice length (frame rounding)."""
+    """Pad/trim до длины озвучки. Недобор — только чёрный хвост, не freeze."""
     got = await probe_duration(src)
     if abs(got - voice_s) <= 0.05:
         if src != dst:
@@ -414,48 +386,23 @@ async def _ensure_timeline_duration(
     if got + 0.05 < voice_s:
         pad_s = _duration_up_to_frame(voice_s - got)
         logger.warning(
-            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — clone last frame {:.3f}s",
+            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — black pad {:.3f}s",
             project_id,
             got,
             voice_s,
             pad_s,
         )
-        # Prefer freeze-frame over black: same policy as gap extend clone.
+        pad_path = tmp / "pad_tail.mp4"
+        await _encode_black_segment(pad_path, w=w, h=h, dur=pad_s)
+        list_file = tmp / "concat_padded.txt"
+        list_file.write_text(
+            "\n".join((f"file '{src.as_posix()}'", f"file '{pad_path.as_posix()}'")),
+            encoding="utf-8",
+        )
         padded = tmp / "timeline_padded.mp4"
-        await _run([
-            "ffmpeg", "-y",
-            "-i", str(src),
-            "-vf",
-            (
-                f"tpad=stop_mode=clone:stop_duration={pad_s:.3f},"
-                f"trim=duration={voice_s:.6f},setpts=PTS-STARTPTS"
-            ),
-            *_X264,
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(padded),
-        ], context=f"clone-pad timeline +{pad_s:.2f}s")
-        got = await probe_duration(padded)
-        if got + 0.05 < voice_s:
-            # Last-resort black only if tpad somehow failed to reach voice_s.
-            extra = _duration_up_to_frame(voice_s - got)
-            logger.warning(
-                "[#{}] variant3: clone-pad still short — black fallback {:.3f}s",
-                project_id,
-                extra,
-            )
-            pad2 = tmp / "pad_tail2.mp4"
-            await _encode_black_segment(pad2, w=w, h=h, dur=extra)
-            list_file2 = tmp / "concat_padded2.txt"
-            list_file2.write_text(
-                "\n".join((f"file '{padded.as_posix()}'", f"file '{pad2.as_posix()}'")),
-                encoding="utf-8",
-            )
-            padded2 = tmp / "timeline_padded2.mp4"
-            await _concat_segments(list_file2, padded2, voice_s=voice_s)
-            padded = padded2
-            got = await probe_duration(padded)
+        await _concat_segments(list_file, padded, voice_s=voice_s)
         src = padded
+        got = await probe_duration(src)
 
     if got > voice_s + 0.05:
         logger.warning(
@@ -507,19 +454,15 @@ async def _encode_clip_segment(
         prefix_pad=slot.prefix_pad,
         suffix_pad=slot.suffix_pad,
     )
-    cmd: list[str] = ["ffmpeg", "-y"]
-    # Короткий клип: крутим вход, чтобы R15-окно было с движением, не freeze.
-    if _clip_needs_loop(slot.src_dur, slot.slot_dur):
-        cmd.extend(["-stream_loop", "-1"])
-    cmd.extend([
+    await _run([
+        "ffmpeg", "-y",
         "-i", str(slot.clip),
         "-vf", vf,
         *_X264,
         "-an",
         "-t", f"{slot.out_duration:.3f}",
         str(path),
-    ])
-    await _run(cmd, context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
+    ], context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
 
 
 async def _build_slot_timeline(
@@ -638,7 +581,7 @@ async def run_variant2(
     gap = voice_s - marker_end
     if gap > 1.0:
         logger.info(
-            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s — последний кадр продлится clone {:.1f}s",
+            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s — хвост {:.1f}s чёрным (без freeze)",
             project.id,
             marker_end,
             voice_s,
@@ -674,6 +617,7 @@ async def run_variant2(
         "\n".join([
             f"engine={MONTAGE_ENGINE_V2}",
             "variant=3-slots",
+            "gap_policy=dense_natural_min_r15_src",
             f"at={datetime.now(timezone.utc).isoformat()}",
             f"xlsx={xlsx}",
             f"xlsx_mtime={datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()}",
