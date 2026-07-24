@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AudioLines,
   ChevronDown,
   ChevronRight,
   Clapperboard,
@@ -1565,6 +1566,20 @@ export function AssembleMontageBoard({
                 <RefreshCw className="h-4 w-4" />
               )}
               {recoverRunning ? "Забираем из Outsee…" : "Забрать правки из Outsee"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              className="h-9 gap-1.5 bg-amber-500 text-xs text-black hover:bg-amber-400"
+              disabled={!projectId}
+              title="5 методик разбора озвучки → таймкоды R15"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("studio-open-audio-align"))
+              }
+            >
+              <AudioLines className="h-4 w-4" />
+              Разбор аудио
             </Button>
             <Button
               type="button"

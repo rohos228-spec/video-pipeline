@@ -64,7 +64,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             onClick={() =>
               window.dispatchEvent(new CustomEvent("studio-open-audio-align"))
             }
-            className="gap-2 text-xs font-semibold"
+            className="gap-2 bg-amber-500 text-xs font-semibold text-black hover:bg-amber-400"
             title="5 методик разбора озвучки → R15"
           >
             <AudioLines className="h-3.5 w-3.5" />
