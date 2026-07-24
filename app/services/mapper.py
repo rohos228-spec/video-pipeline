@@ -275,6 +275,10 @@ def _should_use_token_proportional(
         return True
     if len(segments) < 2:
         return False
+    # Много нулевых/крошечных сегментов = схлопнутый align (одинаковые whisper-индексы).
+    tiny = sum(1 for s in segments if s < 0.1)
+    if tiny > max(1, len(segments) // 10):
+        return True
     mx = max(segments)
     if mx > audio_duration * 0.35:
         return True
@@ -283,6 +287,22 @@ def _should_use_token_proportional(
         if med > 0 and mx > med * 4:
             return True
     return False
+
+
+def timings_have_crumb_durations(
+    timings: list[FrameTiming],
+    *,
+    crumb_s: float = 0.1,
+    max_fraction: float = 0.05,
+    max_absolute: int = 2,
+) -> bool:
+    """True если слишком много кадров с длительностью ≤ crumb_s (сломанный ASR→R15)."""
+    if not timings:
+        return False
+    crumbs = sum(1 for t in timings if float(t.duration) <= crumb_s + 1e-9)
+    if crumbs <= max_absolute:
+        return False
+    return crumbs > max(max_absolute, int(len(timings) * max_fraction))
 
 
 def map_frames(
@@ -368,18 +388,43 @@ def enforce_monotonic_timings(
     master: float | None = None,
     min_duration: float = 0.05,
 ) -> list[FrameTiming]:
-    """R15/overlay: start каждого кадра >= end предыдущего (без overlap назад)."""
+    """R15/overlay: start каждого кадра >= end предыдущего (без overlap назад).
+
+    Не складывает цепочки min_duration (0.05s) при сдвиге overlap —
+    если исходный end уже позади нового start, кадр занимает до старта
+    следующего кадра (сохраняет речь, без крошек 0.05–0.1s в Excel).
+    """
     if not timings:
         return []
     sorted_t = sorted(timings, key=lambda t: t.frame_number)
-    out: list[FrameTiming] = []
-    prev_end = 0.0
+    starts: list[float] = []
+    prev_start = 0.0
     fixed = 0
     for t in sorted_t:
-        start = max(float(t.start_ts), prev_end)
-        end = max(float(t.end_ts), start + min_duration)
+        # Монотонные старты по ASR (не по end — иначе каскад сдвигов).
+        start = max(float(t.start_ts), prev_start)
         if start > float(t.start_ts) + 0.001:
             fixed += 1
+        starts.append(start)
+        prev_start = start
+
+    out: list[FrameTiming] = []
+    for i, t in enumerate(sorted_t):
+        start = starts[i]
+        orig_end = float(t.end_ts)
+        if i + 1 < len(starts):
+            next_start = starts[i + 1]
+            if next_start <= start + 1e-9:
+                # Схлопнутый старт — нулевая длина (не +min_duration: ломает
+                # start_next >= end_prev и плодит крошки). Remap выше по стеку.
+                end = start
+            elif orig_end > start + 0.001 and orig_end <= next_start + 0.001:
+                end = orig_end
+            else:
+                # Overlap / end позади: до следующего ASR-старта, не +0.05.
+                end = next_start
+        else:
+            end = max(orig_end, start + min_duration)
         out.append(
             FrameTiming(
                 t.frame_number,
@@ -388,9 +433,8 @@ def enforce_monotonic_timings(
                 round(end - start, 3),
             )
         )
-        prev_end = end
     if master is not None and out:
-        m = max(float(master), prev_end)
+        m = max(float(master), float(out[-1].end_ts))
         last = out[-1]
         if last.end_ts < m - 0.01:
             out[-1] = FrameTiming(
@@ -398,6 +442,13 @@ def enforce_monotonic_timings(
                 last.start_ts,
                 round(m, 3),
                 round(m - last.start_ts, 3),
+            )
+        # Если после stretch по master всё ещё каскад крошек — не чиним здесь
+        # (нужен map_frames с audio_duration / proportional); только лог.
+        if timings_have_crumb_durations(out):
+            logger.warning(
+                "map_frames: enforce_monotonic — много коротких кадров "
+                "(≤0.1s); нужен contiguous/proportional remap"
             )
     if fixed:
         logger.info(

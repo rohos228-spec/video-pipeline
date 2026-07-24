@@ -424,14 +424,26 @@ async def ensure_r15_from_asr(
     if master is None:
         master = await probe_duration(voice_full_path)
 
-    timings = map_frames(cells, words)
-    if not timings or len(timings) != len(frame_numbers):
-        timings = map_frames(cells, words, audio_duration=master)
+    # Тот же путь, что generate_audio → R15: без крошек 0.05–0.1s от overlap.
+    from app.services.frame_audio import frame_clips_from_whisper
+    from app.services.mapper import timings_have_crumb_durations
+
+    clips = frame_clips_from_whisper(cells, words, float(master), voice_full_path)
+    timings = [
+        FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
+        for c in clips
+        if c.duration > 0
+    ]
     if not timings:
         raise RuntimeError(
             f"[#{project.id}] ASR не сопоставил текст кадров — строку 15 не заполнить"
         )
     timings = enforce_monotonic_timings(timings, master=master)
+    if timings_have_crumb_durations(timings):
+        raise RuntimeError(
+            f"[#{project.id}] ASR дал слишком много кадров ≤0.1s — "
+            "проверьте текст R49 и words.json, строку 15 не пишем"
+        )
 
     ranges = [
         (t.frame_number, format_timecode_range(t.start_ts, t.end_ts)) for t in timings
@@ -651,7 +663,11 @@ def write_asr_timestamps_to_r15(project, clips: list) -> int:
     """После ASR: записать реальные метки в строку 15 листа «план»."""
     from app.storage.plan_sheet_v8 import write_plan_timestamps
 
-    from app.services.mapper import FrameTiming, enforce_monotonic_timings
+    from app.services.mapper import (
+        FrameTiming,
+        enforce_monotonic_timings,
+        timings_have_crumb_durations,
+    )
 
     timings = [
         FrameTiming(c.frame_number, c.start_ts, c.end_ts, c.duration)
@@ -662,6 +678,14 @@ def write_asr_timestamps_to_r15(project, clips: list) -> int:
         return 0
     master = max(c.end_ts for c in clips if c.duration > 0)
     timings = enforce_monotonic_timings(timings, master=master)
+    if timings_have_crumb_durations(timings):
+        logger.error(
+            "[#{}] plan R15: отказ писать — слишком много кадров ≤0.1s "
+            "(сломанный align, {} кадров). Исправьте ASR/текст R49.",
+            project.id,
+            sum(1 for t in timings if t.duration <= 0.1 + 1e-9),
+        )
+        return 0
     ranges = [
         (t.frame_number, format_timecode_range(t.start_ts, t.end_ts)) for t in timings
     ]
