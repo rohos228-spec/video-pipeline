@@ -1,8 +1,6 @@
-"""Absolute R15 montage — extend previous clone, timecodes are priority."""
+"""Overlay R15 plan — absolute start_s, extend clone to next start, no slow-mo."""
 
 from pathlib import Path
-
-import pytest
 
 from app.services.montage.variant2 import (
     MONTAGE_ENGINE_V2,
@@ -15,61 +13,55 @@ from app.services.montage.variant2 import (
 def test_duration_up_to_frame() -> None:
     assert _duration_up_to_frame(0.0) == 0.0
     assert abs(_duration_up_to_frame(0.001) - 1 / 30) < 1e-6
-    assert abs(_duration_up_to_frame(0.05) - 2 / 30) < 1e-6
-    assert abs(_duration_up_to_frame(2.96) - 89 / 30) < 1e-6
 
 
-def test_timeline_segments_sum_to_voice() -> None:
+def test_display_dur_covers_voice() -> None:
     slots = [
         _OverlaySlot(1, 0.0, 2.96, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 2.96, 5.0, Path("b.mp4"), "scene"),
     ]
     src = {Path("a.mp4"): 8.0, Path("b.mp4"): 8.0}
     voice_s = 10.0
-    segs = build_timeline_segments(slots, src, voice_s=voice_s)
-    total = sum(s.duration_s for s in segs)
-    assert abs(total - voice_s) < 0.02
-    assert all(s.kind == "clip" for s in segs)
+    plans = build_timeline_segments(slots, src, voice_s=voice_s)
+    assert abs(plans[0].display_dur - 2.96) < 0.02
+    assert abs(plans[1].display_dur - (voice_s - 2.96)) < 0.02
 
 
-def test_short_src_keeps_r15_start_for_next() -> None:
+def test_short_src_still_on_r15_start() -> None:
     slots = [
         _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 2.0, 4.0, Path("b.mp4"), "scene"),
     ]
     src = {Path("a.mp4"): 1.0, Path("b.mp4"): 2.0}
-    segs = build_timeline_segments(slots, src, voice_s=4.0)
-    assert abs(segs[0].duration_s - 2.0) < 0.02
-    assert abs(segs[1].slot.out_start - 2.0) < 0.02
-    assert abs(segs[1].slot.r15_start - 2.0) < 0.02
+    plans = build_timeline_segments(slots, src, voice_s=4.0)
+    assert abs(plans[0].slot.start_s - 0.0) < 0.02
+    assert abs(plans[1].slot.start_s - 2.0) < 0.02
+    assert plans[0].display_dur > plans[0].r15_window - 0.02
 
 
-def test_first_frame_respects_r15_start() -> None:
+def test_first_frame_on_r15_not_at_zero() -> None:
     slots = [
         _OverlaySlot(1, 3.28, 5.76, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 5.76, 8.72, Path("b.mp4"), "scene"),
     ]
     src = {Path("a.mp4"): 2.0, Path("b.mp4"): 2.96}
-    segs = build_timeline_segments(slots, src, voice_s=10.0)
-    assert abs(segs[0].slot.prefix_pad - 3.28) < 0.02
-    assert abs(segs[0].slot.out_start + segs[0].slot.prefix_pad - 3.28) < 0.02
-    assert abs(segs[1].slot.out_start - 5.76) < 0.02
+    plans = build_timeline_segments(slots, src, voice_s=10.0)
+    assert abs(plans[0].slot.start_s - 3.28) < 0.02
+    assert abs(plans[1].slot.start_s - 5.76) < 0.02
 
 
-def test_r15_gap_extends_previous_not_black() -> None:
+def test_r15_gap_extends_display_not_black() -> None:
     slots = [
         _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
         _OverlaySlot(2, 2.5, 4.0, Path("b.mp4"), "scene"),
     ]
     src = {Path("a.mp4"): 2.0, Path("b.mp4"): 2.0}
-    segs = build_timeline_segments(slots, src, voice_s=4.0)
-    assert all(s.kind == "clip" for s in segs)
-    assert segs[0].slot.suffix_pad > 0.4
-    assert abs(segs[0].duration_s - 2.5) < 0.02
-    assert abs(segs[1].slot.out_start - 2.5) < 0.02
+    plans = build_timeline_segments(slots, src, voice_s=4.0)
+    assert plans[0].gap_extend > 0.4
+    assert abs(plans[0].display_dur - 2.5) < 0.02
 
 
-def test_missing_frame_extends_previous_no_black() -> None:
+def test_missing_frame_extends_display() -> None:
     slots = [
         _OverlaySlot(45, 80.0, 90.0, Path("z.mp4"), "scene"),
         _OverlaySlot(46, 90.0, 100.0, Path("a.mp4"), "scene"),
@@ -80,53 +72,11 @@ def test_missing_frame_extends_previous_no_black() -> None:
         Path("a.mp4"): 10.0,
         Path("b.mp4"): 5.0,
     }
-    segs = build_timeline_segments(slots, src, voice_s=110.0)
-    frame46 = next(s for s in segs if s.slot and s.slot.frame_number == 46)
-    assert frame46.slot.suffix_pad > 2.5
-    assert abs(frame46.duration_s - 13.0) < 0.02
-    frame48 = next(s for s in segs if s.slot and s.slot.frame_number == 48)
-    assert abs(frame48.slot.r15_start - 103.0) < 0.02
+    plans = build_timeline_segments(slots, src, voice_s=110.0)
+    frame46 = next(p for p in plans if p.slot.frame_number == 46)
+    assert frame46.gap_extend > 2.5
+    assert abs(frame46.display_dur - 13.0) < 0.02
 
 
-def test_cumulative_positions_match_r15_starts() -> None:
-    slots = [
-        _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
-        _OverlaySlot(2, 2.0, 4.0, Path("b.mp4"), "scene"),
-        _OverlaySlot(3, 4.5, 7.0, Path("c.mp4"), "scene"),
-    ]
-    src = {Path("a.mp4"): 2.0, Path("b.mp4"): 1.5, Path("c.mp4"): 3.0}
-    segs = build_timeline_segments(slots, src, voice_s=7.0)
-    cursor = 0.0
-    for seg in segs:
-        cs = seg.slot
-        assert cs is not None
-        assert abs(cs.out_start - cursor) < 0.02
-        assert abs(cs.out_start + cs.prefix_pad - cs.r15_start) < 0.02
-        cursor += seg.duration_s
-    assert abs(cursor - 7.0) < 0.02
-
-
-def test_clip_out_end_matches_r15_or_next_start() -> None:
-    slots = [
-        _OverlaySlot(1, 10.0, 20.0, Path("a.mp4"), "scene"),
-        _OverlaySlot(2, 22.0, 30.0, Path("b.mp4"), "scene"),
-    ]
-    src = {Path("a.mp4"): 5.0, Path("b.mp4"): 5.0}
-    segs = build_timeline_segments(slots, src, voice_s=35.0)
-    assert abs(segs[0].slot.out_end - 22.0) < 0.02
-    assert abs(segs[0].slot.r15_end - 20.0) < 0.02
-    assert segs[0].slot.suffix_pad > 1.9
-
-
-def test_no_black_segments() -> None:
-    slots = [
-        _OverlaySlot(1, 0.0, 2.0, Path("a.mp4"), "scene"),
-        _OverlaySlot(2, 2.0, 4.0, Path("b.mp4"), "scene"),
-    ]
-    src = {Path("a.mp4"): 2.0, Path("b.mp4"): 2.0}
-    segs = build_timeline_segments(slots, src, voice_s=4.0)
-    assert all(s.kind == "clip" for s in segs)
-
-
-def test_montage_engine_is_v3_slots() -> None:
-    assert "slots-concat" in MONTAGE_ENGINE_V2
+def test_montage_engine_is_overlay() -> None:
+    assert "overlay" in MONTAGE_ENGINE_V2

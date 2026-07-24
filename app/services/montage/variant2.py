@@ -1,7 +1,7 @@
-"""Вариант 3 (быстрый): R15 → slot-файлы (gap + clip) → concat → mux.
+"""R15 overlay: абсолютные таймкоды (setpts), gap → clone на том же клипе, без slow-mo.
 
-Каждый сегмент кодируется только на свою длительность (2–5 с), а не на всю
-шкалу озвучки (~500 с). Для 140+ клипов это ~5–8 мин вместо ~20 мин overlay.
+Чёрное полотно = voice_s. Клип появляется ровно на start_s из Excel.
+Между end_s и start следующего — продление clone (не чёрный gap).
 """
 
 from __future__ import annotations
@@ -24,10 +24,9 @@ from app.services.montage.workspace import wipe_montage_workspace
 from app.services.shot2_montage import find_scene_clips, shot2_frame_numbers
 from app.settings import settings
 
-MONTAGE_ENGINE_V2 = "montage-v3-r15-slots-concat-s2"
+MONTAGE_ENGINE_V2 = "montage-v2-r15-overlay-extend-s2"
 DEFAULT_W, DEFAULT_H = 1920, 1080
-SLOT_ENCODE_PARALLEL = 4
-_TIMELINE_FPS = 30
+OVERLAY_BATCH = 6
 _DEFAULT_VOICE_GAIN = 1.0
 _DEFAULT_BGM_MIX_RATIO = 0.35
 
@@ -49,41 +48,18 @@ class _OverlaySlot:
 
 
 @dataclass(frozen=True)
-class _ContinuousSlot:
-    """Абсолютная R15: [r15_start,r15_end] на шкале озвучки; gap → clone suffix."""
-
-    frame_number: int
-    clip: Path
-    kind: str
-    label: str
-    out_start: float
-    out_end: float
-    r15_start: float
-    r15_end: float
+class _OverlayPlan:
+    slot: _OverlaySlot
+    display_dur: float
     src_dur: float
 
     @property
-    def out_duration(self) -> float:
-        return self.out_end - self.out_start
+    def r15_window(self) -> float:
+        return self.slot.duration_s
 
     @property
-    def prefix_pad(self) -> float:
-        return max(0.0, self.r15_start - self.out_start)
-
-    @property
-    def suffix_pad(self) -> float:
-        return max(0.0, self.out_end - self.r15_end)
-
-    @property
-    def content_dur(self) -> float:
-        return max(0.05, self.out_duration - self.prefix_pad)
-
-
-@dataclass(frozen=True)
-class _TimelineSegment:
-    kind: str  # clip | black
-    duration_s: float
-    slot: _ContinuousSlot | None = None
+    def gap_extend(self) -> float:
+        return max(0.0, self.display_dur - self.r15_window)
 
 
 def _marker_slots(
@@ -133,7 +109,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         slots.extend(ms)
     if skipped:
         logger.warning(
-            "[#{}] variant3: кадры {} без clip — gap закрывает продление предыдущего",
+            "[#{}] overlay: кадры {} без clip — gap закрывает продление предыдущего",
             project.id,
             skipped,
         )
@@ -141,7 +117,7 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
         raise RuntimeError("нет ни одного videos/clip_*.mp4 для монтажа")
     if split_n:
         logger.info(
-            "[#{}] variant2 shot2: {} кадров 50/50 ({} overlay-слотов)",
+            "[#{}] shot2: {} кадров 50/50 ({} overlay-слотов)",
             project.id,
             split_n,
             len(slots),
@@ -149,88 +125,75 @@ def _all_slots(project: Project, markers: list[R15Marker]) -> list[_OverlaySlot]
     return slots
 
 
-def build_continuous_slots(
+def build_overlay_plan(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
     voice_s: float,
-) -> list[_ContinuousSlot]:
-    """R15 приоритет: каждый клип [out_start,out_end), out_end = start следующего / voice_s."""
+) -> list[_OverlayPlan]:
+    """План overlay: клип на start_s, display до start следующего / voice_s."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     valid = [s for s in ordered if s.duration_s >= 0.05]
-    out: list[_ContinuousSlot] = []
+    plans: list[_OverlayPlan] = []
     for i, slot in enumerate(valid):
-        out_start = 0.0 if not out else out[-1].out_end
-        out_end = valid[i + 1].start_s if i + 1 < len(valid) else voice_s
-        if out_end <= out_start + 0.01:
+        display_dur = (
+            valid[i + 1].start_s - slot.start_s
+            if i + 1 < len(valid)
+            else voice_s - slot.start_s
+        )
+        if display_dur <= 0.05:
             raise RuntimeError(
-                f"кадр {slot.frame_number}: окно {out_start:.2f}–{out_end:.2f}s некорректно"
+                f"кадр {slot.frame_number}: display_dur {display_dur:.2f}s некорректна"
             )
         src_dur = src_durations[slot.clip]
-        suffix = out_end - slot.end_s
-        if suffix > 0.05:
-            logger.debug(
-                "variant3: кадр {} продлён clone {:.2f}s → {:.2f}s (R15 gap / хвост)",
-                slot.frame_number,
-                suffix,
-                out_end,
-            )
         if src_dur + 0.02 < slot.duration_s:
             logger.debug(
-                "variant3: кадр {} src {:.2f}s < R15 {:.2f}s → clone в окне",
+                "overlay: кадр {} src {:.2f}s < R15 {:.2f}s → clone",
                 slot.frame_number,
                 src_dur,
                 slot.duration_s,
             )
-        out.append(
-            _ContinuousSlot(
-                frame_number=slot.frame_number,
-                clip=slot.clip,
-                kind=slot.kind,
-                label=slot.label,
-                out_start=out_start,
-                out_end=out_end,
-                r15_start=slot.start_s,
-                r15_end=slot.end_s,
-                src_dur=src_dur,
+        if display_dur > slot.duration_s + 0.05:
+            logger.debug(
+                "overlay: кадр {} продлён clone {:.2f}s до {:.2f}s",
+                slot.frame_number,
+                display_dur - slot.duration_s,
+                slot.start_s + display_dur,
             )
+        plans.append(
+            _OverlayPlan(slot=slot, display_dur=display_dur, src_dur=src_dur)
         )
-    return out
+    return plans
 
 
-def _validate_timeline(segments: list[_TimelineSegment], voice_s: float) -> None:
-    cursor = 0.0
-    for seg in segments:
-        if seg.kind != "clip" or seg.slot is None:
-            raise RuntimeError("ожидались только clip-сегменты на шкале R15")
-        cs = seg.slot
-        if abs(cs.out_start - cursor) > 0.03:
-            raise RuntimeError(
-                f"кадр {cs.frame_number}: out_start {cs.out_start:.2f} != cursor {cursor:.2f}"
-            )
-        if abs(cs.out_start + cs.prefix_pad - cs.r15_start) > 0.03:
-            raise RuntimeError(
-                f"кадр {cs.frame_number}: контент не на R15 start "
-                f"(out={cs.out_start:.2f}+prefix={cs.prefix_pad:.2f} != {cs.r15_start:.2f})"
-            )
-        if abs(seg.duration_s - cs.out_duration) > 0.03:
-            raise RuntimeError(f"кадр {cs.frame_number}: duration mismatch")
-        cursor += seg.duration_s
-    if abs(cursor - voice_s) > 0.05:
-        raise RuntimeError(f"timeline {cursor:.2f}s != voice {voice_s:.2f}s")
+def _validate_overlay_plan(plans: list[_OverlayPlan], voice_s: float) -> None:
+    if not plans:
+        raise RuntimeError("пустой overlay plan")
+    for i, plan in enumerate(plans):
+        if plan.slot.start_s < -0.02:
+            raise RuntimeError(f"кадр {plan.slot.frame_number}: отрицательный start_s")
+        if i + 1 < len(plans):
+            expected = plans[i + 1].slot.start_s - plan.slot.start_s
+            if abs(plan.display_dur - expected) > 0.03:
+                raise RuntimeError(
+                    f"кадр {plan.slot.frame_number}: display_dur не до next start"
+                )
+        else:
+            expected = voice_s - plan.slot.start_s
+            if abs(plan.display_dur - expected) > 0.05:
+                raise RuntimeError(
+                    f"последний кадр {plan.slot.frame_number}: display_dur != voice tail"
+                )
 
 
+# alias for tests / plan export
 def build_timeline_segments(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
     voice_s: float,
-) -> list[_TimelineSegment]:
-    """R15-слоты → clip-сегменты; таймкод = приоритет; gap → clone prev."""
-    segments = [
-        _TimelineSegment("clip", cs.out_duration, cs)
-        for cs in build_continuous_slots(slots, src_durations, voice_s)
-    ]
-    _validate_timeline(segments, voice_s)
-    return segments
+) -> list[_OverlayPlan]:
+    plans = build_overlay_plan(slots, src_durations, voice_s)
+    _validate_overlay_plan(plans, voice_s)
+    return plans
 
 
 async def _run(cmd: list[str], *, context: str = "") -> None:
@@ -249,33 +212,31 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
         raise RuntimeError(f"{head}\n" + "\n".join(err.splitlines()[-18:]))
 
 
-def _clip_filter_chain(
+def _scale_chain(
     w: int,
     h: int,
-    dur: float,
+    display_dur: float,
     src_dur: float,
-    *,
-    prefix_pad: float = 0.0,
+    r15_window: float,
+    start_s: float,
 ) -> str:
-    """1x без slow-mo: src короче content → clone; длиннее → trim по content."""
+    """Клип на start_s; 1x; src короче / gap → clone; длиннее R15 → trim."""
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
     )
-    if prefix_pad > 0.02:
-        chain = f"tpad=start_mode=clone:start_duration={prefix_pad:.3f}," + chain
-    content_dur = max(0.05, dur - prefix_pad)
-    if src_dur + 0.05 < content_dur:
-        chain += f",tpad=stop_mode=clone:stop_duration={content_dur - src_dur:.3f}"
-    elif src_dur > content_dur + 0.05:
-        chain += f",trim=duration={content_dur:.3f}"
-    chain += f",trim=duration={dur:.3f},setpts=PTS-STARTPTS"
+    play = min(src_dur, r15_window)
+    if src_dur > r15_window + 0.05:
+        chain += f",trim=duration={r15_window:.3f}"
+    extend = display_dur - play
+    if extend > 0.02:
+        chain += f",tpad=stop_mode=clone:stop_duration={extend:.3f}"
+    chain += f",trim=duration={display_dur:.3f},setpts=PTS-STARTPTS+{start_s:.3f}/TB"
     return chain
 
 
 def _write_plan(
-    slots: list[_OverlaySlot],
-    segments: list[_TimelineSegment],
+    plans: list[_OverlayPlan],
     path: Path,
     *,
     voice_s: float,
@@ -285,145 +246,25 @@ def _write_plan(
         f"engine={MONTAGE_ENGINE_V2}",
         f"voice_duration={voice_s:.3f}",
         f"markers={marker_count}",
-        f"overlay_slots={len(slots)}",
-        f"timeline_segments={len(segments)}",
-        "gap_policy=absolute_r15_extend_previous_clone",
+        f"overlay_slots={len(plans)}",
+        "gap_policy=overlay_absolute_r15_extend_clone",
         "",
-        "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
+        "frame\tkind\texcel\tstart_s\tend_s\tr15_dur\tdisplay_dur\tgap_ext\tsrc\tclip",
     ]
     clip_total = 0.0
-    out_total = 0.0
-    for s in slots:
+    for plan in plans:
+        s = plan.slot
         clip_total += s.duration_s
         lines.append(
             f"{s.frame_number}\t{s.kind}\t{s.label}\t{s.start_s:.3f}\t{s.end_s:.3f}\t"
-            f"\t\t{s.duration_s:.3f}\t{s.clip.name}"
-        )
-    for seg in segments:
-        if seg.kind == "black":
-            out_total += seg.duration_s
-            lines.append(f"—\tblack\tvoice_tail\t\t\t\t\t{seg.duration_s:.3f}\t—")
-            continue
-        cs = seg.slot
-        assert cs is not None
-        out_total += seg.duration_s
-        lines.append(
-            f"{cs.frame_number}\t{cs.kind}\t{cs.label}\t{cs.r15_start:.3f}\t{cs.r15_end:.3f}\t"
-            f"{cs.out_start:.3f}\t{cs.out_end:.3f}\t{seg.duration_s:.3f}\t{cs.clip.name}"
-            f"\tsrc={cs.src_dur:.2f}\tprefix={cs.prefix_pad:.2f}\tsuffix={cs.suffix_pad:.2f}"
+            f"{s.duration_s:.3f}\t{plan.display_dur:.3f}\t{plan.gap_extend:.3f}\t"
+            f"{plan.src_dur:.2f}\t{s.clip.name}"
         )
     lines.append(f"\nclip_slots_total={clip_total:.3f}")
-    lines.append(f"timeline_out_total={out_total:.3f}")
-    lines.append(f"segments={len(segments)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _duration_up_to_frame(seconds: float, *, fps: int = _TIMELINE_FPS) -> float:
-    """Round duration up to the next video frame boundary."""
-    if seconds <= 0.0:
-        return 0.0
-    return math.ceil(seconds * fps - 1e-9) / fps
-
-
-async def _concat_segments(list_file: Path, out: Path, *, voice_s: float) -> None:
-    try:
-        await _run([
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_file),
-            "-c", "copy",
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(out),
-        ], context="concat copy")
-    except RuntimeError:
-        logger.warning("variant3: concat copy failed — re-encode once")
-        await _run([
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", str(list_file),
-            *_X264,
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(out),
-        ], context="concat re-encode")
-
-
-async def _ensure_timeline_duration(
-    src: Path,
-    dst: Path,
-    *,
-    w: int,
-    h: int,
-    voice_s: float,
-    tmp: Path,
-    project_id: int,
-) -> Path:
-    """Pad or trim so the montage video matches voice length (frame rounding)."""
-    got = await probe_duration(src)
-    if abs(got - voice_s) <= 0.05:
-        if src != dst:
-            shutil.copy2(src, dst)
-        return dst
-
-    if got + 0.05 < voice_s:
-        pad_s = _duration_up_to_frame(voice_s - got)
-        logger.warning(
-            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — black pad {:.3f}s",
-            project_id,
-            got,
-            voice_s,
-            pad_s,
-        )
-        pad_path = tmp / "pad_tail.mp4"
-        await _encode_black_segment(pad_path, w=w, h=h, dur=pad_s)
-        list_file = tmp / "concat_padded.txt"
-        list_file.write_text(
-            "\n".join((f"file '{src.as_posix()}'", f"file '{pad_path.as_posix()}'")),
-            encoding="utf-8",
-        )
-        padded = tmp / "timeline_padded.mp4"
-        await _concat_segments(list_file, padded, voice_s=voice_s)
-        got = await probe_duration(padded)
-        if got + 0.05 < voice_s:
-            extra = _duration_up_to_frame(voice_s - got)
-            pad2 = tmp / "pad_tail2.mp4"
-            await _encode_black_segment(pad2, w=w, h=h, dur=extra)
-            list_file2 = tmp / "concat_padded2.txt"
-            list_file2.write_text(
-                "\n".join((f"file '{padded.as_posix()}'", f"file '{pad2.as_posix()}'")),
-                encoding="utf-8",
-            )
-            padded2 = tmp / "timeline_padded2.mp4"
-            await _concat_segments(list_file2, padded2, voice_s=voice_s)
-            padded = padded2
-            got = await probe_duration(padded)
-        src = padded
-
-    if got > voice_s + 0.05:
-        logger.warning(
-            "[#{}] variant3: timeline {:.2f}s > voice {:.2f}s — trim",
-            project_id,
-            got,
-            voice_s,
-        )
-        await _run([
-            "ffmpeg", "-y",
-            "-i", str(src),
-            "-vf", f"trim=duration={voice_s:.6f},setpts=PTS-STARTPTS",
-            *_X264,
-            "-an",
-            "-t", f"{voice_s:.3f}",
-            str(dst),
-        ], context=f"trim timeline to {voice_s:.2f}s")
-        return dst
-
-    if src != dst:
-        shutil.copy2(src, dst)
-    return dst
-
-
-async def _encode_black_segment(path: Path, *, w: int, h: int, dur: float) -> None:
+async def _black_base(path: Path, *, w: int, h: int, dur: float) -> None:
     await _run([
         "ffmpeg", "-y",
         "-f", "lavfi",
@@ -432,91 +273,84 @@ async def _encode_black_segment(path: Path, *, w: int, h: int, dur: float) -> No
         "-an",
         "-t", f"{dur:.3f}",
         str(path),
-    ], context=f"black tail {dur:.2f}s")
+    ], context=f"black base {dur:.1f}s")
 
 
-async def _encode_clip_segment(
-    slot: _ContinuousSlot,
-    path: Path,
+async def _overlay_batch(
+    base: Path,
+    batch: list[_OverlayPlan],
     *,
     w: int,
     h: int,
+    voice_s: float,
+    out: Path,
+    batch_idx: int,
 ) -> None:
-    vf = _clip_filter_chain(
-        w,
-        h,
-        slot.out_duration,
-        slot.src_dur,
-        prefix_pad=slot.prefix_pad,
-    )
-    await _run([
-        "ffmpeg", "-y",
-        "-i", str(slot.clip),
-        "-vf", vf,
+    cmd: list[str] = ["ffmpeg", "-y", "-i", str(base)]
+    for plan in batch:
+        cmd.extend(["-i", str(plan.slot.clip)])
+
+    parts: list[str] = []
+    prev = "0:v"
+    for j, plan in enumerate(batch):
+        tag = f"c{batch_idx}_{j}"
+        out_tag = f"v{batch_idx}_{j}"
+        parts.append(
+            f"[{j + 1}:v]{_scale_chain(w, h, plan.display_dur, plan.src_dur, plan.r15_window, plan.slot.start_s)}[{tag}]"
+        )
+        parts.append(f"[{prev}][{tag}]overlay=0:0:eof_action=pass[{out_tag}]")
+        prev = out_tag
+
+    cmd.extend([
+        "-filter_complex", ";".join(parts),
+        "-map", f"[{prev}]",
         *_X264,
         "-an",
-        "-t", f"{slot.out_duration:.3f}",
-        str(path),
-    ], context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
+        "-t", f"{voice_s:.3f}",
+        str(out),
+    ])
+    await _run(cmd, context=f"overlay batch {batch_idx} ({len(batch)} clips)")
 
 
-async def _build_slot_timeline(
+async def _build_overlay_timeline(
     project: Project,
-    segments: list[_TimelineSegment],
+    plans: list[_OverlayPlan],
     *,
     w: int,
     h: int,
     voice_s: float,
     tmp: Path,
 ) -> Path:
-    sem = asyncio.Semaphore(SLOT_ENCODE_PARALLEL)
-    done = 0
-    total = len(segments)
-    paths: list[Path | None] = [None] * total
+    current = tmp / "base_black.mp4"
+    await _black_base(current, w=w, h=h, dur=voice_s)
 
-    async def _one(idx: int, seg: _TimelineSegment) -> None:
-        nonlocal done
-        out = tmp / f"seg_{idx:04d}.mp4"
-        async with sem:
-            if seg.kind == "black":
-                await _encode_black_segment(out, w=w, h=h, dur=seg.duration_s)
-            else:
-                assert seg.slot is not None
-                await _encode_clip_segment(seg.slot, out, w=w, h=h)
-        paths[idx] = out
-        done += 1
-        if done % 20 == 0 or done == total:
-            logger.info(
-                "[#{}] variant3 slots encoded {}/{}",
-                project.id,
-                done,
-                total,
-            )
+    batch_idx = 0
+    for i in range(0, len(plans), OVERLAY_BATCH):
+        chunk = plans[i : i + OVERLAY_BATCH]
+        nxt = tmp / f"layer_{batch_idx:03d}.mp4"
+        await _overlay_batch(
+            current,
+            chunk,
+            w=w,
+            h=h,
+            voice_s=voice_s,
+            out=nxt,
+            batch_idx=batch_idx,
+        )
+        current = nxt
+        batch_idx += 1
+        logger.info(
+            "[#{}] overlay batch {} done ({}/{} slots)",
+            project.id,
+            batch_idx,
+            min(i + OVERLAY_BATCH, len(plans)),
+            len(plans),
+        )
 
-    await asyncio.gather(*(_one(i, seg) for i, seg in enumerate(segments)))
-
-    list_file = tmp / "concat.txt"
-    list_file.write_text(
-        "\n".join(f"file '{p.as_posix()}'" for p in paths if p is not None),
-        encoding="utf-8",
-    )
-    raw = tmp / "timeline_raw.mp4"
-    await _concat_segments(list_file, raw, voice_s=voice_s)
-    out = tmp / "timeline.mp4"
-    await _ensure_timeline_duration(
-        raw,
-        out,
-        w=w,
-        h=h,
-        voice_s=voice_s,
-        tmp=tmp,
-        project_id=project.id,
-    )
-
-    got = await probe_duration(out)
-    if abs(got - voice_s) > 0.5:
-        raise RuntimeError(f"slot timeline {got:.2f}s != voice {voice_s:.2f}s")
-    return out
+    got = await probe_duration(current)
+    if abs(got - voice_s) > 0.4:
+        raise RuntimeError(f"overlay timeline {got:.2f}s != voice {voice_s:.2f}s")
+    return current
 
 
 async def _mux(
@@ -576,7 +410,7 @@ async def run_variant2(
     gap = voice_s - marker_end
     if gap > 1.0:
         logger.info(
-            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s — последний кадр продлится на {:.1f}s",
+            "[#{}] R15 до {:.1f}s, озвучка {:.1f}s — последний кадр продлится clone {:.1f}s",
             project.id,
             marker_end,
             voice_s,
@@ -590,7 +424,7 @@ async def run_variant2(
     for slot in slots:
         if slot.clip not in src_durations:
             src_durations[slot.clip] = await probe_duration(slot.clip)
-    segments = build_timeline_segments(slots, src_durations, voice_s)
+    plans = build_timeline_segments(slots, src_durations, voice_s)
 
     w, h = DEFAULT_W, DEFAULT_H
     try:
@@ -599,8 +433,7 @@ async def run_variant2(
         pass
 
     _write_plan(
-        slots,
-        segments,
+        plans,
         final_dir / "variant2_plan.txt",
         voice_s=voice_s,
         marker_count=len(markers),
@@ -611,12 +444,11 @@ async def run_variant2(
     (final_dir / "MONTAGE_STAMP.txt").write_text(
         "\n".join([
             f"engine={MONTAGE_ENGINE_V2}",
-            "variant=3-slots",
+            "variant=2-overlay-extend",
             f"at={datetime.now(timezone.utc).isoformat()}",
             f"xlsx={xlsx}",
             f"xlsx_mtime={datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()}",
-            f"overlay_slots={len(slots)}",
-            f"timeline_segments={len(segments)}",
+            f"overlay_slots={len(plans)}",
             f"markers={len(markers)}",
             f"voice_s={voice_s:.3f}",
             f"last_marker_end={marker_end:.3f}",
@@ -625,27 +457,30 @@ async def run_variant2(
     )
 
     logger.info(
-        "[#{}] variant3: {} slots → {} segments, voice {:.1f}s, {}x{}",
+        "[#{}] overlay: {} slots, voice {:.1f}s, {}x{}",
         project.id,
-        len(slots),
-        len(segments),
+        len(plans),
         voice_s,
         w,
         h,
     )
 
-    with tempfile.TemporaryDirectory(prefix="vp_montage_v3_") as td:
+    with tempfile.TemporaryDirectory(prefix="vp_montage_overlay_") as td:
         tmp = Path(td)
-        video = await _build_slot_timeline(
-            project, segments, w=w, h=h, voice_s=voice_s, tmp=tmp
+        video = await _build_overlay_timeline(
+            project, plans, w=w, h=h, voice_s=voice_s, tmp=tmp
         )
         pre_mux = final_dir / "_variant2_pre_mux.mp4"
         shutil.copy2(video, pre_mux)
-        logger.info("[#{}] variant3: timeline сохранён → {} (перед mux)", project.id, pre_mux)
+        logger.info("[#{}] overlay timeline → {} (перед mux)", project.id, pre_mux)
         out.parent.mkdir(parents=True, exist_ok=True)
         await _mux(video, voice, out, voice_s=voice_s, bgm=bgm)
-        if pre_mux.is_file():
-            pre_mux.unlink(missing_ok=True)
 
-    logger.info("[#{}] variant3 done → {}", project.id, out)
+    logger.info("[#{}] overlay done → {}", project.id, out)
     return out
+
+
+def _duration_up_to_frame(seconds: float, *, fps: int = 30) -> float:
+    if seconds <= 0.0:
+        return 0.0
+    return math.ceil(seconds * fps - 1e-9) / fps
