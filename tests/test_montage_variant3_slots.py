@@ -11,6 +11,7 @@ from app.services.montage.variant2 import (
     MONTAGE_ENGINE_V2,
     _OverlaySlot,
     _clip_filter_chain,
+    _clip_needs_loop,
     _concat_segments,
     _duration_up_to_frame,
     _encode_clip_segment,
@@ -84,13 +85,17 @@ def test_missing_frame_extends_previous_not_black() -> None:
 
 
 def test_filter_chain_uses_clone_not_slowmo() -> None:
+    # Короткий src: в окне без freeze-tpad (loop на encode); gap → clone suffix.
     vf = _clip_filter_chain(1920, 1080, slot_dur=2.48, src_dur=2.0)
-    assert "tpad=stop_mode=clone" in vf
+    assert "trim=duration=2.480" in vf
+    assert vf.count("tpad=stop_mode=clone") == 0
     assert "setpts=PTS/" not in vf
+    assert _clip_needs_loop(2.0, 2.48)
     vf_gap = _clip_filter_chain(
         1920, 1080, slot_dur=2.0, src_dur=2.0, suffix_pad=3.0
     )
     assert "tpad=stop_mode=clone:stop_duration=3.000" in vf_gap
+    assert not _clip_needs_loop(2.0, 2.0)
 
 
 def test_filter_chain_prefix_after_slot_trim_not_before() -> None:
@@ -104,6 +109,7 @@ def test_filter_chain_prefix_after_slot_trim_not_before() -> None:
     suffix_at = vf.index("tpad=stop_mode=clone:stop_duration=1.000")
     assert trim_at < prefix_at < suffix_at
     assert vf.count("trim=duration=6.000") == 1  # final total = 3+2+1
+    assert not _clip_needs_loop(8.0, 2.0)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")

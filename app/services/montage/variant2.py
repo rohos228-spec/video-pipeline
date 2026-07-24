@@ -1,7 +1,8 @@
 """Вариант 3 (быстрый): R15 → slot-файлы → concat → mux.
 
-gap_policy=absolute_r15_extend_clone: дыры между R15 закрываются clone
-последнего кадра (suffix/prefix tpad), не black и не slow-mo.
+gap_policy=absolute_r15_extend_clone:
+- дыры между R15 / voice tail → clone последнего кадра (tpad suffix/prefix);
+- src короче своего R15-окна → loop клипа (-stream_loop), не freeze и не slow-mo.
 
 Каждый сегмент кодируется только на свою длительность (2–5 с), а не на всю
 шкалу озвучки (~500 с). Для 140+ клипов это ~5–8 мин вместо ~20 мин overlay.
@@ -199,7 +200,7 @@ def build_timeline_segments(
             continue
         if src_dur + 0.02 < window:
             logger.debug(
-                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → clone в окне",
+                "variant3: кадр {} — src {:.2f}s < R15 {:.2f}s → loop в окне",
                 slot.frame_number,
                 src_dur,
                 window,
@@ -281,6 +282,11 @@ async def _run(cmd: list[str], *, context: str = "") -> None:
         raise RuntimeError(f"{head}\n" + "\n".join(err.splitlines()[-18:]))
 
 
+def _clip_needs_loop(src_dur: float, slot_dur: float) -> bool:
+    """Клип короче R15-окна — на encode нужен -stream_loop, иначе trim обрежет коротко."""
+    return src_dur + 0.02 < slot_dur
+
+
 def _clip_filter_chain(
     w: int,
     h: int,
@@ -290,21 +296,18 @@ def _clip_filter_chain(
     prefix_pad: float = 0.0,
     suffix_pad: float = 0.0,
 ) -> str:
-    """R15-окно: сначала длина слота, потом prefix/suffix clone.
+    """R15-окно → exact slot_dur, затем prefix/suffix только для gap.
 
-    Важно: prefix НЕльзя ставить до trim. Иначе при src > slot
-    ``trim=duration=slot`` срезает клон-префикс и сегмент выходит короче
-    (потом _ensure_timeline_duration добивает чёрным → дыры/дрейф).
-    Slow-mo (setpts=PTS/N) запрещён — только tpad clone.
+    Короткий src заполняется loop на encode (``-stream_loop``), не tpad-freeze.
+    Freeze (tpad clone) только для prefix/suffix gap, где нет своего видео.
+    Slow-mo (setpts=PTS/N) запрещён.
     """
+    del src_dur  # длина окна всегда slot_dur; loop решает нехватку кадров
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
-        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,"
+        f"trim=duration={slot_dur:.3f},setpts=PTS-STARTPTS"
     )
-    if src_dur > slot_dur + 0.05:
-        chain += f",trim=duration={slot_dur:.3f},setpts=PTS-STARTPTS"
-    elif src_dur + 0.02 < slot_dur:
-        chain += f",tpad=stop_mode=clone:stop_duration={slot_dur - src_dur:.3f}"
     if prefix_pad > 0.02:
         chain += f",tpad=start_mode=clone:start_duration={prefix_pad:.3f}"
     if suffix_pad > 0.02:
@@ -503,15 +506,19 @@ async def _encode_clip_segment(
         prefix_pad=slot.prefix_pad,
         suffix_pad=slot.suffix_pad,
     )
-    await _run([
-        "ffmpeg", "-y",
+    cmd: list[str] = ["ffmpeg", "-y"]
+    # Короткий клип: крутим вход, чтобы R15-окно было с движением, не freeze.
+    if _clip_needs_loop(slot.src_dur, slot.slot_dur):
+        cmd.extend(["-stream_loop", "-1"])
+    cmd.extend([
         "-i", str(slot.clip),
         "-vf", vf,
         *_X264,
         "-an",
         "-t", f"{slot.out_duration:.3f}",
         str(path),
-    ], context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
+    ])
+    await _run(cmd, context=f"clip slot f{slot.frame_number} {slot.out_duration:.2f}s")
 
 
 async def _build_slot_timeline(
