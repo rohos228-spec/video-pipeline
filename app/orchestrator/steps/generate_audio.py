@@ -146,9 +146,9 @@ async def _persist_audio_results(
         meta=whisper_meta or None,
     ))
 
-    # НЕ пишем ASR в Excel R15: строка 15 — источник таймкодов монтажа.
-    # ASR живёт в words.json (субтитры), иначе старты кадров схлопываются
-    # (0.05s щели) и сборка падает / кадры «отвязываются».
+    from app.services.plan_timestamps import write_asr_timestamps_to_r15
+
+    write_asr_timestamps_to_r15(project, clips)
 
     logger.info(
         "[#{}] generate_audio done: {} frames, {:.2f}s total, {} whisper words ({})",
