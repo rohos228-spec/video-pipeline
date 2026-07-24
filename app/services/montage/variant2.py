@@ -1,13 +1,13 @@
 """Вариант 3: R15 → slot encode → concat → mux.
 
-gap_policy=absolute_r15_real_src_reverse_fill
+gap_policy=absolute_r15_start_then_reverse
 
-Правила:
-1. Старт клипа = Excel r15_start (привязка к таймкоду).
-2. Длина на таймлайне = до старта следующего кадра (или конца voice), НЕ обрезка
-   по r15_end: пока в файле есть кадры — играем реальный src.
-3. Reverse с конца — ТОЛЬКО если реальный src короче времени до следующего старта.
-4. Нельзя решать «видео кончилось», потому что кончился таймкод Excel.
+Правила (только так):
+1. Смотрим ТОЛЬКО начало таймкода кадра (r15_start) — туда вставляем клип.
+2. Играем реальный файл вперёд.
+3. Если файл короче, чем до начала следующего кадра — reverse с конца
+   до следующего старта (на месте склейки).
+4. r15_end не режет клип. Excel R15 не перезаписывать ASR.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ from app.services.shot2_montage import find_scene_clips, shot2_frame_numbers
 from app.settings import settings
 
 MONTAGE_ENGINE_V2 = "montage-v3-r15-slots-concat-s2"
-GAP_POLICY = "absolute_r15_real_src_reverse_fill"
+GAP_POLICY = "absolute_r15_start_then_reverse"
+_MIN_SLOT_GAP_S = 0.05
 DEFAULT_W, DEFAULT_H = 1920, 1080
 SLOT_ENCODE_PARALLEL = 4
 _TIMELINE_FPS = 30
@@ -212,33 +213,51 @@ def _fill_segment(
     return _TimelineSegment("clip", duration, cs)
 
 
+def _next_start_after(
+    ordered: list[_OverlaySlot],
+    index: int,
+    voice_s: float,
+) -> float:
+    """Ближайший следующий старт с зазором ≥ _MIN_SLOT_GAP_S, иначе конец voice."""
+    start = ordered[index].start_s
+    for j in range(index + 1, len(ordered)):
+        if ordered[j].start_s - start > _MIN_SLOT_GAP_S:
+            return ordered[j].start_s
+    return voice_s
+
+
 def build_timeline_segments(
     slots: list[_OverlaySlot],
     src_durations: dict[Path, float],
     voice_s: float,
 ) -> list[_TimelineSegment]:
-    """Старт по R15; длина от реального src до следующего старта; reverse лишь если src мал."""
+    """Старт = r15_start; файл вперёд; reverse только до следующего старта если src короче."""
     ordered = sorted(slots, key=lambda s: (s.start_s, s.frame_number))
     segs: list[_TimelineSegment] = []
     cursor = 0.0
+    placed_starts: list[float] = []
 
     for i, slot in enumerate(ordered):
         src_dur = src_durations[slot.clip]
-        next_start = ordered[i + 1].start_s if i + 1 < len(ordered) else voice_s
-        # Сколько места до ОБЯЗАТЕЛЬНОГО старта следующего кадра / конца voice.
+        next_start = _next_start_after(ordered, i, voice_s)
         available = next_start - slot.start_s
-        if available < 0.05:
+        if available < _MIN_SLOT_GAP_S:
             logger.warning(
-                "variant3: кадр {} — нет места до следующего старта ({:.2f}→{:.2f}), пропуск",
+                "variant3: кадр {} — старт {:.2f} почти = следующий {:.2f}, пропуск",
                 slot.frame_number,
                 slot.start_s,
                 next_start,
             )
             continue
 
-        # Lead до первого r15_start — reverse-fill первым клипом.
+        # Уже покрыто предыдущим сегментом (после look-ahead) — не дублируем.
+        if placed_starts and slot.start_s < placed_starts[-1] + _MIN_SLOT_GAP_S:
+            continue
+        if segs and slot.start_s < cursor - _R15_ALIGN_TOL_S:
+            continue
+
+        # До первого старта — reverse первым клипом (шкала с 0).
         if slot.start_s > cursor + 0.02:
-            gap = slot.start_s - cursor
             segs.append(
                 _fill_segment(
                     frame_number=slot.frame_number,
@@ -246,7 +265,7 @@ def build_timeline_segments(
                     kind=slot.kind,
                     label=slot.label,
                     out_start=cursor,
-                    duration=gap,
+                    duration=slot.start_s - cursor,
                     src_dur=src_dur,
                     r15_start=slot.start_s,
                     r15_end=slot.end_s,
@@ -255,55 +274,41 @@ def build_timeline_segments(
                 )
             )
             cursor = slot.start_s
-        elif slot.start_s < cursor - _R15_ALIGN_TOL_S:
-            raise RuntimeError(
-                f"кадр {slot.frame_number}: R15 {slot.start_s:.2f} < cursor {cursor:.2f}"
-            )
         else:
             cursor = max(cursor, slot.start_s)
 
         if abs(cursor - slot.start_s) > _R15_ALIGN_TOL_S:
             raise RuntimeError(
-                f"кадр {slot.frame_number}: отвязка R15 "
+                f"кадр {slot.frame_number}: отвязка от старта R15 "
                 f"(cursor={cursor:.3f}, r15_start={slot.start_s:.3f})"
             )
 
-        # КРИТИЧНО: не режем по r15_end. Режем только по available / реальному src.
-        # Reverse — только если ФАЙЛ короче available, не потому что «таймкод окна кончился».
-        r15_win = max(0.0, slot.end_s - slot.start_s)
         if src_dur + 0.02 < available:
             logger.debug(
-                "variant3: кадр {} — реальный src {:.2f}s < места {:.2f}s "
-                "(R15-окно было {:.2f}s) → fwd + reverse",
+                "variant3: кадр {} @ {:.2f}s — src {:.2f}s < до следующего {:.2f}s "
+                "→ вперёд + reverse до склейки",
                 slot.frame_number,
+                slot.start_s,
                 src_dur,
-                available,
-                r15_win,
-            )
-        elif src_dur > r15_win + 0.05 and src_dur <= available + 0.02:
-            logger.debug(
-                "variant3: кадр {} — src {:.2f}s > R15-окно {:.2f}s, "
-                "но файл ещё идёт → играем src до {:.2f}s (не режем по таймкоду конца)",
-                slot.frame_number,
-                src_dur,
-                r15_win,
-                available,
+                next_start,
             )
 
-        seg = _fill_segment(
-            frame_number=slot.frame_number,
-            clip=slot.clip,
-            kind=slot.kind,
-            label=slot.label,
-            out_start=slot.start_s,
-            duration=available,
-            src_dur=src_dur,
-            r15_start=slot.start_s,
-            r15_end=slot.end_s,
-            start_phase="fwd",
-            bound_to_r15=True,
+        segs.append(
+            _fill_segment(
+                frame_number=slot.frame_number,
+                clip=slot.clip,
+                kind=slot.kind,
+                label=slot.label,
+                out_start=slot.start_s,
+                duration=available,
+                src_dur=src_dur,
+                r15_start=slot.start_s,
+                r15_end=slot.end_s,
+                start_phase="fwd",
+                bound_to_r15=True,
+            )
         )
-        segs.append(seg)
+        placed_starts.append(slot.start_s)
         cursor = next_start
 
     if voice_s > cursor + 0.02 and segs:
@@ -325,7 +330,7 @@ def build_timeline_segments(
             )
         )
 
-    _validate_timeline(segs, voice_s, ordered_starts=[s.start_s for s in ordered])
+    _validate_timeline(segs, voice_s, placed_starts=placed_starts)
     return segs
 
 
@@ -333,7 +338,7 @@ def _validate_timeline(
     segments: list[_TimelineSegment],
     voice_s: float,
     *,
-    ordered_starts: list[float] | None = None,
+    placed_starts: list[float] | None = None,
 ) -> None:
     cursor = 0.0
     bound_i = 0
@@ -350,19 +355,18 @@ def _validate_timeline(
             )
         if cs.bound_to_r15 and abs(cs.out_start - cs.r15_start) > _R15_ALIGN_TOL_S:
             raise RuntimeError(
-                f"кадр {cs.frame_number}: ОТВЯЗКА от R15 "
+                f"кадр {cs.frame_number}: ОТВЯЗКА от старта R15 "
                 f"(out_start={cs.out_start:.3f} != r15_start={cs.r15_start:.3f})"
             )
-        # Длина bound-сегмента = до следующего R15-старта, НЕ обязана = r15_end-r15_start.
-        if cs.bound_to_r15 and ordered_starts is not None:
-            if bound_i + 1 < len(ordered_starts):
-                expect = ordered_starts[bound_i + 1] - cs.r15_start
+        if cs.bound_to_r15 and placed_starts is not None:
+            if bound_i + 1 < len(placed_starts):
+                expect = placed_starts[bound_i + 1] - cs.r15_start
             else:
                 expect = voice_s - cs.r15_start
             if abs(cs.slot_dur - expect) > 0.05:
                 raise RuntimeError(
                     f"кадр {cs.frame_number}: длина {cs.slot_dur:.2f} "
-                    f"!= места до следующего старта {expect:.2f}"
+                    f"!= до следующего старта {expect:.2f}"
                 )
             bound_i += 1
         if abs(seg.duration_s - cs.out_duration) > 0.03:
@@ -524,7 +528,7 @@ def _write_plan(
         f"overlay_slots={len(slots)}",
         f"timeline_segments={len(segments)}",
         f"gap_policy={GAP_POLICY}",
-        "short_src_policy=forward_then_reverse",
+        "short_src_policy=forward_then_reverse_until_next_start",
         "",
         "frame\tkind\texcel\tr15_start\tr15_end\tout_start\tout_end\tdur\tclip",
     ]
