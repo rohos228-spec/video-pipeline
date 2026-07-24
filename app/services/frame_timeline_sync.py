@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import uuid
@@ -148,9 +149,21 @@ def _apply_clips_to_frames(
         clip = by_num.get(fr.number)
         if clip is None:
             continue
-        fr.start_ts = clip.start_ts
-        fr.end_ts = clip.end_ts
-        fr.duration_seconds = clip.duration
+        new_start = float(clip.start_ts)
+        new_end = float(clip.end_ts)
+        new_dur = float(clip.duration)
+        old_start = float(fr.start_ts) if fr.start_ts is not None else None
+        old_end = float(fr.end_ts) if fr.end_ts is not None else None
+        if (
+            old_start is not None
+            and old_end is not None
+            and abs(old_start - new_start) < 0.001
+            and abs(old_end - new_end) < 0.001
+        ):
+            continue
+        fr.start_ts = new_start
+        fr.end_ts = new_end
+        fr.duration_seconds = new_dur
         updated.append(fr.number)
     return updated
 
@@ -419,6 +432,10 @@ async def sync_frame_timestamps_for_board(
 
     Приоритет: Excel R15 (то, что пишет «Разбор аудио» / remount).
     Не затирать выбранную методику auto/proportional из words.json.
+
+    На повторном открытии доски: если project.xlsx не менялся и у кадров
+    уже есть таймкоды — пропускаем тяжёлый openpyxl R15 (иначе каждый
+    GET /montage-board парсит Excel дважды на 150+ колонок).
     """
     if frames is None:
         frames = list(
@@ -430,6 +447,37 @@ async def sync_frame_timestamps_for_board(
                 )
             ).scalars().all()
         )
+    if not frames:
+        return {"skipped": "no frames"}
+
+    xlsx_path = project.data_dir / "project.xlsx"
+    xlsx_mtime = xlsx_path.stat().st_mtime if xlsx_path.is_file() else 0.0
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    cache = meta.get("montage_r15_sync") if isinstance(meta.get("montage_r15_sync"), dict) else {}
+    have_ts = sum(
+        1
+        for f in frames
+        if f.start_ts is not None and f.end_ts is not None and float(f.end_ts) > float(f.start_ts)
+    )
+    if (
+        cache.get("xlsx_mtime") == xlsx_mtime
+        and int(cache.get("frame_count") or 0) == len(frames)
+        and have_ts >= max(1, int(len(frames) * 0.85))
+    ):
+        logger.debug(
+            "[#{}] montage_board sync: skip R15 (cache hit, {}/{} ts, mtime={:.0f})",
+            project.id,
+            have_ts,
+            len(frames),
+            xlsx_mtime,
+        )
+        return {
+            "skipped": "r15_cache_hit",
+            "updated": [],
+            "frame_count": len(frames),
+            "with_ts": have_ts,
+        }
+
     timeline_frames, cells = timeline_frames_and_cells(project, frames)
     if not timeline_frames:
         return {"skipped": "no timeline frames"}
@@ -453,7 +501,9 @@ async def sync_frame_timestamps_for_board(
         from app.storage.plan_sheet_v8 import read_plan_timestamps_cells
         from app.services.frame_audio import FrameAudioClip
 
-        ts_cells, _ts_row = read_plan_timestamps_cells(project, frame_numbers)
+        ts_cells, _ts_row = await asyncio.to_thread(
+            read_plan_timestamps_cells, project, frame_numbers
+        )
         _filled, parsed_n, _bad = count_parsed_timestamp_cells(ts_cells)
         need = len(frame_numbers)
         # Достаточно большинства меток — не откатываем на words.json из‑за 1–2 дыр.
@@ -483,12 +533,28 @@ async def sync_frame_timestamps_for_board(
                     await session.flush()
                     logger.info(
                         "[#{}] montage_board sync: {} кадров ← Excel R15 "
-                        "(parsed {}/{})",
+                        "(parsed {}/{}, changed={})",
                         project.id,
-                        len(updated),
+                        len(clips),
                         parsed_n,
                         need,
+                        len(updated),
                     )
+                else:
+                    logger.debug(
+                        "[#{}] montage_board sync: R15 ok, DB уже совпадает "
+                        "({} кадров)",
+                        project.id,
+                        len(clips),
+                    )
+                meta["montage_r15_sync"] = {
+                    "xlsx_mtime": xlsx_mtime,
+                    "frame_count": len(frames),
+                    "parsed": parsed_n,
+                    "source": "r15",
+                }
+                project.meta = meta
+                await session.flush()
                 return {
                     "source": "r15",
                     "updated": updated,
@@ -531,6 +597,14 @@ async def sync_frame_timestamps_for_board(
             project.id,
             len(updated),
         )
+    meta["montage_r15_sync"] = {
+        "xlsx_mtime": xlsx_mtime,
+        "frame_count": len(frames),
+        "parsed": len(clips),
+        "source": "words_json",
+    }
+    project.meta = meta
+    await session.flush()
     return {
         "source": "words_json",
         "updated": updated,
