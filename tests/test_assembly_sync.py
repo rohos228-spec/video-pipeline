@@ -41,7 +41,25 @@ def test_enforce_monotonic_fixes_overlap_from_word_direct_map() -> None:
     assert out[1].start_ts >= out[0].end_ts - 0.001
     assert out[2].start_ts >= out[1].end_ts - 0.001
     assert out[-1].end_ts == 12.0
+    # Старты ASR сохраняются (не сдвиг кадра 2 на end кадра 1).
+    assert abs(out[1].start_ts - 6.48) < 0.001
 
+
+def test_enforce_monotonic_no_min_duration_crumb_cascade() -> None:
+    """Overlap хвоста не должен плодить цепочку 0.05s кадров в R15."""
+    raw = [FrameTiming(1, 0.0, 100.0, 100.0)]
+    for i in range(2, 46):
+        # Все «слова» кадра сидят внутри end предыдущего → старый алгоритм
+        # делал start=100+(i-2)*0.05, duration=0.05.
+        raw.append(FrameTiming(i, 99.0, 99.4, 0.4))
+    out = enforce_monotonic_timings(raw, master=120.0)
+    assert out[0].end_ts <= 99.0 + 0.001
+    assert out[1].start_ts == 99.0
+    # Не каскад сдвига: 100.00, 100.05, 100.10, …
+    assert out[2].start_ts == 99.0
+    assert not any(
+        t.start_ts >= 100.0 - 1e-9 and abs(t.duration - 0.05) < 1e-9 for t in out
+    )
 
 def test_map_frames_redistributes_when_whisper_runs_out() -> None:
     cells = [(i, f"слово{i}") for i in range(1, 7)]

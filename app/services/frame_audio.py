@@ -231,41 +231,57 @@ def frame_clips_from_whisper(
     voice_full_path: Path,
 ) -> list[FrameAudioClip]:
     """Границы кадров из Whisper + voice_full, когда нет frame_NNN.mp3."""
-    from app.services.mapper import enforce_monotonic_timings
+    from app.services.mapper import (
+        enforce_monotonic_timings,
+        timings_have_crumb_durations,
+    )
 
     text_by_frame = dict(cells)
-    # Сначала word-level индексы ASR (без proportional stretch по audio_duration).
+
+    def _to_clips(timings: list) -> list[FrameAudioClip]:
+        return [
+            FrameAudioClip(
+                frame_number=t.frame_number,
+                path=voice_full_path,
+                text=text_by_frame.get(t.frame_number, ""),
+                start_ts=t.start_ts,
+                end_ts=t.end_ts,
+                duration=t.duration,
+            )
+            for t in timings
+        ]
+
+    # Direct word min/max часто даёт overlap → старый enforce_monotonic
+    # складывал крошки 0.05–0.1s в хвост R15. Берём direct только если
+    # границы уже монотонны и без крошек; иначе contiguous по стартам слов.
     direct = map_frames(cells, words)
     if direct and len(direct) == len(cells):
-        good = sum(1 for t in direct if t.duration > 0.05)
-        if good >= len(cells) * 0.85:
-            direct = enforce_monotonic_timings(direct, master=master)
-            return [
-                FrameAudioClip(
-                    frame_number=t.frame_number,
-                    path=voice_full_path,
-                    text=text_by_frame.get(t.frame_number, ""),
-                    start_ts=t.start_ts,
-                    end_ts=t.end_ts,
-                    duration=t.duration,
-                )
-                for t in direct
-            ]
+        already_mono = all(
+            direct[i].start_ts >= direct[i - 1].end_ts - 0.001
+            for i in range(1, len(direct))
+        )
+        good = sum(1 for t in direct if t.duration > 0.1)
+        if already_mono and good >= len(cells) * 0.95:
+            mono = enforce_monotonic_timings(direct, master=master)
+            if not timings_have_crumb_durations(mono):
+                return _to_clips(mono)
+
     timings = enforce_monotonic_timings(
         map_frames(cells, words, audio_duration=master),
         master=master,
     )
-    return [
-        FrameAudioClip(
-            frame_number=t.frame_number,
-            path=voice_full_path,
-            text=text_by_frame.get(t.frame_number, ""),
-            start_ts=t.start_ts,
-            end_ts=t.end_ts,
-            duration=t.duration,
+    if timings_have_crumb_durations(timings):
+        logger.warning(
+            "frame_clips_from_whisper: после contiguous всё ещё крошки — "
+            "proportional по словам R49"
         )
-        for t in timings
-    ]
+        from app.services.mapper import build_frame_word_spans, _timings_proportional_to_tokens
+
+        spans = build_frame_word_spans(cells, words)
+        if spans:
+            timings = _timings_proportional_to_tokens(spans, master)
+            timings = enforce_monotonic_timings(timings, master=master)
+    return _to_clips(timings)
 
 
 async def build_assembly_timeline(

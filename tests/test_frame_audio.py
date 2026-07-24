@@ -100,3 +100,24 @@ def test_frame_clips_from_whisper_fills_master_duration(tmp_path: Path) -> None:
     assert clips[0].start_ts == 0.0
     assert clips[-1].end_ts == 10.0
     assert abs(sum(c.duration for c in clips) - 10.0) < 0.01
+
+
+def test_frame_clips_from_whisper_no_r15_crumb_tail(tmp_path: Path) -> None:
+    """Как #26: direct word-map overlap + enforce_monotonic не пишут 0.05–0.1s в R15."""
+    voice = tmp_path / "voice.mp3"
+    voice.write_bytes(b"x")
+    # Много кадров, Whisper «заканчивается» рано — старый путь давал крошки в хвосте.
+    cells = [(i, f"кадр номер {i} длинная фраза закадра") for i in range(1, 41)]
+    words: list[WordTS] = []
+    t = 0.0
+    for i in range(80):
+        words.append(WordTS(f"слово{i}", t, t + 0.4, 1.0))
+        t += 0.4
+    master = 200.0
+    clips = frame_clips_from_whisper(cells, words, master=master, voice_full_path=voice)
+    assert len(clips) == 40
+    assert clips[-1].end_ts == master
+    crumbs = [c for c in clips if c.duration <= 0.1 + 1e-9]
+    assert crumbs == [], f"crumb timings: {[(c.frame_number, c.duration) for c in crumbs[:8]]}"
+    # Кадры получают долю от длины речи, не каскад 0.05s.
+    assert min(c.duration for c in clips) > 0.5
