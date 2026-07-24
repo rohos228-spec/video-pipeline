@@ -11,7 +11,7 @@ MONTAGE_VARIANTS = """
 
 ВАРИАНТ 3 — SLOT+CONCAT (текущий, реализован)
   gap (чёрный) + clip на каждый R15-слот, параллельное кодирование, concat copy.
-  Плотный concat: min(R15, src) без freeze; след. клип сразу; хвост voice = чёрный filler.
+  Абсолютная шкала R15: clip на start из Excel, min(R15,src) без freeze, gap = чёрный.
 
 ВАРИАНТ 4 — EDL / JSON TIMELINE
   Генерируем montage.edl из R15, один ffmpeg-script читает EDL.
