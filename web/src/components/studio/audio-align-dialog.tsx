@@ -133,7 +133,7 @@ export function AudioAlignPopover({
       >
         <h3 className="mb-1 text-sm font-semibold">Разбор речи → R15</h3>
         <p className="mb-3 text-[11px] text-muted-foreground">
-          5 методик разбора речи (NeMo / паузы). У каждой — свои таймкоды. Без Whisper.
+          5 методик (NeMo / паузы). 1/2/5 делят один full-file ASR. «Сегменты» — ≤8 кусков, не 153.
         </p>
 
         {projectId == null ? (

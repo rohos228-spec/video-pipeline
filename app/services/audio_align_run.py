@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.audio_align_methods import (
+    SHARED_NEMO_FULL_METHODS,
     resolve_align_method,
     run_speech_align,
 )
@@ -42,6 +43,7 @@ def _is_sqlite_locked(exc: BaseException) -> bool:
 async def _latest_words_artifact(
     session: AsyncSession, project_id: int, *, method_id: str
 ) -> Artifact | None:
+    """Кэш слов: full-file NeMo общий для direct/contiguous/auto; chunks — отдельно."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -50,13 +52,22 @@ async def _latest_words_artifact(
                 Artifact.kind == ArtifactKind.whisper_words,
             )
             .order_by(Artifact.id.desc())
-            .limit(12)
+            .limit(24)
         )
     ).scalars().all()
     for art in rows:
         meta = art.meta if isinstance(art.meta, dict) else {}
-        if meta.get("align_method") == method_id and meta.get("engine") == "nemo":
-            if art.path and Path(art.path).is_file():
+        if meta.get("engine") != "nemo":
+            continue
+        if not art.path or not Path(art.path).is_file():
+            continue
+        kind = str(meta.get("speech_kind") or "")
+        am = str(meta.get("align_method") or "")
+        if method_id in SHARED_NEMO_FULL_METHODS:
+            if kind == "nemo_full" or am in SHARED_NEMO_FULL_METHODS:
+                return art
+        elif method_id == "nemo_chunks":
+            if kind == "nemo_chunks" or am == "nemo_chunks":
                 return art
     return None
 
@@ -141,6 +152,13 @@ async def _persist_align_db(
         )
 
     if words_path is not None:
+        speech_kind = (
+            "nemo_chunks"
+            if method_id == "nemo_chunks"
+            else "nemo_full"
+            if method_id in SHARED_NEMO_FULL_METHODS
+            else "other"
+        )
         session.add(
             Artifact(
                 project_id=project.id,
@@ -150,6 +168,7 @@ async def _persist_align_db(
                 meta={
                     "source": "audio_align",
                     "align_method": method_id,
+                    "speech_kind": speech_kind,
                     "engine": "nemo",
                 },
             )

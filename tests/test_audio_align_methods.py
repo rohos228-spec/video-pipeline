@@ -30,6 +30,19 @@ def _cells_words():
     return cells, words, 12.0
 
 
+def test_segment_bounds_cap_at_eight() -> None:
+    from app.services.audio_align_methods import _segment_time_bounds
+
+    cells = [(i, f"слово{i} ещё текст") for i in range(1, 154)]
+    segs = _segment_time_bounds(cells, 508.81, max_chunks=8)
+    assert 1 <= len(segs) <= 8
+    assert segs[0][0] == 0.0
+    assert abs(segs[-1][1] - 508.81) < 0.02
+    for prev, cur in zip(segs, segs[1:]):
+        assert cur[0] >= prev[0]
+        assert cur[1] > cur[0]
+
+
 def test_list_has_five_nemo_methods() -> None:
     methods = list_align_methods()
     assert len(methods) == 5

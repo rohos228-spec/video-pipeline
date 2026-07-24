@@ -39,29 +39,33 @@ ALIGN_METHODS: tuple[AlignMethodInfo, ...] = (
     AlignMethodInfo(
         id="nemo_direct",
         title="1. NeMo — слова",
-        summary="Parakeet ASR: старт/конец кадра = первое и последнее сопоставленное слово.",
+        summary="Parakeet/FastConformer ASR целиком: старт/конец = первое и последнее слово кадра.",
     ),
     AlignMethodInfo(
         id="nemo_contiguous",
         title="2. NeMo — до следующего",
-        summary="Parakeet ASR: кадр от своего первого слова до старта следующего кадра.",
+        summary="Тот же full-file NeMo (кэш): кадр до старта следующего. Без повторного ASR.",
     ),
     AlignMethodInfo(
         id="nemo_chunks",
-        title="3. NeMo — по кускам",
-        summary="Режем озвучку по весу R49, ASR NeMo на каждый кусок, склеиваем слова → границы.",
+        title="3. NeMo — сегменты",
+        summary="Режем озвучку на ≤8 сегментов по весу R49, ASR каждого сегмента, склеиваем слова.",
     ),
     AlignMethodInfo(
         id="silence",
         title="4. Паузы (ffmpeg)",
-        summary="Режем по самым длинным тишинам (silencedetect) — без ASR-слов.",
+        summary="Режем по самым длинным тишинам (silencedetect) — без ASR.",
     ),
     AlignMethodInfo(
         id="nemo_auto",
         title="5. NeMo — auto",
-        summary="Parakeet ASR: direct; при крошках — contiguous по стартам слов (production).",
+        summary="Тот же full-file NeMo (кэш): direct, при крошках — contiguous (production).",
     ),
 )
+
+# Full-file NeMo методы делят один words.json (разный только тайминг).
+SHARED_NEMO_FULL_METHODS = frozenset({"nemo_direct", "nemo_contiguous", "nemo_auto"})
+
 
 _METHOD_IDS = {m.id for m in ALIGN_METHODS}
 
@@ -124,22 +128,39 @@ def _token_weights(cells: list[tuple[int, str]]) -> list[float]:
     return [w / total for w in weights]
 
 
-def _extract_audio_slice(src: Path, start: float, end: float, dest: Path) -> None:
-    dur = max(float(end) - float(start), 0.05)
+def _extract_audio_slice(
+    src: Path,
+    start: float,
+    end: float,
+    dest: Path,
+    *,
+    min_dur: float = 3.0,
+) -> float:
+    """Вырезать кусок; короткие добиваем тишиной (apad), чтобы NeMo не падал на Windows."""
+    raw = max(float(end) - float(start), 0.05)
+    dur = max(raw, float(min_dur))
+    pad = max(0.0, dur - raw)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    af = "aresample=16000"
+    if pad > 0.01:
+        af = f"{af},apad=pad_dur={pad:.3f}"
     cmd = [
         "ffmpeg",
         "-y",
         "-ss",
         f"{start:.3f}",
         "-t",
-        f"{dur:.3f}",
+        f"{raw:.3f}",
         "-i",
         str(src),
         "-ac",
         "1",
         "-ar",
         "16000",
+        "-af",
+        af,
+        "-c:a",
+        "pcm_s16le",
         "-vn",
         str(dest),
     ]
@@ -147,6 +168,57 @@ def _extract_audio_slice(src: Path, start: float, end: float, dest: Path) -> Non
     if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size < 64:
         err = (proc.stderr or proc.stdout or "")[-400:]
         raise RuntimeError(f"ffmpeg slice failed ({start:.2f}-{end:.2f}): {err}")
+    return dur
+
+
+def _segment_time_bounds(
+    cells: list[tuple[int, str]],
+    master: float,
+    *,
+    max_chunks: int = 8,
+) -> list[tuple[float, float]]:
+    """≤ max_chunks временных сегментов по накопленному весу R49."""
+    ad = max(float(master), 0.05)
+    n = len(cells)
+    if n <= 0:
+        return []
+    weights = _token_weights(cells)
+    k = max(1, min(int(max_chunks), n))
+    if k == 1:
+        return [(0.0, ad)]
+
+    frame_ends: list[float] = []
+    acc = 0.0
+    for w in weights:
+        acc += w * ad
+        frame_ends.append(acc)
+    frame_ends[-1] = ad
+
+    # границы групп кадров: кумулятивный вес ≈ i/k
+    cuts_idx: list[int] = []
+    cum = 0.0
+    target_i = 1
+    for i, w in enumerate(weights):
+        cum += w
+        if target_i < k and cum + 1e-9 >= target_i / k:
+            cuts_idx.append(i + 1)
+            target_i += 1
+    while len(cuts_idx) < k - 1:
+        cuts_idx.append(min(n, (len(cuts_idx) + 1) * n // k))
+    cuts_idx = sorted({c for c in cuts_idx if 0 < c < n})[: k - 1]
+
+    idx_bounds = [0, *cuts_idx, n]
+    out: list[tuple[float, float]] = []
+    for a, b in zip(idx_bounds[:-1], idx_bounds[1:]):
+        start = 0.0 if a == 0 else float(frame_ends[a - 1])
+        end = float(frame_ends[b - 1])
+        if end <= start + 0.05:
+            end = min(ad, start + 0.5)
+        out.append((round(start, 3), round(end, 3)))
+    if out:
+        out[0] = (0.0, out[0][1])
+        out[-1] = (out[-1][0], ad)
+    return out
 
 
 def speech_nemo_full(audio_path: Path) -> list[WordTS]:
@@ -157,47 +229,78 @@ def speech_nemo_chunks(
     audio_path: Path,
     cells: list[tuple[int, str]],
     master: float,
+    *,
+    max_chunks: int = 8,
 ) -> list[WordTS]:
-    """Провизорные куски по весу R49 → NeMo на каждый → слова со сдвигом."""
+    """≤8 сегментов по весу R49 → NeMo по одному сегменту (не 153 раза)."""
     _require_nemo()
-    ad = max(float(master), 0.05)
-    weights = _token_weights(cells)
-    bounds = [0.0]
-    acc = 0.0
-    for w in weights[:-1]:
-        acc += w * ad
-        bounds.append(round(acc, 3))
-    bounds.append(ad)
+    from app.services.nvidia_asr import (
+        normalize_nvidia_asr_model,
+        transcribe_words_nvidia,
+    )
+    from app.settings import settings
+    import time
 
+    ad = max(float(master), 0.05)
+    segments = _segment_time_bounds(cells, ad, max_chunks=max_chunks)
+    if not segments:
+        raise RuntimeError("nemo_chunks: нет сегментов")
+
+    model = normalize_nvidia_asr_model(settings.nvidia_asr_model)
     words: list[WordTS] = []
     with tempfile.TemporaryDirectory(prefix="align_chunks_") as tmp:
         tmp_dir = Path(tmp)
-        for i, ((fn, _text), start, end) in enumerate(
-            zip(cells, bounds[:-1], bounds[1:])
-        ):
-            if end - start < 0.05:
-                continue
-            slice_path = tmp_dir / f"f{fn}_{i}.wav"
-            _extract_audio_slice(audio_path, start, end, slice_path)
-            chunk_words = transcribe_nemo(slice_path)
+        logger.info(
+            "nemo_chunks: {} сегментов (не по кадру) из {} ячеек, master={:.1f}s",
+            len(segments),
+            len(cells),
+            ad,
+        )
+        for i, (start, end) in enumerate(segments):
+            slice_path = tmp_dir / f"seg_{i:02d}.wav"
+            _extract_audio_slice(audio_path, start, end, slice_path, min_dur=3.0)
+            try:
+                chunk_words = transcribe_words_nvidia(
+                    slice_path,
+                    model_name=model,
+                    language="ru",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "nemo_chunks: сегмент {} [{:.2f}-{:.2f}] упал: {}",
+                    i,
+                    start,
+                    end,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"NeMo упал на сегменте {i + 1}/{len(segments)} "
+                    f"({start:.1f}-{end:.1f}s): {exc}"
+                ) from exc
             for w in chunk_words:
+                ws = float(w.start) + float(start)
+                we = float(w.end) + float(start)
+                if ws >= end + 0.05:
+                    continue
                 words.append(
                     WordTS(
                         word=w.word,
-                        start=round(float(w.start) + float(start), 3),
-                        end=round(float(w.end) + float(start), 3),
+                        start=round(ws, 3),
+                        end=round(min(we, end), 3),
                         prob=w.prob,
                     )
                 )
             logger.info(
-                "nemo_chunks: frame {} [{:.2f}-{:.2f}] → {} слов",
-                fn,
+                "nemo_chunks: seg {}/{} [{:.2f}-{:.2f}] → {} слов",
+                i + 1,
+                len(segments),
                 start,
                 end,
                 len(chunk_words),
             )
+            time.sleep(0.35)
     if not words:
-        raise RuntimeError("nemo_chunks: NeMo не дал слов ни по одному куску")
+        raise RuntimeError("nemo_chunks: NeMo не дал слов ни по одному сегменту")
     return words
 
 
