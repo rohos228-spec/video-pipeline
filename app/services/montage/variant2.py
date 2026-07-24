@@ -1,4 +1,7 @@
-"""Вариант 3 (быстрый): R15 → slot-файлы (gap + clip) → concat → mux.
+"""Вариант 3 (быстрый): R15 → slot-файлы → concat → mux.
+
+gap_policy=absolute_r15_extend_clone: дыры между R15 закрываются clone
+последнего кадра (suffix/prefix tpad), не black и не slow-mo.
 
 Каждый сегмент кодируется только на свою длительность (2–5 с), а не на всю
 шкалу озвучки (~500 с). Для 140+ клипов это ~5–8 мин вместо ~20 мин overlay.
@@ -287,17 +290,23 @@ def _clip_filter_chain(
     prefix_pad: float = 0.0,
     suffix_pad: float = 0.0,
 ) -> str:
-    """R15-окно: src короче → clone; длиннее → trim; gap → clone prefix/suffix."""
+    """R15-окно: сначала длина слота, потом prefix/suffix clone.
+
+    Важно: prefix НЕльзя ставить до trim. Иначе при src > slot
+    ``trim=duration=slot`` срезает клон-префикс и сегмент выходит короче
+    (потом _ensure_timeline_duration добивает чёрным → дыры/дрейф).
+    Slow-mo (setpts=PTS/N) запрещён — только tpad clone.
+    """
     chain = (
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
     )
-    if prefix_pad > 0.02:
-        chain = f"tpad=start_mode=clone:start_duration={prefix_pad:.3f}," + chain
     if src_dur > slot_dur + 0.05:
-        chain += f",trim=duration={slot_dur:.3f}"
+        chain += f",trim=duration={slot_dur:.3f},setpts=PTS-STARTPTS"
     elif src_dur + 0.02 < slot_dur:
         chain += f",tpad=stop_mode=clone:stop_duration={slot_dur - src_dur:.3f}"
+    if prefix_pad > 0.02:
+        chain += f",tpad=start_mode=clone:start_duration={prefix_pad:.3f}"
     if suffix_pad > 0.02:
         chain += f",tpad=stop_mode=clone:stop_duration={suffix_pad:.3f}"
     total = prefix_pad + slot_dur + suffix_pad
@@ -401,24 +410,36 @@ async def _ensure_timeline_duration(
     if got + 0.05 < voice_s:
         pad_s = _duration_up_to_frame(voice_s - got)
         logger.warning(
-            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — black pad {:.3f}s",
+            "[#{}] variant3: timeline {:.2f}s < voice {:.2f}s — clone last frame {:.3f}s",
             project_id,
             got,
             voice_s,
             pad_s,
         )
-        pad_path = tmp / "pad_tail.mp4"
-        await _encode_black_segment(pad_path, w=w, h=h, dur=pad_s)
-        list_file = tmp / "concat_padded.txt"
-        list_file.write_text(
-            "\n".join((f"file '{src.as_posix()}'", f"file '{pad_path.as_posix()}'")),
-            encoding="utf-8",
-        )
+        # Prefer freeze-frame over black: same policy as gap extend clone.
         padded = tmp / "timeline_padded.mp4"
-        await _concat_segments(list_file, padded, voice_s=voice_s)
+        await _run([
+            "ffmpeg", "-y",
+            "-i", str(src),
+            "-vf",
+            (
+                f"tpad=stop_mode=clone:stop_duration={pad_s:.3f},"
+                f"trim=duration={voice_s:.6f},setpts=PTS-STARTPTS"
+            ),
+            *_X264,
+            "-an",
+            "-t", f"{voice_s:.3f}",
+            str(padded),
+        ], context=f"clone-pad timeline +{pad_s:.2f}s")
         got = await probe_duration(padded)
         if got + 0.05 < voice_s:
+            # Last-resort black only if tpad somehow failed to reach voice_s.
             extra = _duration_up_to_frame(voice_s - got)
+            logger.warning(
+                "[#{}] variant3: clone-pad still short — black fallback {:.3f}s",
+                project_id,
+                extra,
+            )
             pad2 = tmp / "pad_tail2.mp4"
             await _encode_black_segment(pad2, w=w, h=h, dur=extra)
             list_file2 = tmp / "concat_padded2.txt"
