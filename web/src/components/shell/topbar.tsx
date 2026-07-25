@@ -42,10 +42,10 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
   return (
     <UiContext.Provider value={{ framesProjectId, openFrames, openOutsee }}>
       <div className="flex h-full min-h-0 w-full flex-1 flex-col">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/30 px-4 backdrop-blur-sm">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] bg-black/40 px-4 backdrop-blur-xl">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary">
-            <Sparkles className="h-4 w-4" />
+          <div className="flex h-7 w-7 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-primary">
+            <Sparkles className="h-3.5 w-3.5" />
           </div>
           <div className="flex flex-col gap-0.5 leading-tight">
             <span className="text-sm font-semibold tracking-tight">Видео студия</span>
@@ -57,7 +57,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Button
             variant="default"
             size="sm"
@@ -69,7 +69,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             Генерация
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() =>
               window.dispatchEvent(
@@ -83,7 +83,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             Промты
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() => window.dispatchEvent(new CustomEvent("studio-open-fleet"))}
             className="gap-2 text-xs"
@@ -93,7 +93,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             Сеть
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() => setLogsOpen(true)}
             className="gap-2 text-xs"

@@ -39,8 +39,8 @@ export function Inspector({
   });
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card/20">
-      <div className="flex h-10 items-center gap-2 border-b border-border px-4">
+    <aside className="flex w-80 shrink-0 flex-col border-l border-white/[0.06] bg-black/30 backdrop-blur-xl">
+      <div className="flex h-10 items-center gap-2 border-b border-white/[0.06] px-4">
         <Info className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {selectedNodeKey

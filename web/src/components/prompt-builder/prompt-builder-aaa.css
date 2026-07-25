@@ -1,43 +1,44 @@
 /* Prompt Forge — dark glass */
 
 .pb-graph-root {
-  --pb-bg: hsl(220 14% 6%);
+  /* Canon C — airy black + pale lime */
+  --pb-bg: hsl(0 0% 2%);
   --pb-header: hsl(0 0% 0% / 0.55);
   --pb-rail: hsl(0 0% 0% / 0.42);
   --pb-strip: hsl(0 0% 0% / 0.38);
-  --pb-panel: hsl(220 12% 10% / 0.72);
-  --pb-surface: hsl(220 10% 14% / 0.65);
-  --pb-surface-hover: hsl(220 10% 18% / 0.75);
-  --pb-elevated: hsl(220 12% 12% / 0.7);
-  --pb-glass: hsl(220 10% 16% / 0.55);
-  --pb-glass-hover: hsl(220 10% 20% / 0.65);
+  --pb-panel: hsl(0 0% 6% / 0.78);
+  --pb-surface: hsl(0 0% 9% / 0.7);
+  --pb-surface-hover: hsl(0 0% 12% / 0.78);
+  --pb-elevated: hsl(0 0% 8% / 0.75);
+  --pb-glass: hsl(0 0% 10% / 0.55);
+  --pb-glass-hover: hsl(0 0% 14% / 0.65);
   --pb-border: hsl(0 0% 100% / 0.08);
   --pb-border-strong: hsl(0 0% 100% / 0.14);
   --pb-text: hsl(0 0% 94%);
-  --pb-text-muted: hsl(0 0% 72%);
-  --pb-text-dim: hsl(0 0% 52%);
-  --pb-accent: hsl(43 56% 58%);
-  --pb-accent-dim: hsl(43 40% 42%);
-  --pb-accent-soft: hsl(43 35% 45% / 0.18);
-  --pb-accent-border: hsl(43 40% 48% / 0.45);
-  --pb-accent-glow: hsl(43 56% 58% / 0.12);
+  --pb-text-muted: hsl(0 0% 68%);
+  --pb-text-dim: hsl(0 0% 48%);
+  --pb-accent: hsl(88 85% 58%);
+  --pb-accent-dim: hsl(88 45% 40%);
+  --pb-accent-soft: hsl(88 55% 45% / 0.16);
+  --pb-accent-border: hsl(88 60% 50% / 0.4);
+  --pb-accent-glow: hsl(88 85% 58% / 0.1);
   --pb-used: hsl(160 35% 42% / 0.22);
   --pb-used-text: hsl(160 40% 65%);
-  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-manrope), var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   color: var(--pb-text);
   background:
-    radial-gradient(ellipse 120% 80% at 15% 0%, hsl(0 0% 0% / 0.55), transparent 58%),
-    radial-gradient(ellipse 80% 60% at 95% 100%, hsl(0 0% 0% / 0.4), transparent 52%),
-    linear-gradient(165deg, hsl(220 14% 5% / 0.98) 0%, hsl(220 12% 4% / 0.99) 100%);
+    radial-gradient(ellipse 100% 70% at 20% 0%, hsl(88 30% 10% / 0.18), transparent 55%),
+    radial-gradient(ellipse 80% 60% at 95% 100%, hsl(0 0% 0% / 0.5), transparent 52%),
+    linear-gradient(165deg, hsl(0 0% 3% / 0.99) 0%, hsl(0 0% 2% / 0.99) 100%);
 }
 
 .pb-shell-premium {
   box-shadow:
     0 0 0 1px hsl(0 0% 100% / 0.06),
     0 24px 80px hsl(0 0% 0% / 0.65),
-    0 0 120px hsl(43 56% 58% / 0.03);
+    0 0 100px hsl(88 85% 58% / 0.04);
 }
 
 .pb-header-premium {

@@ -1,37 +1,34 @@
 @import "tailwindcss";
 
 /*
- * video-pipeline design tokens
- * Стиль: Linear / Vercel minimalism, dark-first.
- *
- *  - Бэкграунд: глубокий neutral-950
- *  - Линии: 1px hsl(0 0% 14%) — ультра-тонкие
- *  - Акцент: violet-500 (#8b5cf6) — единый яркий цвет
- *  - Текст: neutral-200 основной, neutral-500 muted
- *  - Шрифты: Inter (UI), JetBrains Mono (code/logs)
+ * video-pipeline — Canon C (airy black)
+ *  - Преобладающий чёрный, воздух, hairline 1px
+ *  - Акцент: pale lime (редко)
+ *  - Круглые цветные ноды на canvas
+ *  - Шрифты: Manrope (UI), IBM Plex Mono (code)
  */
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-ibm-plex-mono), ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+  --radius-full: 9999px;
 }
 
 :root {
-  /* Light theme (на случай если кто-то поставит light). Основной всё равно dark. */
   --background: 0 0% 100%;
   --foreground: 240 10% 4%;
   --card: 0 0% 100%;
   --card-foreground: 240 10% 4%;
   --popover: 0 0% 100%;
   --popover-foreground: 240 10% 4%;
-  --primary: 263 70% 50%;
-  --primary-foreground: 0 0% 100%;
+  --primary: 88 72% 42%;
+  --primary-foreground: 0 0% 4%;
   --secondary: 240 5% 96%;
   --secondary-foreground: 240 10% 10%;
   --muted: 240 5% 96%;
@@ -42,7 +39,7 @@
   --destructive-foreground: 0 0% 100%;
   --border: 240 6% 90%;
   --input: 240 6% 90%;
-  --ring: 263 70% 50%;
+  --ring: 88 72% 42%;
 
   --success: 142 70% 45%;
   --warning: 38 92% 50%;
@@ -53,33 +50,33 @@
 }
 
 .dark {
-  /* Premium studio: deep charcoal + gold/violet accents (Magnific / Freepik vibe) */
-  --background: 240 10% 4%;
-  --foreground: 40 20% 96%;
-  --card: 240 8% 7%;
-  --card-foreground: 40 15% 94%;
-  --popover: 240 8% 8%;
-  --popover-foreground: 40 15% 94%;
-  --primary: 42 95% 58%;
-  --primary-foreground: 240 10% 6%;
-  --secondary: 263 35% 18%;
-  --secondary-foreground: 263 30% 92%;
-  --muted: 240 6% 11%;
-  --muted-foreground: 240 5% 52%;
-  --accent: 263 40% 22%;
-  --accent-foreground: 40 20% 96%;
+  /* Canon C: void black + pale lime accent, airy hairlines */
+  --background: 0 0% 2%;
+  --foreground: 0 0% 94%;
+  --card: 0 0% 5%;
+  --card-foreground: 0 0% 94%;
+  --popover: 0 0% 5%;
+  --popover-foreground: 0 0% 94%;
+  --primary: 88 85% 58%;
+  --primary-foreground: 0 0% 4%;
+  --secondary: 0 0% 8%;
+  --secondary-foreground: 0 0% 88%;
+  --muted: 0 0% 7%;
+  --muted-foreground: 0 0% 48%;
+  --accent: 0 0% 9%;
+  --accent-foreground: 0 0% 94%;
   --destructive: 0 72% 55%;
   --destructive-foreground: 0 0% 100%;
-  --border: 240 6% 16%;
-  --input: 240 6% 14%;
-  --ring: 42 95% 58%;
+  --border: 0 0% 100% / 0.08;
+  --input: 0 0% 100% / 0.06;
+  --ring: 88 85% 58%;
 
   --success: 142 55% 48%;
   --warning: 38 92% 58%;
   --info: 199 80% 55%;
 
-  --canvas-bg: 240 12% 3%;
-  --canvas-grid: 240 8% 12%;
+  --canvas-bg: 0 0% 1.5%;
+  --canvas-grid: 0 0% 100% / 0.03;
 }
 
 @theme inline {
@@ -125,25 +122,24 @@ body {
   font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
 }
 
-/* Scrollbar — тонкий, в духе Linear. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--border));
-  border-radius: 8px;
+  background: hsl(0 0% 100% / 0.08);
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
+  background: hsl(0 0% 100% / 0.14);
 }
 
-/* React Flow override — убираем шум, делаем чисто. */
 .react-flow {
   background: hsl(var(--canvas-bg));
 }
@@ -151,16 +147,17 @@ body {
   display: none !important;
 }
 .react-flow__controls {
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.85);
+  border: 1px solid hsl(0 0% 100% / 0.08);
   border-radius: var(--radius-md);
   overflow: hidden;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.1);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(12px);
 }
 .react-flow__controls-button {
   background: transparent;
   border: none;
-  border-bottom: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(0 0% 100% / 0.06);
   color: hsl(var(--foreground));
 }
 .react-flow__controls-button:last-child {
@@ -170,29 +167,28 @@ body {
   background: hsl(var(--accent));
 }
 .react-flow__minimap {
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.9);
+  border: 1px solid hsl(0 0% 100% / 0.08);
   border-radius: var(--radius-md);
 }
 .react-flow__edge-path {
-  stroke: hsl(var(--muted-foreground) / 0.5);
-  stroke-width: 1.5;
+  stroke: hsl(0 0% 100% / 0.18);
+  stroke-width: 1;
 }
 .react-flow__edge.selected .react-flow__edge-path,
 .react-flow__edge:focus .react-flow__edge-path {
   stroke: hsl(var(--primary));
+  stroke-width: 1.5;
 }
 
-/* Soft focus rings. */
 :focus-visible {
-  outline: 2px solid hsl(var(--ring));
+  outline: 1px solid hsl(var(--ring) / 0.7);
   outline-offset: 2px;
 }
 
-/* Утилитный класс для glow на running-нодах. */
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.4); }
-  50% { box-shadow: 0 0 0 6px hsl(var(--primary) / 0); }
+  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.35); }
+  50% { box-shadow: 0 0 0 8px hsl(var(--primary) / 0); }
 }
 .glow-running {
   animation: glow-pulse 1.8s ease-in-out infinite;
@@ -213,9 +209,10 @@ body {
   border-radius: 9999px;
   padding: 0.125rem 0.375rem;
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 500;
   text-transform: lowercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
+  border: 1px solid hsl(0 0% 100% / 0.06);
 }
 
 .premium-tray {
@@ -225,10 +222,11 @@ body {
 .premium-sheet {
   background: linear-gradient(
     165deg,
-    hsl(240 10% 6% / 0.98) 0%,
-    hsl(240 12% 5% / 0.99) 50%,
-    hsl(263 20% 8% / 0.98) 100%
+    hsl(0 0% 4% / 0.98) 0%,
+    hsl(0 0% 3% / 0.99) 55%,
+    hsl(0 0% 5% / 0.98) 100%
   );
+  border-color: hsl(0 0% 100% / 0.08) !important;
 }
 
 @keyframes tray-slide-up {
@@ -254,55 +252,82 @@ body {
   overflow: visible !important;
 }
 
+.canon-node-orb {
+  box-shadow:
+    0 0 0 1px hsl(0 0% 100% / 0.06),
+    0 12px 40px hsl(0 0% 0% / 0.55),
+    inset 0 1px 0 hsl(0 0% 100% / 0.08);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+.canon-node-orb:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px hsl(var(--primary) / 0.28),
+    0 16px 48px hsl(0 0% 0% / 0.6),
+    inset 0 1px 0 hsl(0 0% 100% / 0.1);
+}
+
 .premium-node-glow {
   box-shadow:
-    0 0 0 1px hsl(42 95% 58% / 0.08),
+    0 0 0 1px hsl(0 0% 100% / 0.06),
     0 8px 32px hsl(0 0% 0% / 0.45),
     inset 0 1px 0 hsl(0 0% 100% / 0.04);
 }
 
 .neural-node-glow {
   box-shadow:
-    0 0 0 1px hsl(263 55% 62% / 0.08),
+    0 0 0 1px hsl(88 85% 58% / 0.1),
     0 8px 40px hsl(0 0% 0% / 0.5),
     inset 0 1px 0 hsl(0 0% 100% / 0.06);
 }
 
 .neural-canvas-bg {
   background:
-    radial-gradient(ellipse 80% 60% at 50% 20%, hsl(263 40% 14% / 0.45), transparent 55%),
-    radial-gradient(ellipse 60% 50% at 90% 80%, hsl(220 45% 12% / 0.35), transparent 50%),
+    radial-gradient(ellipse 70% 50% at 50% 30%, hsl(88 40% 12% / 0.12), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 85% 80%, hsl(200 30% 12% / 0.1), transparent 50%),
     hsl(var(--background));
 }
 
 .react-flow.neural-flow .react-flow__edge-path {
-  stroke: hsl(263 45% 55% / 0.38);
-  stroke-width: 1.5;
-  filter: drop-shadow(0 0 3px hsl(263 55% 62% / 0.25));
+  stroke: hsl(0 0% 100% / 0.16);
+  stroke-width: 1;
+  filter: none;
 }
 
 .react-flow.neural-flow .react-flow__edge.animated path {
-  stroke-dasharray: 4 6;
-  animation: neural-edge-flow 1.8s linear infinite;
+  stroke-dasharray: 3 8;
+  animation: neural-edge-flow 2.2s linear infinite;
 }
 
 @keyframes neural-edge-flow {
   to {
-    stroke-dashoffset: -20;
+    stroke-dashoffset: -22;
   }
 }
 
 .react-flow.neural-flow .react-flow__connection-path {
-  stroke: hsl(263 55% 62% / 0.5);
-  stroke-width: 1.5;
+  stroke: hsl(var(--primary) / 0.45);
+  stroke-width: 1.25;
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: hsl(var(--primary));
-  stroke-width: 2;
+  stroke-width: 1.5;
 }
 
-/* Native <select>: светлый текст в закрытом состоянии, чёрный — в белом списке option. */
+.btn-airy {
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  background: hsl(0 0% 100% / 0.02);
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.btn-airy:hover {
+  border-color: hsl(0 0% 100% / 0.18);
+  background: hsl(0 0% 100% / 0.05);
+}
+
 select.studio-select {
   color: hsl(var(--foreground));
   background-color: hsl(var(--card));
