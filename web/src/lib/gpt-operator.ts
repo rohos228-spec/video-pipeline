@@ -61,11 +61,32 @@ export const EDGE_KIND_OPTIONS: {
   value: OperatorEdgeKind;
   title: string;
   short: string;
+  hint: string;
 }[] = [
-  { value: "after", title: "После", short: "после" },
-  { value: "feed", title: "Файлы", short: "файлы" },
-  { value: "review", title: "Проверка", short: "проверка" },
-  { value: "gate", title: "Если ok", short: "если ok" },
+  {
+    value: "after",
+    title: "После",
+    short: "после",
+    hint: "Только порядок: сначала эта нода, потом следующая. Файлы не передаёт.",
+  },
+  {
+    value: "feed",
+    title: "Файлы",
+    short: "файлы",
+    hint: "Передаёт результат/файлы в следующую ноду как вход.",
+  },
+  {
+    value: "review",
+    title: "Проверка",
+    short: "проверка",
+    hint: "Следующая нода проверяет результат этой (снимок/файлы).",
+  },
+  {
+    value: "gate",
+    title: "Если ok",
+    short: "если ok",
+    hint: "Дальше только если вердикт pass. При fail — стоп.",
+  },
 ];
 
 export const ROLE_OPTIONS: { value: OperatorRole; title: string; hint: string }[] = [
