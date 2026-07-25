@@ -135,7 +135,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
             {actions && !isHitlNodeType(d.type) && !isExcelFeed && (
               <VTrigger
                 open={!!vMenuOpen}
-                title={isExcelGpt ? "Промты и запуск (V)" : "Меню промтов (V)"}
+                title={isExcelGpt ? "Пульт оператора + промты (V)" : "Меню промтов (V)"}
+                label={isExcelGpt ? "GPT" : "V"}
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
@@ -434,20 +435,23 @@ function VTrigger({
   open,
   onToggle,
   title = "Меню промтов (V)",
+  label = "V",
 }: {
   open: boolean;
   onToggle: () => void;
   title?: string;
+  label?: string;
 }) {
   return (
     <button
       type="button"
       title={title}
       className={cn(
-        "node-v-trigger nodrag nopan nowheel absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-colors",
+        "node-v-trigger nodrag nopan nowheel absolute right-2 top-2 z-30 flex h-6 min-w-6 items-center justify-center rounded-full border px-1 shadow-sm backdrop-blur transition-colors",
         open
           ? "border-primary/60 bg-primary/20 text-primary"
           : "border-white/12 bg-black/40 text-muted-foreground hover:border-primary/50 hover:text-primary",
+        label.length > 1 && "rounded-md px-1.5",
       )}
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
@@ -457,7 +461,7 @@ function VTrigger({
         onToggle();
       }}
     >
-      <span className="text-[11px] font-bold">V</span>
+      <span className="text-[10px] font-bold tracking-tight">{label}</span>
     </button>
   );
 }
