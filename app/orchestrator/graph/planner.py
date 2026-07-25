@@ -52,11 +52,39 @@ class WorkflowGraph:
         self._by_id: dict[str, dict[str, Any]] = {n["id"]: n for n in self.nodes if "id" in n}
         self._out: dict[str, list[str]] = {nid: [] for nid in self._by_id}
         self._in: dict[str, list[str]] = {nid: [] for nid in self._by_id}
+        # (source, target) → kind (after|feed|review|gate)
+        self._edge_kind: dict[tuple[str, str], str] = {}
         for e in self.edges:
             src, tgt = e.get("source"), e.get("target")
             if src in self._out and tgt in self._in:
                 self._out[src].append(tgt)
                 self._in[tgt].append(src)
+                data = e.get("data") if isinstance(e.get("data"), dict) else {}
+                kind = str((data or {}).get("kind") or e.get("kind") or "after").strip().lower()
+                if kind not in ("after", "feed", "review", "gate"):
+                    kind = "after"
+                self._edge_kind[(str(src), str(tgt))] = kind
+
+    def edge_kind(self, source: str, target: str) -> str:
+        return self._edge_kind.get((source, target), "after")
+
+    def gate_blocks_edge(self, project: Project, source: str, target: str) -> bool:
+        """True — по этой стрелке нельзя идти дальше (gate fail / нет вердикта)."""
+        kind = self.edge_kind(source, target)
+        if kind != "gate":
+            # Роль gate на источнике: все исходящие тоже шлагбаум.
+            from app.services.gpt_operator import operator_config
+
+            if self.node_type(source) == EXCEL_GPT_NODE_TYPE:
+                if operator_config(project, source).get("role") != "gate":
+                    return False
+            else:
+                return False
+        from app.services.gpt_operator import gate_allows_successors
+
+        allowed = gate_allows_successors(project, source)
+        # Нет вердикта или fail → блок
+        return allowed is not True
 
     @classmethod
     def default(cls) -> WorkflowGraph:
@@ -279,6 +307,26 @@ class WorkflowGraph:
                 continue
             preds = self._effective_predecessors(key, skipped)
             if all(self._is_ready(p, project, skipped) for p in preds):
+                # Шлагбаум: если любой предшественник режет gate-стрелкой — не запускаем.
+                blocked = False
+                for pred in preds:
+                    # Проверяем прямые и «прозрачные» пути: достаточно прямых рёбер.
+                    if pred in self._in.get(key, []) and self.gate_blocks_edge(
+                        project, pred, key
+                    ):
+                        blocked = True
+                        break
+                    # Также block если pred связан через любое ребро в snapshot
+                    for e_src, e_tgt in list(self._edge_kind.keys()):
+                        if e_tgt == key and e_src == pred and self.gate_blocks_edge(
+                            project, e_src, e_tgt
+                        ):
+                            blocked = True
+                            break
+                    if blocked:
+                        break
+                if blocked:
+                    continue
                 spec = (
                     spec_for_node(n)
                     if str(n.get("type") or "") == EXCEL_GPT_NODE_TYPE

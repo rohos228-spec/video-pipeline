@@ -1161,7 +1161,29 @@ async def patch_excel_gpt_config(
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.services.gpt_operator import patch_operator_config
+
     p = _project_or_404(await session.get(Project, project_id))
+    # Новые поля оператора (+ legacy) через единый patch.
+    op_keys = {
+        "label",
+        "inputSource",
+        "uploadedFileName",
+        "uploadedFileNames",
+        "uploadedPreviewUrl",
+        "slotIndex",
+        "workMode",
+        "role",
+        "outputMode",
+        "useSnapshot",
+        "transport",
+    }
+    if any(k in payload for k in ("role", "outputMode", "useSnapshot", "transport", "uploadedFileNames")):
+        resolved = patch_operator_config(p, node_key, {k: payload[k] for k in op_keys if k in payload})
+        flag_modified(p, "meta")
+        await session.commit()
+        return {"ok": True, "config": resolved.get("config") or {}, "resolve": resolved}
+
     meta = dict(p.meta or {})
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
@@ -1182,6 +1204,59 @@ async def patch_excel_gpt_config(
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "config": cur}
+
+
+@router.get("/{project_id}/gpt-operator/{node_key}/resolve")
+async def gpt_operator_resolve(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.gpt_operator import resolve_operator
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return resolve_operator(p, node_key)
+
+
+@router.patch("/{project_id}/gpt-operator/{node_key}")
+async def gpt_operator_patch(
+    project_id: int,
+    node_key: str,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.gpt_operator import patch_operator_config
+
+    p = _project_or_404(await session.get(Project, project_id))
+    body = dict(payload) if isinstance(payload, dict) else {}
+    body.setdefault("transport", "api")
+    resolved = patch_operator_config(p, node_key, body)
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "resolve": resolved}
+
+
+@router.patch("/{project_id}/canvas-edges/{edge_id}")
+async def patch_canvas_edge_kind(
+    project_id: int,
+    edge_id: str,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.gpt_operator import normalize_edge_kind, set_edge_kind_in_canvas
+
+    p = _project_or_404(await session.get(Project, project_id))
+    kind = normalize_edge_kind((payload or {}).get("kind"))
+    updated = set_edge_kind_in_canvas(p, edge_id, kind)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="edge not found in canvas_graph")
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "edge": updated}
 
 
 @router.post("/{project_id}/excel-gpt/{node_key}/upload")
@@ -1206,7 +1281,7 @@ async def upload_excel_gpt_file(
     if not is_allowed_upload_filename(safe_name):
         raise HTTPException(
             status_code=400,
-            detail="нужен файл .xlsx / .xls / .txt / .png / .jpg / .webp",
+            detail="нужен файл .xlsx/.txt/.md/.json/.csv/.pdf/.png/.jpg/.webp/.mp4/.webm…",
         )
     dest_dir = upload_dir(p, node_key)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1220,10 +1295,15 @@ async def upload_excel_gpt_file(
     cur = dict(configs.get(node_key) or {})
     ext = Path(safe_name).suffix.lower()
     is_image = ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-    preview = f"/api/files?path={dest}" if is_image else None
+    preview = f"/api/files?path={dest}" if is_image or ext in {".mp4", ".webm", ".txt", ".md"} else None
     cur["inputSource"] = "image" if is_image else "upload"
     cur["uploadedFileName"] = safe_name
+    names = [str(x) for x in (cur.get("uploadedFileNames") or []) if x]
+    if safe_name not in names:
+        names.append(safe_name)
+    cur["uploadedFileNames"] = names
     cur["uploadedPreviewUrl"] = preview
+    cur["transport"] = "api"
     cur["label"] = safe_name
     configs[node_key] = cur
     meta["excel_gpt_nodes"] = configs
@@ -1237,6 +1317,7 @@ async def upload_excel_gpt_file(
         "path": str(dest),
         "isImage": is_image,
         "preview_url": preview,
+        "uploadedFileNames": names,
     }
 
 
