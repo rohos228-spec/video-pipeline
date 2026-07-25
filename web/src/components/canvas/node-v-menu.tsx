@@ -105,7 +105,11 @@ export function NodeVMenu({
 }) {
   const [mounted, setMounted] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const menuWidth = Math.max(220, Math.min(340, 340 * Math.max(0.35, Math.min(canvasZoom, 1.5))));
+  const isGptOp = isExcelGptNode(nodeType);
+  const menuWidth = Math.max(
+    220,
+    Math.min(isGptOp ? 360 : 340, (isGptOp ? 360 : 340) * Math.max(0.35, Math.min(canvasZoom, 1.5))),
+  );
 
   useEffect(() => setMounted(true), []);
 
@@ -188,7 +192,7 @@ export function NodeVMenu({
         top: pos.top,
         left: pos.left,
         width: menuWidth,
-        maxHeight: "min(70vh, 560px)",
+        maxHeight: isGptOp ? "min(80vh, 720px)" : "min(70vh, 560px)",
         overflowY: "auto",
         overflowX: "hidden",
         transform: `translateX(-50%) scale(${zoom})`,
@@ -199,7 +203,7 @@ export function NodeVMenu({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
-        {isExcelGptNode(nodeType) ? (
+        {isGptOp ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
             <span className="rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
               {workModeChip(workMode)}
@@ -209,6 +213,24 @@ export function NodeVMenu({
             </span>
           </div>
         ) : null}
+
+        {/* Пульт оператора — ПЕРВЫМ, сразу под шапкой V */}
+        {isGptOp && projectId != null ? (
+          <div className="mb-3 rounded-xl border border-sky-400/30 bg-sky-500/[0.08] p-2">
+            <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-widest text-sky-300">
+              Пульт оператора — роли и файлы
+            </p>
+            <GptOperatorMenuPanel
+              projectId={projectId}
+              nodeKey={nodeKey}
+              onOpenPrompts={() => {
+                if (showGptText) onOpenGptText();
+                else onViewAllPrompts();
+              }}
+            />
+          </div>
+        ) : null}
+
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Мастер-промты
@@ -377,17 +399,6 @@ export function NodeVMenu({
             </button>
           </div>
         )}
-
-        {isExcelGptNode(nodeType) && projectId != null ? (
-          <GptOperatorMenuPanel
-            projectId={projectId}
-            nodeKey={nodeKey}
-            onOpenPrompts={() => {
-              if (showGptText) onOpenGptText();
-              else onViewAllPrompts();
-            }}
-          />
-        ) : null}
 
         <div className="grid grid-cols-2 gap-1 border-t border-white/8 pt-2">
           <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />
