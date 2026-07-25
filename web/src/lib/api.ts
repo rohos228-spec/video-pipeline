@@ -317,11 +317,16 @@ export const api = {
       label?: string;
       inputSource?: string;
       uploadedFileName?: string;
+      uploadedFileNames?: string[];
       slotIndex?: number;
       workMode?: string;
+      role?: string;
+      outputMode?: string;
+      useSnapshot?: boolean;
+      transport?: string;
     },
   ) =>
-    http<{ ok: boolean; config: Record<string, unknown> }>(
+    http<{ ok: boolean; config: Record<string, unknown>; resolve?: Record<string, unknown> }>(
       `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     ),
@@ -334,6 +339,7 @@ export const api = {
       path: string;
       isImage?: boolean;
       preview_url?: string | null;
+      uploadedFileNames?: string[];
     }>(
       `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}/upload`,
       { method: "POST", body: fd },
@@ -343,6 +349,28 @@ export const api = {
     http<{ ok: boolean; remapped: string[] }>(
       `/api/projects/${projectId}/excel-gpt/remap-keys`,
       { method: "POST", body: JSON.stringify({ mapping }) },
+    ),
+  resolveGptOperator: (projectId: number, nodeKey: string) =>
+    http<import("@/lib/gpt-operator").OperatorResolve>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/resolve`,
+    ),
+  patchGptOperator: (
+    projectId: number,
+    nodeKey: string,
+    patch: Record<string, unknown>,
+  ) =>
+    http<{ ok: boolean; resolve: import("@/lib/gpt-operator").OperatorResolve }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  patchCanvasEdgeKind: (
+    projectId: number,
+    edgeId: string,
+    kind: string,
+  ) =>
+    http<{ ok: boolean; edge: Record<string, unknown> }>(
+      `/api/projects/${projectId}/canvas-edges/${encodeURIComponent(edgeId)}`,
+      { method: "PATCH", body: JSON.stringify({ kind }) },
     ),
 
   // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────

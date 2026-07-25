@@ -38,6 +38,7 @@ import {
 } from "@/lib/excel-gpt-config";
 import { Button } from "@/components/ui/button";
 import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
+import { GptOperatorMenuPanel } from "./gpt-operator-menu";
 
 function openPromptSlot(
   slot: NodePromptSlot,
@@ -376,6 +377,17 @@ export function NodeVMenu({
             </button>
           </div>
         )}
+
+        {isExcelGptNode(nodeType) && projectId != null ? (
+          <GptOperatorMenuPanel
+            projectId={projectId}
+            nodeKey={nodeKey}
+            onOpenPrompts={() => {
+              if (showGptText) onOpenGptText();
+              else onViewAllPrompts();
+            }}
+          />
+        ) : null}
 
         <div className="grid grid-cols-2 gap-1 border-t border-white/8 pt-2">
           <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />

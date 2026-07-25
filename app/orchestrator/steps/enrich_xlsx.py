@@ -118,25 +118,38 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     xlsx_path: Path = sheet.ensure_initialized(
         project_id=project.id, slug=project.slug
     )
-    data_paths = attachment_paths(project, node_key)
-    if not data_paths:
-        raise RuntimeError(
-            f"enrich_xlsx: нет файла для отправки "
-            f"({display_attachment_name(project, node_key)})"
-        )
-    want_xlsx = expects_xlsx_result(project, node_key)
-    mode = work_mode(project, node_key)
-    download_path = data_paths[0] if data_paths[0].suffix.lower() in {".xlsx", ".xls"} else xlsx_path
-    if not download_path.exists():
-        download_path = xlsx_path
-    logger.info(
-        "[#{}] enrich_xlsx slot={} mode={} want_xlsx={} attach={}",
-        project.id,
-        slot_idx,
-        mode,
-        want_xlsx,
-        [p.name for p in data_paths],
+
+    from app.services.gpt_operator import (
+        operator_config,
+        resolve_operator,
+        save_operator_result,
     )
+
+    op_cfg = operator_config(project, node_key) if node_key else {}
+    resolved = resolve_operator(project, node_key) if node_key else None
+    explicit = str(op_cfg.get("transport") or "").strip().lower()
+    if explicit in ("api", "browser"):
+        transport = explicit
+    else:
+        has_data_edge = bool(
+            resolved
+            and any(
+                e.get("kind") in ("feed", "review")
+                for e in (resolved.get("incomingEdges") or [])
+            )
+        )
+        role = str(op_cfg.get("role") or "assist")
+        transport = (
+            "api"
+            if (
+                has_data_edge
+                or role != "assist"
+                or op_cfg.get("outputMode")
+                or op_cfg.get("useSnapshot")
+                or op_cfg.get("uploadedFileNames")
+            )
+            else "browser"
+        )
 
     try:
         variant, src_path, master, prompt_source = read_resolved_project_prompt(
@@ -174,6 +187,112 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     accompanying = _get_accompanying_text(project, legacy_step_code)
+
+    # ── API-транспорт (по умолчанию): без браузера/CDP ─────────────────
+    if transport != "browser" and node_key and resolved is not None:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.services.gpt_operator_client import run_operator_api
+        from app.services.step_cancel import raise_if_cancelled
+
+        if not resolved.get("canRun"):
+            errs = "; ".join(resolved.get("errors") or ["входы не согласованы"])
+            raise RuntimeError(f"gpt-operator resolve: {errs}")
+
+        data_paths = [
+            Path(str(f["path"]))
+            for f in (resolved.get("files") or [])
+            if f.get("ok") and f.get("path")
+        ]
+        if not data_paths:
+            raise RuntimeError("gpt-operator: нет существующих файлов на входе")
+
+        role = str(resolved.get("role") or "assist")
+        output_mode = str(resolved.get("outputMode") or "text")
+        logger.info(
+            "[#{}] enrich_xlsx API transport slot={} role={} output={} files={}",
+            project.id,
+            slot_idx,
+            role,
+            output_mode,
+            [p.name for p in data_paths],
+        )
+        raise_if_cancelled(project.id)
+        api_res = await run_operator_api(
+            project_dir=project.data_dir,
+            node_key=node_key,
+            role=role,
+            output_mode=output_mode,
+            prompt=master or "",
+            accompanying=accompanying,
+            input_paths=data_paths,
+        )
+        save_operator_result(
+            project,
+            node_key,
+            input_paths=data_paths,
+            output_paths=list(api_res.output_paths),
+            reply_text=api_res.reply_text,
+            gate_status=api_res.gate_status,
+        )
+        meta = dict(project.meta or {})
+        completed = [
+            int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+        ]
+        if slot_idx not in completed:
+            completed.append(slot_idx)
+            completed.sort()
+            meta["enrich_completed_slots"] = completed
+        done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if node_key not in done_keys:
+            done_keys.append(node_key)
+            meta["excel_gpt_completed_keys"] = done_keys
+        meta.pop("active_excel_gpt_node_key", None)
+        project.meta = meta
+        flag_modified(project, "meta")
+        ready_status = _SLOT_MAP[slot_idx][1]
+        project.status = ready_status
+        await session.flush()
+        try:
+            from app.services.run_sync import complete_excel_gpt_node_by_key
+
+            await complete_excel_gpt_node_by_key(
+                session, project, node_key, enrich_slot=slot_idx
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] enrich_xlsx API: complete_excel_gpt_node_by_key failed",
+                project.id,
+            )
+        logger.info(
+            "[#{}] enrich_xlsx API done → {} gate={} files={}",
+            project.id,
+            ready_status.value,
+            api_res.gate_status,
+            [p.name for p in api_res.output_paths],
+        )
+        return
+
+    # ── Legacy browser path (только transport=browser) ────────────────
+    data_paths = attachment_paths(project, node_key)
+    if not data_paths:
+        raise RuntimeError(
+            f"enrich_xlsx: нет файла для отправки "
+            f"({display_attachment_name(project, node_key)})"
+        )
+    want_xlsx = expects_xlsx_result(project, node_key)
+    mode = work_mode(project, node_key)
+    download_path = data_paths[0] if data_paths[0].suffix.lower() in {".xlsx", ".xls"} else xlsx_path
+    if not download_path.exists():
+        download_path = xlsx_path
+    logger.info(
+        "[#{}] enrich_xlsx slot={} mode={} want_xlsx={} attach={} (browser)",
+        project.id,
+        slot_idx,
+        mode,
+        want_xlsx,
+        [p.name for p in data_paths],
+    )
 
     from app.services import chatgpt_xlsx as cx
 

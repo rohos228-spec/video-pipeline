@@ -44,6 +44,7 @@ import type {
   NodeRunDTO,
   WorkflowDetail,
   WorkflowEdge,
+  WorkflowEdgeKind,
   WorkflowNode,
   WorkflowRunDetail,
 } from "@/lib/types";
@@ -77,6 +78,8 @@ import {
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
+import { EdgeKindControls } from "./edge-kind-controls";
+import { edgeKindLabel } from "@/lib/gpt-operator";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
 import { HitlBanner } from "@/components/hitl/hitl-banner";
@@ -410,11 +413,13 @@ export function FlowCanvas({
             ...connection,
             id: `e_${connection.source}_${connection.target}_${Date.now()}`,
             type: "smoothstep",
+            data: { kind: "after" },
+            label: edgeKindLabel("after"),
           },
           eds,
         ),
       );
-      toast.message("Связь добавлена — сохраняю…");
+      toast.message("Связь добавлена — клик по метке меняет тип (после/файлы/проверка/если ok)");
       scheduleSaveWorkflow();
     },
     [setEdges, scheduleSaveWorkflow],
@@ -437,13 +442,23 @@ export function FlowCanvas({
       const wfNodes: WorkflowNode[] = assignExcelGptSlotIndices(
         currentNodes.map((n) => workflowNodeFromCanvas(n)),
       );
-      const wfEdges: WorkflowEdge[] = currentEdges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        sourceHandle: e.sourceHandle ?? "out",
-        targetHandle: e.targetHandle ?? "in",
-      }));
+      const wfEdges: WorkflowEdge[] = currentEdges.map((e) => {
+        const raw = String((e.data as { kind?: string } | undefined)?.kind || "after");
+        const kind: WorkflowEdgeKind = (
+          ["after", "feed", "review", "gate"] as const
+        ).includes(raw as WorkflowEdgeKind)
+          ? (raw as WorkflowEdgeKind)
+          : "after";
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle ?? "out",
+          targetHandle: e.targetHandle ?? "in",
+          label: typeof e.label === "string" ? e.label : edgeKindLabel(kind),
+          data: { ...((e.data as object) || {}), kind },
+        };
+      });
       const check = await api.validateWorkflow({ nodes: wfNodes, edges: wfEdges });
       if (!check.valid) {
         toast.error(`Граф не сохранён: ${check.errors.join("; ")}`);
@@ -938,6 +953,7 @@ export function FlowCanvas({
         />
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
         <NodeAiReviewControls />
+        <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
         <Controls position="bottom-right" showInteractive={false} />
         {selectedNodeKey && (
           <button
@@ -1589,14 +1605,22 @@ function workflowToReactFlowNodes(
 }
 
 function workflowToReactFlowEdges(wf: WorkflowDetail): Edge[] {
-  return wf.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    sourceHandle: e.sourceHandle ?? undefined,
-    targetHandle: e.targetHandle ?? undefined,
-    type: "smoothstep",
-  }));
+  return wf.edges.map((e) => {
+    const kind =
+      (e.data?.kind as string | undefined) ||
+      ((e as { kind?: string }).kind as string | undefined) ||
+      "after";
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle ?? undefined,
+      targetHandle: e.targetHandle ?? undefined,
+      type: "smoothstep",
+      label: e.label ?? edgeKindLabel(kind),
+      data: { ...(e.data || {}), kind },
+    };
+  });
 }
 
 function ViewportZoomReporter({ onZoom }: { onZoom: (zoom: number) => void }) {

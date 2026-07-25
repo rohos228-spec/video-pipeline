@@ -22,7 +22,20 @@ EXCEL_GPT_NODE_TYPE = "excel_gpt"
 MAX_EXCEL_GPT_SLOTS = 5
 
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
-_UPLOAD_SUFFIXES = frozenset({".xlsx", ".xls", ".txt", *_IMAGE_SUFFIXES})
+_VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mov", ".mkv"})
+_UPLOAD_SUFFIXES = frozenset(
+    {
+        ".xlsx",
+        ".xls",
+        ".txt",
+        ".md",
+        ".json",
+        ".csv",
+        ".pdf",
+        *_IMAGE_SUFFIXES,
+        *_VIDEO_SUFFIXES,
+    }
+)
 _VALID_SOURCES = frozenset(
     {"project_xlsx", "upload", "voiceover", "image", "hero_refs", "scene_images"}
 )
