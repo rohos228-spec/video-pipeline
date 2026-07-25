@@ -26,6 +26,7 @@ import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
+import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
 
 import {
   excelGptAttachmentChipTitle,
@@ -53,7 +54,7 @@ export interface PipelineNodeData extends Record<string, unknown> {
 
 /** Wide panel nodes keep airy card; others are circular orbs (Canon C). */
 function needsWidePanel(type: string): boolean {
-  return type === "excel_feed" || type === "hero";
+  return type === "excel_feed" || type === "hero" || type === "excel_gpt" || type.startsWith("enrich_");
 }
 
 export function PipelineNode({ data, selected }: NodeProps) {
@@ -74,6 +75,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
   const isExcelFeed = d.type === "excel_feed";
   const isHero = d.type === "hero";
+  const isExcelGpt = isExcelGptNode(d.type);
   const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
 
@@ -100,7 +102,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
           <div
             ref={anchorRef}
             className={cn(
-              "group relative w-[260px] overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
+              "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
+              isExcelGpt ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
               running && "glow-running border-primary/45",
               d.status === "done" && "border-emerald-500/30",
@@ -132,6 +135,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             {actions && !isHitlNodeType(d.type) && !isExcelFeed && (
               <VTrigger
                 open={!!vMenuOpen}
+                title={isExcelGpt ? "Промты и запуск (V)" : "Меню промтов (V)"}
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
@@ -199,9 +203,11 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   </span>
                 </div>
                 <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
-                  {spec.description}
+                  {isExcelGpt
+                    ? "Роли, файлы и выход — в пульте ниже. Стрелки между нодами — тип связи."
+                    : spec.description}
                 </span>
-                {isExcelGptNode(d.type) ? (
+                {isExcelGpt ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
                       {workModeChip(d.workMode)}
@@ -217,6 +223,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
               <ExcelFeedPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
+            {isExcelGpt && actions?.projectId && (
+              <GptOperatorCardPanel
+                projectId={actions.projectId}
+                nodeKey={d.nodeKey}
+                onOpenStudio={() => {
+                  actions.setVMenuNodeKey(null);
+                  window.setTimeout(() => actions.onOpenGptText(d.nodeKey, d.type), 32);
+                }}
+              />
+            )}
             {d.progressText && d.status === "running" && (
               <div className="border-t border-white/[0.06] bg-black/20 px-3 py-1 font-mono text-[10px] text-muted-foreground">
                 {d.progressText}
@@ -414,10 +430,19 @@ export function PipelineNode({ data, selected }: NodeProps) {
   );
 }
 
-function VTrigger({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+function VTrigger({
+  open,
+  onToggle,
+  title = "Меню промтов (V)",
+}: {
+  open: boolean;
+  onToggle: () => void;
+  title?: string;
+}) {
   return (
     <button
       type="button"
+      title={title}
       className={cn(
         "node-v-trigger nodrag nopan nowheel absolute right-2 top-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-colors",
         open
@@ -431,7 +456,6 @@ function VTrigger({ open, onToggle }: { open: boolean; onToggle: () => void }) {
         e.preventDefault();
         onToggle();
       }}
-      title="Меню промтов (V)"
     >
       <span className="text-[11px] font-bold">V</span>
     </button>
