@@ -153,6 +153,11 @@ class Settings(BaseSettings):
         False, alias="SUBTITLE_REWHISPER_ON_ASSEMBLE"
     )
 
+    # Параллельная генерация: сколько проектов очереди могут выполняться
+    # одновременно (top-N окно gen_queue + конкуррентный воркер). 1 = как раньше
+    # (строго по одному). Chrome больше нет — можно >1 безопасно.
+    worker_max_parallel: int = Field(1, alias="WORKER_MAX_PARALLEL")
+
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")

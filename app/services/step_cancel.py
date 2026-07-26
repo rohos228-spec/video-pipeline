@@ -62,6 +62,11 @@ def is_advance_active(project_id: int) -> bool:
     return task is not None and not task.done()
 
 
+def active_advance_count() -> int:
+    """Сколько advance-задач сейчас живы в этом процессе."""
+    return sum(1 for task in _advance_tasks.values() if not task.done())
+
+
 def is_generation_active(project_id: int) -> bool:
     from app.services.montage_board_montage_job import is_montage_job_live
     from app.services.xlsx_flow_locks import is_any_xlsx_flow_active

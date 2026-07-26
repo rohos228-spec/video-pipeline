@@ -1,4 +1,9 @@
-"""Последовательная генерация проектов по очереди сайдбара (1→2→3…)."""
+"""Очередь генерации проектов по сайдбару (top-N окно).
+
+При WORKER_MAX_PARALLEL=1 — строго по одному (как раньше).
+При N>1 — одновременно выполняются до N первых незакрытых слотов.
+paused/user_stop у более раннего слота по-прежнему жёстко стопорят хвост.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from app.services.gen_queue_run import (
     skip_gen_queue_slot,
 )
 from app.services.sidebar_layout import get_gen_queue, is_gen_queue_halted
+from app.settings import settings
 from app.telegram.menu import step_by_code, step_by_running_status
 
 GEN_QUEUE_BUSY_STATUSES = [
@@ -45,7 +51,6 @@ GEN_QUEUE_BUSY_STATUSES = [
 
 
 def _slot_blocked(project: Project) -> bool:
-    meta = project.meta if isinstance(project.meta, dict) else {}
     return bool(
         project.status is ProjectStatus.paused
         or _user_stop_blocks_queue(project)
@@ -54,6 +59,15 @@ def _slot_blocked(project: Project) -> bool:
 
 def _slot_closed(project: Project) -> bool:
     return is_gen_queue_run_complete(project) or gen_queue_slot_skipped(project) is not None
+
+
+def worker_max_parallel() -> int:
+    """Сколько проектов очереди могут выполняться одновременно (минимум 1)."""
+    try:
+        n = int(settings.worker_max_parallel)
+    except (TypeError, ValueError):
+        n = 1
+    return max(1, n)
 
 
 def gen_queue_is_active() -> bool:
@@ -272,7 +286,7 @@ async def get_gen_queue_idle_info(session: AsyncSession) -> dict[str, Any] | Non
     queue = get_gen_queue()
     if not queue:
         return None
-    if await gen_queue_busy_project(session) is not None:
+    if await gen_queue_busy_count(session) > 0:
         return None
 
     for idx, pid in enumerate(queue):
@@ -302,15 +316,25 @@ async def get_gen_queue_idle_info(session: AsyncSession) -> dict[str, Any] | Non
 
 async def gen_queue_head_project(session: AsyncSession) -> Project | None:
     """Первый незакрытый слот очереди (может быть paused/user_stop)."""
+    window = await gen_queue_window_projects(session)
+    return window[0] if window else None
+
+
+async def gen_queue_window_projects(session: AsyncSession) -> list[Project]:
+    """Первые N незакрытых слотов очереди (top-N окно)."""
     queue = get_gen_queue()
+    n = worker_max_parallel()
+    out: list[Project] = []
     for pid in queue:
         project = await _load_project(session, pid)
         if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
             continue
-        return project
-    return None
+        out.append(project)
+        if len(out) >= n:
+            break
+    return out
 
 
 async def _rollback_running(
@@ -325,53 +349,71 @@ async def _rollback_running(
 
 
 async def gen_queue_reconcile(session: AsyncSession) -> int:
-    """Сбросить «внеочередные» running внутри очереди — только head может выполняться."""
+    """Сбросить running вне top-N окна; внутри окна — rollback blocked слотов."""
     queue = get_gen_queue()
     if not queue:
         return 0
 
-    head = await gen_queue_head_project(session)
-    head_id = head.id if head is not None else None
-    head_blocked = head is not None and _slot_blocked(head)
+    window = await gen_queue_window_projects(session)
+    window_ids = {p.id for p in window}
     rolled = 0
 
-    if head is not None and head_blocked and head.status in GEN_QUEUE_BUSY_STATUSES:
-        if await _rollback_running(session, head, reason="head blocked"):
-            rolled += 1
+    for project in window:
+        if _slot_blocked(project) and project.status in GEN_QUEUE_BUSY_STATUSES:
+            if await _rollback_running(session, project, reason="window slot blocked"):
+                rolled += 1
 
     for pid in queue:
-        if pid == head_id:
+        if pid in window_ids:
             continue
         project = await _load_project(session, pid)
         if project is None or is_mass_factory_child(project):
             continue
         if project.status not in GEN_QUEUE_BUSY_STATUSES:
             continue
-        if await _rollback_running(session, project, reason="out-of-turn"):
+        if await _rollback_running(session, project, reason="out-of-window"):
             rolled += 1
 
     return rolled
 
 
 async def gen_queue_busy_project(session: AsyncSession) -> int | None:
-    """ID единственного разрешённого running-проекта в очереди (только head)."""
+    """ID первого running-проекта в top-N окне (или None)."""
+    busy_ids = await gen_queue_busy_projects(session)
+    return busy_ids[0] if busy_ids else None
+
+
+async def gen_queue_busy_projects(session: AsyncSession) -> list[int]:
+    """ID running-проектов внутри top-N окна (после reconcile)."""
     await gen_queue_reconcile(session)
-    head = await gen_queue_head_project(session)
-    if head is None or _slot_blocked(head):
-        return None
-    if head.status in GEN_QUEUE_BUSY_STATUSES:
-        return head.id
-    return None
+    out: list[int] = []
+    for project in await gen_queue_window_projects(session):
+        if _slot_blocked(project):
+            continue
+        if project.status in GEN_QUEUE_BUSY_STATUSES:
+            out.append(project.id)
+    return out
+
+
+async def gen_queue_busy_count(session: AsyncSession) -> int:
+    """Сколько проектов очереди сейчас в running внутри окна."""
+    return len(await gen_queue_busy_projects(session))
 
 
 async def gen_queue_incomplete_earlier(
     session: AsyncSession, project_id: int
 ) -> int | None:
-    """Первый более ранний проект в очереди, чей прогон ещё не завершён."""
+    """Блокирующий более ранний слот, если проект вне top-N окна.
+
+    paused/user_stop у любого более раннего незакрытого слота — жёсткий стоп.
+    Иначе блокирует N-й незакрытый предшественник (окно заполнено).
+    """
     queue = get_gen_queue()
     if not queue or project_id not in queue:
         return None
+    n = worker_max_parallel()
     pos = queue.index(project_id)
+    holding: list[int] = []
     for pid in queue[:pos]:
         project = await _load_project(session, pid)
         if project is None or is_mass_factory_child(project):
@@ -390,8 +432,9 @@ async def gen_queue_incomplete_earlier(
                 project.id,
             )
             return project.id
-        if not is_gen_queue_run_complete(project):
-            return project.id
+        holding.append(project.id)
+        if len(holding) >= n:
+            return holding[n - 1]
     return None
 
 
@@ -401,7 +444,7 @@ async def gen_queue_blocks_project(session: AsyncSession, project_id: int) -> in
 
 
 async def gen_queue_tick(session: AsyncSession) -> int:
-    """Запустить следующий проект в очереди, если текущий завершил таймлайн."""
+    """Заполнить top-N окно: стартовать/продвинуть до N проектов."""
     queue = get_gen_queue()
     if not queue:
         return 0
@@ -413,12 +456,15 @@ async def gen_queue_tick(session: AsyncSession) -> int:
     if rolled:
         await session.flush()
 
-    logger.debug("gen_queue tick: порядок {}", queue)
+    n = worker_max_parallel()
+    logger.debug("gen_queue tick: порядок {} (max_parallel={})", queue, n)
 
-    if await gen_queue_busy_project(session) is not None:
-        return 0
+    started_total = 0
+    window_filled = 0
 
     for idx, pid in enumerate(queue):
+        if window_filled >= n:
+            break
         project = await _load_project(session, pid)
         if project is None or is_mass_factory_child(project):
             continue
@@ -430,14 +476,14 @@ async def gen_queue_tick(session: AsyncSession) -> int:
                 project.id,
                 idx + 1,
             )
-            return 0
+            return started_total
         if project.status is ProjectStatus.paused:
             logger.info(
                 "gen_queue: #{} paused — очередь стоит (позиция {})",
                 project.id,
                 idx + 1,
             )
-            return 0
+            return started_total
         if project.status is ProjectStatus.failed:
             fs = (project.meta or {}).get("step_failure") or {}
             err = str(fs.get("last_error") or "ошибка шага")[:120]
@@ -456,25 +502,45 @@ async def gen_queue_tick(session: AsyncSession) -> int:
             continue
         if await _close_slot_if_already_at_target(session, project, queue_pos=idx + 1):
             continue
+
+        if project.status in GEN_QUEUE_BUSY_STATUSES:
+            window_filled += 1
+            continue
+
         started = await _start_or_advance_project(
             session, project, queue_pos=idx + 1
         )
         if started:
-            return 1
+            started_total += started
+            window_filled += 1
+            continue
+
+        # Слот занимает окно (new / ждёт ▶ / без auto_mode), но не running.
+        # При N=1 — как раньше: стоп на этом слоте. При N>1 — пробуем
+        # следующие слоты окна.
+        window_filled += 1
+        if n == 1:
+            logger.info(
+                "gen_queue: ждём #{} (позиция {}, status={})",
+                project.id,
+                idx + 1,
+                project.status.value,
+            )
+            return started_total
         logger.info(
-            "gen_queue: ждём #{} (позиция {}, status={})",
+            "gen_queue: #{} занимает окно (status={}), слот {}/{}",
             project.id,
-            idx + 1,
             project.status.value,
+            window_filled,
+            n,
         )
-        return 0
-    return 0
+    return started_total
 
 
 async def on_project_timeline_maybe_advance_queue(
     session: AsyncSession, project: Project
 ) -> int:
-    """После завершения шага: старт только следующего слота (pos+1), без перескоков."""
+    """После завершения шага: закрыть слот и дозаполнить top-N окно."""
     queue = get_gen_queue()
     if not queue or project.id not in queue:
         return 0
@@ -496,81 +562,14 @@ async def on_project_timeline_maybe_advance_queue(
             project.id,
             queue.index(project.id) + 1,
         )
-    pos = queue.index(project.id)
-    if pos + 1 >= len(queue):
-        return 0
-
-    await gen_queue_reconcile(session)
-    if await gen_queue_busy_project(session) is not None:
-        return 0
-
-    next_id = queue[pos + 1]
-    nxt = await _load_project(session, next_id)
-    if nxt is None or is_mass_factory_child(nxt):
-        return 0
-    if _slot_closed(nxt):
-        return 0
-    if _user_stop_blocks_queue(nxt):
-        logger.info(
-            "gen_queue: #{} done → ждём #{} (user_stop)",
-            project.id,
-            nxt.id,
-        )
-        return 0
-    if nxt.status is ProjectStatus.paused:
-        logger.info(
-            "gen_queue: #{} done → очередь стоит на #{} (paused)",
-            project.id,
-            nxt.id,
-        )
-        return 0
-    if nxt.status is ProjectStatus.failed:
-        fs = (nxt.meta or {}).get("step_failure") or {}
-        err = str(fs.get("last_error") or "ошибка шага")[:120]
-        await skip_gen_queue_slot(session, nxt, reason="failed", detail=err)
-        logger.warning(
-            "gen_queue: #{} done → #{} пропущен (ошибка): {}",
-            project.id,
-            nxt.id,
-            err,
-        )
-        return 0
-    if await _close_slot_if_already_at_target(
-        session, nxt, queue_pos=pos + 2
-    ):
-        return 0
-    started = await _start_or_advance_project(session, nxt, queue_pos=pos + 2)
-    if started:
-        logger.info(
-            "gen_queue: #{} done → started/advanced #{} (queue position {})",
-            project.id,
-            nxt.id,
-            pos + 2,
-        )
-        return 1
-    if not nxt.auto_mode:
-        logger.info(
-            "gen_queue: #{} done → #{} ждёт auto_mode",
-            project.id,
-            nxt.id,
-        )
-        return 0
-    logger.info(
-        "gen_queue: #{} done → ждём #{} (status={})",
-        project.id,
-        nxt.id,
-        nxt.status.value,
-    )
-    return 0
+    # Дозаполняем окно (при N=1 — следующий слот; при N>1 — несколько).
+    return await gen_queue_tick(session)
 
 
 async def assert_can_start_in_queue(session: AsyncSession, project: Project) -> None:
-    """Ручной start_step: только head слота очереди."""
+    """Ручной start_step: проект должен быть внутри top-N окна."""
     queue = get_gen_queue()
     if not queue or project.id not in queue:
-        return
-    head = await gen_queue_head_project(session)
-    if head is None or head.id == project.id:
         return
     blocker = await gen_queue_blocks_project(session, project.id)
     if blocker is not None:

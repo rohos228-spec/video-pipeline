@@ -327,8 +327,136 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         ProjectStatus.publishing,
     ]
     from app.services.mass_pause import is_active as _mass_pause_active
-    from app.services.step_cancel import is_stop_requested
+    from app.services.step_cancel import active_advance_count, is_stop_requested
     from app.telegram.bot import notify_step_done
+
+    from app.services.step_failure_policy import (
+        clear_failure_on_success,
+        is_sleeping,
+        maybe_resume_after_sleep,
+        record_step_failure,
+        failure_sleep_until,
+    )
+
+    async def _handle_one_advance(
+        project_id: int,
+        prev_status_value: str,
+        *,
+        key: tuple[int, str],
+    ) -> None:
+        """Один advance + post-processing в своих сессиях (безопасно для parallel)."""
+        try:
+            result = await advance_project_job(project_id, bot)
+            async with session_scope() as s:
+                p = await s.get(Project, project_id)
+                if p is not None:
+                    clear_failure_on_success(p, ProjectStatus(prev_status_value))
+                    from app.services.run_sync import update_active_node_progress_text
+
+                    await update_active_node_progress_text(s, p, None)
+                    await s.commit()
+            fail_counts.pop(key, None)
+            if result.new_status is not None:
+                try:
+                    async with session_scope() as s:
+                        p = await s.get(Project, project_id)
+                        if p is not None:
+                            from app.services.gen_queue import (
+                                is_timeline_complete,
+                                on_project_timeline_maybe_advance_queue,
+                            )
+
+                            if await is_timeline_complete(s, p):
+                                started = await on_project_timeline_maybe_advance_queue(
+                                    s, p
+                                )
+                                if started:
+                                    await s.commit()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "gen_queue advance after step failed for #{}",
+                        project_id,
+                    )
+                try:
+                    await notify_step_done(
+                        bot,
+                        project_id,
+                        result.prev_status,
+                        result.new_status,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "notify_step_done({}) failed", project_id
+                    )
+        except (StepCancelledError, asyncio.CancelledError):
+            logger.info(
+                "[#{}] advance_project cancelled by user (⏹)",
+                project_id,
+            )
+            fail_counts.pop(key, None)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("advance_project failed for #{}", project_id)
+            prev = fail_counts.get(key, 0)
+            fail_counts[key] = prev + 1
+            try:
+                from app.services.chrome_recovery import is_chrome_infra_error
+
+                async with session_scope() as s:
+                    p = await s.get(Project, project_id)
+                    if p is None:
+                        return
+                    action = await record_step_failure(s, p, error=e)
+                    await s.commit()
+                    if bot and settings.telegram_active:
+                        if action == "retry" and prev == 0:
+                            if is_chrome_infra_error(e):
+                                msg = (
+                                    f"🔄 #{p.id}: Chrome перезапущен, "
+                                    f"повтор {p.status.value}"
+                                )
+                            else:
+                                msg = (
+                                    f"⚠️ #{p.id} ({p.status.value}): "
+                                    f"{type(e).__name__}: {e}"
+                                )
+                            await bot.send_message(
+                                settings.telegram_owner_chat_id, msg[:3800]
+                            )
+                        elif action == "sleep":
+                            await bot.send_message(
+                                settings.telegram_owner_chat_id,
+                                (
+                                    f"😴 #{p.id}: 3 ошибки — reset, "
+                                    f"пауза 30 мин (макс. 9 попыток)"
+                                )[:3800],
+                            )
+                        elif action == "abandon":
+                            await bot.send_message(
+                                settings.telegram_owner_chat_id,
+                                (
+                                    f"🛑 #{p.id}: 3 цикла отказов — "
+                                    f"paused, следующий в очереди"
+                                )[:3800],
+                            )
+                            from app.services.gen_queue import gen_queue_tick
+
+                            await gen_queue_tick(s)
+                            await s.commit()
+                        elif action == "pause_infra":
+                            await bot.send_message(
+                                settings.telegram_owner_chat_id,
+                                (
+                                    f"🌐 #{p.id}: Chrome не восстановился — "
+                                    f"paused. Start-Chrome.cmd + ▶"
+                                )[:3800],
+                            )
+                fail_counts.pop(key, None)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "step_failure_policy failed for #{}", project_id
+                )
+        finally:
+            unregister_advance_task(project_id)
 
     _last_mass_pause_log = False
     while True:
@@ -359,15 +487,26 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
             logger.exception("gen_queue startup reconcile failed")
         try:
             async with session_scope() as s:
+                from app.services.gen_queue import (
+                    gen_queue_blocks_project,
+                    project_gated_by_gen_queue,
+                    worker_max_parallel,
+                )
+                from app.services.gen_queue_run import (
+                    is_user_stopped,
+                    should_hold_queue_auto_advance,
+                )
+                from app.services.project_control import stop_project_running
+                from app.services.run_sync import sync_run_for_project
+
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
-                for p in projects:
-                    from app.services.gen_queue_run import (
-                        is_user_stopped,
-                        should_hold_queue_auto_advance,
-                    )
+                max_parallel = worker_max_parallel()
+                slots_free = max(0, max_parallel - active_advance_count())
+                to_start: list[tuple[int, str]] = []
 
+                for p in projects:
                     if is_user_stopped(p):
                         logger.debug(
                             "worker: #{} {} — user_stop, пропуск тика",
@@ -375,8 +514,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
-                    from app.services.gen_queue import project_gated_by_gen_queue
-
                     if project_gated_by_gen_queue(p.id):
                         logger.debug(
                             "worker: #{} {} — не в gen_queue, пропуск тика",
@@ -392,13 +529,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if is_stop_requested(p.id):
-                        from app.services.project_control import stop_project_running
-
                         info = await stop_project_running(s, p)
                         if info["ok"]:
                             await s.commit()
-                            from app.services.run_sync import sync_run_for_project
-
                             await sync_run_for_project(p.id)
                             logger.info(
                                 "worker: ⏹ #{} — {}",
@@ -413,8 +546,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
-                    from app.services.gen_queue import gen_queue_blocks_project
-
                     queue_blocker = await gen_queue_blocks_project(s, p.id)
                     if queue_blocker is not None:
                         logger.debug(
@@ -424,16 +555,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             queue_blocker,
                         )
                         continue
-                    from app.services.step_failure_policy import (
-                        clear_failure_on_success,
-                        is_sleeping,
-                        maybe_resume_after_sleep,
-                        record_step_failure,
-                    )
-
                     if is_sleeping(p):
-                        from app.services.step_failure_policy import failure_sleep_until
-
                         logger.info(
                             "worker: #{} {} — пауза после ошибок до {}, пропуск тика",
                             p.id,
@@ -443,122 +565,48 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         await maybe_resume_after_sleep(s, p)
                         if is_sleeping(p):
                             continue
-                    key = (p.id, p.status.value)
-                    prev_status_value = p.status.value
-                    project_id = p.id
-                    task = asyncio.create_task(
-                        advance_project_job(project_id, bot)
-                    )
-                    register_advance_task(project_id, task)
-                    try:
-                        result = await task
-                        clear_failure_on_success(p, ProjectStatus(prev_status_value))
-                        from app.services.run_sync import update_active_node_progress_text
-
-                        await update_active_node_progress_text(s, p, None)
-                        fail_counts.pop(key, None)
-                        if result.new_status is not None:
-                            with contextlib.suppress(Exception):
-                                await s.refresh(p)
-                            try:
-                                from app.services.gen_queue import (
-                                    is_timeline_complete,
-                                    on_project_timeline_maybe_advance_queue,
-                                )
-
-                                if await is_timeline_complete(s, p):
-                                    started = await on_project_timeline_maybe_advance_queue(
-                                        s, p
-                                    )
-                                    if started:
-                                        await s.commit()
-                            except Exception:  # noqa: BLE001
-                                logger.exception(
-                                    "gen_queue advance after step failed for #{}",
-                                    project_id,
-                                )
-                            try:
-                                await notify_step_done(
-                                    bot,
-                                    project_id,
-                                    result.prev_status,
-                                    result.new_status,
-                                )
-                            except Exception:  # noqa: BLE001
-                                logger.exception(
-                                    "notify_step_done({}) failed", project_id
-                                )
-                    except (StepCancelledError, asyncio.CancelledError):
-                        # ⏹ Остановить — task.cancel() или кооперативный выход.
-                        logger.info(
-                            "[#{}] advance_project cancelled by user (⏹)",
-                            project_id,
+                    if slots_free <= 0:
+                        logger.debug(
+                            "worker: #{} {} — нет свободных слотов "
+                            "(max_parallel={})",
+                            p.id,
+                            p.status.value,
+                            max_parallel,
                         )
-                        fail_counts.pop(key, None)
-                    except Exception as e:  # noqa: BLE001
-                        logger.exception("advance_project failed for #{}", p.id)
-                        prev = fail_counts.get(key, 0)
-                        fail_counts[key] = prev + 1
-                        try:
-                            from app.services.chrome_recovery import (
-                                is_chrome_infra_error,
-                            )
-                            from app.services.step_failure_policy import (
-                                record_step_failure,
-                            )
+                        break
+                    to_start.append((p.id, p.status.value))
+                    slots_free -= 1
 
-                            action = await record_step_failure(s, p, error=e)
-                            await s.commit()
-                            if bot and settings.telegram_active:
-                                if action == "retry" and prev == 0:
-                                    if is_chrome_infra_error(e):
-                                        msg = (
-                                            f"🔄 #{p.id}: Chrome перезапущен, "
-                                            f"повтор {p.status.value}"
-                                        )
-                                    else:
-                                        msg = (
-                                            f"⚠️ #{p.id} ({p.status.value}): "
-                                            f"{type(e).__name__}: {e}"
-                                        )
-                                    await bot.send_message(
-                                        settings.telegram_owner_chat_id, msg[:3800]
-                                    )
-                                elif action == "sleep":
-                                    await bot.send_message(
-                                        settings.telegram_owner_chat_id,
-                                        (
-                                            f"😴 #{p.id}: 3 ошибки — reset, "
-                                            f"пауза 30 мин (макс. 9 попыток)"
-                                        )[:3800],
-                                    )
-                                elif action == "abandon":
-                                    await bot.send_message(
-                                        settings.telegram_owner_chat_id,
-                                        (
-                                            f"🛑 #{p.id}: 3 цикла отказов — "
-                                            f"paused, следующий в очереди"
-                                        )[:3800],
-                                    )
-                                    from app.services.gen_queue import gen_queue_tick
-
-                                    await gen_queue_tick(s)
-                                    await s.commit()
-                                elif action == "pause_infra":
-                                    await bot.send_message(
-                                        settings.telegram_owner_chat_id,
-                                        (
-                                            f"🌐 #{p.id}: Chrome не восстановился — "
-                                            f"paused. Start-Chrome.cmd + ▶"
-                                        )[:3800],
-                                    )
-                            fail_counts.pop(key, None)
-                        except Exception:  # noqa: BLE001
-                            logger.warning(
-                                "step_failure_policy failed for #{}", p.id
+                if to_start:
+                    logger.info(
+                        "worker: старт {} project(s) (max_parallel={}): {}",
+                        len(to_start),
+                        max_parallel,
+                        [pid for pid, _ in to_start],
+                    )
+                for project_id, prev_status_value in to_start:
+                    key = (project_id, prev_status_value)
+                    if max_parallel <= 1:
+                        # N=1: как раньше — дождаться шага до следующего тика.
+                        wrapper = asyncio.create_task(
+                            _handle_one_advance(
+                                project_id,
+                                prev_status_value,
+                                key=key,
                             )
-                    finally:
-                        unregister_advance_task(project_id)
+                        )
+                        register_advance_task(project_id, wrapper)
+                        await wrapper
+                    else:
+                        # N>1: fire-and-forget, слоты считает active_advance_count.
+                        wrapper = asyncio.create_task(
+                            _handle_one_advance(
+                                project_id,
+                                prev_status_value,
+                                key=key,
+                            )
+                        )
+                        register_advance_task(project_id, wrapper)
 
                 # --- auto_mode ---
                 # 1) auto-advance: для auto_mode проектов в *_ready
