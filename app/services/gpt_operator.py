@@ -21,15 +21,14 @@ from app.services.excel_gpt_node import (
     upload_dir,
 )
 
-EdgeKind = Literal["after", "feed", "review", "gate", "pass", "fail"]
+EdgeKind = Literal["after", "gate", "pass", "fail"]
 OperatorRole = Literal["assist", "review", "transform", "extract", "compare", "gate"]
 OutputMode = Literal["text", "project_file", "sidecar"]
 InputOrigin = Literal["upload", "edge", "project", "snapshot"]
 
-# gate — legacy «если ok»; pass/fail — явные ветки вердикта.
-VALID_EDGE_KINDS: frozenset[str] = frozenset(
-    {"after", "feed", "review", "gate", "pass", "fail"}
-)
+# Связь = порядок + кандидат на вход. Файлы берёт приёмник (takeFromEdges),
+# не отдельный kind «feed». gate — legacy «если ok»; pass/fail — ветки вердикта.
+VALID_EDGE_KINDS: frozenset[str] = frozenset({"after", "gate", "pass", "fail"})
 VALID_ROLES: frozenset[str] = frozenset(
     {"assist", "review", "transform", "extract", "compare", "gate"}
 )
@@ -63,6 +62,9 @@ def normalize_edge_kind(raw: Any) -> EdgeKind:
         s = "pass"
     if s in ("не ok", "не ок", "neok", "not_ok", "reject"):
         s = "fail"
+    # legacy: «файлы» / «проверка» на стрелке → обычная связь (вход решает нода)
+    if s in ("feed", "review", "файлы", "проверка"):
+        s = "after"
     if s in VALID_EDGE_KINDS:
         return s  # type: ignore[return-value]
     return "after"
@@ -118,6 +120,11 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
     cfg["workMode"] = role if role in ("assist", "review", "transform") else "assist"
     cfg["outputMode"] = normalize_output_mode(cfg.get("outputMode"), role=role)
     cfg["useSnapshot"] = bool(cfg.get("useSnapshot"))
+    # Вход со стрелок: по умолчанию да (подвели → претендует на файлы прошлой ноды).
+    if "takeFromEdges" in cfg:
+        cfg["takeFromEdges"] = bool(cfg.get("takeFromEdges"))
+    else:
+        cfg["takeFromEdges"] = True
     raw_transport = str(cfg.get("transport") or "").strip().lower()
     if raw_transport in ("api", "browser"):
         cfg["transport"] = raw_transport
@@ -125,7 +132,13 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
         # По умолчанию API для новой механики; legacy assist без ролей — browser.
         has_operator_fields = any(
             k in cfg
-            for k in ("role", "outputMode", "useSnapshot", "uploadedFileNames")
+            for k in (
+                "role",
+                "outputMode",
+                "useSnapshot",
+                "takeFromEdges",
+                "uploadedFileNames",
+            )
         )
         cfg["transport"] = "api" if has_operator_fields else "browser"
     # multi-file uploads stored as list of names
@@ -340,6 +353,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     role: OperatorRole = cfg["role"]
     output_mode: OutputMode = cfg["outputMode"]
     use_snapshot = bool(cfg.get("useSnapshot"))
+    take_from_edges = bool(cfg.get("takeFromEdges", True))
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -359,13 +373,24 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "fileCount": 0,
             "ok": True,
             "errors": [],
+            "takesFiles": take_from_edges,
         }
-        if kind in ("feed", "review"):
+        if is_verdict_edge_kind(kind):
+            src_cfg = operator_config(project, src) if src else {}
+            src_role = str(src_cfg.get("role") or "")
+            if src_role not in BRANCHING_ROLES and not is_excel_gpt_node_type(
+                _node_type_map(project).get(src, "")
+            ):
+                warnings.append(
+                    f"стрелка {kind} от {src}: ожидается роль «проверяет» / «шлагбаум»"
+                )
+        # Любая входящая связь — кандидат на файлы; решает takeFromEdges у этой ноды.
+        if take_from_edges and src:
             paths = files_from_source_node(
-                project, src, use_snapshot=use_snapshot or kind == "review"
+                project, src, use_snapshot=use_snapshot
             )
             if not paths:
-                msg = f"стрелка {kind}: у ноды {src} нет файлов на диске"
+                msg = f"у ноды {src} нет файлов на диске (вход со стрелки)"
                 summary["ok"] = False
                 summary["errors"].append(msg)
                 errors.append(msg)
@@ -381,23 +406,11 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
                     summary["errors"].append(probe["error"] or "файл битый")
                     errors.append(f"{src}: {probe['error']}")
             summary["fileCount"] = len(paths)
-        elif is_verdict_edge_kind(kind):
-            # Входящая ветка ок/не ок: источник — проверяющая нода.
-            src_cfg = operator_config(project, src) if src else {}
-            src_role = str(src_cfg.get("role") or "")
-            if src_role not in BRANCHING_ROLES and not is_excel_gpt_node_type(
-                _node_type_map(project).get(src, "")
-            ):
-                warnings.append(
-                    f"стрелка {kind} от {src}: ожидается роль «проверяет» / «шлагбаум»"
-                )
         edge_summaries.append(summary)
 
     manual = _manual_upload_files(project, node_key, cfg)
-    # Если есть feed/review — ручной project.xlsx из legacy inputSource не дублируем,
-    # оставляем только upload-слоты и edge-файлы.
-    has_data_edges = any(edge_kind_of(e) in ("feed", "review") for e in incoming)
-    if has_data_edges:
+    # Если берём со стрелок — legacy project.xlsx из inputSource не дублируем.
+    if take_from_edges and incoming:
         manual = [f for f in manual if f.get("origin") == "upload"]
 
     all_files = [*edge_files, *manual]
@@ -417,10 +430,10 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             errors.append(f"{f.get('name')}: {f.get('error') or 'файл недоступен'}")
     if role == "compare" and len(ok_files) < 2:
         errors.append("роль «сравнить» требует минимум 2 существующих файла на входе")
-    if role == "gate" and not ok_files and not any(
-        edge_kind_of(e) in ("feed", "review", "after") for e in incoming
-    ):
+    if role == "gate" and not ok_files and not incoming:
         warnings.append("шлагбаум без входных файлов — проверка будет только по промту")
+    if not take_from_edges and incoming:
+        warnings.append("вход со стрелок выключен — файлы прошлых нод не берутся")
 
     if not ok_files and role in ("assist", "transform", "extract", "review"):
         # soft: assist без файлов — ошибка запуска
@@ -468,6 +481,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "role": role,
         "outputMode": output_mode,
         "useSnapshot": use_snapshot,
+        "takeFromEdges": take_from_edges,
         "transport": cfg.get("transport") or "api",
         "label": str(cfg.get("label") or default_label_for_role(role)),
         "files": unique_files,
@@ -491,6 +505,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "role": role,
             "outputMode": output_mode,
             "useSnapshot": use_snapshot,
+            "takeFromEdges": take_from_edges,
             "transport": cfg.get("transport") or "api",
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
@@ -531,6 +546,8 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         )
     if "useSnapshot" in patch:
         cur["useSnapshot"] = bool(patch.get("useSnapshot"))
+    if "takeFromEdges" in patch:
+        cur["takeFromEdges"] = bool(patch.get("takeFromEdges"))
     if "transport" in patch:
         t = str(patch.get("transport") or "api").strip().lower()
         cur["transport"] = t if t in ("api", "browser") else "api"

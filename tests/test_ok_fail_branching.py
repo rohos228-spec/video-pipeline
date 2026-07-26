@@ -50,6 +50,11 @@ def test_pass_and_fail_edge_kinds(tmp_path: Path, monkeypatch) -> None:
     }
     assert set_edge_kind_in_canvas(p, "e_ok", "pass")["data"]["kind"] == "pass"
     assert set_edge_kind_in_canvas(p, "e_fail", "fail")["data"]["kind"] == "fail"
+    # legacy feed нормализуется в after
+    p.meta["canvas_graph"]["edges"].append(
+        {"id": "e_legacy", "source": a, "target": ok_n, "data": {"kind": "after"}}
+    )
+    assert set_edge_kind_in_canvas(p, "e_legacy", "feed")["data"]["kind"] == "after"
 
     up = p.data_dir / "excel_gpt_uploads" / a
     up.mkdir(parents=True)

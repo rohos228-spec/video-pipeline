@@ -439,7 +439,7 @@ export function FlowCanvas({
           eds,
         ),
       );
-      toast.message("Связь добавлена — клик по метке: после / файлы / проверка / ок / не ок");
+      toast.message("Связь добавлена — клик по метке: связь / ок / не ок. Вход файлов — в приёмной ноде.");
       scheduleSaveWorkflow();
     },
     [setEdges, scheduleSaveWorkflow],
@@ -464,11 +464,15 @@ export function FlowCanvas({
       );
       const wfEdges: WorkflowEdge[] = currentEdges.map((e) => {
         const raw = String((e.data as { kind?: string } | undefined)?.kind || "after");
-        const kind: WorkflowEdgeKind = (
-          ["after", "feed", "review", "gate", "pass", "fail"] as const
-        ).includes(raw as WorkflowEdgeKind)
-          ? (raw as WorkflowEdgeKind)
-          : "after";
+        const normalized =
+          raw === "feed" || raw === "review"
+            ? "after"
+            : (["after", "gate", "pass", "fail"] as const).includes(
+                  raw as "after" | "gate" | "pass" | "fail",
+                )
+              ? raw
+              : "after";
+        const kind: WorkflowEdgeKind = normalized as WorkflowEdgeKind;
         return {
           id: e.id,
           source: e.source,

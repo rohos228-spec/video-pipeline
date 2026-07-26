@@ -1,12 +1,7 @@
 /** Контракт оператора GPT: роли, стрелки, фактические файлы. */
 
-export type OperatorEdgeKind =
-  | "after"
-  | "feed"
-  | "review"
-  | "gate"
-  | "pass"
-  | "fail";
+/** Связь: порядок + кандидат на вход. Файлы — настройка приёмника (takeFromEdges). */
+export type OperatorEdgeKind = "after" | "gate" | "pass" | "fail" | "feed" | "review";
 
 export type OperatorRole =
   | "assist"
@@ -39,6 +34,7 @@ export interface OperatorEdgeSummary {
   fileCount?: number;
   ok?: boolean;
   errors?: string[];
+  takesFiles?: boolean;
 }
 
 export interface OperatorBranching {
@@ -55,6 +51,7 @@ export interface OperatorResolve {
   role: OperatorRole;
   outputMode: OperatorOutputMode;
   useSnapshot: boolean;
+  takeFromEdges: boolean;
   transport: string;
   label: string;
   files: OperatorFileProbe[];
@@ -67,6 +64,7 @@ export interface OperatorResolve {
     fileCount: number;
     ok: boolean;
     errors: string[];
+    takesFiles?: boolean;
   }[];
   outgoingEdges: OperatorEdgeSummary[];
   branching?: OperatorBranching;
@@ -78,29 +76,18 @@ export interface OperatorResolve {
   config?: Record<string, unknown>;
 }
 
+/** Только семантика стрелки — без отдельной кнопки «Файлы». */
 export const EDGE_KIND_OPTIONS: {
-  value: OperatorEdgeKind;
+  value: "after" | "pass" | "fail";
   title: string;
   short: string;
   hint: string;
 }[] = [
   {
     value: "after",
-    title: "После",
-    short: "после",
-    hint: "Только порядок: сначала эта нода, потом следующая. Файлы не передаёт.",
-  },
-  {
-    value: "feed",
-    title: "Файлы",
-    short: "файлы",
-    hint: "Передаёт результат/файлы в следующую ноду как вход.",
-  },
-  {
-    value: "review",
-    title: "Проверка",
-    short: "проверка",
-    hint: "Следующая нода проверяет результат этой (снимок/файлы).",
+    title: "Связь",
+    short: "связь",
+    hint: "Порядок шагов. Файлы подтянет приёмник, если у него включён вход от прошлых нод.",
   },
   {
     value: "pass",
@@ -116,7 +103,6 @@ export const EDGE_KIND_OPTIONS: {
   },
 ];
 
-/** Legacy gate (= pass) тоже показываем в меню как «Ок», но сохраняем значение gate. */
 export const EDGE_KIND_MENU_OPTIONS = EDGE_KIND_OPTIONS;
 
 export const ROLE_OPTIONS: { value: OperatorRole; title: string; hint: string }[] = [
@@ -145,10 +131,9 @@ export const ROLE_DEFAULT_LABELS: Record<OperatorRole, string> = {
   gate: "Ок / не ок",
 };
 
-/** 15 пунктов временного меню */
 export const OPERATOR_MENU_ACTIONS = [
   { id: "upload", group: "in", title: "Загрузить файл(ы)" },
-  { id: "from_edge", group: "in", title: "Взять с входящей стрелки (feed)" },
+  { id: "from_edge", group: "in", title: "Взять от прошлых нод (стрелки)" },
   { id: "multi", group: "in", title: "Несколько файлов" },
   { id: "snapshot", group: "in", title: "Снимок результата, не live" },
   { id: "role_assist", group: "role", title: "Роль: участвует" },
@@ -169,7 +154,8 @@ export function normalizeEdgeKind(raw?: string | null): OperatorEdgeKind {
   if (s === "gate") return "gate";
   if (s === "pass" || s === "ok" || s === "если ok") return "pass";
   if (s === "fail" || s === "не ок" || s === "неok" || s === "not_ok") return "fail";
-  if (s === "feed" || s === "review" || s === "after") return s;
+  // legacy feed/review → обычная связь
+  if (s === "feed" || s === "review" || s === "after") return "after";
   return "after";
 }
 
@@ -186,7 +172,7 @@ export function edgeKindLabel(kind?: string | null): string {
   const k = normalizeEdgeKind(kind);
   if (k === "gate") return "ок";
   const found = EDGE_KIND_OPTIONS.find((o) => o.value === k);
-  return found?.short ?? "после";
+  return found?.short ?? "связь";
 }
 
 export function roleChip(role?: string | null): string {
@@ -203,10 +189,10 @@ export function isBranchingRole(role?: string | null): boolean {
   return BRANCHING_ROLES.includes((role || "") as OperatorRole);
 }
 
-export function nextEdgeKind(kind?: string | null): OperatorEdgeKind {
-  const order: OperatorEdgeKind[] = ["after", "feed", "review", "pass", "fail"];
+export function nextEdgeKind(kind?: string | null): "after" | "pass" | "fail" {
+  const order: Array<"after" | "pass" | "fail"> = ["after", "pass", "fail"];
   const cur = normalizeEdgeKind(kind);
-  const mapped = cur === "gate" ? "pass" : cur;
+  const mapped = cur === "gate" ? "pass" : cur === "pass" || cur === "fail" ? cur : "after";
   const i = order.indexOf(mapped);
   return order[(i + 1) % order.length];
 }

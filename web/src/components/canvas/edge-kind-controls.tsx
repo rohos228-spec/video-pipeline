@@ -52,15 +52,17 @@ function EdgeKindMarker({
     (edge.data as { kind?: string } | undefined)?.kind || "after",
   );
   const fileCount = Number((edge.data as { fileCount?: number } | undefined)?.fileCount || 0);
-  const label =
-    kind === "feed" || kind === "review"
-      ? `${edgeKindLabel(kind)}${fileCount ? ` · ${fileCount}` : ""}`
-      : edgeKindLabel(kind);
+  const label = fileCount
+    ? `${edgeKindLabel(kind)} · ${fileCount}`
+    : edgeKindLabel(kind);
 
-  const menuKind = kind === "gate" ? "pass" : kind;
-  const current =
-    EDGE_KIND_OPTIONS.find((o) => o.value === menuKind) ||
-    EDGE_KIND_OPTIONS.find((o) => o.value === kind);
+  const menuKind =
+    kind === "gate" || kind === "pass"
+      ? "pass"
+      : kind === "fail"
+        ? "fail"
+        : "after";
+  const current = EDGE_KIND_OPTIONS.find((o) => o.value === menuKind);
 
   return (
     <div
@@ -72,9 +74,9 @@ function EdgeKindMarker({
         title={current ? `${current.title}: ${current.hint}` : "Тип связи"}
         className={cn(
           "nodrag nopan pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-full border px-2.5 py-1 text-[9px] font-semibold uppercase tracking-wide shadow-md backdrop-blur transition hover:scale-105",
-          kind === "after" && "border-white/20 bg-black/75 text-muted-foreground",
-          kind === "feed" && "border-emerald-400/40 bg-emerald-950/85 text-emerald-100",
-          kind === "review" && "border-violet-400/40 bg-violet-950/85 text-violet-100",
+          !isPassEdgeKind(kind) &&
+            !isFailEdgeKind(kind) &&
+            "border-white/20 bg-black/75 text-muted-foreground",
           isPassEdgeKind(kind) && "border-amber-400/40 bg-amber-950/85 text-amber-100",
           isFailEdgeKind(kind) && "border-rose-400/40 bg-rose-950/85 text-rose-100",
           open && "ring-2 ring-primary/50",
@@ -115,8 +117,12 @@ function EdgeKindMarker({
             <div className="flex flex-col gap-1">
               {EDGE_KIND_OPTIONS.map((opt) => {
                 const active =
-                  opt.value === kind ||
-                  (opt.value === "pass" && isPassEdgeKind(kind));
+                  opt.value === menuKind ||
+                  (opt.value === "pass" && isPassEdgeKind(kind)) ||
+                  (opt.value === "fail" && isFailEdgeKind(kind)) ||
+                  (opt.value === "after" &&
+                    !isPassEdgeKind(kind) &&
+                    !isFailEdgeKind(kind));
                 return (
                   <button
                     key={opt.value}
@@ -235,7 +241,7 @@ export function EdgeKindControls({
   return portal;
 }
 
-/** Подтянуть fileCount на feed/review из resolve целевой excel_gpt ноды. */
+/** Подтянуть fileCount на входящих стрелках из resolve целевой excel_gpt ноды. */
 export function applyResolveFileCountsToEdges(
   edges: Edge[],
   resolveByTarget: Record<string, { incomingEdges?: { id: string; fileCount: number }[] }>,

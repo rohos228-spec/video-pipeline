@@ -58,7 +58,8 @@ def test_resolve_manual_upload_and_missing_file(tmp_path: Path, monkeypatch) -> 
     assert res["consistent"] is False
 
 
-def test_feed_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
+def test_incoming_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
+    """Любая связь + takeFromEdges (default) — вход с прошлой ноды."""
     p = _project(tmp_path, monkeypatch)
     scenes = p.data_dir / "scenes"
     scenes.mkdir(parents=True)
@@ -77,7 +78,7 @@ def test_feed_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
                     "id": "e1",
                     "source": img,
                     "target": gpt,
-                    "data": {"kind": "feed"},
+                    "data": {"kind": "after"},
                 }
             ],
         },
@@ -87,10 +88,48 @@ def test_feed_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
     }
     res = resolve_operator(p, gpt)
     assert res["canRun"] is True
+    assert res["takeFromEdges"] is True
     assert res["okFileCount"] == 2
     kinds = {e["kind"] for e in res["incomingEdges"]}
-    assert "feed" in kinds
+    assert "after" in kinds
     assert all(f["origin"] in ("edge", "snapshot") for f in res["files"] if f["ok"])
+
+
+def test_take_from_edges_off_skips_incoming(tmp_path: Path, monkeypatch) -> None:
+    p = _project(tmp_path, monkeypatch)
+    scenes = p.data_dir / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "f001.png").write_bytes(b"\x89PNG" + b"1" * 400)
+    gpt = "n_excel_gpt_1"
+    img = "n_images"
+    up = p.data_dir / "excel_gpt_uploads" / gpt
+    up.mkdir(parents=True)
+    (up / "manual.txt").write_text("own", encoding="utf-8")
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": img, "type": "images", "position": {"x": 0, "y": 0}},
+                {"id": gpt, "type": "excel_gpt", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": img, "target": gpt, "data": {"kind": "after"}},
+            ],
+        },
+        "excel_gpt_nodes": {
+            gpt: {
+                "role": "assist",
+                "transport": "api",
+                "takeFromEdges": False,
+                "uploadedFileNames": ["manual.txt"],
+                "inputSource": "upload",
+            }
+        },
+    }
+    res = resolve_operator(p, gpt)
+    assert res["takeFromEdges"] is False
+    assert res["okFileCount"] == 1
+    assert all(f.get("fromNode") in (None, "") for f in res["files"] if f["ok"])
+    assert any("выключен" in w for w in res["warnings"])
 
 
 def test_compare_needs_two_files(tmp_path: Path, monkeypatch) -> None:

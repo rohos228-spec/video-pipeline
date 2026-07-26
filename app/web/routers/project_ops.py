@@ -1176,9 +1176,20 @@ async def patch_excel_gpt_config(
         "role",
         "outputMode",
         "useSnapshot",
+        "takeFromEdges",
         "transport",
     }
-    if any(k in payload for k in ("role", "outputMode", "useSnapshot", "transport", "uploadedFileNames")):
+    if any(
+        k in payload
+        for k in (
+            "role",
+            "outputMode",
+            "useSnapshot",
+            "takeFromEdges",
+            "transport",
+            "uploadedFileNames",
+        )
+    ):
         resolved = patch_operator_config(p, node_key, {k: payload[k] for k in op_keys if k in payload})
         flag_modified(p, "meta")
         await session.commit()

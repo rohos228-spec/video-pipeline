@@ -204,8 +204,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
                   {isExcelGpt
                     ? isBranchingRole(d.role || d.workMode)
-                      ? "Две исходящие стрелки: «Ок» и «Не ок». Тип — клик по метке на связи."
-                      : "Роли, файлы и выход — в пульте ниже. Стрелки между нодами — тип связи."
+                      ? "Две исходящие: «Ок» и «Не ок». Вход от прошлых — в пульте."
+                      : "Вход от прошлых нод и роли — в пульте. На стрелке: связь / ок / не ок."
                     : spec.description}
                 </span>
                 {isExcelGpt ? (
