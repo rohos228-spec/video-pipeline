@@ -386,6 +386,59 @@ export const api = {
   clearExcelHero: (projectId: number) =>
     http<void>(`/api/projects/${projectId}/excel-hero`, { method: "DELETE" }),
 
+  // ── Storage node (хранилище файлов по node_key) ─────────────────
+  resolveStorage: (projectId: number, nodeKey: string) =>
+    http<{
+      nodeKey: string;
+      label: string;
+      formats: string[];
+      files: {
+        name: string;
+        path: string;
+        size: number;
+        kind: string;
+        ok: boolean;
+        preview_url?: string | null;
+      }[];
+      okFileCount: number;
+      incomingSources: string[];
+      storageDir: string;
+      lastSyncAt?: string;
+    }>(`/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/resolve`),
+  patchStorage: (
+    projectId: number,
+    nodeKey: string,
+    patch: { formats?: string[]; label?: string },
+  ) =>
+    http<{ ok: boolean; config: Record<string, unknown>; resolve: Record<string, unknown> }>(
+      `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  syncStorage: (projectId: number, nodeKey: string) =>
+    http<{
+      ok: boolean;
+      copied: string[];
+      skipped: string[];
+      errors: string[];
+      files: { name: string; path: string }[];
+      okFileCount: number;
+    }>(`/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/sync`, {
+      method: "POST",
+    }),
+  uploadStorageFile: (projectId: number, nodeKey: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{ ok: boolean; fileName: string; path: string }>(
+      `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/upload`,
+      { method: "POST", body: fd },
+    );
+  },
+  clearStorageFiles: (projectId: number, nodeKey: string) =>
+    http<{ ok: boolean; removed: number }>(
+      `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/files`,
+      { method: "DELETE" },
+    ),
+
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>
     http<FrameDTO[]>(`/api/projects/${projectId}/frames`),

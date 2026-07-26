@@ -29,7 +29,7 @@ function EdgeAiMarker({
     return null;
   }
   const tgtType = (target.data as PipelineNodeData)?.type;
-  if (tgtType === "excel_feed") return null;
+  if (tgtType === "excel_feed" || tgtType === "storage") return null;
   if (!autoReviewKindForNodeType(tgtType)) return null;
 
   const sw = source.measured?.width ?? 260;

@@ -24,6 +24,7 @@ import { NodeResultBadge } from "./node-result-badge";
 import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
+import { StoragePanel } from "./storage-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
@@ -77,6 +78,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
   const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
   const isExcelFeed = d.type === "excel_feed";
+  const isStorage = d.type === "storage";
   const isHero = d.type === "hero";
   const isExcelGpt = isExcelGptNode(d.type);
   const isAssemble = d.type === "assemble";
@@ -130,7 +132,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 }}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && (
+            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
               <VTrigger
                 open={!!vMenuOpen}
                 title={isExcelGpt ? "Пульт оператора + промты (V)" : "Меню промтов (V)"}
@@ -138,7 +140,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && (
+            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
               <NodeVMenu
                 open={!!vMenuOpen}
                 anchorRef={anchorRef}
@@ -206,7 +208,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     ? isBranchingRole(d.role || d.workMode)
                       ? "Две исходящие: «Ок» и «Не ок». Вход от прошлых — в пульте."
                       : "Вход от прошлых нод и роли — в пульте. На стрелке: связь / ок / не ок."
-                    : spec.description}
+                    : isStorage
+                      ? "Только хранит файлы. Своя папка. Форматы — в панели ниже."
+                      : spec.description}
                 </span>
                 {isExcelGpt ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
@@ -228,6 +232,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
             </div>
             {isExcelFeed && actions?.projectId && (
               <ExcelFeedPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+            )}
+            {isStorage && actions?.projectId && (
+              <StoragePanel projectId={actions.projectId} nodeKey={d.nodeKey} />
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
             {isExcelGpt && actions?.projectId && (

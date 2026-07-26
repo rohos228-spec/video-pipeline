@@ -32,7 +32,7 @@ from app.services.excel_gpt_node import (
 )
 from app.services.disabled_nodes import disabled_node_types
 
-PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed"})
+PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed", "storage"})
 
 
 def is_passthrough_node_type(node_type: str) -> bool:
