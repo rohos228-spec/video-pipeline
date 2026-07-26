@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # на stub (dev/tests) или на браузер. Ключ можно переиспользовать из GRSAI.
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
-    gpt_model: str = Field("gpt-4o", alias="GPT_MODEL")
+    gpt_model: str = Field("gpt-5.5", alias="GPT_MODEL")
     gpt_timeout_s: float = Field(180.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 
