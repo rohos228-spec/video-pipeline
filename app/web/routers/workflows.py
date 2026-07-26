@@ -55,6 +55,7 @@ async def create_workflow(
     check = validate_workflow_graph(nodes_raw, edges_raw)
     if not check["valid"]:
         raise HTTPException(status_code=400, detail={"graph": check["errors"]})
+    edges_raw = check.get("edges") or edges_raw
     wf = Workflow(
         name=payload.name or "Untitled",
         description=payload.description,
@@ -88,6 +89,7 @@ async def update_workflow(
     check = validate_workflow_graph(nodes_raw, edges_raw)
     if not check["valid"]:
         raise HTTPException(status_code=400, detail={"graph": check["errors"]})
+    edges_raw = check.get("edges") or edges_raw
     wf.nodes = nodes_raw
     wf.edges = edges_raw
     wf.version = (wf.version or 1) + 1

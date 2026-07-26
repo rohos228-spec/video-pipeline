@@ -52,6 +52,26 @@ def test_ok_fail_retry_loop_is_allowed() -> None:
     assert any("Не ок" in w or "петля" in w for w in r["warnings"])
 
 
+def test_hero_excel_gpt_loop_auto_marks_fail() -> None:
+    """hero → excel_gpt → hero: обратная стрелка сама становится «Не ок»."""
+    nodes = [
+        {"id": "n_hero", "type": "hero", "position": {"x": 0, "y": 0}, "data": {}},
+        {"id": "n_excel_gpt", "type": "excel_gpt", "position": {"x": 200, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e_fwd", "source": "n_hero", "target": "n_excel_gpt", "data": {"kind": "after"}},
+        {"id": "e_back", "source": "n_excel_gpt", "target": "n_hero", "data": {"kind": "after"}},
+    ]
+    r = validate_workflow_graph(nodes, edges)
+    assert r["valid"] is True, r["errors"]
+    assert r["errors"] == []
+    back = next(e for e in r["edges"] if e["id"] == "e_back")
+    assert (back.get("data") or {}).get("kind") == "fail"
+    fwd = next(e for e in r["edges"] if e["id"] == "e_fwd")
+    assert (fwd.get("data") or {}).get("kind") == "after"
+    assert any("петля" in w or "Не ок" in w for w in r["warnings"])
+
+
 def test_broken_edge_reference() -> None:
     nodes = [{"id": "n_plan", "type": "plan", "position": {}, "data": {}}]
     edges = [{"id": "e1", "source": "n_plan", "target": "n_missing"}]
