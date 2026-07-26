@@ -58,6 +58,31 @@ class Settings(BaseSettings):
     grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
     grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
 
+    # GPT text via API (OpenAI-compatible /v1/chat/completions) — замена
+    # браузерного ChatGPT для excel_gpt / проверочных нод. Пусто → fallback
+    # на stub (dev/tests) или на браузер. Ключ можно переиспользовать из GRSAI.
+    gpt_api_key: str = Field("", alias="GPT_API_KEY")
+    gpt_base_url: str = Field("", alias="GPT_BASE_URL")
+    gpt_model: str = Field("gpt-4o", alias="GPT_MODEL")
+    gpt_timeout_s: float = Field(180.0, alias="GPT_TIMEOUT_S")
+    gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
+
+    @property
+    def gpt_api_effective_key(self) -> str:
+        """Ключ GPT: свой GPT_API_KEY или переиспользуем GRSAI_API_KEY."""
+        return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
+
+    @property
+    def gpt_api_effective_base_url(self) -> str:
+        """База GPT: свой GPT_BASE_URL или GRSAI_BASE_URL (OpenAI-совместимый шлюз)."""
+        base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
+        return base.rstrip("/")
+
+    @property
+    def gpt_api_enabled(self) -> bool:
+        """API-транспорт GPT доступен только при наличии ключа и базы."""
+        return bool(self.gpt_api_effective_key and self.gpt_api_effective_base_url)
+
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )

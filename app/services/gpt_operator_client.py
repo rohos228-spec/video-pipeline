@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 from app.services.check_analysis import (
     SCHEMA_ID,
     CheckAnalysis,
@@ -69,7 +71,25 @@ async def run_operator_api(
     accompanying: str,
     input_paths: list[Path],
 ) -> OperatorApiResult:
-    """Вызов API-оператора. Сейчас — детерминированный stub без сети."""
+    """Вызов API-оператора GPT.
+
+    Если задан ключ API (`settings.gpt_api_enabled`) — реальный вызов
+    OpenAI-совместимого шлюза; иначе — детерминированный stub без сети
+    (dev/tests).
+    """
+    from app.services.gpt_api import gpt_api_enabled
+
+    if gpt_api_enabled():
+        return await _run_operator_api_real(
+            project_dir=project_dir,
+            node_key=node_key,
+            role=role,
+            output_mode=output_mode,
+            prompt=prompt,
+            accompanying=accompanying,
+            input_paths=input_paths,
+        )
+
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,6 +151,71 @@ async def run_operator_api(
 
     return OperatorApiResult(
         reply_text=body,
+        output_paths=output_paths,
+        gate_status=gate_status,
+        analysis=analysis,
+    )
+
+
+async def _run_operator_api_real(
+    *,
+    project_dir: Path,
+    node_key: str,
+    role: str,
+    output_mode: str,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path],
+) -> OperatorApiResult:
+    """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
+    from app.services.gpt_api import chat, collect_result_urls, download_content
+
+    out_dir = project_dir / "excel_gpt_uploads" / node_key
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    is_check = role in ("review", "gate", "compare")
+    prompt_for_model = append_response_footer(prompt) if is_check else (prompt or "")
+
+    result = await chat(
+        prompt=prompt_for_model,
+        accompanying=accompanying,
+        input_paths=list(input_paths),
+        # Проверочные роли: строгий JSON, temperature=0 для стабильного вердикта.
+        temperature=0.0 if is_check else None,
+    )
+    reply_text = result.text
+
+    analysis: CheckAnalysis | None = None
+    gate_status: str | None = None
+    output_paths: list[Path] = []
+
+    if is_check:
+        analysis = parse_check_analysis(reply_text)
+        gate_status = analysis.verdict
+        output_paths.append(write_analysis_json(out_dir, analysis))
+
+    # Скачивание/копирование контента: если модель вернула ссылки на файлы —
+    # тянем их в папку ноды (картинки/видео/xlsx из ответа GPT).
+    for i, url in enumerate(collect_result_urls(reply_text)):
+        suffix = Path(url.split("?")[0]).suffix or ".bin"
+        dest = out_dir / f"content_{i + 1}{suffix}"
+        try:
+            output_paths.append(await download_content(url, dest))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("gpt_operator/api: не скачал {}: {}", url, e)
+
+    # Текст ответа на диск (для UI / forward.inherit).
+    if output_mode == "sidecar":
+        sidecar = out_dir / "operator_transform.txt"
+        sidecar.write_text(reply_text, encoding="utf-8")
+        output_paths.append(sidecar)
+    else:
+        reply_path = out_dir / "gpt_reply.txt"
+        reply_path.write_text(reply_text, encoding="utf-8")
+        output_paths.append(reply_path)
+
+    return OperatorApiResult(
+        reply_text=reply_text,
         output_paths=output_paths,
         gate_status=gate_status,
         analysis=analysis,
