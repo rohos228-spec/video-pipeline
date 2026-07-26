@@ -343,15 +343,33 @@ def list_check_operator_steps() -> list[str]:
 
 
 def load_check_operator_prompt(step: str) -> str | None:
-    """Текст промта проверки + хвост схемы vp.check.v1."""
+    """Текст промта проверки + хвост схемы vp.check.v1.
+
+    Резолвит любой реальный тип ноды пайплайна в файл
+    `prompts/check_operator/<step>/default.md`. HITL-ноды проверяют те же
+    артефакты, что и рабочая нода выше по стрелке, поэтому маппятся на неё;
+    enrich-слоты и excel_feed — на общий контракт excel_gpt.
+    """
     step_key = (step or "").strip().lower().replace("-", "_")
     aliases = {
+        # step_code рабочих нод → имя папки промта
         "img_pr": "image_prompts",
         "anim_pr": "animation_prompts",
         "img": "images",
         "video": "videos",
         "topic": "plan",
+        # excel round-trip: слоты enrich_1..5 и excel_feed → общий excel_gpt
+        "excel_feed": "excel_gpt",
+        "enrich": "excel_gpt",
+        # HITL-ноды проверяют выход рабочей ноды выше по стрелке
+        "hitl_hero": "hero",
+        "hitl_images": "images",
+        "hitl_videos": "videos",
+        "hitl_final": "assemble",
     }
+    # enrich_1..5 (и любой enrich_*) → excel_gpt
+    if step_key.startswith("enrich_"):
+        step_key = "excel_gpt"
     step_key = aliases.get(step_key, step_key)
     path = _check_operator_root() / step_key / "default.md"
     if not path.is_file():
