@@ -53,8 +53,14 @@ export interface WorkflowNode {
   data: Record<string, unknown> & { label?: string; description?: string };
 }
 
-/** after=порядок, feed=файлы, review=проверка, gate=шлагбаум */
-export type WorkflowEdgeKind = "after" | "feed" | "review" | "gate";
+/** after=порядок, feed=файлы, review=проверка, gate/pass=ок, fail=не ок */
+export type WorkflowEdgeKind =
+  | "after"
+  | "feed"
+  | "review"
+  | "gate"
+  | "pass"
+  | "fail";
 
 export interface WorkflowEdge {
   id: string;

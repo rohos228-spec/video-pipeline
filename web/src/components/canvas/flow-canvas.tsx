@@ -274,6 +274,9 @@ export function FlowCanvas({
         if (cfg.workMode && cfg.workMode !== d.workMode) {
           patch.workMode = cfg.workMode as PipelineNodeData["workMode"];
         }
+        if (cfg.role && cfg.role !== d.role) {
+          patch.role = cfg.role as string;
+        }
         if (!Object.keys(patch).length) return n;
         changed = true;
         return { ...n, data: { ...d, ...patch } };
@@ -419,7 +422,7 @@ export function FlowCanvas({
           eds,
         ),
       );
-      toast.message("Связь добавлена — клик по метке меняет тип (после/файлы/проверка/если ok)");
+      toast.message("Связь добавлена — клик по метке: после / файлы / проверка / ок / не ок");
       scheduleSaveWorkflow();
     },
     [setEdges, scheduleSaveWorkflow],
@@ -445,7 +448,7 @@ export function FlowCanvas({
       const wfEdges: WorkflowEdge[] = currentEdges.map((e) => {
         const raw = String((e.data as { kind?: string } | undefined)?.kind || "after");
         const kind: WorkflowEdgeKind = (
-          ["after", "feed", "review", "gate"] as const
+          ["after", "feed", "review", "gate", "pass", "fail"] as const
         ).includes(raw as WorkflowEdgeKind)
           ? (raw as WorkflowEdgeKind)
           : "after";
@@ -1592,6 +1595,7 @@ function workflowToReactFlowNodes(
         inputSource: data.inputSource as PipelineNodeData["inputSource"],
         uploadedFileName: data.uploadedFileName as string | undefined,
         workMode: data.workMode as PipelineNodeData["workMode"],
+        role: data.role as string | undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

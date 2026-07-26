@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { roleChip } from "@/lib/gpt-operator";
+import { isBranchingRole, roleChip } from "@/lib/gpt-operator";
 import { GptOperatorMenuPanel } from "./gpt-operator-menu";
 import { cn } from "@/lib/utils";
 
@@ -43,8 +43,13 @@ export function GptOperatorCardPanel({
             Пульт оператора GPT
           </span>
           <span className="mt-0.5 block text-[9px] text-muted-foreground">
-            {roleChip(data?.role)} · файлов {data?.okFileCount ?? "…"}
+            {roleChip(data?.role)}
+            {isBranchingRole(data?.role) ? " · ок/не ок" : ""}
+            {" · "}файлов {data?.okFileCount ?? "…"}
             {data && !data.consistent ? " · рассинхрон" : ""}
+            {data?.branching && isBranchingRole(data.role)
+              ? ` · ветки ${data.branching.hasPass ? "ок" : "—"}/${data.branching.hasFail ? "неок" : "—"}`
+              : ""}
             {" · "}
             {open ? "свернуть" : "открыть роли / файлы / выход"}
           </span>
@@ -59,7 +64,7 @@ export function GptOperatorCardPanel({
       <div
         className={cn(
           "overflow-hidden transition-[max-height,opacity]",
-          open ? "mt-2 max-h-[480px] opacity-100" : "max-h-0 opacity-0",
+          open ? "mt-2 max-h-[640px] opacity-100 overflow-y-auto" : "max-h-0 opacity-0",
         )}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}

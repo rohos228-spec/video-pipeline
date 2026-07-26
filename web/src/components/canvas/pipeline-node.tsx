@@ -35,6 +35,7 @@ import {
   type ExcelGptInputSource,
   type ExcelGptWorkMode,
 } from "@/lib/excel-gpt-config";
+import { isBranchingRole, roleChip } from "@/lib/gpt-operator";
 
 export interface PipelineNodeData extends Record<string, unknown> {
   nodeKey: string;
@@ -45,6 +46,8 @@ export interface PipelineNodeData extends Record<string, unknown> {
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
   workMode?: ExcelGptWorkMode;
+  /** Полная роль оператора (assist/review/…/gate); workMode — legacy. */
+  role?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -200,17 +203,25 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 </div>
                 <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
                   {isExcelGpt
-                    ? "Роли, файлы и выход — в пульте ниже. Стрелки между нодами — тип связи."
+                    ? isBranchingRole(d.role || d.workMode)
+                      ? "Две исходящие стрелки: «Ок» и «Не ок». Тип — клик по метке на связи."
+                      : "Роли, файлы и выход — в пульте ниже. Стрелки между нодами — тип связи."
                     : spec.description}
                 </span>
                 {isExcelGpt ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
-                      {workModeChip(d.workMode)}
+                      {d.role ? roleChip(d.role) : workModeChip(d.workMode)}
                     </span>
-                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
-                      {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
-                    </span>
+                    {isBranchingRole(d.role || d.workMode) ? (
+                      <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-100/90">
+                        ок · не ок
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                        {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
+                      </span>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -392,11 +403,17 @@ export function PipelineNode({ data, selected }: NodeProps) {
               {isExcelGptNode(d.type) ? (
                 <div className="mt-0.5 flex max-w-full flex-wrap justify-center gap-0.5">
                   <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1 py-0.5 text-[8px] font-medium text-violet-100/90">
-                    {workModeChip(d.workMode)}
+                    {d.role ? roleChip(d.role) : workModeChip(d.workMode)}
                   </span>
-                  <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1 py-0.5 text-[8px] font-medium text-emerald-100/90">
-                    {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
-                  </span>
+                  {isBranchingRole(d.role || d.workMode) ? (
+                    <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-1 py-0.5 text-[8px] font-medium text-amber-100/90">
+                      ок · не ок
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1 py-0.5 text-[8px] font-medium text-emerald-100/90">
+                      {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
+                    </span>
+                  )}
                 </div>
               ) : null}
               {disabled && (

@@ -47,6 +47,8 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   if (typeof d.slotIndex === "number") data.slotIndex = d.slotIndex;
   if (typeof d.inputSource === "string") data.inputSource = d.inputSource;
   if (typeof d.uploadedFileName === "string") data.uploadedFileName = d.uploadedFileName;
+  if (typeof d.workMode === "string") data.workMode = d.workMode;
+  if (typeof d.role === "string") data.role = d.role;
   return {
     id: n.id,
     type,

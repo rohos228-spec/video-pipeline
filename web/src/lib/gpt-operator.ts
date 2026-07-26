@@ -1,6 +1,12 @@
 /** Контракт оператора GPT: роли, стрелки, фактические файлы. */
 
-export type OperatorEdgeKind = "after" | "feed" | "review" | "gate";
+export type OperatorEdgeKind =
+  | "after"
+  | "feed"
+  | "review"
+  | "gate"
+  | "pass"
+  | "fail";
 
 export type OperatorRole =
   | "assist"
@@ -25,6 +31,25 @@ export interface OperatorFileProbe {
   error?: string | null;
 }
 
+export interface OperatorEdgeSummary {
+  id: string;
+  source: string;
+  target: string;
+  kind: OperatorEdgeKind;
+  fileCount?: number;
+  ok?: boolean;
+  errors?: string[];
+}
+
+export interface OperatorBranching {
+  enabled: boolean;
+  passEdges: OperatorEdgeSummary[];
+  failEdges: OperatorEdgeSummary[];
+  hasPass: boolean;
+  hasFail: boolean;
+  verdict?: "pass" | "fail" | null;
+}
+
 export interface OperatorResolve {
   nodeKey: string;
   role: OperatorRole;
@@ -43,12 +68,8 @@ export interface OperatorResolve {
     ok: boolean;
     errors: string[];
   }[];
-  outgoingEdges: {
-    id: string;
-    source: string;
-    target: string;
-    kind: OperatorEdgeKind;
-  }[];
+  outgoingEdges: OperatorEdgeSummary[];
+  branching?: OperatorBranching;
   errors: string[];
   warnings: string[];
   consistent: boolean;
@@ -82,20 +103,29 @@ export const EDGE_KIND_OPTIONS: {
     hint: "Следующая нода проверяет результат этой (снимок/файлы).",
   },
   {
-    value: "gate",
-    title: "Если ok",
-    short: "если ok",
-    hint: "Дальше только если вердикт pass. При fail — стоп.",
+    value: "pass",
+    title: "Ок",
+    short: "ок",
+    hint: "Ветка «всё хорошо»: дальше только при вердикте pass.",
+  },
+  {
+    value: "fail",
+    title: "Не ок",
+    short: "не ок",
+    hint: "Ветка «нужно чинить»: дальше только при вердикте fail.",
   },
 ];
 
+/** Legacy gate (= pass) тоже показываем в меню как «Ок», но сохраняем значение gate. */
+export const EDGE_KIND_MENU_OPTIONS = EDGE_KIND_OPTIONS;
+
 export const ROLE_OPTIONS: { value: OperatorRole; title: string; hint: string }[] = [
   { value: "assist", title: "Участвует", hint: "Обычный шаг пайплайна" },
-  { value: "review", title: "Проверяет", hint: "Ок / не ок" },
+  { value: "review", title: "Проверяет", hint: "Ок / не ок — две ветки" },
   { value: "transform", title: "Переделывает", hint: "Вход → другой вид" },
   { value: "extract", title: "Достаёт данные", hint: "Структура из файла" },
   { value: "compare", title: "Сравнивает", hint: "Два входа" },
-  { value: "gate", title: "Шлагбаум", hint: "Пустить / стоп" },
+  { value: "gate", title: "Шлагбаум", hint: "Ок / не ок — две ветки" },
 ];
 
 export const OUTPUT_OPTIONS: { value: OperatorOutputMode; title: string }[] = [
@@ -103,6 +133,17 @@ export const OUTPUT_OPTIONS: { value: OperatorOutputMode; title: string }[] = [
   { value: "project_file", title: "Файл проекта" },
   { value: "sidecar", title: "Рядом, не ломая" },
 ];
+
+export const BRANCHING_ROLES: OperatorRole[] = ["review", "gate", "compare"];
+
+export const ROLE_DEFAULT_LABELS: Record<OperatorRole, string> = {
+  assist: "Работа с GPT",
+  review: "Ок / не ок",
+  transform: "Переделывает",
+  extract: "Достаёт данные",
+  compare: "Сравнивает",
+  gate: "Ок / не ок",
+};
 
 /** 15 пунктов временного меню */
 export const OPERATOR_MENU_ACTIONS = [
@@ -123,8 +164,28 @@ export const OPERATOR_MENU_ACTIONS = [
   { id: "resolve", group: "always", title: "Показать файлы / пересверить" },
 ] as const;
 
+export function normalizeEdgeKind(raw?: string | null): OperatorEdgeKind {
+  const s = String(raw || "after").trim().toLowerCase();
+  if (s === "gate") return "gate";
+  if (s === "pass" || s === "ok" || s === "если ok") return "pass";
+  if (s === "fail" || s === "не ок" || s === "неok" || s === "not_ok") return "fail";
+  if (s === "feed" || s === "review" || s === "after") return s;
+  return "after";
+}
+
+export function isPassEdgeKind(kind?: string | null): boolean {
+  const k = normalizeEdgeKind(kind);
+  return k === "pass" || k === "gate";
+}
+
+export function isFailEdgeKind(kind?: string | null): boolean {
+  return normalizeEdgeKind(kind) === "fail";
+}
+
 export function edgeKindLabel(kind?: string | null): string {
-  const found = EDGE_KIND_OPTIONS.find((o) => o.value === kind);
+  const k = normalizeEdgeKind(kind);
+  if (k === "gate") return "ок";
+  const found = EDGE_KIND_OPTIONS.find((o) => o.value === k);
   return found?.short ?? "после";
 }
 
@@ -133,8 +194,19 @@ export function roleChip(role?: string | null): string {
   return found?.title ?? "Участвует";
 }
 
+export function defaultLabelForRole(role?: string | null): string {
+  const r = (role || "assist") as OperatorRole;
+  return ROLE_DEFAULT_LABELS[r] ?? "Работа с GPT";
+}
+
+export function isBranchingRole(role?: string | null): boolean {
+  return BRANCHING_ROLES.includes((role || "") as OperatorRole);
+}
+
 export function nextEdgeKind(kind?: string | null): OperatorEdgeKind {
-  const order: OperatorEdgeKind[] = ["after", "feed", "review", "gate"];
-  const i = order.indexOf((kind as OperatorEdgeKind) || "after");
+  const order: OperatorEdgeKind[] = ["after", "feed", "review", "pass", "fail"];
+  const cur = normalizeEdgeKind(kind);
+  const mapped = cur === "gate" ? "pass" : cur;
+  const i = order.indexOf(mapped);
   return order[(i + 1) % order.length];
 }

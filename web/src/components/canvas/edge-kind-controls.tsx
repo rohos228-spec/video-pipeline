@@ -10,6 +10,9 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
   EDGE_KIND_OPTIONS,
   edgeKindLabel,
+  isFailEdgeKind,
+  isPassEdgeKind,
+  normalizeEdgeKind,
   type OperatorEdgeKind,
 } from "@/lib/gpt-operator";
 import { useCanvasActionsOptional } from "./canvas-actions-context";
@@ -45,15 +48,19 @@ function EdgeKindMarker({
   const x = (sx + tx) / 2;
   const y = (sy + ty) / 2 - 14;
 
-  const kind = ((edge.data as { kind?: string } | undefined)?.kind ||
-    "after") as OperatorEdgeKind;
+  const kind = normalizeEdgeKind(
+    (edge.data as { kind?: string } | undefined)?.kind || "after",
+  );
   const fileCount = Number((edge.data as { fileCount?: number } | undefined)?.fileCount || 0);
   const label =
     kind === "feed" || kind === "review"
       ? `${edgeKindLabel(kind)}${fileCount ? ` · ${fileCount}` : ""}`
       : edgeKindLabel(kind);
 
-  const current = EDGE_KIND_OPTIONS.find((o) => o.value === kind);
+  const menuKind = kind === "gate" ? "pass" : kind;
+  const current =
+    EDGE_KIND_OPTIONS.find((o) => o.value === menuKind) ||
+    EDGE_KIND_OPTIONS.find((o) => o.value === kind);
 
   return (
     <div
@@ -68,7 +75,8 @@ function EdgeKindMarker({
           kind === "after" && "border-white/20 bg-black/75 text-muted-foreground",
           kind === "feed" && "border-emerald-400/40 bg-emerald-950/85 text-emerald-100",
           kind === "review" && "border-violet-400/40 bg-violet-950/85 text-violet-100",
-          kind === "gate" && "border-amber-400/40 bg-amber-950/85 text-amber-100",
+          isPassEdgeKind(kind) && "border-amber-400/40 bg-amber-950/85 text-amber-100",
+          isFailEdgeKind(kind) && "border-rose-400/40 bg-rose-950/85 text-rose-100",
           open && "ring-2 ring-primary/50",
         )}
         onMouseDown={(e) => e.stopPropagation()}
@@ -106,7 +114,9 @@ function EdgeKindMarker({
             </div>
             <div className="flex flex-col gap-1">
               {EDGE_KIND_OPTIONS.map((opt) => {
-                const active = opt.value === kind;
+                const active =
+                  opt.value === kind ||
+                  (opt.value === "pass" && isPassEdgeKind(kind));
                 return (
                   <button
                     key={opt.value}

@@ -52,7 +52,7 @@ class WorkflowGraph:
         self._by_id: dict[str, dict[str, Any]] = {n["id"]: n for n in self.nodes if "id" in n}
         self._out: dict[str, list[str]] = {nid: [] for nid in self._by_id}
         self._in: dict[str, list[str]] = {nid: [] for nid in self._by_id}
-        # (source, target) → kind (after|feed|review|gate)
+        # (source, target) → kind (after|feed|review|gate|pass|fail)
         self._edge_kind: dict[tuple[str, str], str] = {}
         for e in self.edges:
             src, tgt = e.get("source"), e.get("target")
@@ -61,7 +61,11 @@ class WorkflowGraph:
                 self._in[tgt].append(src)
                 data = e.get("data") if isinstance(e.get("data"), dict) else {}
                 kind = str((data or {}).get("kind") or e.get("kind") or "after").strip().lower()
-                if kind not in ("after", "feed", "review", "gate"):
+                if kind in ("ok", "если ok", "если_ok"):
+                    kind = "pass"
+                if kind in ("не ok", "не ок", "not_ok"):
+                    kind = "fail"
+                if kind not in ("after", "feed", "review", "gate", "pass", "fail"):
                     kind = "after"
                 self._edge_kind[(str(src), str(tgt))] = kind
 
@@ -69,22 +73,27 @@ class WorkflowGraph:
         return self._edge_kind.get((source, target), "after")
 
     def gate_blocks_edge(self, project: Project, source: str, target: str) -> bool:
-        """True — по этой стрелке нельзя идти дальше (gate fail / нет вердикта)."""
+        """True — по этой стрелке нельзя идти (ветка не совпала с вердиктом / нет вердикта)."""
+        from app.services.gpt_operator import (
+            BRANCHING_ROLES,
+            is_verdict_edge_kind,
+            operator_config,
+            verdict_edge_blocks,
+        )
+
         kind = self.edge_kind(source, target)
-        if kind != "gate":
-            # Роль gate на источнике: все исходящие тоже шлагбаум.
-            from app.services.gpt_operator import operator_config
+        if is_verdict_edge_kind(kind):
+            blocked = verdict_edge_blocks(project, source, kind)
+            return bool(blocked)
 
-            if self.node_type(source) == EXCEL_GPT_NODE_TYPE:
-                if operator_config(project, source).get("role") != "gate":
-                    return False
-            else:
-                return False
-        from app.services.gpt_operator import gate_allows_successors
-
-        allowed = gate_allows_successors(project, source)
-        # Нет вердикта или fail → блок
-        return allowed is not True
+        # Legacy: роль шлагбаум без явного pass/fail на стрелке —
+        # все исходящие ведут себя как «Ок» (только pass).
+        if self.node_type(source) == EXCEL_GPT_NODE_TYPE:
+            role = operator_config(project, source).get("role")
+            if role in BRANCHING_ROLES and role == "gate":
+                blocked = verdict_edge_blocks(project, source, "pass")
+                return bool(blocked)
+        return False
 
     @classmethod
     def default(cls) -> WorkflowGraph:
