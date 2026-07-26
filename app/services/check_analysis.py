@@ -310,6 +310,43 @@ EXPECTED_ARTIFACTS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Типы вышестоящих нод, для которых важен целевой формат кадра/видео.
+VISUAL_CHECK_TYPES: frozenset[str] = frozenset(
+    {
+        "image_prompts",
+        "images",
+        "hitl_images",
+        "videos",
+        "hitl_videos",
+        "hero",
+        "hitl_hero",
+        "items",
+        "assemble",
+        "hitl_final",
+        "publish",
+    }
+)
+
+
+def format_target_hint(
+    aspect_ratio: str | None = None,
+    image_resolution: str | None = None,
+    video_resolution: str | None = None,
+) -> str:
+    """Короткий блок «целевой формат проекта» для контекста агента-проверки.
+
+    Разрешение/формат НЕ статичны в промтах — фактические значения проекта
+    подставляются сюда, чтобы агент сверял с ними, а не с зашитым 9:16.
+    """
+    aspect = (aspect_ratio or "").strip() or "9:16"
+    parts = [f"соотношение сторон = {aspect}"]
+    if (image_resolution or "").strip():
+        parts.append(f"разрешение картинок = {image_resolution.strip()}")
+    if (video_resolution or "").strip():
+        parts.append(f"разрешение видео = {video_resolution.strip()}")
+    return "Целевой формат проекта: " + ", ".join(parts) + "."
+
+
 def expected_artifacts_for_node_type(node_type: str) -> tuple[str, ...]:
     t = (node_type or "").strip().lower()
     if t.startswith("enrich_"):

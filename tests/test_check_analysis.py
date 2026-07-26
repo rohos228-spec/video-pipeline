@@ -149,7 +149,7 @@ def test_prompts_declare_stable_check_ids() -> None:
     """Каждый агент перечисляет фиксированные check-id (строгий вывод)."""
     expected: dict[str, tuple[str, ...]] = {
         "plan": ("hook_present", "arc_clear", "topic_covered"),
-        "images": ("files_present", "no_artifacts", "aspect_9x16"),
+        "images": ("files_present", "no_artifacts", "aspect_matches_target"),
         "videos": ("clips_present", "no_black_frames"),
         "excel_gpt": ("xlsx_valid", "task_applied", "no_data_loss"),
         "items": ("items_present",),

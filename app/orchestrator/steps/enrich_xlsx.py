@@ -161,6 +161,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except FileNotFoundError:
         variant = "default"
         src_path = None
+        prompt_source = "default"
         master = (
             f"# {prompt_step_code}\n\n"
             "Мастер-промт для доп. работы с Excel ещё не настроен. "
@@ -188,13 +189,38 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     accompanying = _get_accompanying_text(project, legacy_step_code)
 
-    # Проверочные роли: в промт добавляем хвост схемы vp.check.v1.
+    # Проверочные роли: агент-проверки vp.check.v1.
     branching_role = False
     if node_key and resolved is not None:
         role_name = str(resolved.get("role") or "")
         branching_role = role_name in ("review", "gate", "compare")
         if branching_role:
             from app.services.check_analysis import append_response_footer
+            from app.services.gpt_operator import (
+                default_check_prompt_for_node,
+                project_format_hint_for_check,
+            )
+
+            # Нет кастомного промта у ноды (source=default) → берём
+            # универсальный агент-проверки по типу вышестоящей рабочей ноды.
+            if str(prompt_source or "") == "default" or not (master or "").strip():
+                agent = default_check_prompt_for_node(project, node_key)
+                if agent:
+                    master = agent
+                    logger.info(
+                        "[#{}] enrich_xlsx node={!r}: универсальный агент-проверки "
+                        "по вышестоящей ноде ({} симв)",
+                        project.id,
+                        node_key,
+                        len(master),
+                    )
+
+            # Целевой формат проекта в контекст — не статично, из полей проекта.
+            hint = project_format_hint_for_check(project, node_key)
+            if hint and hint not in (accompanying or ""):
+                accompanying = (
+                    f"{accompanying}\n\n{hint}".strip() if accompanying else hint
+                )
 
             master = append_response_footer(master or "")
 
