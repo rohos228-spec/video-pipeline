@@ -237,8 +237,9 @@ async def record_step_failure(
         await mark_running_node_failed(
             session,
             project,
-            str(fs.get("last_error") or error),
+            error,
             initiator="worker",
+            error_code=err_code,
         )
         await session.flush()
         logger.error(
@@ -261,8 +262,9 @@ async def record_step_failure(
         await mark_running_node_failed(
             session,
             project,
-            str(fs.get("last_error") or error),
+            error,
             initiator="worker",
+            error_code=err_code,
         )
         await session.flush()
         logger.warning(
@@ -281,7 +283,7 @@ async def record_step_failure(
     # Не вызываем start_step / reset_step — они удаляют файлы на диске.
     if step is not None:
         project.status = step.running_status
-    short_err = str(error).replace("\n", " ")[:80]
+    short_err = err_msg.replace("\n", " ")[:120]
     from app.services.run_sync import update_active_node_progress_text
 
     await update_active_node_progress_text(

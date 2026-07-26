@@ -375,12 +375,19 @@ async def sync_project_xlsx(
         msg = "xlsx-sync: импорт не удался"
         if parts:
             msg += f" ({'; '.join(parts)})"
+        from app.services.error_catalog import describe_error
         from app.services.run_sync import mark_running_node_failed
 
+        sync_exc = RuntimeError(msg)
+        code, pretty = describe_error(sync_exc)
         await mark_running_node_failed(
-            session, project, msg[:2000], initiator="worker"
+            session,
+            project,
+            pretty,
+            initiator="worker",
+            error_code=code,
         )
-        raise RuntimeError(msg)
+        raise sync_exc
 
     if sync_info.get("error") and update_frames_voiceover:
         raise RuntimeError(f"xlsx-sync: {sync_info['error']}")

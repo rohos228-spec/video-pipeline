@@ -122,10 +122,14 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
+    if "xlsx-sync" in low or "xlsx" in low and ("corrupt" in low or "не открыв" in low):
+        return "xlsx_corrupt" if "corrupt" in low or "не открыв" in low else "xlsx_invalid"
     if name in ("StepCancelledError", "CancelledError"):
         return "pipeline_cancelled"
     if "timeout" in low or "таймаут" in low:
         return "gpt_timeout"
+    if "chrome" in low or "cdp" in low:
+        return "unknown"
     return "unknown"
 
 
@@ -137,6 +141,11 @@ def describe_error(exc: Exception) -> tuple[str, str]:
     if code == "unknown":
         return code, (detail[:300] or spec.title)
     return code, f"{spec.title}: {detail[:200]}"
+
+
+def format_node_error(exc: Exception) -> str:
+    """Текст для NodeRun.error / WS payload."""
+    return describe_error(exc)[1]
 
 
 def all_error_codes() -> list[str]:

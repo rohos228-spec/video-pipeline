@@ -698,11 +698,23 @@ async def complete_active_node_for_step(
 async def mark_running_node_failed(
     session: AsyncSession,
     project: Project,
-    error: str,
+    error: str | Exception,
     *,
     initiator: str = "worker",
+    error_code: str | None = None,
 ) -> None:
-    """running → failed для активной ноды проекта."""
+    """running → failed для активной ноды проекта.
+
+    `error` — строка или Exception (тогда через describe_error).
+    """
+    code = error_code
+    if isinstance(error, Exception):
+        from app.services.error_catalog import describe_error
+
+        code, msg = describe_error(error)
+        error_text = msg
+    else:
+        error_text = str(error)
     run = await _workflow_run_with_nodes(session, project.id)
     if run is None:
         return
@@ -726,19 +738,22 @@ async def mark_running_node_failed(
             NodeRunStatus.queued,
             NodeRunStatus.waiting_hitl,
         ):
-            fail_node(nr, error, project_id=project.id, initiator=initiator)
+            fail_node(nr, error_text, project_id=project.id, initiator=initiator)
             await session.flush()
+            payload: dict = {
+                "node_type": nr.node_type,
+                "from": "running",
+                "to": nr.status.value,
+                "project_id": project.id,
+                "error": error_text[:500],
+            }
+            if code:
+                payload["error_code"] = code
             await publish_node_event(
                 run.id,
                 event_type="node_status_changed",
                 node_key=nr.node_key,
-                payload={
-                    "node_type": nr.node_type,
-                    "from": "running",
-                    "to": nr.status.value,
-                    "project_id": project.id,
-                    "error": error[:200],
-                },
+                payload=payload,
             )
             return
 
