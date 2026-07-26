@@ -24,6 +24,7 @@ def _enable(monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_base_url", "https://gw.test")
+    monkeypatch.setattr(settings, "gpt_chat_path", "/v1/chat/completions")
     monkeypatch.setattr(settings, "gpt_max_retries", 3)
 
 
@@ -133,6 +134,64 @@ async def test_chat_exhausts_retries_on_500(monkeypatch) -> None:
     with pytest.raises(GptApiError):
         await chat(prompt="x", max_retries=2)
     assert state["n"] == 3  # 1 + 2 ретрая
+
+
+@pytest.mark.asyncio
+async def test_chat_responses_mode(monkeypatch) -> None:
+    """kie.ai Responses API: input/output вместо messages/choices."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {
+                        "role": "assistant",
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "работает"}],
+                        "status": "completed",
+                    }
+                ],
+            },
+        )
+
+    _mock_httpx(monkeypatch, handler)
+    res = await chat(prompt="скажи", model="gpt-5-6-sol")
+    assert res.text == "работает"
+    assert res.finish_reason == "completed"
+    assert captured["path"] == "/codex/v1/responses"
+    assert "input" in captured["body"]  # responses-формат
+    assert "messages" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_chat_provider_envelope_error(monkeypatch) -> None:
+    """kie.ai отдаёт ошибку как HTTP 200 {code,msg} — ловим её понятно."""
+    _enable(monkeypatch)
+    state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        return httpx.Response(
+            200,
+            json={"code": 401, "msg": "The API key is not authorized to use this model.", "data": None},
+        )
+
+    _mock_httpx(monkeypatch, handler)
+    with pytest.raises(GptApiError) as ei:
+        await chat(prompt="x", max_retries=3)
+    assert ei.value.context.get("provider_code") == 401
+    assert state["n"] == 1  # 401 не ретраится
 
 
 @pytest.mark.asyncio

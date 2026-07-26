@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
     gpt_chat_path: str = Field("/v1/chat/completions", alias="GPT_CHAT_PATH")
+    # Формат API: chat (messages/choices) | responses (input/output) | auto.
+    # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
+    gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(180.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 

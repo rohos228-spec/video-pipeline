@@ -136,6 +136,36 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     return f"===== {path.name} =====\n{body}"
 
 
+def is_responses_mode() -> bool:
+    """API формата Responses (input/output) вместо chat/completions?"""
+    mode = (settings.gpt_api_mode or "auto").strip().lower()
+    if mode == "responses":
+        return True
+    if mode == "chat":
+        return False
+    return "responses" in (settings.gpt_chat_path or "").lower()
+
+
+def build_input(
+    *,
+    prompt: str,
+    accompanying: str = "",
+    input_paths: list[Path] | None = None,
+    system: str | None = None,
+) -> str:
+    """Плоский текст-ввод для Responses API (kie.ai codex)."""
+    msgs = build_messages(
+        prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+    )
+    parts: list[str] = []
+    for m in msgs:
+        if m["role"] == "system":
+            parts.append(f"[Инструкция]\n{m['content']}")
+        else:
+            parts.append(m["content"])
+    return "\n\n".join(parts)
+
+
 def build_messages(
     *,
     prompt: str,
@@ -167,8 +197,69 @@ def build_messages(
 # ─────────────────────────── HTTP вызов ───────────────────────────
 
 
+def _check_provider_envelope(payload: dict[str, Any]) -> None:
+    """Некоторые шлюзы (kie.ai) отдают ошибку как HTTP 200 с {code,msg,data}.
+
+    Если code не успешный и нет choices — поднимаем понятную ошибку.
+    """
+    if not isinstance(payload, dict) or payload.get("choices"):
+        return
+    code = payload.get("code")
+    if code is None:
+        return
+    try:
+        code_int = int(code)
+    except (TypeError, ValueError):
+        return
+    if code_int in (0, 200):
+        return
+    msg = str(payload.get("msg") or payload.get("message") or "ошибка провайдера")
+    retryable = code_int in _RETRY_STATUS or code_int >= 500
+    hint = ""
+    low = msg.lower()
+    if "not authorized" in low or "apikey" in low or code_int in (401, 403):
+        hint = " — ключ не авторизован на эту модель (проверь GPT_API_KEY/модель у провайдера)"
+    raise GptApiError(
+        f"GPT провайдер code={code_int}: {msg}{hint}",
+        context={"provider_code": code_int, "retryable": retryable},
+    )
+
+
+def _parse_responses(payload: dict[str, Any]) -> tuple[str, str]:
+    """(text, status) из ответа Responses API (kie.ai codex, gpt-5.6)."""
+    _check_provider_envelope(payload)
+    status = str(payload.get("status") or "")
+    text_parts: list[str] = []
+    output = payload.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for c in content:
+                    if (
+                        isinstance(c, dict)
+                        and c.get("type") in ("output_text", "text")
+                        and c.get("text")
+                    ):
+                        text_parts.append(str(c["text"]))
+    text = "".join(text_parts).strip()
+    if not text:
+        ot = payload.get("output_text")
+        if isinstance(ot, str):
+            text = ot.strip()
+    if not text:
+        raise GptApiError(
+            "GPT(responses): пустой output",
+            context={"status": status, "payload": payload},
+        )
+    return text, status
+
+
 def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     """(text, finish_reason) из ответа chat/completions."""
+    _check_provider_envelope(payload)
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         raise GptApiError("GPT: пустой choices в ответе", context={"payload": payload})
@@ -211,10 +302,22 @@ async def chat(
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
 
-    messages = build_messages(
-        prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
-    )
-    body: dict[str, Any] = {"model": use_model, "messages": messages}
+    responses_mode = is_responses_mode()
+    if responses_mode:
+        body: dict[str, Any] = {
+            "model": use_model,
+            "input": build_input(
+                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+            ),
+            "stream": False,
+        }
+    else:
+        body = {
+            "model": use_model,
+            "messages": build_messages(
+                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+            ),
+        }
     if temperature is not None:
         body["temperature"] = temperature
 
@@ -257,7 +360,9 @@ async def chat(
                     f"GPT: ответ не JSON: {resp.text[:300]}",
                     context={"retryable": True, "model": use_model},
                 ) from e
-            text, finish = _parse_choice(payload)
+            text, finish = (
+                _parse_responses(payload) if responses_mode else _parse_choice(payload)
+            )
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
             logger.info(
                 "gpt_api.chat OK model={} attempt={} finish={} chars={}",
