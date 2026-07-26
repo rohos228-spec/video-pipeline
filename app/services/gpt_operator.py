@@ -614,6 +614,42 @@ def set_edge_kind_in_canvas(
     return updated
 
 
+def apply_check_reply(
+    project: Project,
+    node_key: str,
+    reply_text: str,
+    *,
+    input_paths: list[Path] | None = None,
+    extra_output_paths: list[Path] | None = None,
+) -> dict[str, Any]:
+    """Разобрать ответ проверки → analysis.json + gateStatus в meta.
+
+    Для browser и API путей. Битый JSON → fail (ветка «Не ок»).
+    """
+    from app.services.check_analysis import parse_check_analysis, write_analysis_json
+    from app.services.excel_gpt_node import upload_dir
+
+    parsed = parse_check_analysis(reply_text or "")
+    out_dir = upload_dir(project, node_key)
+    analysis_path = write_analysis_json(out_dir, parsed)
+    outputs = [analysis_path, *(extra_output_paths or [])]
+    reply_file = out_dir / "gpt_reply.txt"
+    if (reply_text or "").strip() and not reply_file.is_file():
+        reply_file.write_text((reply_text or "").strip() + "\n", encoding="utf-8")
+        outputs.append(reply_file)
+    elif reply_file.is_file() and reply_file not in outputs:
+        outputs.append(reply_file)
+    return save_operator_result(
+        project,
+        node_key,
+        input_paths=list(input_paths or []),
+        output_paths=outputs,
+        reply_text=reply_text or "",
+        gate_status=parsed.verdict,
+        analysis=parsed.to_dict(),
+    )
+
+
 def save_operator_result(
     project: Project,
     node_key: str,
