@@ -18,7 +18,8 @@ export function GptOperatorCardPanel({
   nodeKey: string;
   onOpenStudio?: () => void;
 }) {
-  const [open, setOpen] = useState(true);
+  /** По умолчанию свёрнут — карточка компактная, пульт по клику. */
+  const [open, setOpen] = useState(false);
   const resolve = useQuery({
     queryKey: ["gpt-operator-resolve", projectId, nodeKey],
     queryFn: () => api.resolveGptOperator(projectId, nodeKey),
