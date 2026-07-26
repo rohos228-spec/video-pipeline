@@ -1353,6 +1353,90 @@ async def remap_excel_gpt_keys(
     return {"ok": True, "remapped": remapped}
 
 
+@router.get("/{project_id}/storage/{node_key}/resolve")
+async def storage_resolve(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.storage_node import resolve_storage
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return resolve_storage(p, node_key)
+
+
+@router.patch("/{project_id}/storage/{node_key}")
+async def storage_patch(
+    project_id: int,
+    node_key: str,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.storage_node import patch_config, resolve_storage
+
+    p = _project_or_404(await session.get(Project, project_id))
+    body = dict(payload) if isinstance(payload, dict) else {}
+    cfg = patch_config(p, node_key, body)
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, "config": cfg, "resolve": resolve_storage(p, node_key)}
+
+
+@router.post("/{project_id}/storage/{node_key}/sync")
+async def storage_sync(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Забрать файлы с входящих стрелок в папку этой ноды."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.storage_node import sync_from_edges
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = sync_from_edges(p, node_key)
+    flag_modified(p, "meta")
+    await session.commit()
+    return {"ok": True, **result}
+
+
+@router.post("/{project_id}/storage/{node_key}/upload")
+async def storage_upload(
+    project_id: int,
+    node_key: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.storage_node import resolve_storage, save_upload
+
+    p = _project_or_404(await session.get(Project, project_id))
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    dest = save_upload(p, node_key, file.filename or "upload.bin", raw)
+    return {
+        "ok": True,
+        "fileName": dest.name,
+        "path": str(dest),
+        "resolve": resolve_storage(p, node_key),
+    }
+
+
+@router.delete("/{project_id}/storage/{node_key}/files")
+async def storage_clear_files(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.services.storage_node import clear_storage, resolve_storage
+
+    p = _project_or_404(await session.get(Project, project_id))
+    n = clear_storage(p, node_key)
+    return {"ok": True, "removed": n, "resolve": resolve_storage(p, node_key)}
+
+
 @router.post("/parents/disable-auto-mode")
 async def disable_auto_mode_all_parents(
     session: AsyncSession = Depends(get_session),

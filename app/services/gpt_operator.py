@@ -306,6 +306,11 @@ def files_from_source_node(
     if typ == "hero":
         return _collect_under(root / "characters", suffixes=_IMAGE_SUFFIXES, limit=limit)
 
+    if typ == "storage":
+        from app.services.storage_node import stored_paths
+
+        return stored_paths(project, source_key, limit=limit)
+
     if typ in ("audio", "music"):
         voice = root / "voiceover.txt"
         if voice.is_file():

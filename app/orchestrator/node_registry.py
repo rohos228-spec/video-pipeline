@@ -19,7 +19,7 @@ HITL_NODE_TYPES: frozenset[str] = frozenset(
     {"hitl_hero", "hitl_images", "hitl_videos", "hitl_final", "hitl_gate"}
 )
 
-CONFIG_NODE_TYPES: frozenset[str] = frozenset({"topic"})
+CONFIG_NODE_TYPES: frozenset[str] = frozenset({"topic", "storage"})
 
 
 @dataclass(frozen=True)

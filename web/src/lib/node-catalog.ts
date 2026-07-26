@@ -37,6 +37,15 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "88 70% 52%",
     iconKey: "plan",
   },
+  storage: {
+    type: "storage",
+    label: "Хранилище",
+    description:
+      "Только хранит файлы: со стрелок или загрузкой. Своя папка на каждую ноду, форматы на выбор.",
+    category: "objects",
+    accent: "200 55% 55%",
+    iconKey: "package",
+  },
   topic: {
     type: "topic",
     label: "Тема ролика",

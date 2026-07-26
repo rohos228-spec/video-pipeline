@@ -18,7 +18,7 @@ export interface NodePromptSlot {
   custom?: boolean;
 }
 
-const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt"]);
+const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt", "storage"]);
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
