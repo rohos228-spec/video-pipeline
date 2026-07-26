@@ -114,13 +114,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
             )}
           >
             {!isExcelFeed && <HandleWithDetach side="in" nodeKey={d.nodeKey} />}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id="out"
-              className="!h-3.5 !w-3.5 !cursor-crosshair !rounded-full !border !border-primary/40 !bg-background hover:!scale-125 hover:!border-primary"
-              style={{ right: -7 }}
-            />
+            {/* Выход без точки: тянуть связь можно с любого места правого края */}
+            <SideSourceStrip nodeKey={d.nodeKey} />
             {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
               <NodeResultBadge
                 snapshot={resultSnapshot}
@@ -271,13 +266,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               }}
             >
               {!isExcelFeed && <HandleWithDetach side="in" nodeKey={d.nodeKey} />}
-              <Handle
-                type="source"
-                position={Position.Right}
-                id="out"
-                className="!h-3 !w-3 !cursor-crosshair !rounded-full !border !border-white/30 !bg-background hover:!scale-125 hover:!border-primary"
-                style={{ right: -6 }}
-              />
+              <SideSourceStrip nodeKey={d.nodeKey} />
 
               {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
                 <div className="absolute -right-1 -top-1 z-20 scale-90">
@@ -466,6 +455,31 @@ function VTrigger({
   );
 }
 
+/** Невидимая полоса справа: отсюда тянут сколько угодно связей, без точки-выхода. */
+function SideSourceStrip({ nodeKey }: { nodeKey: string }) {
+  return (
+    <div
+      className="group/out pointer-events-none absolute inset-y-0 -right-2 z-20 w-4"
+      data-node-out={nodeKey}
+    >
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="out"
+        title="Тяни связь с правого края"
+        className={cn(
+          "!pointer-events-auto !left-auto !right-0 !top-0 !h-full !w-3 !translate-x-0 !translate-y-0",
+          "!cursor-crosshair !rounded-none !border-0 !bg-transparent !opacity-0",
+          "hover:!bg-primary/15 hover:!opacity-100",
+        )}
+        style={{ right: 0, top: 0, transform: "none" }}
+      />
+      {/* тонкая подсветка края при наведении на зону выхода */}
+      <div className="pointer-events-none absolute inset-y-1 right-0 w-0.5 rounded-full bg-primary/0 transition group-hover/out:bg-primary/45" />
+    </div>
+  );
+}
+
 function HandleWithDetach({
   side,
   nodeKey,
@@ -474,28 +488,24 @@ function HandleWithDetach({
   nodeKey: string;
 }) {
   const isIn = side === "in";
+  // Выход больше не рисуем точкой — только SideSourceStrip.
+  if (!isIn) return <SideSourceStrip nodeKey={nodeKey} />;
   return (
     <div
-      className={cn(
-        "group/conn pointer-events-none absolute top-1/2 z-10 -translate-y-1/2",
-        isIn ? "-left-3" : "-right-3",
-      )}
+      className="group/conn pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 -left-3"
       style={{ width: 22, height: 22 }}
     >
       <Handle
-        type={isIn ? "target" : "source"}
-        position={isIn ? Position.Left : Position.Right}
-        id={isIn ? "in" : "out"}
+        type="target"
+        position={Position.Left}
+        id="in"
         className="!pointer-events-auto !left-1/2 !top-1/2 !h-3.5 !w-3.5 !-translate-x-1/2 !-translate-y-1/2 !cursor-crosshair !rounded-full !border !border-white/30 !bg-background hover:!scale-125 hover:!border-primary"
       />
       <button
         type="button"
-        title="Отсоединить эту сторону ноды"
+        title="Отсоединить вход"
         aria-label="Отсоединить"
-        className={cn(
-          "nodrag pointer-events-auto absolute z-20 flex h-4 w-4 items-center justify-center rounded-full border border-destructive/60 bg-destructive text-destructive-foreground opacity-0 shadow ring-1 ring-background transition group-hover/conn:opacity-100",
-          isIn ? "-top-2 -left-2" : "-top-2 -right-2",
-        )}
+        className="nodrag pointer-events-auto absolute -top-2 -left-2 z-20 flex h-4 w-4 items-center justify-center rounded-full border border-destructive/60 bg-destructive text-destructive-foreground opacity-0 shadow ring-1 ring-background transition group-hover/conn:opacity-100"
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -505,7 +515,7 @@ function HandleWithDetach({
           e.stopPropagation();
           window.dispatchEvent(
             new CustomEvent("canvas-detach-handle", {
-              detail: { nodeKey, side, autoSave: true },
+              detail: { nodeKey, side: "in", autoSave: true },
             }),
           );
         }}
