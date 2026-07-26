@@ -221,8 +221,17 @@ async def chat(
                 resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
             if status in _FATAL_STATUS:
+                low = resp.text.lower()
+                hint = ""
+                if "apikey error" in low:
+                    hint = (
+                        f" — ключ не авторизован на модель {use_model!r} "
+                        "(добавь модель в whitelist ключа grsai)"
+                    )
+                elif "model not register" in low or "not register" in low:
+                    hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
                 raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:400]}",
+                    f"GPT HTTP {status}: {resp.text[:400]}{hint}",
                     context={"status_code": status, "retryable": False, "model": use_model},
                 )
             if status in _RETRY_STATUS or status >= 500:
