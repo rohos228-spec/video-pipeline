@@ -258,6 +258,40 @@ def test_build_messages_with_file(tmp_path: Path) -> None:
     assert "закадровый текст" in user
 
 
+def _tiny_png(path: Path) -> Path:
+    path.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+        )
+    )
+    return path
+
+
+def test_build_messages_vision_parts(tmp_path: Path) -> None:
+    img = _tiny_png(tmp_path / "hero.png")
+    msgs = build_messages(prompt="проверь кадр", input_paths=[img])
+    content = msgs[-1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_build_input_vision_responses(tmp_path: Path) -> None:
+    from app.services.gpt_api import build_input
+
+    img = _tiny_png(tmp_path / "scene.jpg")
+    # .jpg with png bytes — mime by suffix; ok for structure test
+    img.write_bytes(_tiny_png(tmp_path / "x.png").read_bytes())
+    inp = build_input(prompt="aspect?", input_paths=[img])
+    assert isinstance(inp, list)
+    parts = inp[0]["content"]
+    assert parts[0]["type"] == "input_text"
+    assert parts[1]["type"] == "input_image"
+    assert parts[1]["image_url"].startswith("data:image/jpeg;base64,")
+
+
 @pytest.mark.asyncio
 async def test_run_operator_api_real_check(monkeypatch, tmp_path: Path) -> None:
     """Интеграция: включённый API + review-роль → analysis.json + verdict."""

@@ -31,6 +31,10 @@ _RETRY_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\}<>\"']+", re.IGNORECASE)
 _TEXT_SUFFIXES = frozenset({".txt", ".md", ".csv", ".json", ".yaml", ".yml"})
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+# Лимит картинок и размера (base64 раздувает ~4/3) — чтобы не упереться в payload.
+_MAX_VISION_IMAGES = 8
+_MAX_VISION_BYTES = 4_000_000
 
 
 class GptApiError(Exception):
@@ -124,8 +128,14 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
             body = path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:  # noqa: BLE001
             body = f"[не удалось прочитать {path.name}: {e}]"
+    elif suffix in _IMAGE_SUFFIXES:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = -1
+        return f"[изображение {path.name}: {suffix}, {size} байт — см. vision-вложение]"
     else:
-        # бинарь (png/mp4/…) — только метаданные, не тянем в текст.
+        # бинарь (mp4/…) — только метаданные, не тянем в текст.
         try:
             size = path.stat().st_size
         except OSError:
@@ -134,6 +144,42 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     if len(body) > max_chars:
         body = body[:max_chars] + "\n… (обрезано)"
     return f"===== {path.name} =====\n{body}"
+
+
+def is_image_path(path: Path) -> bool:
+    return path.suffix.lower() in _IMAGE_SUFFIXES
+
+
+def image_to_data_url(path: Path) -> str:
+    """data:image/...;base64,... для multimodal / vision."""
+    import base64
+
+    suffix = path.suffix.lower()
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix, "application/octet-stream")
+    data = path.read_bytes()
+    if len(data) > _MAX_VISION_BYTES:
+        raise GptApiError(
+            f"картинка слишком большая для vision: {path.name} ({len(data)} байт)",
+            context={"error_kind": "media_too_large", "retryable": False},
+        )
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def split_input_paths(
+    input_paths: list[Path] | None,
+) -> tuple[list[Path], list[Path]]:
+    """(text_or_other_files, image_files) с лимитом vision."""
+    files = [p for p in (input_paths or []) if p and p.is_file()]
+    images = [p for p in files if is_image_path(p)][:_MAX_VISION_IMAGES]
+    others = [p for p in files if p not in images]
+    return others, images
 
 
 def is_responses_mode() -> bool:
@@ -146,24 +192,65 @@ def is_responses_mode() -> bool:
     return "responses" in (settings.gpt_chat_path or "").lower()
 
 
+def _compose_user_text(
+    *,
+    prompt: str,
+    accompanying: str = "",
+    text_paths: list[Path] | None = None,
+    image_names: list[str] | None = None,
+) -> str:
+    parts: list[str] = []
+    if (prompt or "").strip():
+        parts.append(prompt.strip())
+    if (accompanying or "").strip():
+        parts.append("## Сопроводительный текст\n" + accompanying.strip())
+    files = list(text_paths or [])
+    if files:
+        parts.append("## Приложенные файлы")
+        for p in files:
+            parts.append(file_to_context(p))
+    if image_names:
+        parts.append(
+            "## Изображения (vision)\n"
+            + "\n".join(f"- {n}" for n in image_names)
+        )
+    return "\n\n".join(parts) or "(пусто)"
+
+
 def build_input(
     *,
     prompt: str,
     accompanying: str = "",
     input_paths: list[Path] | None = None,
     system: str | None = None,
-) -> str:
-    """Плоский текст-ввод для Responses API (kie.ai codex)."""
-    msgs = build_messages(
-        prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+) -> str | list[dict[str, Any]]:
+    """Ввод для Responses API: строка или multimodal input[] с картинками."""
+    others, images = split_input_paths(input_paths)
+    text = _compose_user_text(
+        prompt=prompt,
+        accompanying=accompanying,
+        text_paths=others,
+        image_names=[p.name for p in images],
     )
-    parts: list[str] = []
-    for m in msgs:
-        if m["role"] == "system":
-            parts.append(f"[Инструкция]\n{m['content']}")
-        else:
-            parts.append(m["content"])
-    return "\n\n".join(parts)
+    if system:
+        text = f"[Инструкция]\n{system}\n\n{text}"
+    if not images:
+        return text
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
+    for img in images:
+        try:
+            content.append(
+                {"type": "input_image", "image_url": image_to_data_url(img)}
+            )
+        except GptApiError as e:
+            logger.warning("gpt_api vision skip {}: {}", img.name, e)
+            content.append(
+                {
+                    "type": "input_text",
+                    "text": f"[не удалось вложить изображение {img.name}: {e}]",
+                }
+            )
+    return [{"role": "user", "content": content}]
 
 
 def build_messages(
@@ -172,25 +259,41 @@ def build_messages(
     accompanying: str = "",
     input_paths: list[Path] | None = None,
     system: str | None = None,
-) -> list[dict[str, str]]:
-    """Собрать messages для chat/completions из промта + сопровода + файлов."""
-    messages: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    """Собрать messages для chat/completions (текст + optional vision)."""
+    messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
 
-    parts: list[str] = []
-    if (prompt or "").strip():
-        parts.append(prompt.strip())
-    if (accompanying or "").strip():
-        parts.append("## Сопроводительный текст\n" + accompanying.strip())
+    others, images = split_input_paths(input_paths)
+    text = _compose_user_text(
+        prompt=prompt,
+        accompanying=accompanying,
+        text_paths=others,
+        image_names=[p.name for p in images],
+    )
+    if not images:
+        messages.append({"role": "user", "content": text})
+        return messages
 
-    files = [p for p in (input_paths or []) if p and p.is_file()]
-    if files:
-        parts.append("## Приложенные файлы")
-        for p in files:
-            parts.append(file_to_context(p))
-
-    messages.append({"role": "user", "content": "\n\n".join(parts) or "(пусто)"})
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for img in images:
+        try:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_to_data_url(img)},
+                }
+            )
+        except GptApiError as e:
+            logger.warning("gpt_api vision skip {}: {}", img.name, e)
+            content.append(
+                {
+                    "type": "text",
+                    "text": f"[не удалось вложить изображение {img.name}: {e}]",
+                }
+            )
+    messages.append({"role": "user", "content": content})
     return messages
 
 
