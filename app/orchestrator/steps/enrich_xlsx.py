@@ -263,6 +263,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             accompanying=accompanying,
             input_paths=data_paths,
         )
+        # После project_file writeback — подтянуть xlsx → DB.
+        if output_mode == "project_file":
+            wrote = any(
+                p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
+            )
+            if wrote:
+                try:
+                    from app.services.chatgpt_xlsx import sync_project_xlsx
+
+                    await sync_project_xlsx(
+                        session, project, project.data_dir / "project.xlsx",
+                        keep_fields=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[#{}] enrich_xlsx API: sync_project_xlsx after writeback failed",
+                        project.id,
+                    )
         save_operator_result(
             project,
             node_key,

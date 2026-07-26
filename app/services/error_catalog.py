@@ -122,8 +122,10 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
-    if "xlsx-sync" in low or "xlsx" in low and ("corrupt" in low or "не открыв" in low):
-        return "xlsx_corrupt" if "corrupt" in low or "не открыв" in low else "xlsx_invalid"
+    if "xlsx-sync" in low or "xlsx" in low:
+        if "corrupt" in low or "не открыв" in low:
+            return "xlsx_corrupt"
+        return "xlsx_invalid"
     if name in ("StepCancelledError", "CancelledError"):
         return "pipeline_cancelled"
     if "timeout" in low or "таймаут" in low:

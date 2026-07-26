@@ -169,6 +169,7 @@ async def _run_operator_api_real(
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
+    from app.services.xlsx_text_writeback import WRITEBACK_HINT, writeback_project_xlsx
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -176,9 +177,13 @@ async def _run_operator_api_real(
     is_check = role in ("review", "gate", "compare")
     prompt_for_model = append_response_footer(prompt) if is_check else (prompt or "")
 
+    accomp = accompanying or ""
+    if output_mode == "project_file" and WRITEBACK_HINT not in accomp:
+        accomp = f"{accomp}\n\n{WRITEBACK_HINT}".strip() if accomp else WRITEBACK_HINT
+
     result = await chat(
         prompt=prompt_for_model,
-        accompanying=accompanying,
+        accompanying=accomp,
         input_paths=list(input_paths),
         # Проверочные роли: строгий JSON, temperature=0 для стабильного вердикта.
         temperature=0.0 if is_check else None,
@@ -196,13 +201,32 @@ async def _run_operator_api_real(
 
     # Скачивание/копирование контента: если модель вернула ссылки на файлы —
     # тянем их в папку ноды (картинки/видео/xlsx из ответа GPT).
+    downloaded: list[Path] = []
     for i, url in enumerate(collect_result_urls(reply_text)):
         suffix = Path(url.split("?")[0]).suffix or ".bin"
         dest = out_dir / f"content_{i + 1}{suffix}"
         try:
-            output_paths.append(await download_content(url, dest))
+            got = await download_content(url, dest)
+            downloaded.append(got)
+            output_paths.append(got)
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_operator/api: не скачал {}: {}", url, e)
+
+    # Рабочие ноды (project_file): запись обратно в project.xlsx.
+    if output_mode == "project_file":
+        project_xlsx = project_dir / "project.xlsx"
+        updated = writeback_project_xlsx(
+            project_xlsx=project_xlsx,
+            reply_text=reply_text,
+            downloaded_paths=downloaded,
+        )
+        if updated is not None:
+            output_paths.insert(0, updated)
+        else:
+            logger.warning(
+                "gpt_operator/api: project_file без writeback (нет xlsx/TSV) node={}",
+                node_key,
+            )
 
     # Текст ответа на диск (для UI / forward.inherit).
     if output_mode == "sidecar":
