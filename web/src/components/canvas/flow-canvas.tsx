@@ -488,10 +488,30 @@ export function FlowCanvas({
         const cycle = (check.errors || []).find((e) => e.includes("цикл"));
         toast.error(
           cycle
-            ? `Граф не сохранён: жёсткий цикл. Ветку возврата пометьте как «Не ок» на стрелке — петля проверки допускается.`
+            ? `Граф не сохранён: жёсткий цикл без проверяющей ноды. Петля через excel_gpt помечается сама; иначе уберите кольцо.`
             : `Граф не сохранён: ${check.errors.join("; ")}`,
         );
         return;
+      }
+      // Авто: excel_gpt → hero и т.п. стали «Не ок» — пишем уже нормализованные рёбра.
+      if (Array.isArray(check.edges) && check.edges.length) {
+        const byId = new Map(check.edges.map((e) => [e.id, e]));
+        for (let i = 0; i < wfEdges.length; i++) {
+          const next = byId.get(wfEdges[i].id);
+          if (next) wfEdges[i] = next;
+        }
+        setEdges((prev) =>
+          prev.map((e) => {
+            const next = byId.get(e.id);
+            if (!next) return e;
+            const kind = String(next.data?.kind || "after");
+            return {
+              ...e,
+              label: typeof next.label === "string" ? next.label : e.label,
+              data: { ...((e.data as object) || {}), ...(next.data || {}), kind },
+            };
+          }),
+        );
       }
       if (check.warnings.length) {
         const soft = check.warnings.find((w) => w.includes("Не ок") || w.includes("петля"));

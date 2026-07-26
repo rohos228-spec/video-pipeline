@@ -220,7 +220,13 @@ export const api = {
   saveWorkflow: (id: number, body: { name?: string; description?: string; nodes: WorkflowNode[]; edges: WorkflowEdge[] }) =>
     http<WorkflowDetail>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   validateWorkflow: (body: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }) =>
-    http<{ valid: boolean; errors: string[]; warnings: string[] }>(`/api/workflows/validate`, {
+    http<{
+      valid: boolean;
+      errors: string[];
+      warnings: string[];
+      /** Рёбра после авто-разметки петли excel_gpt → «Не ок». */
+      edges?: WorkflowEdge[];
+    }>(`/api/workflows/validate`, {
       method: "POST",
       body: JSON.stringify({ nodes: body.nodes, edges: body.edges }),
     }),
