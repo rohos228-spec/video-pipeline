@@ -52,9 +52,9 @@ export interface PipelineNodeData extends Record<string, unknown> {
   attempts: number;
 }
 
-/** Wide panel nodes keep airy card; others are circular orbs (Canon C). */
-function needsWidePanel(type: string): boolean {
-  return type === "excel_feed" || type === "hero" || type === "excel_gpt" || type.startsWith("enrich_");
+/** Все ноды — прямоугольные карточки (старый стиль). */
+function needsWidePanel(_type: string): boolean {
+  return true;
 }
 
 export function PipelineNode({ data, selected }: NodeProps) {
