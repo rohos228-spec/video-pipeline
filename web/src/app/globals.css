@@ -171,14 +171,19 @@ body {
   border: 1px solid hsl(0 0% 100% / 0.08);
   border-radius: var(--radius-md);
 }
-.react-flow__edge-path {
-  stroke: hsl(0 0% 100% / 0.18);
-  stroke-width: 1;
+.react-flow__edge-path,
+.react-flow__edge .soft-thread-edge-path {
+  stroke: hsl(210 18% 62% / 0.55);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
 }
 .react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:focus .react-flow__edge-path {
-  stroke: hsl(var(--primary));
-  stroke-width: 1.5;
+.react-flow__edge:focus .react-flow__edge-path,
+.react-flow__edge.selected .soft-thread-edge-path {
+  stroke: hsl(210 22% 72% / 0.85);
+  stroke-width: 1.55;
 }
 
 :focus-visible {
@@ -291,31 +296,40 @@ body {
     hsl(var(--background));
 }
 
-.react-flow.neural-flow .react-flow__edge-path {
-  stroke: hsl(0 0% 100% / 0.16);
-  stroke-width: 1;
+.react-flow.neural-flow .react-flow__edge-path,
+.react-flow.neural-flow .soft-thread-edge-path {
+  stroke: hsl(210 18% 62% / 0.55);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   filter: none;
 }
 
-.react-flow.neural-flow .react-flow__edge.animated path {
-  stroke-dasharray: 3 8;
-  animation: neural-edge-flow 2.2s linear infinite;
+/* Пунктир-нити: короткие точки, скруглённые концы, без ломаных углов path */
+.react-flow.neural-flow .react-flow__edge.animated path,
+.react-flow .react-flow__edge.animated path {
+  stroke-dasharray: 1.5 9;
+  animation: soft-thread-flow 2.8s linear infinite;
 }
 
-@keyframes neural-edge-flow {
+@keyframes soft-thread-flow {
   to {
-    stroke-dashoffset: -22;
+    stroke-dashoffset: -21;
   }
 }
 
-.react-flow.neural-flow .react-flow__connection-path {
-  stroke: hsl(var(--primary) / 0.45);
-  stroke-width: 1.25;
+.react-flow.neural-flow .react-flow__connection-path,
+.react-flow__connection-path {
+  stroke: hsl(210 18% 62% / 0.7);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-dasharray: 1.5 9;
 }
 
-.react-flow__edge.selected .react-flow__edge-path {
-  stroke: hsl(var(--primary));
-  stroke-width: 1.5;
+.react-flow__edge.excel-lane-edge .react-flow__edge-path,
+.react-flow__edge.excel-lane-edge .soft-thread-edge-path {
+  stroke: hsl(210 18% 62% / 0.55);
+  stroke-width: 1.35;
 }
 
 .btn-airy {

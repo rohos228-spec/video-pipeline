@@ -7,6 +7,7 @@ import {
   Controls,
   MiniMap,
   BackgroundVariant,
+  ConnectionLineType,
   type Node,
   type Edge,
   useNodesState,
@@ -79,6 +80,7 @@ import {
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
 import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { EdgeKindControls } from "./edge-kind-controls";
+import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
@@ -94,6 +96,19 @@ import {
 const nodeTypes = {
   pipeline: PipelineNode,
 };
+
+const edgeTypes = {
+  thread: SoftThreadEdge,
+  /** Старые графы со smoothstep/default → та же мягкая нить. */
+  smoothstep: SoftThreadEdge,
+  default: SoftThreadEdge,
+  bezier: SoftThreadEdge,
+};
+
+const THREAD_EDGE_STYLE = {
+  stroke: "hsl(210 18% 62% / 0.55)",
+  strokeWidth: 1.35,
+} as const;
 
 export function FlowCanvas({
   projectId,
@@ -415,7 +430,9 @@ export function FlowCanvas({
           {
             ...connection,
             id: `e_${connection.source}_${connection.target}_${Date.now()}`,
-            type: "smoothstep",
+            type: "thread",
+            animated: true,
+            style: { ...THREAD_EDGE_STYLE },
             data: { kind: "after" },
             label: edgeKindLabel("after"),
           },
@@ -706,7 +723,9 @@ export function FlowCanvas({
       target: idMap.get(e.target) ?? e.target,
       sourceHandle: e.sourceHandle ?? "out",
       targetHandle: e.targetHandle ?? "in",
-      type: "smoothstep",
+      type: "thread",
+      animated: true,
+      style: { ...THREAD_EDGE_STYLE },
     }));
     setNodes((prev) => [
       ...prev.map((n) => ({ ...n, selected: false })),
@@ -891,6 +910,7 @@ export function FlowCanvas({
     <>
       <div ref={paneRef} className="relative h-full w-full">
       <ReactFlow
+        className="neural-flow"
         nodes={nodes}
         edges={edges}
         onInit={(inst) => {
@@ -915,7 +935,14 @@ export function FlowCanvas({
         selectionKeyCode={null}
         onPaneContextMenu={(e) => e.preventDefault()}
         onConnect={onConnect}
-        connectionLineStyle={{ strokeDasharray: "6 4", stroke: "hsl(var(--primary))" }}
+        connectionLineType={ConnectionLineType.Bezier}
+        connectionLineStyle={{
+          strokeDasharray: "2 7",
+          stroke: "hsl(210 18% 62% / 0.7)",
+          strokeWidth: 1.35,
+          strokeLinecap: "round",
+        }}
+        edgeTypes={edgeTypes}
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
         onNodesDelete={onNodesDelete}
@@ -946,7 +973,11 @@ export function FlowCanvas({
             onSelectNode(null);
           }
         }}
-        defaultEdgeOptions={{ animated: true }}
+        defaultEdgeOptions={{
+          type: "thread",
+          animated: true,
+          style: { ...THREAD_EDGE_STYLE },
+        }}
       >
         <Background
           color="hsl(var(--canvas-grid))"
@@ -1070,6 +1101,9 @@ export function FlowCanvas({
               id: `${e.id}_lane_${stamp}`,
               source: idMap.get(e.source) ?? e.source,
               target: idMap.get(e.target) ?? e.target,
+              type: "thread",
+              animated: true,
+              style: { ...THREAD_EDGE_STYLE },
             }));
           const excelNode = nodes.find(
             (n) => (n.data as PipelineNodeData).type === "excel_feed",
@@ -1083,9 +1117,9 @@ export function FlowCanvas({
                   id: `excel_${stamp}_${p.id}`,
                   source: excelNode.id,
                   target: p.id,
-                  type: "smoothstep",
+                  type: "thread",
                   animated: true,
-                  style: { stroke: "hsl(142 70% 45%)", strokeWidth: 2 },
+                  style: { ...THREAD_EDGE_STYLE },
                   className: "excel-lane-edge",
                 });
               }
@@ -1620,7 +1654,9 @@ function workflowToReactFlowEdges(wf: WorkflowDetail): Edge[] {
       target: e.target,
       sourceHandle: e.sourceHandle ?? undefined,
       targetHandle: e.targetHandle ?? undefined,
-      type: "smoothstep",
+      type: "thread",
+      animated: true,
+      style: { ...THREAD_EDGE_STYLE },
       label: e.label ?? edgeKindLabel(kind),
       data: { ...(e.data || {}), kind },
     };
