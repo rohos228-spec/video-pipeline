@@ -110,9 +110,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
               "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
               isExcelGpt ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
-              running && "glow-running border-primary/45",
-              d.status === "done" && "border-emerald-500/30",
-              d.status === "failed" && "border-destructive/50",
+              running && "glow-running border-amber-400/60",
+              d.status === "done" && "border-emerald-500/40",
+              d.status === "failed" && "border-destructive/60",
               d.status === "waiting_hitl" && "border-amber-400/50 pulse-soft",
               selected && "ring-1 ring-primary/50 ring-offset-2 ring-offset-background",
               disabled && "opacity-45 grayscale",
@@ -252,9 +252,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 {d.progressText}
               </div>
             )}
-            {d.error && d.status === "failed" && (
-              <div className="border-t border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[10px] text-destructive">
-                {truncate(d.error, 80)}
+            {d.error && (
+              <div
+                className="border-t border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[10px] text-destructive"
+                title={d.error}
+              >
+                {truncate(d.error, 120)}
               </div>
             )}
           </div>
@@ -270,9 +273,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
             <div
               className={cn(
                 "canon-node-orb relative flex h-[72px] w-[72px] items-center justify-center rounded-full border border-white/10 bg-gradient-to-b from-white/[0.07] to-black/40 backdrop-blur-md",
-                running && "glow-running border-primary/50",
-                d.status === "done" && "border-emerald-400/35",
-                d.status === "failed" && "border-destructive/50",
+                running && "glow-running border-amber-400/60",
+                d.status === "done" && "border-emerald-400/45",
+                d.status === "failed" && "border-destructive/60",
                 d.status === "waiting_hitl" && "border-amber-400/50 pulse-soft",
                 selected && "ring-1 ring-primary/60 ring-offset-2 ring-offset-background",
               )}
@@ -579,7 +582,7 @@ const STATUS_CONFIG: Record<
 > = {
   pending: { icon: Circle, label: "ожидание", bg: "bg-muted/80", text: "text-muted-foreground" },
   queued: { icon: Hourglass, label: "в очереди", bg: "bg-sky-500/15", text: "text-sky-400" },
-  running: { icon: Loader2, label: "в работе", bg: "bg-primary/20", text: "text-primary" },
+  running: { icon: Loader2, label: "в работе", bg: "bg-amber-500/20", text: "text-amber-400" },
   waiting_hitl: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15", text: "text-amber-400" },
   done: { icon: CheckCircle2, label: "готово", bg: "bg-emerald-500/15", text: "text-emerald-400" },
   failed: { icon: AlertCircle, label: "ошибка", bg: "bg-destructive/15", text: "text-destructive" },

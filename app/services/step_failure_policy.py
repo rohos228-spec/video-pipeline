@@ -216,7 +216,11 @@ async def record_step_failure(
     total = totals.get(key, 0) + 1
     totals[key] = total
     fs["total_fails"] = totals
-    fs["last_error"] = f"{type(error).__name__}: {error}"
+    from app.services.error_catalog import describe_error
+
+    err_code, err_msg = describe_error(error)
+    fs["last_error"] = err_msg
+    fs["last_error_code"] = err_code
     fs["last_running"] = key
     cycle = (total - 1) // FAILS_PER_CYCLE + 1
     fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1

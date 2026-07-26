@@ -366,7 +366,7 @@ export function FlowCanvas({
       evt !== null &&
       (evt as { type?: string }).type === "node_status_changed"
     ) {
-      const e = evt as { node_key?: string; to: string };
+      const e = evt as { node_key?: string; to: string; error?: string | null };
       if (!e.node_key) return;
       setNodes((prev) =>
         prev.map((n) => {
@@ -382,6 +382,14 @@ export function FlowCanvas({
               status: to,
               progress: to === "running" ? n.data.progress : 0,
               progressText: to === "running" ? n.data.progressText : null,
+              // Мгновенно показываем ошибку из WS (не ждём refetch);
+              // на успехе/сбросе — очищаем.
+              error:
+                e.error != null
+                  ? e.error
+                  : to === "done" || to === "pending" || to === "queued"
+                    ? null
+                    : n.data.error,
             },
           };
         }),
@@ -1057,7 +1065,7 @@ export function FlowCanvas({
           style={{ width: 168, height: 112 }}
           nodeColor={(node) => {
             const data = node.data as PipelineNodeData;
-            if (data.status === "running") return "hsl(var(--primary))";
+            if (data.status === "running") return "hsl(43 96% 56%)";
             if (data.status === "queued") return "hsl(200 80% 50%)";
             if (data.status === "done") return "hsl(var(--success))";
             if (data.status === "failed") return "hsl(var(--destructive))";

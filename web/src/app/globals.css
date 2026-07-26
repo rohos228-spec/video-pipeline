@@ -192,11 +192,12 @@ body {
 }
 
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.35); }
-  50% { box-shadow: 0 0 0 8px hsl(var(--primary) / 0); }
+  /* Работающая нода — жёлтое/янтарное свечение цвета пайплайна. */
+  0%, 100% { box-shadow: 0 0 0 0 hsl(43 96% 56% / 0.45); }
+  50% { box-shadow: 0 0 0 9px hsl(43 96% 56% / 0); }
 }
 .glow-running {
-  animation: glow-pulse 1.8s ease-in-out infinite;
+  animation: glow-pulse 1.6s ease-in-out infinite;
 }
 
 @keyframes pulse-soft {

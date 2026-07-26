@@ -345,7 +345,7 @@ export interface FleetTransferState {
  */
 export type BusEvent =
   | { type: "subscribed"; channel: string }
-  | { type: "node_status_changed"; run_id: number; node_key: string; node_type: string; from: NodeRunStatus; to: NodeRunStatus; project_id?: number }
+  | { type: "node_status_changed"; run_id: number; node_key: string; node_type: string; from: NodeRunStatus; to: NodeRunStatus; project_id?: number; error?: string | null }
   | { type: "run_created"; run_id: number; project_id: number; workflow_id: number }
   | { type: "run_cancelled"; run_id: number }
   | { type: "project_created"; project_id: number; slug: string; topic: string }
