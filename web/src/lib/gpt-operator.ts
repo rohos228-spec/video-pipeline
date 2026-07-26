@@ -46,6 +46,22 @@ export interface OperatorBranching {
   verdict?: "pass" | "fail" | null;
 }
 
+export interface CheckAnalysisItem {
+  id: string;
+  ok: boolean;
+  note?: string;
+}
+
+export interface CheckAnalysisView {
+  schema?: string;
+  verdict?: "pass" | "fail" | string;
+  summary?: string;
+  checks?: CheckAnalysisItem[];
+  forward?: { mode?: string; paths?: string[] };
+  fix?: { target?: string; instructions?: string; rewrite_file?: string | null };
+  raw_error?: string | null;
+}
+
 export interface OperatorResolve {
   nodeKey: string;
   role: OperatorRole;
@@ -68,6 +84,8 @@ export interface OperatorResolve {
   }[];
   outgoingEdges: OperatorEdgeSummary[];
   branching?: OperatorBranching;
+  /** Последний разбор vp.check.v1 (если нода проверяет). */
+  analysis?: CheckAnalysisView | null;
   errors: string[];
   warnings: string[];
   consistent: boolean;

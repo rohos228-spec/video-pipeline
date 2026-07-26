@@ -10,6 +10,8 @@ from app.services.check_analysis import (
     SCHEMA_ID,
     append_response_footer,
     expected_artifacts_for_node_type,
+    list_check_operator_steps,
+    load_check_operator_prompt,
     parse_check_analysis,
     parse_gate_status,
     write_analysis_json,
@@ -88,3 +90,25 @@ def test_footer_and_artifacts() -> None:
     assert "scenes/" in expected_artifacts_for_node_type("images")
     assert "characters/" in expected_artifacts_for_node_type("hero")
     assert "project.xlsx" in expected_artifacts_for_node_type("plan")
+
+
+def test_check_operator_prompt_library() -> None:
+    steps = list_check_operator_steps()
+    for need in (
+        "hero",
+        "images",
+        "assemble",
+        "plan",
+        "script",
+        "videos",
+        "audio",
+        "animation_prompts",
+        "image_prompts",
+    ):
+        assert need in steps, need
+    hero = load_check_operator_prompt("hero")
+    assert hero is not None
+    assert "персонаж" in hero.lower() or "hero" in hero.lower()
+    assert SCHEMA_ID in hero
+    # alias img_pr → image_prompts
+    assert load_check_operator_prompt("img_pr") is not None

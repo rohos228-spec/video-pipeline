@@ -10,6 +10,7 @@ from app.services.check_analysis import SCHEMA_ID
 from app.services.gpt_operator import (
     apply_check_reply,
     gate_allows_successors,
+    resolve_operator,
     verdict_edge_blocks,
 )
 
@@ -85,3 +86,29 @@ def test_apply_check_reply_broken_json_is_fail(tmp_path: Path, monkeypatch) -> N
     assert gate_allows_successors(p, "n_check") is False
     assert verdict_edge_blocks(p, "n_check", "fail") is False
     assert verdict_edge_blocks(p, "n_check", "pass") is True
+
+
+def test_resolve_exposes_analysis(tmp_path: Path, monkeypatch) -> None:
+    p = _project(tmp_path, monkeypatch)
+    apply_check_reply(
+        p,
+        "n_check",
+        json.dumps(
+            {
+                "schema": SCHEMA_ID,
+                "verdict": "fail",
+                "summary": "нужна правка кадра 3",
+                "checks": [{"id": "frame_3", "ok": False, "note": "артефакт"}],
+                "forward": {"mode": "inherit", "paths": []},
+                "fix": {"target": "source", "instructions": "переген кадр 3"},
+            },
+            ensure_ascii=False,
+        ),
+        input_paths=[p.data_dir / "project.xlsx"],
+    )
+    res = resolve_operator(p, "n_check")
+    assert res["analysis"] is not None
+    assert res["analysis"]["verdict"] == "fail"
+    assert res["analysis"]["summary"] == "нужна правка кадра 3"
+    assert res["branching"]["verdict"] == "fail"
+    assert res["analysis"]["checks"][0]["id"] == "frame_3"

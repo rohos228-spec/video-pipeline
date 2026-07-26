@@ -514,6 +514,24 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     if verdict not in ("pass", "fail"):
         verdict = ""
 
+    analysis_out: dict[str, Any] | None = None
+    raw_analysis = last.get("analysis") if isinstance(last.get("analysis"), dict) else None
+    if raw_analysis:
+        analysis_out = dict(raw_analysis)
+    elif verdict:
+        # минимальная карточка, если analysis.json ещё не было
+        analysis_out = {
+            "schema": "vp.check.v1",
+            "verdict": verdict,
+            "summary": str(cfg.get("lastSummary") or last.get("replyPreview") or "")[:500],
+            "checks": [],
+            "forward": {
+                "mode": "explicit" if last.get("forwardPaths") else "inherit",
+                "paths": list(last.get("forwardPaths") or []),
+            },
+            "fix": {"target": "none", "instructions": "", "rewrite_file": None},
+        }
+
     consistent = len(errors) == 0
     return {
         "nodeKey": node_key,
@@ -536,6 +554,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "hasFail": len(fail_edges) > 0,
             "verdict": verdict or None,
         },
+        "analysis": analysis_out,
         "errors": errors,
         "warnings": warnings,
         "consistent": consistent,
@@ -552,6 +571,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "inputSource": cfg.get("inputSource"),
             "label": str(cfg.get("label") or default_label_for_role(role)),
             "gateStatus": verdict or None,
+            "lastSummary": str(cfg.get("lastSummary") or "")[:500] or None,
         },
     }
 

@@ -51,6 +51,9 @@ export function GptOperatorCardPanel({
             {data?.branching && isBranchingRole(data.role)
               ? ` · ветки ${data.branching.hasPass ? "ок" : "—"}/${data.branching.hasFail ? "неок" : "—"}`
               : ""}
+            {data?.analysis?.verdict
+              ? ` · вердикт ${data.analysis.verdict === "pass" ? "ок" : "не ок"}`
+              : ""}
             {" · "}
             {open ? "свернуть" : "открыть роли / файлы / выход"}
           </span>

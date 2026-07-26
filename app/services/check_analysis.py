@@ -315,3 +315,46 @@ def expected_artifacts_for_node_type(node_type: str) -> tuple[str, ...]:
     if t.startswith("enrich_"):
         return EXPECTED_ARTIFACTS["excel_gpt"]
     return EXPECTED_ARTIFACTS.get(t, ())
+
+
+def _check_operator_root() -> Path:
+    try:
+        root = Path(__file__).resolve().parents[2]
+        path = root / "prompts" / "check_operator"
+        if path.is_dir():
+            return path
+    except Exception:  # noqa: BLE001
+        pass
+    return Path("prompts") / "check_operator"
+
+
+def list_check_operator_steps() -> list[str]:
+    """Имена шагов с промтами в prompts/check_operator/<step>/default.md."""
+    root = _check_operator_root()
+    if not root.is_dir():
+        return []
+    steps: list[str] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or child.name.startswith("_"):
+            continue
+        if (child / "default.md").is_file():
+            steps.append(child.name)
+    return steps
+
+
+def load_check_operator_prompt(step: str) -> str | None:
+    """Текст промта проверки + хвост схемы vp.check.v1."""
+    step_key = (step or "").strip().lower().replace("-", "_")
+    aliases = {
+        "img_pr": "image_prompts",
+        "anim_pr": "animation_prompts",
+        "img": "images",
+        "video": "videos",
+        "topic": "plan",
+    }
+    step_key = aliases.get(step_key, step_key)
+    path = _check_operator_root() / step_key / "default.md"
+    if not path.is_file():
+        return None
+    body = path.read_text(encoding="utf-8").strip()
+    return append_response_footer(body)

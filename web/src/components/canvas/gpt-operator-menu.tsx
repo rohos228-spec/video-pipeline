@@ -199,6 +199,54 @@ export function GptOperatorMenuPanel({
               ))}
             </ul>
           ) : null}
+          {data?.analysis ? (
+            <div className="mt-1.5 space-y-1 rounded-md border border-white/10 bg-black/25 px-1.5 py-1.5">
+              <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Анализ vp.check.v1
+              </p>
+              {data.analysis.summary ? (
+                <p className="text-[10px] leading-snug text-foreground/90">
+                  {data.analysis.summary}
+                </p>
+              ) : null}
+              {(data.analysis.checks || []).length ? (
+                <ul className="space-y-0.5">
+                  {data.analysis.checks!.slice(0, 8).map((c) => (
+                    <li
+                      key={`${c.id}-${c.note || ""}`}
+                      className={cn(
+                        "text-[9px] leading-snug",
+                        c.ok ? "text-emerald-100/85" : "text-rose-100/85",
+                      )}
+                    >
+                      {c.ok ? "✓" : "✗"} {c.id}
+                      {c.note ? ` — ${c.note}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {data.analysis.fix?.instructions ? (
+                <p className="text-[9px] leading-snug text-amber-100/80">
+                  правки: {data.analysis.fix.instructions}
+                </p>
+              ) : null}
+              {data.analysis.forward?.mode === "explicit" &&
+              (data.analysis.forward.paths || []).length ? (
+                <p className="text-[9px] text-muted-foreground">
+                  дальше: {(data.analysis.forward.paths || []).join(", ")}
+                </p>
+              ) : null}
+              {data.analysis.raw_error ? (
+                <p className="text-[9px] text-rose-200/90">
+                  ошибка разбора: {data.analysis.raw_error}
+                </p>
+              ) : null}
+            </div>
+          ) : showBranches ? (
+            <p className="mt-1 text-[9px] text-muted-foreground">
+              После Run здесь будет summary и checks из analysis.json
+            </p>
+          ) : null}
         </div>
       ) : null}
 
