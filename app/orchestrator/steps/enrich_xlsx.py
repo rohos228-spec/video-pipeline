@@ -234,6 +234,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             output_paths=list(api_res.output_paths),
             reply_text=api_res.reply_text,
             gate_status=api_res.gate_status,
+            analysis=(
+                api_res.analysis.to_dict() if getattr(api_res, "analysis", None) else None
+            ),
         )
         meta = dict(project.meta or {})
         completed = [

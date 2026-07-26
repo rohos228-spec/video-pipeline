@@ -622,18 +622,38 @@ def save_operator_result(
     output_paths: list[Path],
     reply_text: str,
     gate_status: str | None = None,
+    analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from datetime import datetime, timezone
 
+    from app.services.check_analysis import parse_check_analysis
+
+    # Если вердикт не передан явно — пробуем разобрать ответ (vp.check.v1).
+    resolved_gate = (gate_status or "").strip().lower() or None
+    analysis_dict = analysis
+    if analysis_dict is None and reply_text:
+        cfg = operator_config(project, node_key)
+        if cfg.get("role") in BRANCHING_ROLES:
+            parsed = parse_check_analysis(reply_text)
+            analysis_dict = parsed.to_dict()
+            if resolved_gate not in ("pass", "fail"):
+                resolved_gate = parsed.verdict
+
     meta = dict(project.meta or {})
     results = dict(meta.get("gpt_operator_results") or {})
-    entry = {
+    entry: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "inputPaths": [str(p) for p in input_paths],
         "outputPaths": [str(p) for p in output_paths],
         "replyPreview": (reply_text or "")[:2000],
-        "gateStatus": gate_status,
+        "gateStatus": resolved_gate,
     }
+    if analysis_dict:
+        entry["analysis"] = analysis_dict
+        fwd = analysis_dict.get("forward") if isinstance(analysis_dict, dict) else None
+        if isinstance(fwd, dict) and fwd.get("mode") == "explicit":
+            paths = fwd.get("paths") if isinstance(fwd.get("paths"), list) else []
+            entry["forwardPaths"] = [str(p) for p in paths]
     results[node_key] = entry
     meta["gpt_operator_results"] = results
     # mirror last reply into excel_gpt node config for UI
@@ -642,8 +662,10 @@ def save_operator_result(
     if output_paths:
         cur["lastReplyPath"] = str(output_paths[0])
         cur["lastReplyAt"] = entry["at"]
-    if gate_status:
-        cur["gateStatus"] = gate_status
+    if resolved_gate:
+        cur["gateStatus"] = resolved_gate
+    if analysis_dict and isinstance(analysis_dict, dict):
+        cur["lastSummary"] = str(analysis_dict.get("summary") or "")[:500]
     configs[node_key] = cur
     meta["excel_gpt_nodes"] = configs
     project.meta = meta

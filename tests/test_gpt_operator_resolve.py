@@ -205,9 +205,13 @@ def test_api_stub_writes_reply(tmp_path: Path, monkeypatch) -> None:
         )
     )
     assert res.output_paths
-    assert res.output_paths[0].is_file()
-    assert "stub" in res.reply_text.lower()
+    assert any(p.name == "analysis.json" for p in res.output_paths)
+    assert "vp.check.v1" in res.reply_text or "stub" in res.reply_text.lower()
     assert res.gate_status == "pass"
+    assert res.analysis is not None
+    assert res.analysis.verdict == "pass"
+    analysis_path = next(p for p in res.output_paths if p.name == "analysis.json")
+    assert "pass" in analysis_path.read_text(encoding="utf-8")
 
 
 def test_patch_sets_transport_api(tmp_path: Path, monkeypatch) -> None:
