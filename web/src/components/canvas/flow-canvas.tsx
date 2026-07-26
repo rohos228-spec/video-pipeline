@@ -481,11 +481,18 @@ export function FlowCanvas({
       });
       const check = await api.validateWorkflow({ nodes: wfNodes, edges: wfEdges });
       if (!check.valid) {
-        toast.error(`Граф не сохранён: ${check.errors.join("; ")}`);
+        const cycle = (check.errors || []).find((e) => e.includes("цикл"));
+        toast.error(
+          cycle
+            ? `Граф не сохранён: жёсткий цикл. Ветку возврата пометьте как «Не ок» на стрелке — петля проверки допускается.`
+            : `Граф не сохранён: ${check.errors.join("; ")}`,
+        );
         return;
       }
       if (check.warnings.length) {
-        toast.message(check.warnings[0]);
+        const soft = check.warnings.find((w) => w.includes("Не ок") || w.includes("петля"));
+        if (soft) toast.message(soft);
+        else toast.message(check.warnings[0]);
       }
       if (projectId) {
         const projectData = project.data ?? (await api.getProject(projectId));
