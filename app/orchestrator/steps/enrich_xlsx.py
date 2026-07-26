@@ -188,6 +188,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     accompanying = _get_accompanying_text(project, legacy_step_code)
 
+    # Проверочные роли: в промт добавляем хвост схемы vp.check.v1.
+    branching_role = False
+    if node_key and resolved is not None:
+        role_name = str(resolved.get("role") or "")
+        branching_role = role_name in ("review", "gate", "compare")
+        if branching_role:
+            from app.services.check_analysis import append_response_footer
+
+            master = append_response_footer(master or "")
+
     # ── API-транспорт (по умолчанию): без браузера/CDP ─────────────────
     if transport != "browser" and node_key and resolved is not None:
         from sqlalchemy.orm.attributes import flag_modified
@@ -234,6 +244,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             output_paths=list(api_res.output_paths),
             reply_text=api_res.reply_text,
             gate_status=api_res.gate_status,
+            analysis=(
+                api_res.analysis.to_dict() if getattr(api_res, "analysis", None) else None
+            ),
         )
         meta = dict(project.meta or {})
         completed = [
@@ -447,6 +460,41 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     f"enrich_xlsx slot={slot_idx}: 3 попытки failed, last err: {e}"
                 ) from e
             continue
+
+    # 3b. Проверочная роль: разобрать ответ → analysis.json + gateStatus
+    # (иначе ОК/НЕ ОК на канвасе не откроются после browser-run).
+    if branching_role and node_key:
+        from app.services.gpt_operator import apply_check_reply
+
+        reply_text = locals().get("reply") or ""
+        if not str(reply_text).strip():
+            from app.services.excel_gpt_node import upload_dir as _udir
+
+            rp = _udir(project, node_key) / "gpt_reply.txt"
+            if rp.is_file():
+                reply_text = rp.read_text(encoding="utf-8")
+        try:
+            apply_check_reply(
+                project,
+                node_key,
+                str(reply_text or ""),
+                input_paths=list(data_paths),
+                extra_output_paths=(
+                    [download_path]
+                    if want_xlsx and download_path.exists()
+                    else None
+                ),
+            )
+            logger.info(
+                "[#{}] enrich_xlsx browser check: gateStatus записан для {}",
+                project.id,
+                node_key,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] enrich_xlsx browser check: не удалось сохранить analysis",
+                project.id,
+            )
 
     # 4. Единый импорт xlsx → БД (только если ждали обновлённый Excel).
     if want_xlsx:

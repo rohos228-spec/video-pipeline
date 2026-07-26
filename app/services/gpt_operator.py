@@ -284,12 +284,47 @@ def files_from_source_node(
     if isinstance(results, dict):
         entry = results.get(source_key)
         if isinstance(entry, dict):
+            # vp.check.v1 forward.explicit → только указанные пути
+            fwd_paths = entry.get("forwardPaths")
+            if isinstance(fwd_paths, list) and fwd_paths:
+                for item in fwd_paths:
+                    rel = str(item).strip().replace("\\", "/")
+                    if not rel:
+                        continue
+                    p = Path(rel)
+                    if not p.is_file():
+                        p = root / rel
+                    if p.is_file():
+                        found.append(p)
+                if found:
+                    return found[:limit]
+            analysis = (
+                entry.get("analysis")
+                if isinstance(entry.get("analysis"), dict)
+                else {}
+            )
+            fwd = analysis.get("forward") if isinstance(analysis.get("forward"), dict) else {}
+            inherit_check = (
+                str(entry.get("gateStatus") or "") in ("pass", "fail")
+                or str(fwd.get("mode") or "") == "inherit"
+            )
+            # Проверка: дальше отдаём то, что проверяли — не analysis.json
+            if inherit_check and isinstance(entry.get("inputPaths"), list):
+                for item in entry["inputPaths"]:
+                    p = Path(str(item))
+                    if (
+                        p.is_file()
+                        and p.name not in ("analysis.json", "gpt_reply.txt")
+                    ):
+                        found.append(p)
+                if found:
+                    return found[:limit]
             for key in ("outputPaths", "inputPaths"):
                 raw = entry.get(key) or []
                 if isinstance(raw, list):
                     for item in raw:
                         p = Path(str(item))
-                        if p.is_file():
+                        if p.is_file() and p.name != "analysis.json":
                             found.append(p)
             if found:
                 return found[:limit]
@@ -614,6 +649,42 @@ def set_edge_kind_in_canvas(
     return updated
 
 
+def apply_check_reply(
+    project: Project,
+    node_key: str,
+    reply_text: str,
+    *,
+    input_paths: list[Path] | None = None,
+    extra_output_paths: list[Path] | None = None,
+) -> dict[str, Any]:
+    """Разобрать ответ проверки → analysis.json + gateStatus в meta.
+
+    Для browser и API путей. Битый JSON → fail (ветка «Не ок»).
+    """
+    from app.services.check_analysis import parse_check_analysis, write_analysis_json
+    from app.services.excel_gpt_node import upload_dir
+
+    parsed = parse_check_analysis(reply_text or "")
+    out_dir = upload_dir(project, node_key)
+    analysis_path = write_analysis_json(out_dir, parsed)
+    outputs = [analysis_path, *(extra_output_paths or [])]
+    reply_file = out_dir / "gpt_reply.txt"
+    if (reply_text or "").strip() and not reply_file.is_file():
+        reply_file.write_text((reply_text or "").strip() + "\n", encoding="utf-8")
+        outputs.append(reply_file)
+    elif reply_file.is_file() and reply_file not in outputs:
+        outputs.append(reply_file)
+    return save_operator_result(
+        project,
+        node_key,
+        input_paths=list(input_paths or []),
+        output_paths=outputs,
+        reply_text=reply_text or "",
+        gate_status=parsed.verdict,
+        analysis=parsed.to_dict(),
+    )
+
+
 def save_operator_result(
     project: Project,
     node_key: str,
@@ -622,18 +693,38 @@ def save_operator_result(
     output_paths: list[Path],
     reply_text: str,
     gate_status: str | None = None,
+    analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from datetime import datetime, timezone
 
+    from app.services.check_analysis import parse_check_analysis
+
+    # Если вердикт не передан явно — пробуем разобрать ответ (vp.check.v1).
+    resolved_gate = (gate_status or "").strip().lower() or None
+    analysis_dict = analysis
+    if analysis_dict is None and reply_text:
+        cfg = operator_config(project, node_key)
+        if cfg.get("role") in BRANCHING_ROLES:
+            parsed = parse_check_analysis(reply_text)
+            analysis_dict = parsed.to_dict()
+            if resolved_gate not in ("pass", "fail"):
+                resolved_gate = parsed.verdict
+
     meta = dict(project.meta or {})
     results = dict(meta.get("gpt_operator_results") or {})
-    entry = {
+    entry: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "inputPaths": [str(p) for p in input_paths],
         "outputPaths": [str(p) for p in output_paths],
         "replyPreview": (reply_text or "")[:2000],
-        "gateStatus": gate_status,
+        "gateStatus": resolved_gate,
     }
+    if analysis_dict:
+        entry["analysis"] = analysis_dict
+        fwd = analysis_dict.get("forward") if isinstance(analysis_dict, dict) else None
+        if isinstance(fwd, dict) and fwd.get("mode") == "explicit":
+            paths = fwd.get("paths") if isinstance(fwd.get("paths"), list) else []
+            entry["forwardPaths"] = [str(p) for p in paths]
     results[node_key] = entry
     meta["gpt_operator_results"] = results
     # mirror last reply into excel_gpt node config for UI
@@ -642,8 +733,10 @@ def save_operator_result(
     if output_paths:
         cur["lastReplyPath"] = str(output_paths[0])
         cur["lastReplyAt"] = entry["at"]
-    if gate_status:
-        cur["gateStatus"] = gate_status
+    if resolved_gate:
+        cur["gateStatus"] = resolved_gate
+    if analysis_dict and isinstance(analysis_dict, dict):
+        cur["lastSummary"] = str(analysis_dict.get("summary") or "")[:500]
     configs[node_key] = cur
     meta["excel_gpt_nodes"] = configs
     project.meta = meta
