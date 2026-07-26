@@ -284,6 +284,15 @@ def files_from_source_node(
     if isinstance(results, dict):
         entry = results.get(source_key)
         if isinstance(entry, dict):
+            # vp.check.v1 fix.rewrite_file → агент сам исправил файл: дальше
+            # отдаём исправленную версию (высший приоритет над forward/inherit).
+            rewrite = str(entry.get("fixRewriteFile") or "").strip().replace("\\", "/")
+            if rewrite:
+                rp = Path(rewrite)
+                if not rp.is_file():
+                    rp = root / rewrite
+                if rp.is_file() and rp.stat().st_size > 0:
+                    return [rp]
             # vp.check.v1 forward.explicit → только указанные пути
             fwd_paths = entry.get("forwardPaths")
             if isinstance(fwd_paths, list) and fwd_paths:
@@ -745,6 +754,12 @@ def save_operator_result(
         if isinstance(fwd, dict) and fwd.get("mode") == "explicit":
             paths = fwd.get("paths") if isinstance(fwd.get("paths"), list) else []
             entry["forwardPaths"] = [str(p) for p in paths]
+        # Если агент сам исправил файл — запоминаем путь исправленной версии.
+        fix = analysis_dict.get("fix") if isinstance(analysis_dict, dict) else None
+        if isinstance(fix, dict):
+            rewrite = str(fix.get("rewrite_file") or "").strip()
+            if rewrite:
+                entry["fixRewriteFile"] = rewrite
     results[node_key] = entry
     meta["gpt_operator_results"] = results
     # mirror last reply into excel_gpt node config for UI
