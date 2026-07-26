@@ -113,8 +113,8 @@ export function PipelineNode({ data, selected }: NodeProps) {
               disabled && "opacity-45 grayscale",
             )}
           >
-            {!isExcelFeed && <HandleWithDetach side="in" nodeKey={d.nodeKey} />}
-            {/* Выход без точки: тянуть связь можно с любого места правого края */}
+            {/* Вход/выход без точек: связь с левого и правого края по всей высоте */}
+            {!isExcelFeed && <SideTargetStrip nodeKey={d.nodeKey} />}
             <SideSourceStrip nodeKey={d.nodeKey} />
             {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
               <NodeResultBadge
@@ -265,7 +265,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   : undefined,
               }}
             >
-              {!isExcelFeed && <HandleWithDetach side="in" nodeKey={d.nodeKey} />}
+              {!isExcelFeed && <SideTargetStrip nodeKey={d.nodeKey} />}
               <SideSourceStrip nodeKey={d.nodeKey} />
 
               {actions && resultSnapshot && !hideResultBadgeForNodeType(d.type) && (
@@ -455,7 +455,7 @@ function VTrigger({
   );
 }
 
-/** Невидимая полоса справа: отсюда тянут сколько угодно связей, без точки-выхода. */
+/** Невидимая полоса справа: тянуть выходные связи с края, без точки. */
 function SideSourceStrip({ nodeKey }: { nodeKey: string }) {
   return (
     <div
@@ -474,38 +474,36 @@ function SideSourceStrip({ nodeKey }: { nodeKey: string }) {
         )}
         style={{ right: 0, top: 0, transform: "none" }}
       />
-      {/* тонкая подсветка края при наведении на зону выхода */}
       <div className="pointer-events-none absolute inset-y-1 right-0 w-0.5 rounded-full bg-primary/0 transition group-hover/out:bg-primary/45" />
     </div>
   );
 }
 
-function HandleWithDetach({
-  side,
-  nodeKey,
-}: {
-  side: "in" | "out";
-  nodeKey: string;
-}) {
-  const isIn = side === "in";
-  // Выход больше не рисуем точкой — только SideSourceStrip.
-  if (!isIn) return <SideSourceStrip nodeKey={nodeKey} />;
+/** Невидимая полоса слева: принимать связи на весь левый край, без точки. */
+function SideTargetStrip({ nodeKey }: { nodeKey: string }) {
   return (
     <div
-      className="group/conn pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 -left-3"
-      style={{ width: 22, height: 22 }}
+      className="group/in pointer-events-none absolute inset-y-0 -left-2 z-20 w-4"
+      data-node-in={nodeKey}
     >
       <Handle
         type="target"
         position={Position.Left}
         id="in"
-        className="!pointer-events-auto !left-1/2 !top-1/2 !h-3.5 !w-3.5 !-translate-x-1/2 !-translate-y-1/2 !cursor-crosshair !rounded-full !border !border-white/30 !bg-background hover:!scale-125 hover:!border-primary"
+        title="Подключи сюда с левого края"
+        className={cn(
+          "!pointer-events-auto !left-0 !right-auto !top-0 !h-full !w-3 !translate-x-0 !translate-y-0",
+          "!cursor-crosshair !rounded-none !border-0 !bg-transparent !opacity-0",
+          "hover:!bg-emerald-400/15 hover:!opacity-100",
+        )}
+        style={{ left: 0, top: 0, transform: "none" }}
       />
+      <div className="pointer-events-none absolute inset-y-1 left-0 w-0.5 rounded-full bg-emerald-400/0 transition group-hover/in:bg-emerald-400/45" />
       <button
         type="button"
         title="Отсоединить вход"
-        aria-label="Отсоединить"
-        className="nodrag pointer-events-auto absolute -top-2 -left-2 z-20 flex h-4 w-4 items-center justify-center rounded-full border border-destructive/60 bg-destructive text-destructive-foreground opacity-0 shadow ring-1 ring-background transition group-hover/conn:opacity-100"
+        aria-label="Отсоединить вход"
+        className="nodrag pointer-events-auto absolute left-0 top-1 z-30 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full border border-destructive/60 bg-destructive text-destructive-foreground opacity-0 shadow ring-1 ring-background transition group-hover/in:opacity-100"
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
