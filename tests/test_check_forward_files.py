@@ -69,3 +69,27 @@ def test_explicit_forward_paths(tmp_path: Path, monkeypatch) -> None:
     )
     got = files_from_source_node(p, "n_check")
     assert got == [keep]
+
+
+def test_fix_rewrite_file_forwarded(tmp_path: Path, monkeypatch) -> None:
+    """Агент сам исправил файл (fix.rewrite_file) → дальше идёт исправленная версия."""
+    p = _project(tmp_path, monkeypatch)
+    orig = p.data_dir / "project.xlsx"
+    orig.write_bytes(b"PK" + b"0" * 100)
+    fixed = p.data_dir / "old"
+    fixed.mkdir()
+    fixed_file = fixed / "project_fixed.xlsx"
+    fixed_file.write_bytes(b"PK" + b"1" * 100)
+
+    apply_check_reply(
+        p,
+        "n_check",
+        '{"schema":"vp.check.v1","verdict":"pass","summary":"исправил",'
+        '"checks":[{"id":"task_applied","ok":true}],'
+        '"forward":{"mode":"inherit","paths":[]},'
+        '"fix":{"target":"xlsx","instructions":"поправил R48",'
+        '"rewrite_file":"old/project_fixed.xlsx"}}',
+        input_paths=[orig],
+    )
+    got = files_from_source_node(p, "n_check")
+    assert got == [fixed_file]  # исправленный файл имеет приоритет над inherit

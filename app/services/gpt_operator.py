@@ -284,6 +284,15 @@ def files_from_source_node(
     if isinstance(results, dict):
         entry = results.get(source_key)
         if isinstance(entry, dict):
+            # vp.check.v1 fix.rewrite_file → агент сам исправил файл: дальше
+            # отдаём исправленную версию (высший приоритет над forward/inherit).
+            rewrite = str(entry.get("fixRewriteFile") or "").strip().replace("\\", "/")
+            if rewrite:
+                rp = Path(rewrite)
+                if not rp.is_file():
+                    rp = root / rewrite
+                if rp.is_file() and rp.stat().st_size > 0:
+                    return [rp]
             # vp.check.v1 forward.explicit → только указанные пути
             fwd_paths = entry.get("forwardPaths")
             if isinstance(fwd_paths, list) and fwd_paths:
@@ -745,6 +754,12 @@ def save_operator_result(
         if isinstance(fwd, dict) and fwd.get("mode") == "explicit":
             paths = fwd.get("paths") if isinstance(fwd.get("paths"), list) else []
             entry["forwardPaths"] = [str(p) for p in paths]
+        # Если агент сам исправил файл — запоминаем путь исправленной версии.
+        fix = analysis_dict.get("fix") if isinstance(analysis_dict, dict) else None
+        if isinstance(fix, dict):
+            rewrite = str(fix.get("rewrite_file") or "").strip()
+            if rewrite:
+                entry["fixRewriteFile"] = rewrite
     results[node_key] = entry
     meta["gpt_operator_results"] = results
     # mirror last reply into excel_gpt node config for UI
@@ -802,3 +817,60 @@ def verdict_edge_blocks(
         return allowed is not True
     # fail
     return allowed is not False
+
+
+def upstream_node_type_for_check(project: Project, node_key: str) -> str | None:
+    """Тип рабочей ноды выше по стрелке от проверочной ноды.
+
+    Проверочная нода стоит «ниже» рабочей и валидирует её выход. Берём
+    источник входящей стрелки (приоритет — вердиктные/данные), это и есть
+    рабочая нода, чей результат проверяем.
+    """
+    from app.orchestrator.node_registry import is_work_node_type
+
+    types = _node_type_map(project)
+    incoming = _incoming_edges(project, node_key)
+
+    def _pick(edges: list[dict[str, Any]]) -> str | None:
+        for e in edges:
+            src = str(e.get("source") or "")
+            typ = types.get(src, "")
+            if typ and (is_work_node_type(typ) or typ.startswith("hitl_")):
+                return typ
+        return None
+
+    # Сначала вердиктные/gate-стрелки (типичная связь «работа → проверка»),
+    # затем любые входящие.
+    priority = [e for e in incoming if edge_kind_of(e) in ("after", "gate", "pass", "fail")]
+    return _pick(priority) or _pick(incoming)
+
+
+def default_check_prompt_for_node(project: Project, node_key: str) -> str | None:
+    """Универсальный агент-проверки по типу вышестоящей рабочей ноды.
+
+    Возвращает текст промта из `prompts/check_operator/<step>/default.md`
+    (с хвостом схемы vp.check.v1) или None, если вышестоящую ноду не нашли.
+    """
+    from app.services.check_analysis import load_check_operator_prompt
+
+    typ = upstream_node_type_for_check(project, node_key)
+    if not typ:
+        return None
+    return load_check_operator_prompt(typ)
+
+
+def project_format_hint_for_check(project: Project, node_key: str) -> str:
+    """Блок «целевой формат проекта» — только для визуальных вышестоящих нод.
+
+    Формат/разрешение берём из полей проекта (не хардкодим в промтах).
+    """
+    from app.services.check_analysis import VISUAL_CHECK_TYPES, format_target_hint
+
+    typ = upstream_node_type_for_check(project, node_key)
+    if not typ or typ not in VISUAL_CHECK_TYPES:
+        return ""
+    return format_target_hint(
+        getattr(project, "aspect_ratio", None),
+        getattr(project, "image_resolution", None),
+        getattr(project, "video_resolution", None),
+    )

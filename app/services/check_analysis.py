@@ -310,6 +310,43 @@ EXPECTED_ARTIFACTS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Типы вышестоящих нод, для которых важен целевой формат кадра/видео.
+VISUAL_CHECK_TYPES: frozenset[str] = frozenset(
+    {
+        "image_prompts",
+        "images",
+        "hitl_images",
+        "videos",
+        "hitl_videos",
+        "hero",
+        "hitl_hero",
+        "items",
+        "assemble",
+        "hitl_final",
+        "publish",
+    }
+)
+
+
+def format_target_hint(
+    aspect_ratio: str | None = None,
+    image_resolution: str | None = None,
+    video_resolution: str | None = None,
+) -> str:
+    """Короткий блок «целевой формат проекта» для контекста агента-проверки.
+
+    Разрешение/формат НЕ статичны в промтах — фактические значения проекта
+    подставляются сюда, чтобы агент сверял с ними, а не с зашитым 9:16.
+    """
+    aspect = (aspect_ratio or "").strip() or "9:16"
+    parts = [f"соотношение сторон = {aspect}"]
+    if (image_resolution or "").strip():
+        parts.append(f"разрешение картинок = {image_resolution.strip()}")
+    if (video_resolution or "").strip():
+        parts.append(f"разрешение видео = {video_resolution.strip()}")
+    return "Целевой формат проекта: " + ", ".join(parts) + "."
+
+
 def expected_artifacts_for_node_type(node_type: str) -> tuple[str, ...]:
     t = (node_type or "").strip().lower()
     if t.startswith("enrich_"):
@@ -343,15 +380,33 @@ def list_check_operator_steps() -> list[str]:
 
 
 def load_check_operator_prompt(step: str) -> str | None:
-    """Текст промта проверки + хвост схемы vp.check.v1."""
+    """Текст промта проверки + хвост схемы vp.check.v1.
+
+    Резолвит любой реальный тип ноды пайплайна в файл
+    `prompts/check_operator/<step>/default.md`. HITL-ноды проверяют те же
+    артефакты, что и рабочая нода выше по стрелке, поэтому маппятся на неё;
+    enrich-слоты и excel_feed — на общий контракт excel_gpt.
+    """
     step_key = (step or "").strip().lower().replace("-", "_")
     aliases = {
+        # step_code рабочих нод → имя папки промта
         "img_pr": "image_prompts",
         "anim_pr": "animation_prompts",
         "img": "images",
         "video": "videos",
         "topic": "plan",
+        # excel round-trip: слоты enrich_1..5 и excel_feed → общий excel_gpt
+        "excel_feed": "excel_gpt",
+        "enrich": "excel_gpt",
+        # HITL-ноды проверяют выход рабочей ноды выше по стрелке
+        "hitl_hero": "hero",
+        "hitl_images": "images",
+        "hitl_videos": "videos",
+        "hitl_final": "assemble",
     }
+    # enrich_1..5 (и любой enrich_*) → excel_gpt
+    if step_key.startswith("enrich_"):
+        step_key = "excel_gpt"
     step_key = aliases.get(step_key, step_key)
     path = _check_operator_root() / step_key / "default.md"
     if not path.is_file():
