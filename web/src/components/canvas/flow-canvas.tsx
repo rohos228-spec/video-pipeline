@@ -493,22 +493,29 @@ export function FlowCanvas({
         );
         return;
       }
-      // Авто: excel_gpt → hero и т.п. стали «Не ок» — пишем уже нормализованные рёбра.
-      if (Array.isArray(check.edges) && check.edges.length) {
-        const byId = new Map(check.edges.map((e) => [e.id, e]));
+      // Авто: только точечные патчи Связь→Не ок. Не перетираем «Ок» у других нод.
+      const patches = Array.isArray(check.edge_patches) ? check.edge_patches : [];
+      if (patches.length) {
+        const kindById = new Map(
+          patches.map((p) => [p.id, String(p.kind || "fail") as WorkflowEdgeKind]),
+        );
         for (let i = 0; i < wfEdges.length; i++) {
-          const next = byId.get(wfEdges[i].id);
-          if (next) wfEdges[i] = next;
+          const kind = kindById.get(wfEdges[i].id);
+          if (!kind) continue;
+          wfEdges[i] = {
+            ...wfEdges[i],
+            label: edgeKindLabel(kind),
+            data: { ...((wfEdges[i].data as object) || {}), kind },
+          };
         }
         setEdges((prev) =>
           prev.map((e) => {
-            const next = byId.get(e.id);
-            if (!next) return e;
-            const kind = String(next.data?.kind || "after");
+            const kind = kindById.get(e.id);
+            if (!kind) return e;
             return {
               ...e,
-              label: typeof next.label === "string" ? next.label : e.label,
-              data: { ...((e.data as object) || {}), ...(next.data || {}), kind },
+              label: edgeKindLabel(kind),
+              data: { ...((e.data as object) || {}), kind },
             };
           }),
         );
