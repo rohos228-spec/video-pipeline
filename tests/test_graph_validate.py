@@ -44,7 +44,7 @@ def test_ok_fail_retry_loop_is_allowed() -> None:
     edges = [
         {"id": "e_ok", "source": "check", "target": "img", "data": {"kind": "pass"}},
         {"id": "e_fail", "source": "check", "target": "fix", "data": {"kind": "fail"}},
-        {"id": "e_back", "source": "fix", "target": "check", "data": {"kind": "feed"}},
+        {"id": "e_back", "source": "fix", "target": "check", "data": {"kind": "after"}},
     ]
     r = validate_workflow_graph(nodes, edges)
     assert r["valid"] is True

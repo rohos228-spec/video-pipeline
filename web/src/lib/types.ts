@@ -53,7 +53,7 @@ export interface WorkflowNode {
   data: Record<string, unknown> & { label?: string; description?: string };
 }
 
-/** after=порядок, feed=файлы, review=проверка, gate/pass=ок, fail=не ок */
+/** after=связь (+вход решает приёмник), gate/pass=ок, fail=не ок; feed/review — legacy */
 export type WorkflowEdgeKind =
   | "after"
   | "feed"

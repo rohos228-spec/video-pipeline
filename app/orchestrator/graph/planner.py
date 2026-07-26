@@ -52,7 +52,7 @@ class WorkflowGraph:
         self._by_id: dict[str, dict[str, Any]] = {n["id"]: n for n in self.nodes if "id" in n}
         self._out: dict[str, list[str]] = {nid: [] for nid in self._by_id}
         self._in: dict[str, list[str]] = {nid: [] for nid in self._by_id}
-        # (source, target) → kind (after|feed|review|gate|pass|fail)
+        # (source, target) → kind (after|gate|pass|fail; legacy feed/review → after)
         self._edge_kind: dict[tuple[str, str], str] = {}
         for e in self.edges:
             src, tgt = e.get("source"), e.get("target")
@@ -65,7 +65,9 @@ class WorkflowGraph:
                     kind = "pass"
                 if kind in ("не ok", "не ок", "not_ok"):
                     kind = "fail"
-                if kind not in ("after", "feed", "review", "gate", "pass", "fail"):
+                if kind in ("feed", "review"):
+                    kind = "after"
+                if kind not in ("after", "gate", "pass", "fail"):
                     kind = "after"
                 self._edge_kind[(str(src), str(tgt))] = kind
 

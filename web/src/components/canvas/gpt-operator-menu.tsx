@@ -89,6 +89,8 @@ export function GptOperatorMenuPanel({
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const branching = data?.branching;
   const showBranches = isBranchingRole(role);
+  const takeFromEdges = data?.takeFromEdges !== false;
+  const incomingCount = data?.incomingEdges?.length ?? 0;
 
   return (
     <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
@@ -225,6 +227,51 @@ export function GptOperatorMenuPanel({
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
         Вход
       </p>
+      <div className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5">
+        <p className="text-[9px] leading-snug text-muted-foreground">
+          Подвели стрелку — нода претендует на результат прошлой. Здесь решаете:
+          брать или нет.
+        </p>
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          <button
+            type="button"
+            disabled={patch.isPending || incomingCount === 0}
+            title={
+              incomingCount === 0
+                ? "Сначала соедините ноду входящей стрелкой"
+                : "Брать файлы/результат с входящих связей"
+            }
+            onClick={() =>
+              patch.mutate({ takeFromEdges: true, transport: "api" })
+            }
+            className={cn(
+              "rounded-md border px-1.5 py-1 text-[9px] transition",
+              takeFromEdges && incomingCount > 0
+                ? "border-emerald-400/45 bg-emerald-500/15 text-emerald-50"
+                : "border-white/10 text-muted-foreground hover:border-white/20",
+              incomingCount === 0 && "opacity-50",
+            )}
+          >
+            От прошлых ({incomingCount})
+          </button>
+          <button
+            type="button"
+            disabled={patch.isPending}
+            title="Не брать ничего со стрелок — только загрузка/свой вход"
+            onClick={() =>
+              patch.mutate({ takeFromEdges: false, transport: "api" })
+            }
+            className={cn(
+              "rounded-md border px-1.5 py-1 text-[9px] transition",
+              !takeFromEdges
+                ? "border-amber-400/40 bg-amber-500/15 text-amber-50"
+                : "border-white/10 text-muted-foreground hover:border-white/20",
+            )}
+          >
+            Ничего со стрелок
+          </button>
+        </div>
+      </div>
       <div className="flex flex-wrap gap-1">
         <Button
           type="button"
@@ -239,7 +286,7 @@ export function GptOperatorMenuPanel({
           ) : (
             <Upload className="h-3 w-3" />
           )}
-          Файл(ы)
+          Загрузить
         </Button>
         <Button
           type="button"
@@ -251,19 +298,6 @@ export function GptOperatorMenuPanel({
           }
         >
           Снимок
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 text-[10px]"
-          onClick={() => {
-            toast.message(
-              "Поставьте стрелку «файлы» или «проверка» от нужной ноды — вход подтянется сам",
-            );
-          }}
-        >
-          Со стрелки
         </Button>
         <input
           ref={fileRef}
