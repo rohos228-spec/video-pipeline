@@ -112,3 +112,52 @@ def test_check_operator_prompt_library() -> None:
     assert SCHEMA_ID in hero
     # alias img_pr → image_prompts
     assert load_check_operator_prompt("img_pr") is not None
+
+
+def test_new_step_prompts_present() -> None:
+    steps = list_check_operator_steps()
+    for need in ("items", "excel_gpt", "storage", "publish"):
+        assert need in steps, need
+
+
+def test_every_pipeline_node_type_resolves() -> None:
+    """Каждый реальный тип ноды пайплайна должен резолвиться в промт-агент."""
+    from app.orchestrator.node_registry import (
+        CONFIG_NODE_TYPES,
+        HITL_NODE_TYPES,
+        WORK_NODES,
+    )
+
+    node_types: set[str] = set(WORK_NODES) | set(HITL_NODE_TYPES) | set(CONFIG_NODE_TYPES)
+    node_types.update({"excel_gpt", "excel_feed"})
+    # hitl_gate — ручной гейт без своего артефакта, промт не обязателен.
+    node_types.discard("hitl_gate")
+    for nt in sorted(node_types):
+        prompt = load_check_operator_prompt(nt)
+        assert prompt is not None, f"нет промта проверки для ноды {nt!r}"
+        assert SCHEMA_ID in prompt, nt
+        assert "verdict" in prompt.lower(), nt
+
+
+def test_step_code_aliases_resolve() -> None:
+    """step_code рабочих нод (img_pr/anim_pr/img/video) тоже резолвятся."""
+    for code in ("img_pr", "anim_pr", "img", "video", "topic", "enrich_3"):
+        assert load_check_operator_prompt(code) is not None, code
+
+
+def test_prompts_declare_stable_check_ids() -> None:
+    """Каждый агент перечисляет фиксированные check-id (строгий вывод)."""
+    expected: dict[str, tuple[str, ...]] = {
+        "plan": ("hook_present", "arc_clear", "topic_covered"),
+        "images": ("files_present", "no_artifacts", "aspect_9x16"),
+        "videos": ("clips_present", "no_black_frames"),
+        "excel_gpt": ("xlsx_valid", "task_applied", "no_data_loss"),
+        "items": ("items_present",),
+        "storage": ("files_present", "sorted_by_format"),
+        "publish": ("final_ready",),
+    }
+    for step, ids in expected.items():
+        body = load_check_operator_prompt(step)
+        assert body is not None, step
+        for cid in ids:
+            assert cid in body, f"{step}: нет check-id {cid}"
