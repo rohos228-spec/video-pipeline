@@ -251,14 +251,40 @@ def write_analysis_json(out_dir: Path, analysis: CheckAnalysis) -> Path:
     return path
 
 
+def _load_footer_from_prompts() -> str:
+    """Хвост из prompts/check_operator/_schema/response_footer.md, если есть."""
+    try:
+        from app.settings import settings
+
+        path = Path(settings.prompts_dir) / "check_operator" / "_schema" / "response_footer.md"
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if SCHEMA_ID in text:
+                return text
+    except Exception:  # noqa: BLE001
+        pass
+    # fallback: рядом с репо
+    try:
+        root = Path(__file__).resolve().parents[2]
+        path = root / "prompts" / "check_operator" / "_schema" / "response_footer.md"
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if SCHEMA_ID in text:
+                return text
+    except Exception:  # noqa: BLE001
+        pass
+    return RESPONSE_FOOTER
+
+
 def append_response_footer(prompt: str) -> str:
     """Добавить хвост схемы, если его ещё нет."""
+    footer = _load_footer_from_prompts()
     base = (prompt or "").rstrip()
     if SCHEMA_ID in base and "verdict" in base.lower():
         return base
     if not base:
-        return RESPONSE_FOOTER
-    return f"{base}\n\n{RESPONSE_FOOTER}"
+        return footer
+    return f"{base}\n\n{footer}"
 
 
 # Ожидаемые артефакты по типу исходной рабочей ноды (относительно data_dir).

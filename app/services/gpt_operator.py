@@ -284,12 +284,47 @@ def files_from_source_node(
     if isinstance(results, dict):
         entry = results.get(source_key)
         if isinstance(entry, dict):
+            # vp.check.v1 forward.explicit → только указанные пути
+            fwd_paths = entry.get("forwardPaths")
+            if isinstance(fwd_paths, list) and fwd_paths:
+                for item in fwd_paths:
+                    rel = str(item).strip().replace("\\", "/")
+                    if not rel:
+                        continue
+                    p = Path(rel)
+                    if not p.is_file():
+                        p = root / rel
+                    if p.is_file():
+                        found.append(p)
+                if found:
+                    return found[:limit]
+            analysis = (
+                entry.get("analysis")
+                if isinstance(entry.get("analysis"), dict)
+                else {}
+            )
+            fwd = analysis.get("forward") if isinstance(analysis.get("forward"), dict) else {}
+            inherit_check = (
+                str(entry.get("gateStatus") or "") in ("pass", "fail")
+                or str(fwd.get("mode") or "") == "inherit"
+            )
+            # Проверка: дальше отдаём то, что проверяли — не analysis.json
+            if inherit_check and isinstance(entry.get("inputPaths"), list):
+                for item in entry["inputPaths"]:
+                    p = Path(str(item))
+                    if (
+                        p.is_file()
+                        and p.name not in ("analysis.json", "gpt_reply.txt")
+                    ):
+                        found.append(p)
+                if found:
+                    return found[:limit]
             for key in ("outputPaths", "inputPaths"):
                 raw = entry.get(key) or []
                 if isinstance(raw, list):
                     for item in raw:
                         p = Path(str(item))
-                        if p.is_file():
+                        if p.is_file() and p.name != "analysis.json":
                             found.append(p)
             if found:
                 return found[:limit]
