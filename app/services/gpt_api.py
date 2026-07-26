@@ -68,11 +68,17 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-def _chat_url() -> str:
+def _chat_url(model: str) -> str:
     base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError("GPT_BASE_URL пуст — задай базу шлюза", context={"error_kind": "no_base"})
-    return f"{base}/v1/chat/completions"
+    path = (settings.gpt_chat_path or "/v1/chat/completions").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    # kie.ai: путь зависит от модели (/{model}/v1/chat/completions).
+    if "{model}" in path:
+        path = path.replace("{model}", model)
+    return f"{base}{path}"
 
 
 # ─────────────────────────── файлы → контекст ───────────────────────────
@@ -199,9 +205,9 @@ async def chat(
     max_retries: int | None = None,
 ) -> GptChatResult:
     """Вызвать GPT chat/completions с ретраями и полной обработкой ошибок."""
-    url = _chat_url()
     headers = _headers()
-    use_model = (model or settings.gpt_model or "gpt-4o").strip()
+    use_model = (model or settings.gpt_model or "gpt-5.5").strip()
+    url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
 

@@ -68,6 +68,25 @@ async def test_chat_success(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_templated_path_per_model(monkeypatch) -> None:
+    """kie.ai: путь зависит от модели — /{model}/v1/chat/completions."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
+    monkeypatch.setattr(settings, "gpt_chat_path", "/{model}/v1/chat/completions")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json=_completion("ok"))
+
+    _mock_httpx(monkeypatch, handler)
+    await chat(prompt="x", model="gemini-2.5-pro")
+    assert seen == ["/gemini-2.5-pro/v1/chat/completions"]
+
+
+@pytest.mark.asyncio
 async def test_chat_retries_on_429_then_success(monkeypatch) -> None:
     _enable(monkeypatch)
     state = {"n": 0}

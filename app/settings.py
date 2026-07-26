@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5.5", alias="GPT_MODEL")
+    # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
+    # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
+    # Плейсхолдер {model} подставляется слагом модели.
+    gpt_chat_path: str = Field("/v1/chat/completions", alias="GPT_CHAT_PATH")
     gpt_timeout_s: float = Field(180.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 
