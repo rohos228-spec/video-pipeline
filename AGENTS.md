@@ -39,8 +39,10 @@ Do **not** stop at an open PR on a side branch. Optional PR is fine **after** `m
 - **PATH**: Dev tools (`ruff`, `mypy`, `pytest`, `playwright`) install to `~/.local/bin` — ensure it's on `PATH`.
 - **Paths** resolve from repo root (`pyproject.toml`), not shell CWD — safe to run `python -m app.main` even after `cd web`. On Windows use `STUDIO.cmd` or `scripts\run-backend.ps1`.
 - The app connects to Chrome via CDP on `localhost:29229` for browser automation (ChatGPT, outsee.io). This is only needed for the actual pipeline execution, not for running tests or linting.
-- **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
-- Tests use in-memory SQLite and don't require external services or a `.env` file.
+- **Pre-existing lint/type issues**: `ruff check .` reports several hundred errors and `mypy` reports many errors — these are pre-existing in the codebase and not caused by env setup. The lint/type commands still run fine.
+- Tests use in-memory SQLite and don't require external services or a `.env` file. Individual test files mostly pass, but the full `python3 -m pytest tests/` run has ~30 pre-existing failures — a mix of test-ordering/shared-`data/`-dir state and stub-session tests that drifted from evolved code (e.g. `test_auto_advance_parity.py`). These are unrelated to environment setup; re-run a suspect file in isolation to confirm it passes.
+- **Web-only run**: copy `.env.example` to `.env` (defaults are web-only: `TELEGRAM_ENABLED=false`, `:8765`) and run `python3 -m app.main` from repo root. FastAPI serves the committed `web/out/` UI at http://127.0.0.1:8765; no npm build needed to run. On first start it auto-seeds a pilot project. `ASR_BACKEND=nvidia` in `.env.example` is harmless without the NeMo extra — preload is off, so Studio starts and falls back to whisper only when an audio step runs.
+- **Sidebar refresh quirk**: after creating a project via the UI wizard, the new project may not appear in the left sidebar until a page reload, even though it is created (visible in the inspector and `/api/projects`). Reload to confirm.
 
 ### Studio UI version badge
 
