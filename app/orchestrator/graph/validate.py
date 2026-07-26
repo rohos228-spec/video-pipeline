@@ -6,6 +6,19 @@ from typing import Any
 
 from app.orchestrator.node_registry import is_work_node_type
 
+# Ветка «не ок» — допустимый обратный ход (проверка → починить → снова проверка).
+_FEEDBACK_EDGE_KINDS = frozenset({"fail"})
+
+
+def _edge_kind(edge: dict[str, Any]) -> str:
+    data = edge.get("data") if isinstance(edge.get("data"), dict) else {}
+    kind = str((data or {}).get("kind") or edge.get("kind") or "after").strip().lower()
+    if kind in ("ok", "если ok", "если_ok"):
+        return "pass"
+    if kind in ("не ok", "не ок", "not_ok"):
+        return "fail"
+    return kind
+
 
 def validate_workflow_graph(
     nodes: list[dict[str, Any]],
@@ -26,7 +39,11 @@ def validate_workflow_graph(
         by_id[sid] = n
 
     out: dict[str, list[str]] = {nid: [] for nid in by_id}
+    # Граф без feedback-стрелок — для проверки «жёстких» циклов.
+    out_forward: dict[str, list[str]] = {nid: [] for nid in by_id}
     rev: dict[str, list[str]] = {nid: [] for nid in by_id}
+    feedback_count = 0
+
     for e in edges or []:
         src, tgt = str(e.get("source") or ""), str(e.get("target") or "")
         if not src or not tgt:
@@ -40,10 +57,22 @@ def validate_workflow_graph(
             continue
         out[src].append(tgt)
         rev[tgt].append(src)
+        kind = _edge_kind(e)
+        if kind in _FEEDBACK_EDGE_KINDS:
+            feedback_count += 1
+            continue
+        out_forward[src].append(tgt)
 
-    cycle = _find_cycle(out)
+    cycle = _find_cycle(out_forward)
     if cycle:
         errors.append(f"цикл в графе: {' → '.join(cycle)}")
+    elif feedback_count:
+        # Полный граф с fail может замыкаться — это ок для ok/не ок.
+        soft = _find_cycle(out)
+        if soft:
+            warnings.append(
+                "есть петля через «Не ок» (проверка → правка → снова) — так и задумано"
+            )
 
     work_nodes = [
         nid for nid, n in by_id.items() if is_work_node_type(str(n.get("type") or ""))
