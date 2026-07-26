@@ -10,6 +10,12 @@ export type CanvasRuntimeData = {
   progressText?: unknown;
   error?: unknown;
   attempts?: unknown;
+  /** UI/meta — не терять при reload структуры графа. */
+  role?: unknown;
+  workMode?: unknown;
+  label?: unknown;
+  inputSource?: unknown;
+  uploadedFileName?: unknown;
 };
 
 export type MergeableCanvasNode<T extends CanvasRuntimeData = CanvasRuntimeData> = {
@@ -39,6 +45,12 @@ export function mergeGraphNodesWithRuntime<T extends CanvasRuntimeData>(
         progressText: old.data.progressText ?? n.data.progressText,
         error: old.data.error ?? n.data.error,
         attempts: old.data.attempts ?? n.data.attempts,
+        // Роль «Ок / не ок» живёт в UI; source может быть без неё после autosave.
+        role: n.data.role ?? old.data.role,
+        workMode: n.data.workMode ?? old.data.workMode,
+        label: n.data.label ?? old.data.label,
+        inputSource: n.data.inputSource ?? old.data.inputSource,
+        uploadedFileName: n.data.uploadedFileName ?? old.data.uploadedFileName,
       },
     };
   });

@@ -224,7 +224,8 @@ export const api = {
       valid: boolean;
       errors: string[];
       warnings: string[];
-      /** Рёбра после авто-разметки петли excel_gpt → «Не ок». */
+      /** Только реально изменённые kind (Связь→Не ок). Не затирает остальные. */
+      edge_patches?: { id: string; kind: string }[];
       edges?: WorkflowEdge[];
     }>(`/api/workflows/validate`, {
       method: "POST",

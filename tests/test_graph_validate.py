@@ -53,7 +53,7 @@ def test_ok_fail_retry_loop_is_allowed() -> None:
 
 
 def test_hero_excel_gpt_loop_auto_marks_fail() -> None:
-    """hero → excel_gpt → hero: обратная стрелка сама становится «Не ок»."""
+    """hero → excel_gpt → hero: обратная «Связь» сама становится «Не ок»."""
     nodes = [
         {"id": "n_hero", "type": "hero", "position": {"x": 0, "y": 0}, "data": {}},
         {"id": "n_excel_gpt", "type": "excel_gpt", "position": {"x": 200, "y": 0}, "data": {}},
@@ -65,11 +65,34 @@ def test_hero_excel_gpt_loop_auto_marks_fail() -> None:
     r = validate_workflow_graph(nodes, edges)
     assert r["valid"] is True, r["errors"]
     assert r["errors"] == []
+    assert any(p["id"] == "e_back" and p["kind"] == "fail" for p in r["edge_patches"])
     back = next(e for e in r["edges"] if e["id"] == "e_back")
     assert (back.get("data") or {}).get("kind") == "fail"
     fwd = next(e for e in r["edges"] if e["id"] == "e_fwd")
     assert (fwd.get("data") or {}).get("kind") == "after"
-    assert any("петля" in w or "Не ок" in w for w in r["warnings"])
+
+
+def test_does_not_overwrite_pass_edge_on_cycle() -> None:
+    """Уже размеченная «Ок» не превращается в «Не ок» при петле."""
+    nodes = [
+        {"id": "gpt_a", "type": "excel_gpt", "position": {}, "data": {}},
+        {"id": "gpt_b", "type": "excel_gpt", "position": {}, "data": {}},
+        {"id": "img", "type": "images", "position": {}, "data": {}},
+    ]
+    edges = [
+        {"id": "e_ok", "source": "gpt_a", "target": "gpt_b", "data": {"kind": "pass"}},
+        {"id": "e_fail", "source": "gpt_a", "target": "img", "data": {"kind": "fail"}},
+        {"id": "e_back", "source": "gpt_b", "target": "gpt_a", "data": {"kind": "after"}},
+    ]
+    r = validate_workflow_graph(nodes, edges)
+    assert r["valid"] is True, r["errors"]
+    # e_ok остаётся pass
+    assert not any(p["id"] == "e_ok" for p in r.get("edge_patches") or [])
+    # обратная after с gpt_b → fail
+    assert any(p["id"] == "e_back" and p["kind"] == "fail" for p in r["edge_patches"])
+    if r.get("edges"):
+        ok = next(e for e in r["edges"] if e["id"] == "e_ok")
+        assert (ok.get("data") or {}).get("kind") == "pass"
 
 
 def test_broken_edge_reference() -> None:

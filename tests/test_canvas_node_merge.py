@@ -12,6 +12,8 @@ def test_merge_helper_source_positions_win() -> None:
     assert "Позиции ВСЕГДА из source" in src or "position: n.position" in src
     # Не должно залипать на old.position как единственный источник.
     assert "position: old.position" not in src
+    # Роль «Ок / не ок» не должна пропадать при reload структуры.
+    assert "role: n.data.role ?? old.data.role" in src
 
 
 def test_flow_canvas_waits_for_project_meta() -> None:
