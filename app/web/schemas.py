@@ -144,7 +144,7 @@ class WorkflowEdgeDTO(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — соответствует @xyflow/react
     targetHandle: str | None = None  # noqa: N815
-    # kind: after | feed | review | gate — семантика связи (опционально)
+    # kind: after | feed | review | gate | pass | fail — семантика связи (опционально)
     data: dict[str, Any] | None = None
     label: str | None = None
 

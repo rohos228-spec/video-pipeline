@@ -21,16 +21,34 @@ from app.services.excel_gpt_node import (
     upload_dir,
 )
 
-EdgeKind = Literal["after", "feed", "review", "gate"]
+EdgeKind = Literal["after", "feed", "review", "gate", "pass", "fail"]
 OperatorRole = Literal["assist", "review", "transform", "extract", "compare", "gate"]
 OutputMode = Literal["text", "project_file", "sidecar"]
 InputOrigin = Literal["upload", "edge", "project", "snapshot"]
 
-VALID_EDGE_KINDS: frozenset[str] = frozenset({"after", "feed", "review", "gate"})
+# gate — legacy «если ok»; pass/fail — явные ветки вердикта.
+VALID_EDGE_KINDS: frozenset[str] = frozenset(
+    {"after", "feed", "review", "gate", "pass", "fail"}
+)
 VALID_ROLES: frozenset[str] = frozenset(
     {"assist", "review", "transform", "extract", "compare", "gate"}
 )
 VALID_OUTPUTS: frozenset[str] = frozenset({"text", "project_file", "sidecar"})
+
+# Роли с вердиктом ок/не ок → две исходящие ветки.
+BRANCHING_ROLES: frozenset[str] = frozenset({"review", "gate", "compare"})
+
+ROLE_DEFAULT_LABELS: dict[str, str] = {
+    "assist": "Работа с GPT",
+    "review": "Ок / не ок",
+    "transform": "Переделывает",
+    "extract": "Достаёт данные",
+    "compare": "Сравнивает",
+    "gate": "Ок / не ок",
+}
+_DEFAULT_LABEL_SET: frozenset[str] = frozenset(
+    {*ROLE_DEFAULT_LABELS.values(), "Работа с GPT", ""}
+)
 
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 _VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mov", ".mkv"})
@@ -40,9 +58,31 @@ _ANY_SUFFIXES = _IMAGE_SUFFIXES | _VIDEO_SUFFIXES | _DOC_SUFFIXES
 
 def normalize_edge_kind(raw: Any) -> EdgeKind:
     s = str(raw or "after").strip().lower()
+    # синонимы UI / legacy
+    if s in ("ok", "если ok", "если_ok", "pass_ok"):
+        s = "pass"
+    if s in ("не ok", "не ок", "neok", "not_ok", "reject"):
+        s = "fail"
     if s in VALID_EDGE_KINDS:
         return s  # type: ignore[return-value]
     return "after"
+
+
+def is_pass_edge_kind(kind: str) -> bool:
+    """True для ветки «ок» (включая legacy gate)."""
+    return kind in ("pass", "gate")
+
+
+def is_fail_edge_kind(kind: str) -> bool:
+    return kind == "fail"
+
+
+def is_verdict_edge_kind(kind: str) -> bool:
+    return is_pass_edge_kind(kind) or is_fail_edge_kind(kind)
+
+
+def default_label_for_role(role: OperatorRole | str) -> str:
+    return ROLE_DEFAULT_LABELS.get(str(role), "Работа с GPT")
 
 
 def edge_kind_of(edge: dict[str, Any]) -> EdgeKind:
@@ -341,13 +381,16 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
                     summary["errors"].append(probe["error"] or "файл битый")
                     errors.append(f"{src}: {probe['error']}")
             summary["fileCount"] = len(paths)
-        elif kind == "gate":
-            # gate на входе к этой ноде = предыдущая должна быть gate-ролью
+        elif is_verdict_edge_kind(kind):
+            # Входящая ветка ок/не ок: источник — проверяющая нода.
             src_cfg = operator_config(project, src) if src else {}
-            if src_cfg.get("role") != "gate" and not is_excel_gpt_node_type(
+            src_role = str(src_cfg.get("role") or "")
+            if src_role not in BRANCHING_ROLES and not is_excel_gpt_node_type(
                 _node_type_map(project).get(src, "")
             ):
-                warnings.append(f"стрелка gate от {src}: ожидается роль «шлагбаум»")
+                warnings.append(
+                    f"стрелка {kind} от {src}: ожидается роль «проверяет» / «шлагбаум»"
+                )
         edge_summaries.append(summary)
 
     manual = _manual_upload_files(project, node_key, cfg)
@@ -383,7 +426,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         # soft: assist без файлов — ошибка запуска
         errors.append("нет ни одного существующего файла на входе")
 
-    # исходящие gate
+    # исходящие стрелки + ветки ок/не ок
     outgoing = []
     for e in _outgoing_edges(project, node_key):
         outgoing.append(
@@ -401,6 +444,23 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     if isinstance(results, dict) and isinstance(results.get(node_key), dict):
         last = dict(results[node_key])
 
+    pass_edges = [e for e in outgoing if is_pass_edge_kind(str(e.get("kind") or ""))]
+    fail_edges = [e for e in outgoing if is_fail_edge_kind(str(e.get("kind") or ""))]
+    branching_enabled = role in BRANCHING_ROLES
+    if branching_enabled:
+        if not pass_edges:
+            warnings.append(
+                "нет исходящей стрелки «Ок» — проведите связь и выберите тип «Ок»"
+            )
+        if not fail_edges:
+            warnings.append(
+                "нет исходящей стрелки «Не ок» — проведите связь и выберите тип «Не ок»"
+            )
+
+    verdict = str(last.get("gateStatus") or cfg.get("gateStatus") or "").strip().lower()
+    if verdict not in ("pass", "fail"):
+        verdict = ""
+
     consistent = len(errors) == 0
     return {
         "nodeKey": node_key,
@@ -409,11 +469,19 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "outputMode": output_mode,
         "useSnapshot": use_snapshot,
         "transport": cfg.get("transport") or "api",
-        "label": str(cfg.get("label") or "Работа с GPT"),
+        "label": str(cfg.get("label") or default_label_for_role(role)),
         "files": unique_files,
         "okFileCount": len(ok_files),
         "incomingEdges": edge_summaries,
         "outgoingEdges": outgoing,
+        "branching": {
+            "enabled": branching_enabled,
+            "passEdges": pass_edges,
+            "failEdges": fail_edges,
+            "hasPass": len(pass_edges) > 0,
+            "hasFail": len(fail_edges) > 0,
+            "verdict": verdict or None,
+        },
         "errors": errors,
         "warnings": warnings,
         "consistent": consistent,
@@ -427,6 +495,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
             "inputSource": cfg.get("inputSource"),
+            "label": str(cfg.get("label") or default_label_for_role(role)),
+            "gateStatus": verdict or None,
         },
     }
 
@@ -437,8 +507,10 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
 
+    role_changed = False
     if "role" in patch:
         role = normalize_role(patch.get("role"))
+        role_changed = normalize_role(cur.get("role") or cur.get("workMode") or "assist") != role
         cur["role"] = role
         cur["transport"] = str(cur.get("transport") or "api")
         if cur["transport"] not in ("api", "browser"):
@@ -449,6 +521,7 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
             cur["workMode"] = "review"
     if "workMode" in patch and "role" not in patch:
         role = normalize_role(patch.get("workMode"))
+        role_changed = normalize_role(cur.get("role") or cur.get("workMode") or "assist") != role
         cur["role"] = role
         cur["workMode"] = role if role in ("assist", "review", "transform") else "assist"
     if "outputMode" in patch:
@@ -463,6 +536,13 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         cur["transport"] = t if t in ("api", "browser") else "api"
     if "label" in patch and patch["label"] is not None:
         cur["label"] = str(patch["label"])
+    elif role_changed:
+        # Автоподпись при смене роли, если текст ещё дефолтный / пустой.
+        prev_label = str(cur.get("label") or "").strip()
+        if prev_label in _DEFAULT_LABEL_SET:
+            cur["label"] = default_label_for_role(
+                normalize_role(cur.get("role") or "assist")
+            )
     if "uploadedFileNames" in patch and isinstance(patch["uploadedFileNames"], list):
         cur["uploadedFileNames"] = [str(x) for x in patch["uploadedFileNames"] if x]
         if cur["uploadedFileNames"]:
@@ -549,20 +629,41 @@ def save_operator_result(
 
 
 def gate_allows_successors(project: Project, gate_node_key: str) -> bool | None:
-    """None — нода не gate / нет вердикта; True/False — pass/fail."""
+    """None — нода без вердикта / не branching-роль; True/False — pass/fail."""
     cfg = operator_config(project, gate_node_key)
-    if cfg.get("role") != "gate":
+    if cfg.get("role") not in BRANCHING_ROLES:
         return None
     meta = project.meta if isinstance(project.meta, dict) else {}
     results = meta.get("gpt_operator_results")
-    if not isinstance(results, dict):
-        return None
-    entry = results.get(gate_node_key)
-    if not isinstance(entry, dict):
-        return None
-    status = str(entry.get("gateStatus") or "").strip().lower()
+    status = ""
+    if isinstance(results, dict):
+        entry = results.get(gate_node_key)
+        if isinstance(entry, dict):
+            status = str(entry.get("gateStatus") or "").strip().lower()
+    if not status:
+        status = str(cfg.get("gateStatus") or "").strip().lower()
     if status == "pass":
         return True
     if status == "fail":
         return False
     return None
+
+
+def verdict_edge_blocks(
+    project: Project, source_key: str, edge_kind: str
+) -> bool | None:
+    """Блокирует ли стрелка pass/fail/gate переход.
+
+    None — стрелка не вердиктная (после/файлы/проверка).
+    True — блок; False — можно идти.
+    """
+    kind = normalize_edge_kind(edge_kind)
+    if not is_verdict_edge_kind(kind):
+        return None
+    allowed = gate_allows_successors(project, source_key)
+    if allowed is None:
+        return True  # нет вердикта → ни одна ветка не открыта
+    if is_pass_edge_kind(kind):
+        return allowed is not True
+    # fail
+    return allowed is not False

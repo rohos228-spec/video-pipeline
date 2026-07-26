@@ -9,11 +9,27 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
   OUTPUT_OPTIONS,
   ROLE_OPTIONS,
+  defaultLabelForRole,
+  isBranchingRole,
   type OperatorOutputMode,
   type OperatorRole,
 } from "@/lib/gpt-operator";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+function syncNodeLabelOnCanvas(nodeKey: string, label: string, role: string) {
+  const workMode =
+    role === "gate" || role === "compare" || role === "extract"
+      ? "review"
+      : role === "assist" || role === "review" || role === "transform"
+        ? role
+        : "assist";
+  window.dispatchEvent(
+    new CustomEvent("canvas-patch-node-data", {
+      detail: { nodeKey, patch: { label, role, workMode } },
+    }),
+  );
+}
 
 /** Временный пульт: 15 функций оператора + фактические файлы. */
 export function GptOperatorMenuPanel({
@@ -37,12 +53,23 @@ export function GptOperatorMenuPanel({
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       api.patchGptOperator(projectId, nodeKey, body),
-    onSuccess: () => {
+    onSuccess: (res, vars) => {
+      const resolved = res.resolve;
+      const role = (resolved?.role || (vars.role as string) || "assist") as OperatorRole;
+      const label =
+        String(resolved?.label || resolved?.config?.label || "").trim() ||
+        defaultLabelForRole(role);
+      syncNodeLabelOnCanvas(nodeKey, label, role);
       void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
       }, 60);
+      if (vars.role && isBranchingRole(String(vars.role))) {
+        toast.message(
+          "Роль с ветками: проведите две стрелки наружу и на метках выберите «Ок» и «Не ок»",
+        );
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -60,6 +87,8 @@ export function GptOperatorMenuPanel({
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
+  const branching = data?.branching;
+  const showBranches = isBranchingRole(role);
 
   return (
     <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
@@ -96,7 +125,13 @@ export function GptOperatorMenuPanel({
             key={opt.value}
             type="button"
             disabled={patch.isPending}
-            onClick={() => patch.mutate({ role: opt.value, transport: "api" })}
+            onClick={() =>
+              patch.mutate({
+                role: opt.value,
+                transport: "api",
+                label: defaultLabelForRole(opt.value),
+              })
+            }
             className={cn(
               "rounded-md border px-1.5 py-1 text-left text-[9px] leading-tight transition",
               role === opt.value
@@ -109,6 +144,61 @@ export function GptOperatorMenuPanel({
           </button>
         ))}
       </div>
+
+      {showBranches ? (
+        <div className="rounded-lg border border-amber-400/25 bg-amber-500/10 px-2 py-1.5">
+          <p className="text-[10px] font-semibold text-amber-100">
+            Ветки: Ок и Не ок
+          </p>
+          <p className="mt-0.5 text-[9px] leading-snug text-amber-100/80">
+            От этой ноды — две стрелки. На метке связи выберите «Ок» (если
+            прошло) и «Не ок» (если чинить / другой путь). Подпись ноды: «Ок /
+            не ок».
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            <span
+              className={cn(
+                "rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
+                branching?.hasPass
+                  ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                  : "border-white/15 bg-black/20 text-muted-foreground",
+              )}
+            >
+              Ок →{" "}
+              {branching?.hasPass
+                ? branching.passEdges.map((e) => e.target).join(", ")
+                : "нет стрелки"}
+            </span>
+            <span
+              className={cn(
+                "rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
+                branching?.hasFail
+                  ? "border-rose-400/40 bg-rose-500/15 text-rose-100"
+                  : "border-white/15 bg-black/20 text-muted-foreground",
+              )}
+            >
+              Не ок →{" "}
+              {branching?.hasFail
+                ? branching.failEdges.map((e) => e.target).join(", ")
+                : "нет стрелки"}
+            </span>
+            {branching?.verdict ? (
+              <span className="rounded-full border border-sky-400/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-100">
+                вердикт: {branching.verdict === "pass" ? "ок" : "не ок"}
+              </span>
+            ) : null}
+          </div>
+          {(data?.warnings || []).length ? (
+            <ul className="mt-1 space-y-0.5">
+              {data!.warnings.map((w) => (
+                <li key={w} className="text-[9px] text-amber-100/70">
+                  · {w}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
         Выход

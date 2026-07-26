@@ -53,8 +53,12 @@ async def run_operator_api(
 
     gate_status: str | None = None
     if role in ("review", "gate", "compare"):
-        gate_status = "pass"
-        body += "\nВердикт: OK (stub pass)\n"
+        # Stub: pass по умолчанию; если в промте/сопроводе есть fail-маркеры — fail.
+        probe = f"{prompt}\n{accompanying}\n"
+        gate_status = _infer_gate(probe) if any(
+            m in probe.lower() for m in ("fail", "не ок", "неок", "reject", "стоп")
+        ) else "pass"
+        body += f"\nВердикт: {'OK' if gate_status == 'pass' else 'FAIL'} (stub {gate_status})\n"
     elif role == "extract":
         body += "\nextract: {\"ok\": true, \"items\": []}\n"
 
@@ -72,9 +76,6 @@ async def run_operator_api(
         reply_path = out_dir / "gpt_reply.txt"
         reply_path.write_text(body, encoding="utf-8")
         output_paths.append(reply_path)
-
-    if role == "gate":
-        gate_status = _infer_gate(body)
 
     return OperatorApiResult(
         reply_text=body,
