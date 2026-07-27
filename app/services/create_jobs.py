@@ -130,6 +130,10 @@ async def _run_job(
     params: dict[str, Any] | None,
     quote: dict[str, Any] | None,
 ) -> None:
+    import shutil
+
+    from app.services.generation_storage import generations_root
+
     job.status = "processing"
     update_sidecar(job.path, status="processing")
     logger.info(
@@ -141,18 +145,38 @@ async def _run_job(
     )
     try:
         result = await run(job.path)
-        # generate_* может сменить суффикс (.jpeg и т.п.)
+        # generate_* может сменить суффикс (.jpeg и т.п.) или путь
         final_path = Path(getattr(result, "file_path", job.path))
-        if final_path != job.path and final_path.is_file():
-            # переносим sidecar к фактическому файлу
+        if not final_path.is_file() or final_path.stat().st_size < 32:
+            raise RuntimeError(
+                f"Create job: файл не сохранён на диск ({final_path})"
+            )
+
+        # Всегда держим копию под data/generations/
+        root = generations_root().resolve()
+        try:
+            final_path.resolve().relative_to(root)
+            under_gens = True
+        except ValueError:
+            under_gens = False
+
+        if not under_gens:
+            dest = job.path if job.path.suffix == final_path.suffix else job.path.with_suffix(
+                final_path.suffix
+            )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(final_path, dest)
+            final_path = dest
+        elif final_path != job.path:
             old_side = job.path.with_suffix(".json")
             if old_side.is_file() and not final_path.with_suffix(".json").is_file():
                 try:
                     old_side.replace(final_path.with_suffix(".json"))
                 except OSError:
                     pass
-            job.path = final_path
-            job.history_id = f"gen-{final_path.name}"
+
+        job.path = final_path
+        job.history_id = f"gen-{final_path.name}"
         job.raw_url = getattr(result, "raw_url", None)
         job.preview_url = f"/api/files?path={job.path.resolve()}"
         job.status = "done"
@@ -168,11 +192,13 @@ async def _run_job(
             status="done",
             job_id=job.id,
         )
+        if not job.path.is_file() or job.path.stat().st_size < 32:
+            raise RuntimeError("Create job: sidecar ok, но media-файл пропал")
         logger.info(
             "create_job.done id={} path={} bytes={}",
             job.id,
             job.path,
-            job.path.stat().st_size if job.path.is_file() else 0,
+            job.path.stat().st_size,
         )
     except Exception as e:  # noqa: BLE001
         job.status = "failed"

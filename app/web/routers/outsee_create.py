@@ -101,10 +101,23 @@ async def list_outsee_create_history(
     limit: int = Query(200, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    """История генераций по всем проектам (как аккаунт на outsee)."""
-    kind_filter: set[ArtifactKind] | None
+    """История: сначала локальные Create-файлы с диска, потом артефакты проектов."""
+    from app.services.generation_storage import list_generation_files
+
+    # 1) Локальные генерации Create — ВСЕГДА первыми (иначе тонут в 200 artifacts)
+    create_budget = min(120, limit)
+    out: list[dict[str, Any]] = list(
+        list_generation_files(kind=kind, limit=create_budget)
+    )
+    seen_ids = {x["id"] for x in out}
+
+    kind_filter: set[ArtifactKind]
     if kind == "image":
-        kind_filter = {ArtifactKind.scene_image, ArtifactKind.hero_reference, ArtifactKind.item_reference}
+        kind_filter = {
+            ArtifactKind.scene_image,
+            ArtifactKind.hero_reference,
+            ArtifactKind.item_reference,
+        }
     elif kind == "video":
         kind_filter = {ArtifactKind.scene_video, ArtifactKind.final_video}
     elif kind == "audio":
@@ -123,14 +136,15 @@ async def list_outsee_create_history(
         p.id: p
         for p in (await session.execute(select(Project))).scalars().all()
     }
+    remain = max(0, limit - len(out))
     arts = (
         await session.execute(
             select(Artifact)
             .where(Artifact.kind.in_(kind_filter))
             .order_by(Artifact.id.desc())
-            .limit(limit)
+            .limit(remain if remain else 1)
         )
-    ).scalars().all()
+    ).scalars().all() if remain else []
 
     frame_ids = {a.frame_id for a in arts if a.frame_id}
     frames: dict[int, Frame] = {}
@@ -142,8 +156,10 @@ async def list_outsee_create_history(
             ).scalars().all()
         }
 
-    out: list[dict[str, Any]] = []
     for a in arts:
+        aid = a.uuid or f"art-{a.id}"
+        if aid in seen_ids:
+            continue
         proj = projects.get(a.project_id)
         fr = frames.get(a.frame_id) if a.frame_id else None
         a_kind = a.kind.value if hasattr(a.kind, "value") else str(a.kind)
@@ -157,7 +173,7 @@ async def list_outsee_create_history(
             label = f"frame_{int(getattr(fr, 'number', 0) or 0):03d}"
         out.append(
             {
-                "id": a.uuid or f"art-{a.id}",
+                "id": aid,
                 "kind": media,
                 "artifact_kind": a_kind,
                 "preview_url": _preview_for_artifact(a),
@@ -173,40 +189,54 @@ async def list_outsee_create_history(
                     if fr
                     else None
                 ),
+                "status": "done",
             }
         )
+        seen_ids.add(aid)
+        if len(out) >= limit:
+            break
 
-    # Локальные результаты Create: data/generations/... (+ legacy grsai_history)
-    from app.services.generation_storage import list_generation_files
-
-    for item in list_generation_files(kind=kind, limit=80):
-        if any(x["id"] == item["id"] for x in out):
-            continue
-        out.insert(0, item)
-
-    # Disk fallback: scenes/videos across projects if DB sparse
-    if len(out) < 40:
+    # Disk fallback только если Create-локал + DB всё ещё мало
+    if len(out) < min(40, limit):
         for pid, p in projects.items():
             base = p.data_dir
             if not base.is_dir():
                 continue
-            for sub, media in (("scenes", "image"), ("images", "image"), ("videos", "video"), ("clips", "video"), ("audio", "audio")):
+            for sub, media in (
+                ("scenes", "image"),
+                ("images", "image"),
+                ("videos", "video"),
+                ("clips", "video"),
+                ("audio", "audio"),
+            ):
                 if kind not in ("all", media):
                     continue
                 d = base / sub
                 if not d.is_dir():
                     continue
                 try:
-                    files = sorted(d.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
+                    files = sorted(
+                        d.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True
+                    )
                 except OSError:
                     continue
                 for fp in files[:30]:
                     if not fp.is_file():
                         continue
-                    if fp.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mp3", ".wav", ".m4a"}:
+                    if fp.suffix.lower() not in {
+                        ".png",
+                        ".jpg",
+                        ".jpeg",
+                        ".webp",
+                        ".mp4",
+                        ".webm",
+                        ".mp3",
+                        ".wav",
+                        ".m4a",
+                    }:
                         continue
                     key = f"disk-{pid}-{fp.name}"
-                    if any(x["id"] == key for x in out):
+                    if key in seen_ids:
                         continue
                     out.append(
                         {
@@ -220,9 +250,11 @@ async def list_outsee_create_history(
                             "project_slug": p.slug,
                             "frame_id": None,
                             "prompt": None,
+                            "status": "done",
                         }
                     )
-        # newest first roughly
-        out = out[:limit]
+                    seen_ids.add(key)
+                    if len(out) >= limit:
+                        return out[:limit]
 
     return out[:limit]

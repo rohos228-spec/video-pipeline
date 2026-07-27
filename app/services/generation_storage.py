@@ -117,12 +117,93 @@ def update_sidecar(media_path: Path, **updates: Any) -> Path | None:
     return side
 
 
+def import_legacy_create_media() -> int:
+    """Копирует loose-файлы из outsee_create/grsai_history → data/generations/.
+
+    Старые Create-ответы писали только в flat-папки — история их не видела.
+    Исходник не удаляем; повторный импорт блокируется маркером.
+    """
+    import shutil
+
+    exts = {
+        ".png": "image",
+        ".jpg": "image",
+        ".jpeg": "image",
+        ".webp": "image",
+        ".mp4": "video",
+        ".webm": "video",
+        ".mp3": "audio",
+        ".wav": "audio",
+        ".m4a": "audio",
+        ".ogg": "audio",
+    }
+    marker = generations_root() / ".imported_legacy.txt"
+    try:
+        imported = (
+            set(marker.read_text(encoding="utf-8").splitlines())
+            if marker.is_file()
+            else set()
+        )
+    except OSError:
+        imported = set()
+
+    moved = 0
+    changed = False
+    for legacy_name in ("outsee_create", "grsai_history"):
+        legacy = settings.data_dir / legacy_name
+        if not legacy.is_dir():
+            continue
+        for fp in legacy.iterdir():
+            if not fp.is_file():
+                continue
+            media = exts.get(fp.suffix.lower())
+            if not media:
+                continue
+            key = f"{legacy_name}/{fp.name}"
+            if key in imported:
+                continue
+            dest = build_generation_path(
+                media=media,
+                model=legacy_name.replace("_", "-"),
+                ext=fp.suffix.lower(),
+            )
+            try:
+                shutil.copy2(fp, dest)
+            except OSError:
+                continue
+            write_sidecar(
+                dest,
+                media=media,
+                model=legacy_name.replace("_", "-"),
+                prompt="",
+                params={"imported_from": key},
+                provider="legacy",
+                status="done",
+                require_file=True,
+            )
+            imported.add(key)
+            changed = True
+            moved += 1
+    if changed:
+        try:
+            marker.write_text("\n".join(sorted(imported)) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return moved
+
+
 def list_generation_files(
     *,
     kind: str = "all",
     limit: int = 80,
+    import_legacy: bool = True,
 ) -> list[dict[str, Any]]:
     """Скан data/generations (+ legacy) — включая pending без файла."""
+    if import_legacy:
+        try:
+            import_legacy_create_media()
+        except Exception:  # noqa: BLE001
+            pass
     items: list[dict[str, Any]] = []
     root = generations_root()
     media_filter = None if kind == "all" else kind
