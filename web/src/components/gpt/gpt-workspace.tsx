@@ -234,6 +234,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       // Новые результаты — сразу скачать уже с конвертированным именем
       for (const f of s.outputs) {
         if (/^reply_\d/i.test(f.name)) continue;
+        if (/\.html?$/i.test(f.name)) continue;
         const key = `${s.id}:${f.name}:${f.size}`;
         if (knownOutputsRef.current.has(key)) continue;
         knownOutputsRef.current.add(key);
@@ -472,7 +473,11 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {session.outputs
-                      .filter((f) => !/^reply_\d/i.test(f.name))
+                      .filter(
+                        (f) =>
+                          !/^reply_\d/i.test(f.name) &&
+                          !/\.html?$/i.test(f.name),
+                      )
                       .map((f) => (
                         <FileChip
                           key={f.name}
@@ -603,7 +608,7 @@ function MessageBubble({
   const attNames = message.attachment_names ?? [];
   // reply_*.txt = копия текста ответа (уже в пузыре) — не показываем как «файл»
   const outNames = (message.output_files ?? []).filter(
-    (n) => !/^reply_\d/.test(n),
+    (n) => !/^reply_\d/.test(n) && !/\.html?$/i.test(n),
   );
 
   return (

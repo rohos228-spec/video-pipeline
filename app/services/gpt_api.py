@@ -979,7 +979,7 @@ def finalize_downloaded_file(
 
 
 def collect_result_urls(text: str) -> list[str]:
-    """Достать http(s)-ссылки на контент из ответа модели (картинки/файлы)."""
+    """Достать http(s)-ссылки; картинки/файлы раньше HTML-страниц."""
     if not text:
         return []
     seen: set[str] = set()
@@ -989,6 +989,86 @@ def collect_result_urls(text: str) -> list[str]:
         if u not in seen:
             seen.add(u)
             out.append(u)
+    out.sort(key=_url_image_priority)
+    return out
+
+
+_IMG_PATH_RE = re.compile(
+    r"\.(png|jpe?g|webp|gif|bmp|svg|avif|heic|ico)(?:\?|#|$)",
+    re.IGNORECASE,
+)
+
+
+def _url_image_priority(url: str) -> int:
+    """Меньше = раньше качаем (прямые картинки важнее wiki/html)."""
+    u = (url or "").lower()
+    path = u.split("?")[0]
+    if _IMG_PATH_RE.search(path):
+        return 0
+    if any(
+        x in u
+        for x in (
+            "/images/",
+            "/image/",
+            "/media/",
+            "upload.",
+            "imgur.",
+            "i.ibb.",
+            "cdn.",
+            "special:filepath",
+        )
+    ):
+        return 1
+    if path.endswith((".html", ".htm")) or "/wiki/" in u or "/article/" in u:
+        return 5
+    return 3
+
+
+def extract_image_urls_from_html(html: bytes | str, base_url: str) -> list[str]:
+    """Достать реальные URL картинок из HTML (og:image, twitter:image, img/srcset)."""
+    from urllib.parse import urljoin
+
+    if isinstance(html, bytes):
+        text = html.decode("utf-8", errors="replace")
+    else:
+        text = html
+    found: list[str] = []
+    patterns = (
+        r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::secure_url)?["\']',
+        r'<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image(?::src)?["\']',
+        r'<link[^>]+rel=["\']image_src["\'][^>]+href=["\']([^"\']+)["\']',
+        r'<meta[^>]+itemprop=["\']image["\'][^>]+content=["\']([^"\']+)["\']',
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            found.append(m.group(1).strip())
+    for m in re.finditer(r'<img\b[^>]*>', text, re.IGNORECASE):
+        tag = m.group(0)
+        for attr in ("src", "data-src", "data-original"):
+            am = re.search(rf'{attr}=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+            if am:
+                src = am.group(1).strip()
+                if src and not src.startswith("data:"):
+                    found.append(src)
+        sm = re.search(r'srcset=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if sm:
+            first = sm.group(1).split(",")[0].strip().split()[0]
+            if first and not first.startswith("data:"):
+                found.append(first)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in found:
+        abs_u = urljoin(base_url, u.replace("&amp;", "&"))
+        if not abs_u.startswith("http"):
+            continue
+        if abs_u in seen:
+            continue
+        seen.add(abs_u)
+        out.append(abs_u)
+    out.sort(key=_url_image_priority)
     return out
 
 
@@ -1043,13 +1123,16 @@ async def materialize_reply_assets(
     timeout: float = 120.0,
     max_urls: int = 8,
 ) -> list[Path]:
-    """Скачать URL и data-URI из ответа модели в out_dir."""
+    """Скачать URL и data-URI из ответа модели в out_dir.
+
+    Если URL отдаёт HTML-страницу — вытаскиваем og:image/img и качаем картинку.
+    Сам .html в Результаты не кладём (в браузерном ChatGPT так же видна картинка, не HTML).
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     saved.extend(extract_data_uri_files(text, out_dir, prefix=f"{prefix}_embed"))
 
     for i, url in enumerate(collect_result_urls(text)[:max_urls]):
-        # имя временное — финальное расширение после Content-Type/magic (без .bin)
         dest = out_dir / f"{prefix}_url_{i}.download"
         n = 2
         while dest.exists():
@@ -1058,9 +1141,74 @@ async def materialize_reply_assets(
         try:
             got = await download_content(url, dest, timeout=timeout)
             got = ensure_correct_extension(got)
-            # на всякий случай ещё раз вычистить .bin
             if got.suffix.lower() == ".bin":
                 got = finalize_downloaded_file(got, url=url)
+
+            # HTML-страница вместо файла → достать картинку
+            if got.suffix.lower() in {".html", ".htm"}:
+                try:
+                    html_bytes = got.read_bytes()
+                except OSError:
+                    html_bytes = b""
+                img_urls = extract_image_urls_from_html(html_bytes, url)
+                try:
+                    got.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                pulled = False
+                for j, iurl in enumerate(img_urls[:4]):
+                    idest = out_dir / f"{prefix}_url_{i}_img_{j}.download"
+                    k = 2
+                    while idest.exists():
+                        idest = out_dir / f"{prefix}_url_{i}_img_{j}_{k}.download"
+                        k += 1
+                    try:
+                        igot = await download_content(iurl, idest, timeout=timeout)
+                        igot = ensure_correct_extension(igot)
+                        if igot.suffix.lower() in {".html", ".htm", ".txt", ".dat"}:
+                            # не картинка — выкинуть
+                            try:
+                                igot.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            continue
+                        if (
+                            igot.suffix.lower() in _IMAGE_SUFFIXES
+                            or sniff_file_extension(igot.read_bytes()[:64]) in _IMAGE_SUFFIXES
+                        ):
+                            saved.append(igot)
+                            pulled = True
+                            logger.info(
+                                "materialize: HTML {} → image {}",
+                                url[:100],
+                                igot.name,
+                            )
+                            break
+                        # не image — тоже не оставляем мусор
+                        try:
+                            igot.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "materialize: img from html fail {}: {}",
+                            iurl[:100],
+                            e,
+                        )
+                if not pulled:
+                    logger.warning(
+                        "materialize: HTML без картинки, skip: {}",
+                        url[:120],
+                    )
+                continue
+
+            # не тащим html/пустые заглушки в Результаты
+            if got.suffix.lower() in {".html", ".htm"}:
+                try:
+                    got.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
             saved.append(got)
         except Exception as e:  # noqa: BLE001
             logger.warning("materialize_reply_assets: skip {}: {}", url[:120], e)

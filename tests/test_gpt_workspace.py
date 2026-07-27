@@ -69,6 +69,68 @@ def test_outputs_zip() -> None:
     assert z.stat().st_size > 10
 
 
+def test_extract_image_urls_from_html() -> None:
+    from app.services.gpt_api import collect_result_urls, extract_image_urls_from_html
+
+    html = """
+    <html><head>
+      <meta property="og:image" content="https://cdn.example/hero.png" />
+      <meta name="twitter:image" content="https://cdn.example/tw.jpg" />
+    </head><body>
+      <img src="/static/a.webp" />
+      <img src="data:image/png;base64,aaa" />
+    </body></html>
+    """
+    urls = extract_image_urls_from_html(html, "https://wiki.example/page/Lion")
+    assert urls[0] == "https://cdn.example/hero.png"
+    assert "https://cdn.example/tw.jpg" in urls
+    assert "https://wiki.example/static/a.webp" in urls
+    assert all(not u.startswith("data:") for u in urls)
+
+    ordered = collect_result_urls(
+        "see https://en.wikipedia.org/wiki/Lion and https://cdn.example/x.png"
+    )
+    assert ordered[0].endswith(".png")
+
+
+@pytest.mark.asyncio
+async def test_materialize_html_pulls_og_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import gpt_api as ga
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    html = (
+        b"<!DOCTYPE html><html><head>"
+        b'<meta property="og:image" content="https://cdn.example/lion.png" />'
+        b"</head><body>Lion</body></html>"
+    )
+
+    async def fake_download(url: str, out_path: Path, *, timeout: float = 180.0) -> Path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if url.endswith(".png") or "lion.png" in url:
+            out_path.write_bytes(png)
+            return ga.finalize_downloaded_file(
+                out_path, content_type="image/png", url=url
+            )
+        out_path.write_bytes(html)
+        return ga.finalize_downloaded_file(
+            out_path, content_type="text/html", url=url
+        )
+
+    monkeypatch.setattr(ga, "download_content", fake_download)
+    saved = await ga.materialize_reply_assets(
+        "вот https://en.wikipedia.org/wiki/Lion_(Dota_2)",
+        tmp_path,
+        prefix="gpt_test",
+    )
+    assert len(saved) == 1
+    assert saved[0].suffix == ".png"
+    assert saved[0].read_bytes().startswith(b"\x89PNG")
+    assert not list(tmp_path.glob("*.html"))
+
+
 def test_finalize_url_download_never_bin(tmp_path: Path) -> None:
     from app.services.gpt_api import finalize_downloaded_file, maybe_decode_base64_image
     import base64
