@@ -388,6 +388,7 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
                 "error": meta.get("error"),
                 "elapsed_sec": elapsed_sec,
                 "elapsed_label": elapsed_label,
+                "raw_url": meta.get("raw_url"),
                 "mtime": mtime,
             }
         )

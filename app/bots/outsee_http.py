@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,11 @@ from loguru import logger
 from app.bots.outsee import GenerationResult, OutseeImageError
 from app.generation_options import prepend_gen_id
 from app.settings import settings
+
+_DATA_URL_RE = re.compile(
+    r"^data:(image/(?:png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=\s]+)$",
+    re.IGNORECASE,
+)
 
 _DEFAULT_BASE = "https://outsee.io"
 _POLL_INTERVAL_S = 2.5
@@ -294,6 +301,163 @@ def _path_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _decode_data_url(url: str) -> tuple[bytes, str] | None:
+    m = _DATA_URL_RE.match((url or "").strip())
+    if not m:
+        return None
+    mime = m.group(1).lower().replace("image/jpg", "image/jpeg")
+    try:
+        raw = base64.b64decode(re.sub(r"\s+", "", m.group(2)), validate=False)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(raw) < 32:
+        return None
+    return raw, mime
+
+
+async def ensure_public_image_url(url: str | None) -> str | None:
+    """Outsee first_frame_url принимает только http(s); data: молча игнорит.
+
+    data: → временный публичный URL (litterbox 1h). http → как есть.
+    """
+    if not url or not str(url).strip():
+        return None
+    u = str(url).strip()
+    if u.startswith(("http://", "https://")):
+        return u
+    decoded = _decode_data_url(u)
+    if not decoded:
+        logger.warning("outsee_api.frame: не data/http URL, пропускаю")
+        return None
+    raw, mime = decoded
+    ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "png")
+    import os
+
+    tmp = Path(tempfile.gettempdir()) / f"outsee_frame_{os.getpid()}_{abs(hash(raw)) & 0xFFFFFFFF}.{ext}"
+    try:
+        tmp.write_bytes(raw)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            with tmp.open("rb") as fh:
+                r = await client.post(
+                    "https://litterbox.catbox.moe/resources/internals/api.php",
+                    data={"reqtype": "fileupload", "time": "1h"},
+                    files={"fileToUpload": (tmp.name, fh, mime)},
+                )
+            text = (r.text or "").strip()
+            if r.status_code >= 400 or not text.startswith("http"):
+                raise OutseeApiError(
+                    f"frame upload failed HTTP {r.status_code}: {text[:200]}",
+                    context={"mime": mime, "bytes": len(raw)},
+                )
+            logger.info("outsee_api.frame hosted {} bytes → {}", len(raw), text[:120])
+            return text
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+async def probe_has_audio(path: Path) -> bool:
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return bool((stdout or b"").strip())
+
+
+async def postprocess_veo_mp4(
+    path: Path,
+    *,
+    duration: int | None,
+    generate_audio: bool | None,
+) -> Path:
+    """Outsee Veo всегда отдаёт ~8с + AAC. Подрезаем/глушим локально под UI."""
+    from app.services.media_probe import probe_duration
+
+    want_dur = int(duration) if duration is not None else None
+    want_mute = generate_audio is False
+    if not want_mute and want_dur not in {4, 6}:
+        return path
+
+    actual = 0.0
+    try:
+        actual = await probe_duration(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("veo postprocess: probe failed {} — {}", path.name, e)
+
+    trim_to: float | None = None
+    if want_dur in {4, 6} and actual >= float(want_dur) + 0.35:
+        trim_to = float(want_dur)
+
+    has_a = False
+    if want_mute:
+        try:
+            has_a = await probe_has_audio(path)
+        except Exception:  # noqa: BLE001
+            has_a = True
+
+    if trim_to is None and not (want_mute and has_a):
+        return path
+
+    out = path.with_name(f"{path.stem}_pp{path.suffix}")
+    cmd: list[str] = ["ffmpeg", "-y", "-i", str(path)]
+    if trim_to is not None:
+        cmd.extend(["-t", f"{trim_to:.3f}"])
+    if want_mute and has_a:
+        cmd.append("-an")
+    else:
+        cmd.extend(["-c:a", "copy"])
+    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", str(out)])
+    # If only mute (no trim), stream-copy video is faster:
+    if trim_to is None and want_mute and has_a:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(path),
+            "-c:v",
+            "copy",
+            "-an",
+            str(out),
+        ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate()
+    if proc.returncode != 0 or not out.is_file() or out.stat().st_size < 64:
+        logger.warning(
+            "veo postprocess ffmpeg failed rc={} err={}",
+            proc.returncode,
+            (stderr or b"")[:400].decode(errors="ignore"),
+        )
+        out.unlink(missing_ok=True)
+        return path
+    path.write_bytes(out.read_bytes())
+    out.unlink(missing_ok=True)
+    logger.info(
+        "veo postprocess ok path={} trim={} mute={}",
+        path.name,
+        trim_to,
+        want_mute and has_a,
+    )
+    return path
+
+
 def _normalize_refs(refs: list[Any] | None) -> list[str] | None:
     if not refs:
         return None
@@ -414,7 +578,7 @@ async def generate_video(
     else:
         body["resolution"] = res if res in {"720p", "1080p"} else "720p"
 
-    # Veo: 4 / 6 / 8 (каталог пишет 8; API принимает и шлёт duration_sec)
+    # Veo: каталог Outsee фиксирует duration_sec=8; 4/6 шлём и потом режем ffmpeg.
     dur = int(duration or 8)
     if model == "veo-3-1-lite":
         if dur not in {4, 6, 8}:
@@ -431,6 +595,7 @@ async def generate_video(
         frame = reference_image
     elif not frame and isinstance(reference_image, Path) and reference_image.is_file():
         frame = _path_to_data_url(reference_image)
+    frame = await ensure_public_image_url(frame)
     if frame:
         body["first_frame_url"] = frame
 
@@ -441,6 +606,7 @@ async def generate_video(
         last = last_frame_image
     elif not last and isinstance(last_frame_image, Path) and last_frame_image.is_file():
         last = _path_to_data_url(last_frame_image)
+    last = await ensure_public_image_url(last)
     if last:
         body["last_frame_url"] = last
 
@@ -463,6 +629,12 @@ async def generate_video(
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf)
     await _download(url, out_path)
+    if model == "veo-3-1-lite":
+        await postprocess_veo_mp4(
+            out_path,
+            duration=dur,
+            generate_audio=generate_audio,
+        )
     return GenerationResult(
         file_path=out_path,
         raw_url=url,

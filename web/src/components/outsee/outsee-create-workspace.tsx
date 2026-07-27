@@ -61,6 +61,7 @@ type HistoryItem = {
   id: string;
   kind: string;
   preview_url: string | null;
+  raw_url?: string | null;
   path?: string | null;
   label: string;
   project_id: number | null;
@@ -73,6 +74,15 @@ type HistoryItem = {
   elapsed_sec?: number | null;
   elapsed_label?: string | null;
 };
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
 
 function formatElapsedMinSec(totalSec: number | null | undefined): string {
   const n = Math.max(0, Math.round(Number(totalSec) || 0));
@@ -318,6 +328,42 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       }
     }
   }, [imageSlug, videoSlug, mediaType]);
+
+  const applyFrameFromHistory = async (item: HistoryItem, slot: "first" | "last") => {
+    // Предпочитаем публичный raw_url (Outsee CDN) — data:/local Outsee игнорит.
+    const httpUrl = item.raw_url && item.raw_url.startsWith("http") ? item.raw_url : null;
+    if (httpUrl) {
+      if (slot === "first") {
+        setFirstFrameDataUrl(httpUrl);
+        setFirstFrameName(item.label || "история");
+      } else {
+        setLastFrameDataUrl(httpUrl);
+        setLastFrameName(item.label || "история");
+      }
+      toast.success(slot === "first" ? "Стартовый кадр из истории" : "Конечный кадр из истории");
+      return;
+    }
+    if (!item.preview_url) {
+      toast.error("Нет URL картинки для кадра");
+      return;
+    }
+    try {
+      const res = await fetch(item.preview_url);
+      const blob = await res.blob();
+      const file = new File([blob], `${item.id}.png`, { type: blob.type || "image/png" });
+      const dataUrl = await readFileAsDataUrl(file);
+      if (slot === "first") {
+        setFirstFrameDataUrl(dataUrl);
+        setFirstFrameName(item.label || item.id);
+      } else {
+        setLastFrameDataUrl(dataUrl);
+        setLastFrameName(item.label || item.id);
+      }
+      toast.success(slot === "first" ? "Стартовый кадр" : "Конечный кадр");
+    } catch {
+      toast.error("Не удалось взять кадр из истории");
+    }
+  };
 
   const applyModelDefaults = (slug: string, kind: OutseeMediaType) => {
     if (kind === "image") {
@@ -887,6 +933,27 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
                   />
                 )}
+                {mediaType === "video" &&
+                  videoModel.chips.includes("image-input") &&
+                  selected.kind === "image" &&
+                  selected.status === "done" && (
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        className="rounded-xl border border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] px-3 py-1.5 text-[11px] font-medium"
+                        onClick={() => void applyFrameFromHistory(selected, "first")}
+                      >
+                        → Старт
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/75"
+                        onClick={() => void applyFrameFromHistory(selected, "last")}
+                      >
+                        → Финиш
+                      </button>
+                    </div>
+                  )}
                 <div className="text-[12px] font-medium text-white/70">
                   Результат ·{" "}
                   {selected.elapsed_label ||
@@ -1112,12 +1179,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             onChange={(e) => {
                               const f = e.target.files?.[0];
                               if (!f) return;
-                              const reader = new FileReader();
-                              reader.onload = () => {
-                                setFirstFrameDataUrl(String(reader.result || ""));
+                              void readFileAsDataUrl(f).then((dataUrl) => {
+                                setFirstFrameDataUrl(dataUrl);
                                 setFirstFrameName(f.name);
-                              };
-                              reader.readAsDataURL(f);
+                                toast.success("Стартовый кадр выбран");
+                              });
                               e.target.value = "";
                             }}
                           />
@@ -1129,12 +1195,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             onChange={(e) => {
                               const f = e.target.files?.[0];
                               if (!f) return;
-                              const reader = new FileReader();
-                              reader.onload = () => {
-                                setLastFrameDataUrl(String(reader.result || ""));
+                              void readFileAsDataUrl(f).then((dataUrl) => {
+                                setLastFrameDataUrl(dataUrl);
                                 setLastFrameName(f.name);
-                              };
-                              reader.readAsDataURL(f);
+                                toast.success("Конечный кадр выбран");
+                              });
                               e.target.value = "";
                             }}
                           />
@@ -1147,8 +1212,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                                 ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
                                 : "border-white/10 bg-[#222] text-white/70",
                             )}
-                            title={firstFrameName || "Стартовый кадр"}
+                            title={firstFrameName || "Стартовый кадр (файл или из истории)"}
                           >
+                            {firstFrameDataUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={firstFrameDataUrl}
+                                alt=""
+                                className="h-5 w-5 rounded object-cover"
+                              />
+                            ) : null}
                             Старт
                             {firstFrameDataUrl ? (
                               <span
@@ -1174,6 +1247,14 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             )}
                             title={lastFrameName || "Конечный кадр"}
                           >
+                            {lastFrameDataUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={lastFrameDataUrl}
+                                alt=""
+                                className="h-5 w-5 rounded object-cover"
+                              />
+                            ) : null}
                             Финиш
                             {lastFrameDataUrl ? (
                               <span

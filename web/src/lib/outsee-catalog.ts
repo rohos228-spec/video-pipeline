@@ -498,7 +498,7 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     studioId: "veo_3_1_lite",
     displayName: "Veo 3.1 Lite",
     description:
-      "Outsee Veo: 720p, 4/6/8 сек, звук, стартовый и конечный кадр.",
+      "Outsee Veo 720p: звук/4–6с дожимаем локально; кадры — http URL (история → Старт).",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
     price: "от 10",
     grsaiWired: true,
