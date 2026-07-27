@@ -316,14 +316,21 @@ def _decode_data_url(url: str) -> tuple[bytes, str] | None:
 
 
 async def ensure_public_image_url(url: str | None) -> str | None:
-    """Outsee first_frame_url принимает только http(s); data: молча игнорит.
+    """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → временный публичный URL (litterbox 1h). http → как есть.
+    data: → публичный URL (litterbox 24h). http(s) → как есть (кроме localhost).
     """
     if not url or not str(url).strip():
         return None
     u = str(url).strip()
     if u.startswith(("http://", "https://")):
+        # Outsee не скачает localhost / 127.0.0.1 — молча получится чужое видео
+        low = u.lower()
+        if "://127." in low or "://localhost" in low or "://[::1]" in low:
+            raise OutseeApiError(
+                "стартовый кадр: localhost URL недоступен Outsee — нужен data: или публичный https",
+                context={"url": u[:120]},
+            )
         return u
     decoded = _decode_data_url(u)
     if not decoded:
@@ -340,7 +347,7 @@ async def ensure_public_image_url(url: str | None) -> str | None:
             with tmp.open("rb") as fh:
                 r = await client.post(
                     "https://litterbox.catbox.moe/resources/internals/api.php",
-                    data={"reqtype": "fileupload", "time": "1h"},
+                    data={"reqtype": "fileupload", "time": "24h"},
                     files={"fileToUpload": (tmp.name, fh, mime)},
                 )
             text = (r.text or "").strip()
