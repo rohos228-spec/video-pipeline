@@ -34,7 +34,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import (
     OutseeBot,
     OutseeContentRejectedError,
@@ -532,7 +532,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         #   - любой v — для GPT-rewrite внутри generate_image_with_retries
         #     (после 3 неудачных попыток в outsee он попросит ChatGPT
         #     переписать промт без триггеров модерации).
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
 
         # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
         if not hero_prompt:
@@ -1042,7 +1042,7 @@ async def _generate_one_excel_character(
     prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}-{short_uuid}]"
 
     async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
         outsee = OutseeBot(bs)
 
         # Сборка промта.

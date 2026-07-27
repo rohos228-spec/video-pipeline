@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import OutseeBot
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
@@ -158,7 +158,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # `gpt` — для GPT-rewrite внутри generate_video_with_retries:
         # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
         # animation_prompt без триггеров модерации, потом ещё 3 попытки.
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
 
         skipped = 0
         generated = 0

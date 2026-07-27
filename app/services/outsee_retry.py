@@ -56,11 +56,11 @@ _GPT_MODERATION_REWRITE_OUTER_TIMEOUT_S = 180.0
 _GPT_MODERATION_REWRITE_ASK_TIMEOUT_S = 150.0
 # Хвост uniquify `[… r9a9]` — резерв при расчёте max_body.
 _UNIQUIFY_SUFFIX_RESERVE = 8
+
 from typing import Any
 
 from loguru import logger
 
-from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import (
     GenerationResult,
     OutseeBot,
@@ -192,7 +192,7 @@ def _target_body_chars_from_error(
 
 
 async def _compress_prompt_for_outsee(
-    gpt: ChatGPTBot,
+    gpt: Any,
     prompt_body: str,
     *,
     prefix: str | None = None,
@@ -260,7 +260,7 @@ async def _compress_prompt_for_outsee(
 
 
 async def _prepare_prompt_for_outsee(
-    gpt: ChatGPTBot | None,
+    gpt: Any | None,
     prompt_body: str,
     prefix: str | None,
     *,
@@ -322,7 +322,7 @@ async def _prepare_prompt_for_outsee(
 
 
 async def _ask_gpt_to_rewrite(
-    gpt: ChatGPTBot,
+    gpt: Any,
     original_prompt: str,
     *,
     project_id: int | None = None,
@@ -446,7 +446,7 @@ async def _ask_gpt_to_rewrite(
 
 
 async def _fix_prompt_after_outsee_error(
-    gpt: ChatGPTBot,
+    gpt: Any,
     prompt_body: str,
     err: OutseeImageError,
     *,
@@ -544,7 +544,7 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
 
 async def generate_image_with_retries(
     outsee: OutseeBot,
-    gpt: ChatGPTBot | None,
+    gpt: Any | None,
     *,
     prompt: str,
     out_path: Path,
@@ -813,7 +813,7 @@ async def generate_image_with_retries(
 
 async def generate_video_with_retries(
     outsee: OutseeBot,
-    gpt: ChatGPTBot | None,
+    gpt: Any | None,
     *,
     prompt: str,
     out_path: Path,

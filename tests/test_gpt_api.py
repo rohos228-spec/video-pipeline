@@ -25,6 +25,7 @@ def _enable(monkeypatch) -> None:
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_base_url", "https://gw.test")
     monkeypatch.setattr(settings, "gpt_chat_path", "/v1/chat/completions")
+    monkeypatch.setattr(settings, "gpt_api_mode", "chat")
     monkeypatch.setattr(settings, "gpt_max_retries", 3)
 
 

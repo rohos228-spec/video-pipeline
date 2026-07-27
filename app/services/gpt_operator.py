@@ -129,18 +129,8 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
     if raw_transport in ("api", "browser"):
         cfg["transport"] = raw_transport
     else:
-        # По умолчанию API для новой механики; legacy assist без ролей — browser.
-        has_operator_fields = any(
-            k in cfg
-            for k in (
-                "role",
-                "outputMode",
-                "useSnapshot",
-                "takeFromEdges",
-                "uploadedFileNames",
-            )
-        )
-        cfg["transport"] = "api" if has_operator_fields else "browser"
+        # Полный переход на API: browser только если явно указан.
+        cfg["transport"] = "api"
     # multi-file uploads stored as list of names
     names = cfg.get("uploadedFileNames")
     if not isinstance(names, list):

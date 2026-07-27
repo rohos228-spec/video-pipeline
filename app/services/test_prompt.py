@@ -123,22 +123,21 @@ async def _gpt_get_new_prompt(
     содержимое txt.
     """
     # Импорт ленивый — чтобы тесты могли мокать.
-    from app.bots.browser import browser_session
-    from app.bots.chatgpt import ChatGPTBot
+    from app.services.gpt_client import get_gpt_client
 
     out_txt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
-        await gpt.new_conversation()
-        if attachments:
-            await gpt.ask_with_files(
-                user_message, attachments, timeout=900, expect_file_download=True
-            )
-        else:
-            await gpt.ask(user_message, timeout=900)
-        # Скачиваем сгенерированный .txt из ответа.
-        await gpt.download_attachment_from_last_reply(out_txt_path)
+    gpt = get_gpt_client()
+    await gpt.new_conversation()
+    if attachments:
+        await gpt.ask_with_files(
+            user_message, attachments, timeout=900, expect_file_download=True
+        )
+    else:
+        await gpt.ask_fresh(user_message, timeout=900)
+    await gpt.download_attachment_from_last_reply(
+        out_txt_path, allow_reply_text_fallback=True
+    )
 
     if not out_txt_path.exists() or out_txt_path.stat().st_size == 0:
         raise RuntimeError(

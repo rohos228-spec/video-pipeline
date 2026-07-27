@@ -823,8 +823,6 @@ async def run_gpt_verdict(
     payload: GptVerdictRunPayload | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    from app.bots.browser import browser_session
-    from app.bots.chatgpt import ChatGPTBot
     from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS, run_verdict_review
     from app.services.step_cancel import StepCancelledError, consume_stop
 
@@ -837,18 +835,17 @@ async def run_gpt_verdict(
     consume_stop(project_id)
     user_prompt = payload.prompt if payload else None
     try:
-        async with browser_session() as bs:
-            meta = project.meta if isinstance(project.meta, dict) else {}
-            if meta.get("ai_new_window_per_check"):
-                bs.force_new_window = True
-            gpt = ChatGPTBot(bs)
-            result = await run_verdict_review(
-                session,
-                project,
-                step_code,
-                gpt,
-                user_prompt=user_prompt,
-            )
+        from app.services.gpt_client import get_gpt_client
+
+        gpt = get_gpt_client()
+        await gpt.new_conversation()
+        result = await run_verdict_review(
+            session,
+            project,
+            step_code,
+            gpt,
+            user_prompt=user_prompt,
+        )
     except StepCancelledError as e:
         raise HTTPException(status_code=499, detail=str(e)) from e
 

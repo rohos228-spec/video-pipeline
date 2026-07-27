@@ -25,7 +25,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import (
     OutseeBot,
     OutseeContentRejectedError,
@@ -149,7 +149,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             async with browser_session() as bs:
                 outsee = OutseeBot(bs)
-                gpt = ChatGPTBot(bs)
+                gpt = get_gpt_client()
                 result = await generate_image_with_retries(
                     outsee, gpt,
                     prompt=full_prompt,

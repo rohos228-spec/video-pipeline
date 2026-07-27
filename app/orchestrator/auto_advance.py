@@ -1155,15 +1155,13 @@ async def _run_verdict_review_for_step(
     step_code: str,
 ) -> ReviewResult:
     """GPT-проверка «Вердикт» — тот же шаблон, что в Studio."""
-    from app.bots.browser import browser_session
-    from app.bots.chatgpt import ChatGPTBot
+    from app.services.gpt_client import get_gpt_client
     from app.services.gpt_verdict_review import (
         load_verdict_check_prompt,
         run_verdict_review,
         verdict_template_for_project,
     )
 
-    meta = getattr(project, "meta", None) or {}
     template = verdict_template_for_project(project, step_code)
     check_prompt = load_verdict_check_prompt(step_code, template=template)
     logger.info(
@@ -1174,17 +1172,15 @@ async def _run_verdict_review_for_step(
         len(check_prompt),
     )
 
-    async with browser_session() as bs:
-        if meta.get("ai_new_window_per_check"):
-            bs.force_new_window = True
-        gpt = ChatGPTBot(bs)
-        verdict = await run_verdict_review(
-            session,
-            project,
-            step_code,
-            gpt,
-            user_prompt=check_prompt,
-        )
+    gpt = get_gpt_client()
+    await gpt.new_conversation()
+    verdict = await run_verdict_review(
+        session,
+        project,
+        step_code,
+        gpt,
+        user_prompt=check_prompt,
+    )
 
     if verdict.approved or verdict.fix_applied:
         return ReviewResult(
@@ -1205,13 +1201,10 @@ async def _run_verdict_review_for_step(
 async def _run_text_review(
     project: Project, kind: HITLKind, artifact: str
 ) -> ReviewResult:
-    """Запускает GPT-ревью текста в новом chat (через ChatGPTBot)."""
-    # Локальный импорт чтобы избежать циклов / тяжёлой инициализации.
-    from app.bots.browser import browser_session
-    from app.bots.chatgpt import ChatGPTBot
+    """Запускает GPT-ревью текста через HTTP API."""
     from app.services import auto_review
+    from app.services.gpt_client import get_gpt_client
 
-    # Папка snapshot'а массового — если проект в батче.
     snap = None
     if getattr(project, "batch_slug", None):
         from pathlib import Path
@@ -1221,28 +1214,24 @@ async def _run_text_review(
         if not snap.exists():
             snap = None
 
-    # Постоянный продукт массового (если есть) — для проверки упоминания.
     meta = getattr(project, "meta", None) or {}
     product = meta.get("permanent_product") or {}
     product_name = (product.get("name") or "").strip() or None
 
-    async with browser_session() as bs:
-        meta = getattr(project, "meta", None) or {}
-        if meta.get("ai_new_window_per_check"):
-            bs.force_new_window = True
-        gpt = ChatGPTBot(bs)
-        if kind is HITLKind.approve_plan:
-            return await auto_review.review_plan(
-                plan_text=artifact, chatgpt_bot=gpt,
-                batch_snapshot_dir=snap,
-                product_name=product_name,
-            )
-        if kind is HITLKind.approve_script:
-            return await auto_review.review_script(
-                script_text=artifact, chatgpt_bot=gpt,
-                batch_snapshot_dir=snap,
-                product_name=product_name,
-            )
+    gpt = get_gpt_client()
+    await gpt.new_conversation()
+    if kind is HITLKind.approve_plan:
+        return await auto_review.review_plan(
+            plan_text=artifact, chatgpt_bot=gpt,
+            batch_snapshot_dir=snap,
+            product_name=product_name,
+        )
+    if kind is HITLKind.approve_script:
+        return await auto_review.review_script(
+            script_text=artifact, chatgpt_bot=gpt,
+            batch_snapshot_dir=snap,
+            product_name=product_name,
+        )
     raise RuntimeError(f"_run_text_review: неизвестный kind={kind}")
 
 

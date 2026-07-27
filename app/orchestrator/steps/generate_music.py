@@ -14,7 +14,6 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.bots.outsee import OutseeBot
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services import gpt_text_builder as gtb
@@ -44,18 +43,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         voiceover_attached=voiceover_path.exists(),
     )
 
-    logger.info("[#{}] generate_music: GPT → Suno (voiceover + сопр. текст)", project.id)
+    logger.info("[#{}] generate_music: GPT API → Suno (voiceover + сопр. текст)", project.id)
 
-    async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
-        await gpt.new_conversation()
-        logger.info("[#{}] generate_music: отправка voiceover.txt в ChatGPT", project.id)
-        suno_prompt = await gpt.ask_with_files(
-            chat_msg,
-            [voiceover_path],
-            timeout=900,
-            project_id=project.id,
-        )
+    from app.services.gpt_client import get_gpt_client
+
+    gpt = get_gpt_client()
+    await gpt.new_conversation()
+    logger.info("[#{}] generate_music: отправка voiceover.txt в GPT API", project.id)
+    suno_prompt = await gpt.ask_with_files(
+        chat_msg,
+        [voiceover_path],
+        timeout=900,
+        project_id=project.id,
+    )
     suno_prompt = (suno_prompt or "").strip()
     if len(suno_prompt) < 20:
         raise RuntimeError("GPT вернул слишком короткий промт для музыки")

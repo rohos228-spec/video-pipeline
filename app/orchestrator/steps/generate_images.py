@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import (
     OutseeBot,
     OutseeContentRejectedError,
@@ -723,7 +723,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
         # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
         # промт без триггеров модерации, потом ещё 3 попытки.
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
         phase = "shot1"
         shot2_queued = 0
         try:
@@ -1030,7 +1030,7 @@ async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
     outsee: OutseeBot,
-    gpt: ChatGPTBot,
+    gpt,  # ApiGptClient | duck-typed ask_fresh
     project: Project,
     frame: Frame,
     out_dir: Path,

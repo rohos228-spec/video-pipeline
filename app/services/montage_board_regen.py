@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
+from app.services.gpt_client import get_gpt_client
 from app.bots.outsee import OutseeBot
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
@@ -263,7 +263,7 @@ async def execute_image_regen(prep: ImageRegenPrep) -> Path:
     )
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
         try:
             result = await generate_image_with_retries(
                 outsee,
@@ -476,7 +476,7 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     )
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
-        gpt = ChatGPTBot(bs)
+        gpt = get_gpt_client()
         videos_dir = prep.file_path.parent
         if prep.shot == 2:
             dup_globs = list(videos_dir.glob(f"clip_{prep.frame_number:03d}_s2_*.mp4"))

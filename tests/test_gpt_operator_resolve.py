@@ -188,6 +188,7 @@ def test_set_edge_kind_and_gate_result(tmp_path: Path, monkeypatch) -> None:
 def test_api_stub_writes_reply(tmp_path: Path, monkeypatch) -> None:
     import asyncio
 
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: False)
     p = _project(tmp_path, monkeypatch)
     key = "n_excel_gpt_1"
     src = p.data_dir / "project.xlsx"

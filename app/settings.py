@@ -59,19 +59,18 @@ class Settings(BaseSettings):
     grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
 
     # GPT text via API (OpenAI-compatible /v1/chat/completions) — замена
-    # браузерного ChatGPT для excel_gpt / проверочных нод. Пусто → fallback
-    # на stub (dev/tests) или на браузер. Ключ можно переиспользовать из GRSAI.
+    # текста/xlsx/check. Браузерный ChatGPT отключён. Пусто → нужен ключ+база. Ключ можно переиспользовать из GRSAI.
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
-    gpt_model: str = Field("gpt-5.5", alias="GPT_MODEL")
+    gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
-    gpt_chat_path: str = Field("/v1/chat/completions", alias="GPT_CHAT_PATH")
+    gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
-    gpt_timeout_s: float = Field(180.0, alias="GPT_TIMEOUT_S")
+    gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 
     @property

@@ -1,9 +1,8 @@
-"""Шаг 8: промты анимации через ChatGPT web (один диалог, пачки по 5 кадров).
+"""Шаг 8: промты анимации через GPT API (пачки по 5 кадров + vision).
 
 Схема:
   1) Один раз: сопр. промт + файл мастер-промта (без картинок).
-  2) Дальше в том же чате: одна PNG-лента (до 5 кадров слева→направо,
-     между ними белые вертикальные разделители) + ID и закадровый текст.
+  2) Дальше: PNG-лента (до 5 кадров) + ID и закадровый текст (vision).
   3) Парсим ответ → plan R48 (shot_01) и R64 (shot_02) + БД; повторяем 2–3.
 """
 
@@ -16,11 +15,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.chatgpt import ChatGPTBot
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import animation_prompt_gpt as apg
 from app.services.chatgpt_xlsx import tmp_gpt_dir, write_anim_pr_prompt_file
+from app.services.gpt_client import get_gpt_client
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
 from app.storage.plan_sheet_v8 import write_plan_animation_prompt
@@ -97,118 +95,117 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     sheet = _sheet_for_project(project)
 
-    logger.info("[#{}] anim_pr: подключаю Chrome (CDP)…", project.id)
-    async with browser_session() as bs:
-        gpt = ChatGPTBot(bs)
-        try:
-            logger.info("[#{}] anim_pr: новый чат ChatGPT…", project.id)
-            await gpt.new_conversation()
-            raise_if_cancelled(project.id)
-            if not skip_phase1:
-                logger.info(
-                    "[#{}] anim_pr: новый чат → ФАЗА 1 только текст+файл {} ({} байт), {} симв.",
-                    project.id,
-                    prompt_file.name,
-                    prompt_file.stat().st_size,
-                    len(initial),
-                )
-                initial_reply = await gpt.ask_anim_pr_initial(
-                    initial,
-                    prompt_file,
-                    timeout=300,
-                    project_id=project.id,
-                )
-                if not (initial_reply or "").strip():
-                    logger.warning(
-                        "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
-                        project.id,
-                    )
-                raise_if_cancelled(project.id)
-            else:
-                logger.info(
-                    "[#{}] anim_pr: ФАЗА 1 пропущена — {} промтов уже в xlsx/БД",
-                    project.id,
-                    already_done,
-                )
-
-            while True:
-                raise_if_cancelled(project.id)
-                pending = apg.collect_batch_items(project, frames)
-                if not pending:
-                    break
-
-                batch = pending[: apg.BATCH_SIZE]
-                strip_path = apg.build_batch_strip_path(batch, tmp_dir)
-                batch_msg = apg.build_batch_message(batch)
-                logger.info(
-                    "[#{}] anim_pr: ФАЗА 2 shot_01 batch {} кадров {} — лента {} ({} симв.)",
-                    project.id,
-                    len(batch),
-                    [it.frame.number for it in batch],
-                    strip_path.name,
-                    len(batch_msg),
-                )
-                reply = await gpt.ask_anim_pr_batch(
-                    batch_msg,
-                    [strip_path],
-                    timeout=600,
-                    project_id=project.id,
-                )
-                await _save_anim_pr_batch(
-                    session,
-                    project,
-                    frames,
-                    batch,
-                    reply,
-                    sheet,
-                    shot=1,
-                )
-
-            while True:
-                raise_if_cancelled(project.id)
-                pending2 = apg.collect_shot2_batch_items(project, frames)
-                if not pending2:
-                    break
-
-                batch2 = pending2[: apg.BATCH_SIZE]
-                strip2 = apg.build_batch_strip_path(batch2, tmp_dir)
-                batch_msg2 = apg.build_batch_message_shot2(batch2)
-                logger.info(
-                    "[#{}] anim_pr: ФАЗА 2 shot_02 batch {} кадров {} — лента {} ({} симв.)",
-                    project.id,
-                    len(batch2),
-                    [it.frame.number for it in batch2],
-                    strip2.name,
-                    len(batch_msg2),
-                )
-                reply2 = await gpt.ask_anim_pr_batch(
-                    batch_msg2,
-                    [strip2],
-                    timeout=600,
-                    project_id=project.id,
-                )
-                await _save_anim_pr_batch(
-                    session,
-                    project,
-                    frames,
-                    batch2,
-                    reply2,
-                    sheet,
-                    shot=2,
-                )
-
-        except StepCancelledError as e:
-            consume_stop(project.id)
+    logger.info("[#{}] anim_pr: GPT API…", project.id)
+    gpt = get_gpt_client()
+    try:
+        logger.info("[#{}] anim_pr: новый API-сеанс…", project.id)
+        await gpt.new_conversation()
+        raise_if_cancelled(project.id)
+        if not skip_phase1:
             logger.info(
-                "[#{}] make_animation_prompts: {} — выхожу из цикла",
+                "[#{}] anim_pr: ФАЗА 1 текст+файл {} ({} байт), {} симв.",
                 project.id,
-                e,
+                prompt_file.name,
+                prompt_file.stat().st_size,
+                len(initial),
             )
-            try:
-                await session.refresh(project)
-            except Exception:  # noqa: BLE001
-                logger.warning("[#{}] не смог refresh project после ⏹", project.id)
-            return
+            initial_reply = await gpt.ask_anim_pr_initial(
+                initial,
+                prompt_file,
+                timeout=300,
+                project_id=project.id,
+            )
+            if not (initial_reply or "").strip():
+                logger.warning(
+                    "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                    project.id,
+                )
+            raise_if_cancelled(project.id)
+        else:
+            logger.info(
+                "[#{}] anim_pr: ФАЗА 1 пропущена — {} промтов уже в xlsx/БД",
+                project.id,
+                already_done,
+            )
+
+        while True:
+            raise_if_cancelled(project.id)
+            pending = apg.collect_batch_items(project, frames)
+            if not pending:
+                break
+
+            batch = pending[: apg.BATCH_SIZE]
+            strip_path = apg.build_batch_strip_path(batch, tmp_dir)
+            batch_msg = apg.build_batch_message(batch)
+            logger.info(
+                "[#{}] anim_pr: ФАЗА 2 shot_01 batch {} кадров {} — лента {} ({} симв.)",
+                project.id,
+                len(batch),
+                [it.frame.number for it in batch],
+                strip_path.name,
+                len(batch_msg),
+            )
+            reply = await gpt.ask_anim_pr_batch(
+                batch_msg,
+                [strip_path],
+                timeout=600,
+                project_id=project.id,
+            )
+            await _save_anim_pr_batch(
+                session,
+                project,
+                frames,
+                batch,
+                reply,
+                sheet,
+                shot=1,
+            )
+
+        while True:
+            raise_if_cancelled(project.id)
+            pending2 = apg.collect_shot2_batch_items(project, frames)
+            if not pending2:
+                break
+
+            batch2 = pending2[: apg.BATCH_SIZE]
+            strip2 = apg.build_batch_strip_path(batch2, tmp_dir)
+            batch_msg2 = apg.build_batch_message_shot2(batch2)
+            logger.info(
+                "[#{}] anim_pr: ФАЗА 2 shot_02 batch {} кадров {} — лента {} ({} симв.)",
+                project.id,
+                len(batch2),
+                [it.frame.number for it in batch2],
+                strip2.name,
+                len(batch_msg2),
+            )
+            reply2 = await gpt.ask_anim_pr_batch(
+                batch_msg2,
+                [strip2],
+                timeout=600,
+                project_id=project.id,
+            )
+            await _save_anim_pr_batch(
+                session,
+                project,
+                frames,
+                batch2,
+                reply2,
+                sheet,
+                shot=2,
+            )
+
+    except StepCancelledError as e:
+        consume_stop(project.id)
+        logger.info(
+            "[#{}] make_animation_prompts: {} — выхожу из цикла",
+            project.id,
+            e,
+        )
+        try:
+            await session.refresh(project)
+        except Exception:  # noqa: BLE001
+            logger.warning("[#{}] не смог refresh project после ⏹", project.id)
+        return
 
     project.status = ProjectStatus.animation_prompts_ready
     await session.flush()

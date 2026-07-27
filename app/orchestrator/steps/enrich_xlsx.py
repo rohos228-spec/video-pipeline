@@ -128,28 +128,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     op_cfg = operator_config(project, node_key) if node_key else {}
     resolved = resolve_operator(project, node_key) if node_key else None
     explicit = str(op_cfg.get("transport") or "").strip().lower()
-    if explicit in ("api", "browser"):
-        transport = explicit
-    else:
-        has_data_edge = bool(
-            resolved
-            and any(
-                e.get("kind") in ("feed", "review")
-                for e in (resolved.get("incomingEdges") or [])
-            )
+    if explicit == "browser":
+        raise RuntimeError(
+            "enrich_xlsx: transport=browser отключён. "
+            "Используй transport=api (GPT HTTP). Убери browser в настройках ноды."
         )
-        role = str(op_cfg.get("role") or "assist")
-        transport = (
-            "api"
-            if (
-                has_data_edge
-                or role != "assist"
-                or op_cfg.get("outputMode")
-                or op_cfg.get("useSnapshot")
-                or op_cfg.get("uploadedFileNames")
-            )
-            else "browser"
-        )
+    transport = "api"
 
     try:
         variant, src_path, master, prompt_source = read_resolved_project_prompt(
@@ -224,8 +208,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             master = append_response_footer(master or "")
 
-    # ── API-транспорт (по умолчанию): без браузера/CDP ─────────────────
-    if transport != "browser" and node_key and resolved is not None:
+    # ── API-транспорт (единственный): без браузера/CDP ─────────────────
+    if node_key and resolved is not None:
         from sqlalchemy.orm.attributes import flag_modified
 
         from app.services.gpt_operator_client import run_operator_api
@@ -394,20 +378,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             else:
 
                 async def _do() -> str:
-                    from app.bots.browser import browser_session
-                    from app.bots.chatgpt import ChatGPTBot
-
-                    async with browser_session() as bs:
-                        gpt = ChatGPTBot(bs)
-                        await gpt.new_conversation()
-                        return await gpt.ask_with_files(
-                            (accompanying or "").strip()
-                            or "Выполни инструкцию из приложенного промта.",
-                            attach_files,
-                            timeout=1200,
-                            project_id=project.id,
-                            expect_file_download=False,
-                        )
+                    return await xgf.telegram_style_ask_with_files(
+                        (accompanying or "").strip()
+                        or "Выполни инструкцию из приложенного промта.",
+                        attach_files,
+                        timeout=1200,
+                        project_id=project.id,
+                    )
 
             reply = await xgf.run_under_xlsx_lock(
                 project.id, legacy_step_code, _do
