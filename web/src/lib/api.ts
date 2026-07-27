@@ -1451,10 +1451,13 @@ export type GptWorkspaceSessionSummary = {
 
 export type GptWorkspaceFile = {
   name: string;
+  display_name?: string;
   size: number;
   path: string;
   url: string;
   download_url?: string;
+  mime?: string;
+  kind?: "image" | "file" | string;
 };
 
 export type GptWorkspaceMessage = {

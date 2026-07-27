@@ -80,6 +80,32 @@ def _file_urls(path: Path) -> dict[str, str]:
     }
 
 
+def _file_entry(path: Path) -> dict[str, Any]:
+    """Карточка файла: sniff-rename на диске + mime/kind для превью в GPT-окне."""
+    from app.services.gpt_api import ensure_correct_extension, suggested_name_and_mime
+
+    fixed = ensure_correct_extension(path)
+    display_name, mime = suggested_name_and_mime(fixed)
+    kind = "image" if (mime or "").startswith("image/") else "file"
+    if kind != "image" and fixed.suffix.lower() in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+    }:
+        kind = "image"
+    return {
+        "name": fixed.name,
+        "display_name": display_name or fixed.name,
+        "size": fixed.stat().st_size if fixed.is_file() else 0,
+        "path": str(fixed),
+        "mime": mime,
+        "kind": kind,
+        **_file_urls(fixed),
+    }
+
+
 def _root() -> Path:
     d = Path(settings.data_dir) / "gpt_workspace"
     d.mkdir(parents=True, exist_ok=True)
@@ -171,27 +197,13 @@ def get_session(session_id: str) -> dict[str, Any]:
     if att_dir.is_dir():
         for p in sorted(att_dir.iterdir()):
             if p.is_file():
-                attachments.append(
-                    {
-                        "name": p.name,
-                        "size": p.stat().st_size,
-                        "path": str(p),
-                        **_file_urls(p),
-                    }
-                )
+                attachments.append(_file_entry(p))
     outputs = []
     out_dir = d / "outputs"
     if out_dir.is_dir():
         for p in sorted(out_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
             if p.is_file():
-                outputs.append(
-                    {
-                        "name": p.name,
-                        "size": p.stat().st_size,
-                        "path": str(p),
-                        **_file_urls(p),
-                    }
-                )
+                outputs.append(_file_entry(p))
     return {
         "id": d.name,
         "title": meta.get("title") or d.name,
@@ -238,6 +250,12 @@ def _rewrite_message_filenames(
             names = nm.get(key)
             if isinstance(names, list):
                 nm[key] = [renames.get(str(n), n) for n in names]
+        content = nm.get("content")
+        if isinstance(content, str) and content:
+            for old, new in renames.items():
+                if old and new and old != new and old in content:
+                    content = content.replace(old, new)
+            nm["content"] = content
         out.append(nm)
     return out
 
@@ -294,12 +312,7 @@ def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, An
     meta = _read_json(d / "meta.json", {})
     meta["updated_at"] = _now()
     _write_json(d / "meta.json", meta)
-    return {
-        "name": path.name,
-        "size": path.stat().st_size,
-        "path": str(path),
-        **_file_urls(path),
-    }
+    return _file_entry(path)
 
 
 def delete_attachment(session_id: str, name: str) -> None:
@@ -341,12 +354,7 @@ def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
     meta = _read_json(d / "meta.json", {})
     meta["updated_at"] = _now()
     _write_json(d / "meta.json", meta)
-    return {
-        "name": dest.name,
-        "size": dest.stat().st_size,
-        "path": str(dest),
-        **_file_urls(dest),
-    }
+    return _file_entry(dest)
 
 
 def build_outputs_zip(session_id: str) -> Path:

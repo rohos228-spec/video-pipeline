@@ -105,10 +105,21 @@ def test_get_session_renames_existing_bin() -> None:
     att = d / "attachments"
     att.mkdir(exist_ok=True)
     (att / "legacy.bin").write_bytes(png)
-    gw._append_message(s["id"], "user", "hi", attachment_names=["legacy.bin"])
+    gw._append_message(
+        s["id"],
+        "assistant",
+        "Вот legacy.bin для тебя",
+        attachment_names=["legacy.bin"],
+    )
     got = gw.get_session(s["id"])
-    assert got["attachments"][0]["name"] == "legacy.png"
+    att0 = got["attachments"][0]
+    assert att0["name"] == "legacy.png"
+    assert att0["display_name"] == "legacy.png"
+    assert att0["kind"] == "image"
+    assert att0["mime"] == "image/png"
     assert got["messages"][0]["attachment_names"] == ["legacy.png"]
+    assert "legacy.png" in got["messages"][0]["content"]
+    assert "legacy.bin" not in got["messages"][0]["content"]
     assert not (att / "legacy.bin").exists()
     assert (att / "legacy.png").is_file()
 

@@ -663,6 +663,8 @@ def sniff_file_extension(data: bytes) -> str | None:
         return ".gif"
     if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
         return ".webp"
+    if data.startswith(b"BM") and len(data) >= 2:
+        return ".bmp"
     if data.startswith(b"%PDF"):
         return ".pdf"
     if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06"):
@@ -683,6 +685,7 @@ _SNIFF_MIME = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".bmp": "image/bmp",
     ".pdf": "application/pdf",
     ".zip": "application/zip",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

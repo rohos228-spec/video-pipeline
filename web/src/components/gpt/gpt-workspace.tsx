@@ -52,8 +52,90 @@ function resolveFile(
   return undefined;
 }
 
-function isImageName(n: string): boolean {
+function fileLabel(f: GptWorkspaceFile): string {
+  return f.display_name || f.name;
+}
+
+function isImageFile(f: GptWorkspaceFile | undefined, fallbackName?: string): boolean {
+  if (f?.kind === "image") return true;
+  if (f?.mime?.startsWith("image/")) return true;
+  const n = f ? fileLabel(f) : fallbackName || "";
   return /\.(png|jpe?g|webp|gif)$/i.test(n);
+}
+
+function downloadHref(f: GptWorkspaceFile): string {
+  if (f.download_url) return f.download_url;
+  return `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`;
+}
+
+/** Сразу скачать файл (конвертированное имя с сервера через Content-Disposition). */
+function triggerDownload(f: GptWorkspaceFile): void {
+  const a = document.createElement("a");
+  a.href = downloadHref(f);
+  a.rel = "noopener";
+  // без download= — иначе браузер форсит старое .bin имя
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function FileChip({
+  file,
+  onToOutputs,
+  onDelete,
+}: {
+  file: GptWorkspaceFile;
+  onToOutputs?: () => void;
+  onDelete?: () => void;
+}) {
+  const label = fileLabel(file);
+  const image = isImageFile(file);
+  return (
+    <div className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5">
+      {image ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={file.url}
+          alt={label}
+          className="max-h-28 w-full rounded object-contain bg-black/40"
+        />
+      ) : null}
+      <div className="flex items-center gap-1 text-[11px] text-white/70">
+        {image ? null : <Paperclip className="h-3 w-3 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate" title={label}>
+          {label}
+        </span>
+        <button
+          type="button"
+          className="text-white/35 hover:text-white"
+          title="Скачать"
+          onClick={() => triggerDownload(file)}
+        >
+          <Download className="h-3 w-3" />
+        </button>
+        {onToOutputs && (
+          <button
+            type="button"
+            className="text-white/30 hover:text-white"
+            title="В Результаты"
+            onClick={onToOutputs}
+          >
+            <FolderOutput className="h-3 w-3" />
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="text-white/30 hover:text-red-400"
+            title="Удалить"
+            onClick={onDelete}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 type Props = {
@@ -88,6 +170,18 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const session: GptWorkspaceSession | undefined = sessionQ.data;
 
   const [elapsedSec, setElapsedSec] = useState(0);
+  const knownOutputsRef = useRef<Set<string>>(new Set());
+  const seededSessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!session) return;
+    if (seededSessionRef.current !== session.id) {
+      seededSessionRef.current = session.id;
+      knownOutputsRef.current = new Set(
+        session.outputs.map((f) => `${session.id}:${f.name}:${f.size}`),
+      );
+    }
+  }, [session]);
 
   useEffect(() => {
     if (!open) return;
@@ -137,6 +231,14 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       setSessionId(s.id);
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", s.id] });
+      // Новые результаты — сразу скачать уже с конвертированным именем
+      for (const f of s.outputs) {
+        if (/^reply_\d/i.test(f.name)) continue;
+        const key = `${s.id}:${f.name}:${f.size}`;
+        if (knownOutputsRef.current.has(key)) continue;
+        knownOutputsRef.current.add(key);
+        triggerDownload(f);
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -328,64 +430,37 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                   <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/35">
                     Вложения
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-2">
                     {session.attachments.map((f) => (
-                      <span
+                      <FileChip
                         key={f.name}
-                        className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[11px] text-white/70"
-                      >
-                        <Paperclip className="h-3 w-3 shrink-0" />
-                        <a
-                          href={f.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="max-w-[140px] truncate hover:text-white"
-                          title={f.name}
-                        >
-                          {f.name}
-                        </a>
-                        <a
-                          href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
-                          className="text-white/35 hover:text-white"
-                          title="Скачать"
-                        >
-                          <Download className="h-3 w-3" />
-                        </a>
-                        <button
-                          type="button"
-                          className="text-white/30 hover:text-white"
-                          title="В Результаты"
-                          onClick={() => {
-                            void api
-                              .gptAttachmentToOutputs(session.id, f.name)
-                              .then((out) => {
-                                toast.success(`В Результаты → ${out.name || f.name}`);
-                                void qc.invalidateQueries({
-                                  queryKey: ["gpt-workspace", "session", session.id],
-                                });
-                              })
-                              .catch((e) => toast.error(errorMessageFromUnknown(e)));
-                          }}
-                        >
-                          <FolderOutput className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          className="text-white/30 hover:text-red-400"
-                          title="Удалить"
-                          onClick={() =>
-                            api
-                              .gptDeleteAttachment(session.id, f.name)
-                              .then(() =>
-                                qc.invalidateQueries({
-                                  queryKey: ["gpt-workspace", "session", session.id],
-                                }),
-                              )
-                          }
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </span>
+                        file={f}
+                        onToOutputs={() => {
+                          void api
+                            .gptAttachmentToOutputs(session.id, f.name)
+                            .then((out) => {
+                              toast.success(
+                                `В Результаты → ${out.display_name || out.name || f.name}`,
+                              );
+                              const key = `${session.id}:${out.name}:${out.size}`;
+                              knownOutputsRef.current.add(key);
+                              triggerDownload(out);
+                              void qc.invalidateQueries({
+                                queryKey: ["gpt-workspace", "session", session.id],
+                              });
+                            })
+                            .catch((e) => toast.error(errorMessageFromUnknown(e)));
+                        }}
+                        onDelete={() =>
+                          void api
+                            .gptDeleteAttachment(session.id, f.name)
+                            .then(() =>
+                              qc.invalidateQueries({
+                                queryKey: ["gpt-workspace", "session", session.id],
+                              }),
+                            )
+                        }
+                      />
                     ))}
                   </div>
                 </div>
@@ -395,30 +470,15 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                   <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/35">
                     Результаты
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {session.outputs.map((f) => (
-                      <span
-                        key={f.name}
-                        className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[11px]"
-                      >
-                        <a
-                          href={f.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="max-w-[160px] truncate text-white/70 hover:text-white"
-                          title={f.name}
-                        >
-                          {f.name}
-                        </a>
-                        <a
-                          href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
-                          className="text-white/35 hover:text-white"
-                          title="Скачать"
-                        >
-                          <Download className="h-3 w-3" />
-                        </a>
-                      </span>
-                    ))}
+                  <div className="flex flex-wrap gap-2">
+                    {session.outputs
+                      .filter((f) => !/^reply_\d/i.test(f.name))
+                      .map((f) => (
+                        <FileChip
+                          key={f.name}
+                          file={f}
+                        />
+                      ))}
                   </div>
                 </div>
               )}
@@ -567,14 +627,13 @@ function MessageBubble({
         <div className="mt-2 flex flex-wrap gap-2">
           {attNames.map((name) => {
             const f = resolveFile(filesByName, name);
-            const label = f?.name || name;
-            const href = f?.download_url || f?.url;
+            const label = f ? fileLabel(f) : name;
             return (
               <div
                 key={name}
                 className="rounded border border-white/[0.08] bg-black/30 p-1.5"
               >
-                {f && isImageName(label) ? (
+                {f && isImageFile(f, name) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={f.url}
@@ -585,14 +644,15 @@ function MessageBubble({
                 <div className="flex items-center gap-1.5 text-[10px] text-white/55">
                   <Paperclip className="h-3 w-3" />
                   <span className="max-w-[160px] truncate">{label}</span>
-                  {href && (
-                    <a
-                      href={href}
+                  {f && (
+                    <button
+                      type="button"
+                      onClick={() => triggerDownload(f)}
                       className="text-white/40 hover:text-white"
                       title="Скачать"
                     >
                       <Download className="h-3 w-3" />
-                    </a>
+                    </button>
                   )}
                 </div>
               </div>
@@ -605,39 +665,41 @@ function MessageBubble({
           <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/30">
             Файлы из ответа
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
           {outNames.map((name) => {
             const f = resolveFile(filesByName, name);
-            const label = f?.name || name;
-            const href = f?.download_url || f?.url;
+            const label = f ? fileLabel(f) : name;
             return (
-              <span
+              <div
                 key={name}
-                className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10px] text-white/55"
+                className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5 text-[10px] text-white/55"
               >
-                {f && isImageName(label) ? (
+                {f && isImageFile(f, name) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={f.url}
                     alt={label}
-                    className="max-h-24 max-w-[140px] rounded object-contain"
+                    className="max-h-28 w-full rounded object-contain bg-black/40"
                   />
                 ) : (
-                  <FileText className="h-3 w-3" />
+                  <div className="flex items-center gap-1">
+                    <FileText className="h-3 w-3" />
+                    <span className="truncate">{label}</span>
+                  </div>
                 )}
-                {href ? (
-                  <a href={href} className="hover:text-white">
-                    {label}
-                  </a>
-                ) : (
-                  label
-                )}
-                {href && (
-                  <a href={href} title="Скачать">
-                    <Download className="h-3 w-3 text-white/35 hover:text-white" />
-                  </a>
-                )}
-              </span>
+                <div className="flex items-center gap-1">
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  {f && (
+                    <button
+                      type="button"
+                      onClick={() => triggerDownload(f)}
+                      title="Скачать"
+                    >
+                      <Download className="h-3 w-3 text-white/35 hover:text-white" />
+                    </button>
+                  )}
+                </div>
+              </div>
             );
           })}
           </div>
