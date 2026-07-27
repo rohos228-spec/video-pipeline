@@ -35,13 +35,27 @@ def format_elapsed_min_sec(seconds: float | int | None) -> str:
     return f"{m} мин {s} сек"
 
 
-def elapsed_from_iso(start: str | None, end: str | None = None) -> int | None:
-    """Секунды между ISO-метками; None если разобрать нельзя."""
+def elapsed_from_iso(
+    start: str | None,
+    end: str | None = None,
+    *,
+    live: bool = False,
+) -> int | None:
+    """Секунды между ISO-метками.
+
+    live=True — если end нет, считаем до сейчас (только для queued/processing).
+    live=False — без end возвращаем None (готовые результаты не «накручивают» часы).
+    """
     if not start:
         return None
     try:
         t0 = datetime.fromisoformat(start)
-        t1 = datetime.fromisoformat(end) if end else datetime.now(timezone.utc).astimezone()
+        if end:
+            t1 = datetime.fromisoformat(end)
+        elif live:
+            t1 = datetime.now(timezone.utc).astimezone()
+        else:
+            return None
         if t0.tzinfo is None:
             t0 = t0.replace(tzinfo=timezone.utc).astimezone()
         if t1.tzinfo is None:
@@ -49,6 +63,49 @@ def elapsed_from_iso(start: str | None, end: str | None = None) -> int | None:
         return max(0, int((t1 - t0).total_seconds()))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _mtime_iso(mtime: float) -> str:
+    return (
+        datetime.fromtimestamp(mtime, tz=timezone.utc)
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
+
+
+def resolve_item_elapsed(
+    meta: dict[str, Any],
+    *,
+    status: str,
+    mtime: float | None = None,
+) -> tuple[int | None, str | None, bool]:
+    """Вернуть (elapsed_sec, elapsed_label, needs_persist).
+
+    Для done/failed — только зафиксированные метки (никогда wall-clock now).
+    """
+    sec = meta.get("elapsed_sec")
+    label = meta.get("elapsed_label")
+    if sec is not None:
+        try:
+            sec_i = int(sec)
+        except (TypeError, ValueError):
+            sec_i = None
+        if sec_i is not None:
+            if not label:
+                label = format_elapsed_min_sec(sec_i)
+            return sec_i, label, False
+
+    terminal = status in {"done", "failed"}
+    start = meta.get("started_at") or meta.get("created_at")
+    end = meta.get("finished_at") or meta.get("updated_at")
+    if terminal and not end and mtime is not None:
+        end = _mtime_iso(mtime)
+    sec_i = elapsed_from_iso(start, end, live=not terminal)
+    if sec_i is None:
+        return None, None, False
+    label = format_elapsed_min_sec(sec_i)
+    # Готовый результат без elapsed_sec в sidecar — записать один раз.
+    return sec_i, label, terminal
 
 
 def invalidate_generation_list_cache() -> None:
@@ -361,15 +418,27 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
                     except Exception:  # noqa: BLE001
                         pass
         resolved = str(fp.resolve()) if fp.is_absolute() or fp.exists() else str(fp)
-        elapsed_sec = meta.get("elapsed_sec")
-        elapsed_label = meta.get("elapsed_label")
-        if elapsed_sec is None:
-            elapsed_sec = elapsed_from_iso(
-                meta.get("started_at") or meta.get("created_at"),
-                meta.get("finished_at") or meta.get("updated_at"),
-            )
-        if elapsed_label is None and elapsed_sec is not None:
-            elapsed_label = format_elapsed_min_sec(elapsed_sec)
+        file_mtime = mtime
+        if has_file:
+            try:
+                file_mtime = fp.stat().st_mtime
+            except OSError:
+                pass
+        elapsed_sec, elapsed_label, persist = resolve_item_elapsed(
+            meta, status=status, mtime=file_mtime
+        )
+        if persist and fp is not None:
+            try:
+                end = meta.get("finished_at") or meta.get("updated_at")
+                if not end and file_mtime is not None:
+                    end = _mtime_iso(file_mtime)
+                update_sidecar(
+                    fp,
+                    elapsed_sec=elapsed_sec,
+                    finished_at=end or meta.get("finished_at"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         items.append(
             {
                 "id": key,
@@ -389,7 +458,7 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
                 "elapsed_sec": elapsed_sec,
                 "elapsed_label": elapsed_label,
                 "raw_url": meta.get("raw_url"),
-                "mtime": mtime,
+                "mtime": file_mtime,
             }
         )
 
