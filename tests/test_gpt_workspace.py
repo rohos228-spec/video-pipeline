@@ -59,6 +59,45 @@ def test_copy_attachment_to_outputs() -> None:
     got = gw.get_session(s["id"])
     assert any(o["name"] == "pic.png" for o in got["outputs"])
 
+
+def test_outputs_zip() -> None:
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "a.txt", b"hello")
+    gw.copy_attachment_to_outputs(s["id"], "a.txt")
+    z = gw.build_outputs_zip(s["id"])
+    assert z.exists() and z.suffix == ".zip"
+    assert z.stat().st_size > 10
+
+
+def test_wants_file_return() -> None:
+    assert gw._wants_file_return("верни файл обратно")
+    assert gw._wants_file_return("send back the file please")
+    assert not gw._wants_file_return("что на картинке?")
+
+
+@pytest.mark.asyncio
+async def test_ask_promotes_attachment_on_return_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.gpt_client as gc
+
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "hero.png", b"\x89PNG" + b"x" * 40)
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            assert kwargs.get("system")
+            return "Не могу прислать файл через интерфейс."
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            raise RuntimeError("no")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    out = await gw.ask(s["id"], "верни файл hero.png")
+    names = [o["name"] for o in out["outputs"]]
+    assert "hero.png" in names
+    assert any(n.startswith("reply_") for n in names)
+
     with pytest.raises(FileNotFoundError, match="сессия не найдена"):
         gw.save_attachment("nosuch", "a.txt", b"hi")
 

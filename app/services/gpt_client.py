@@ -70,6 +70,7 @@ class ApiGptClient:
         expect_file_download: bool = False,
         history: list[dict[str, Any]] | None = None,
         treat_txt_as_prompt: bool = True,
+        system: str | None = None,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import chat
@@ -134,6 +135,7 @@ class ApiGptClient:
             input_paths=data_files if master else attachments,
             timeout=float(timeout),
             history=hist or None,
+            system=system,
         )
         self._last_reply = result.text or ""
         self._last_input_paths = list(data_files or attachments)

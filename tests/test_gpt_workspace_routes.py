@@ -146,6 +146,29 @@ async def test_ask_missing_session(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_multi_upload_and_outputs_zip(client) -> None:
+    c, _, _ = client
+    s = (await c.post("/api/gpt-workspace/sessions", json={})).json()
+    sid = s["id"]
+    r = await c.post(
+        f"/api/gpt-workspace/sessions/{sid}/attachments",
+        files=[
+            ("files", ("a.txt", b"aaa", "text/plain")),
+            ("files", ("b.csv", b"x,y\n1,2\n", "text/csv")),
+        ],
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 2
+    # promote one
+    await c.post(f"/api/gpt-workspace/sessions/{sid}/attachments/a.txt/to-outputs")
+    z = await c.get(f"/api/gpt-workspace/sessions/{sid}/outputs.zip")
+    assert z.status_code == 200
+    assert z.headers.get("content-type", "").startswith("application/zip")
+    assert len(z.content) > 20
+
+
+@pytest.mark.asyncio
 async def test_ask_api_unavailable_returns_503(client, monkeypatch) -> None:
     c, _, _ = client
     from app.services.gpt_client import GptApiUnavailable

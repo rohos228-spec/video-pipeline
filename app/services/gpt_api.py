@@ -30,11 +30,27 @@ _FATAL_STATUS = frozenset({400, 401, 403, 404, 422})
 _RETRY_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\}<>\"']+", re.IGNORECASE)
-_TEXT_SUFFIXES = frozenset({".txt", ".md", ".csv", ".json", ".yaml", ".yml"})
+_TEXT_SUFFIXES = frozenset({
+    ".txt",
+    ".md",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".htm",
+    ".log",
+    ".srt",
+    ".vtt",
+})
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 # Лимит картинок и размера (base64 раздувает ~4/3) — чтобы не упереться в payload.
 _MAX_VISION_IMAGES = 8
 _MAX_VISION_BYTES = 4_000_000
+# Мелкий бинарь (pdf/docx/zip/…) можно отдать как base64 — как «файл в чате».
+_MAX_BINARY_INLINE_BYTES = 400_000
 
 
 class GptApiError(Exception):
@@ -119,9 +135,11 @@ def xlsx_to_text(path: Path, *, max_rows: int = 400, max_cols: int = 40) -> str:
 
 
 def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
-    """Текстовое представление файла для вложения в prompt."""
+    """Текстовое представление файла для вложения в prompt (как attach в ChatGPT)."""
+    import base64
+
     suffix = path.suffix.lower()
-    if suffix in (".xlsx", ".xlsm"):
+    if suffix in (".xlsx", ".xlsm", ".xls"):
         body = xlsx_to_text(path)
     elif suffix in _TEXT_SUFFIXES:
         try:
@@ -134,14 +152,67 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
         except OSError:
             size = -1
         return f"[изображение {path.name}: {suffix}, {size} байт — см. vision-вложение]"
-    else:
-        # бинарь (mp4/…) — только метаданные, не тянем в текст.
+    elif suffix == ".pdf":
+        # Без pypdf: вытаскиваем printable-куски + при малом размере — base64.
         try:
-            size = path.stat().st_size
-        except OSError:
-            size = -1
-        return f"[файл {path.name}: {suffix or 'bin'}, {size} байт — бинарный, не разворачиваю]"
-    if len(body) > max_chars:
+            raw = path.read_bytes()
+        except OSError as e:
+            return f"[pdf {path.name}: не прочитан ({e})]"
+        printable = "".join(
+            chr(b) if 32 <= b < 127 or b in (9, 10, 13) else " "
+            for b in raw[:200_000]
+        )
+        printable = re.sub(r"[ \t]{2,}", " ", printable)
+        printable = re.sub(r"\n{3,}", "\n\n", printable).strip()
+        parts = [f"[pdf {path.name}: {len(raw)} байт]"]
+        if printable and len(printable) > 40:
+            parts.append(printable[:max_chars])
+        if len(raw) <= _MAX_BINARY_INLINE_BYTES:
+            parts.append(
+                f"data:application/pdf;base64,{base64.b64encode(raw).decode('ascii')}"
+            )
+        body = "\n\n".join(parts)
+    elif suffix in {".docx"}:
+        # docx = zip+xml; вытащим word/document.xml текст грубо.
+        try:
+            import zipfile
+            from xml.etree import ElementTree as ET
+
+            with zipfile.ZipFile(path) as zf:
+                xml = zf.read("word/document.xml")
+            root = ET.fromstring(xml)
+            texts = [
+                (n.text or "")
+                for n in root.iter()
+                if n.tag.endswith("}t") and (n.text or "").strip()
+            ]
+            body = "\n".join(texts) or f"[docx {path.name}: пустой текст]"
+        except Exception as e:  # noqa: BLE001
+            body = f"[docx {path.name}: не разобрал ({e})]"
+    else:
+        # Прочий бинарь — метаданные; мелкий файл инлайним base64 (модель может вернуть).
+        try:
+            raw = path.read_bytes()
+            size = len(raw)
+        except OSError as e:
+            return f"[файл {path.name}: не прочитан ({e})]"
+        if size <= _MAX_BINARY_INLINE_BYTES:
+            mime = {
+                ".zip": "application/zip",
+                ".mp4": "video/mp4",
+                ".webm": "video/webm",
+            }.get(suffix, "application/octet-stream")
+            body = (
+                f"[файл {path.name}: {suffix or 'bin'}, {size} байт]\n"
+                f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            )
+        else:
+            return (
+                f"[файл {path.name}: {suffix or 'bin'}, {size} байт — "
+                f"слишком большой для inline (>{_MAX_BINARY_INLINE_BYTES}), "
+                f"только имя; скачай исходник кнопкой ↓ в Studio]"
+            )
+    if len(body) > max_chars and "base64," not in body:
         body = body[:max_chars] + "\n… (обрезано)"
     return f"===== {path.name} =====\n{body}"
 
@@ -572,7 +643,9 @@ async def chat(
 # ─────────────────────────── контент (download/copy) ───────────────────────────
 
 _DATA_URI_RE = re.compile(
-    r"data:(image/(?:png|jpeg|jpg|webp|gif)|application/(?:pdf|octet-stream))"
+    r"data:(image/(?:png|jpeg|jpg|webp|gif)|application/(?:pdf|zip|octet-stream|"
+    r"vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|"
+    r"vnd\.ms-excel))"
     r";base64,([A-Za-z0-9+/=\s]+)",
     re.IGNORECASE,
 )
@@ -612,6 +685,9 @@ def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -
             "image/webp": ".webp",
             "image/gif": ".gif",
             "application/pdf": ".pdf",
+            "application/zip": ".zip",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "application/vnd.ms-excel": ".xls",
         }.get(mime, ".bin")
         try:
             data = base64.b64decode(raw_b64, validate=False)

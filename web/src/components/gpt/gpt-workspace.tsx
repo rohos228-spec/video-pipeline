@@ -44,6 +44,7 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [withAttachments, setWithAttachments] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -107,20 +108,21 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
   });
 
   const uploadMut = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (fileOrFiles: File | File[]) => {
       let sid = sessionId;
       if (!sid) {
         const s = await api.gptCreateSession();
         sid = s.id;
         setSessionId(sid);
       }
-      const att = await api.gptUploadAttachment(sid, file);
-      return { sid, att };
+      const result = await api.gptUploadAttachment(sid, fileOrFiles);
+      return { sid, result };
     },
-    onSuccess: ({ sid }) => {
+    onSuccess: ({ sid, result }) => {
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
-      toast.success("Файл прикреплён");
+      const n = Array.isArray(result) ? result.length : 1;
+      toast.success(n > 1 ? `Прикреплено файлов: ${n}` : "Файл прикреплён");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -416,7 +418,7 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
           {/* compose dock */}
           <div className="shrink-0 border-t border-white/[0.06] bg-[#0d0d0d] px-4 py-3">
             <div className="mx-auto flex max-w-3xl flex-col gap-2">
-              <div className="flex items-center gap-3 text-[11px] text-white/45">
+              <div className="flex flex-wrap items-center gap-3 text-[11px] text-white/45">
                 <label className="inline-flex cursor-pointer items-center gap-1.5">
                   <input
                     type="checkbox"
@@ -437,58 +439,89 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                     Ответ → voiceover.txt
                   </button>
                 )}
+                {session && session.outputs.length > 0 && (
+                  <a
+                    href={api.gptOutputsZipUrl(session.id)}
+                    className="inline-flex items-center gap-1 hover:text-white"
+                    title="Скачать все Результаты"
+                  >
+                    <Download className="h-3 w-3" />
+                    Скачать всё (.zip)
+                  </a>
+                )}
               </div>
-              <div className="flex items-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => fileRef.current?.click()}
-                  disabled={uploadMut.isPending}
-                  className="rounded-md border border-white/[0.08] p-2.5 text-white/55 hover:bg-white/[0.05] hover:text-white"
-                  title="Прикрепить файл"
-                >
-                  {uploadMut.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Paperclip className="h-4 w-4" />
-                  )}
-                </button>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) uploadMut.mutate(f);
-                    e.target.value = "";
-                  }}
-                />
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      if (!busy && draft.trim()) askMut.mutate();
-                    }
-                  }}
-                  rows={3}
-                  placeholder="Сообщение GPT… (Enter — отправить, Shift+Enter — новая строка)"
-                  className="min-h-[72px] flex-1 resize-none rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:border-[rgba(209,254,23,0.4)] focus:outline-none"
-                />
-                <button
-                  type="button"
-                  disabled={busy || !draft.trim()}
-                  onClick={() => askMut.mutate()}
-                  className="inline-flex h-[72px] w-12 items-center justify-center rounded-lg font-semibold text-black disabled:opacity-40"
-                  style={{ backgroundColor: ACCENT }}
-                  title="Отправить"
-                >
-                  {busy ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
-                </button>
+              <div
+                className={cn(
+                  "rounded-lg border border-dashed px-2 py-1 transition-colors",
+                  dragOver
+                    ? "border-[rgba(209,254,23,0.55)] bg-[rgba(209,254,23,0.06)]"
+                    : "border-transparent",
+                )}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  const list = Array.from(e.dataTransfer.files || []);
+                  if (list.length) uploadMut.mutate(list.length === 1 ? list[0] : list);
+                }}
+              >
+                <div className="flex items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploadMut.isPending}
+                    className="rounded-md border border-white/[0.08] p-2.5 text-white/55 hover:bg-white/[0.05] hover:text-white"
+                    title="Прикрепить файлы (несколько)"
+                  >
+                    {uploadMut.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Paperclip className="h-4 w-4" />
+                    )}
+                  </button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const list = Array.from(e.target.files || []);
+                      if (list.length) uploadMut.mutate(list.length === 1 ? list[0] : list);
+                      e.target.value = "";
+                    }}
+                  />
+                  <textarea
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!busy && draft.trim()) askMut.mutate();
+                      }
+                    }}
+                    rows={3}
+                    placeholder="Сообщение GPT… файлы: скрепка или drag&drop (Enter — отправить)"
+                    className="min-h-[72px] flex-1 resize-none rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:border-[rgba(209,254,23,0.4)] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || !draft.trim()}
+                    onClick={() => askMut.mutate()}
+                    className="inline-flex h-[72px] w-12 items-center justify-center rounded-lg font-semibold text-black disabled:opacity-40"
+                    style={{ backgroundColor: ACCENT }}
+                    title="Отправить"
+                  >
+                    {busy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

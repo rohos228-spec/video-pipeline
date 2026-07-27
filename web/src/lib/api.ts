@@ -1379,16 +1379,27 @@ export const api = {
     http<{ ok: boolean }>(`/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
     }),
-  gptUploadAttachment: async (sessionId: string, file: File) => {
+  gptUploadAttachment: async (sessionId: string, file: File | File[]) => {
     const fd = new FormData();
-    fd.append("file", file);
+    const list = Array.isArray(file) ? file : [file];
+    if (list.length === 1) {
+      fd.append("file", list[0]);
+    } else {
+      for (const f of list) fd.append("files", f);
+    }
     const res = await fetch(
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments`,
       { method: "POST", body: fd },
     );
     if (!res.ok) throw new ApiError(res.status, await res.text());
-    return res.json() as Promise<GptWorkspaceFile>;
+    const body = await res.json();
+    if (body && Array.isArray(body.files)) {
+      return body.files as GptWorkspaceFile[];
+    }
+    return body as GptWorkspaceFile;
   },
+  gptOutputsZipUrl: (sessionId: string) =>
+    `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/outputs.zip`,
   gptDeleteAttachment: (sessionId: string, name: string) =>
     http<{ ok: boolean }>(
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,

@@ -21,6 +21,29 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
+# Как в браузерном ChatGPT: модель умеет «вернуть файл» через содержимое ответа.
+_WORKSPACE_SYSTEM = (
+    "Ты в Studio GPT (HTTP API). Вложения пользователя уже в контексте запроса.\n"
+    "Если просят ВЕРНУТЬ / ПРИСЛАТЬ / ОТПРАВИТЬ / СКАЧАТЬ файл:\n"
+    "• таблица → полный TSV с строками «# Лист: …»;\n"
+    "• картинка → один блок data:image/png;base64,... (целиком);\n"
+    "• текст → полное содержимое файла;\n"
+    "• иной файл → data:<mime>;base64,... целиком.\n"
+    "Не отказывайся ссылкой на «интерфейс не умеет» — Studio сама сохранит файлы "
+    "из твоего ответа в «Результаты» и даст скачать."
+)
+
+_RETURN_FILE_RE = re.compile(
+    r"(?i)\b("
+    r"верн[иу]|пришл[иу]|отправ[ьи]|скача[йть]|download|send\s+back|"
+    r"return\s+(the\s+)?file|дай\s+файл|выгруз"
+    r")\b"
+)
+
+
+def _wants_file_return(message: str) -> bool:
+    return bool(_RETURN_FILE_RE.search(message or ""))
+
 
 def _file_urls(path: Path) -> dict[str, str]:
     """URL просмотра и принудительного скачивания через /api/files."""
@@ -245,6 +268,24 @@ def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
     }
 
 
+def build_outputs_zip(session_id: str) -> Path:
+    """Собрать zip всех outputs сессии (скачать всё, как из ChatGPT)."""
+    import zipfile
+
+    d = _session_dir(session_id)
+    if not d.is_dir() or not (d / "meta.json").is_file():
+        raise FileNotFoundError(f"сессия не найдена: {session_id}")
+    out_dir = d / "outputs"
+    files = [p for p in out_dir.iterdir() if p.is_file()] if out_dir.is_dir() else []
+    if not files:
+        raise FileNotFoundError("нет файлов в Результатах")
+    zip_path = d / f"outputs_{session_id}.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in files:
+            zf.write(p, arcname=p.name)
+    return zip_path
+
+
 def _append_message(session_id: str, role: str, content: str, **extra: Any) -> None:
     d = _session_dir(session_id)
     msgs = _read_json(d / "messages.json", [])
@@ -324,6 +365,7 @@ async def ask(
             expect_file_download=has_xlsx,
             history=history,
             treat_txt_as_prompt=False,
+            system=_WORKSPACE_SYSTEM,
         )
         reply = (reply or "").strip()
 
@@ -337,7 +379,7 @@ async def ask(
         reply_path.write_text(reply, encoding="utf-8")
         saved_files.append(reply_path.name)
 
-        # URL / data-URI из ответа → файлы в outputs (картинки, xlsx, …)
+        # URL / data-URI из ответа → файлы в outputs (картинки, xlsx, pdf, …)
         try:
             from app.services.gpt_api import materialize_reply_assets
 
@@ -382,6 +424,16 @@ async def ask(
                         saved_files.append(xlsx_path.name)
             except Exception:  # noqa: BLE001
                 pass
+
+        # Браузерный UX: «верни/пришли файл» → исходники сразу в Результаты.
+        if files and _wants_file_return(text):
+            for src in files:
+                try:
+                    dest_info = copy_attachment_to_outputs(session_id, src.name)
+                    if dest_info["name"] not in saved_files:
+                        saved_files.append(dest_info["name"])
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("gpt_workspace: promote {}: {}", src.name, e)
 
         _append_message(
             session_id,

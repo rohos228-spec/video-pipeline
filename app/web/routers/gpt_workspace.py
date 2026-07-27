@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,20 +77,38 @@ async def delete_workspace_session(session_id: str) -> dict[str, Any]:
 @router.post("/sessions/{session_id}/attachments")
 async def upload_attachment(
     session_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
 ) -> dict[str, Any]:
+    """Один файл (`file`) или пачка (`files`) — как batch attach в ChatGPT."""
+    uploads: list[UploadFile] = []
+    if files:
+        uploads.extend(files)
+    if file is not None:
+        uploads.append(file)
+    if not uploads:
+        raise HTTPException(status_code=400, detail="нет файлов")
+    saved: list[dict[str, Any]] = []
     try:
-        data = await file.read()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"read failed: {e}") from e
-    if not data:
-        raise HTTPException(status_code=400, detail="пустой файл")
-    try:
-        return gw.save_attachment(session_id, file.filename or "file.bin", data)
+        for uf in uploads:
+            data = await uf.read()
+            if not data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"пустой файл: {uf.filename or '?'}",
+                )
+            saved.append(
+                gw.save_attachment(session_id, uf.filename or "file.bin", data)
+            )
+    except HTTPException:
+        raise
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if len(saved) == 1:
+        return saved[0]
+    return {"files": saved, "count": len(saved)}
 
 
 @router.delete("/sessions/{session_id}/attachments/{name}")
@@ -108,6 +127,20 @@ async def attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
         return gw.copy_attachment_to_outputs(session_id, name)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/sessions/{session_id}/outputs.zip")
+async def download_outputs_zip(session_id: str) -> FileResponse:
+    """Скачать все Результаты одним zip."""
+    try:
+        path = gw.build_outputs_zip(session_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"gpt_outputs_{session_id}.zip",
+    )
 
 
 @router.post("/sessions/{session_id}/ask")
