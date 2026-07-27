@@ -9,6 +9,7 @@ import { StudioWorkspace } from "@/components/studio/studio-workspace";
 import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { OutseeCreateWorkspace } from "@/components/outsee/outsee-create-workspace";
+import { GptWorkspace } from "@/components/gpt/gpt-workspace";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -28,6 +29,7 @@ export default function HomePage() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
   const [outseeOpen, setOutseeOpen] = useState(false);
+  const [gptOpen, setGptOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
@@ -53,6 +55,12 @@ export default function HomePage() {
     window.addEventListener("studio-open-outsee", openOutsee);
     return () => window.removeEventListener("studio-open-outsee", openOutsee);
   }, [setSelectedProjectId]);
+
+  useEffect(() => {
+    const openGpt = () => setGptOpen(true);
+    window.addEventListener("studio-open-gpt", openGpt);
+    return () => window.removeEventListener("studio-open-gpt", openGpt);
+  }, []);
 
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);
@@ -141,6 +149,11 @@ export default function HomePage() {
       <OutseeCreateWorkspace
         open={outseeOpen}
         onOpenChange={setOutseeOpen}
+        projectId={selectedProjectId}
+      />
+      <GptWorkspace
+        open={gptOpen}
+        onOpenChange={setGptOpen}
         projectId={selectedProjectId}
       />
     </AppShell>

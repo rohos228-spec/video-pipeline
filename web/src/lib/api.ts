@@ -1359,6 +1359,101 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // ── GPT Workspace (свободный чат) ──
+  gptListSessions: () =>
+    http<{ sessions: GptWorkspaceSessionSummary[] }>(`/api/gpt-workspace/sessions`),
+  gptCreateSession: (title?: string) =>
+    http<GptWorkspaceSession>(`/api/gpt-workspace/sessions`, {
+      method: "POST",
+      body: JSON.stringify({ title: title || null }),
+    }),
+  gptGetSession: (sessionId: string) =>
+    http<GptWorkspaceSession>(`/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}`),
+  gptRenameSession: (sessionId: string, title: string) =>
+    http<GptWorkspaceSession>(`/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+  gptDeleteSession: (sessionId: string) =>
+    http<{ ok: boolean }>(`/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
+  gptUploadAttachment: async (sessionId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<GptWorkspaceFile>;
+  },
+  gptDeleteAttachment: (sessionId: string, name: string) =>
+    http<{ ok: boolean }>(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  gptAsk: (sessionId: string, message: string, withAttachments = true) =>
+    http<GptWorkspaceSession>(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/ask`,
+      {
+        method: "POST",
+        body: JSON.stringify({ message, with_attachments: withAttachments }),
+      },
+    ),
+  gptSaveToProject: (
+    sessionId: string,
+    body: { project_id: number; output_name: string; as_name?: string },
+  ) =>
+    http<{ saved_as: string; name: string; size: number }>(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/save-to-project`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  gptSaveVoiceover: (
+    sessionId: string,
+    body: { project_id: number; message_id?: string },
+  ) =>
+    http<{ saved_as: string; name: string; chars: number }>(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/save-voiceover`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+};
+
+export type GptWorkspaceSessionSummary = {
+  id: string;
+  title: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  message_count: number;
+  status: string;
+};
+
+export type GptWorkspaceFile = {
+  name: string;
+  size: number;
+  path: string;
+  url: string;
+};
+
+export type GptWorkspaceMessage = {
+  id: string;
+  role: "user" | "assistant" | "system" | string;
+  content: string;
+  at?: string;
+  attachment_names?: string[];
+  output_files?: string[];
+};
+
+export type GptWorkspaceSession = {
+  id: string;
+  title: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  status: string;
+  messages: GptWorkspaceMessage[];
+  attachments: GptWorkspaceFile[];
+  outputs: GptWorkspaceFile[];
 };
 
 export interface PromptFileInfo {
