@@ -43,7 +43,6 @@ import {
   outseeCreateUrl,
   pickerModelsForType,
   slugToStudioId,
-  supportsRelax,
   toGrsaiVideoModel,
   type OutseeChip,
   type OutseeFeedKind,
@@ -83,22 +82,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [aspect, setAspect] = useState("16:9");
   const [resolution, setResolution] = useState("2K");
   const [detail, setDetail] = useState("medium");
-  const [relax, setRelax] = useState(false);
   const [videoResolution, setVideoResolution] = useState("1080p");
-  const [videoRelax, setVideoRelax] = useState(false);
   const [duration, setDuration] = useState("5");
   const [generateAudio, setGenerateAudio] = useState(false);
   const [orientation, setOrientation] = useState<"video" | "image">("video");
   const [motionQuality, setMotionQuality] = useState("std");
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
-  const [imageProvider, setImageProvider] = useState<"grsai" | "outsee">("grsai");
-  const [videoProvider, setVideoProvider] = useState<"grsai" | "outsee">("grsai");
   const [soraSize, setSoraSize] = useState<"small" | "large">("small");
   const [modelOpen, setModelOpen] = useState(false);
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
+  const [enqueueBusy, setEnqueueBusy] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
 
   const settingsQ = useQuery({
@@ -110,6 +106,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const grsaiStatusQ = useQuery({
     queryKey: ["grsai-status"],
     queryFn: api.getGrsaiStatus,
+    enabled: open,
+    staleTime: 30_000,
+  });
+
+  const outseeStatusQ = useQuery({
+    queryKey: ["outsee-status"],
+    queryFn: api.outseeStatus,
     enabled: open,
     staleTime: 30_000,
   });
@@ -137,17 +140,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setAspect(String(s.aspect || "16:9"));
     setResolution(String(s.image_resolution || "2K"));
     setDetail(String(s.image_quality || "medium"));
-    setRelax(Boolean(s.image_relax));
     setVideoResolution(String(s.video_resolution || "1080p"));
-    setVideoRelax(Boolean(s.video_relax));
     setDuration(String(s.duration || "5"));
     setGenerateAudio(Boolean(s.generate_audio));
     setOrientation(s.orientation === "image" ? "image" : "video");
     setMotionQuality(String(s.motion_quality || "std"));
     setInstrumental(Boolean(s.instrumental));
     setPrompt(String(s.prompt || ""));
-    setImageProvider(s.image_provider === "outsee" ? "outsee" : "grsai");
-    setVideoProvider(s.video_provider === "outsee" ? "outsee" : "grsai");
     setSoraSize(s.sora_size === "large" ? "large" : "small");
     setSettingsHydrated(true);
   }, [open, settingsQ.data, settingsHydrated]);
@@ -190,15 +189,30 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         ? videoModel.displayName
         : audioModel.displayName;
   const currentWired = isGrsaiWiredSlug(activeSlug, mediaType);
-  const canGrsaiDirect =
-    Boolean(grsaiStatusQ.data?.configured) &&
-    ((mediaType === "image" && imageProvider === "grsai" && currentWired) ||
-      (mediaType === "video" && videoProvider === "grsai" && currentWired));
-  /** Outsee Developer API (OUTSEE_API_KEY) — image/video без Chrome/Grsai. */
-  const canOutseeDirect =
-    (mediaType === "image" && imageProvider === "outsee") ||
-    (mediaType === "video" && videoProvider === "outsee");
-  const canApiDirect = canGrsaiDirect || canOutseeDirect;
+  const outseeConfigured = Boolean(outseeStatusQ.data?.configured);
+  const grsaiConfigured = Boolean(grsaiStatusQ.data?.configured);
+
+  /** Без UI-переключателя: ключ Outsee → Outsee; Sora/Kling → Grsai; иначе Grsai. */
+  const autoProvider: "outsee" | "grsai" | null = useMemo(() => {
+    if (mediaType === "audio") return null;
+    const slug = activeSlug.toLowerCase();
+    if (mediaType === "image") {
+      if (outseeConfigured) return "outsee";
+      if (grsaiConfigured) return "grsai";
+      return null;
+    }
+    // video
+    if (slug.includes("sora") || slug.includes("kling")) {
+      if (grsaiConfigured) return "grsai";
+      return null;
+    }
+    if (outseeConfigured && slug.includes("veo")) return "outsee";
+    if (grsaiConfigured) return "grsai";
+    if (outseeConfigured) return "outsee";
+    return null;
+  }, [mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
+
+  const canApiDirect = autoProvider != null;
   const currentIcon =
     mediaType === "image"
       ? imageModel.icon
@@ -213,7 +227,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         : audioModel.price;
 
   const quoteModel =
-    mediaType === "video" && canGrsaiDirect ? toGrsaiVideoModel(videoSlug) : activeSlug;
+    mediaType === "video" && autoProvider === "grsai"
+      ? toGrsaiVideoModel(videoSlug)
+      : activeSlug;
 
   const quoteQ = useQuery({
     queryKey: [
@@ -315,17 +331,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     aspect,
     image_resolution: resolution,
     image_quality: detail,
-    image_relax: relax,
+    image_relax: false,
     video_resolution: videoResolution,
-    video_relax: videoRelax,
+    video_relax: false,
     duration,
     generate_audio: generateAudio,
     orientation,
     motion_quality: motionQuality,
     instrumental,
     prompt,
-    image_provider: imageProvider,
-    video_provider: videoProvider,
+    // провайдер выбирается автоматически при Generate — в UI не показываем
+    image_provider: autoProvider === "outsee" ? "outsee" : "grsai",
+    video_provider: autoProvider === "outsee" ? "outsee" : "grsai",
     sora_size: soraSize,
   });
 
@@ -350,13 +367,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         body.aspect_ratio = aspect.replace(":", "_");
         body.image_resolution = resolution.toLowerCase();
         if (imageModel.chips.includes("detail")) body.image_quality = detail;
-        body.image_relax = relax;
+        body.image_relax = false;
       }
       if (vidStudio) {
         body.video_generator = vidStudio;
         const vr = videoResolution.toLowerCase();
         if (vr === "720p" || vr === "1080p") body.video_resolution = vr;
-        body.video_relax = supportsRelax(videoSlug, "video") ? videoRelax : false;
+        body.video_relax = false;
       }
       return api.patchProject(projectId, body);
     },
@@ -375,7 +392,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (!trackingJobs.length) return;
     let cancelled = false;
     const tick = async () => {
-      for (const t of trackingJobs) {
+      for (const t of [...trackingJobs]) {
         try {
           const job =
             t.provider === "grsai"
@@ -384,12 +401,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           if (cancelled) return;
           qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           if (job.status === "done") {
-            toast.success(`${t.provider === "grsai" ? "Grsai" : "Outsee"}: ${job.model || "готово"}`);
+            toast.success(`Готово · ${job.model || "файл"}`);
             if (job.history_id) setSelectedId(job.history_id);
             setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
           } else if (job.status === "failed") {
             toast.error(job.error || "Генерация не удалась");
             setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
+            qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           }
         } catch {
           /* job may not be ready yet */
@@ -404,110 +422,103 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     };
   }, [trackingJobs, qc]);
 
-  const grsaiGenerate = useMutation({
+  const createGenerate = useMutation({
     mutationFn: async () => {
       const text = prompt.trim();
       if (!text) throw new Error("Введите промпт");
-      if (!grsaiStatusQ.data?.configured) {
-        throw new Error("GRSAI_API_KEY не задан в .env — перезапустите бэкенд");
+      if (mediaType === "audio") {
+        if (projectId == null) {
+          throw new Error("Аудио — через шаг пайплайна: выберите проект");
+        }
+        await api.putOutseeCreateSettings(settingsPayload());
+        await applyToProject.mutateAsync();
+        return api.runProjectStep(projectId, "audio");
       }
-      await api.putOutseeCreateSettings(settingsPayload());
-      const enqueued =
-        mediaType === "video"
-          ? await api.grsaiGenerate({
-              prompt: text,
-              model: toGrsaiVideoModel(videoSlug),
-              aspect,
-              media: "video",
-              duration: Number(duration) || 10,
-              size: soraSize,
-            })
-          : await api.grsaiGenerate({
-              prompt: text,
-              model: imageSlug,
-              aspect,
-              resolution,
-              media: "image",
-            });
-      return enqueued;
+      const provider = autoProvider;
+      if (!provider) {
+        throw new Error(
+          "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
+        );
+      }
+      setEnqueueBusy(true);
+      try {
+        await api.putOutseeCreateSettings(settingsPayload());
+        if (provider === "grsai") {
+          if (!grsaiConfigured) {
+            throw new Error("GRSAI_API_KEY не задан в .env");
+          }
+          const enqueued =
+            mediaType === "video"
+              ? await api.grsaiGenerate({
+                  prompt: text,
+                  model: toGrsaiVideoModel(videoSlug),
+                  aspect,
+                  media: "video",
+                  duration: Number(duration) || 10,
+                  size: soraSize,
+                })
+              : await api.grsaiGenerate({
+                  prompt: text,
+                  model: imageSlug,
+                  aspect,
+                  resolution,
+                  media: "image",
+                });
+          return { ...enqueued, provider: "grsai" as const };
+        }
+        if (!outseeConfigured) {
+          throw new Error("OUTSEE_API_KEY не задан в .env");
+        }
+        const enqueued =
+          mediaType === "video"
+            ? await api.outseeGenerate({
+                prompt: text,
+                media: "video",
+                model: videoSlug,
+                aspect,
+                resolution: videoResolution,
+                duration: Number(duration) || 5,
+                project_id: projectId,
+              })
+            : await api.outseeGenerate({
+                prompt: text,
+                media: "image",
+                model: imageSlug,
+                aspect,
+                resolution,
+                project_id: projectId,
+              });
+        return { ...enqueued, provider: "outsee" as const };
+      } finally {
+        setEnqueueBusy(false);
+      }
     },
     onSuccess: (res) => {
-      if (res.history_id) setSelectedId(res.history_id);
-      setTrackingJobs((prev) => [
-        ...prev,
-        { provider: "grsai", jobId: res.job_id, historyId: res.history_id },
-      ]);
-      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-      toast.message(
-        res.queue && res.queue > 1 ? `В очереди · ${res.queue}` : "В очереди",
-      );
-    },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
-
-  const outseeGenerate = useMutation({
-    mutationFn: async () => {
-      const text = prompt.trim();
-      if (!text) throw new Error("Введите промпт");
-      await api.putOutseeCreateSettings(settingsPayload());
-      const enqueued =
-        mediaType === "video"
-          ? await api.outseeGenerate({
-              prompt: text,
-              media: "video",
-              model: videoSlug,
-              aspect,
-              resolution: videoResolution,
-              duration: Number(duration) || 5,
-              relax: videoRelax,
-              generate_audio: generateAudio,
-              project_id: projectId,
-            })
-          : await api.outseeGenerate({
-              prompt: text,
-              media: "image",
-              model: imageSlug,
-              aspect,
-              resolution,
-              relax,
-              project_id: projectId,
-            });
-      return enqueued;
-    },
-    onSuccess: (res) => {
-      if (res.history_id) setSelectedId(res.history_id);
-      setTrackingJobs((prev) => [
-        ...prev,
-        { provider: "outsee", jobId: res.job_id, historyId: res.history_id },
-      ]);
-      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-      toast.message(
-        res.queue && res.queue > 1
-          ? `В очереди Outsee · ${res.queue}`
-          : "В очереди Outsee",
-      );
-    },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
-
-  const runStep = useMutation({
-    mutationFn: async () => {
-      if (canGrsaiDirect) {
-        return grsaiGenerate.mutateAsync();
+      if (res && typeof res === "object" && "job_id" in res && res.job_id) {
+        const r = res as {
+          job_id: string;
+          history_id: string;
+          queue?: number;
+          provider: "grsai" | "outsee";
+        };
+        if (r.history_id) setSelectedId(r.history_id);
+        setTrackingJobs((prev) => [
+          ...prev,
+          { provider: r.provider, jobId: r.job_id, historyId: r.history_id },
+        ]);
+        qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+        toast.message(
+          r.queue && r.queue > 1 ? `В очереди · ${r.queue}` : "В очереди",
+        );
+        return;
       }
-      if (canOutseeDirect) {
-        return outseeGenerate.mutateAsync();
-      }
-      if (projectId == null) throw new Error("Для запуска пайплайна выберите проект");
-      await applyToProject.mutateAsync();
-      const step = mediaType === "video" ? "video" : mediaType === "audio" ? "audio" : "img";
-      return api.runProjectStep(projectId, step);
-    },
-    onSuccess: () => {
-      if (!canApiDirect) toast.success("Шаг запущен");
+      toast.success("Шаг запущен");
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
     },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+    onError: (e) => {
+      setEnqueueBusy(false);
+      toast.error(errorMessageFromUnknown(e));
+    },
   });
 
   const historyItems: HistoryItem[] = useMemo(
@@ -982,43 +993,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     );
                   })}
 
-                  {supportsRelax(activeSlug, mediaType === "audio" ? "image" : mediaType) &&
-                    mediaType !== "audio" && (
-                      <LimitToggle
-                        on={mediaType === "image" ? relax : videoRelax}
-                        onChange={mediaType === "image" ? setRelax : setVideoRelax}
-                      />
-                    )}
-
                   <div className="ml-auto flex flex-wrap items-center gap-2">
-                    {(mediaType === "image" || mediaType === "video") && (
-                      <div
-                        className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5"
-                        title={
-                          grsaiStatusQ.data?.configured
-                            ? `Grsai …${grsaiStatusQ.data.key_suffix || ""}`
-                            : "Задайте GRSAI_API_KEY в .env"
-                        }
-                      >
-                        {(["grsai", "outsee"] as const).map((p) => (
-                          <button
-                            key={p}
-                            type="button"
-                            onClick={() =>
-                              mediaType === "image" ? setImageProvider(p) : setVideoProvider(p)
-                            }
-                            className={cn(
-                              "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wide",
-                              (mediaType === "image" ? imageProvider : videoProvider) === p
-                                ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                                : "text-white/40 hover:text-white/70",
-                            )}
-                          >
-                            {p === "grsai" ? "Grsai+" : "Outsee"}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                     {mediaType === "video" &&
                       (videoSlug === "sora-2" ||
                         videoSlug === "sora2-portrait" ||
@@ -1068,32 +1043,26 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     <button
                       type="button"
                       disabled={
-                        runStep.isPending ||
-                        grsaiGenerate.isPending ||
-                        outseeGenerate.isPending ||
-                        (!canApiDirect && projectId == null) ||
-                        (canApiDirect && !prompt.trim())
+                        enqueueBusy ||
+                        createGenerate.isPending ||
+                        !prompt.trim() ||
+                        (mediaType === "audio" && projectId == null) ||
+                        (mediaType !== "audio" && !canApiDirect)
                       }
-                      onClick={() => runStep.mutate()}
+                      onClick={() => createGenerate.mutate()}
                       className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
                       style={{ backgroundColor: OUTSEE_ACCENT }}
                       title={
-                        canGrsaiDirect
-                          ? `Сгенерировать через Grsai · ${priceLabel}`
-                          : canOutseeDirect
-                            ? `Сгенерировать через Outsee API · ${priceLabel}`
-                            : `Запустить шаг пайплайна · ${priceLabel}`
+                        !canApiDirect && mediaType !== "audio"
+                          ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
+                          : `Сгенерировать · ${priceLabel}`
                       }
                     >
-                      {runStep.isPending ||
-                      grsaiGenerate.isPending ||
-                      outseeGenerate.isPending ? (
+                      {enqueueBusy || createGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           …
                         </>
-                      ) : canApiDirect ? (
-                        "Генерировать +"
                       ) : (
                         "Генерировать"
                       )}
@@ -1130,31 +1099,6 @@ function ChipButton({
       )}
     >
       {children}
-    </button>
-  );
-}
-
-function LimitToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!on)}
-      className={cn(
-        "inline-flex h-9 items-center gap-2 rounded-xl border px-2.5",
-        on ? "border-amber-400/35 bg-amber-500/10" : "border-white/10 bg-[#1a1a1a]",
-      )}
-    >
-      <span className={cn("text-xs font-semibold", on ? "text-gray-200" : "text-gray-400")}>
-        Безлимит
-      </span>
-      <span className={cn("relative h-4 w-8 rounded-full", on ? "bg-amber-500" : "bg-zinc-600")}>
-        <span
-          className={cn(
-            "absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all",
-            on ? "left-[18px]" : "left-[2px]",
-          )}
-        />
-      </span>
     </button>
   );
 }
