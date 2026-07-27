@@ -68,6 +68,7 @@ class ApiGptClient:
         timeout: float = 600,
         project_id: int | None = None,
         expect_file_download: bool = False,
+        history: list[dict[str, Any]] | None = None,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import chat
@@ -109,13 +110,15 @@ class ApiGptClient:
                     else WRITEBACK_HINT
                 )
 
+        hist = list(history or [])
         logger.info(
-            "gpt_client/api: ask files=[{}] master={} chat_len={} expect_dl={} pid={}",
+            "gpt_client/api: ask files=[{}] master={} chat_len={} expect_dl={} pid={} history={}",
             ", ".join(p.name for p in attachments) or "—",
             prompt_file.name if prompt_file else "—",
             len(accompanying),
             expect_file_download,
             project_id,
+            len(hist),
         )
 
         result = await chat(
@@ -123,6 +126,7 @@ class ApiGptClient:
             accompanying="" if not master else accompanying,
             input_paths=data_files if master else attachments,
             timeout=float(timeout),
+            history=hist or None,
         )
         self._last_reply = result.text or ""
         self._last_input_paths = list(data_files or attachments)

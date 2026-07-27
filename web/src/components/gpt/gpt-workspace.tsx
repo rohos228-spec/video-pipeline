@@ -183,7 +183,7 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
             <Bot className="h-4 w-4" style={{ color: ACCENT }} />
             <span className="text-sm font-semibold tracking-tight">GPT</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40">
-              api · без браузера
+              api · память сессии
             </span>
           </div>
           {projectId != null && (
@@ -260,8 +260,8 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                 <Bot className="mx-auto h-10 w-10 text-white/20" />
                 <h2 className="mt-4 text-lg font-semibold">Работа с GPT</h2>
                 <p className="mt-2 text-sm text-white/45">
-                  История чатов, вложения (xlsx/txt/картинки), обработка через API,
-                  сохранение ответа в проект.
+                  История чатов уходит в API как контекст (память диалога). Вложения
+                  (xlsx/txt/картинки), сохранение ответа в проект.
                 </p>
               </div>
             )}

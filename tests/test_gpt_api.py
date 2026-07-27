@@ -248,6 +248,50 @@ def test_xlsx_to_text(tmp_path: Path) -> None:
     assert "хук" in text
 
 
+def test_build_messages_with_history() -> None:
+    from app.services.gpt_api import build_messages, normalize_history
+
+    hist = normalize_history(
+        [
+            {"role": "user", "content": "меня зовут Вася"},
+            {"role": "assistant", "content": "Привет, Вася"},
+            {"role": "system", "content": "игнор"},
+        ]
+    )
+    assert len(hist) == 2
+    msgs = build_messages(prompt="как меня зовут?", history=hist)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert "Вася" in msgs[0]["content"]
+    assert "как меня зовут" in msgs[-1]["content"]
+
+
+def test_build_input_with_history() -> None:
+    from app.services.gpt_api import build_input
+
+    inp = build_input(
+        prompt="второе сообщение",
+        history=[
+            {"role": "user", "content": "первое"},
+            {"role": "assistant", "content": "ок"},
+        ],
+    )
+    assert isinstance(inp, list)
+    assert len(inp) == 3
+    assert inp[0] == {"role": "user", "content": "первое"}
+    assert inp[1]["role"] == "assistant"
+    assert inp[2]["role"] == "user"
+    assert "второе" in inp[2]["content"]
+
+
+def test_normalize_history_truncates_old() -> None:
+    from app.services.gpt_api import normalize_history
+
+    big = [{"role": "user", "content": f"m{i}"} for i in range(50)]
+    out = normalize_history(big, max_messages=5)
+    assert len(out) == 5
+    assert out[0]["content"] == "m45"
+
+
 def test_build_messages_with_file(tmp_path: Path) -> None:
     f = tmp_path / "voiceover.txt"
     f.write_text("закадровый текст", encoding="utf-8")

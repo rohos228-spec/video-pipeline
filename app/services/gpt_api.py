@@ -217,14 +217,61 @@ def _compose_user_text(
     return "\n\n".join(parts) or "(пусто)"
 
 
+def normalize_history(
+    history: list[dict[str, Any]] | None,
+    *,
+    max_messages: int = 40,
+    max_chars: int = 120_000,
+) -> list[dict[str, str]]:
+    """Оставить user/assistant реплики для multi-turn (хвост, лимит символов)."""
+    if not history:
+        return []
+    cleaned: list[dict[str, str]] = []
+    for raw in history:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = raw.get("content")
+        if isinstance(content, list):
+            # multimodal leftover — берём только текст
+            text = "".join(
+                str(p.get("text") or "")
+                for p in content
+                if isinstance(p, dict)
+            ).strip()
+        else:
+            text = str(content or "").strip()
+        if not text:
+            continue
+        cleaned.append({"role": role, "content": text})
+    if max_messages > 0 and len(cleaned) > max_messages:
+        cleaned = cleaned[-max_messages:]
+    # с хвоста: уложиться в max_chars, выкидывая самые старые
+    if max_chars > 0:
+        total = 0
+        kept_rev: list[dict[str, str]] = []
+        for item in reversed(cleaned):
+            n = len(item["content"])
+            if kept_rev and total + n > max_chars:
+                break
+            kept_rev.append(item)
+            total += n
+        cleaned = list(reversed(kept_rev))
+    return cleaned
+
+
 def build_input(
     *,
     prompt: str,
     accompanying: str = "",
     input_paths: list[Path] | None = None,
     system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> str | list[dict[str, Any]]:
-    """Ввод для Responses API: строка или multimodal input[] с картинками."""
+    """Ввод для Responses API: строка или multimodal/multi-turn input[]."""
+    prior = normalize_history(history)
     others, images = split_input_paths(input_paths)
     text = _compose_user_text(
         prompt=prompt,
@@ -234,8 +281,15 @@ def build_input(
     )
     if system:
         text = f"[Инструкция]\n{system}\n\n{text}"
-    if not images:
+
+    if not images and not prior:
         return text
+
+    items: list[dict[str, Any]] = [{"role": m["role"], "content": m["content"]} for m in prior]
+    if not images:
+        items.append({"role": "user", "content": text})
+        return items
+
     content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
     for img in images:
         try:
@@ -250,7 +304,8 @@ def build_input(
                     "text": f"[не удалось вложить изображение {img.name}: {e}]",
                 }
             )
-    return [{"role": "user", "content": content}]
+    items.append({"role": "user", "content": content})
+    return items
 
 
 def build_messages(
@@ -259,11 +314,14 @@ def build_messages(
     accompanying: str = "",
     input_paths: list[Path] | None = None,
     system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Собрать messages для chat/completions (текст + optional vision)."""
+    """Собрать messages для chat/completions (текст + optional vision + история)."""
     messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
+    for m in normalize_history(history):
+        messages.append({"role": m["role"], "content": m["content"]})
 
     others, images = split_input_paths(input_paths)
     text = _compose_user_text(
@@ -393,6 +451,7 @@ async def chat(
     accompanying: str = "",
     input_paths: list[Path] | None = None,
     system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
     model: str | None = None,
     temperature: float | None = None,
     timeout: float | None = None,
@@ -410,7 +469,11 @@ async def chat(
         body: dict[str, Any] = {
             "model": use_model,
             "input": build_input(
-                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=input_paths,
+                system=system,
+                history=history,
             ),
             "stream": False,
         }
@@ -418,7 +481,11 @@ async def chat(
         body = {
             "model": use_model,
             "messages": build_messages(
-                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=input_paths,
+                system=system,
+                history=history,
             ),
         }
     if temperature is not None:

@@ -41,3 +41,32 @@ def test_attachment_and_voiceover_save(tmp_path: Path) -> None:
     r = gw.save_reply_as_voiceover(s["id"], project_data_dir=proj)
     assert (proj / "voiceover.txt").read_text(encoding="utf-8").startswith("закадровый")
     assert r["chars"] > 0
+
+
+@pytest.mark.asyncio
+async def test_ask_passes_session_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Повторный ask должен отдать прошлые реплики в history клиента."""
+    import app.services.gpt_client as gc
+
+    s = gw.create_session(title="mem")
+    gw._append_message(s["id"], "user", "зови меня Капитан")
+    gw._append_message(s["id"], "assistant", "Хорошо, Капитан")
+
+    captured: dict = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            captured["text"] = text
+            captured["history"] = list(kwargs.get("history") or [])
+            return "Ты Капитан"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+
+    out = await gw.ask(s["id"], "как меня зовут?")
+    assert captured["text"] == "как меня зовут?"
+    assert len(captured["history"]) == 2
+    assert captured["history"][0]["content"] == "зови меня Капитан"
+    assert "Капитан" in out["messages"][-1]["content"]

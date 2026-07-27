@@ -225,7 +225,11 @@ async def ask(
     *,
     with_attachments: bool = True,
 ) -> dict[str, Any]:
-    """Отправить сообщение в GPT API, сохранить ответ и файлы в outputs/."""
+    """Отправить сообщение в GPT API, сохранить ответ и файлы в outputs/.
+
+    Память диалога: прошлые user/assistant реплики сессии уходят в API как history.
+    """
+    from app.services.gpt_api import normalize_history
     from app.services.gpt_client import get_gpt_client
 
     d = _session_dir(session_id)
@@ -242,6 +246,10 @@ async def ask(
         if att.is_dir():
             files = [p for p in sorted(att.iterdir()) if p.is_file()]
 
+    # История ДО текущего сообщения (UI хранит всё; в API — только user/assistant)
+    prior_raw = _read_json(d / "messages.json", [])
+    history = normalize_history(prior_raw if isinstance(prior_raw, list) else [])
+
     meta = _read_json(d / "meta.json", {})
     meta["status"] = "running"
     meta["updated_at"] = _now()
@@ -256,12 +264,13 @@ async def ask(
 
     try:
         gpt = get_gpt_client()
-        await gpt.new_conversation()
+        # Не сбрасываем контекст: history передаём явно в ask_with_files
         reply = await gpt.ask_with_files(
             text,
             files,
             timeout=float(settings.gpt_timeout_s or 600),
             expect_file_download=True,
+            history=history,
         )
         reply = (reply or "").strip()
 
@@ -301,10 +310,11 @@ async def ask(
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
         logger.info(
-            "gpt_workspace: session={} reply_len={} files={}",
+            "gpt_workspace: session={} reply_len={} files={} history={}",
             session_id,
             len(reply),
             saved_files,
+            len(history),
         )
         return get_session(session_id)
     except Exception as e:
