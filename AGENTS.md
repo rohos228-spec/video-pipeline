@@ -38,7 +38,8 @@ Do **not** stop at an open PR on a side branch. Optional PR is fine **after** `m
 - **No `python` alias** — use `python3` on Linux. The system has Python 3.12 which satisfies the `>=3.11,<3.13` constraint.
 - **PATH**: Dev tools (`ruff`, `mypy`, `pytest`, `playwright`) install to `~/.local/bin` — ensure it's on `PATH`.
 - **Paths** resolve from repo root (`pyproject.toml`), not shell CWD — safe to run `python -m app.main` even after `cd web`. On Windows use `STUDIO.cmd` or `scripts\run-backend.ps1`.
-- The app connects to Chrome via CDP on `localhost:29229` for browser automation (ChatGPT, outsee.io). This is only needed for the actual pipeline execution, not for running tests or linting.
+- The app connects to Chrome via CDP on `localhost:29229` for browser automation (Outsee CDP fallback, ElevenLabs). GPT **text** is API-only (`GPT_API_KEY`). **Outsee media** via Developer API: `OUTSEE_API_KEY` (profile outsee.io) → Bearer `https://outsee.io/api/v1/...` (`app/bots/outsee_http.py`). Set `IMAGE_PROVIDER=outsee` / `VIDEO_PROVIDER=outsee`. Fallback CDP: `OUTSEE_HTTP_FALLBACK_CDP=true`. Alternative: `IMAGE_PROVIDER=grsai` / `VIDEO_PROVIDER=grsai` (`GRSAI_API_KEY` — другой ключ).
+- Studio Create: provider **outsee** → `POST /api/outsee/generate`; provider **grsai** → `/api/grsai/generate`.
 - **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
 - Tests use in-memory SQLite and don't require external services or a `.env` file.
 - **Parallel projects**: `WORKER_MAX_PARALLEL` (default `1`) — top-N window in `app/services/gen_queue.py` + concurrent advances in `_run_worker_loop`. `1` keeps legacy serial behavior; `paused`/`user_stop` on an earlier slot still hard-blocks the rest of the queue.

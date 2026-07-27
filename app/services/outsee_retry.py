@@ -562,9 +562,15 @@ async def generate_image_with_retries(
     """
     from app.bots.grsai import grsai_enabled, generate_image as grsai_generate_image
     from app.bots.grsai import studio_id_to_grsai_slug
+    from app.bots.outsee_http import (
+        generate_image as outsee_api_generate_image,
+        outsee_api_enabled_for_image,
+        studio_id_to_outsee_image_slug,
+    )
     from app.settings import settings as _settings
 
     use_grsai = grsai_enabled()
+    use_outsee_api = (not use_grsai) and outsee_api_enabled_for_image()
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -642,6 +648,57 @@ async def generate_image_with_retries(
                         )
                     except Exception:  # noqa: BLE001
                         logger.debug("grsai sidecar write skipped", exc_info=True)
+                    return result
+                if use_outsee_api:
+                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                        _settings, "outsee_default_image_model", None
+                    )
+                    slug = studio_id_to_outsee_image_slug(
+                        str(raw_slug) if raw_slug else None
+                    )
+                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
+                        "image_resolution"
+                    )
+                    refs = attempt_kwargs.get("reference_image")
+                    ref_list: list[Any] | None = None
+                    if isinstance(refs, Path):
+                        ref_list = [refs]
+                    elif isinstance(refs, list):
+                        ref_list = list(refs)
+                    result = await outsee_api_generate_image(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res) if res else "2K",
+                        detail_level=attempt_kwargs.get("quality"),
+                        reference_images=ref_list,
+                        prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                        timeout=float(attempt_kwargs.get("timeout") or 600),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=pid if isinstance(pid, int) else None,
+                    )
+                    try:
+                        from app.services.generation_storage import write_sidecar
+
+                        write_sidecar(
+                            result.file_path,
+                            media="image",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res) if res else "2K",
+                                "project_id": pid,
+                                "gen_id": attempt_kwargs.get("gen_id"),
+                            },
+                            raw_url=result.raw_url,
+                            quote=None,
+                            provider="outsee",
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("outsee sidecar write skipped", exc_info=True)
                     return result
                 return await outsee.generate_image(
                     send_prompt, out_path, **attempt_kwargs
@@ -843,6 +900,18 @@ async def generate_video_with_retries(
     else:
         rounds.append("fallback_model")
 
+    from app.bots.grsai import grsai_video_enabled, generate_video as grsai_generate_video
+    from app.bots.grsai import studio_id_to_grsai_video_slug
+    from app.bots.outsee_http import (
+        generate_video as outsee_api_generate_video,
+        outsee_api_enabled_for_video,
+        studio_id_to_outsee_video_slug,
+    )
+    from app.settings import settings as _settings
+
+    use_grsai_video = grsai_video_enabled()
+    use_outsee_api_video = (not use_grsai_video) and outsee_api_enabled_for_video()
+
     _DOWNLOAD_ONLY_RETRIES = 2
     gen_failures = 0
     fallback_logged = False
@@ -870,14 +939,20 @@ async def generate_video_with_retries(
                     fb["aspect_ratio"],
                 )
                 fallback_logged = True
+            provider_label = (
+                "grsai"
+                if use_grsai_video
+                else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
+            )
             logger.info(
-                "outsee_retry: video [{}] попытка {}/{} model={} res={} aspect={}",
+                "outsee_retry: video [{}] попытка {}/{} model={} res={} aspect={} provider={}",
                 round_label,
                 attempt,
                 max_attempts_per_prompt,
                 attempt_kwargs.get("model_slug"),
                 attempt_kwargs.get("resolution"),
                 attempt_kwargs.get("aspect_ratio"),
+                provider_label,
             )
             if uniquify_prompt_id:
                 attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
@@ -897,6 +972,99 @@ async def generate_video_with_retries(
                     prefix,
                     project_id=project_id,
                 )
+                if use_grsai_video:
+                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                        _settings, "grsai_default_video_model", None
+                    )
+                    slug = studio_id_to_grsai_video_slug(
+                        str(raw_slug) if raw_slug else None
+                    )
+                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                    res = attempt_kwargs.get("resolution") or "720p"
+                    dur = attempt_kwargs.get("duration") or 5
+                    result = await grsai_generate_video(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res),
+                        duration=int(dur) if dur else 5,
+                        timeout=float(attempt_kwargs.get("timeout") or 900),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=project_id,
+                        start_frame=attempt_kwargs.get("start_frame"),
+                    )
+                    try:
+                        from app.services.generation_storage import write_sidecar
+                        from app.services.grsai_pricing import quote_generation
+
+                        write_sidecar(
+                            result.file_path,
+                            media="video",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res),
+                                "duration": dur,
+                                "project_id": project_id,
+                            },
+                            raw_url=result.raw_url,
+                            quote=quote_generation(
+                                media="video",
+                                model=slug,
+                                resolution=str(res),
+                                duration=int(dur) if dur else 5,
+                            ),
+                            provider="grsai",
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("grsai video sidecar skipped", exc_info=True)
+                    return result
+                if use_outsee_api_video:
+                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                        _settings, "outsee_default_video_model", None
+                    )
+                    slug = studio_id_to_outsee_video_slug(
+                        str(raw_slug) if raw_slug else None
+                    )
+                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                    res = attempt_kwargs.get("resolution") or "720p"
+                    dur = attempt_kwargs.get("duration")
+                    result = await outsee_api_generate_video(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res),
+                        duration=int(dur) if dur else None,
+                        reference_image=attempt_kwargs.get("start_frame"),
+                        prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                        timeout=float(attempt_kwargs.get("timeout") or 900),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=project_id,
+                    )
+                    try:
+                        from app.services.generation_storage import write_sidecar
+
+                        write_sidecar(
+                            result.file_path,
+                            media="video",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res),
+                                "duration": dur,
+                                "project_id": project_id,
+                            },
+                            raw_url=result.raw_url,
+                            quote=None,
+                            provider="outsee",
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("outsee video sidecar skipped", exc_info=True)
+                    return result
                 return await outsee.generate_video(
                     send_prompt, out_path, project_id=project_id,
                     **attempt_kwargs,

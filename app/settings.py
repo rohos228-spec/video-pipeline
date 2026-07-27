@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     outsee_queue_mode: bool = Field(True, alias="OUTSEE_QUEUE_MODE")
     # Таймаут скачивания результата outsee (сек) — URL и клик «Скачать».
     outsee_download_timeout_s: float = Field(120.0, alias="OUTSEE_DOWNLOAD_TIMEOUT_S")
+    # Developer API key (https://outsee.io/profile) — НЕ cookies / НЕ Grsai
+    outsee_api_key: str = Field("", alias="OUTSEE_API_KEY")
+    outsee_api_base_url: str = Field("https://outsee.io", alias="OUTSEE_API_BASE_URL")
+    outsee_default_image_model: str = Field(
+        "gpt-image-2", alias="OUTSEE_DEFAULT_IMAGE_MODEL"
+    )
+    outsee_default_video_model: str = Field(
+        "veo-3-1-lite", alias="OUTSEE_DEFAULT_VIDEO_MODEL"
+    )
+    # при сбое Bearer API — откат на Playwright UI (нужен Chrome CDP)
+    outsee_http_fallback_cdp: bool = Field(True, alias="OUTSEE_HTTP_FALLBACK_CDP")
+    # legacy alias (cookie-era); ignored if OUTSEE_API_KEY set
+    outsee_http_api: bool = Field(True, alias="OUTSEE_HTTP_API")
 
     # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP
     grsai_api_key: str = Field("", alias="GRSAI_API_KEY")

@@ -1134,6 +1134,51 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  outseeStatus: () =>
+    http<{
+      configured: boolean;
+      enabled_image: boolean;
+      enabled_video: boolean;
+      http_api: boolean;
+      fallback_cdp: boolean;
+      image_provider: string;
+      video_provider: string;
+      base_url?: string;
+      key_suffix?: string | null;
+      balance?: Record<string, unknown> | null;
+      hint: string;
+    }>(`/api/outsee/status`),
+
+  outseeGenerate: (body: {
+    prompt: string;
+    media?: "image" | "video" | "audio";
+    model?: string;
+    aspect?: string;
+    resolution?: string;
+    duration?: number;
+    title?: string;
+    relax?: boolean;
+    generate_audio?: boolean;
+    project_id?: number | null;
+  }) =>
+    http<{
+      ok: boolean;
+      media: string;
+      model: string | null;
+      path: string;
+      preview_url: string;
+      raw_url?: string | null;
+      gen_id?: string | null;
+      provider: string;
+    }>(
+      `/api/outsee/generate`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      900_000,
+    ),
+
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];

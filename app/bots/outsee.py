@@ -1893,6 +1893,68 @@ class OutseeBot:
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
 
+    async def _try_http_image(self, **kwargs: Any) -> GenerationResult | None:
+        """Outsee Developer API (Bearer OUTSEE_API_KEY). None = fallback CDP UI."""
+        from app.bots import outsee_http as oh
+        from app.settings import settings as st
+
+        if not oh.outsee_http_enabled():
+            return None
+        try:
+            return await oh.generate_image(**kwargs)
+        except oh.OutseeHttpAuthError as e:
+            if not getattr(st, "outsee_http_fallback_cdp", True):
+                raise
+            logger.warning("outsee API auth → CDP UI: {}", e.reason)
+            return None
+        except oh.OutseeHttpError as e:
+            if not getattr(st, "outsee_http_fallback_cdp", True):
+                raise
+            logger.warning("outsee API fail → CDP UI: {}", e.reason)
+            return None
+
+    async def _try_http_video(self, **kwargs: Any) -> GenerationResult | None:
+        from app.bots import outsee_http as oh
+        from app.settings import settings as st
+
+        if not oh.outsee_http_enabled():
+            return None
+        try:
+            return await oh.generate_video(**kwargs)
+        except oh.OutseeHttpAuthError as e:
+            if not getattr(st, "outsee_http_fallback_cdp", True):
+                raise
+            logger.warning("outsee API video auth → CDP UI: {}", e.reason)
+            return None
+        except oh.OutseeHttpError as e:
+            if not getattr(st, "outsee_http_fallback_cdp", True):
+                raise
+            logger.warning("outsee API video fail → CDP UI: {}", e.reason)
+            return None
+
+    async def generate_music(
+        self,
+        prompt: str,
+        out_path: Path,
+        *,
+        title: str | None = None,
+        timeout: float = 900,
+        model_slug: str | None = "suno-5-5",
+        instrumental: bool = False,
+        prompt_id_prefix: str | None = None,
+        project_id: int | None = None,
+    ) -> GenerationResult:
+        """Audio: Developer API не поддерживает — только CDP/пайплайн."""
+        del prompt, out_path, title, timeout, model_slug, instrumental
+        del prompt_id_prefix, project_id
+        from app.bots.outsee_http import OutseeApiError
+
+        raise OutseeApiError(
+            "Outsee Developer API не поддерживает audio — "
+            "используй шаг audio (ElevenLabs/Suno) или CDP UI",
+            context={"hint": "нет /api/v1/audio"},
+        )
+
     # ----- IMAGE (nano-banana-2) -----
 
     async def generate_image(
@@ -1939,6 +2001,30 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
+
+        # 1) HTTP API outsee.io/create (cookies из Chrome /profile)
+        refs: list[Path] = []
+        if isinstance(reference_image, Path):
+            refs = [reference_image]
+        elif isinstance(reference_image, list):
+            refs = [p for p in reference_image if isinstance(p, Path)]
+        http_res = await self._try_http_image(
+            prompt=prompt,
+            out_path=out_path,
+            model_slug=model_slug,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution or "1K",
+            detail_level=quality,
+            reference_images=refs or None,
+            use_unlimited=bool(relax),
+            prompt_id_prefix=prompt_id_prefix,
+            timeout=float(timeout),
+            gen_id=gen_id,
+            project_id=project_id,
+        )
+        if http_res is not None:
+            return http_res
+
         if prompt_id_prefix:
             from app.generation_options import prepend_gen_id
 
@@ -4812,6 +4898,23 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         gen_id = gen_id or _uuid.uuid4().hex
+
+        http_res = await self._try_http_video(
+            prompt=prompt,
+            out_path=out_path,
+            model_slug=model_slug,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution or "720p",
+            use_unlimited=bool(relax),
+            prompt_id_prefix=prompt_id_prefix,
+            timeout=float(timeout),
+            gen_id=gen_id,
+            project_id=project_id,
+            reference_image=start_frame,
+        )
+        if http_res is not None:
+            return http_res
+
         dup_refs = [
             p for p in (duplicate_check_paths or []) if isinstance(p, Path) and p.is_file()
         ]

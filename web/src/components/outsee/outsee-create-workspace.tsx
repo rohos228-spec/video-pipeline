@@ -185,6 +185,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     Boolean(grsaiStatusQ.data?.configured) &&
     ((mediaType === "image" && imageProvider === "grsai" && currentWired) ||
       (mediaType === "video" && videoProvider === "grsai" && currentWired));
+  /** Outsee Developer API (OUTSEE_API_KEY) — image/video без Chrome/Grsai. */
+  const canOutseeDirect =
+    (mediaType === "image" && imageProvider === "outsee") ||
+    (mediaType === "video" && videoProvider === "outsee");
+  const canApiDirect = canGrsaiDirect || canOutseeDirect;
   const currentIcon =
     mediaType === "image"
       ? imageModel.icon
@@ -387,10 +392,58 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const outseeGenerate = useMutation({
+    mutationFn: async () => {
+      const text = prompt.trim();
+      if (!text) throw new Error("Введите промпт");
+      await api.putOutseeCreateSettings(settingsPayload());
+      if (mediaType === "audio") {
+        return api.outseeGenerate({
+          prompt: text,
+          media: "audio",
+          model: audioSlug,
+          title: text.slice(0, 80),
+          project_id: projectId,
+        });
+      }
+      if (mediaType === "video") {
+        return api.outseeGenerate({
+          prompt: text,
+          media: "video",
+          model: videoSlug,
+          aspect,
+          resolution: videoResolution,
+          duration: Number(duration) || 5,
+          relax: videoRelax,
+          generate_audio: generateAudio,
+          project_id: projectId,
+        });
+      }
+      return api.outseeGenerate({
+        prompt: text,
+        media: "image",
+        model: imageSlug,
+        aspect,
+        resolution,
+        relax,
+        project_id: projectId,
+      });
+    },
+    onSuccess: (res) => {
+      toast.success(`Outsee API: ${res.model || res.media} готово`);
+      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+      if (res.preview_url) setSelectedId(`outsee-${res.path.split("/").pop()}`);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const runStep = useMutation({
     mutationFn: async () => {
       if (canGrsaiDirect) {
         return grsaiGenerate.mutateAsync();
+      }
+      if (canOutseeDirect) {
+        return outseeGenerate.mutateAsync();
       }
       if (projectId == null) throw new Error("Для запуска пайплайна выберите проект");
       await applyToProject.mutateAsync();
@@ -398,7 +451,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       return api.runProjectStep(projectId, step);
     },
     onSuccess: () => {
-      if (!canGrsaiDirect) toast.success("Шаг запущен");
+      if (!canApiDirect) toast.success("Шаг запущен");
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -908,8 +961,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       disabled={
                         runStep.isPending ||
                         grsaiGenerate.isPending ||
-                        (!canGrsaiDirect && projectId == null) ||
-                        (canGrsaiDirect && !prompt.trim())
+                        outseeGenerate.isPending ||
+                        (!canApiDirect && projectId == null) ||
+                        (canApiDirect && !prompt.trim())
                       }
                       onClick={() => runStep.mutate()}
                       className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
@@ -917,17 +971,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       title={
                         canGrsaiDirect
                           ? `Сгенерировать через Grsai · ${priceLabel}`
-                          : mediaType === "audio"
-                            ? `Запустить шаг audio · ${priceLabel}`
+                          : canOutseeDirect
+                            ? `Сгенерировать через Outsee API · ${priceLabel}`
                             : `Запустить шаг пайплайна · ${priceLabel}`
                       }
                     >
-                      {runStep.isPending || grsaiGenerate.isPending ? (
+                      {runStep.isPending ||
+                      grsaiGenerate.isPending ||
+                      outseeGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           …
                         </>
-                      ) : canGrsaiDirect ? (
+                      ) : canApiDirect ? (
                         "Генерировать +"
                       ) : (
                         "Генерировать"
