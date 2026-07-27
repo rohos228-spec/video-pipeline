@@ -70,7 +70,11 @@ def test_outputs_zip() -> None:
 
 
 def test_sniff_png_bin_renames(tmp_path: Path) -> None:
-    from app.services.gpt_api import ensure_correct_extension, sniff_file_extension
+    from app.services.gpt_api import (
+        ensure_correct_extension,
+        sniff_file_extension,
+        suggested_name_and_mime,
+    )
 
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -80,10 +84,33 @@ def test_sniff_png_bin_renames(tmp_path: Path) -> None:
     assert sniff_file_extension(b"\xff\xd8\xff\xe0" + b"x" * 20) == ".jpg"
     p = tmp_path / "reply.bin"
     p.write_bytes(png)
+    # пока на диске .bin — download-имя уже .png + image/png
+    name, mime = suggested_name_and_mime(p)
+    assert name == "reply.png"
+    assert mime == "image/png"
     fixed = ensure_correct_extension(p)
     assert fixed.name == "reply.png"
     assert fixed.is_file()
     assert not p.exists()
+
+
+def test_get_session_renames_existing_bin() -> None:
+    """Старые сессии с .bin на диске — при get_session становятся .png."""
+    s = gw.create_session()
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    d = gw._session_dir(s["id"])
+    att = d / "attachments"
+    att.mkdir(exist_ok=True)
+    (att / "legacy.bin").write_bytes(png)
+    gw._append_message(s["id"], "user", "hi", attachment_names=["legacy.bin"])
+    got = gw.get_session(s["id"])
+    assert got["attachments"][0]["name"] == "legacy.png"
+    assert got["messages"][0]["attachment_names"] == ["legacy.png"]
+    assert not (att / "legacy.bin").exists()
+    assert (att / "legacy.png").is_file()
 
 
 def test_save_attachment_bin_becomes_png() -> None:

@@ -32,7 +32,11 @@ async def serve_data_file(
     """Отдаёт файл из data_dir (или его подкаталогов). Безопасный whitelist
     предотвращает path traversal — допускаем только пути, чей resolve
     начинается с data_dir.resolve().
+
+    Имя на диске (.bin) не доверяем: magic → MIME и filename при download.
     """
+    from app.services.gpt_api import suggested_name_and_mime
+
     candidate = Path(path).resolve()
     base = Path(settings.data_dir).resolve()
     try:
@@ -41,10 +45,10 @@ async def serve_data_file(
         raise HTTPException(status_code=400, detail="path outside data_dir") from exc
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="file not found")
-    mime, _ = mimetypes.guess_type(str(candidate))
+    download_name, mime = suggested_name_and_mime(candidate)
     kwargs: dict = {"media_type": mime or "application/octet-stream"}
     if download:
-        kwargs["filename"] = candidate.name
+        kwargs["filename"] = download_name
     return FileResponse(candidate, **kwargs)
 
 

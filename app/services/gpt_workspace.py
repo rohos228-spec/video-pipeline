@@ -159,8 +159,13 @@ def get_session(session_id: str) -> dict[str, Any]:
     d = _session_dir(session_id)
     if not d.is_dir():
         raise FileNotFoundError(f"сессия не найдена: {session_id}")
+    # Лениво: .bin на диске → png/jpg по magic (в т.ч. старые сессии)
+    renames = _normalize_session_files(d)
     meta = _read_json(d / "meta.json", {})
     messages = _read_json(d / "messages.json", [])
+    if renames and isinstance(messages, list):
+        messages = _rewrite_message_filenames(messages, renames)
+        _write_json(d / "messages.json", messages)
     attachments = []
     att_dir = d / "attachments"
     if att_dir.is_dir():
@@ -199,6 +204,42 @@ def get_session(session_id: str) -> dict[str, Any]:
         "attachments": attachments,
         "outputs": outputs,
     }
+
+
+def _normalize_session_files(d: Path) -> dict[str, str]:
+    """Переименовать .bin/слабые расширения по magic. {old_name: new_name}."""
+    from app.services.gpt_api import ensure_correct_extension
+
+    renames: dict[str, str] = {}
+    for sub in ("attachments", "outputs"):
+        folder = d / sub
+        if not folder.is_dir():
+            continue
+        for p in list(folder.iterdir()):
+            if not p.is_file():
+                continue
+            old = p.name
+            fixed = ensure_correct_extension(p)
+            if fixed.name != old:
+                renames[old] = fixed.name
+    return renames
+
+
+def _rewrite_message_filenames(
+    messages: list[Any], renames: dict[str, str]
+) -> list[Any]:
+    out: list[Any] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        nm = dict(m)
+        for key in ("attachment_names", "output_files"):
+            names = nm.get(key)
+            if isinstance(names, list):
+                nm[key] = [renames.get(str(n), n) for n in names]
+        out.append(nm)
+    return out
 
 
 def delete_session(session_id: str) -> None:

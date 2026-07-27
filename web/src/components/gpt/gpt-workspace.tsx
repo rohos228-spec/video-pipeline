@@ -33,6 +33,29 @@ import { cn } from "@/lib/utils";
 
 const ACCENT = "#D1FE17";
 
+function stemOf(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(0, i) : name;
+}
+
+/** Найти файл после sniff-rename (.bin → .png) по старому имени из сообщения. */
+function resolveFile(
+  filesByName: Map<string, GptWorkspaceFile>,
+  name: string,
+): GptWorkspaceFile | undefined {
+  const direct = filesByName.get(name);
+  if (direct) return direct;
+  const stem = stemOf(name);
+  for (const [k, v] of filesByName) {
+    if (stemOf(k) === stem) return v;
+  }
+  return undefined;
+}
+
+function isImageName(n: string): boolean {
+  return /\.(png|jpe?g|webp|gif)$/i.test(n);
+}
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -325,7 +348,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                           href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
                           className="text-white/35 hover:text-white"
                           title="Скачать"
-                          download={f.name}
                         >
                           <Download className="h-3 w-3" />
                         </a>
@@ -336,8 +358,8 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                           onClick={() => {
                             void api
                               .gptAttachmentToOutputs(session.id, f.name)
-                              .then(() => {
-                                toast.success(`В Результаты → ${f.name}`);
+                              .then((out) => {
+                                toast.success(`В Результаты → ${out.name || f.name}`);
                                 void qc.invalidateQueries({
                                   queryKey: ["gpt-workspace", "session", session.id],
                                 });
@@ -392,7 +414,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                           href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
                           className="text-white/35 hover:text-white"
                           title="Скачать"
-                          download={f.name}
                         >
                           <Download className="h-3 w-3" />
                         </a>
@@ -524,7 +545,6 @@ function MessageBubble({
   const outNames = (message.output_files ?? []).filter(
     (n) => !/^reply_\d/.test(n),
   );
-  const isImage = (n: string) => /\.(png|jpe?g|webp|gif)$/i.test(n);
 
   return (
     <div
@@ -546,28 +566,28 @@ function MessageBubble({
       {attNames.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {attNames.map((name) => {
-            const f = filesByName.get(name);
+            const f = resolveFile(filesByName, name);
+            const label = f?.name || name;
             const href = f?.download_url || f?.url;
             return (
               <div
                 key={name}
                 className="rounded border border-white/[0.08] bg-black/30 p-1.5"
               >
-                {f && isImage(name) ? (
+                {f && isImageName(label) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={f.url}
-                    alt={name}
+                    alt={label}
                     className="mb-1 max-h-40 max-w-[220px] rounded object-contain"
                   />
                 ) : null}
                 <div className="flex items-center gap-1.5 text-[10px] text-white/55">
                   <Paperclip className="h-3 w-3" />
-                  <span className="max-w-[160px] truncate">{name}</span>
+                  <span className="max-w-[160px] truncate">{label}</span>
                   {href && (
                     <a
                       href={href}
-                      download={name}
                       className="text-white/40 hover:text-white"
                       title="Скачать"
                     >
@@ -587,23 +607,33 @@ function MessageBubble({
           </div>
           <div className="flex flex-wrap gap-1.5">
           {outNames.map((name) => {
-            const f = filesByName.get(name);
+            const f = resolveFile(filesByName, name);
+            const label = f?.name || name;
             const href = f?.download_url || f?.url;
             return (
               <span
                 key={name}
                 className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10px] text-white/55"
               >
-                <FileText className="h-3 w-3" />
+                {f && isImageName(label) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={f.url}
+                    alt={label}
+                    className="max-h-24 max-w-[140px] rounded object-contain"
+                  />
+                ) : (
+                  <FileText className="h-3 w-3" />
+                )}
                 {href ? (
-                  <a href={href} download={name} className="hover:text-white">
-                    {name}
+                  <a href={href} className="hover:text-white">
+                    {label}
                   </a>
                 ) : (
-                  name
+                  label
                 )}
                 {href && (
-                  <a href={href} download={name} title="Скачать">
+                  <a href={href} title="Скачать">
                     <Download className="h-3 w-3 text-white/35 hover:text-white" />
                   </a>
                 )}

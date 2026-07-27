@@ -675,23 +675,67 @@ def sniff_file_extension(data: bytes) -> str | None:
     return None
 
 
+_WEAK_SUFFIXES = frozenset({"", ".bin", ".dat", ".tmp", ".octet-stream", ".unknown"})
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_SNIFF_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _read_magic_head(path: Path) -> bytes:
+    try:
+        size = path.stat().st_size
+        if size <= 64_000:
+            return path.read_bytes()
+        with path.open("rb") as f:
+            return f.read(16_384)
+    except OSError:
+        return b""
+
+
+def needs_extension_fix(path: Path, sniffed: str | None) -> bool:
+    """True если имя слабое (.bin) или не совпадает с magic (картинка)."""
+    if not sniffed:
+        return False
+    cur = path.suffix.lower()
+    if cur in _WEAK_SUFFIXES:
+        return True
+    if sniffed in _IMAGE_SUFFIXES and cur not in _IMAGE_SUFFIXES:
+        return True
+    return False
+
+
+def suggested_name_and_mime(path: Path) -> tuple[str, str]:
+    """Имя для Content-Disposition + MIME по magic (без обязательного rename на диске)."""
+    import mimetypes
+
+    head = _read_magic_head(path)
+    sniffed = sniff_file_extension(head)
+    name = path.name
+    if sniffed and needs_extension_fix(path, sniffed):
+        name = f"{path.stem}{sniffed}"
+    mime, _ = mimetypes.guess_type(name)
+    if not mime and sniffed:
+        mime = _SNIFF_MIME.get(sniffed)
+    if not mime:
+        mime, _ = mimetypes.guess_type(str(path))
+    return name, mime or "application/octet-stream"
+
+
 def ensure_correct_extension(path: Path) -> Path:
     """Переименовать файл, если расширение .bin/пустое/не совпадает с magic."""
     if not path.is_file():
         return path
-    try:
-        size = path.stat().st_size
-        raw = path.read_bytes() if size <= 64_000 else path.read_bytes()[:16_384]
-    except OSError:
-        return path
-    sniffed = sniff_file_extension(raw if len(raw) >= 12 else path.read_bytes())
-    if not sniffed:
-        return path
-    cur = path.suffix.lower()
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-    weak = cur in {"", ".bin", ".dat", ".tmp", ".octet-stream"}
-    mismatch_image = sniffed in image_exts and cur not in image_exts and cur != ".jpeg"
-    if not (weak or mismatch_image):
+    sniffed = sniff_file_extension(_read_magic_head(path))
+    if not needs_extension_fix(path, sniffed) or not sniffed:
         return path
     target = path.with_suffix(sniffed)
     if target.resolve() == path.resolve():
@@ -837,7 +881,7 @@ async def download_content(
         ) from e
     if not out_path.is_file() or out_path.stat().st_size < 1:
         raise GptApiError("download: пустой файл", context={"url": url, "path": str(out_path)})
-    return out_path
+    return ensure_correct_extension(out_path)
 
 
 def copy_content(src: Path, out_path: Path) -> Path:
