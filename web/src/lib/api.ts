@@ -113,7 +113,9 @@ async function http<T>(
       const sec = Math.max(1, Math.round(timeoutMs / 1000));
       throw new ApiError(
         0,
-        `Сервер не ответил за ${sec} с — проверьте окно BACKEND (Uvicorn на :8765)`,
+        timeoutMs >= 120_000
+          ? `GPT не ответил за ${sec} с (vision/длинный ответ). Смотри окно BACKEND / лог; можно повторить.`
+          : `Сервер не ответил за ${sec} с — проверьте окно BACKEND (Uvicorn на :8765)`,
       );
     }
     throw e;
@@ -1411,12 +1413,14 @@ export const api = {
       { method: "POST" },
     ),
   gptAsk: (sessionId: string, message: string, withAttachments = true) =>
+    // Vision / длинные ответы kie.ai часто >30с; бэкенд GPT_TIMEOUT_S≈600.
     http<GptWorkspaceSession>(
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/ask`,
       {
         method: "POST",
         body: JSON.stringify({ message, with_attachments: withAttachments }),
       },
+      620_000,
     ),
   gptSaveToProject: (
     sessionId: string,
