@@ -195,6 +195,12 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 "Outsee generate: нет id",
                 context={"path": path, "body": data},
             )
+        logger.info(
+            "outsee_api.submitted path={} id={} status={}",
+            path,
+            data.get("id"),
+            data.get("status"),
+        )
         return data
 
 
@@ -232,15 +238,33 @@ async def _poll_generation(
 
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-        r = await client.get(url)
-        if r.status_code >= 400 or len(r.content) < 64:
-            raise OutseeApiError(
-                f"Outsee download HTTP {r.status_code}",
-                context={"url": url[:160], "bytes": len(r.content)},
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(
+                timeout=180.0, follow_redirects=True
+            ) as client:
+                r = await client.get(url)
+                if r.status_code >= 400 or len(r.content) < 64:
+                    raise OutseeApiError(
+                        f"Outsee download HTTP {r.status_code}",
+                        context={"url": url[:160], "bytes": len(r.content)},
+                    )
+                out_path.write_bytes(r.content)
+            return out_path
+        except (httpx.HTTPError, OSError, OutseeApiError) as e:
+            last_err = e
+            logger.warning(
+                "outsee_api.download retry {}/3 url={} err={}",
+                attempt,
+                url[:120],
+                e,
             )
-        out_path.write_bytes(r.content)
-    return out_path
+            await asyncio.sleep(1.5 * attempt)
+    raise OutseeApiError(
+        f"Outsee download failed after retries: {last_err}",
+        context={"url": url[:160]},
+    ) from last_err
 
 
 def _pick_result_url(status: dict[str, Any]) -> str:

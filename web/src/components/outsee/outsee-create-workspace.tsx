@@ -451,8 +451,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
         );
       }
-      // Не блокируем кнопку на время чужих jobs — только быстрый enqueue
-      await api.putOutseeCreateSettings(settingsPayload());
+      // Settings не блокируют enqueue: параллельные клики иначе ломаются
+      // на гонке записи outsee_create_settings.json.
+      void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
       if (provider === "grsai") {
         if (!grsaiConfigured) {
           throw new Error("GRSAI_API_KEY не задан в .env");

@@ -70,6 +70,8 @@ class CreateJob:
 
 _JOBS: dict[str, CreateJob] = {}
 _LOCK = asyncio.Lock()
+# Сильные ссылки на tasks — иначе GC может убить pending create_task.
+_TASKS: set[asyncio.Task[Any]] = set()
 # Отдельный семафор на провайдера: Outsee и Grsai не делят один пул.
 _SEMS: dict[str, asyncio.Semaphore] = {}
 _SEM_SIZES: dict[str, int] = {}
@@ -204,10 +206,12 @@ async def enqueue_generation(
         max_parallel(provider),
     )
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_job(job, run=run, params=params, quote=quote),
         name=f"create-job-{job_id}",
     )
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
     return job
 
 

@@ -238,6 +238,18 @@ def list_generation_files(
         has_file = fp.is_file() and fp.stat().st_size > 32
         if status == "done" and not has_file:
             status = "failed"
+        # Старые pending без файла после рестарта бэкенда (не трогаем свежие).
+        if status in {"queued", "processing"} and not has_file:
+            age_s = max(0.0, datetime.now(timezone.utc).timestamp() - mtime)
+            if age_s > 20 * 60:
+                status = "failed"
+                if not meta.get("error"):
+                    err = "прервано (рестарт / сбой задачи)"
+                    meta["error"] = err
+                    try:
+                        update_sidecar(fp, status="failed", error=err)
+                    except Exception:  # noqa: BLE001
+                        pass
         items.append(
             {
                 "id": key,

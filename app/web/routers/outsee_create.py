@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from app.web.deps import get_session
 router = APIRouter(prefix="/outsee-create", tags=["outsee-create"])
 
 _SETTINGS_FILE = "outsee_create_settings.json"
+_SETTINGS_LOCK = asyncio.Lock()
 
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "media_type": "image",
@@ -73,7 +75,10 @@ def _save_settings(data: dict[str, Any]) -> dict[str, Any]:
         if k in data:
             out[k] = data[k]
     path = _settings_path()
-    path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    # атомарная запись: параллельные PUT не портят JSON
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
     return out
 
 
@@ -86,7 +91,8 @@ async def get_outsee_create_settings() -> dict[str, Any]:
 async def put_outsee_create_settings(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be object")
-    return _save_settings(body)
+    async with _SETTINGS_LOCK:
+        return await asyncio.to_thread(_save_settings, body)
 
 
 def _preview_for_artifact(a: Artifact) -> str | None:

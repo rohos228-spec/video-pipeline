@@ -22,6 +22,7 @@ def _reset_create_jobs(
     cj._JOBS.clear()
     cj._SEMS.clear()
     cj._SEM_SIZES.clear()
+    cj._TASKS.clear()
 
 
 @pytest.mark.asyncio
@@ -94,6 +95,7 @@ async def test_enqueue_respects_max_parallel_and_unique_ids(
     assert len(started) == 3
     final = cj.queue_snapshot()
     assert final["total_active"] == 0
+    assert len(cj._TASKS) == 0
 
 
 @pytest.mark.asyncio
