@@ -8,9 +8,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.web.deps import get_session
 from app.models import Project
 from app.services import gpt_workspace as gw
+from app.services.gpt_client import GptApiUnavailable
+from app.web.deps import get_session as get_db_session
 
 router = APIRouter(prefix="/gpt-workspace", tags=["gpt-workspace"])
 
@@ -51,7 +52,7 @@ async def create_session(body: CreateSessionBody | None = None) -> dict[str, Any
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str) -> dict[str, Any]:
+async def get_workspace_session(session_id: str) -> dict[str, Any]:
     try:
         return gw.get_session(session_id)
     except FileNotFoundError as e:
@@ -59,7 +60,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 
 @router.patch("/sessions/{session_id}")
-async def rename_session(session_id: str, body: RenameBody) -> dict[str, Any]:
+async def rename_workspace_session(session_id: str, body: RenameBody) -> dict[str, Any]:
     try:
         return gw.rename_session(session_id, body.title)
     except FileNotFoundError as e:
@@ -67,7 +68,7 @@ async def rename_session(session_id: str, body: RenameBody) -> dict[str, Any]:
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str) -> dict[str, Any]:
+async def delete_workspace_session(session_id: str) -> dict[str, Any]:
     gw.delete_session(session_id)
     return {"ok": True}
 
@@ -87,6 +88,8 @@ async def upload_attachment(
         return gw.save_attachment(session_id, file.filename or "file.bin", data)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.delete("/sessions/{session_id}/attachments/{name}")
@@ -110,6 +113,8 @@ async def ask(session_id: str, body: AskBody) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except GptApiUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(e)[:800]) from e
 
@@ -118,9 +123,9 @@ async def ask(session_id: str, body: AskBody) -> dict[str, Any]:
 async def save_to_project(
     session_id: str,
     body: SaveToProjectBody,
-    session: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    project = await session.get(Project, body.project_id)
+    project = await db.get(Project, body.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     try:
@@ -132,15 +137,17 @@ async def save_to_project(
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/sessions/{session_id}/save-voiceover")
 async def save_voiceover(
     session_id: str,
     body: SaveVoiceoverBody,
-    session: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    project = await session.get(Project, body.project_id)
+    project = await db.get(Project, body.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     try:

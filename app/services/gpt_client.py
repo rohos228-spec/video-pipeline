@@ -69,6 +69,7 @@ class ApiGptClient:
         project_id: int | None = None,
         expect_file_download: bool = False,
         history: list[dict[str, Any]] | None = None,
+        treat_txt_as_prompt: bool = True,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import chat
@@ -85,12 +86,16 @@ class ApiGptClient:
 
         prompt_file: Path | None = None
         data_files: list[Path] = []
-        for p in attachments:
-            if prompt_file is None and p.suffix.lower() in {".txt", ".md"}:
-                # Первый .txt/.md — мастер-промт (как вложение в браузере).
-                prompt_file = p
-            else:
-                data_files.append(p)
+        if treat_txt_as_prompt:
+            for p in attachments:
+                if prompt_file is None and p.suffix.lower() in {".txt", ".md"}:
+                    # Первый .txt/.md — мастер-промт (как вложение в пайплайне/браузере).
+                    prompt_file = p
+                else:
+                    data_files.append(p)
+        else:
+            # Workspace / свободный чат: сообщение юзера = prompt, все файлы = вложения.
+            data_files = list(attachments)
 
         master = ""
         if prompt_file is not None:
@@ -112,13 +117,15 @@ class ApiGptClient:
 
         hist = list(history or [])
         logger.info(
-            "gpt_client/api: ask files=[{}] master={} chat_len={} expect_dl={} pid={} history={}",
+            "gpt_client/api: ask files=[{}] master={} chat_len={} expect_dl={} "
+            "pid={} history={} txt_as_prompt={}",
             ", ".join(p.name for p in attachments) or "—",
             prompt_file.name if prompt_file else "—",
             len(accompanying),
             expect_file_download,
             project_id,
             len(hist),
+            treat_txt_as_prompt,
         )
 
         result = await chat(

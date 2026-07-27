@@ -1,4 +1,4 @@
-"""GPT workspace service: sessions / attachments / save."""
+"""GPT workspace: вложения, ask, ошибки, save."""
 
 from __future__ import annotations
 
@@ -35,12 +35,22 @@ def test_attachment_and_voiceover_save(tmp_path: Path) -> None:
     got = gw.get_session(s["id"])
     assert len(got["attachments"]) == 1
 
-    # fake assistant message
     gw._append_message(s["id"], "assistant", "закадровый текст для ролика")
     proj = tmp_path / "proj"
     r = gw.save_reply_as_voiceover(s["id"], project_data_dir=proj)
     assert (proj / "voiceover.txt").read_text(encoding="utf-8").startswith("закадровый")
     assert r["chars"] > 0
+
+
+def test_save_attachment_missing_session() -> None:
+    with pytest.raises(FileNotFoundError, match="сессия не найдена"):
+        gw.save_attachment("nosuch", "a.txt", b"hi")
+
+
+def test_save_attachment_empty_raises() -> None:
+    s = gw.create_session()
+    with pytest.raises(ValueError, match="пустой"):
+        gw.save_attachment(s["id"], "a.txt", b"")
 
 
 @pytest.mark.asyncio
@@ -58,6 +68,7 @@ async def test_ask_passes_session_history(monkeypatch: pytest.MonkeyPatch) -> No
         async def ask_with_files(self, text, files, **kwargs):
             captured["text"] = text
             captured["history"] = list(kwargs.get("history") or [])
+            captured["treat_txt_as_prompt"] = kwargs.get("treat_txt_as_prompt")
             return "Ты Капитан"
 
         async def download_attachment_from_last_reply(self, *a, **k):
@@ -70,3 +81,79 @@ async def test_ask_passes_session_history(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(captured["history"]) == 2
     assert captured["history"][0]["content"] == "зови меня Капитан"
     assert "Капитан" in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_sends_txt_as_attachment_not_master(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Workspace: .txt — вложение, не master-промт пайплайна."""
+    import app.services.gpt_client as gc
+
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "secret.txt", "код OMEGA-1\n".encode("utf-8"))
+
+    captured: dict = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            captured["text"] = text
+            captured["files"] = [Path(p).name for p in files]
+            captured["treat_txt_as_prompt"] = kwargs.get("treat_txt_as_prompt", True)
+            captured["expect_file_download"] = kwargs.get("expect_file_download")
+            return "OMEGA-1"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    out = await gw.ask(s["id"], "какой код в файле?")
+    assert captured["text"] == "какой код в файле?"
+    assert captured["files"] == ["secret.txt"]
+    assert captured["treat_txt_as_prompt"] is False
+    assert captured["expect_file_download"] is False
+    assert out["messages"][-2].get("attachment_names") == ["secret.txt"]
+    assert "OMEGA-1" in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_xlsx_sets_expect_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.gpt_client as gc
+
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "t.xlsx", b"PK\x03\x04fake")
+
+    captured: dict = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            captured["expect_file_download"] = kwargs.get("expect_file_download")
+            captured["treat_txt_as_prompt"] = kwargs.get("treat_txt_as_prompt")
+            return "ok"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            raise RuntimeError("no xlsx")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    await gw.ask(s["id"], "проверь таблицу")
+    assert captured["expect_file_download"] is True
+    assert captured["treat_txt_as_prompt"] is False
+
+
+@pytest.mark.asyncio
+async def test_ask_api_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.gpt_client as gc
+    from app.services.gpt_client import GptApiUnavailable
+
+    s = gw.create_session()
+
+    class Boom:
+        async def ask_with_files(self, *a, **k):
+            raise GptApiUnavailable("GPT API не настроен: test")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: Boom())
+    with pytest.raises(GptApiUnavailable):
+        await gw.ask(s["id"], "привет")
+    got = gw.get_session(s["id"])
+    assert got["status"] == "error"
+    assert any(m["role"] == "system" for m in got["messages"])

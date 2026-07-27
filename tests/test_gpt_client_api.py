@@ -21,20 +21,56 @@ def test_require_gpt_api_raises_without_key(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_api_client_ask_fresh(monkeypatch) -> None:
+async def test_api_client_workspace_txt_stays_in_input_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """treat_txt_as_prompt=False: user text = prompt, .txt в input_paths."""
     from app.settings import settings
 
     monkeypatch.setattr(settings, "gpt_api_key", "k")
     monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
 
+    note = tmp_path / "note.txt"
+    note.write_text("секрет", encoding="utf-8")
+    captured: dict = {}
+
     async def fake_chat(**kwargs):
-        assert kwargs["prompt"] == "привет"
-        return GptChatResult(text="ок", model="gpt-5-6-sol", finish_reason="completed")
+        captured.update(kwargs)
+        return GptChatResult(text="секрет", model="m", finish_reason="completed")
 
     monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
     client = ApiGptClient()
-    reply = await client.ask_fresh("привет")
-    assert reply == "ок"
+    reply = await client.ask_with_files(
+        "что в файле?",
+        [note],
+        treat_txt_as_prompt=False,
+    )
+    assert reply == "секрет"
+    assert captured["prompt"] == "что в файле?"
+    assert captured["accompanying"] == ""
+    assert [p.name for p in (captured.get("input_paths") or [])] == ["note.txt"]
+
+
+@pytest.mark.asyncio
+async def test_api_client_pipeline_txt_is_master(monkeypatch, tmp_path: Path) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_api_key", "k")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
+
+    note = tmp_path / "prompt.txt"
+    note.write_text("мастер-промт", encoding="utf-8")
+    captured: dict = {}
+
+    async def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return GptChatResult(text="ok", model="m", finish_reason="completed")
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    client = ApiGptClient()
+    await client.ask_with_files("сопроводительный", [note], treat_txt_as_prompt=True)
+    assert captured["prompt"] == "мастер-промт"
+    assert "сопроводительный" in captured["accompanying"]
 
 
 @pytest.mark.asyncio

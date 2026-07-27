@@ -163,6 +163,10 @@ def _safe_filename(name: str) -> str:
 
 def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, Any]:
     d = _session_dir(session_id)
+    if not d.is_dir() or not (d / "meta.json").is_file():
+        raise FileNotFoundError(f"сессия не найдена: {session_id}")
+    if not data:
+        raise ValueError("пустой файл")
     att = d / "attachments"
     att.mkdir(exist_ok=True)
     safe = _safe_filename(filename)
@@ -190,7 +194,10 @@ def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, An
 
 
 def delete_attachment(session_id: str, name: str) -> None:
-    path = _session_dir(session_id) / "attachments" / Path(name).name
+    d = _session_dir(session_id)
+    if not d.is_dir() or not (d / "meta.json").is_file():
+        raise FileNotFoundError(f"сессия не найдена: {session_id}")
+    path = d / "attachments" / Path(name).name
     if path.exists():
         path.unlink()
 
@@ -264,13 +271,16 @@ async def ask(
 
     try:
         gpt = get_gpt_client()
-        # Не сбрасываем контекст: history передаём явно в ask_with_files
+        has_xlsx = any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
+        # Свободный чат: сообщение юзера = prompt, все файлы (в т.ч. .txt) = вложения.
+        # expect_file_download только когда реально ждём xlsx-ответ.
         reply = await gpt.ask_with_files(
             text,
             files,
             timeout=float(settings.gpt_timeout_s or 600),
-            expect_file_download=True,
+            expect_file_download=has_xlsx,
             history=history,
+            treat_txt_as_prompt=False,
         )
         reply = (reply or "").strip()
 
@@ -285,19 +295,34 @@ async def ask(
         saved_files.append(reply_path.name)
 
         # Попробовать materialize xlsx/доп. файлы из ответа
-        try:
-            xlsx_path = out_dir / f"result_{ts}.xlsx"
-            await gpt.download_attachment_from_last_reply(
-                xlsx_path,
-                timeout=120,
-                fallback_text=reply,
-                allow_reply_text_fallback=False,
-            )
-            if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
-                saved_files.append(xlsx_path.name)
-        except Exception:  # noqa: BLE001
-            # Не xlsx — ок, текст уже сохранён
-            pass
+        if has_xlsx:
+            try:
+                xlsx_path = out_dir / f"result_{ts}.xlsx"
+                await gpt.download_attachment_from_last_reply(
+                    xlsx_path,
+                    timeout=120,
+                    fallback_text=reply,
+                    allow_reply_text_fallback=False,
+                )
+                if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
+                    saved_files.append(xlsx_path.name)
+            except Exception:  # noqa: BLE001
+                # Не xlsx — ок, текст уже сохранён
+                pass
+        else:
+            # Даже без входного xlsx модель могла вернуть таблицу — мягкая попытка
+            try:
+                xlsx_path = out_dir / f"result_{ts}.xlsx"
+                await gpt.download_attachment_from_last_reply(
+                    xlsx_path,
+                    timeout=60,
+                    fallback_text=reply,
+                    allow_reply_text_fallback=False,
+                )
+                if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
+                    saved_files.append(xlsx_path.name)
+            except Exception:  # noqa: BLE001
+                pass
 
         _append_message(
             session_id,

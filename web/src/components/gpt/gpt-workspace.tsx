@@ -112,12 +112,12 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
         sid = s.id;
         setSessionId(sid);
       }
-      return api.gptUploadAttachment(sid, file);
+      const att = await api.gptUploadAttachment(sid, file);
+      return { sid, att };
     },
-    onSuccess: () => {
-      if (sessionId) {
-        void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sessionId] });
-      }
+    onSuccess: ({ sid }) => {
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
       toast.success("Файл прикреплён");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
