@@ -17,6 +17,7 @@ import {
   ImageIcon,
   Loader2,
   Music,
+  Paperclip,
   Sparkles,
   Video,
   X,
@@ -584,6 +585,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               model: imageSlug,
               aspect,
               resolution,
+              first_frame_url: firstFrameDataUrl,
               project_id: projectId,
             });
       return { ...enqueued, provider: "outsee" as const };
@@ -1050,6 +1052,122 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 className="min-w-0 flex-1 border border-white/[0.08] bg-[#171717] shadow-[0_12px_40px_rgba(0,0,0,0.55)]"
                 style={{ borderRadius: 16 }}
               >
+                {/* Явная зона вложений — как на outsee.io (не прятать в чипах) */}
+                {(mediaType === "video"
+                  ? videoModel.chips.includes("image-input")
+                  : mediaType === "image" && imageModel.chips.includes("image-input")) && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
+                    <input
+                      ref={firstFrameInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        void readFileAsDataUrl(f).then((dataUrl) => {
+                          setFirstFrameDataUrl(dataUrl);
+                          setFirstFrameName(f.name);
+                          toast.success(
+                            mediaType === "video" ? "Стартовый кадр" : "Референс добавлен",
+                          );
+                        });
+                        e.target.value = "";
+                      }}
+                    />
+                    {mediaType === "video" ? (
+                      <input
+                        ref={lastFrameInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (!f) return;
+                          void readFileAsDataUrl(f).then((dataUrl) => {
+                            setLastFrameDataUrl(dataUrl);
+                            setLastFrameName(f.name);
+                            toast.success("Конечный кадр");
+                          });
+                          e.target.value = "";
+                        }}
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => firstFrameInputRef.current?.click()}
+                      className={cn(
+                        "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
+                        firstFrameDataUrl
+                          ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
+                          : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
+                      )}
+                    >
+                      {firstFrameDataUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={firstFrameDataUrl}
+                          alt=""
+                          className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
+                        />
+                      ) : (
+                        <Paperclip className="h-4 w-4" />
+                      )}
+                      {mediaType === "video" ? "Стартовый кадр" : "Референс"}
+                      {firstFrameDataUrl ? (
+                        <span
+                          className="text-white/45"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setFirstFrameDataUrl(null);
+                            setFirstFrameName(null);
+                          }}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </span>
+                      ) : null}
+                    </button>
+                    {mediaType === "video" ? (
+                      <button
+                        type="button"
+                        onClick={() => lastFrameInputRef.current?.click()}
+                        className={cn(
+                          "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
+                          lastFrameDataUrl
+                            ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
+                            : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
+                        )}
+                      >
+                        {lastFrameDataUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={lastFrameDataUrl}
+                            alt=""
+                            className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
+                          />
+                        ) : (
+                          <Paperclip className="h-4 w-4" />
+                        )}
+                        Конечный кадр
+                        {lastFrameDataUrl ? (
+                          <span
+                            className="text-white/45"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              setLastFrameDataUrl(null);
+                              setLastFrameName(null);
+                            }}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </span>
+                        ) : null}
+                      </button>
+                    ) : null}
+                    <span className="text-[10px] text-white/35">
+                      файл или картинка из истории → кнопки под превью
+                    </span>
+                  </div>
+                )}
                 <div className="px-3 pt-3 lg:px-4">
                   <textarea
                     value={prompt}
@@ -1169,108 +1287,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       );
                     }
                     if (chip === "image-input") {
-                      return (
-                        <div key="image-input" className="flex flex-wrap items-center gap-1.5">
-                          <input
-                            ref={firstFrameInputRef}
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            className="hidden"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (!f) return;
-                              void readFileAsDataUrl(f).then((dataUrl) => {
-                                setFirstFrameDataUrl(dataUrl);
-                                setFirstFrameName(f.name);
-                                toast.success("Стартовый кадр выбран");
-                              });
-                              e.target.value = "";
-                            }}
-                          />
-                          <input
-                            ref={lastFrameInputRef}
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            className="hidden"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (!f) return;
-                              void readFileAsDataUrl(f).then((dataUrl) => {
-                                setLastFrameDataUrl(dataUrl);
-                                setLastFrameName(f.name);
-                                toast.success("Конечный кадр выбран");
-                              });
-                              e.target.value = "";
-                            }}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => firstFrameInputRef.current?.click()}
-                            className={cn(
-                              "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
-                              firstFrameDataUrl
-                                ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                                : "border-white/10 bg-[#222] text-white/70",
-                            )}
-                            title={firstFrameName || "Стартовый кадр (файл или из истории)"}
-                          >
-                            {firstFrameDataUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={firstFrameDataUrl}
-                                alt=""
-                                className="h-5 w-5 rounded object-cover"
-                              />
-                            ) : null}
-                            Старт
-                            {firstFrameDataUrl ? (
-                              <span
-                                className="text-[10px] text-white/50"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  setFirstFrameDataUrl(null);
-                                  setFirstFrameName(null);
-                                }}
-                              >
-                                ✕
-                              </span>
-                            ) : null}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => lastFrameInputRef.current?.click()}
-                            className={cn(
-                              "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
-                              lastFrameDataUrl
-                                ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                                : "border-white/10 bg-[#222] text-white/70",
-                            )}
-                            title={lastFrameName || "Конечный кадр"}
-                          >
-                            {lastFrameDataUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={lastFrameDataUrl}
-                                alt=""
-                                className="h-5 w-5 rounded object-cover"
-                              />
-                            ) : null}
-                            Финиш
-                            {lastFrameDataUrl ? (
-                              <span
-                                className="text-[10px] text-white/50"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  setLastFrameDataUrl(null);
-                                  setLastFrameName(null);
-                                }}
-                              >
-                                ✕
-                              </span>
-                            ) : null}
-                          </button>
-                        </div>
-                      );
+                      // Вложения — отдельная полоса над промптом, не дублируем в чипах
+                      return null;
                     }
                     if (chip === "instrumental") {
                       return (

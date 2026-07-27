@@ -130,7 +130,8 @@ async def test_veo_generate_video_hosts_frame_and_postprocesses(
             first_frame_url="data:image/png;base64,aaa",
         )
 
-    assert captured["body"]["first_frame_url"] == "https://cdn.example/frame.png"
+    assert captured["body"]["image_url"] == "https://cdn.example/frame.png"
+    assert "first_frame_url" not in captured["body"]
     assert captured["body"]["generate_audio"] is False
     assert captured["body"]["duration_sec"] == 4
     assert captured["pp"] == {"duration": 4, "audio": False}

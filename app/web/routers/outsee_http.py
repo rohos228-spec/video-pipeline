@@ -25,9 +25,10 @@ class OutseeGenerateBody(BaseModel):
     relax: bool = False
     generate_audio: bool | None = None
     project_id: int | None = None
-    # data: URL или https — стартовый / конечный кадр (Veo)
+    # data: URL или https — стартовый / конечный кадр (Veo) / референс (image)
     first_frame_url: str | None = None
     last_frame_url: str | None = None
+    reference_images: list[str] | None = None
 
 
 @router.get("/status")
@@ -156,6 +157,8 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
                 model_slug=model,
                 aspect_ratio=(body.aspect or "9:16").replace("_", ":"),
                 resolution=body.resolution or "2K",
+                reference_images=body.reference_images
+                or ([body.first_frame_url] if body.first_frame_url else None),
                 project_id=body.project_id,
                 timeout=600,
             )

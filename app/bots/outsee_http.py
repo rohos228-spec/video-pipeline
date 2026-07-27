@@ -511,7 +511,13 @@ async def generate_image(
         body["detail_level"] = mapping.get(dl, dl)
     refs = _normalize_refs(reference_images)
     if refs:
-        body["reference_images"] = refs
+        hosted: list[str] = []
+        for u in refs:
+            pub = await ensure_public_image_url(u)
+            if pub:
+                hosted.append(pub)
+        if hosted:
+            body["reference_images"] = hosted
 
     logger.info(
         "outsee_api.image model={} aspect={} res={} project={}",
@@ -597,7 +603,8 @@ async def generate_video(
         frame = _path_to_data_url(reference_image)
     frame = await ensure_public_image_url(frame)
     if frame:
-        body["first_frame_url"] = frame
+        # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
+        body["image_url"] = frame
 
     last = last_frame_url
     if not last and isinstance(last_frame_image, str) and last_frame_image.startswith(
@@ -608,17 +615,18 @@ async def generate_video(
         last = _path_to_data_url(last_frame_image)
     last = await ensure_public_image_url(last)
     if last:
-        body["last_frame_url"] = last
+        # конечный кадр в каталоге не заявлен; пробуем end_image_url
+        body["end_image_url"] = last
 
     logger.info(
-        "outsee_api.video model={} aspect={} res={} dur={} audio={} first={} last={} project={}",
+        "outsee_api.video model={} aspect={} res={} dur={} audio={} image_url={} end={} project={}",
         model,
         body.get("aspect_ratio"),
         body.get("resolution"),
         body.get("duration_sec"),
         body.get("generate_audio"),
-        bool(body.get("first_frame_url")),
-        bool(body.get("last_frame_url")),
+        bool(body.get("image_url")),
+        bool(body.get("end_image_url")),
         project_id,
     )
     submitted = await _post_generate("/api/v1/videos/generate", body)
