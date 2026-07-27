@@ -1434,6 +1434,7 @@ export type GptWorkspaceFile = {
   size: number;
   path: string;
   url: string;
+  download_url?: string;
 };
 
 export type GptWorkspaceMessage = {

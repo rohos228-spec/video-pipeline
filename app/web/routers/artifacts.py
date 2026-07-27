@@ -25,7 +25,10 @@ files_router = APIRouter(tags=["files"])
 
 
 @files_router.get("/files")
-async def serve_data_file(path: str = Query(..., description="Абсолютный путь под data_dir")) -> FileResponse:
+async def serve_data_file(
+    path: str = Query(..., description="Абсолютный путь под data_dir"),
+    download: int = Query(0, description="1 = Content-Disposition: attachment"),
+) -> FileResponse:
     """Отдаёт файл из data_dir (или его подкаталогов). Безопасный whitelist
     предотвращает path traversal — допускаем только пути, чей resolve
     начинается с data_dir.resolve().
@@ -39,7 +42,10 @@ async def serve_data_file(path: str = Query(..., description="Абсолютны
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     mime, _ = mimetypes.guess_type(str(candidate))
-    return FileResponse(candidate, media_type=mime or "application/octet-stream")
+    kwargs: dict = {"media_type": mime or "application/octet-stream"}
+    if download:
+        kwargs["filename"] = candidate.name
+    return FileResponse(candidate, **kwargs)
 
 
 @router.get("", response_model=list[ArtifactDTO])

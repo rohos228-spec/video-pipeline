@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
+  Download,
   FileText,
   History,
   Loader2,
@@ -299,11 +300,28 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                         key={f.name}
                         className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[11px] text-white/70"
                       >
-                        <Paperclip className="h-3 w-3" />
-                        {f.name}
+                        <Paperclip className="h-3 w-3 shrink-0" />
+                        <a
+                          href={f.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="max-w-[140px] truncate hover:text-white"
+                          title={f.name}
+                        >
+                          {f.name}
+                        </a>
+                        <a
+                          href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
+                          className="text-white/35 hover:text-white"
+                          title="Скачать"
+                          download={f.name}
+                        >
+                          <Download className="h-3 w-3" />
+                        </a>
                         <button
                           type="button"
                           className="text-white/30 hover:text-red-400"
+                          title="Удалить"
                           onClick={() =>
                             api
                               .gptDeleteAttachment(session.id, f.name)
@@ -336,9 +354,18 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                           href={f.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-white/70 hover:text-white"
+                          className="max-w-[160px] truncate text-white/70 hover:text-white"
+                          title={f.name}
                         >
                           {f.name}
+                        </a>
+                        <a
+                          href={f.download_url || `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`}
+                          className="text-white/35 hover:text-white"
+                          title="Скачать"
+                          download={f.name}
+                        >
+                          <Download className="h-3 w-3" />
                         </a>
                         {projectId != null && (
                           <button

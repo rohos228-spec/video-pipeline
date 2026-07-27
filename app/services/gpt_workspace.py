@@ -13,12 +13,22 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from loguru import logger
 
 from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
+
+
+def _file_urls(path: Path) -> dict[str, str]:
+    """URL просмотра и принудительного скачивания через /api/files."""
+    q = quote(str(path), safe="")
+    return {
+        "url": f"/api/files?path={q}",
+        "download_url": f"/api/files?path={q}&download=1",
+    }
 
 
 def _root() -> Path:
@@ -112,7 +122,7 @@ def get_session(session_id: str) -> dict[str, Any]:
                         "name": p.name,
                         "size": p.stat().st_size,
                         "path": str(p),
-                        "url": f"/api/files?path={p}",
+                        **_file_urls(p),
                     }
                 )
     outputs = []
@@ -125,7 +135,7 @@ def get_session(session_id: str) -> dict[str, Any]:
                         "name": p.name,
                         "size": p.stat().st_size,
                         "path": str(p),
-                        "url": f"/api/files?path={p}",
+                        **_file_urls(p),
                     }
                 )
     return {
@@ -189,7 +199,7 @@ def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, An
         "name": path.name,
         "size": path.stat().st_size,
         "path": str(path),
-        "url": f"/api/files?path={path}",
+        **_file_urls(path),
     }
 
 

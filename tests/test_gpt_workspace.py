@@ -42,7 +42,14 @@ def test_attachment_and_voiceover_save(tmp_path: Path) -> None:
     assert r["chars"] > 0
 
 
-def test_save_attachment_missing_session() -> None:
+def test_attachment_urls_include_download() -> None:
+    s = gw.create_session()
+    att = gw.save_attachment(s["id"], "note.txt", b"hello")
+    assert "download=1" in att["download_url"]
+    assert att["url"].startswith("/api/files?path=")
+    got = gw.get_session(s["id"])
+    assert got["attachments"][0]["download_url"].endswith("download=1")
+
     with pytest.raises(FileNotFoundError, match="сессия не найдена"):
         gw.save_attachment("nosuch", "a.txt", b"hi")
 
