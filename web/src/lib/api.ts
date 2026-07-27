@@ -1216,7 +1216,57 @@ export const api = {
       preview_url?: string | null;
       error?: string | null;
       bytes?: number;
+      queue_position?: number | null;
     }>(`/api/outsee/jobs/${encodeURIComponent(jobId)}`),
+
+  createQueue: () =>
+    http<{
+      max_parallel: number;
+      running_count: number;
+      waiting_count: number;
+      total_active: number;
+      running: {
+        job_id: string;
+        status: string;
+        media: string;
+        model: string;
+        history_id: string;
+        prompt_preview?: string;
+        queue_position?: number | null;
+        provider: string;
+      }[];
+      waiting: {
+        job_id: string;
+        status: string;
+        media: string;
+        model: string;
+        history_id: string;
+        prompt_preview?: string;
+        queue_position?: number | null;
+        provider: string;
+      }[];
+      jobs: {
+        job_id: string;
+        status: string;
+        media: string;
+        model: string;
+        history_id: string;
+        prompt_preview?: string;
+        queue_position?: number | null;
+        provider: string;
+      }[];
+    }>(`/api/create/queue`),
+
+  createJob: (jobId: string) =>
+    http<{
+      job_id: string;
+      status: string;
+      history_id: string;
+      preview_url?: string | null;
+      error?: string | null;
+      queue_position?: number | null;
+      model?: string;
+    }>(`/api/create/jobs/${encodeURIComponent(jobId)}`),
 
   wizardCatalog: () =>
     http<{

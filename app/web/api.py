@@ -50,6 +50,9 @@ from app.web.routers import (
     outsee_http as outsee_http_router,
 )
 from app.web.routers import (
+    create_queue as create_queue_router,
+)
+from app.web.routers import (
     gpt_workspace as gpt_workspace_router,
 )
 from app.web.routers import (
@@ -196,6 +199,7 @@ def create_app() -> FastAPI:
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
     app.include_router(outsee_create_router.router, prefix=API_PREFIX)
     app.include_router(outsee_http_router.router, prefix=API_PREFIX)
+    app.include_router(create_queue_router.router, prefix=API_PREFIX)
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
     app.include_router(grsai_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)

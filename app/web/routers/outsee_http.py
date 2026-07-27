@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.bots import outsee_http as oh
-from app.services.create_jobs import enqueue_generation, get_job, list_active_jobs
+from app.services.create_jobs import enqueue_generation, get_job, queue_snapshot
 from app.settings import settings
 
 router = APIRouter(prefix="/outsee", tags=["outsee-http"])
@@ -36,7 +36,7 @@ async def outsee_http_status() -> dict[str, Any]:
             balance = await oh.fetch_balance()
         except Exception as e:  # noqa: BLE001
             balance = {"error": str(e)[:200]}
-    active = list_active_jobs(provider="outsee")
+    active_snap = queue_snapshot(provider="outsee")
     return {
         "configured": oh.outsee_api_configured(),
         "enabled_image": oh.outsee_api_enabled_for_image(),
@@ -52,8 +52,11 @@ async def outsee_http_status() -> dict[str, Any]:
         "wired_video_models": list(oh.OUTSEE_WIRED_VIDEO_MODELS),
         "key_suffix": (f"…{key[-6:]}" if len(key) >= 6 else None),
         "balance": balance,
-        "queue": len(active),
-        "active_jobs": [j.to_dict() for j in active],
+        "queue": active_snap["total_active"],
+        "running_count": active_snap["running_count"],
+        "waiting_count": active_snap["waiting_count"],
+        "max_parallel": active_snap["max_parallel"],
+        "active_jobs": active_snap["jobs"],
         "hint": (
             "OUTSEE_API_KEY из https://outsee.io/profile — Bearer /api/v1 "
             "(отдельный ключ, не Grsai)"
@@ -160,5 +163,9 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
         )
 
     payload = job.to_dict()
-    payload["queue"] = len(list_active_jobs(provider="outsee"))
+    snap = queue_snapshot(provider="outsee")
+    payload["queue"] = snap["total_active"]
+    payload["waiting_count"] = snap["waiting_count"]
+    payload["running_count"] = snap["running_count"]
+    payload["max_parallel"] = snap["max_parallel"]
     return payload

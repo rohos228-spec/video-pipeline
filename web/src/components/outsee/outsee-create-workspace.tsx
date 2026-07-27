@@ -94,7 +94,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
-  const [enqueueBusy, setEnqueueBusy] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
 
   const settingsQ = useQuery({
@@ -124,10 +123,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     refetchInterval: open ? 2500 : false,
   });
 
-  const queueCount = useMemo(() => {
-    const items = (historyQ.data as HistoryItem[] | undefined) ?? [];
-    return items.filter((h) => h.status === "queued" || h.status === "processing").length;
-  }, [historyQ.data]);
+  const createQueueQ = useQuery({
+    queryKey: ["create-queue"],
+    queryFn: api.createQueue,
+    enabled: open,
+    refetchInterval: open ? 1200 : false,
+  });
+
+  const runningJobs = createQueueQ.data?.running ?? [];
+  const waitingJobs = createQueueQ.data?.waiting ?? [];
+  const queueCount =
+    (createQueueQ.data?.total_active ?? 0) ||
+    runningJobs.length + waitingJobs.length;
+  const maxParallel = createQueueQ.data?.max_parallel ?? 2;
 
   useEffect(() => {
     if (!open || !settingsQ.data || settingsHydrated) return;
@@ -394,12 +402,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     const tick = async () => {
       for (const t of [...trackingJobs]) {
         try {
-          const job =
-            t.provider === "grsai"
-              ? await api.grsaiJob(t.jobId)
-              : await api.outseeJob(t.jobId);
+          const job = await api.createJob(t.jobId);
           if (cancelled) return;
           qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+          qc.invalidateQueries({ queryKey: ["create-queue"] });
           if (job.status === "done") {
             toast.success(`Готово · ${job.model || "файл"}`);
             if (job.history_id) setSelectedId(job.history_id);
@@ -407,7 +413,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           } else if (job.status === "failed") {
             toast.error(job.error || "Генерация не удалась");
             setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
-            qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           }
         } catch {
           /* job may not be ready yet */
@@ -440,58 +445,54 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
         );
       }
-      setEnqueueBusy(true);
-      try {
-        await api.putOutseeCreateSettings(settingsPayload());
-        if (provider === "grsai") {
-          if (!grsaiConfigured) {
-            throw new Error("GRSAI_API_KEY не задан в .env");
-          }
-          const enqueued =
-            mediaType === "video"
-              ? await api.grsaiGenerate({
-                  prompt: text,
-                  model: toGrsaiVideoModel(videoSlug),
-                  aspect,
-                  media: "video",
-                  duration: Number(duration) || 10,
-                  size: soraSize,
-                })
-              : await api.grsaiGenerate({
-                  prompt: text,
-                  model: imageSlug,
-                  aspect,
-                  resolution,
-                  media: "image",
-                });
-          return { ...enqueued, provider: "grsai" as const };
-        }
-        if (!outseeConfigured) {
-          throw new Error("OUTSEE_API_KEY не задан в .env");
+      // Не блокируем кнопку на время чужих jobs — только быстрый enqueue
+      await api.putOutseeCreateSettings(settingsPayload());
+      if (provider === "grsai") {
+        if (!grsaiConfigured) {
+          throw new Error("GRSAI_API_KEY не задан в .env");
         }
         const enqueued =
           mediaType === "video"
-            ? await api.outseeGenerate({
+            ? await api.grsaiGenerate({
                 prompt: text,
-                media: "video",
-                model: videoSlug,
+                model: toGrsaiVideoModel(videoSlug),
                 aspect,
-                resolution: videoResolution,
-                duration: Number(duration) || 5,
-                project_id: projectId,
+                media: "video",
+                duration: Number(duration) || 10,
+                size: soraSize,
               })
-            : await api.outseeGenerate({
+            : await api.grsaiGenerate({
                 prompt: text,
-                media: "image",
                 model: imageSlug,
                 aspect,
                 resolution,
-                project_id: projectId,
+                media: "image",
               });
-        return { ...enqueued, provider: "outsee" as const };
-      } finally {
-        setEnqueueBusy(false);
+        return { ...enqueued, provider: "grsai" as const };
       }
+      if (!outseeConfigured) {
+        throw new Error("OUTSEE_API_KEY не задан в .env");
+      }
+      const enqueued =
+        mediaType === "video"
+          ? await api.outseeGenerate({
+              prompt: text,
+              media: "video",
+              model: videoSlug,
+              aspect,
+              resolution: videoResolution,
+              duration: Number(duration) || 5,
+              project_id: projectId,
+            })
+          : await api.outseeGenerate({
+              prompt: text,
+              media: "image",
+              model: imageSlug,
+              aspect,
+              resolution,
+              project_id: projectId,
+            });
+      return { ...enqueued, provider: "outsee" as const };
     },
     onSuccess: (res) => {
       if (res && typeof res === "object" && "job_id" in res && res.job_id) {
@@ -499,24 +500,34 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           job_id: string;
           history_id: string;
           queue?: number;
+          waiting_count?: number;
+          running_count?: number;
+          status?: string;
+          queue_position?: number | null;
           provider: "grsai" | "outsee";
         };
         if (r.history_id) setSelectedId(r.history_id);
         setTrackingJobs((prev) => [
-          ...prev,
+          ...prev.filter((x) => x.jobId !== r.job_id),
           { provider: r.provider, jobId: r.job_id, historyId: r.history_id },
         ]);
         qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-        toast.message(
-          r.queue && r.queue > 1 ? `В очереди · ${r.queue}` : "В очереди",
-        );
+        qc.invalidateQueries({ queryKey: ["create-queue"] });
+        const wait = r.waiting_count ?? 0;
+        const run = r.running_count ?? 0;
+        if (r.status === "queued" || (r.queue_position != null && r.queue_position > 0)) {
+          toast.message(
+            `Ожидание #${r.queue_position ?? wait} · в работе ${run}/${maxParallel}`,
+          );
+        } else {
+          toast.message(`В работе · ${run}/${maxParallel}`);
+        }
         return;
       }
       toast.success("Шаг запущен");
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
     },
     onError: (e) => {
-      setEnqueueBusy(false);
       toast.error(errorMessageFromUnknown(e));
     },
   });
@@ -594,15 +605,84 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               <span
                 className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black"
                 style={{ backgroundColor: OUTSEE_ACCENT }}
-                title="Активные генерации"
+                title={`В работе ${runningJobs.length}/${maxParallel}, ожидание ${waitingJobs.length}`}
               >
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                очередь {queueCount}
+                {runningJobs.length}·{waitingJobs.length}
               </span>
             )}
             <span className="ml-auto font-mono text-[10px] text-white/30">
               {historyItems.length}
             </span>
+          </div>
+          <div className="space-y-2 border-b border-white/[0.06] px-2 py-2">
+            <div>
+              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+                В работе · {runningJobs.length}/{maxParallel}
+              </div>
+              {runningJobs.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-white/10 px-2 py-2 text-[9px] text-white/30">
+                  нет активных
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {runningJobs.map((j) => (
+                    <button
+                      key={j.job_id}
+                      type="button"
+                      onClick={() => j.history_id && setSelectedId(j.history_id)}
+                      className="flex w-full items-center gap-2 rounded-lg border border-[rgba(209,254,23,0.25)] bg-[rgba(209,254,23,0.06)] px-2 py-1.5 text-left"
+                    >
+                      <Loader2
+                        className="h-3 w-3 shrink-0 animate-spin"
+                        style={{ color: OUTSEE_ACCENT }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-mono text-[10px] text-white/80">
+                          {j.model || j.media}
+                        </div>
+                        <div className="truncate text-[9px] text-white/40">
+                          {j.prompt_preview || "генерация…"}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+                Ожидание · {waitingJobs.length}
+              </div>
+              {waitingJobs.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-white/10 px-2 py-2 text-[9px] text-white/30">
+                  очередь пуста
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {waitingJobs.map((j) => (
+                    <button
+                      key={j.job_id}
+                      type="button"
+                      onClick={() => j.history_id && setSelectedId(j.history_id)}
+                      className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-left"
+                    >
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/10 font-mono text-[9px] text-white/60">
+                        #{j.queue_position ?? "—"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-mono text-[10px] text-white/70">
+                          {j.model || j.media}
+                        </div>
+                        <div className="truncate text-[9px] text-white/35">
+                          {j.prompt_preview || "в очереди"}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap gap-1 border-b border-white/[0.06] p-2">
             {OUTSEE_FEED_TABS.map((t) => (
@@ -638,9 +718,20 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 {historyItems.map((item) => {
                   const active = selected?.id === item.id;
                   const isVideo = item.kind === "video";
+                  const waitJob = waitingJobs.find((j) => j.history_id === item.id);
+                  const runJob = runningJobs.find((j) => j.history_id === item.id);
                   const pending =
-                    item.status === "queued" || item.status === "processing";
+                    item.status === "queued" ||
+                    item.status === "processing" ||
+                    Boolean(waitJob || runJob);
                   const failed = item.status === "failed";
+                  const pendingLabel = waitJob
+                    ? `ожидание #${waitJob.queue_position ?? "—"}`
+                    : runJob || item.status === "processing"
+                      ? "в работе"
+                      : item.status === "queued"
+                        ? "в очереди"
+                        : "генерация";
                   return (
                     <button
                       key={item.id}
@@ -675,7 +766,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           )}
                           {pending && (
                             <span className="text-[9px] font-semibold uppercase tracking-wider text-white/55">
-                              {item.status === "queued" ? "в очереди" : "генерация"}
+                              {pendingLabel}
                             </span>
                           )}
                         </div>
@@ -1043,8 +1134,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     <button
                       type="button"
                       disabled={
-                        enqueueBusy ||
-                        createGenerate.isPending ||
                         !prompt.trim() ||
                         (mediaType === "audio" && projectId == null) ||
                         (mediaType !== "audio" && !canApiDirect)
@@ -1055,10 +1144,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       title={
                         !canApiDirect && mediaType !== "audio"
                           ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
-                          : `Сгенерировать · ${priceLabel}`
+                          : `Сгенерировать (можно несколько параллельно, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
-                      {enqueueBusy || createGenerate.isPending ? (
+                      {createGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           …

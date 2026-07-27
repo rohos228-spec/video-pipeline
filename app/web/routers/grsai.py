@@ -22,7 +22,7 @@ from app.bots.grsai import (
     grsai_key_configured,
     grsai_video_enabled,
 )
-from app.services.create_jobs import enqueue_generation, get_job, list_active_jobs
+from app.services.create_jobs import enqueue_generation, get_job, queue_snapshot
 from app.services.grsai_pricing import TOKEN_USD, quote_generation
 from app.settings import settings
 
@@ -66,7 +66,7 @@ def _model_dict(m: Any) -> dict[str, Any]:
 @router.get("/status")
 async def grsai_status() -> dict[str, Any]:
     key = (settings.grsai_api_key or "").strip()
-    active = list_active_jobs(provider="grsai")
+    active_snap = queue_snapshot(provider="grsai")
     return {
         "enabled": grsai_enabled(),
         "video_enabled": grsai_video_enabled(),
@@ -82,8 +82,11 @@ async def grsai_status() -> dict[str, Any]:
         "wired_video_models": list(GRSAI_WIRED_VIDEO_MODELS),
         "wired_audio_models": list(GRSAI_WIRED_AUDIO_MODELS),
         "token_usd": TOKEN_USD,
-        "queue": len(active),
-        "active_jobs": [j.to_dict() for j in active],
+        "queue": active_snap["total_active"],
+        "running_count": active_snap["running_count"],
+        "waiting_count": active_snap["waiting_count"],
+        "max_parallel": active_snap["max_parallel"],
+        "active_jobs": active_snap["jobs"],
         "audio_note": (
             None
             if GRSAI_WIRED_AUDIO_MODELS
@@ -238,6 +241,10 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
         )
 
     payload = job.to_dict()
-    payload["queue"] = len(list_active_jobs(provider="grsai"))
+    snap = queue_snapshot(provider="grsai")
+    payload["queue"] = snap["total_active"]
+    payload["waiting_count"] = snap["waiting_count"]
+    payload["running_count"] = snap["running_count"]
+    payload["max_parallel"] = snap["max_parallel"]
     payload["quote"] = quote
     return payload

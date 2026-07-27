@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     outsee_http_fallback_cdp: bool = Field(True, alias="OUTSEE_HTTP_FALLBACK_CDP")
     # legacy alias (cookie-era); ignored if OUTSEE_API_KEY set
     outsee_http_api: bool = Field(True, alias="OUTSEE_HTTP_API")
+    # Сколько Create-генераций реально уходят в API одновременно;
+    # остальные ждут (status=queued) до свободного слота.
+    create_max_parallel: int = Field(2, alias="CREATE_MAX_PARALLEL")
 
     # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP
     grsai_api_key: str = Field("", alias="GRSAI_API_KEY")
