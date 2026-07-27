@@ -69,7 +69,33 @@ def test_outputs_zip() -> None:
     assert z.stat().st_size > 10
 
 
-def test_wants_file_return() -> None:
+def test_sniff_png_bin_renames(tmp_path: Path) -> None:
+    from app.services.gpt_api import ensure_correct_extension, sniff_file_extension
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    assert sniff_file_extension(png) == ".png"
+    assert sniff_file_extension(b"\xff\xd8\xff\xe0" + b"x" * 20) == ".jpg"
+    p = tmp_path / "reply.bin"
+    p.write_bytes(png)
+    fixed = ensure_correct_extension(p)
+    assert fixed.name == "reply.png"
+    assert fixed.is_file()
+    assert not p.exists()
+
+
+def test_save_attachment_bin_becomes_png() -> None:
+    s = gw.create_session()
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    att = gw.save_attachment(s["id"], "sand.bin", png)
+    assert att["name"].endswith(".png")
+    assert not att["name"].endswith(".bin")
+
     assert gw._wants_file_return("верни файл обратно")
     assert gw._wants_file_return("send back the file please")
     assert not gw._wants_file_return("что на картинке?")

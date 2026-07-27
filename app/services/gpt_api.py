@@ -651,6 +651,64 @@ _DATA_URI_RE = re.compile(
 )
 
 
+def sniff_file_extension(data: bytes) -> str | None:
+    """Определить расширение по magic bytes (PNG/JPEG/…), не по имени/.bin."""
+    if not data or len(data) < 12:
+        return None
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"%PDF"):
+        return ".pdf"
+    if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06"):
+        head = data[:8000]
+        if b"word/" in head:
+            return ".docx"
+        if b"xl/" in head or b"xl\\" in head:
+            return ".xlsx"
+        return ".zip"
+    return None
+
+
+def ensure_correct_extension(path: Path) -> Path:
+    """Переименовать файл, если расширение .bin/пустое/не совпадает с magic."""
+    if not path.is_file():
+        return path
+    try:
+        size = path.stat().st_size
+        raw = path.read_bytes() if size <= 64_000 else path.read_bytes()[:16_384]
+    except OSError:
+        return path
+    sniffed = sniff_file_extension(raw if len(raw) >= 12 else path.read_bytes())
+    if not sniffed:
+        return path
+    cur = path.suffix.lower()
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    weak = cur in {"", ".bin", ".dat", ".tmp", ".octet-stream"}
+    mismatch_image = sniffed in image_exts and cur not in image_exts and cur != ".jpeg"
+    if not (weak or mismatch_image):
+        return path
+    target = path.with_suffix(sniffed)
+    if target.resolve() == path.resolve():
+        return path
+    n = 2
+    while target.exists():
+        target = path.with_name(f"{path.stem}_{n}{sniffed}")
+        n += 1
+    try:
+        path.rename(target)
+        logger.info("sniff rename {} → {}", path.name, target.name)
+        return target
+    except OSError as e:
+        logger.warning("sniff rename failed {}: {}", path, e)
+        return path
+
+
 def collect_result_urls(text: str) -> list[str]:
     """Достать http(s)-ссылки на контент из ответа модели (картинки/файлы)."""
     if not text:
@@ -695,13 +753,16 @@ def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -
             continue
         if len(data) < 32:
             continue
+        sniffed = sniff_file_extension(data)
+        if sniffed:
+            ext = sniffed
         path = out_dir / f"{prefix}_{i}{ext}"
         n = 2
         while path.exists():
             path = out_dir / f"{prefix}_{i}_{n}{ext}"
             n += 1
         path.write_bytes(data)
-        saved.append(path)
+        saved.append(ensure_correct_extension(path))
     return saved
 
 
@@ -719,7 +780,6 @@ async def materialize_reply_assets(
     saved.extend(extract_data_uri_files(text, out_dir, prefix=f"{prefix}_embed"))
 
     for i, url in enumerate(collect_result_urls(text)[:max_urls]):
-        # пропускаем якоря/доки без явного файла — всё равно пробуем
         url_path = url.split("?")[0]
         suffix = Path(url_path).suffix.lower()
         if suffix not in {
@@ -741,7 +801,6 @@ async def materialize_reply_assets(
             ".webm",
             "",
         }:
-            # неизвестный суффикс — всё равно скачиваем как .bin
             suffix = suffix if suffix and len(suffix) <= 8 else ""
         dest = out_dir / f"{prefix}_url_{i}{suffix or '.bin'}"
         n = 2
@@ -750,21 +809,7 @@ async def materialize_reply_assets(
             n += 1
         try:
             got = await download_content(url, dest, timeout=timeout)
-            # угадать расширение по magic, если .bin
-            if got.suffix.lower() == ".bin" and got.stat().st_size >= 8:
-                head = got.read_bytes()[:16]
-                new_suf = None
-                if head.startswith(b"\x89PNG"):
-                    new_suf = ".png"
-                elif head.startswith(b"\xff\xd8\xff"):
-                    new_suf = ".jpg"
-                elif head.startswith(b"PK"):
-                    new_suf = ".zip"
-                if new_suf:
-                    renamed = got.with_suffix(new_suf)
-                    if not renamed.exists():
-                        got.rename(renamed)
-                        got = renamed
+            got = ensure_correct_extension(got)
             saved.append(got)
         except Exception as e:  # noqa: BLE001
             logger.warning("materialize_reply_assets: skip {}: {}", url[:120], e)

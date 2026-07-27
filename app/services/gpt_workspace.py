@@ -193,6 +193,8 @@ def get_session(session_id: str) -> dict[str, Any]:
         "created_at": meta.get("created_at"),
         "updated_at": meta.get("updated_at"),
         "status": meta.get("status") or "idle",
+        "phase": meta.get("phase") or "",
+        "phase_detail": meta.get("phase_detail") or "",
         "messages": messages if isinstance(messages, list) else [],
         "attachments": attachments,
         "outputs": outputs,
@@ -221,6 +223,8 @@ def _safe_filename(name: str) -> str:
 
 
 def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, Any]:
+    from app.services.gpt_api import sniff_file_extension
+
     d = _session_dir(session_id)
     if not d.is_dir() or not (d / "meta.json").is_file():
         raise FileNotFoundError(f"сессия не найдена: {session_id}")
@@ -229,6 +233,11 @@ def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, An
     att = d / "attachments"
     att.mkdir(exist_ok=True)
     safe = _safe_filename(filename)
+    # Если имя .bin / без расширения — восстановить по magic (PNG→.png)
+    sniffed = sniff_file_extension(data)
+    suf = Path(safe).suffix.lower()
+    if sniffed and suf in {"", ".bin", ".dat", ".tmp", ".octet-stream"}:
+        safe = f"{Path(safe).stem}{sniffed}"
     path = att / safe
     # уникальность
     if path.exists():
@@ -263,6 +272,8 @@ def delete_attachment(session_id: str, name: str) -> None:
 
 def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
     """Скопировать вложение в outputs/ — «вернуть файл» без генерации моделью."""
+    from app.services.gpt_api import ensure_correct_extension
+
     d = _session_dir(session_id)
     if not d.is_dir() or not (d / "meta.json").is_file():
         raise FileNotFoundError(f"сессия не найдена: {session_id}")
@@ -271,7 +282,9 @@ def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
         raise FileNotFoundError(f"нет вложения {name}")
     out_dir = d / "outputs"
     out_dir.mkdir(exist_ok=True)
-    safe = _safe_filename(src.name)
+    # Имя с корректным расширением (если исходник .bin, а внутри PNG)
+    fixed_src = ensure_correct_extension(src)
+    safe = _safe_filename(fixed_src.name)
     dest = out_dir / safe
     if dest.exists():
         stem, suf = Path(safe).stem, Path(safe).suffix
@@ -282,7 +295,8 @@ def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
                 dest = cand
                 break
             i += 1
-    shutil.copy2(src, dest)
+    shutil.copy2(fixed_src, dest)
+    dest = ensure_correct_extension(dest)
     meta = _read_json(d / "meta.json", {})
     meta["updated_at"] = _now()
     _write_json(d / "meta.json", meta)
@@ -402,6 +416,8 @@ async def ask(
 
     meta = _read_json(d / "meta.json", {})
     meta["status"] = "running"
+    meta["phase"] = "accepted"
+    meta["phase_detail"] = "Запрос принят"
     meta["updated_at"] = _now()
     _write_json(d / "meta.json", meta)
 
@@ -437,6 +453,8 @@ async def ask(
             )
             meta = _read_json(d / "meta.json", {})
             meta["status"] = "idle"
+            meta["phase"] = "done"
+            meta["phase_detail"] = "Готово (возврат файлов)"
             meta["updated_at"] = _now()
             _write_json(d / "meta.json", meta)
             logger.info(
@@ -456,6 +474,12 @@ async def ask(
                 f"{', '.join(saved_files)}. Не реконструируй байты.]"
             )
 
+        meta = _read_json(d / "meta.json", {})
+        meta["phase"] = "thinking"
+        meta["phase_detail"] = "GPT думает / генерирует ответ (vision может занять минуты)…"
+        meta["updated_at"] = _now()
+        _write_json(d / "meta.json", meta)
+
         reply = await gpt.ask_with_files(
             ask_text,
             files,
@@ -467,13 +491,19 @@ async def ask(
         )
         reply = (reply or "").strip()
 
+        meta = _read_json(d / "meta.json", {})
+        meta["phase"] = "saving"
+        meta["phase_detail"] = "Сохраняю ответ и файлы…"
+        meta["updated_at"] = _now()
+        _write_json(d / "meta.json", meta)
+
         # Текст ответа на диск (для zip), в пузыре не дублируем reply_*.txt
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
 
         # URL / data-URI из ответа → только НОВЫЕ артефакты модели
         try:
-            from app.services.gpt_api import materialize_reply_assets
+            from app.services.gpt_api import ensure_correct_extension, materialize_reply_assets
 
             assets = await materialize_reply_assets(
                 reply,
@@ -482,8 +512,15 @@ async def ask(
                 timeout=90.0,
             )
             for p in assets:
+                p = ensure_correct_extension(p)
                 if p.is_file() and p.name not in saved_files:
                     saved_files.append(p.name)
+            # Добить любые .bin в outputs этой сессии
+            for p in out_dir.iterdir():
+                if p.is_file() and p.suffix.lower() in {".bin", ".dat"}:
+                    fixed = ensure_correct_extension(p)
+                    if fixed.name not in saved_files and fixed.suffix.lower() != ".bin":
+                        saved_files.append(fixed.name)
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 
@@ -524,6 +561,8 @@ async def ask(
         )
         meta = _read_json(d / "meta.json", {})
         meta["status"] = "idle"
+        meta["phase"] = "done"
+        meta["phase_detail"] = "Готово"
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
         logger.info(
@@ -538,6 +577,8 @@ async def ask(
     except Exception as e:
         meta = _read_json(d / "meta.json", {})
         meta["status"] = "error"
+        meta["phase"] = "error"
+        meta["phase_detail"] = str(e)[:200]
         meta["last_error"] = str(e)[:500]
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)

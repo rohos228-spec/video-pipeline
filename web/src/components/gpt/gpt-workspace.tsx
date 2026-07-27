@@ -58,9 +58,13 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     queryKey: ["gpt-workspace", "session", sessionId],
     queryFn: () => api.gptGetSession(sessionId!),
     enabled: open && !!sessionId,
+    refetchInterval: (q) =>
+      q.state.data?.status === "running" ? 1_500 : false,
   });
 
   const session: GptWorkspaceSession | undefined = sessionQ.data;
+
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -96,7 +100,15 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       const msg = draft.trim();
       if (!msg) throw new Error("Введите сообщение");
       setDraft("");
-      return api.gptAsk(sid, msg, withAttachments);
+      // пока ждём — опрашиваем phase
+      const poll = window.setInterval(() => {
+        void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
+      }, 1500);
+      try {
+        return await api.gptAsk(sid, msg, withAttachments);
+      } finally {
+        window.clearInterval(poll);
+      }
     },
     onSuccess: (s) => {
       setSessionId(s.id);
@@ -127,6 +139,24 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   });
 
   const busy = askMut.isPending || session?.status === "running";
+  const phaseLabel =
+    session?.phase_detail ||
+    (busy ? "GPT думает / ждём ответ…" : "");
+
+  useEffect(() => {
+    if (!busy) {
+      setElapsedSec(0);
+      return;
+    }
+    setElapsedSec(0);
+    const t = window.setInterval(() => setElapsedSec((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
+
+  useEffect(() => {
+    if (!busy) return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [busy, phaseLabel]);
 
   const sessions = sessionsQ.data?.sessions ?? [];
 
@@ -221,6 +251,24 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
 
         {/* main */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {busy && (
+            <div
+              className="flex shrink-0 items-center gap-3 border-b border-[rgba(209,254,23,0.25)] bg-[rgba(209,254,23,0.08)] px-4 py-2.5"
+              role="status"
+              aria-live="polite"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" style={{ color: ACCENT }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-white/90">
+                  {phaseLabel || "GPT думает…"}
+                </div>
+                <div className="mt-0.5 font-mono text-[10px] text-white/45">
+                  идёт обдумывание · {elapsedSec} с
+                  {elapsedSec >= 30 ? " · vision/генерация может занять несколько минут" : ""}
+                </div>
+              </div>
+            </div>
+          )}
           {/* messages */}
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             {!session && (
@@ -243,7 +291,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
             {busy && (
               <div className="mb-4 flex items-center gap-2 text-xs text-white/50">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: ACCENT }} />
-                GPT обрабатывает…
+                {phaseLabel || "GPT обрабатывает…"} · {elapsedSec} с
               </div>
             )}
             <div ref={bottomRef} />
