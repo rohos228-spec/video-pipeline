@@ -652,33 +652,167 @@ _DATA_URI_RE = re.compile(
 
 
 def sniff_file_extension(data: bytes) -> str | None:
-    """Определить расширение по magic bytes (PNG/JPEG/…), не по имени/.bin."""
-    if not data or len(data) < 12:
+    """Определить расширение по magic bytes / сигнатурам (не по имени/.bin)."""
+    if not data:
+        return None
+    # JPEG: достаточно 3 байт; остальным обычно хватает 12
+    if len(data) >= 3 and data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if len(data) < 8:
         return None
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
     if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
         return ".gif"
-    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return ".webp"
-    if data.startswith(b"BM") and len(data) >= 2:
+    if data.startswith(b"BM"):
         return ".bmp"
+    # AVIF / HEIC (ISO BMFF)
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in (b"avif", b"avis"):
+            return ".avif"
+        if brand in (b"heic", b"heif", b"mif1", b"msf1"):
+            return ".heic"
     if data.startswith(b"%PDF"):
         return ".pdf"
-    if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06"):
+    if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
         head = data[:8000]
         if b"word/" in head:
             return ".docx"
         if b"xl/" in head or b"xl\\" in head:
             return ".xlsx"
         return ".zip"
+    # ICO
+    if len(data) >= 4 and data[:4] == b"\x00\x00\x01\x00":
+        return ".ico"
+    # SVG / HTML (текст)
+    head = data.lstrip()[:800].lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+        return ".svg"
+    if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+        return ".html"
     return None
 
 
-_WEAK_SUFFIXES = frozenset({"", ".bin", ".dat", ".tmp", ".octet-stream", ".unknown"})
-_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
+def extension_from_content_type(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+    ct = content_type.split(";")[0].strip().lower()
+    return {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/bmp": ".bmp",
+        "image/svg+xml": ".svg",
+        "image/avif": ".avif",
+        "image/heic": ".heic",
+        "image/heif": ".heic",
+        "image/x-icon": ".ico",
+        "image/vnd.microsoft.icon": ".ico",
+        "application/pdf": ".pdf",
+        "application/zip": ".zip",
+        "application/json": ".json",
+        "text/plain": ".txt",
+        "text/html": ".html",
+        "text/csv": ".csv",
+        "text/markdown": ".md",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    }.get(ct)
+
+
+def maybe_decode_base64_image(data: bytes) -> tuple[bytes, str | None]:
+    """Если тело — base64 PNG/JPEG/… (часто так отдают «файлы»), декодировать."""
+    import base64
+    import re
+
+    if not data or len(data) < 32:
+        return data, None
+    sample = data.lstrip()[:32]
+    # типичные префиксы base64 картинок
+    if not (
+        sample.startswith(b"iVBOR")  # PNG
+        or sample.startswith(b"/9j/")  # JPEG
+        or sample.startswith(b"R0lGOD")  # GIF
+        or sample.startswith(b"UklGR")  # WEBP
+        or sample.startswith(b"AAAA")  # иногда AVIF/mp4
+    ):
+        return data, None
+    # только printable base64 + whitespace
+    if any(b < 9 or (13 < b < 32) for b in data[:4000]):
+        return data, None
+    raw = re.sub(rb"\s+", b"", data.strip())
+    if len(raw) < 32 or len(raw) % 4 not in (0,):  # pad ok
+        # try pad
+        raw = raw + b"=" * ((4 - len(raw) % 4) % 4)
+    try:
+        decoded = base64.b64decode(raw, validate=False)
+    except Exception:  # noqa: BLE001
+        return data, None
+    if len(decoded) < 32:
+        return data, None
+    ext = sniff_file_extension(decoded)
+    if ext:
+        return decoded, ext
+    return data, None
+
+
+def resolve_bytes_extension(
+    data: bytes,
+    *,
+    content_type: str | None = None,
+    url: str | None = None,
+    fallback: str = ".dat",
+) -> str:
+    """Расширение для байтов. НИКОГДА не возвращает .bin."""
+    sniffed = sniff_file_extension(data)
+    if sniffed:
+        return sniffed
+    from_ct = extension_from_content_type(content_type)
+    if from_ct:
+        return from_ct
+    if url:
+        suf = Path(url.split("?")[0]).suffix.lower()
+        if suf in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".bmp",
+            ".svg",
+            ".avif",
+            ".heic",
+            ".ico",
+            ".pdf",
+            ".zip",
+            ".xlsx",
+            ".xls",
+            ".txt",
+            ".md",
+            ".csv",
+            ".json",
+            ".html",
+            ".mp4",
+            ".webm",
+        }:
+            return ".jpg" if suf == ".jpeg" else suf
+    # text-ish
+    if data and all(b in b"\t\n\r\f\b" or 32 <= b < 127 or b >= 160 for b in data[:2000]):
+        return ".txt"
+    return fallback if fallback != ".bin" else ".dat"
+
+
+_WEAK_SUFFIXES = frozenset(
+    {"", ".bin", ".dat", ".tmp", ".octet-stream", ".unknown", ".download", ".file"}
+)
+_IMAGE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif", ".heic", ".ico"}
+)
 _SNIFF_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -686,10 +820,16 @@ _SNIFF_MIME = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+    ".ico": "image/x-icon",
     ".pdf": "application/pdf",
     ".zip": "application/zip",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".html": "text/html",
+    ".txt": "text/plain",
 }
 
 
@@ -722,8 +862,13 @@ def suggested_name_and_mime(path: Path) -> tuple[str, str]:
 
     head = _read_magic_head(path)
     sniffed = sniff_file_extension(head)
+    if not sniffed and path.suffix.lower() in _WEAK_SUFFIXES:
+        sniffed = resolve_bytes_extension(head or b"\x00", fallback=".dat")
     name = path.name
-    if sniffed and needs_extension_fix(path, sniffed):
+    if sniffed and (
+        needs_extension_fix(path, sniffed)
+        or path.suffix.lower() in {".bin", ".download", ".octet-stream"}
+    ):
         name = f"{path.stem}{sniffed}"
     mime, _ = mimetypes.guess_type(name)
     if not mime and sniffed:
@@ -734,26 +879,103 @@ def suggested_name_and_mime(path: Path) -> tuple[str, str]:
 
 
 def ensure_correct_extension(path: Path) -> Path:
-    """Переименовать файл, если расширение .bin/пустое/не совпадает с magic."""
+    """Переименовать файл по magic/base64; .bin запрещены — уйдут в реальный тип или .dat."""
     if not path.is_file():
         return path
-    sniffed = sniff_file_extension(_read_magic_head(path))
-    if not needs_extension_fix(path, sniffed) or not sniffed:
-        return path
-    target = path.with_suffix(sniffed)
-    if target.resolve() == path.resolve():
-        return path
-    n = 2
-    while target.exists():
-        target = path.with_name(f"{path.stem}_{n}{sniffed}")
-        n += 1
     try:
-        path.rename(target)
-        logger.info("sniff rename {} → {}", path.name, target.name)
-        return target
-    except OSError as e:
-        logger.warning("sniff rename failed {}: {}", path, e)
+        raw = path.read_bytes()
+    except OSError:
         return path
+    decoded, b64_ext = maybe_decode_base64_image(raw)
+    if b64_ext and decoded is not raw:
+        try:
+            path.write_bytes(decoded)
+            raw = decoded
+        except OSError as e:
+            logger.warning("base64 unwrap write failed {}: {}", path, e)
+    sniffed = sniff_file_extension(raw) or b64_ext
+    if not sniffed and path.suffix.lower() in _WEAK_SUFFIXES:
+        # всё равно убрать .bin
+        sniffed = resolve_bytes_extension(raw, fallback=".dat")
+    if not sniffed:
+        return path
+    if not needs_extension_fix(path, sniffed) and path.suffix.lower() not in {
+        ".bin",
+        ".download",
+        ".octet-stream",
+    }:
+        return path
+    # всегда чиним .bin даже если sniffed == fallback .dat
+    if path.suffix.lower() in {".bin", ".download", ".octet-stream"} or needs_extension_fix(
+        path, sniffed
+    ):
+        target = path.with_suffix(sniffed)
+        if target.resolve() == path.resolve():
+            return path
+        n = 2
+        while target.exists():
+            target = path.with_name(f"{path.stem}_{n}{sniffed}")
+            n += 1
+        try:
+            path.rename(target)
+            logger.info("sniff rename {} → {}", path.name, target.name)
+            return target
+        except OSError as e:
+            logger.warning("sniff rename failed {}: {}", path, e)
+            return path
+    return path
+
+
+def finalize_downloaded_file(
+    path: Path,
+    *,
+    content_type: str | None = None,
+    url: str | None = None,
+) -> Path:
+    """После HTTP-download: decode base64 → sniff/CT/url → имя без .bin."""
+    if not path.is_file():
+        return path
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return path
+    decoded, b64_ext = maybe_decode_base64_image(raw)
+    if b64_ext and decoded is not raw:
+        try:
+            path.write_bytes(decoded)
+            raw = decoded
+        except OSError:
+            pass
+    ext = resolve_bytes_extension(
+        raw, content_type=content_type, url=url, fallback=".dat"
+    )
+    if b64_ext:
+        ext = b64_ext
+    cur = path.suffix.lower()
+    if cur == ext:
+        return path
+    # слабое имя или несовпадение с картинкой / принудительно убрать .bin
+    if cur in _WEAK_SUFFIXES or cur == ".bin" or (
+        ext in _IMAGE_SUFFIXES and cur not in _IMAGE_SUFFIXES
+    ):
+        target = path.with_suffix(ext)
+        n = 2
+        while target.exists() and target.resolve() != path.resolve():
+            target = path.with_name(f"{path.stem}_{n}{ext}")
+            n += 1
+        if target.resolve() != path.resolve():
+            try:
+                path.rename(target)
+                logger.info(
+                    "download finalize {} → {} (ct={})",
+                    path.name,
+                    target.name,
+                    content_type,
+                )
+                return target
+            except OSError as e:
+                logger.warning("download finalize rename failed {}: {}", path, e)
+    return ensure_correct_extension(path)
 
 
 def collect_result_urls(text: str) -> list[str]:
@@ -793,7 +1015,7 @@ def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -
             "application/zip": ".zip",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
             "application/vnd.ms-excel": ".xls",
-        }.get(mime, ".bin")
+        }.get(mime, ".dat")
         try:
             data = base64.b64decode(raw_b64, validate=False)
         except Exception:  # noqa: BLE001
@@ -827,36 +1049,18 @@ async def materialize_reply_assets(
     saved.extend(extract_data_uri_files(text, out_dir, prefix=f"{prefix}_embed"))
 
     for i, url in enumerate(collect_result_urls(text)[:max_urls]):
-        url_path = url.split("?")[0]
-        suffix = Path(url_path).suffix.lower()
-        if suffix not in {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-            ".gif",
-            ".xlsx",
-            ".xls",
-            ".xlsm",
-            ".txt",
-            ".md",
-            ".csv",
-            ".json",
-            ".pdf",
-            ".zip",
-            ".mp4",
-            ".webm",
-            "",
-        }:
-            suffix = suffix if suffix and len(suffix) <= 8 else ""
-        dest = out_dir / f"{prefix}_url_{i}{suffix or '.bin'}"
+        # имя временное — финальное расширение после Content-Type/magic (без .bin)
+        dest = out_dir / f"{prefix}_url_{i}.download"
         n = 2
         while dest.exists():
-            dest = out_dir / f"{prefix}_url_{i}_{n}{suffix or '.bin'}"
+            dest = out_dir / f"{prefix}_url_{i}_{n}.download"
             n += 1
         try:
             got = await download_content(url, dest, timeout=timeout)
             got = ensure_correct_extension(got)
+            # на всякий случай ещё раз вычистить .bin
+            if got.suffix.lower() == ".bin":
+                got = finalize_downloaded_file(got, url=url)
             saved.append(got)
         except Exception as e:  # noqa: BLE001
             logger.warning("materialize_reply_assets: skip {}: {}", url[:120], e)
@@ -866,8 +1070,9 @@ async def materialize_reply_assets(
 async def download_content(
     url: str, out_path: Path, *, timeout: float = 180.0
 ) -> Path:
-    """Скачать файл по URL в out_path (картинки/видео/xlsx из ответа GPT)."""
+    """Скачать файл по URL; расширение — Content-Type + magic, никогда .bin."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    content_type: str | None = None
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             r = await client.get(url)
@@ -876,6 +1081,7 @@ async def download_content(
                     f"download HTTP {r.status_code}: {url}",
                     context={"status_code": r.status_code, "url": url},
                 )
+            content_type = r.headers.get("content-type")
             out_path.write_bytes(r.content)
     except httpx.HTTPError as e:
         raise GptApiError(
@@ -884,7 +1090,7 @@ async def download_content(
         ) from e
     if not out_path.is_file() or out_path.stat().st_size < 1:
         raise GptApiError("download: пустой файл", context={"url": url, "path": str(out_path)})
-    return ensure_correct_extension(out_path)
+    return finalize_downloaded_file(out_path, content_type=content_type, url=url)
 
 
 def copy_content(src: Path, out_path: Path) -> Path:

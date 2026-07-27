@@ -93,6 +93,11 @@ def _file_entry(path: Path) -> dict[str, Any]:
         ".jpeg",
         ".webp",
         ".gif",
+        ".bmp",
+        ".svg",
+        ".avif",
+        ".heic",
+        ".ico",
     }:
         kind = "image"
     return {
@@ -219,8 +224,8 @@ def get_session(session_id: str) -> dict[str, Any]:
 
 
 def _normalize_session_files(d: Path) -> dict[str, str]:
-    """Переименовать .bin/слабые расширения по magic. {old_name: new_name}."""
-    from app.services.gpt_api import ensure_correct_extension
+    """Переименовать .bin/слабые расширения по magic/CT. {old_name: new_name}."""
+    from app.services.gpt_api import ensure_correct_extension, finalize_downloaded_file
 
     renames: dict[str, str] = {}
     for sub in ("attachments", "outputs"):
@@ -231,7 +236,10 @@ def _normalize_session_files(d: Path) -> dict[str, str]:
             if not p.is_file():
                 continue
             old = p.name
-            fixed = ensure_correct_extension(p)
+            if p.suffix.lower() in {".bin", ".download", ".octet-stream", ".dat", ".tmp"}:
+                fixed = finalize_downloaded_file(p)
+            else:
+                fixed = ensure_correct_extension(p)
             if fixed.name != old:
                 renames[old] = fixed.name
     return renames
@@ -282,7 +290,7 @@ def _safe_filename(name: str) -> str:
 
 
 def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, Any]:
-    from app.services.gpt_api import sniff_file_extension
+    from app.services.gpt_api import resolve_bytes_extension, sniff_file_extension
 
     d = _session_dir(session_id)
     if not d.is_dir() or not (d / "meta.json").is_file():
@@ -292,10 +300,14 @@ def save_attachment(session_id: str, filename: str, data: bytes) -> dict[str, An
     att = d / "attachments"
     att.mkdir(exist_ok=True)
     safe = _safe_filename(filename)
-    # Если имя .bin / без расширения — восстановить по magic (PNG→.png)
-    sniffed = sniff_file_extension(data)
+    # Никогда не оставляем .bin — magic / fallback .dat
+    sniffed = sniff_file_extension(data) or resolve_bytes_extension(data, fallback=".dat")
     suf = Path(safe).suffix.lower()
-    if sniffed and suf in {"", ".bin", ".dat", ".tmp", ".octet-stream"}:
+    if suf in {"", ".bin", ".dat", ".tmp", ".octet-stream", ".download"} or (
+        sniffed.startswith(".")
+        and sniffed in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif"}
+        and suf not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif"}
+    ):
         safe = f"{Path(safe).stem}{sniffed}"
     path = att / safe
     # уникальность
@@ -564,12 +576,23 @@ async def ask(
                 p = ensure_correct_extension(p)
                 if p.is_file() and p.name not in saved_files:
                     saved_files.append(p.name)
-            # Добить любые .bin в outputs этой сессии
-            for p in out_dir.iterdir():
-                if p.is_file() and p.suffix.lower() in {".bin", ".dat"}:
-                    fixed = ensure_correct_extension(p)
-                    if fixed.name not in saved_files and fixed.suffix.lower() != ".bin":
-                        saved_files.append(fixed.name)
+            # Добить любые .bin/.download в outputs этой сессии
+            for p in list(out_dir.iterdir()):
+                if p.is_file() and p.suffix.lower() in {
+                    ".bin",
+                    ".dat",
+                    ".download",
+                    ".octet-stream",
+                }:
+                    from app.services.gpt_api import finalize_downloaded_file
+
+                    fixed = finalize_downloaded_file(p)
+                    if fixed.name not in saved_files and fixed.suffix.lower() not in {
+                        ".bin",
+                        ".download",
+                    }:
+                        if fixed.name not in saved_files:
+                            saved_files.append(fixed.name)
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 

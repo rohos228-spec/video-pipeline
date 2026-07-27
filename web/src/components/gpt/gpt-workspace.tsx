@@ -60,7 +60,7 @@ function isImageFile(f: GptWorkspaceFile | undefined, fallbackName?: string): bo
   if (f?.kind === "image") return true;
   if (f?.mime?.startsWith("image/")) return true;
   const n = f ? fileLabel(f) : fallbackName || "";
-  return /\.(png|jpe?g|webp|gif)$/i.test(n);
+  return /\.(png|jpe?g|webp|gif|bmp|svg|avif|heic|ico)$/i.test(n);
 }
 
 function downloadHref(f: GptWorkspaceFile): string {

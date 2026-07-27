@@ -69,6 +69,44 @@ def test_outputs_zip() -> None:
     assert z.stat().st_size > 10
 
 
+def test_finalize_url_download_never_bin(tmp_path: Path) -> None:
+    from app.services.gpt_api import finalize_downloaded_file, maybe_decode_base64_image
+    import base64
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    p = tmp_path / "gpt_20260727_110549_url_0.bin"
+    p.write_bytes(png)
+    got = finalize_downloaded_file(p, content_type="image/png")
+    assert got.suffix == ".png"
+    assert got.name.endswith(".png")
+    assert not p.exists()
+
+    # Content-Type alone (байты неизвестны)
+    p2 = tmp_path / "url_1.bin"
+    p2.write_bytes(b"\x00" * 200)
+    got2 = finalize_downloaded_file(p2, content_type="image/webp")
+    assert got2.suffix == ".webp"
+
+    # base64 PNG в теле
+    p3 = tmp_path / "url_2.bin"
+    p3.write_bytes(base64.b64encode(png))
+    dec, ext = maybe_decode_base64_image(p3.read_bytes())
+    assert ext == ".png"
+    got3 = finalize_downloaded_file(p3)
+    assert got3.suffix == ".png"
+    assert got3.read_bytes().startswith(b"\x89PNG")
+
+    # неизвестное → .dat, не .bin
+    p4 = tmp_path / "url_3.bin"
+    p4.write_bytes(bytes(range(256)) * 4)
+    got4 = finalize_downloaded_file(p4)
+    assert got4.suffix == ".dat"
+    assert got4.suffix != ".bin"
+
+
 def test_sniff_png_bin_renames(tmp_path: Path) -> None:
     from app.services.gpt_api import (
         ensure_correct_extension,
