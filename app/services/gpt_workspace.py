@@ -374,10 +374,10 @@ async def ask(
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         saved_files: list[str] = []
 
-        # Текст ответа всегда сохраняем
+        # Текст ответа всегда на диск (для zip), но в пузыре не дублируем reply_*.txt
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
-        saved_files.append(reply_path.name)
+        saved_files: list[str] = []
 
         # URL / data-URI из ответа → файлы в outputs (картинки, xlsx, pdf, …)
         try:
@@ -395,33 +395,26 @@ async def ask(
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 
-        # Попробовать materialize xlsx из TSV-ответа (пайплайн-стиль)
-        if has_xlsx:
+        # xlsx только если реально ждали таблицу (вложение xlsx или TSV «# Лист:» в ответе)
+        looks_like_xlsx = has_xlsx or ("# Лист:" in reply) or ("# Лист：" in reply)
+        if looks_like_xlsx:
             try:
                 xlsx_path = out_dir / f"result_{ts}.xlsx"
                 await gpt.download_attachment_from_last_reply(
                     xlsx_path,
-                    timeout=120,
+                    timeout=120 if has_xlsx else 60,
                     fallback_text=reply,
                     allow_reply_text_fallback=False,
                 )
                 if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
                     if xlsx_path.name not in saved_files:
                         saved_files.append(xlsx_path.name)
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            try:
-                xlsx_path = out_dir / f"result_{ts}.xlsx"
-                await gpt.download_attachment_from_last_reply(
-                    xlsx_path,
-                    timeout=60,
-                    fallback_text=reply,
-                    allow_reply_text_fallback=False,
-                )
-                if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
-                    if xlsx_path.name not in saved_files:
-                        saved_files.append(xlsx_path.name)
+                elif xlsx_path.exists():
+                    # пустышка — не оставляем
+                    try:
+                        xlsx_path.unlink()
+                    except OSError:
+                        pass
             except Exception:  # noqa: BLE001
                 pass
 

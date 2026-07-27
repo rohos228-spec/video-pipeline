@@ -543,7 +543,10 @@ function MessageBubble({
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const attNames = message.attachment_names ?? [];
-  const outNames = message.output_files ?? [];
+  // reply_*.txt = копия текста ответа (уже в пузыре) — не показываем как «файл»
+  const outNames = (message.output_files ?? []).filter(
+    (n) => !/^reply_\d/.test(n),
+  );
   const isImage = (n: string) => /\.(png|jpe?g|webp|gif)$/i.test(n);
 
   return (
@@ -563,10 +566,11 @@ function MessageBubble({
           <button
             type="button"
             onClick={onSaveVoiceover}
-            className="inline-flex items-center gap-1 text-[10px] text-white/40 hover:text-white"
+            className="inline-flex items-center gap-1 text-[10px] text-white/35 hover:text-white"
+            title="Сохранить этот ответ в проект как voiceover.txt (для озвучки)"
           >
             <Save className="h-3 w-3" />
-            voiceover
+            → voiceover.txt
           </button>
         )}
       </div>
@@ -611,7 +615,11 @@ function MessageBubble({
         </div>
       )}
       {outNames.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-2">
+          <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/30">
+            Файлы из ответа
+          </div>
+          <div className="flex flex-wrap gap-1.5">
           {outNames.map((name) => {
             const f = filesByName.get(name);
             const href = f?.download_url || f?.url;
@@ -636,6 +644,7 @@ function MessageBubble({
               </span>
             );
           })}
+          </div>
         </div>
       )}
     </div>
