@@ -1022,6 +1022,10 @@ export const api = {
         project_slug: string | null;
         frame_id: number | null;
         prompt: string | null;
+        status?: string | null;
+        job_id?: string | null;
+        error?: string | null;
+        model?: string | null;
       }[]
     >(`/api/outsee-create/history?kind=${kind}`),
 
@@ -1117,13 +1121,16 @@ export const api = {
   }) =>
     http<{
       ok: boolean;
+      job_id: string;
+      status: string;
       media: string;
       model: string;
       path: string;
-      preview_url: string;
+      history_id: string;
+      preview_url?: string | null;
       raw_url?: string | null;
-      bytes: number;
-      sidecar?: string;
+      bytes?: number;
+      queue?: number;
       quote?: {
         tokens: number;
         usd: number;
@@ -1133,6 +1140,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  grsaiJob: (jobId: string) =>
+    http<{
+      job_id: string;
+      status: string;
+      media: string;
+      model: string;
+      path: string;
+      history_id: string;
+      preview_url?: string | null;
+      error?: string | null;
+      bytes?: number;
+    }>(`/api/grsai/jobs/${encodeURIComponent(jobId)}`),
 
   outseeStatus: () =>
     http<{
@@ -1146,6 +1166,7 @@ export const api = {
       base_url?: string;
       key_suffix?: string | null;
       balance?: Record<string, unknown> | null;
+      queue?: number;
       hint: string;
     }>(`/api/outsee/status`),
 
@@ -1163,21 +1184,39 @@ export const api = {
   }) =>
     http<{
       ok: boolean;
+      job_id: string;
+      status: string;
       media: string;
       model: string | null;
       path: string;
-      preview_url: string;
+      history_id: string;
+      preview_url?: string | null;
       raw_url?: string | null;
       gen_id?: string | null;
-      provider: string;
+      provider?: string;
+      queue?: number;
+      error?: string | null;
     }>(
       `/api/outsee/generate`,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
-      900_000,
+      60_000,
     ),
+
+  outseeJob: (jobId: string) =>
+    http<{
+      job_id: string;
+      status: string;
+      media: string;
+      model: string;
+      path: string;
+      history_id: string;
+      preview_url?: string | null;
+      error?: string | null;
+      bytes?: number;
+    }>(`/api/outsee/jobs/${encodeURIComponent(jobId)}`),
 
   wizardCatalog: () =>
     http<{

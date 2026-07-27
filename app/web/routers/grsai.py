@@ -22,7 +22,7 @@ from app.bots.grsai import (
     grsai_key_configured,
     grsai_video_enabled,
 )
-from app.services.generation_storage import build_generation_path, write_sidecar
+from app.services.create_jobs import enqueue_generation, get_job, list_active_jobs
 from app.services.grsai_pricing import TOKEN_USD, quote_generation
 from app.settings import settings
 
@@ -66,6 +66,7 @@ def _model_dict(m: Any) -> dict[str, Any]:
 @router.get("/status")
 async def grsai_status() -> dict[str, Any]:
     key = (settings.grsai_api_key or "").strip()
+    active = list_active_jobs(provider="grsai")
     return {
         "enabled": grsai_enabled(),
         "video_enabled": grsai_video_enabled(),
@@ -81,6 +82,8 @@ async def grsai_status() -> dict[str, Any]:
         "wired_video_models": list(GRSAI_WIRED_VIDEO_MODELS),
         "wired_audio_models": list(GRSAI_WIRED_AUDIO_MODELS),
         "token_usd": TOKEN_USD,
+        "queue": len(active),
+        "active_jobs": [j.to_dict() for j in active],
         "audio_note": (
             None
             if GRSAI_WIRED_AUDIO_MODELS
@@ -130,6 +133,14 @@ async def grsai_quote_get(
     )
 
 
+@router.get("/jobs/{job_id}")
+async def grsai_job_status(job_id: str) -> dict[str, Any]:
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job.to_dict()
+
+
 @router.post("/generate")
 async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
     if not grsai_key_configured():
@@ -142,16 +153,24 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
         "duration": body.duration,
         "size": body.size,
     }
+    quote: dict[str, Any] | None = None
 
-    try:
-        if media == "video":
-            model = (
-                body.model
-                or getattr(settings, "grsai_default_video_model", None)
-                or "sora-2"
-            ).strip()
-            out_path = build_generation_path(media="video", model=model, ext=".mp4")
-            result = await generate_video(
+    if media == "video":
+        model = (
+            body.model
+            or getattr(settings, "grsai_default_video_model", None)
+            or "sora-2"
+        ).strip()
+        quote = quote_generation(
+            media="video",
+            model=model,
+            resolution=body.resolution,
+            duration=body.duration,
+            size=body.size,
+        )
+
+        async def run(out_path):
+            return await generate_video(
                 body.prompt,
                 out_path,
                 model_slug=model,
@@ -160,14 +179,45 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
                 size=body.size,
                 timeout=900,
             )
-        elif media == "audio":
-            model = (body.model or "audio").strip()
-            out_path = build_generation_path(media="audio", model=model, ext=".mp3")
-            result = await generate_audio(body.prompt, out_path, model_slug=model)
-        else:
-            model = (body.model or settings.grsai_default_image_model or "gpt-image-2").strip()
-            out_path = build_generation_path(media="image", model=model, ext=".png")
-            result = await generate_image(
+
+        job = await enqueue_generation(
+            media="video",
+            model=model,
+            provider="grsai",
+            prompt=body.prompt,
+            ext=".mp4",
+            params=params,
+            quote=quote,
+            run=run,
+        )
+    elif media == "audio":
+        model = (body.model or "audio").strip()
+
+        async def run(out_path):
+            return await generate_audio(body.prompt, out_path, model_slug=model)
+
+        job = await enqueue_generation(
+            media="audio",
+            model=model,
+            provider="grsai",
+            prompt=body.prompt,
+            ext=".mp3",
+            params=params,
+            quote=None,
+            run=run,
+        )
+    else:
+        model = (body.model or settings.grsai_default_image_model or "gpt-image-2").strip()
+        quote = quote_generation(
+            media="image",
+            model=model,
+            resolution=body.resolution,
+            duration=body.duration,
+            size=body.size,
+        )
+
+        async def run(out_path):
+            return await generate_image(
                 body.prompt,
                 out_path,
                 model_slug=model,
@@ -175,37 +225,19 @@ async def grsai_generate(body: GrsaiGenerateBody) -> dict[str, Any]:
                 resolution=body.resolution,
                 timeout=600,
             )
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(getattr(e, "reason", None) or e)) from e
 
-    quote = quote_generation(
-        media=media,
-        model=model,
-        resolution=body.resolution,
-        duration=body.duration,
-        size=body.size,
-    )
-    side = write_sidecar(
-        result.file_path,
-        media=media,
-        model=model,
-        prompt=body.prompt,
-        params=params,
-        raw_url=result.raw_url,
-        quote=quote,
-        provider="grsai",
-    )
+        job = await enqueue_generation(
+            media="image",
+            model=model,
+            provider="grsai",
+            prompt=body.prompt,
+            ext=".png",
+            params=params,
+            quote=quote,
+            run=run,
+        )
 
-    rel = result.file_path
-    preview = f"/api/files?path={rel.resolve()}"
-    return {
-        "ok": True,
-        "media": media,
-        "model": model,
-        "path": str(rel.resolve()),
-        "preview_url": preview,
-        "raw_url": result.raw_url,
-        "bytes": rel.stat().st_size if rel.is_file() else 0,
-        "sidecar": str(side.resolve()),
-        "quote": quote,
-    }
+    payload = job.to_dict()
+    payload["queue"] = len(list_active_jobs(provider="grsai"))
+    payload["quote"] = quote
+    return payload

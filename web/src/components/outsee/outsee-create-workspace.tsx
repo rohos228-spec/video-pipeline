@@ -67,6 +67,10 @@ type HistoryItem = {
   project_id: number | null;
   project_slug: string | null;
   prompt: string | null;
+  status?: string | null;
+  job_id?: string | null;
+  error?: string | null;
+  model?: string | null;
 };
 
 export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) {
@@ -114,8 +118,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     queryKey: ["outsee-create-history", feedKind],
     queryFn: () => api.listOutseeCreateHistory(feedKind),
     enabled: open,
-    refetchInterval: open ? 10000 : false,
+    refetchInterval: open ? 2500 : false,
   });
+
+  const queueCount = useMemo(() => {
+    const items = (historyQ.data as HistoryItem[] | undefined) ?? [];
+    return items.filter((h) => h.status === "queued" || h.status === "processing").length;
+  }, [historyQ.data]);
 
   useEffect(() => {
     if (!open || !settingsQ.data || settingsHydrated) return;
@@ -358,6 +367,43 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const [trackingJobs, setTrackingJobs] = useState<
+    { provider: "grsai" | "outsee"; jobId: string; historyId: string }[]
+  >([]);
+
+  useEffect(() => {
+    if (!trackingJobs.length) return;
+    let cancelled = false;
+    const tick = async () => {
+      for (const t of trackingJobs) {
+        try {
+          const job =
+            t.provider === "grsai"
+              ? await api.grsaiJob(t.jobId)
+              : await api.outseeJob(t.jobId);
+          if (cancelled) return;
+          qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+          if (job.status === "done") {
+            toast.success(`${t.provider === "grsai" ? "Grsai" : "Outsee"}: ${job.model || "готово"}`);
+            if (job.history_id) setSelectedId(job.history_id);
+            setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
+          } else if (job.status === "failed") {
+            toast.error(job.error || "Генерация не удалась");
+            setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
+          }
+        } catch {
+          /* job may not be ready yet */
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [trackingJobs, qc]);
+
   const grsaiGenerate = useMutation({
     mutationFn: async () => {
       const text = prompt.trim();
@@ -366,28 +412,35 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         throw new Error("GRSAI_API_KEY не задан в .env — перезапустите бэкенд");
       }
       await api.putOutseeCreateSettings(settingsPayload());
-      if (mediaType === "video") {
-        return api.grsaiGenerate({
-          prompt: text,
-          model: toGrsaiVideoModel(videoSlug),
-          aspect,
-          media: "video",
-          duration: Number(duration) || 10,
-          size: soraSize,
-        });
-      }
-      return api.grsaiGenerate({
-        prompt: text,
-        model: imageSlug,
-        aspect,
-        resolution,
-        media: "image",
-      });
+      const enqueued =
+        mediaType === "video"
+          ? await api.grsaiGenerate({
+              prompt: text,
+              model: toGrsaiVideoModel(videoSlug),
+              aspect,
+              media: "video",
+              duration: Number(duration) || 10,
+              size: soraSize,
+            })
+          : await api.grsaiGenerate({
+              prompt: text,
+              model: imageSlug,
+              aspect,
+              resolution,
+              media: "image",
+            });
+      return enqueued;
     },
     onSuccess: (res) => {
-      toast.success(`Grsai: ${res.model} готово`);
+      if (res.history_id) setSelectedId(res.history_id);
+      setTrackingJobs((prev) => [
+        ...prev,
+        { provider: "grsai", jobId: res.job_id, historyId: res.history_id },
+      ]);
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-      if (res.preview_url) setSelectedId(`grsai-${res.path.split("/").pop()}`);
+      toast.message(
+        res.queue && res.queue > 1 ? `В очереди · ${res.queue}` : "В очереди",
+      );
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -397,42 +450,42 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const text = prompt.trim();
       if (!text) throw new Error("Введите промпт");
       await api.putOutseeCreateSettings(settingsPayload());
-      if (mediaType === "audio") {
-        return api.outseeGenerate({
-          prompt: text,
-          media: "audio",
-          model: audioSlug,
-          title: text.slice(0, 80),
-          project_id: projectId,
-        });
-      }
-      if (mediaType === "video") {
-        return api.outseeGenerate({
-          prompt: text,
-          media: "video",
-          model: videoSlug,
-          aspect,
-          resolution: videoResolution,
-          duration: Number(duration) || 5,
-          relax: videoRelax,
-          generate_audio: generateAudio,
-          project_id: projectId,
-        });
-      }
-      return api.outseeGenerate({
-        prompt: text,
-        media: "image",
-        model: imageSlug,
-        aspect,
-        resolution,
-        relax,
-        project_id: projectId,
-      });
+      const enqueued =
+        mediaType === "video"
+          ? await api.outseeGenerate({
+              prompt: text,
+              media: "video",
+              model: videoSlug,
+              aspect,
+              resolution: videoResolution,
+              duration: Number(duration) || 5,
+              relax: videoRelax,
+              generate_audio: generateAudio,
+              project_id: projectId,
+            })
+          : await api.outseeGenerate({
+              prompt: text,
+              media: "image",
+              model: imageSlug,
+              aspect,
+              resolution,
+              relax,
+              project_id: projectId,
+            });
+      return enqueued;
     },
     onSuccess: (res) => {
-      toast.success(`Outsee API: ${res.model || res.media} готово`);
+      if (res.history_id) setSelectedId(res.history_id);
+      setTrackingJobs((prev) => [
+        ...prev,
+        { provider: "outsee", jobId: res.job_id, historyId: res.history_id },
+      ]);
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-      if (res.preview_url) setSelectedId(`outsee-${res.path.split("/").pop()}`);
+      toast.message(
+        res.queue && res.queue > 1
+          ? `В очереди Outsee · ${res.queue}`
+          : "В очереди Outsee",
+      );
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -526,6 +579,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
               История
             </span>
+            {queueCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black"
+                style={{ backgroundColor: OUTSEE_ACCENT }}
+                title="Активные генерации"
+              >
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                очередь {queueCount}
+              </span>
+            )}
             <span className="ml-auto font-mono text-[10px] text-white/30">
               {historyItems.length}
             </span>
@@ -564,6 +627,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 {historyItems.map((item) => {
                   const active = selected?.id === item.id;
                   const isVideo = item.kind === "video";
+                  const pending =
+                    item.status === "queued" || item.status === "processing";
+                  const failed = item.status === "failed";
                   return (
                     <button
                       key={item.id}
@@ -577,7 +643,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       )}
                       title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""}`}
                     >
-                      {item.preview_url ? (
+                      {item.preview_url && !pending ? (
                         isVideo ? (
                           <video src={item.preview_url} muted playsInline className="h-full w-full object-cover" />
                         ) : (
@@ -585,8 +651,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <img src={item.preview_url} alt="" className="h-full w-full object-cover" />
                         )
                       ) : (
-                        <div className="flex h-full items-center justify-center text-[9px] text-white/25">
-                          {item.kind}
+                        <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
+                          {pending ? (
+                            <Loader2
+                              className="h-5 w-5 animate-spin"
+                              style={{ color: OUTSEE_ACCENT }}
+                            />
+                          ) : failed ? (
+                            <span className="text-[10px] font-semibold text-red-400">ошибка</span>
+                          ) : (
+                            <span className="text-[9px] text-white/25">{item.kind}</span>
+                          )}
+                          {pending && (
+                            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/55">
+                              {item.status === "queued" ? "в очереди" : "генерация"}
+                            </span>
+                          )}
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-1.5 py-1">
@@ -612,7 +692,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             </h2>
           </div>
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
-            {selected?.preview_url ? (
+            {selected?.preview_url &&
+            selected.status !== "queued" &&
+            selected.status !== "processing" ? (
               <>
                 {selected.kind === "video" ? (
                   <video
@@ -643,6 +725,33 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   </div>
                 )}
               </>
+            ) : selected &&
+              (selected.status === "queued" || selected.status === "processing") ? (
+              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-12 text-center">
+                <Loader2
+                  className="h-9 w-9 animate-spin"
+                  style={{ color: OUTSEE_ACCENT }}
+                />
+                <div className="text-sm font-semibold text-white/85">
+                  {selected.status === "queued" ? "В очереди" : "Генерация…"}
+                </div>
+                <div className="text-[12px] text-white/45">
+                  {selected.model || selected.label}
+                  {queueCount > 1 ? ` · очередь ${queueCount}` : ""}
+                </div>
+                {selected.prompt && (
+                  <div className="line-clamp-3 max-w-full text-[11px] text-white/35">
+                    {selected.prompt}
+                  </div>
+                )}
+              </div>
+            ) : selected?.status === "failed" ? (
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/5 px-6 py-10 text-center">
+                <div className="text-sm font-semibold text-red-300">Ошибка генерации</div>
+                <div className="text-[12px] text-white/50">
+                  {selected.error || "Не удалось получить файл"}
+                </div>
+              </div>
             ) : (
               <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-10 text-center">
                 <ImageIcon className="h-8 w-8 text-white/30" />
