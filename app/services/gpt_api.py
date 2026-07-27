@@ -571,6 +571,12 @@ async def chat(
 
 # ─────────────────────────── контент (download/copy) ───────────────────────────
 
+_DATA_URI_RE = re.compile(
+    r"data:(image/(?:png|jpeg|jpg|webp|gif)|application/(?:pdf|octet-stream))"
+    r";base64,([A-Za-z0-9+/=\s]+)",
+    re.IGNORECASE,
+)
+
 
 def collect_result_urls(text: str) -> list[str]:
     """Достать http(s)-ссылки на контент из ответа модели (картинки/файлы)."""
@@ -584,6 +590,109 @@ def collect_result_urls(text: str) -> list[str]:
             seen.add(u)
             out.append(u)
     return out
+
+
+def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -> list[Path]:
+    """Вынуть data:image/...;base64,... из ответа модели в файлы."""
+    import base64
+
+    if not text:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    for i, m in enumerate(_DATA_URI_RE.finditer(text)):
+        mime = (m.group(1) or "application/octet-stream").lower()
+        raw_b64 = re.sub(r"\s+", "", m.group(2) or "")
+        if len(raw_b64) < 32:
+            continue
+        ext = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "application/pdf": ".pdf",
+        }.get(mime, ".bin")
+        try:
+            data = base64.b64decode(raw_b64, validate=False)
+        except Exception:  # noqa: BLE001
+            continue
+        if len(data) < 32:
+            continue
+        path = out_dir / f"{prefix}_{i}{ext}"
+        n = 2
+        while path.exists():
+            path = out_dir / f"{prefix}_{i}_{n}{ext}"
+            n += 1
+        path.write_bytes(data)
+        saved.append(path)
+    return saved
+
+
+async def materialize_reply_assets(
+    text: str,
+    out_dir: Path,
+    *,
+    prefix: str = "file",
+    timeout: float = 120.0,
+    max_urls: int = 8,
+) -> list[Path]:
+    """Скачать URL и data-URI из ответа модели в out_dir."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    saved.extend(extract_data_uri_files(text, out_dir, prefix=f"{prefix}_embed"))
+
+    for i, url in enumerate(collect_result_urls(text)[:max_urls]):
+        # пропускаем якоря/доки без явного файла — всё равно пробуем
+        url_path = url.split("?")[0]
+        suffix = Path(url_path).suffix.lower()
+        if suffix not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".xlsx",
+            ".xls",
+            ".xlsm",
+            ".txt",
+            ".md",
+            ".csv",
+            ".json",
+            ".pdf",
+            ".zip",
+            ".mp4",
+            ".webm",
+            "",
+        }:
+            # неизвестный суффикс — всё равно скачиваем как .bin
+            suffix = suffix if suffix and len(suffix) <= 8 else ""
+        dest = out_dir / f"{prefix}_url_{i}{suffix or '.bin'}"
+        n = 2
+        while dest.exists():
+            dest = out_dir / f"{prefix}_url_{i}_{n}{suffix or '.bin'}"
+            n += 1
+        try:
+            got = await download_content(url, dest, timeout=timeout)
+            # угадать расширение по magic, если .bin
+            if got.suffix.lower() == ".bin" and got.stat().st_size >= 8:
+                head = got.read_bytes()[:16]
+                new_suf = None
+                if head.startswith(b"\x89PNG"):
+                    new_suf = ".png"
+                elif head.startswith(b"\xff\xd8\xff"):
+                    new_suf = ".jpg"
+                elif head.startswith(b"PK"):
+                    new_suf = ".zip"
+                if new_suf:
+                    renamed = got.with_suffix(new_suf)
+                    if not renamed.exists():
+                        got.rename(renamed)
+                        got = renamed
+            saved.append(got)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("materialize_reply_assets: skip {}: {}", url[:120], e)
+    return saved
 
 
 async def download_content(

@@ -50,6 +50,15 @@ def test_attachment_urls_include_download() -> None:
     got = gw.get_session(s["id"])
     assert got["attachments"][0]["download_url"].endswith("download=1")
 
+
+def test_copy_attachment_to_outputs() -> None:
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "pic.png", b"\x89PNG" + b"x" * 40)
+    out = gw.copy_attachment_to_outputs(s["id"], "pic.png")
+    assert out["name"] == "pic.png"
+    got = gw.get_session(s["id"])
+    assert any(o["name"] == "pic.png" for o in got["outputs"])
+
     with pytest.raises(FileNotFoundError, match="сессия не найдена"):
         gw.save_attachment("nosuch", "a.txt", b"hi")
 

@@ -24,6 +24,7 @@ import {
 import { toast } from "sonner";
 import {
   api,
+  type GptWorkspaceFile,
   type GptWorkspaceMessage,
   type GptWorkspaceSession,
 } from "@/lib/api";
@@ -157,6 +158,13 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
 
   const sessions = sessionsQ.data?.sessions ?? [];
 
+  const filesByName = useMemo(() => {
+    const map = new Map<string, GptWorkspaceFile>();
+    for (const f of session?.attachments ?? []) map.set(f.name, f);
+    for (const f of session?.outputs ?? []) map.set(f.name, f);
+    return map;
+  }, [session?.attachments, session?.outputs]);
+
   const lastAssistant = useMemo(() => {
     const msgs = session?.messages ?? [];
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -270,6 +278,7 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
               <MessageBubble
                 key={m.id}
                 message={m}
+                filesByName={filesByName}
                 onSaveVoiceover={
                   m.role === "assistant" && projectId != null
                     ? () => saveVoiceMut.mutate(m.id)
@@ -318,6 +327,24 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                         >
                           <Download className="h-3 w-3" />
                         </a>
+                        <button
+                          type="button"
+                          className="text-white/30 hover:text-white"
+                          title="В Результаты"
+                          onClick={() => {
+                            void api
+                              .gptAttachmentToOutputs(session.id, f.name)
+                              .then(() => {
+                                toast.success(`В Результаты → ${f.name}`);
+                                void qc.invalidateQueries({
+                                  queryKey: ["gpt-workspace", "session", session.id],
+                                });
+                              })
+                              .catch((e) => toast.error(errorMessageFromUnknown(e)));
+                          }}
+                        >
+                          <Save className="h-3 w-3" />
+                        </button>
                         <button
                           type="button"
                           className="text-white/30 hover:text-red-400"
@@ -473,13 +500,19 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
 
 function MessageBubble({
   message,
+  filesByName,
   onSaveVoiceover,
 }: {
   message: GptWorkspaceMessage;
+  filesByName: Map<string, GptWorkspaceFile>;
   onSaveVoiceover?: () => void;
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
+  const attNames = message.attachment_names ?? [];
+  const outNames = message.output_files ?? [];
+  const isImage = (n: string) => /\.(png|jpe?g|webp|gif)$/i.test(n);
+
   return (
     <div
       className={cn(
@@ -507,14 +540,69 @@ function MessageBubble({
       <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-white/90">
         {message.content}
       </pre>
-      {!!message.attachment_names?.length && (
-        <div className="mt-2 text-[10px] text-white/35">
-          вложения: {message.attachment_names.join(", ")}
+      {attNames.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {attNames.map((name) => {
+            const f = filesByName.get(name);
+            const href = f?.download_url || f?.url;
+            return (
+              <div
+                key={name}
+                className="rounded border border-white/[0.08] bg-black/30 p-1.5"
+              >
+                {f && isImage(name) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={f.url}
+                    alt={name}
+                    className="mb-1 max-h-40 max-w-[220px] rounded object-contain"
+                  />
+                ) : null}
+                <div className="flex items-center gap-1.5 text-[10px] text-white/55">
+                  <Paperclip className="h-3 w-3" />
+                  <span className="max-w-[160px] truncate">{name}</span>
+                  {href && (
+                    <a
+                      href={href}
+                      download={name}
+                      className="text-white/40 hover:text-white"
+                      title="Скачать"
+                    >
+                      <Download className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
-      {!!message.output_files?.length && (
-        <div className="mt-1 text-[10px] text-white/35">
-          файлы: {message.output_files.join(", ")}
+      {outNames.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {outNames.map((name) => {
+            const f = filesByName.get(name);
+            const href = f?.download_url || f?.url;
+            return (
+              <span
+                key={name}
+                className="inline-flex items-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10px] text-white/55"
+              >
+                <FileText className="h-3 w-3" />
+                {href ? (
+                  <a href={href} download={name} className="hover:text-white">
+                    {name}
+                  </a>
+                ) : (
+                  name
+                )}
+                {href && (
+                  <a href={href} download={name} title="Скачать">
+                    <Download className="h-3 w-3 text-white/35 hover:text-white" />
+                  </a>
+                )}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

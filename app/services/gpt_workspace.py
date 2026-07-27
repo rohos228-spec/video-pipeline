@@ -212,6 +212,39 @@ def delete_attachment(session_id: str, name: str) -> None:
         path.unlink()
 
 
+def copy_attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
+    """Скопировать вложение в outputs/ — «вернуть файл» без генерации моделью."""
+    d = _session_dir(session_id)
+    if not d.is_dir() or not (d / "meta.json").is_file():
+        raise FileNotFoundError(f"сессия не найдена: {session_id}")
+    src = d / "attachments" / Path(name).name
+    if not src.is_file():
+        raise FileNotFoundError(f"нет вложения {name}")
+    out_dir = d / "outputs"
+    out_dir.mkdir(exist_ok=True)
+    safe = _safe_filename(src.name)
+    dest = out_dir / safe
+    if dest.exists():
+        stem, suf = Path(safe).stem, Path(safe).suffix
+        i = 2
+        while True:
+            cand = out_dir / f"{stem}_out{i}{suf}"
+            if not cand.exists():
+                dest = cand
+                break
+            i += 1
+    shutil.copy2(src, dest)
+    meta = _read_json(d / "meta.json", {})
+    meta["updated_at"] = _now()
+    _write_json(d / "meta.json", meta)
+    return {
+        "name": dest.name,
+        "size": dest.stat().st_size,
+        "path": str(dest),
+        **_file_urls(dest),
+    }
+
+
 def _append_message(session_id: str, role: str, content: str, **extra: Any) -> None:
     d = _session_dir(session_id)
     msgs = _read_json(d / "messages.json", [])
@@ -304,7 +337,23 @@ async def ask(
         reply_path.write_text(reply, encoding="utf-8")
         saved_files.append(reply_path.name)
 
-        # Попробовать materialize xlsx/доп. файлы из ответа
+        # URL / data-URI из ответа → файлы в outputs (картинки, xlsx, …)
+        try:
+            from app.services.gpt_api import materialize_reply_assets
+
+            assets = await materialize_reply_assets(
+                reply,
+                out_dir,
+                prefix=f"gpt_{ts}",
+                timeout=90.0,
+            )
+            for p in assets:
+                if p.is_file() and p.name not in saved_files:
+                    saved_files.append(p.name)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("gpt_workspace: materialize assets: {}", e)
+
+        # Попробовать materialize xlsx из TSV-ответа (пайплайн-стиль)
         if has_xlsx:
             try:
                 xlsx_path = out_dir / f"result_{ts}.xlsx"
@@ -315,12 +364,11 @@ async def ask(
                     allow_reply_text_fallback=False,
                 )
                 if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
-                    saved_files.append(xlsx_path.name)
+                    if xlsx_path.name not in saved_files:
+                        saved_files.append(xlsx_path.name)
             except Exception:  # noqa: BLE001
-                # Не xlsx — ок, текст уже сохранён
                 pass
         else:
-            # Даже без входного xlsx модель могла вернуть таблицу — мягкая попытка
             try:
                 xlsx_path = out_dir / f"result_{ts}.xlsx"
                 await gpt.download_attachment_from_last_reply(
@@ -330,7 +378,8 @@ async def ask(
                     allow_reply_text_fallback=False,
                 )
                 if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
-                    saved_files.append(xlsx_path.name)
+                    if xlsx_path.name not in saved_files:
+                        saved_files.append(xlsx_path.name)
             except Exception:  # noqa: BLE001
                 pass
 

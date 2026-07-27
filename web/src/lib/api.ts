@@ -1394,6 +1394,11 @@ export const api = {
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     ),
+  gptAttachmentToOutputs: (sessionId: string, name: string) =>
+    http<GptWorkspaceFile>(
+      `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}/to-outputs`,
+      { method: "POST" },
+    ),
   gptAsk: (sessionId: string, message: string, withAttachments = true) =>
     http<GptWorkspaceSession>(
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/ask`,

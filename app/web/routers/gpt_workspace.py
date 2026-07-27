@@ -101,6 +101,15 @@ async def delete_attachment(session_id: str, name: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@router.post("/sessions/{session_id}/attachments/{name}/to-outputs")
+async def attachment_to_outputs(session_id: str, name: str) -> dict[str, Any]:
+    """Скопировать вложение в Результаты (скачиваемый output)."""
+    try:
+        return gw.copy_attachment_to_outputs(session_id, name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @router.post("/sessions/{session_id}/ask")
 async def ask(session_id: str, body: AskBody) -> dict[str, Any]:
     try:
