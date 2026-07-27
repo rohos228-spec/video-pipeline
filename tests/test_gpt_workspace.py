@@ -73,33 +73,70 @@ def test_wants_file_return() -> None:
     assert gw._wants_file_return("верни файл обратно")
     assert gw._wants_file_return("send back the file please")
     assert not gw._wants_file_return("что на картинке?")
+    assert gw._pure_file_return("верни файл hero.png")
+    assert not gw._pure_file_return("верни файл и опиши что на нём")
+
+
+def test_save_attachment_missing_session() -> None:
+    with pytest.raises(FileNotFoundError, match="сессия не найдена"):
+        gw.save_attachment("nosuch", "a.txt", b"hi")
 
 
 @pytest.mark.asyncio
-async def test_ask_promotes_attachment_on_return_request(
+async def test_ask_studio_returns_bytes_without_gpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Верни файл» — исходные байты с диска, GPT не вызывается."""
+    import app.services.gpt_client as gc
+
+    called = {"n": 0}
+
+    class Boom:
+        async def ask_with_files(self, *a, **k):
+            called["n"] += 1
+            raise AssertionError("GPT не должен вызываться для чистого возврата")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: Boom())
+
+    s = gw.create_session()
+    raw = b"\x89PNG" + b"ORIGINAL-BYTES-XYZ" + b"x" * 20
+    gw.save_attachment(s["id"], "hero.png", raw)
+    out = await gw.ask(s["id"], "верни файл hero.png")
+    assert called["n"] == 0
+    names = [o["name"] for o in out["outputs"]]
+    assert "hero.png" in names
+    # байты идентичны исходному вложению
+    got = next(o for o in out["outputs"] if o["name"] == "hero.png")
+    assert Path(got["path"]).read_bytes() == raw
+    assert "Studio вернула" in out["messages"][-1]["content"]
+    assert out["messages"][-1].get("studio_returned") is True
+
+
+@pytest.mark.asyncio
+async def test_ask_return_plus_analyze_still_calls_gpt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.services.gpt_client as gc
 
-    s = gw.create_session()
-    gw.save_attachment(s["id"], "hero.png", b"\x89PNG" + b"x" * 40)
+    captured: dict = {}
 
     class FakeGpt:
         async def ask_with_files(self, text, files, **kwargs):
-            assert kwargs.get("system")
-            return "Не могу прислать файл через интерфейс."
+            captured["text"] = text
+            captured["called"] = True
+            return "На картинке персонаж в песке."
 
         async def download_attachment_from_last_reply(self, *a, **k):
-            raise RuntimeError("no")
+            return None
 
     monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
-    out = await gw.ask(s["id"], "верни файл hero.png")
-    names = [o["name"] for o in out["outputs"]]
-    assert "hero.png" in names
-    assert any(n.startswith("reply_") for n in names)
-
-    with pytest.raises(FileNotFoundError, match="сессия не найдена"):
-        gw.save_attachment("nosuch", "a.txt", b"hi")
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "hero.png", b"\x89PNG" + b"x" * 40)
+    out = await gw.ask(s["id"], "верни файл и опиши что на картинке")
+    assert captured.get("called")
+    assert "Studio уже положила" in captured["text"]
+    assert "hero.png" in [o["name"] for o in out["outputs"]]
+    assert "Исходники (Studio" in out["messages"][-1]["content"]
 
 
 def test_save_attachment_empty_raises() -> None:

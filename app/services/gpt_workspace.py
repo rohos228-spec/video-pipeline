@@ -21,28 +21,54 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
-# Как в браузерном ChatGPT: модель умеет «вернуть файл» через содержимое ответа.
+# Vision ≠ исходные байты. Возврат файлов делает Studio из attachments/, не модель.
 _WORKSPACE_SYSTEM = (
-    "Ты в Studio GPT (HTTP API). Вложения пользователя уже в контексте запроса.\n"
-    "Если просят ВЕРНУТЬ / ПРИСЛАТЬ / ОТПРАВИТЬ / СКАЧАТЬ файл:\n"
-    "• таблица → полный TSV с строками «# Лист: …»;\n"
-    "• картинка → один блок data:image/png;base64,... (целиком);\n"
-    "• текст → полное содержимое файла;\n"
-    "• иной файл → data:<mime>;base64,... целиком.\n"
-    "Не отказывайся ссылкой на «интерфейс не умеет» — Studio сама сохранит файлы "
-    "из твоего ответа в «Результаты» и даст скачать."
+    "Ты в Studio GPT (HTTP API).\n"
+    "Изображения приходят как vision (input_image) — ты их ВИДИШЬ и можешь анализировать, "
+    "но у тебя НЕТ исходных байтов PNG/Base64 для дословного возврата.\n"
+    "Возврат исходных вложений делает Studio сама (кнопка ↓ / «Результаты»), "
+    "не проси реконструировать файл и НЕ пиши, что «интерфейс не умеет» / "
+    "«нет доступа к байтам».\n"
+    "Если просят анализ — анализируй. Если просят вернуть файл — коротко: "
+    "«Studio положила исходник в Результаты» (файлы уже прикреплены приложением).\n"
+    "Новые таблицы можно отдать TSV с «# Лист: …». Новые картинки — только если "
+    "ты их реально сгенерировал (data:image/...;base64,...), не «восстанавливай» "
+    "исходник пользователя."
 )
 
 _RETURN_FILE_RE = re.compile(
     r"(?i)\b("
     r"верн[иу]|пришл[иу]|отправ[ьи]|скача[йть]|download|send\s+back|"
-    r"return\s+(the\s+)?file|дай\s+файл|выгруз"
+    r"return\s+(the\s+)?file|дай\s+файл|выгруз|исходник"
     r")\b"
+)
+
+_ANALYZE_RE = re.compile(
+    r"(?i)("
+    r"анализ|опис|что\s+(на|в)\s+|расскаж|проверь|сравн|"
+    r"describe|analy[sz]e|compare|explain|что\s+это|кто\s+это|"
+    r"перепиши|исправ|сгенерир|сделай\s+(новую|другую)|измени"
+    r")"
 )
 
 
 def _wants_file_return(message: str) -> bool:
     return bool(_RETURN_FILE_RE.search(message or ""))
+
+
+def _wants_analysis(message: str) -> bool:
+    return bool(_ANALYZE_RE.search(message or ""))
+
+
+def _pure_file_return(message: str) -> bool:
+    """Только вернуть файл(ы), без анализа/генерации — GPT не нужен."""
+    text = (message or "").strip()
+    if not text or not _wants_file_return(text):
+        return False
+    if _wants_analysis(text):
+        return False
+    # короткое «верни sand.png» / «пришли файл обратно»
+    return len(text) < 240
 
 
 def _file_urls(path: Path) -> dict[str, str]:
@@ -310,6 +336,36 @@ def _append_message(session_id: str, role: str, content: str, **extra: Any) -> N
     _write_json(d / "meta.json", meta)
 
 
+def _promote_attachments(session_id: str, files: list[Path]) -> list[str]:
+    """Скопировать исходные байты вложений в outputs/ (возврат без модели)."""
+    names: list[str] = []
+    for src in files:
+        try:
+            dest_info = copy_attachment_to_outputs(session_id, src.name)
+            if dest_info["name"] not in names:
+                names.append(dest_info["name"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("gpt_workspace: promote {}: {}", src.name, e)
+    return names
+
+
+def _studio_return_reply(returned: list[str]) -> str:
+    if not returned:
+        return (
+            "Нет вложений в этой сессии. Прикрепи файл(ы) скрепкой, "
+            "затем снова попроси вернуть."
+        )
+    lines = [
+        "Studio вернула исходные файлы из хранилища сессии "
+        "(байты с диска, без участия модели / vision).",
+        "",
+        "Скачай в блоке «Результаты» или ↓ ниже:",
+    ]
+    for n in returned:
+        lines.append(f"• {n}")
+    return "\n".join(lines)
+
+
 async def ask(
     session_id: str,
     message: str,
@@ -319,6 +375,9 @@ async def ask(
     """Отправить сообщение в GPT API, сохранить ответ и файлы в outputs/.
 
     Память диалога: прошлые user/assistant реплики сессии уходят в API как history.
+
+    Возврат исходников: Studio копирует attachments/ → outputs/ сама.
+    Vision даёт модели только визуальные токены, не байты файла.
     """
     from app.services.gpt_api import normalize_history
     from app.services.gpt_client import get_gpt_client
@@ -353,13 +412,52 @@ async def ask(
         attachment_names=[p.name for p in files],
     )
 
+    out_dir = d / "outputs"
+    out_dir.mkdir(exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    saved_files: list[str] = []
+
+    # ─── возврат исходников: байты с диска, НЕ реконструкция моделью ───
+    want_return = bool(files) and _wants_file_return(text)
+    if want_return:
+        saved_files.extend(_promote_attachments(session_id, files))
+
     try:
+        # Чистый «верни файл» — GPT не вызываем (как карточка файла в веб-ChatGPT).
+        if want_return and _pure_file_return(text):
+            reply = _studio_return_reply(saved_files)
+            reply_path = out_dir / f"reply_{ts}.txt"
+            reply_path.write_text(reply, encoding="utf-8")
+            _append_message(
+                session_id,
+                "assistant",
+                reply,
+                output_files=list(saved_files),
+                studio_returned=True,
+            )
+            meta = _read_json(d / "meta.json", {})
+            meta["status"] = "idle"
+            meta["updated_at"] = _now()
+            _write_json(d / "meta.json", meta)
+            logger.info(
+                "gpt_workspace: session={} studio_return files={}",
+                session_id,
+                saved_files,
+            )
+            return get_session(session_id)
+
         gpt = get_gpt_client()
         has_xlsx = any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
-        # Свободный чат: сообщение юзера = prompt, все файлы (в т.ч. .txt) = вложения.
-        # expect_file_download только когда реально ждём xlsx-ответ.
+        ask_text = text
+        if want_return and saved_files:
+            ask_text = (
+                f"{text}\n\n"
+                f"[Studio уже положила исходники в Результаты: "
+                f"{', '.join(saved_files)}. Не реконструируй байты.]"
+            )
+
         reply = await gpt.ask_with_files(
-            text,
+            ask_text,
             files,
             timeout=float(settings.gpt_timeout_s or 600),
             expect_file_download=has_xlsx,
@@ -369,17 +467,11 @@ async def ask(
         )
         reply = (reply or "").strip()
 
-        out_dir = d / "outputs"
-        out_dir.mkdir(exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        saved_files: list[str] = []
-
-        # Текст ответа всегда на диск (для zip), но в пузыре не дублируем reply_*.txt
+        # Текст ответа на диск (для zip), в пузыре не дублируем reply_*.txt
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
-        saved_files: list[str] = []
 
-        # URL / data-URI из ответа → файлы в outputs (картинки, xlsx, pdf, …)
+        # URL / data-URI из ответа → только НОВЫЕ артефакты модели
         try:
             from app.services.gpt_api import materialize_reply_assets
 
@@ -395,7 +487,6 @@ async def ask(
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 
-        # xlsx только если реально ждали таблицу (вложение xlsx или TSV «# Лист:» в ответе)
         looks_like_xlsx = has_xlsx or ("# Лист:" in reply) or ("# Лист：" in reply)
         if looks_like_xlsx:
             try:
@@ -410,7 +501,6 @@ async def ask(
                     if xlsx_path.name not in saved_files:
                         saved_files.append(xlsx_path.name)
                 elif xlsx_path.exists():
-                    # пустышка — не оставляем
                     try:
                         xlsx_path.unlink()
                     except OSError:
@@ -418,32 +508,31 @@ async def ask(
             except Exception:  # noqa: BLE001
                 pass
 
-        # Браузерный UX: «верни/пришли файл» → исходники сразу в Результаты.
-        if files and _wants_file_return(text):
-            for src in files:
-                try:
-                    dest_info = copy_attachment_to_outputs(session_id, src.name)
-                    if dest_info["name"] not in saved_files:
-                        saved_files.append(dest_info["name"])
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("gpt_workspace: promote {}: {}", src.name, e)
+        if want_return and saved_files:
+            reply = (
+                f"{reply.rstrip()}\n\n"
+                f"—\n"
+                f"Исходники (Studio, не модель): {', '.join(saved_files)}"
+            )
 
         _append_message(
             session_id,
             "assistant",
             reply,
-            output_files=saved_files,
+            output_files=list(saved_files),
+            studio_returned=want_return,
         )
         meta = _read_json(d / "meta.json", {})
         meta["status"] = "idle"
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
         logger.info(
-            "gpt_workspace: session={} reply_len={} files={} history={}",
+            "gpt_workspace: session={} reply_len={} files={} history={} returned={}",
             session_id,
             len(reply),
             saved_files,
             len(history),
+            want_return,
         )
         return get_session(session_id)
     except Exception as e:
