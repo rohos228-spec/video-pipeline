@@ -45,7 +45,7 @@ _TEXT_SUFFIXES = frozenset({
     ".srt",
     ".vtt",
 })
-_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 # Лимит картинок и размера (base64 раздувает ~4/3) — чтобы не упереться в payload.
 _MAX_VISION_IMAGES = 8
 _MAX_VISION_BYTES = 4_000_000
@@ -678,7 +678,7 @@ def sniff_file_extension(data: bytes) -> str | None:
 
 
 _WEAK_SUFFIXES = frozenset({"", ".bin", ".dat", ".tmp", ".octet-stream", ".unknown"})
-_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 _SNIFF_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
