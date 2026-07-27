@@ -67,7 +67,7 @@ VIDEO_RESOLUTIONS = {
     "seedance-1-5-pro": ["480p", "720p"],
     "grok-imagine-video-1.5": ["480p", "720p"],
     "omni-flash": ["720p", "1080p"],
-    "veo-3-1-lite": ["720p", "1080p"],
+    "veo-3-1-lite": ["720p"],
     "happyhorse-1-0": ["720P", "1080P"],
     "kling-lip-sync": ["720p", "1080p"],
     "kling-motion-control": ["std", "pro"],
@@ -78,7 +78,7 @@ VIDEO_DURATIONS = {
     "kling-3-0": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     "kling-2-6": [5, 10],
     "kling-2-5-turbo": [5, 10],
-    "veo-3-1-lite": [8],
+    "veo-3-1-lite": [4, 6, 8],
     "omni-flash": [4, 6, 8, 10],
     "seedance-1-5-pro": [4, 8, 12],
     "seedance-2-0-global": list(range(4, 16)),
@@ -89,7 +89,7 @@ VIDEO_CHIPS = {
     "kling-3-0": ["aspect", "resolution", "duration", "audio", "image-input"],
     "kling-2-6": ["aspect", "resolution", "duration", "audio", "image-input"],
     "kling-2-5-turbo": ["aspect", "resolution", "duration", "image-input"],
-    "veo-3-1-lite": ["aspect", "duration"],
+    "veo-3-1-lite": ["aspect", "resolution", "duration", "audio", "image-input"],
     "omni-flash": ["aspect", "resolution", "duration"],
     "seedance-1-5-pro": ["aspect", "resolution", "duration", "audio", "image-input"],
     "kling-motion-control": ["orientation", "quality"],
@@ -136,7 +136,7 @@ def test_chip_options_helper_matches_outsee_tables():
         return
 
     # inline runner importing compiled logic is heavy; assert tables embedded
-    runner = Path("/tmp/outsee_chip_check.mjs")
+    runner = Path(__file__).resolve().parent / "_outsee_chip_check.mjs"
     runner.write_text(
         """
 import { createRequire } from 'module';
@@ -156,8 +156,11 @@ console.log(JSON.stringify({ ok: true, models: Object.keys(expect.IMAGE_ASPECTS)
 """,
         encoding="utf-8",
     )
-    out = subprocess.check_output(["node", str(runner)], text=True)
-    assert "ok" in out
+    try:
+        out = subprocess.check_output(["node", str(runner)], text=True)
+        assert "ok" in out
+    finally:
+        runner.unlink(missing_ok=True)
 
 
 def test_image_resolution_table_complete():
@@ -177,4 +180,12 @@ def test_kling_durations_and_audio_chip():
     assert VIDEO_DURATIONS["kling-3-0"][-1] == 15
     assert "audio" in VIDEO_CHIPS["kling-3-0"]
     assert "audio" not in VIDEO_CHIPS["kling-2-5-turbo"]
-    assert VIDEO_CHIPS["veo-3-1-lite"] == ["aspect", "duration"]
+    assert VIDEO_CHIPS["veo-3-1-lite"] == [
+        "aspect",
+        "resolution",
+        "duration",
+        "audio",
+        "image-input",
+    ]
+    assert VIDEO_DURATIONS["veo-3-1-lite"] == [4, 6, 8]
+    assert VIDEO_RESOLUTIONS["veo-3-1-lite"] == ["720p"]

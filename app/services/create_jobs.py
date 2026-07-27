@@ -44,11 +44,21 @@ class CreateJob:
         .astimezone()
         .isoformat(timespec="seconds")
     )
+    started_at: str | None = None
+    finished_at: str | None = None
+    elapsed_sec: int | None = None
     history_id: str = ""
     # позиция в очереди ожидания (1-based), None если уже processing/done
     queue_position: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        from app.services.generation_storage import format_elapsed_min_sec
+
+        label = (
+            format_elapsed_min_sec(self.elapsed_sec)
+            if self.elapsed_sec is not None
+            else None
+        )
         return {
             "job_id": self.id,
             "ok": self.status != "failed",
@@ -63,6 +73,10 @@ class CreateJob:
             "error": self.error,
             "bytes": self.path.stat().st_size if self.path.is_file() else 0,
             "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "elapsed_sec": self.elapsed_sec,
+            "elapsed_label": label,
             "queue_position": self.queue_position,
             "prompt_preview": (self.prompt or "")[:120],
         }
@@ -230,8 +244,12 @@ async def _run_job(
     async with _semaphore(job.provider):
         job.status = "processing"
         job.queue_position = None
+        job.started_at = (
+            datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        )
+        t0 = asyncio.get_running_loop().time()
         _refresh_queue_positions()
-        update_sidecar(job.path, status="processing")
+        update_sidecar(job.path, status="processing", started_at=job.started_at)
         logger.info(
             "create_job.start id={} provider={} media={} model={} (slot acquired, cap={})",
             job.id,
@@ -277,6 +295,10 @@ async def _run_job(
             job.raw_url = getattr(result, "raw_url", None)
             job.preview_url = f"/api/files?path={job.path.resolve()}"
             job.status = "done"
+            job.finished_at = (
+                datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            )
+            job.elapsed_sec = max(0, int(round(asyncio.get_running_loop().time() - t0)))
             write_sidecar(
                 job.path,
                 media=job.media,
@@ -288,19 +310,36 @@ async def _run_job(
                 provider=job.provider,
                 status="done",
                 job_id=job.id,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                elapsed_sec=job.elapsed_sec,
             )
             if not job.path.is_file() or job.path.stat().st_size < 32:
                 raise RuntimeError("Create job: sidecar ok, но media-файл пропал")
+            from app.services.generation_storage import format_elapsed_min_sec
+
             logger.info(
-                "create_job.done id={} path={} bytes={}",
+                "create_job.done id={} path={} bytes={} elapsed={}",
                 job.id,
                 job.path,
                 job.path.stat().st_size,
+                format_elapsed_min_sec(job.elapsed_sec),
             )
         except Exception as e:  # noqa: BLE001
             job.status = "failed"
             job.error = str(getattr(e, "reason", None) or e)[:500]
-            update_sidecar(job.path, status="failed", error=job.error)
+            job.finished_at = (
+                datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            )
+            job.elapsed_sec = max(0, int(round(asyncio.get_running_loop().time() - t0)))
+            update_sidecar(
+                job.path,
+                status="failed",
+                error=job.error,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                elapsed_sec=job.elapsed_sec,
+            )
             logger.exception("create_job.failed id={}", job.id)
         finally:
             _refresh_queue_positions()

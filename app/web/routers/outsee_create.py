@@ -104,17 +104,24 @@ def _preview_for_artifact(a: Artifact) -> str | None:
 @router.get("/history")
 async def list_outsee_create_history(
     kind: str = Query("all", pattern="^(all|image|video|audio)$"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(80, ge=1, le=500),
+    scope: str = Query(
+        "create",
+        pattern="^(create|all)$",
+        description="create = только data/generations; all = + артефакты проектов",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    """История: сначала локальные Create-файлы с диска, потом артефакты проектов."""
+    """История: локальные Create-файлы; артефакты проектов — только scope=all."""
     from app.services.generation_storage import list_generation_files
 
-    # 1) Локальные генерации Create — ВСЕГДА первыми (иначе тонут в 200 artifacts)
     create_budget = min(120, limit)
     out: list[dict[str, Any]] = list(
         list_generation_files(kind=kind, limit=create_budget)
     )
+    if scope != "all":
+        return out[:limit]
+
     seen_ids = {x["id"] for x in out}
 
     kind_filter: set[ArtifactKind]

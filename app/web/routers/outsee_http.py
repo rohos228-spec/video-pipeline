@@ -23,8 +23,11 @@ class OutseeGenerateBody(BaseModel):
     duration: int | None = 5
     title: str | None = None
     relax: bool = False
-    generate_audio: bool = False
+    generate_audio: bool | None = None
     project_id: int | None = None
+    # data: URL или https — стартовый / конечный кадр (Veo)
+    first_frame_url: str | None = None
+    last_frame_url: str | None = None
 
 
 @router.get("/status")
@@ -110,6 +113,9 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
         "resolution": body.resolution,
         "duration": body.duration,
         "project_id": body.project_id,
+        "generate_audio": body.generate_audio,
+        "has_first_frame": bool(body.first_frame_url),
+        "has_last_frame": bool(body.last_frame_url),
     }
 
     if media == "video":
@@ -123,6 +129,9 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
                 aspect_ratio=(body.aspect or "9:16").replace("_", ":"),
                 resolution=body.resolution or "720p",
                 duration=body.duration,
+                generate_audio=body.generate_audio,
+                first_frame_url=body.first_frame_url,
+                last_frame_url=body.last_frame_url,
                 project_id=body.project_id,
                 timeout=900,
             )

@@ -379,31 +379,54 @@ async def generate_video(
     aspect_ratio: str = "9:16",
     resolution: str | None = "720p",
     duration: int | float | None = None,
+    generate_audio: bool | None = None,
     first_frame_url: str | None = None,
+    last_frame_url: str | None = None,
     reference_image: Path | str | None = None,
+    last_frame_image: Path | str | None = None,
     prompt_id_prefix: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_S,
     gen_id: str | None = None,
     project_id: int | None = None,
     **_kwargs: Any,
 ) -> GenerationResult:
-    """Видео через POST /api/v1/videos/generate."""
+    """Видео через POST /api/v1/videos/generate.
+
+    Veo 3.1 Lite (Outsee): aspect 16:9|9:16, resolution 720p,
+    duration_sec 4|6|8, generate_audio, first_frame_url, last_frame_url.
+    """
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
     model = studio_id_to_outsee_video_slug(model_slug)
+    aspect = (aspect_ratio or "9:16").replace("_", ":")
+    if aspect not in {"16:9", "9:16"}:
+        aspect = "16:9"
     body: dict[str, Any] = {
         "prompt": prompt,
         "model": model,
-        "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
+        "aspect_ratio": aspect,
     }
-    if resolution:
-        # Каталог: veo-3-1-lite только 720p
+
+    # Veo Outsee: только 720p (1080p → invalid_request)
+    res = (resolution or "720p").strip().lower()
+    if model == "veo-3-1-lite":
         body["resolution"] = "720p"
-    # Каталог: duration_sec фиксирован 8
-    body["duration_sec"] = 8
+    else:
+        body["resolution"] = res if res in {"720p", "1080p"} else "720p"
+
+    # Veo: 4 / 6 / 8 (каталог пишет 8; API принимает и шлёт duration_sec)
+    dur = int(duration or 8)
+    if model == "veo-3-1-lite":
+        if dur not in {4, 6, 8}:
+            dur = 8
+    body["duration_sec"] = dur
+
+    if generate_audio is not None:
+        body["generate_audio"] = bool(generate_audio)
+
     frame = first_frame_url
     if not frame and isinstance(reference_image, str) and reference_image.startswith(
-        "http"
+        ("http", "data:")
     ):
         frame = reference_image
     elif not frame and isinstance(reference_image, Path) and reference_image.is_file():
@@ -411,11 +434,25 @@ async def generate_video(
     if frame:
         body["first_frame_url"] = frame
 
+    last = last_frame_url
+    if not last and isinstance(last_frame_image, str) and last_frame_image.startswith(
+        ("http", "data:")
+    ):
+        last = last_frame_image
+    elif not last and isinstance(last_frame_image, Path) and last_frame_image.is_file():
+        last = _path_to_data_url(last_frame_image)
+    if last:
+        body["last_frame_url"] = last
+
     logger.info(
-        "outsee_api.video model={} aspect={} res={} project={}",
+        "outsee_api.video model={} aspect={} res={} dur={} audio={} first={} last={} project={}",
         model,
         body.get("aspect_ratio"),
         body.get("resolution"),
+        body.get("duration_sec"),
+        body.get("generate_audio"),
+        bool(body.get("first_frame_url")),
+        bool(body.get("last_frame_url")),
         project_id,
     )
     submitted = await _post_generate("/api/v1/videos/generate", body)

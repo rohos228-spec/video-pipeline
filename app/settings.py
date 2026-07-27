@@ -63,7 +63,8 @@ class Settings(BaseSettings):
     # Create: параллель по провайдерам (остальные ждут status=queued).
     # CREATE_MAX_PARALLEL — legacy fallback, если provider-specific не задан.
     create_max_parallel: int = Field(5, alias="CREATE_MAX_PARALLEL")
-    create_max_parallel_outsee: int = Field(5, alias="CREATE_MAX_PARALLEL_OUTSEE")
+    # Outsee API concurrency_limit=4 — не ставить выше 4.
+    create_max_parallel_outsee: int = Field(4, alias="CREATE_MAX_PARALLEL_OUTSEE")
     create_max_parallel_grsai: int = Field(10, alias="CREATE_MAX_PARALLEL_GRSAI")
 
     # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP

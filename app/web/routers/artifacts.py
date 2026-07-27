@@ -46,9 +46,17 @@ async def serve_data_file(
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     download_name, mime = suggested_name_and_mime(candidate)
-    kwargs: dict = {"media_type": mime or "application/octet-stream"}
+    kwargs: dict = {
+        "media_type": mime or "application/octet-stream",
+        "headers": {
+            # Превью истории Create: не качать одни и те же PNG на каждый poll.
+            "Cache-Control": "private, max-age=86400, immutable",
+        },
+    }
     if download:
         kwargs["filename"] = download_name
+        # download — без долгого кэша в браузере как attachment
+        kwargs["headers"] = {"Cache-Control": "private, no-store"}
     return FileResponse(candidate, **kwargs)
 
 

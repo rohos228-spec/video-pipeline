@@ -18,6 +18,44 @@ from app.settings import settings
 
 _SAFE = re.compile(r"[^a-zA-Z0-9._-]+")
 
+# Кэш списка Create-файлов: не перечитываем весь data/generations на каждый poll.
+_LIST_CACHE: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
+_LIST_CACHE_GEN = 0
+
+
+def format_elapsed_min_sec(seconds: float | int | None) -> str:
+    """Всегда «N мин M сек» (даже если минут 0)."""
+    try:
+        total = int(round(float(seconds or 0)))
+    except (TypeError, ValueError):
+        total = 0
+    if total < 0:
+        total = 0
+    m, s = divmod(total, 60)
+    return f"{m} мин {s} сек"
+
+
+def elapsed_from_iso(start: str | None, end: str | None = None) -> int | None:
+    """Секунды между ISO-метками; None если разобрать нельзя."""
+    if not start:
+        return None
+    try:
+        t0 = datetime.fromisoformat(start)
+        t1 = datetime.fromisoformat(end) if end else datetime.now(timezone.utc).astimezone()
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=timezone.utc).astimezone()
+        if t1.tzinfo is None:
+            t1 = t1.replace(tzinfo=timezone.utc).astimezone()
+        return max(0, int((t1 - t0).total_seconds()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def invalidate_generation_list_cache() -> None:
+    global _LIST_CACHE_GEN, _LIST_CACHE
+    _LIST_CACHE_GEN += 1
+    _LIST_CACHE.clear()
+
 
 def generations_root() -> Path:
     root = settings.data_dir / "generations"
@@ -63,11 +101,18 @@ def write_sidecar(
     job_id: str | None = None,
     error: str | None = None,
     require_file: bool = True,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    elapsed_sec: int | None = None,
 ) -> Path:
     """JSON рядом с файлом — чтобы на диске был полный контекст генерации.
 
     `require_file=False` — для pending (файл ещё не скачан).
     """
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    sec = elapsed_sec
+    if sec is None and started_at:
+        sec = elapsed_from_iso(started_at, finished_at or now)
     meta = {
         "id": media_path.stem,
         "media": media,
@@ -79,11 +124,15 @@ def write_sidecar(
         "quote": quote,
         "file": media_path.name,
         "path": str(media_path.resolve()),
-        "created_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "created_at": now,
         "bytes": media_path.stat().st_size if media_path.is_file() else 0,
         "status": status,
         "job_id": job_id,
         "error": error,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed_sec": sec,
+        "elapsed_label": format_elapsed_min_sec(sec) if sec is not None else None,
     }
     if require_file and not media_path.is_file() and status == "done":
         # всё равно пишем sidecar — статус покажет проблему
@@ -92,6 +141,7 @@ def write_sidecar(
     side = media_path.with_suffix(".json")
     side.parent.mkdir(parents=True, exist_ok=True)
     side.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    invalidate_generation_list_cache()
     return side
 
 
@@ -112,8 +162,13 @@ def update_sidecar(media_path: Path, **updates: Any) -> Path | None:
     meta["updated_at"] = (
         datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     )
+    if "elapsed_sec" in updates and updates["elapsed_sec"] is not None:
+        meta["elapsed_label"] = format_elapsed_min_sec(updates["elapsed_sec"])
+    elif meta.get("elapsed_sec") is not None and not meta.get("elapsed_label"):
+        meta["elapsed_label"] = format_elapsed_min_sec(meta["elapsed_sec"])
     side.parent.mkdir(parents=True, exist_ok=True)
     side.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    invalidate_generation_list_cache()
     return side
 
 
@@ -146,6 +201,24 @@ def import_legacy_create_media() -> int:
         )
     except OSError:
         imported = set()
+
+    # Быстрый выход: нет новых файлов в legacy с момента маркера.
+    if marker.is_file():
+        try:
+            marker_m = marker.stat().st_mtime
+            newest_legacy = 0.0
+            for legacy_name in ("outsee_create", "grsai_history"):
+                legacy = settings.data_dir / legacy_name
+                if not legacy.is_dir():
+                    continue
+                newest_legacy = max(newest_legacy, legacy.stat().st_mtime)
+                for fp in legacy.iterdir():
+                    if fp.is_file():
+                        newest_legacy = max(newest_legacy, fp.stat().st_mtime)
+            if newest_legacy <= marker_m + 0.01:
+                return 0
+        except OSError:
+            pass
 
     moved = 0
     changed = False
@@ -198,12 +271,45 @@ def list_generation_files(
     limit: int = 80,
     import_legacy: bool = True,
 ) -> list[dict[str, Any]]:
-    """Скан data/generations (+ legacy) — включая pending без файла."""
+    """Скан data/generations (+ legacy) — включая pending без файла.
+
+    Результат кэшируется: полный rglob не обязателен на каждый poll UI.
+    """
     if import_legacy:
         try:
             import_legacy_create_media()
         except Exception:  # noqa: BLE001
             pass
+
+    cache_key = f"{kind}:{limit}"
+    sig = _list_cache_signature(kind=kind)
+    cached = _LIST_CACHE.get(cache_key)
+    if cached is not None and cached[0] == sig:
+        return [dict(x) for x in cached[1]]
+
+    items = _scan_generation_files(kind=kind, limit=limit)
+    _LIST_CACHE[cache_key] = (sig, [dict(x) for x in items])
+    return items
+
+
+def _list_cache_signature(*, kind: str) -> tuple[Any, ...]:
+    """Лёгкий fingerprint каталога — без чтения содержимого json."""
+    root = generations_root()
+    newest = 0.0
+    count = 0
+    if root.is_dir():
+        for side in root.rglob("*.json"):
+            try:
+                st = side.stat()
+            except OSError:
+                continue
+            count += 1
+            if st.st_mtime > newest:
+                newest = st.st_mtime
+    return (_LIST_CACHE_GEN, kind, count, round(newest, 3))
+
+
+def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     root = generations_root()
     media_filter = None if kind == "all" else kind
@@ -235,10 +341,14 @@ def list_generation_files(
             return
         seen.add(key)
         status = str(meta.get("status") or ("done" if fp.is_file() else "queued"))
-        has_file = fp.is_file() and fp.stat().st_size > 32
+        # Не статим файл на каждый poll, если sidecar уже знает bytes.
+        meta_bytes = int(meta.get("bytes") or 0)
+        if status == "done" and meta_bytes > 32:
+            has_file = True
+        else:
+            has_file = fp.is_file() and fp.stat().st_size > 32
         if status == "done" and not has_file:
             status = "failed"
-        # Старые pending без файла после рестарта бэкенда (не трогаем свежие).
         if status in {"queued", "processing"} and not has_file:
             age_s = max(0.0, datetime.now(timezone.utc).timestamp() - mtime)
             if age_s > 20 * 60:
@@ -250,15 +360,23 @@ def list_generation_files(
                         update_sidecar(fp, status="failed", error=err)
                     except Exception:  # noqa: BLE001
                         pass
+        resolved = str(fp.resolve()) if fp.is_absolute() or fp.exists() else str(fp)
+        elapsed_sec = meta.get("elapsed_sec")
+        elapsed_label = meta.get("elapsed_label")
+        if elapsed_sec is None:
+            elapsed_sec = elapsed_from_iso(
+                meta.get("started_at") or meta.get("created_at"),
+                meta.get("finished_at") or meta.get("updated_at"),
+            )
+        if elapsed_label is None and elapsed_sec is not None:
+            elapsed_label = format_elapsed_min_sec(elapsed_sec)
         items.append(
             {
                 "id": key,
                 "kind": media,
                 "artifact_kind": "generation",
-                "preview_url": (
-                    f"/api/files?path={fp.resolve()}" if has_file else None
-                ),
-                "path": str(fp.resolve()) if fp else None,
+                "preview_url": (f"/api/files?path={resolved}" if has_file else None),
+                "path": resolved if fp else None,
                 "label": _status_label(status, meta.get("model")),
                 "project_id": None,
                 "project_slug": meta.get("provider") or "local",
@@ -268,6 +386,8 @@ def list_generation_files(
                 "status": status,
                 "job_id": meta.get("job_id"),
                 "error": meta.get("error"),
+                "elapsed_sec": elapsed_sec,
+                "elapsed_label": elapsed_label,
                 "mtime": mtime,
             }
         )
@@ -310,7 +430,6 @@ def list_generation_files(
         )
 
     if root.is_dir():
-        # pending / done sidecars first
         for side in root.rglob("*.json"):
             if not side.is_file():
                 continue
@@ -337,7 +456,6 @@ def list_generation_files(
                 if fp.is_file() and fp.suffix.lower() in allow:
                     _add_media_only(fp, media)
 
-    # legacy flat grsai_history + outsee_create
     for legacy_name in ("grsai_history", "outsee_create"):
         legacy = settings.data_dir / legacy_name
         if not legacy.is_dir():

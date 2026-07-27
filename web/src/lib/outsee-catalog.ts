@@ -169,6 +169,7 @@ export const OUTSEE_CHIP_LABELS: Record<string, string> = {
   orientation: "Ориентация",
   quality: "Качество",
   instrumental: "Вокал",
+  "image-input": "Кадры",
 };
 
 /** Вертикальный typetoggle create (ep=). */
@@ -496,16 +497,22 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
     slug: "veo-3-1-lite",
     studioId: "veo_3_1_lite",
     displayName: "Veo 3.1 Lite",
-    description: "Grsai · alias veo3.1-fast. Хорошая генерация русской речи.",
+    description:
+      "Outsee Veo: 720p, 4/6/8 сек, звук, стартовый и конечный кадр.",
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/google.webp`,
-    price: "от 0.4",
+    price: "от 10",
     grsaiWired: true,
-    chips: ["aspect", "duration"],
-    defaults: { aspectRatio: "16:9", duration: 8 },
+    chips: ["aspect", "resolution", "duration", "audio", "image-input"],
+    defaults: {
+      aspectRatio: "16:9",
+      resolution: "720p",
+      duration: 8,
+      generateAudio: true,
+    },
     nn: {
-      resolutions: ["720p", "1080p"],
-      durations: [8],
-      aspectRatios: ["portrait", "landscape"],
+      resolutions: ["720p"],
+      durations: [4, 6, 8],
+      aspectRatios: ["16:9", "9:16"],
     },
   },
   {
@@ -768,7 +775,10 @@ export function chipOptions(slug: string, chip: OutseeChip): string[] {
       }
       return [...video.nn.aspectRatios];
     }
-    if (chip === "resolution") return [...video.nn.resolutions];
+    if (chip === "resolution") {
+      if (slug === "veo-3-1-lite") return ["720p"];
+      return [...video.nn.resolutions];
+    }
     if (chip === "duration") return video.nn.durations.map(String);
     return [];
   }
@@ -810,6 +820,7 @@ export const DOCK_CHIP_ORDER: OutseeChip[] = [
   "detail",
   "duration",
   "audio",
+  "image-input",
 ];
 
 export function dockChipsForModel(slug: string, mediaType: OutseeMediaType): OutseeChip[] {

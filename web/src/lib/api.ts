@@ -1009,7 +1009,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  listOutseeCreateHistory: (kind: "all" | "image" | "video" | "audio" = "all") =>
+  listOutseeCreateHistory: (
+    kind: "all" | "image" | "video" | "audio" = "all",
+    opts?: { limit?: number; scope?: "create" | "all" },
+  ) =>
     http<
       {
         id: string;
@@ -1026,8 +1029,12 @@ export const api = {
         job_id?: string | null;
         error?: string | null;
         model?: string | null;
+        elapsed_sec?: number | null;
+        elapsed_label?: string | null;
       }[]
-    >(`/api/outsee-create/history?kind=${kind}`),
+    >(
+      `/api/outsee-create/history?kind=${kind}&scope=${opts?.scope ?? "create"}&limit=${opts?.limit ?? 60}`,
+    ),
 
   getGrsaiStatus: () =>
     http<{
@@ -1179,8 +1186,10 @@ export const api = {
     duration?: number;
     title?: string;
     relax?: boolean;
-    generate_audio?: boolean;
+    generate_audio?: boolean | null;
     project_id?: number | null;
+    first_frame_url?: string | null;
+    last_frame_url?: string | null;
   }) =>
     http<{
       ok: boolean;
@@ -1268,6 +1277,8 @@ export const api = {
       error?: string | null;
       queue_position?: number | null;
       model?: string;
+      elapsed_sec?: number | null;
+      elapsed_label?: string | null;
     }>(`/api/create/jobs/${encodeURIComponent(jobId)}`),
 
   wizardCatalog: () =>

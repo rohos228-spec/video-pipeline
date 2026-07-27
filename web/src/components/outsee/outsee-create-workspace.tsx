@@ -70,7 +70,16 @@ type HistoryItem = {
   job_id?: string | null;
   error?: string | null;
   model?: string | null;
+  elapsed_sec?: number | null;
+  elapsed_label?: string | null;
 };
+
+function formatElapsedMinSec(totalSec: number | null | undefined): string {
+  const n = Math.max(0, Math.round(Number(totalSec) || 0));
+  const m = Math.floor(n / 60);
+  const s = n % 60;
+  return `${m} мин ${s} сек`;
+}
 
 export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) {
   const qc = useQueryClient();
@@ -90,11 +99,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [soraSize, setSoraSize] = useState<"small" | "large">("small");
+  const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
+  const [lastFrameDataUrl, setLastFrameDataUrl] = useState<string | null>(null);
+  const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
+  const [lastFrameName, setLastFrameName] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
+  const firstFrameInputRef = useRef<HTMLInputElement>(null);
+  const lastFrameInputRef = useRef<HTMLInputElement>(null);
 
   const settingsQ = useQuery({
     queryKey: ["outsee-create-settings"],
@@ -116,13 +131,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     staleTime: 30_000,
   });
 
-  const historyQ = useQuery({
-    queryKey: ["outsee-create-history", feedKind],
-    queryFn: () => api.listOutseeCreateHistory(feedKind),
-    enabled: open,
-    refetchInterval: open ? 2500 : false,
-  });
-
   const createQueueQ = useQuery({
     queryKey: ["create-queue"],
     queryFn: api.createQueue,
@@ -135,6 +143,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const queueCount =
     (createQueueQ.data?.total_active ?? 0) ||
     runningJobs.length + waitingJobs.length;
+  const historyBusy = queueCount > 0;
+
+  const historyQ = useQuery({
+    queryKey: ["outsee-create-history", feedKind],
+    queryFn: () =>
+      api.listOutseeCreateHistory(feedKind, { scope: "create", limit: 60 }),
+    enabled: open,
+    // Не долбим диск/сеть: часто только пока есть очередь, иначе редко.
+    refetchInterval: open ? (historyBusy ? 3000 : 12_000) : false,
+  });
 
   useEffect(() => {
     if (!open || !settingsQ.data || settingsHydrated) return;
@@ -335,6 +353,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     }
     if (m.chips.includes("audio")) setGenerateAudio(Boolean(d.generateAudio));
     if (m.chips.includes("quality")) setMotionQuality(d.motionQuality || "std");
+    // Кадры привязаны к модели — сбрасываем при смене
+    setFirstFrameDataUrl(null);
+    setFirstFrameName(null);
+    setLastFrameDataUrl(null);
+    setLastFrameName(null);
   };
 
   const settingsPayload = (): Record<string, unknown> => ({
@@ -410,15 +433,30 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         try {
           const job = await api.createJob(t.jobId);
           if (cancelled) return;
-          qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           qc.invalidateQueries({ queryKey: ["create-queue"] });
           if (job.status === "done") {
-            toast.success(`Готово · ${job.model || "файл"}`);
+            const took =
+              job.elapsed_label ||
+              (job.elapsed_sec != null ? formatElapsedMinSec(job.elapsed_sec) : null);
+            toast.success(
+              took
+                ? `Готово · ${job.model || "файл"} · ${took}`
+                : `Готово · ${job.model || "файл"}`,
+            );
             if (job.history_id) setSelectedId(job.history_id);
             setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
+            qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           } else if (job.status === "failed") {
-            toast.error(job.error || "Генерация не удалась");
+            const took =
+              job.elapsed_label ||
+              (job.elapsed_sec != null ? formatElapsedMinSec(job.elapsed_sec) : null);
+            toast.error(
+              took
+                ? `${job.error || "Генерация не удалась"} · ${took}`
+                : job.error || "Генерация не удалась",
+            );
             setTrackingJobs((prev) => prev.filter((x) => x.jobId !== t.jobId));
+            qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
           }
         } catch {
           /* job may not be ready yet */
@@ -489,6 +527,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               aspect,
               resolution: videoResolution,
               duration: Number(duration) || 5,
+              generate_audio: videoModel.chips.includes("audio") ? generateAudio : null,
+              first_frame_url: firstFrameDataUrl,
+              last_frame_url: lastFrameDataUrl,
               project_id: projectId,
             })
           : await api.outseeGenerate({
@@ -754,10 +795,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     >
                       {item.preview_url && !pending ? (
                         isVideo ? (
-                          <video src={item.preview_url} muted playsInline className="h-full w-full object-cover" />
+                          <video
+                            src={item.preview_url}
+                            muted
+                            playsInline
+                            preload="metadata"
+                            className="h-full w-full object-cover"
+                          />
                         ) : (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={item.preview_url} alt="" className="h-full w-full object-cover" />
+                          <img
+                            src={item.preview_url}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            className="h-full w-full object-cover"
+                          />
                         )
                       ) : (
                         <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
@@ -798,6 +851,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <h2 className="flex items-center gap-2 text-sm font-bold text-white lg:text-base">
               <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
               Результат генерации
+              {selected &&
+                (selected.elapsed_label ||
+                  (selected.elapsed_sec != null && selected.elapsed_sec >= 0)) && (
+                  <span className="text-[12px] font-medium text-white/55">
+                    ·{" "}
+                    {selected.elapsed_label ||
+                      formatElapsedMinSec(selected.elapsed_sec)}
+                  </span>
+                )}
             </h2>
           </div>
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
@@ -825,6 +887,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
                   />
                 )}
+                <div className="text-[12px] font-medium text-white/70">
+                  Результат ·{" "}
+                  {selected.elapsed_label ||
+                    formatElapsedMinSec(selected.elapsed_sec)}
+                </div>
                 {selected.path && (
                   <div
                     className="max-w-full truncate px-2 font-mono text-[10px] text-white/35"
@@ -859,6 +926,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 <div className="text-sm font-semibold text-red-300">Ошибка генерации</div>
                 <div className="text-[12px] text-white/50">
                   {selected.error || "Не удалось получить файл"}
+                </div>
+                <div className="text-[12px] font-medium text-white/55">
+                  Результат ·{" "}
+                  {selected.elapsed_label ||
+                    formatElapsedMinSec(selected.elapsed_sec)}
                 </div>
               </div>
             ) : (
@@ -1020,9 +1092,103 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                               ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
                               : "border-white/10 bg-[#222] text-white/70",
                           )}
+                          title={generateAudio ? "Со звуком" : "Без звука"}
                         >
                           {OUTSEE_CHIP_LABELS.audio}
+                          <span className="font-mono text-[10px] text-white/45">
+                            {generateAudio ? "on" : "off"}
+                          </span>
                         </button>
+                      );
+                    }
+                    if (chip === "image-input") {
+                      return (
+                        <div key="image-input" className="flex flex-wrap items-center gap-1.5">
+                          <input
+                            ref={firstFrameInputRef}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                setFirstFrameDataUrl(String(reader.result || ""));
+                                setFirstFrameName(f.name);
+                              };
+                              reader.readAsDataURL(f);
+                              e.target.value = "";
+                            }}
+                          />
+                          <input
+                            ref={lastFrameInputRef}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                setLastFrameDataUrl(String(reader.result || ""));
+                                setLastFrameName(f.name);
+                              };
+                              reader.readAsDataURL(f);
+                              e.target.value = "";
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => firstFrameInputRef.current?.click()}
+                            className={cn(
+                              "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                              firstFrameDataUrl
+                                ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
+                                : "border-white/10 bg-[#222] text-white/70",
+                            )}
+                            title={firstFrameName || "Стартовый кадр"}
+                          >
+                            Старт
+                            {firstFrameDataUrl ? (
+                              <span
+                                className="text-[10px] text-white/50"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  setFirstFrameDataUrl(null);
+                                  setFirstFrameName(null);
+                                }}
+                              >
+                                ✕
+                              </span>
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => lastFrameInputRef.current?.click()}
+                            className={cn(
+                              "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                              lastFrameDataUrl
+                                ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
+                                : "border-white/10 bg-[#222] text-white/70",
+                            )}
+                            title={lastFrameName || "Конечный кадр"}
+                          >
+                            Финиш
+                            {lastFrameDataUrl ? (
+                              <span
+                                className="text-[10px] text-white/50"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  setLastFrameDataUrl(null);
+                                  setLastFrameName(null);
+                                }}
+                              >
+                                ✕
+                              </span>
+                            ) : null}
+                          </button>
+                        </div>
                       );
                     }
                     if (chip === "instrumental") {
