@@ -1222,6 +1222,8 @@ export const api = {
   createQueue: () =>
     http<{
       max_parallel: number;
+      max_parallel_outsee?: number;
+      max_parallel_grsai?: number;
       running_count: number;
       waiting_count: number;
       total_active: number;

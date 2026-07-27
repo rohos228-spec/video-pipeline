@@ -21,6 +21,8 @@ async def create_queue() -> dict[str, Any]:
         "outsee_configured": bool((settings.outsee_api_key or "").strip()),
         "grsai_configured": bool((settings.grsai_api_key or "").strip()),
         "max_parallel": max_parallel(),
+        "max_parallel_outsee": max_parallel("outsee"),
+        "max_parallel_grsai": max_parallel("grsai"),
     }
 
 

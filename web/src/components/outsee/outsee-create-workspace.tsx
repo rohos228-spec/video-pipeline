@@ -135,7 +135,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const queueCount =
     (createQueueQ.data?.total_active ?? 0) ||
     runningJobs.length + waitingJobs.length;
-  const maxParallel = createQueueQ.data?.max_parallel ?? 2;
 
   useEffect(() => {
     if (!open || !settingsQ.data || settingsHydrated) return;
@@ -219,6 +218,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (outseeConfigured) return "outsee";
     return null;
   }, [mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
+
+  const maxParallel =
+    autoProvider === "outsee"
+      ? (createQueueQ.data?.max_parallel_outsee ?? 5)
+      : autoProvider === "grsai"
+        ? (createQueueQ.data?.max_parallel_grsai ?? 10)
+        : (createQueueQ.data?.max_parallel ?? 5);
 
   const canApiDirect = autoProvider != null;
   const currentIcon =

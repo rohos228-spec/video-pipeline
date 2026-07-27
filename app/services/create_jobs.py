@@ -1,8 +1,9 @@
 """Фоновые jobs Create (Outsee / Grsai): очередь ожидания + параллельный пул.
 
 Каждый Generate → отдельный job_id.
-status=queued пока ждёт слот семафора;
-status=processing когда реально ушёл в API (слотов ≤ CREATE_MAX_PARALLEL).
+status=queued пока ждёт слот семафора провайдера;
+status=processing когда реально ушёл в API
+(Outsee ≤ CREATE_MAX_PARALLEL_OUTSEE, Grsai ≤ CREATE_MAX_PARALLEL_GRSAI).
 """
 
 from __future__ import annotations
@@ -69,23 +70,39 @@ class CreateJob:
 
 _JOBS: dict[str, CreateJob] = {}
 _LOCK = asyncio.Lock()
-_SEM: asyncio.Semaphore | None = None
-_SEM_SIZE: int = 0
+# Отдельный семафор на провайдера: Outsee и Grsai не делят один пул.
+_SEMS: dict[str, asyncio.Semaphore] = {}
+_SEM_SIZES: dict[str, int] = {}
+
+_MAX_PARALLEL_CAP = 16
 
 
-def max_parallel() -> int:
-    n = int(getattr(settings, "create_max_parallel", 2) or 2)
-    return max(1, min(n, 8))
+def max_parallel(provider: str | None = None) -> int:
+    """Лимит одновременных Create-jobs для провайдера (outsee=5, grsai=10)."""
+    p = (provider or "").strip().lower()
+    fallback = int(getattr(settings, "create_max_parallel", 5) or 5)
+    if p == "outsee":
+        n = int(getattr(settings, "create_max_parallel_outsee", fallback) or fallback)
+    elif p == "grsai":
+        n = int(getattr(settings, "create_max_parallel_grsai", fallback) or fallback)
+    else:
+        # Сводка без фильтра: верхняя граница среди известных провайдеров.
+        n = max(
+            int(getattr(settings, "create_max_parallel_outsee", fallback) or fallback),
+            int(getattr(settings, "create_max_parallel_grsai", fallback) or fallback),
+            fallback,
+        )
+    return max(1, min(n, _MAX_PARALLEL_CAP))
 
 
-def _semaphore() -> asyncio.Semaphore:
-    """Ленивый семафор; пересоздаём если CREATE_MAX_PARALLEL изменился."""
-    global _SEM, _SEM_SIZE
-    size = max_parallel()
-    if _SEM is None or _SEM_SIZE != size:
-        _SEM = asyncio.Semaphore(size)
-        _SEM_SIZE = size
-    return _SEM
+def _semaphore(provider: str) -> asyncio.Semaphore:
+    """Ленивый семафор на provider; пересоздаём при смене лимита."""
+    key = (provider or "outsee").strip().lower() or "outsee"
+    size = max_parallel(key)
+    if key not in _SEMS or _SEM_SIZES.get(key) != size:
+        _SEMS[key] = asyncio.Semaphore(size)
+        _SEM_SIZES[key] = size
+    return _SEMS[key]
 
 
 def get_job(job_id: str) -> CreateJob | None:
@@ -93,15 +110,17 @@ def get_job(job_id: str) -> CreateJob | None:
 
 
 def _refresh_queue_positions() -> None:
-    waiting = sorted(
-        (j for j in _JOBS.values() if j.status == "queued"),
-        key=lambda j: j.created_at,
-    )
-    for i, j in enumerate(waiting, start=1):
-        j.queue_position = i
+    """Позиции в ожидании — отдельно по каждому провайдеру."""
+    by_provider: dict[str, list[CreateJob]] = {}
     for j in _JOBS.values():
-        if j.status != "queued":
+        if j.status == "queued":
+            by_provider.setdefault(j.provider, []).append(j)
+        else:
             j.queue_position = None
+    for waiting in by_provider.values():
+        waiting.sort(key=lambda j: j.created_at)
+        for i, j in enumerate(waiting, start=1):
+            j.queue_position = i
 
 
 def list_active_jobs(*, provider: str | None = None) -> list[CreateJob]:
@@ -122,7 +141,9 @@ def queue_snapshot(*, provider: str | None = None) -> dict[str, Any]:
     running = [j for j in active if j.status == "processing"]
     waiting = [j for j in active if j.status == "queued"]
     return {
-        "max_parallel": max_parallel(),
+        "max_parallel": max_parallel(provider),
+        "max_parallel_outsee": max_parallel("outsee"),
+        "max_parallel_grsai": max_parallel("grsai"),
         "running_count": len(running),
         "waiting_count": len(waiting),
         "total_active": len(active),
@@ -180,7 +201,7 @@ async def enqueue_generation(
         media,
         model,
         job.queue_position,
-        max_parallel(),
+        max_parallel(provider),
     )
 
     asyncio.create_task(
@@ -201,18 +222,19 @@ async def _run_job(
 
     from app.services.generation_storage import generations_root
 
-    # Ждём свободный слот — пока status=queued (видимо в UI как «ожидание»)
-    async with _semaphore():
+    # Ждём свободный слот провайдера — пока status=queued (UI: «ожидание»)
+    async with _semaphore(job.provider):
         job.status = "processing"
         job.queue_position = None
         _refresh_queue_positions()
         update_sidecar(job.path, status="processing")
         logger.info(
-            "create_job.start id={} provider={} media={} model={} (slot acquired)",
+            "create_job.start id={} provider={} media={} model={} (slot acquired, cap={})",
             job.id,
             job.provider,
             job.media,
             job.model,
+            max_parallel(job.provider),
         )
         try:
             result = await run(job.path)
