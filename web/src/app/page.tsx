@@ -154,7 +154,6 @@ export default function HomePage() {
       <GptWorkspace
         open={gptOpen}
         onOpenChange={setGptOpen}
-        projectId={selectedProjectId}
       />
     </AppShell>
   );

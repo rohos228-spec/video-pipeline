@@ -2,8 +2,8 @@
 
 /**
  * GPT Workspace — свободный чат через API.
- * История сессий · вложения · обработка · сохранение в проект.
- * Визуально рядом с Генерацией (Outsee): тёмный фон, акцент #D1FE17.
+ * Сам по себе: история · вложения · результаты · скачивание.
+ * Без связи с нодами/проектом пайплайна.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -12,11 +12,11 @@ import {
   Bot,
   Download,
   FileText,
+  FolderOutput,
   History,
   Loader2,
   Paperclip,
   Plus,
-  Save,
   Send,
   Trash2,
   X,
@@ -36,10 +36,9 @@ const ACCENT = "#D1FE17";
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  projectId: number | null;
 };
 
-export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
+export function GptWorkspace({ open, onOpenChange }: Props) {
   const qc = useQueryClient();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -127,35 +126,6 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const saveVoiceMut = useMutation({
-    mutationFn: (messageId?: string) => {
-      if (!projectId) throw new Error("Выбери проект в сайдбаре");
-      if (!sessionId) throw new Error("Нет сессии");
-      return api.gptSaveVoiceover(sessionId, {
-        project_id: projectId,
-        message_id: messageId,
-      });
-    },
-    onSuccess: (r) => toast.success(`Сохранено → ${r.name}`),
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
-
-  const saveFileMut = useMutation({
-    mutationFn: (outputName: string) => {
-      if (!projectId) throw new Error("Выбери проект в сайдбаре");
-      if (!sessionId) throw new Error("Нет сессии");
-      const asName =
-        outputName.toLowerCase().endsWith(".xlsx") ? "project.xlsx" : undefined;
-      return api.gptSaveToProject(sessionId, {
-        project_id: projectId,
-        output_name: outputName,
-        as_name: asName,
-      });
-    },
-    onSuccess: (r) => toast.success(`Сохранено → ${r.name}`),
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
-
   const busy = askMut.isPending || session?.status === "running";
 
   const sessions = sessionsQ.data?.sessions ?? [];
@@ -166,14 +136,6 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
     for (const f of session?.outputs ?? []) map.set(f.name, f);
     return map;
   }, [session?.attachments, session?.outputs]);
-
-  const lastAssistant = useMemo(() => {
-    const msgs = session?.messages ?? [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "assistant") return msgs[i];
-    }
-    return null;
-  }, [session?.messages]);
 
   if (!open) return null;
 
@@ -194,14 +156,9 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
             <Bot className="h-4 w-4" style={{ color: ACCENT }} />
             <span className="text-sm font-semibold tracking-tight">GPT</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40">
-              api · память сессии
+              api · сам по себе
             </span>
           </div>
-          {projectId != null && (
-            <span className="rounded border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-white/50">
-              проект #{projectId}
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -271,8 +228,8 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                 <Bot className="mx-auto h-10 w-10 text-white/20" />
                 <h2 className="mt-4 text-lg font-semibold">Работа с GPT</h2>
                 <p className="mt-2 text-sm text-white/45">
-                  История чатов уходит в API как контекст (память диалога). Вложения
-                  (xlsx/txt/картинки), сохранение ответа в проект.
+                  История, вложения и результаты живут только здесь — без связи
+                  с нодами пайплайна. Скачивай файлы ↓ или zip.
                 </p>
               </div>
             )}
@@ -281,11 +238,6 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                 key={m.id}
                 message={m}
                 filesByName={filesByName}
-                onSaveVoiceover={
-                  m.role === "assistant" && projectId != null
-                    ? () => saveVoiceMut.mutate(m.id)
-                    : undefined
-                }
               />
             ))}
             {busy && (
@@ -345,7 +297,7 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                               .catch((e) => toast.error(errorMessageFromUnknown(e)));
                           }}
                         >
-                          <Save className="h-3 w-3" />
+                          <FolderOutput className="h-3 w-3" />
                         </button>
                         <button
                           type="button"
@@ -396,17 +348,6 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                         >
                           <Download className="h-3 w-3" />
                         </a>
-                        {projectId != null && (
-                          <button
-                            type="button"
-                            title="Сохранить в проект"
-                            className="text-white/35 hover:text-[color:var(--accent)]"
-                            style={{ ["--accent" as string]: ACCENT }}
-                            onClick={() => saveFileMut.mutate(f.name)}
-                          >
-                            <Save className="h-3 w-3" />
-                          </button>
-                        )}
                       </span>
                     ))}
                   </div>
@@ -429,16 +370,6 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
                   />
                   С вложениями
                 </label>
-                {lastAssistant && projectId != null && (
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:text-white"
-                    onClick={() => saveVoiceMut.mutate(lastAssistant.id)}
-                  >
-                    <FileText className="h-3 w-3" />
-                    Ответ → voiceover.txt
-                  </button>
-                )}
                 {session && session.outputs.length > 0 && (
                   <a
                     href={api.gptOutputsZipUrl(session.id)}
@@ -534,11 +465,9 @@ export function GptWorkspace({ open, onOpenChange, projectId }: Props) {
 function MessageBubble({
   message,
   filesByName,
-  onSaveVoiceover,
 }: {
   message: GptWorkspaceMessage;
   filesByName: Map<string, GptWorkspaceFile>;
-  onSaveVoiceover?: () => void;
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
@@ -562,17 +491,6 @@ function MessageBubble({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
           {message.role}
         </span>
-        {onSaveVoiceover && (
-          <button
-            type="button"
-            onClick={onSaveVoiceover}
-            className="inline-flex items-center gap-1 text-[10px] text-white/35 hover:text-white"
-            title="Сохранить этот ответ в проект как voiceover.txt (для озвучки)"
-          >
-            <Save className="h-3 w-3" />
-            → voiceover.txt
-          </button>
-        )}
       </div>
       <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-white/90">
         {message.content}

@@ -73,7 +73,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             size="sm"
             onClick={() => window.dispatchEvent(new CustomEvent("studio-open-gpt"))}
             className="gap-2 text-xs font-semibold"
-            title="Работа с GPT: история, вложения, сохранение"
+            title="Свободный GPT: история, вложения, результаты (без нод)"
           >
             <Bot className="h-3.5 w-3.5" />
             GPT
