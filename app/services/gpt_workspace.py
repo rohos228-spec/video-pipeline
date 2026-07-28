@@ -97,13 +97,13 @@ def _pure_file_return(message: str) -> bool:
 
 
 def _wants_deliverable_file(message: str) -> bool:
-    """Пользователь ждёт новый скачиваемый файл (не возврат исходника)."""
+    """Пользователь ждёт скачиваемый файл в «Результаты»."""
     text = message or ""
-    if _wants_file_return(text):
-        return False
-    if _FILE_DELIVERY_RE.search(text):
+    if _FILE_DELIVERY_RE.search(text) or _DOCX_RE.search(text):
         return True
-    # «составь договор» без слова «файл» — тоже документ в Результаты
+    # «отправь файл» / «пришли файл» / «дай файл» — тоже файл, не текст в пузыре
+    if _RETURN_FILE_RE.search(text):
+        return True
     if re.search(r"(?i)(договор|контракт|соглашени)", text) and _wants_analysis(text):
         return True
     return False
@@ -111,6 +111,26 @@ def _wants_deliverable_file(message: str) -> bool:
 
 def _wants_docx(message: str) -> bool:
     return bool(_DOCX_RE.search(message or ""))
+
+
+def _last_assistant_document(prior_raw: list[Any]) -> str:
+    """Последний длинный ответ ассистента (текст документа в чате)."""
+    for m in reversed(prior_raw or []):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        content = str(m.get("content") or "").strip()
+        if not content:
+            continue
+        # отрезаем студийные хвосты
+        content = re.split(
+            r"\n—\n(?:Studio|Исходники)",
+            content,
+            maxsplit=1,
+        )[0].strip()
+        content = _strip_attachment_excuses(content)
+        if len(content) >= 80:
+            return content
+    return ""
 
 
 def _strip_attachment_excuses(text: str) -> str:
@@ -615,9 +635,54 @@ async def ask(
     out_dir.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     saved_files: list[str] = []
+    want_pack = _wants_deliverable_file(text)
+    last_doc = _last_assistant_document(
+        prior_raw if isinstance(prior_raw, list) else []
+    )
+
+    # «отправь файл» после длинного ответа в чате → сразу в Результаты, без GPT
+    if (
+        want_pack
+        and not _wants_analysis(text)
+        and len(text) < 240
+        and len(last_doc) >= 80
+    ):
+        delivered = _deliver_reply_as_file(
+            out_dir=out_dir,
+            reply=last_doc,
+            user_text=text,
+            attachments=files,
+            ts=ts,
+        )
+        if delivered is not None:
+            saved_files.append(delivered.name)
+            reply = (
+                f"Studio положила файл в «Результаты»: {delivered.name}\n"
+                f"(текст из предыдущего ответа ассистента)"
+            )
+            (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
+            _append_message(
+                session_id,
+                "assistant",
+                reply,
+                output_files=list(saved_files),
+                studio_returned=False,
+            )
+            meta = _read_json(d / "meta.json", {})
+            meta["status"] = "idle"
+            meta["phase"] = "done"
+            meta["phase_detail"] = "Готово (файл из ответа)"
+            meta["updated_at"] = _now()
+            _write_json(d / "meta.json", meta)
+            logger.info(
+                "gpt_workspace: session={} packed_last_assistant file={}",
+                session_id,
+                delivered.name,
+            )
+            return get_session(session_id)
 
     # ─── возврат исходников: байты с диска, НЕ реконструкция моделью ───
-    want_return = bool(files) and _wants_file_return(text)
+    want_return = bool(files) and _wants_file_return(text) and not last_doc
     if want_return:
         saved_files.extend(_promote_attachments(session_id, files))
 
@@ -687,7 +752,7 @@ async def ask(
         delivered: Path | None = None
         if (
             reply
-            and _wants_deliverable_file(text)
+            and want_pack
             and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
         ):
             try:

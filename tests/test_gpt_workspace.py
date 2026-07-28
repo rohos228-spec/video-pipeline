@@ -341,6 +341,35 @@ async def test_ask_rework_text_to_file_calls_gpt(
 
 
 @pytest.mark.asyncio
+async def test_ask_send_file_packs_previous_assistant_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«отправь файл» после длинного ответа → .txt/.docx в Результаты, без GPT."""
+    import app.services.gpt_client as gc
+
+    class Boom:
+        async def ask_with_files(self, *a, **k):
+            raise AssertionError("GPT не нужен — пакуем прошлый ответ")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: Boom())
+    s = gw.create_session()
+    long_doc = "ДОГОВОР\n\n" + ("Пункт о взаимных обязательствах сторон.\n" * 8)
+    gw._append_message(s["id"], "assistant", long_doc)
+    out = await gw.ask(s["id"], "отправь файл")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert names, out["outputs"]
+    assert any(n.endswith((".txt", ".docx")) for n in names)
+    assert "Studio положила файл" in out["messages"][-1]["content"]
+    assert "ДОГОВОР" not in out["messages"][-1]["content"]  # не дублируем весь текст в пузырь
+
+
+def test_wants_deliverable_includes_send_file() -> None:
+    assert gw._wants_deliverable_file("отправь файл")
+    assert gw._wants_deliverable_file("пришли мне файлом")
+    assert gw._wants_deliverable_file("Составь договор аренды и пришли .docx")
+
+
+@pytest.mark.asyncio
 async def test_ask_docx_contract_saved_as_docx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +397,7 @@ async def test_ask_docx_contract_saved_as_docx(
     # отмазка модели вырезана / перекрыта студийной ремаркой
     assert "Studio положила файл" in out["messages"][-1]["content"]
     assert "недоступен инструмент" not in out["messages"][-1]["content"]
+
 
 def test_save_attachment_empty_raises() -> None:
     s = gw.create_session()
