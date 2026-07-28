@@ -38,3 +38,29 @@ async def test_stop_running_preserves_auto_mode(session: AsyncSession) -> None:
     assert p.auto_mode is True
     assert p.status is ProjectStatus.enrich_2_ready
     assert (p.meta or {}).get("user_stop") is True
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_failure_sleep(session: AsyncSession) -> None:
+    p = Project(
+        slug="sleep-stop",
+        topic="Test",
+        status=ProjectStatus.planning,
+        auto_mode=True,
+        meta={
+            "step_failure": {
+                "sleep_until": "2099-01-01T00:00:00+00:00",
+                "total_fails": {"planning": 3},
+            }
+        },
+    )
+    session.add(p)
+    await session.flush()
+
+    await stop_project_running(session, p)
+
+    assert p.status is ProjectStatus.new
+    assert (p.meta or {}).get("user_stop") is True
+    fs = (p.meta or {}).get("step_failure") or {}
+    assert "sleep_until" not in fs
+    assert fs.get("total_fails") == {"planning": 3}

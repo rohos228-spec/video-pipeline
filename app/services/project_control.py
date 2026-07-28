@@ -255,6 +255,12 @@ async def stop_project_running(
         clear_stop(project.id)
 
     _set_user_stop_gate(project)
+    # Снять sleep soft-retry — иначе после ⏹ может «проснуться» и снова крутить
+    from app.services.step_failure_policy import clear_failure_sleep
+
+    if clear_failure_sleep(project):
+        logger.info("[#{}] STOP: cleared step_failure.sleep_until", project.id)
+
     project.updated_at = datetime.utcnow()
     await session.flush()
 

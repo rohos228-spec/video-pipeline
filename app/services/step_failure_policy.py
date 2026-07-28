@@ -103,6 +103,15 @@ def clear_failure_backoff_for_manual_start(project: Project, *, running_key: str
     return True
 
 
+def clear_failure_sleep(project: Project) -> bool:
+    """Снять sleep_until (⏹ STOP) — без сброса счётчиков fails."""
+    fs = _failure_state(project)
+    if fs.pop("sleep_until", None) is None:
+        return False
+    _save_failure_state(project, fs)
+    return True
+
+
 def clear_sleep_if_expired(project: Project) -> bool:
     """Снять sleep_until если время вышло. True если только что проснулись."""
     if is_sleeping(project):
@@ -201,10 +210,51 @@ async def record_step_failure(
 ) -> str:
     """Обработать ошибку advance_project.
 
-    Returns: retry | sleep | abandon | pause_infra
+    Returns: retry | sleep | abandon | pause_infra | stopped
     """
     if is_chrome_infra_error(error):
         return await handle_chrome_step_failure(session, project, error)
+
+    from app.services.error_catalog import describe_error
+    from app.services.gen_queue_run import is_user_stopped
+    from app.services.project_state import is_running_status
+    from app.services.step_cancel import is_stop_requested
+
+    # ⏹ уже нажат — не поднимать planning снова soft-retry'ем (иначе крутилка вечная)
+    if is_user_stopped(project) or is_stop_requested(project.id):
+        from app.services.run_sync import mark_running_node_failed
+
+        running = project.status
+        step = step_by_running_status(running)
+        err_code, err_msg = describe_error(error)
+        fs = _failure_state(project)
+        fs["last_error"] = err_msg
+        fs["last_error_code"] = err_code
+        if step is not None:
+            fs["last_running"] = step.running_status.value
+        fs.pop("sleep_until", None)
+        _save_failure_state(project, fs)
+        await mark_running_node_failed(
+            session,
+            project,
+            error,
+            initiator="worker",
+            error_code=err_code,
+        )
+        if is_running_status(project.status):
+            rollback = (
+                step.requires
+                if step is not None and step.requires is not None
+                else ProjectStatus.new
+            )
+            project.status = rollback
+        await session.flush()
+        logger.warning(
+            "[#{}] step failure ignored soft-retry (user_stop) → {}",
+            project.id,
+            project.status.value,
+        )
+        return "stopped"
 
     running = project.status
     step = step_by_running_status(running)
@@ -216,7 +266,6 @@ async def record_step_failure(
     total = totals.get(key, 0) + 1
     totals[key] = total
     fs["total_fails"] = totals
-    from app.services.error_catalog import describe_error
 
     err_code, err_msg = describe_error(error)
     fs["last_error"] = err_msg
@@ -259,6 +308,8 @@ async def record_step_failure(
         _save_failure_state(project, fs)
         from app.services.run_sync import mark_running_node_failed
 
+        # Сначала failed по NodeRun (пока status ещё running-шаг), потом уходим
+        # из planning/… — иначе UI крутит «выполняется» все 30 мин сна.
         await mark_running_node_failed(
             session,
             project,
@@ -266,9 +317,13 @@ async def record_step_failure(
             initiator="worker",
             error_code=err_code,
         )
+        if step is not None and step.requires is not None:
+            project.status = step.requires
+        else:
+            project.status = ProjectStatus.new
         await session.flush()
         logger.warning(
-            "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{})",
+            "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}) → status={}",
             project.id,
             sleep_min,
             total,
@@ -276,6 +331,7 @@ async def record_step_failure(
             key,
             cycle,
             MAX_CYCLES,
+            project.status.value,
         )
         return "sleep"
 
@@ -324,6 +380,10 @@ async def maybe_resume_after_sleep(
 ) -> bool:
     """После сна — снова запустить тот же шаг (auto retry)."""
     if not clear_sleep_if_expired(project):
+        return False
+    from app.services.gen_queue_run import is_user_stopped
+
+    if is_user_stopped(project):
         return False
     if not project.auto_mode or project.status is ProjectStatus.paused:
         return False
