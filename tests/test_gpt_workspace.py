@@ -411,12 +411,128 @@ def test_resolve_file_intent_simple() -> None:
         )
         == "pack_reply"
     )
+    # Вопрос про прошлую доставку — не новый pack
+    assert (
+        gw.resolve_file_intent(
+            "почему ты с первого раза не прислал файлом?",
+            has_attachments=False,
+            last_doc=doc,
+        )
+        == "none"
+    )
+    assert (
+        gw.resolve_file_intent(
+            "я вопрос блять задал",
+            has_attachments=False,
+            last_doc=doc,
+        )
+        == "none"
+    )
+
+
+def test_short_affirmative_continues_file_work() -> None:
+    prior = [
+        {
+            "role": "user",
+            "content": "убрать лишние ** и пришли заново файл txt",
+        },
+        {
+            "role": "assistant",
+            "content": "Убрать форматирование и выдать полный .txt?",
+        },
+    ]
+    assert (
+        gw.resolve_file_intent(
+            "да",
+            has_attachments=False,
+            last_doc="",
+            prior_raw=prior,
+        )
+        == "pack_reply"
+    )
+
+
+def test_last_assistant_skips_ready_files_notice() -> None:
+    contract = (
+        "ДОГОВОР № ___\nпредоставления доступа\n\n"
+        "1.1. Сервис — система.\n1.2. API — интерфейс.\n"
+        "1.3. Пакет — объем.\n1.4. Лимиты — ограничения.\n"
+        "1.5. Запрос — данные.\n"
+        + ("Исполнитель и Заказчик. Реквизиты сторон.\n" * 40)
+    )
+    prior = [
+        {"role": "assistant", "content": contract},
+        {
+            "role": "assistant",
+            "content": "Готовые файлы:\n• document_x.txt",
+        },
+    ]
+    got = gw._last_assistant_document(prior)
+    assert "ДОГОВОР" in got
+    assert "Готовые файлы" not in got
 
 
 @pytest.mark.asyncio
-async def test_ask_blank_txt_via_gpt_empty_output(
+async def test_ask_meta_question_does_not_repack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """«почему не прислал файлом?» — ответ текстом, без нового document_*.txt."""
+    import app.services.gpt_client as gc
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return (
+                "Потому что в том сообщении договор был только в чате. "
+                "Скачиваемый файл появляется после явной просьбы «пришли файлом» "
+                "или когда Studio сама кладёт длинный договор в результаты."
+            )
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    contract = (
+        "ДОГОВОР № ___\nпредоставления доступа к API\n\n"
+        "1.1. Сервис.\n1.2. API.\n1.3. Пакет.\n1.4. Лимиты.\n1.5. Запрос.\n"
+        + ("Исполнитель Крохмаль. Заказчик. Реквизиты сторон.\n" * 50)
+    )
+    gw._append_message(s["id"], "assistant", contract)
+    out = await gw.ask(s["id"], "почему ты с первого раза не прислал файлом?")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert not names, names
+    assert "Потому что" in out["messages"][-1]["content"]
+    assert "document_" not in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_auto_packs_contract_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Длинный договор в ответе GPT сразу кладётся в файл."""
+    import app.services.gpt_client as gc
+
+    contract = (
+        "ДОГОВОР № ___\nпредоставления доступа к API\n\n"
+        "1.1. Сервис.\n1.2. API.\n1.3. Пакет.\n1.4. Лимиты.\n1.5. Запрос.\n"
+        + ("Исполнитель Крохмаль. Заказчик. Реквизиты сторон.\n" * 50)
+    )
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return contract
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "россия оставь прочерки")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".txt") for n in names)
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    # простыню договора в пузыре не дублируем
+    assert "1.1. Сервис" not in out["messages"][-1]["content"]
     """«пустой txt» → запрос в GPT; пустой output пакуется как empty_*.txt."""
     import app.services.gpt_client as gc
 

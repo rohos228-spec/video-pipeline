@@ -101,6 +101,61 @@ def _asks_file(message: str) -> bool:
     return bool(_ASKS_FILE_RE.search(message or ""))
 
 
+def _is_meta_chat_question(message: str) -> bool:
+    """Вопрос/жалоба про чат — не команда «пришли файл»."""
+    t = (message or "").strip()
+    if not t:
+        return False
+    if re.search(
+        r"(?i)("
+        r"почему|зачем|как\s+так| wh?y\b|"
+        r"я\s+вопрос|это\s+(?:был\s+)?вопрос|ответь\s+на\s+вопрос|"
+        r"объясни|что\s+значит|"
+        r"с\s+первого\s+раза|"
+        r"не\s+(?:прислал|отправил|дал|положил)"
+        r")",
+        t,
+    ):
+        return True
+    if t.endswith("?") and not re.search(
+        r"(?i)^(пришл[иу]|отправ[ьи]|верн[иу]|скача[йть]|дай)\b",
+        t,
+    ):
+        return True
+    return False
+
+
+def _is_short_affirmative(message: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?is)\s*(да|даа+|ага|угу|ок|окей|okay|yes|lf|конечно|сделай|давай)\s*[.!…]?\s*",
+            message or "",
+        )
+    )
+
+
+def _looks_like_document(text: str) -> bool:
+    """Длинный текст договора/документа в пузыре — кандидат на .txt/.docx."""
+    t = (text or "").strip()
+    if len(t) < 400:
+        return False
+    if re.match(r"(?i)^(готовые файлы|studio\s+положила|studio\s+вернула)\b", t):
+        return False
+    score = 0
+    if re.search(r"(?i)\bдоговор\b", t):
+        score += 2
+    if re.search(
+        r"(?i)(реквизит|исполнител|заказчик|предмет\s+договора|сторон[ыа])",
+        t,
+    ):
+        score += 1
+    if len(re.findall(r"(?m)^\s*\d+(?:\.\d+)+\.?\s", t)) >= 5:
+        score += 1
+    if len(t) >= 2500:
+        score += 1
+    return score >= 2
+
+
 def _needs_work(message: str) -> bool:
     return bool(_NEEDS_WORK_RE.search(message or ""))
 
@@ -228,7 +283,8 @@ def _strip_attachment_excuses(text: str) -> str:
 
 
 def _last_assistant_document(prior_raw: list[Any]) -> str:
-    """Последний длинный ответ ассистента (текст документа в чате)."""
+    """Последний документ в чате (не «Готовые файлы» и не отмазка GPT)."""
+    fallback = ""
     for m in reversed(prior_raw or []):
         if not isinstance(m, dict) or m.get("role") != "assistant":
             continue
@@ -236,14 +292,54 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
         if not content:
             continue
         content = re.split(
-            r"\n—\n(?:Studio|Исходники)",
+            r"\n—\n(?:Studio|Исходники)|"
+            r"\n\nГотовые файлы\b",
             content,
             maxsplit=1,
+            flags=re.I,
         )[0].strip()
         content = _strip_attachment_excuses(content)
-        if len(content) >= 80:
+        content = _strip_media_payloads(content)
+        if not content or len(content) < 80:
+            continue
+        if re.match(r"(?i)^(готовые файлы|studio\s+положила|studio\s+вернула)\b", content):
+            continue
+        if _looks_like_document(content):
             return content
-    return ""
+        if len(content) > len(fallback):
+            fallback = content
+    return fallback
+
+
+def _prior_turn_wanted_file(prior_raw: list[Any]) -> bool:
+    """Недавний запрос пользователя про файл / уточнение ассистента про выдачу файла."""
+    users: list[str] = []
+    last_assistant = ""
+    for m in reversed(prior_raw or []):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = str(m.get("content") or "").strip()
+        if role == "user" and content:
+            users.append(content)
+            if len(users) >= 3:
+                break
+        elif role == "assistant" and content and not last_assistant:
+            last_assistant = content
+    for u in users:
+        if _is_meta_chat_question(u):
+            continue
+        if _asks_file(u) or _explicit_text_doc_ask(u) or _wants_docx(u):
+            return True
+    if last_assistant and re.search(
+        r"(?i)("
+        r"\.txt|\.docx|файл|выдать|пришл|отправ|"
+        r"готовые\s+файлы|убрать\s+лишн"
+        r")",
+        last_assistant,
+    ):
+        return True
+    return False
 
 
 def _image_search_query(message: str) -> str:
@@ -364,6 +460,7 @@ def resolve_file_intent(
     *,
     has_attachments: bool,
     last_doc: str,
+    prior_raw: list[Any] | None = None,
 ) -> str:
     """Одна развилка вместо кучи флагов.
 
@@ -375,10 +472,17 @@ def resolve_file_intent(
     text = (message or "").strip()
     if not text:
         return "none"
+    # «почему не прислал файлом?» / «я вопрос задал» — ответ текстом, не новый .txt
+    if _is_meta_chat_question(text):
+        return "none"
     asks = _asks_file(text)
     work = _needs_work(text)
     short = len(text) < 240
-    has_doc = len(last_doc or "") >= 80
+    has_doc = len(last_doc or "") >= 80 or _looks_like_document(last_doc or "")
+
+    # «да» после «убрать ** и пришли txt» — продолжить работу и сразу упаковать
+    if _is_short_affirmative(text) and _prior_turn_wanted_file(prior_raw or []):
+        return "pack_reply"
 
     # «составь договор и пришли файлом» / «переработай и отправь» / «пустой txt»
     if asks and work:
@@ -985,6 +1089,7 @@ async def ask(
         text,
         has_attachments=bool(files),
         last_doc=last_doc,
+        prior_raw=prior_raw if isinstance(prior_raw, list) else [],
     )
     want_pack = intent in {"pack_last", "pack_reply"}
     want_return = intent == "return_attachments"
@@ -1197,11 +1302,18 @@ async def ask(
             except Exception as e:  # noqa: BLE001
                 logger.warning("gpt_workspace: xlsx deliver: {}", e)
 
-        # 3) .txt/.docx — только документные запросы, не «пришли картинку»
+        # 3) .txt/.docx — документные запросы; длинный договор в ответе — тоже файл
         delivered: Path | None = None
-        if (
+        pack_doc = (
             want_pack
             and _should_pack_text_document(text, reply, media_count=media_count)
+        ) or (
+            media_count == 0
+            and _looks_like_document(reply)
+            and not _is_meta_chat_question(text)
+        )
+        if (
+            pack_doc
             and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
         ):
             try:
@@ -1225,6 +1337,11 @@ async def ask(
             body,
             flags=re.I,
         ).rstrip()
+        # Длинный договор уже в файле — в пузыре не дублируем простыню
+        if ready and _looks_like_document(body) and any(
+            Path(n).suffix.lower() in {".txt", ".docx", ".md"} for n in ready
+        ):
+            body = ""
         if _wants_image_file(text) and media_count == 0:
             logger.warning(
                 "gpt_workspace: session={} image ask but no real media "
