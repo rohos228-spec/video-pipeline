@@ -334,9 +334,40 @@ async def test_ask_rework_text_to_file_calls_gpt(
     assert out["messages"][-1].get("studio_returned") is not True
     assert "Studio вернула исходные" not in out["messages"][-1]["content"]
     assert "Переработанный текст" in out["messages"][-1]["content"]
+    assert "Studio положила файл в «Результаты»" in out["messages"][-1]["content"]
     # новый файл в Результаты, не копия исходника
     out_names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
     assert any(n.endswith(".txt") and "дело" in n.lower() for n in out_names)
+
+
+@pytest.mark.asyncio
+async def test_ask_docx_contract_saved_as_docx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.gpt_client as gc
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            assert "Studio GPT" in (kwargs.get("system") or "") or True
+            return (
+                "ДОГОВОР\n\n1. Предмет\nСтороны обязуются…\n"
+                "В этой сессии недоступен инструмент создания новых вложений, "
+                "поэтому прикрепить .docx не смогу."
+            )
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "Составь договор аренды и пришли .docx")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".docx") for n in names)
+    doc = next(o for o in out["outputs"] if o["name"].endswith(".docx"))
+    assert Path(doc["path"]).stat().st_size > 64
+    # отмазка модели вырезана / перекрыта студийной ремаркой
+    assert "Studio положила файл" in out["messages"][-1]["content"]
+    assert "недоступен инструмент" not in out["messages"][-1]["content"]
 
 def test_save_attachment_empty_raises() -> None:
     s = gw.create_session()

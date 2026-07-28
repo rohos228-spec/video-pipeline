@@ -21,19 +21,20 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
-# Vision ≠ исходные байты. Возврат файлов делает Studio из attachments/, не модель.
+# Vision ≠ исходные байты. Возврат/выдача файлов делает Studio, не модель.
 _WORKSPACE_SYSTEM = (
-    "Ты в Studio GPT (HTTP API).\n"
-    "Изображения приходят как vision (input_image) — ты их ВИДИШЬ и можешь анализировать, "
-    "но у тебя НЕТ исходных байтов PNG/Base64 для дословного возврата.\n"
-    "Возврат исходных вложений делает Studio сама (кнопка ↓ / «Результаты»), "
-    "не проси реконструировать файл и НЕ пиши, что «интерфейс не умеет» / "
-    "«нет доступа к байтам».\n"
-    "Если просят анализ — анализируй. Если просят вернуть файл — коротко: "
-    "«Studio положила исходник в Результаты» (файлы уже прикреплены приложением).\n"
-    "Новые таблицы можно отдать TSV с «# Лист: …». Новые картинки — только если "
-    "ты их реально сгенерировал (data:image/...;base64,...), не «восстанавливай» "
-    "исходник пользователя."
+    "Ты в Studio GPT (HTTP API). Вложения пользователя уже приложены приложением.\n"
+    "Изображения — vision (input_image): ты их ВИДИШЬ и анализируешь, "
+    "но исходные байты PNG для дословного возврата недоступны.\n"
+    "ЗАПРЕЩЕНО писать, что «нет инструмента вложений», «не могу прикрепить файл», "
+    "«в этой сессии недоступна генерация файлов», «интерфейс не умеет». "
+    "Studio сама кладёт готовый текст в «Результаты» как скачиваемый файл.\n"
+    "Если просят вернуть исходник — коротко: «Studio положила исходник в Результаты».\n"
+    "Если просят новый документ / договор / .docx / .txt / «пришли файлом» — "
+    "выдай ПОЛНЫЙ готовый текст документа в ответе (без мета-оговорок). "
+    "Studio оформит его в файл. Неизвестные поля — прочерки «—».\n"
+    "Новые таблицы — TSV с «# Лист: …». Новые картинки — только data:image/...;base64,..."
+    ", не «восстанавливай» исходник пользователя."
 )
 
 _RETURN_FILE_RE = re.compile(
@@ -46,17 +47,31 @@ _RETURN_FILE_RE = re.compile(
 _FILE_DELIVERY_RE = re.compile(
     r"(?i)("
     r"файл[оа]м|как\s+файл|в\s+виде\s+файл|отправ[ьи].*файл|"
-    r"пришл[иу].*файл|send\s+as\s+(a\s+)?file|as\s+a\s+file"
+    r"пришл[иу].*файл|прилож[иь]|вложен|"
+    r"\.docx|\.txt|\.md|word|ворд|"
+    r"send\s+as\s+(a\s+)?file|as\s+a\s+file"
     r")"
 )
+
+_DOCX_RE = re.compile(r"(?i)(\.docx|\bdocx\b|word|ворд)")
 
 _ANALYZE_RE = re.compile(
     r"(?i)("
     r"анализ|опис|что\s+(на|в)\s+|расскаж|проверь|сравн|"
     r"describe|analy[sz]e|compare|explain|что\s+это|кто\s+это|"
     r"перепиши|переработ|передел|обработ|отредактир|rewrite|rework|"
-    r"исправ|сгенерир|сделай\s+(новую|другую)|измени"
+    r"исправ|сгенерир|сделай\s+(новую|другую)|измени|"
+    r"сформируй|состав[ьи]|подготов[ьи]|написать|напиши|"
+    r"договор|контракт|соглашени"
     r")"
+)
+
+_EXCUSE_RE = re.compile(
+    r"(?im)^.*("
+    r"недоступен инструмент|не\s+могу\s+прикрепить|не\s+смогу\s+прикрепить|"
+    r"генерации файлов|создания новых вложений|прикрепить\s+\.docx|"
+    r"cannot\s+attach|no\s+attachment\s+tool"
+    r").*(?:\n|$)"
 )
 
 
@@ -79,6 +94,103 @@ def _pure_file_return(message: str) -> bool:
         return False
     # короткое «верни sand.png» / «пришли файл обратно»
     return len(text) < 240
+
+
+def _wants_deliverable_file(message: str) -> bool:
+    """Пользователь ждёт новый скачиваемый файл (не возврат исходника)."""
+    text = message or ""
+    if _wants_file_return(text):
+        return False
+    if _FILE_DELIVERY_RE.search(text):
+        return True
+    # «составь договор» без слова «файл» — тоже документ в Результаты
+    if re.search(r"(?i)(договор|контракт|соглашени)", text) and _wants_analysis(text):
+        return True
+    return False
+
+
+def _wants_docx(message: str) -> bool:
+    return bool(_DOCX_RE.search(message or ""))
+
+
+def _strip_attachment_excuses(text: str) -> str:
+    cleaned = _EXCUSE_RE.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _write_simple_docx(path: Path, text: str) -> None:
+    """Минимальный .docx (OOXML zip) без python-docx — открывается в Word/LibreOffice."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    body_parts: list[str] = []
+    for line in lines:
+        body_parts.append(
+            "<w:p><w:r><w:t xml:space=\"preserve\">"
+            f"{escape(line)}"
+            "</w:t></w:r></w:p>"
+        )
+    if not body_parts:
+        body_parts.append("<w:p><w:r><w:t></w:t></w:r></w:p>")
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(body_parts)}<w:sectPr/></w:body></w:document>"
+    )
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+"""
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+"""
+    doc_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("word/document.xml", document_xml)
+        zf.writestr("word/_rels/document.xml.rels", doc_rels)
+
+
+def _deliver_reply_as_file(
+    *,
+    out_dir: Path,
+    reply: str,
+    user_text: str,
+    attachments: list[Path],
+    ts: str,
+) -> Path | None:
+    """Сохранить ответ модели как скачиваемый .txt/.docx в outputs/."""
+    body = _strip_attachment_excuses(reply)
+    if len(body) < 40:
+        body = (reply or "").strip()
+    if len(body) < 20:
+        return None
+    stem = "document"
+    for p in attachments:
+        if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv", ".docx"}:
+            stem = p.stem[:48] or stem
+            break
+    if re.search(r"(?i)договор", user_text):
+        stem = "dogovor"
+    elif re.search(r"(?i)контракт", user_text):
+        stem = "contract"
+    if _wants_docx(user_text):
+        dest = out_dir / f"{stem}_{ts}.docx"
+        _write_simple_docx(dest, body)
+    else:
+        dest = out_dir / f"{stem}_{ts}.txt"
+        dest.write_text(body, encoding="utf-8")
+    return dest if dest.is_file() and dest.stat().st_size > 32 else None
 
 
 def _file_urls(path: Path) -> dict[str, str]:
@@ -572,22 +684,24 @@ async def ask(
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
 
-        # «переработай и пришли файлом» — положить ответ модели как скачиваемый .txt
+        delivered: Path | None = None
         if (
             reply
-            and _wants_analysis(text)
-            and _FILE_DELIVERY_RE.search(text)
+            and _wants_deliverable_file(text)
             and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
         ):
-            stem = "result"
-            for p in files:
-                if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv"}:
-                    stem = p.stem[:48] or stem
-                    break
-            deliver = out_dir / f"{stem}_{ts}.txt"
-            deliver.write_text(reply, encoding="utf-8")
-            if deliver.name not in saved_files:
-                saved_files.append(deliver.name)
+            try:
+                delivered = _deliver_reply_as_file(
+                    out_dir=out_dir,
+                    reply=reply,
+                    user_text=text,
+                    attachments=files,
+                    ts=ts,
+                )
+                if delivered is not None and delivered.name not in saved_files:
+                    saved_files.append(delivered.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("gpt_workspace: deliver reply file: {}", e)
 
         # URL / data-URI из ответа → только НОВЫЕ артефакты модели
         try:
@@ -649,6 +763,12 @@ async def ask(
                 f"{reply.rstrip()}\n\n"
                 f"—\n"
                 f"Исходники (Studio, не модель): {', '.join(saved_files)}"
+            )
+        elif delivered is not None:
+            reply = (
+                f"{_strip_attachment_excuses(reply).rstrip()}\n\n"
+                f"—\n"
+                f"Studio положила файл в «Результаты»: {delivered.name}"
             )
 
         _append_message(
