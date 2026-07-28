@@ -237,8 +237,11 @@ def test_save_attachment_bin_becomes_png() -> None:
     assert gw._wants_file_return("верни файл обратно")
     assert gw._wants_file_return("send back the file please")
     assert not gw._wants_file_return("что на картинке?")
+    assert not gw._wants_file_return("текст переработай и пришли мне файлом")
+    assert not gw._pure_file_return("текст переработай и пришли мне файлом")
     assert gw._pure_file_return("верни файл hero.png")
     assert not gw._pure_file_return("верни файл и опиши что на нём")
+    assert not gw._wants_file_return("верни файл и опиши что на нём")
 
 
 def test_save_attachment_missing_session() -> None:
@@ -287,6 +290,7 @@ async def test_ask_return_plus_analyze_still_calls_gpt(
     class FakeGpt:
         async def ask_with_files(self, text, files, **kwargs):
             captured["text"] = text
+            captured["files"] = [p.name for p in files]
             captured["called"] = True
             return "На картинке персонаж в песке."
 
@@ -298,10 +302,41 @@ async def test_ask_return_plus_analyze_still_calls_gpt(
     gw.save_attachment(s["id"], "hero.png", b"\x89PNG" + b"x" * 40)
     out = await gw.ask(s["id"], "верни файл и опиши что на картинке")
     assert captured.get("called")
-    assert "Studio уже положила" in captured["text"]
-    assert "hero.png" in [o["name"] for o in out["outputs"]]
-    assert "Исходники (Studio" in out["messages"][-1]["content"]
+    # при анализе/переработке исходники не копируем в Результаты
+    assert "Studio уже положила" not in (captured.get("text") or "")
+    assert "hero.png" in captured.get("files", [])
+    assert "Исходники (Studio" not in out["messages"][-1]["content"]
 
+
+@pytest.mark.asyncio
+async def test_ask_rework_text_to_file_calls_gpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«переработай и пришли файлом» — GPT, не studio-return исходников."""
+    import app.services.gpt_client as gc
+
+    called = {"n": 0}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            called["n"] += 1
+            assert files and files[0].name.endswith(".txt")
+            return "Переработанный текст для файла."
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "дело.txt", "сырой текст дела".encode("utf-8"))
+    out = await gw.ask(s["id"], "текст переработай и пришли мне файлом")
+    assert called["n"] == 1
+    assert out["messages"][-1].get("studio_returned") is not True
+    assert "Studio вернула исходные" not in out["messages"][-1]["content"]
+    assert "Переработанный текст" in out["messages"][-1]["content"]
+    # новый файл в Результаты, не копия исходника
+    out_names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".txt") and "дело" in n.lower() for n in out_names)
 
 def test_save_attachment_empty_raises() -> None:
     s = gw.create_session()

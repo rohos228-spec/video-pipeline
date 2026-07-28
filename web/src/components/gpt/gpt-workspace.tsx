@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
+  ChevronDown,
   Download,
   FileText,
   FolderOutput,
@@ -148,6 +149,8 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [withAttachments, setWithAttachments] = useState(true);
+  const [stripAttachOpen, setStripAttachOpen] = useState(false);
+  const [stripResultsOpen, setStripResultsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -428,63 +431,92 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
             <div className="flex shrink-0 gap-4 border-t border-white/[0.06] bg-black/30 px-4 py-2">
               {session.attachments.length > 0 && (
                 <div className="min-w-0 flex-1">
-                  <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/35">
-                    Вложения
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {session.attachments.map((f) => (
-                      <FileChip
-                        key={f.name}
-                        file={f}
-                        onToOutputs={() => {
-                          void api
-                            .gptAttachmentToOutputs(session.id, f.name)
-                            .then((out) => {
-                              toast.success(
-                                `В Результаты → ${out.display_name || out.name || f.name}`,
-                              );
-                              const key = `${session.id}:${out.name}:${out.size}`;
-                              knownOutputsRef.current.add(key);
-                              triggerDownload(out);
-                              void qc.invalidateQueries({
-                                queryKey: ["gpt-workspace", "session", session.id],
-                              });
-                            })
-                            .catch((e) => toast.error(errorMessageFromUnknown(e)));
-                        }}
-                        onDelete={() =>
-                          void api
-                            .gptDeleteAttachment(session.id, f.name)
-                            .then(() =>
-                              qc.invalidateQueries({
-                                queryKey: ["gpt-workspace", "session", session.id],
-                              }),
-                            )
-                        }
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-              {session.outputs.length > 0 && (
-                <div className="min-w-0 flex-1">
-                  <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/35">
-                    Результаты
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {session.outputs
-                      .filter(
-                        (f) =>
-                          !/^reply_\d/i.test(f.name) &&
-                          !/\.html?$/i.test(f.name),
-                      )
-                      .map((f) => (
+                  <button
+                    type="button"
+                    onClick={() => setStripAttachOpen((v) => !v)}
+                    className="mb-1 flex w-full items-center gap-1 text-left text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "h-3 w-3 shrink-0 transition-transform",
+                        !stripAttachOpen && "-rotate-90",
+                      )}
+                    />
+                    Вложения · {session.attachments.length}
+                  </button>
+                  {stripAttachOpen && (
+                    <div className="flex flex-wrap gap-2">
+                      {session.attachments.map((f) => (
                         <FileChip
                           key={f.name}
                           file={f}
+                          onToOutputs={() => {
+                            void api
+                              .gptAttachmentToOutputs(session.id, f.name)
+                              .then((out) => {
+                                toast.success(
+                                  `В Результаты → ${out.display_name || out.name || f.name}`,
+                                );
+                                const key = `${session.id}:${out.name}:${out.size}`;
+                                knownOutputsRef.current.add(key);
+                                triggerDownload(out);
+                                void qc.invalidateQueries({
+                                  queryKey: ["gpt-workspace", "session", session.id],
+                                });
+                              })
+                              .catch((e) => toast.error(errorMessageFromUnknown(e)));
+                          }}
+                          onDelete={() =>
+                            void api
+                              .gptDeleteAttachment(session.id, f.name)
+                              .then(() =>
+                                qc.invalidateQueries({
+                                  queryKey: ["gpt-workspace", "session", session.id],
+                                }),
+                              )
+                          }
                         />
                       ))}
-                  </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {session.outputs.filter(
+                (f) => !/^reply_\d/i.test(f.name) && !/\.html?$/i.test(f.name),
+              ).length > 0 && (
+                <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setStripResultsOpen((v) => !v)}
+                    className="mb-1 flex w-full items-center gap-1 text-left text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "h-3 w-3 shrink-0 transition-transform",
+                        !stripResultsOpen && "-rotate-90",
+                      )}
+                    />
+                    Результаты ·{" "}
+                    {
+                      session.outputs.filter(
+                        (f) =>
+                          !/^reply_\d/i.test(f.name) && !/\.html?$/i.test(f.name),
+                      ).length
+                    }
+                  </button>
+                  {stripResultsOpen && (
+                    <div className="flex flex-wrap gap-2">
+                      {session.outputs
+                        .filter(
+                          (f) =>
+                            !/^reply_\d/i.test(f.name) &&
+                            !/\.html?$/i.test(f.name),
+                        )
+                        .map((f) => (
+                          <FileChip key={f.name} file={f} />
+                        ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -610,6 +642,8 @@ function MessageBubble({
   const outNames = (message.output_files ?? []).filter(
     (n) => !/^reply_\d/.test(n) && !/\.html?$/i.test(n),
   );
+  const [attsOpen, setAttsOpen] = useState(false);
+  const [outsOpen, setOutsOpen] = useState(false);
 
   return (
     <div
@@ -629,85 +663,114 @@ function MessageBubble({
         {message.content}
       </pre>
       {attNames.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {attNames.map((name) => {
-            const f = resolveFile(filesByName, name);
-            const label = f ? fileLabel(f) : name;
-            return (
-              <div
-                key={name}
-                className="rounded border border-white/[0.08] bg-black/30 p-1.5"
-              >
-                {f && isImageFile(f, name) ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={f.url}
-                    alt={label}
-                    className="mb-1 max-h-40 max-w-[220px] rounded object-contain"
-                  />
-                ) : null}
-                <div className="flex items-center gap-1.5 text-[10px] text-white/55">
-                  <Paperclip className="h-3 w-3" />
-                  <span className="max-w-[160px] truncate">{label}</span>
-                  {f && (
-                    <button
-                      type="button"
-                      onClick={() => triggerDownload(f)}
-                      className="text-white/40 hover:text-white"
-                      title="Скачать"
-                    >
-                      <Download className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setAttsOpen((v) => !v)}
+            className="flex items-center gap-1 text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
+          >
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 shrink-0 transition-transform",
+                !attsOpen && "-rotate-90",
+              )}
+            />
+            Вложения · {attNames.length}
+          </button>
+          {attsOpen && (
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {attNames.map((name) => {
+                const f = resolveFile(filesByName, name);
+                const label = f ? fileLabel(f) : name;
+                return (
+                  <div
+                    key={name}
+                    className="rounded border border-white/[0.08] bg-black/30 p-1.5"
+                  >
+                    {f && isImageFile(f, name) ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={f.url}
+                        alt={label}
+                        className="mb-1 max-h-40 max-w-[220px] rounded object-contain"
+                      />
+                    ) : null}
+                    <div className="flex items-center gap-1.5 text-[10px] text-white/55">
+                      <Paperclip className="h-3 w-3" />
+                      <span className="max-w-[160px] truncate">{label}</span>
+                      {f && (
+                        <button
+                          type="button"
+                          onClick={() => triggerDownload(f)}
+                          className="text-white/40 hover:text-white"
+                          title="Скачать"
+                        >
+                          <Download className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
       {outNames.length > 0 && (
         <div className="mt-2">
-          <div className="mb-1 text-[10px] uppercase tracking-[0.14em] text-white/30">
-            Файлы из ответа
-          </div>
-          <div className="flex flex-wrap gap-2">
-          {outNames.map((name) => {
-            const f = resolveFile(filesByName, name);
-            const label = f ? fileLabel(f) : name;
-            return (
-              <div
-                key={name}
-                className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5 text-[10px] text-white/55"
-              >
-                {f && isImageFile(f, name) ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={f.url}
-                    alt={label}
-                    className="max-h-28 w-full rounded object-contain bg-black/40"
-                  />
-                ) : (
-                  <div className="flex items-center gap-1">
-                    <FileText className="h-3 w-3" />
-                    <span className="truncate">{label}</span>
+          <button
+            type="button"
+            onClick={() => setOutsOpen((v) => !v)}
+            className="flex items-center gap-1 text-[10px] uppercase tracking-[0.14em] text-white/30 hover:text-white/55"
+          >
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 shrink-0 transition-transform",
+                !outsOpen && "-rotate-90",
+              )}
+            />
+            Файлы из ответа · {outNames.length}
+          </button>
+          {outsOpen && (
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {outNames.map((name) => {
+                const f = resolveFile(filesByName, name);
+                const label = f ? fileLabel(f) : name;
+                return (
+                  <div
+                    key={name}
+                    className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5 text-[10px] text-white/55"
+                  >
+                    {f && isImageFile(f, name) ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={f.url}
+                        alt={label}
+                        className="max-h-28 w-full rounded object-contain bg-black/40"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <FileText className="h-3 w-3" />
+                        <span className="truncate">{label}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <span className="min-w-0 flex-1 truncate">{label}</span>
+                      {f && (
+                        <button
+                          type="button"
+                          onClick={() => triggerDownload(f)}
+                          title="Скачать"
+                        >
+                          <Download className="h-3 w-3 text-white/35 hover:text-white" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-                <div className="flex items-center gap-1">
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                  {f && (
-                    <button
-                      type="button"
-                      onClick={() => triggerDownload(f)}
-                      title="Скачать"
-                    >
-                      <Download className="h-3 w-3 text-white/35 hover:text-white" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

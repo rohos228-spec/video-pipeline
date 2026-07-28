@@ -43,29 +43,39 @@ _RETURN_FILE_RE = re.compile(
     r")\b"
 )
 
+_FILE_DELIVERY_RE = re.compile(
+    r"(?i)("
+    r"файл[оа]м|как\s+файл|в\s+виде\s+файл|отправ[ьи].*файл|"
+    r"пришл[иу].*файл|send\s+as\s+(a\s+)?file|as\s+a\s+file"
+    r")"
+)
+
 _ANALYZE_RE = re.compile(
     r"(?i)("
     r"анализ|опис|что\s+(на|в)\s+|расскаж|проверь|сравн|"
     r"describe|analy[sz]e|compare|explain|что\s+это|кто\s+это|"
-    r"перепиши|исправ|сгенерир|сделай\s+(новую|другую)|измени"
+    r"перепиши|переработ|передел|обработ|отредактир|rewrite|rework|"
+    r"исправ|сгенерир|сделай\s+(новую|другую)|измени"
     r")"
 )
-
-
-def _wants_file_return(message: str) -> bool:
-    return bool(_RETURN_FILE_RE.search(message or ""))
 
 
 def _wants_analysis(message: str) -> bool:
     return bool(_ANALYZE_RE.search(message or ""))
 
 
+def _wants_file_return(message: str) -> bool:
+    """Вернуть исходные байты вложений. Не срабатывает при «переработай и пришли файлом»."""
+    text = message or ""
+    if _wants_analysis(text):
+        return False
+    return bool(_RETURN_FILE_RE.search(text))
+
+
 def _pure_file_return(message: str) -> bool:
     """Только вернуть файл(ы), без анализа/генерации — GPT не нужен."""
     text = (message or "").strip()
     if not text or not _wants_file_return(text):
-        return False
-    if _wants_analysis(text):
         return False
     # короткое «верни sand.png» / «пришли файл обратно»
     return len(text) < 240
@@ -561,6 +571,23 @@ async def ask(
         # Текст ответа на диск (для zip), в пузыре не дублируем reply_*.txt
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
+
+        # «переработай и пришли файлом» — положить ответ модели как скачиваемый .txt
+        if (
+            reply
+            and _wants_analysis(text)
+            and _FILE_DELIVERY_RE.search(text)
+            and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
+        ):
+            stem = "result"
+            for p in files:
+                if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv"}:
+                    stem = p.stem[:48] or stem
+                    break
+            deliver = out_dir / f"{stem}_{ts}.txt"
+            deliver.write_text(reply, encoding="utf-8")
+            if deliver.name not in saved_files:
+                saved_files.append(deliver.name)
 
         # URL / data-URI из ответа → только НОВЫЕ артефакты модели
         try:
