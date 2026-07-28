@@ -1,5 +1,7 @@
 # AGENTS.md
 
+> **Карта системы (промпты, оркестратор, GPT-чат, Create, mass, xlsx):** [`docs/AGENT_MAP.md`](docs/AGENT_MAP.md). Операторская шпаргалка: [`docs/OPERATOR_BIBLE.md`](docs/OPERATOR_BIBLE.md).
+
 ## Cursor Cloud specific instructions
 
 ### Git: merge to `main` immediately (mandatory)

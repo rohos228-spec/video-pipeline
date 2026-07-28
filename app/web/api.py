@@ -41,6 +41,9 @@ from app.web.routers import (
     hitl as hitl_router,
 )
 from app.web.routers import (
+    knowledge as knowledge_router,
+)
+from app.web.routers import (
     library as library_router,
 )
 from app.web.routers import (
@@ -209,6 +212,7 @@ def create_app() -> FastAPI:
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)
     app.include_router(library_router.router, prefix=API_PREFIX)
     app.include_router(hitl_router.router, prefix=API_PREFIX)
+    app.include_router(knowledge_router.router, prefix=API_PREFIX)
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
