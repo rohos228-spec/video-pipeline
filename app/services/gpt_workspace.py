@@ -21,50 +21,39 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
-# Vision ≠ исходные байты. Возврат/выдача файлов делает Studio, не модель.
+# Vision ≠ исходные байты. Выдача файлов — всегда Studio, не модель.
 _WORKSPACE_SYSTEM = (
     "Ты в Studio GPT (HTTP API). Вложения пользователя уже приложены приложением.\n"
-    "Изображения — vision (input_image): ты их ВИДИШЬ и анализируешь, "
-    "но исходные байты PNG для дословного возврата недоступны.\n"
-    "ЗАПРЕЩЕНО писать, что «нет инструмента вложений», «не могу прикрепить файл», "
-    "«в этой сессии недоступна генерация файлов», «интерфейс не умеет». "
+    "Изображения — vision: ты их видишь и анализируешь.\n"
+    "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений. "
     "Studio сама кладёт готовый текст в «Результаты» как скачиваемый файл.\n"
-    "Если просят вернуть исходник — коротко: «Studio положила исходник в Результаты».\n"
-    "Если просят новый документ / договор / .docx / .txt / «пришли файлом» — "
-    "выдай ПОЛНЫЙ готовый текст документа в ответе (без мета-оговорок). "
-    "Studio оформит его в файл. Неизвестные поля — прочерки «—».\n"
-    "Новые таблицы — TSV с «# Лист: …». Новые картинки — только data:image/...;base64,..."
-    ", не «восстанавливай» исходник пользователя."
+    "Если просят документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст "
+    "без мета-оговорок. Неизвестные поля — прочерки «—».\n"
+    "Таблицы — TSV с «# Лист: …». Картинки — только data:image/...;base64,..."
 )
 
-_RETURN_FILE_RE = re.compile(
-    r"(?i)\b("
-    r"верн[иу]|пришл[иу]|отправ[ьи]|скача[йть]|download|send\s+back|"
-    r"return\s+(the\s+)?file|дай\s+файл|выгруз|исходник"
-    r")\b"
-)
-
-_FILE_DELIVERY_RE = re.compile(
+# Пользователь хочет файл в «Результаты» (не обязательно исходник).
+_ASKS_FILE_RE = re.compile(
     r"(?i)("
-    r"файл[оа]м|как\s+файл|в\s+виде\s+файл|отправ[ьи].*файл|"
-    r"пришл[иу].*файл|прилож[иь]|вложен|"
-    r"\.docx|\.txt|\.md|word|ворд|"
-    r"send\s+as\s+(a\s+)?file|as\s+a\s+file"
+    r"верн[иу]|пришл[иу]|отправ[ьи]|скача[йть]|дай\s+файл|выгруз|исходник|"
+    r"файл[оа]м|как\s+файл|в\s+виде\s+файл|прилож[иь]|"
+    r"\.docx|\.txt|\.md|\bdocx\b|word|ворд|"
+    r"download|send\s+(back\s+)?(the\s+)?file|as\s+a\s+file"
+    r")"
+)
+
+# Нужна работа модели (не просто «положи уже готовое»).
+_NEEDS_WORK_RE = re.compile(
+    r"(?i)("
+    r"анализ|опис|что\s+(на|в)\s+|расскаж|проверь|сравн|"
+    r"перепиши|переработ|передел|обработ|отредактир|исправ|"
+    r"сгенерир|сформируй|состав[ьи]|подготов[ьи]|напиши|написать|"
+    r"сделай|измени|договор|контракт|соглашени|"
+    r"describe|analy[sz]e|compare|explain|rewrite|rework"
     r")"
 )
 
 _DOCX_RE = re.compile(r"(?i)(\.docx|\bdocx\b|word|ворд)")
-
-_ANALYZE_RE = re.compile(
-    r"(?i)("
-    r"анализ|опис|что\s+(на|в)\s+|расскаж|проверь|сравн|"
-    r"describe|analy[sz]e|compare|explain|что\s+это|кто\s+это|"
-    r"перепиши|переработ|передел|обработ|отредактир|rewrite|rework|"
-    r"исправ|сгенерир|сделай\s+(новую|другую)|измени|"
-    r"сформируй|состав[ьи]|подготов[ьи]|написать|напиши|"
-    r"договор|контракт|соглашени"
-    r")"
-)
 
 _EXCUSE_RE = re.compile(
     r"(?im)^.*("
@@ -74,43 +63,31 @@ _EXCUSE_RE = re.compile(
     r").*(?:\n|$)"
 )
 
+# Совместимость со старыми тестами / именами
+_RETURN_FILE_RE = _ASKS_FILE_RE
+_FILE_DELIVERY_RE = _ASKS_FILE_RE
+_ANALYZE_RE = _NEEDS_WORK_RE
+
+
+def _asks_file(message: str) -> bool:
+    return bool(_ASKS_FILE_RE.search(message or ""))
+
+
+def _needs_work(message: str) -> bool:
+    return bool(_NEEDS_WORK_RE.search(message or ""))
+
 
 def _wants_analysis(message: str) -> bool:
-    return bool(_ANALYZE_RE.search(message or ""))
-
-
-def _wants_file_return(message: str) -> bool:
-    """Вернуть исходные байты вложений. Не срабатывает при «переработай и пришли файлом»."""
-    text = message or ""
-    if _wants_analysis(text):
-        return False
-    return bool(_RETURN_FILE_RE.search(text))
-
-
-def _pure_file_return(message: str) -> bool:
-    """Только вернуть файл(ы), без анализа/генерации — GPT не нужен."""
-    text = (message or "").strip()
-    if not text or not _wants_file_return(text):
-        return False
-    # короткое «верни sand.png» / «пришли файл обратно»
-    return len(text) < 240
-
-
-def _wants_deliverable_file(message: str) -> bool:
-    """Пользователь ждёт скачиваемый файл в «Результаты»."""
-    text = message or ""
-    if _FILE_DELIVERY_RE.search(text) or _DOCX_RE.search(text):
-        return True
-    # «отправь файл» / «пришли файл» / «дай файл» — тоже файл, не текст в пузыре
-    if _RETURN_FILE_RE.search(text):
-        return True
-    if re.search(r"(?i)(договор|контракт|соглашени)", text) and _wants_analysis(text):
-        return True
-    return False
+    return _needs_work(message)
 
 
 def _wants_docx(message: str) -> bool:
     return bool(_DOCX_RE.search(message or ""))
+
+
+def _strip_attachment_excuses(text: str) -> str:
+    cleaned = _EXCUSE_RE.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def _last_assistant_document(prior_raw: list[Any]) -> str:
@@ -121,7 +98,6 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
         content = str(m.get("content") or "").strip()
         if not content:
             continue
-        # отрезаем студийные хвосты
         content = re.split(
             r"\n—\n(?:Studio|Исходники)",
             content,
@@ -133,9 +109,60 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
     return ""
 
 
-def _strip_attachment_excuses(text: str) -> str:
-    cleaned = _EXCUSE_RE.sub("", text or "")
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+def resolve_file_intent(
+    message: str,
+    *,
+    has_attachments: bool,
+    last_doc: str,
+) -> str:
+    """Одна развилка вместо кучи флагов.
+
+    return_attachments — скопировать вложения пользователя в Результаты
+    pack_last         — упаковать предыдущий ответ ассистента
+    pack_reply        — вызвать GPT и упаковать его ответ
+    none              — обычный чат
+    """
+    text = (message or "").strip()
+    if not text:
+        return "none"
+    asks = _asks_file(text)
+    work = _needs_work(text)
+    short = len(text) < 240
+    has_doc = len(last_doc or "") >= 80
+
+    # «составь договор и пришли файлом» / «переработай и отправь»
+    if asks and work:
+        return "pack_reply"
+    # «отправь файл» после готового текста в чате
+    if asks and short and has_doc and not work:
+        return "pack_last"
+    # «верни файл» — только исходники со скрепки
+    if asks and short and has_attachments and not work and not has_doc:
+        return "return_attachments"
+    # «отправь файл» без контекста — всё равно просим модель и пакуем ответ
+    if asks:
+        return "pack_reply"
+    # договор без слова «файл»
+    if work and re.search(r"(?i)(договор|контракт|соглашени|\.docx)", text):
+        return "pack_reply"
+    return "none"
+
+
+# --- aliases для старых тестов ---
+def _wants_file_return(message: str) -> bool:
+    return _asks_file(message) and not _needs_work(message)
+
+
+def _pure_file_return(message: str) -> bool:
+    text = (message or "").strip()
+    return bool(text) and _wants_file_return(text) and len(text) < 240
+
+
+def _wants_deliverable_file(message: str) -> bool:
+    return _asks_file(message) or bool(
+        re.search(r"(?i)(договор|контракт|соглашени)", message or "")
+        and _needs_work(message)
+    )
 
 
 def _write_simple_docx(path: Path, text: str) -> None:
@@ -189,7 +216,7 @@ def _deliver_reply_as_file(
     attachments: list[Path],
     ts: str,
 ) -> Path | None:
-    """Сохранить ответ модели как скачиваемый .txt/.docx в outputs/."""
+    """Сохранить текст как скачиваемый .txt/.docx в outputs/."""
     body = _strip_attachment_excuses(reply)
     if len(body) < 40:
         body = (reply or "").strip()
@@ -635,18 +662,19 @@ async def ask(
     out_dir.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     saved_files: list[str] = []
-    want_pack = _wants_deliverable_file(text)
     last_doc = _last_assistant_document(
         prior_raw if isinstance(prior_raw, list) else []
     )
+    intent = resolve_file_intent(
+        text,
+        has_attachments=bool(files),
+        last_doc=last_doc,
+    )
+    want_pack = intent in {"pack_last", "pack_reply"}
+    want_return = intent == "return_attachments"
 
-    # «отправь файл» после длинного ответа в чате → сразу в Результаты, без GPT
-    if (
-        want_pack
-        and not _wants_analysis(text)
-        and len(text) < 240
-        and len(last_doc) >= 80
-    ):
+    # 1) Упаковать уже готовый текст из чата
+    if intent == "pack_last":
         delivered = _deliver_reply_as_file(
             out_dir=out_dir,
             reply=last_doc,
@@ -656,17 +684,13 @@ async def ask(
         )
         if delivered is not None:
             saved_files.append(delivered.name)
-            reply = (
-                f"Studio положила файл в «Результаты»: {delivered.name}\n"
-                f"(текст из предыдущего ответа ассистента)"
-            )
+            reply = f"Studio положила файл в «Результаты»: {delivered.name}"
             (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
             _append_message(
                 session_id,
                 "assistant",
                 reply,
                 output_files=list(saved_files),
-                studio_returned=False,
             )
             meta = _read_json(d / "meta.json", {})
             meta["status"] = "idle"
@@ -675,52 +699,41 @@ async def ask(
             meta["updated_at"] = _now()
             _write_json(d / "meta.json", meta)
             logger.info(
-                "gpt_workspace: session={} packed_last_assistant file={}",
+                "gpt_workspace: session={} intent=pack_last file={}",
                 session_id,
                 delivered.name,
             )
             return get_session(session_id)
 
-    # ─── возврат исходников: байты с диска, НЕ реконструкция моделью ───
-    want_return = bool(files) and _wants_file_return(text) and not last_doc
+    # 2) Вернуть исходные вложения со скрепки
     if want_return:
         saved_files.extend(_promote_attachments(session_id, files))
+        reply = _studio_return_reply(saved_files)
+        (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
+        _append_message(
+            session_id,
+            "assistant",
+            reply,
+            output_files=list(saved_files),
+            studio_returned=True,
+        )
+        meta = _read_json(d / "meta.json", {})
+        meta["status"] = "idle"
+        meta["phase"] = "done"
+        meta["phase_detail"] = "Готово (возврат файлов)"
+        meta["updated_at"] = _now()
+        _write_json(d / "meta.json", meta)
+        logger.info(
+            "gpt_workspace: session={} intent=return_attachments files={}",
+            session_id,
+            saved_files,
+        )
+        return get_session(session_id)
 
     try:
-        # Чистый «верни файл» — GPT не вызываем (как карточка файла в веб-ChatGPT).
-        if want_return and _pure_file_return(text):
-            reply = _studio_return_reply(saved_files)
-            reply_path = out_dir / f"reply_{ts}.txt"
-            reply_path.write_text(reply, encoding="utf-8")
-            _append_message(
-                session_id,
-                "assistant",
-                reply,
-                output_files=list(saved_files),
-                studio_returned=True,
-            )
-            meta = _read_json(d / "meta.json", {})
-            meta["status"] = "idle"
-            meta["phase"] = "done"
-            meta["phase_detail"] = "Готово (возврат файлов)"
-            meta["updated_at"] = _now()
-            _write_json(d / "meta.json", meta)
-            logger.info(
-                "gpt_workspace: session={} studio_return files={}",
-                session_id,
-                saved_files,
-            )
-            return get_session(session_id)
-
         gpt = get_gpt_client()
         has_xlsx = any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
         ask_text = text
-        if want_return and saved_files:
-            ask_text = (
-                f"{text}\n\n"
-                f"[Studio уже положила исходники в Результаты: "
-                f"{', '.join(saved_files)}. Не реконструируй байты.]"
-            )
 
         meta = _read_json(d / "meta.json", {})
         meta["phase"] = "thinking"
@@ -823,13 +836,7 @@ async def ask(
             except Exception:  # noqa: BLE001
                 pass
 
-        if want_return and saved_files:
-            reply = (
-                f"{reply.rstrip()}\n\n"
-                f"—\n"
-                f"Исходники (Studio, не модель): {', '.join(saved_files)}"
-            )
-        elif delivered is not None:
+        if delivered is not None:
             reply = (
                 f"{_strip_attachment_excuses(reply).rstrip()}\n\n"
                 f"—\n"
@@ -841,7 +848,6 @@ async def ask(
             "assistant",
             reply,
             output_files=list(saved_files),
-            studio_returned=want_return,
         )
         meta = _read_json(d / "meta.json", {})
         meta["status"] = "idle"
@@ -850,12 +856,12 @@ async def ask(
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
         logger.info(
-            "gpt_workspace: session={} reply_len={} files={} history={} returned={}",
+            "gpt_workspace: session={} intent={} reply_len={} files={} history={}",
             session_id,
+            intent,
             len(reply),
             saved_files,
             len(history),
-            want_return,
         )
         return get_session(session_id)
     except Exception as e:

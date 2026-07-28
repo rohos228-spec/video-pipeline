@@ -369,6 +369,40 @@ def test_wants_deliverable_includes_send_file() -> None:
     assert gw._wants_deliverable_file("Составь договор аренды и пришли .docx")
 
 
+def test_resolve_file_intent_simple() -> None:
+    doc = "ДОГОВОР\n\n" + ("пункт\n" * 20)
+    assert (
+        gw.resolve_file_intent("отправь файл", has_attachments=False, last_doc=doc)
+        == "pack_last"
+    )
+    assert (
+        gw.resolve_file_intent(
+            "верни файл hero.png", has_attachments=True, last_doc=""
+        )
+        == "return_attachments"
+    )
+    assert (
+        gw.resolve_file_intent(
+            "текст переработай и пришли мне файлом",
+            has_attachments=True,
+            last_doc="",
+        )
+        == "pack_reply"
+    )
+    assert (
+        gw.resolve_file_intent(
+            "Составь договор аренды и пришли .docx",
+            has_attachments=False,
+            last_doc="",
+        )
+        == "pack_reply"
+    )
+    assert (
+        gw.resolve_file_intent("что на картинке?", has_attachments=True, last_doc="")
+        == "none"
+    )
+
+
 @pytest.mark.asyncio
 async def test_ask_docx_contract_saved_as_docx(
     monkeypatch: pytest.MonkeyPatch,
