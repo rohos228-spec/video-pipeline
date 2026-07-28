@@ -89,8 +89,36 @@ _TASKS: set[asyncio.Task[Any]] = set()
 # Отдельный семафор на провайдера: Outsee и Grsai не делят один пул.
 _SEMS: dict[str, asyncio.Semaphore] = {}
 _SEM_SIZES: dict[str, int] = {}
+# Анти-даблклик: одинаковый запрос за <N сек → вернуть уже поставленный job.
+_RECENT_FP: dict[str, tuple[str, float]] = {}
+_DEDUP_WINDOW_S = 2.5
 
 _MAX_PARALLEL_CAP = 16
+
+
+def _job_fingerprint(
+    *,
+    media: str,
+    model: str,
+    provider: str,
+    prompt: str,
+    params: dict[str, Any] | None,
+) -> str:
+    p = params or {}
+    return "|".join(
+        [
+            (provider or "").strip().lower(),
+            (media or "").strip().lower(),
+            (model or "").strip().lower(),
+            (prompt or "").strip(),
+            str(p.get("aspect") or ""),
+            str(p.get("resolution") or ""),
+            str(p.get("duration") or ""),
+            str(bool(p.get("generate_audio"))),
+            str(bool(p.get("has_first_frame"))),
+            str(bool(p.get("has_last_frame"))),
+        ]
+    )
 
 
 def max_parallel(provider: str | None = None) -> int:
@@ -181,6 +209,28 @@ async def enqueue_generation(
     run: GenerateFn,
 ) -> CreateJob:
     """Регистрирует job (queued) и стартует task — слот API берёт семафор."""
+    fp = _job_fingerprint(
+        media=media, model=model, provider=provider, prompt=prompt, params=params
+    )
+    now = datetime.now(timezone.utc).timestamp()
+    async with _LOCK:
+        stale = [k for k, (_, ts) in _RECENT_FP.items() if now - ts > _DEDUP_WINDOW_S]
+        for k in stale:
+            _RECENT_FP.pop(k, None)
+        prev = _RECENT_FP.get(fp)
+        if prev is not None:
+            prev_id, prev_ts = prev
+            if now - prev_ts <= _DEDUP_WINDOW_S:
+                existing = _JOBS.get(prev_id)
+                if existing is not None and existing.status in {"queued", "processing"}:
+                    logger.info(
+                        "create_job.dedup id={} fp={} (даблклик / повтор за {:.2f}s)",
+                        existing.id,
+                        fp[:80],
+                        now - prev_ts,
+                    )
+                    return existing
+
     job_id = uuid.uuid4().hex[:12]
     out_path = build_generation_path(media=media, model=model, ext=ext)
     history_id = f"gen-{out_path.name}"
@@ -208,6 +258,7 @@ async def enqueue_generation(
     )
     async with _LOCK:
         _JOBS[job_id] = job
+        _RECENT_FP[fp] = (job_id, now)
         _refresh_queue_positions()
 
     logger.info(

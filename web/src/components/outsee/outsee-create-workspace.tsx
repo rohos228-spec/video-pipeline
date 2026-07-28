@@ -1406,17 +1406,23 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     <button
                       type="button"
                       disabled={
+                        createGenerate.isPending ||
                         !prompt.trim() ||
                         (mediaType === "audio" && projectId == null) ||
                         (mediaType !== "audio" && !canApiDirect)
                       }
-                      onClick={() => createGenerate.mutate()}
+                      onClick={() => {
+                        if (createGenerate.isPending) return;
+                        createGenerate.mutate();
+                      }}
                       className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
                       style={{ backgroundColor: OUTSEE_ACCENT }}
                       title={
-                        !canApiDirect && mediaType !== "audio"
-                          ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
-                          : `Сгенерировать (можно несколько параллельно, лимит ${maxParallel}) · ${priceLabel}`
+                        createGenerate.isPending
+                          ? "Уже ставится в очередь…"
+                          : !canApiDirect && mediaType !== "audio"
+                            ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
+                            : `Сгенерировать (можно несколько параллельно, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (

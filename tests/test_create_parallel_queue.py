@@ -23,6 +23,42 @@ def _reset_create_jobs(
     cj._SEMS.clear()
     cj._SEM_SIZES.clear()
     cj._TASKS.clear()
+    cj._RECENT_FP.clear()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_dedups_identical_request_within_window(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.services import create_jobs as cj
+    from app.services import generation_storage as gs
+
+    monkeypatch.setattr(gs.settings, "data_dir", tmp_path)
+    _reset_create_jobs(monkeypatch, outsee=2)
+
+    async def slow_run(out_path: Path):
+        class R:
+            file_path = out_path
+            raw_url = None
+
+        out_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        await asyncio.sleep(0.05)
+        return R()
+
+    kwargs = dict(
+        media="image",
+        model="gpt-image-2",
+        provider="outsee",
+        prompt="одинаковый",
+        ext=".png",
+        params={"aspect": "16:9"},
+        quote=None,
+        run=slow_run,
+    )
+    a = await cj.enqueue_generation(**kwargs)
+    b = await cj.enqueue_generation(**kwargs)
+    assert a.id == b.id
+    await asyncio.sleep(0.1)
 
 
 @pytest.mark.asyncio
