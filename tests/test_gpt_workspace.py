@@ -428,6 +428,25 @@ def test_resolve_file_intent_simple() -> None:
         )
         == "none"
     )
+    # Любой хвост с «?» — ответ в чате, даже если есть «файл»
+    assert (
+        gw.resolve_file_intent(
+            "можешь прислать файлом?",
+            has_attachments=False,
+            last_doc=doc,
+        )
+        == "none"
+    )
+    assert (
+        gw.resolve_file_intent(
+            "отправь файл?",
+            has_attachments=False,
+            last_doc=doc,
+        )
+        == "none"
+    )
+    assert gw._is_meta_chat_question("пришли мне файл???")
+    assert not gw._is_meta_chat_question("пришли мне файлом")
 
 
 def test_short_affirmative_continues_file_work() -> None:

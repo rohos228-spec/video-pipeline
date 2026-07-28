@@ -102,10 +102,17 @@ def _asks_file(message: str) -> bool:
 
 
 def _is_meta_chat_question(message: str) -> bool:
-    """Вопрос/жалоба про чат — не команда «пришли файл»."""
+    """Вопрос — ответить в чате, не слать/паковать файл.
+
+    Правило: если в конце `?` / `？` — всегда вопрос.
+    Также жалобы/meta без знака («я вопрос задал», «почему не прислал»).
+    """
     t = (message or "").strip()
     if not t:
         return False
+    # хвостовая пунктуация: «…файл???» / «файл？»
+    if re.search(r"[?？]\s*$", t):
+        return True
     if re.search(
         r"(?i)("
         r"почему|зачем|как\s+так| wh?y\b|"
@@ -114,11 +121,6 @@ def _is_meta_chat_question(message: str) -> bool:
         r"с\s+первого\s+раза|"
         r"не\s+(?:прислал|отправил|дал|положил)"
         r")",
-        t,
-    ):
-        return True
-    if t.endswith("?") and not re.search(
-        r"(?i)^(пришл[иу]|отправ[ьи]|верн[иу]|скача[йть]|дай)\b",
         t,
     ):
         return True
