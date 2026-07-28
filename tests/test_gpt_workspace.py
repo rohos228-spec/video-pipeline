@@ -445,6 +445,36 @@ async def test_ask_blank_txt_via_gpt_empty_output(
 
 
 @pytest.mark.asyncio
+async def test_ask_image_typo_does_not_pack_txt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Опечатка «картику» не должна давать document_*.txt."""
+    import app.services.gpt_client as gc
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return "Phantom_Assassin.png\npa_white_bg.png"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    out = await gw.ask(
+        s["id"],
+        "пришли мне картику фантом ассасин из доты на белом фоне",
+    )
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert not any(n.endswith(".txt") and n.startswith("document_") for n in names)
+    assert gw._wants_image_file("пришли мне картику фантом")
+    assert not gw._should_pack_text_document(
+        "пришли мне картику фантом",
+        "Phantom_Assassin.png",
+        media_count=0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_ask_image_does_not_pack_txt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

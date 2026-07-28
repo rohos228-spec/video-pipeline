@@ -29,7 +29,8 @@ _WORKSPACE_SYSTEM = (
     "Документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст файла "
     "без мета-оговорок. Клиент сохранит ответ как скачиваемый файл.\n"
     "Пустой .txt — ответь пустой строкой или одним переводом строки, без пояснений.\n"
-    "Картинка — ТОЛЬКО data:image/...;base64,... без другого текста.\n"
+    "Картинка / арт / фото — ТОЛЬКО одна или несколько строк data:image/...;base64,... "
+    "без имён файлов, без списков и без пояснений.\n"
     "Excel — TSV с строками «# Лист: …». Word — обычный текст документа.\n"
     "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
     "Неизвестные поля — прочерки «—»."
@@ -61,8 +62,11 @@ _XLSX_RE = re.compile(
     r"(?i)(\.xlsx|\.xls|\bxlsx\b|\bexcel\b|эксел[ьяю]|таблиц[аеуы])"
 )
 _IMAGE_ASK_RE = re.compile(
-    r"(?i)(картинк|изображен|\.png|\.jpe?g|\.webp|\.gif|\bpng\b|"
-    r"\bimage\b|фото|рисунок|пиксель)"
+    r"(?i)("
+    r"картин?к|"  # картинка/картинку + опечатка «картику»
+    r"изображен|рисунок|фото|пикч|пиксель|арт\b|скрин|"
+    r"\.png|\.jpe?g|\.webp|\.gif|\bpng\b|\bimage\b|\bpicture\b|\bphoto\b"
+    r")"
 )
 _DATA_URI_INLINE_RE = re.compile(
     r"data:(?:image|application)/[^;,\s]+;base64,[A-Za-z0-9+/=\s]+",
@@ -136,25 +140,47 @@ def _is_media_heavy_reply(reply: str) -> bool:
     return len(_strip_media_payloads(raw)) < 40
 
 
+def _explicit_text_doc_ask(message: str) -> bool:
+    """Явно просят текстовый/док файл (не «пришли картинку»)."""
+    t = message or ""
+    return bool(
+        re.search(
+            r"(?i)("
+            r"\.txt|\.md|\btxt\b|\bmd\b|"
+            r"пуст(?:ой|ая|ое|ую).*(?:файл|txt|текст)|"
+            r"текст(?:ом|овый)?\s+файл|"
+            r"как\s+файл|в\s+виде\s+файл|файл[оа]м|"
+            r"договор|контракт|соглашени"
+            r")",
+            t,
+        )
+    )
+
+
 def _should_pack_text_document(
     user_text: str, reply: str, *, media_count: int
 ) -> bool:
-    """Паковать .txt/.docx только когда просят документ, не «картинку»."""
+    """Паковать .txt/.docx только для явных документных запросов."""
+    if _wants_image_file(user_text) and not _explicit_text_doc_ask(user_text):
+        return False
     if _wants_blank_file(user_text):
         return True
     if _wants_docx(user_text):
         return True
-    if _wants_image_file(user_text) and not _wants_docx(user_text) and not re.search(
-        r"(?i)(\.txt|\.md|\btxt\b|текст|договор|контракт)", user_text or ""
-    ):
-        return False
-    if _wants_xlsx(user_text) and not _wants_docx(user_text) and not re.search(
-        r"(?i)(\.txt|\.md|\btxt\b)", user_text or ""
-    ):
+    if _wants_xlsx(user_text) and not _explicit_text_doc_ask(user_text):
         return False
     if media_count > 0 and _is_media_heavy_reply(reply):
         return False
-    return _asks_file(user_text)
+    if _explicit_text_doc_ask(user_text):
+        return True
+    # «отправь/верни/скачай файл» без картинки
+    if re.search(
+        r"(?i)(отправ[ьи]|верн[иу]|скача[йть]|дай)\s+(?:мне\s+)?файл",
+        user_text or "",
+    ):
+        return True
+    # НЕ пакуем от голого «пришли …» (иначе любой запрос картинки → .txt)
+    return False
 
 
 def _write_simple_xlsx(path: Path, text: str) -> None:
