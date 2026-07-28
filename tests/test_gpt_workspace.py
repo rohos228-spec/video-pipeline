@@ -444,6 +444,84 @@ async def test_ask_blank_txt_via_gpt_empty_output(
     assert "Готовые файлы" in out["messages"][-1]["content"]
 
 
+def test_placeholder_1x1_png_detected(tmp_path: Path) -> None:
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    p = tmp_path / "stub.png"
+    p.write_bytes(png)
+    assert gw._is_placeholder_image(p)
+    kept = gw._filter_placeholder_images(tmp_path, ["stub.png"])
+    assert kept == []
+    assert not p.exists()
+
+
+@pytest.mark.asyncio
+async def test_ask_image_web_search_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Если GPT шлёт 1×1 — Studio ищет картинку в сети."""
+    import struct
+    import zlib
+
+    import app.services.gpt_api as ga
+    import app.services.gpt_client as gc
+
+    stub = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8A"
+        "AusB9Y9Zl1sAAAAASUVORK5CYII="
+    )
+
+    def _png(w: int, h: int) -> bytes:
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
+        raw = b"".join(b"\x00" + bytes([0, 128, 255, 255]) * w for _ in range(h))
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
+
+    real = _png(40, 40)
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return f"data:image/png;base64,{stub}"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    async def fake_fetch(query, out_dir, **kwargs):
+        assert "фантом" in query.lower() or "phantom" in query.lower() or "ассасин" in query.lower()
+        dest = Path(out_dir) / "web_0.png"
+        dest.write_bytes(real)
+        return [dest]
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    monkeypatch.setattr(ga, "fetch_web_images", fake_fetch)
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "пришли мне картику фантом ассасин из доты")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".png") for n in names)
+    got = next(o for o in out["outputs"] if o["name"].endswith(".png"))
+    assert Path(got["path"]).stat().st_size > 100
+
+
+def test_image_search_query_strips_fluff() -> None:
+    assert "фантом" in gw._image_search_query(
+        "пришли мне картику фантом ассасин из доты на белом фоне"
+    ).lower()
+
+
 @pytest.mark.asyncio
 async def test_materialize_svg_data_uri(tmp_path: Path) -> None:
     from app.services.gpt_api import materialize_reply_assets
@@ -495,13 +573,31 @@ async def test_ask_image_typo_does_not_pack_txt(
 async def test_ask_image_does_not_pack_txt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """«пришли картинку» → png, без document_*.txt с data-URI."""
+    """«пришли картинку» с нормальным PNG → файл есть, без document_*.txt."""
+    import base64
+    import struct
+    import zlib
+
     import app.services.gpt_client as gc
 
-    png_b64 = (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF"
-        "gAI/ScL1WQAAAABJRU5ErkJggg=="
-    )
+    def _png(w: int, h: int) -> bytes:
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
+        raw = b"".join(b"\x00" + bytes([255, 0, 0, 255]) * w for _ in range(h))
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
+
+    png_b64 = base64.b64encode(_png(32, 32)).decode("ascii")
 
     class FakeGpt:
         async def ask_with_files(self, *a, **k):

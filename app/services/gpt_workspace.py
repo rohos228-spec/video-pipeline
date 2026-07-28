@@ -21,16 +21,17 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
-# Vision ≠ исходные байты. Контент файлов — только из ответа GPT; Studio лишь сохраняет/показывает.
+# Vision ≠ исходные байты. Контент файлов — из ответа GPT / скачанных URL.
 _WORKSPACE_SYSTEM = (
     "Ты в чате Studio GPT (HTTP API). Вложения пользователя уже приложены.\n"
-    "Изображения — vision: ты их видишь и анализируешь.\n"
+    "Изображения во вложениях — vision: ты их видишь и анализируешь.\n"
     "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений.\n"
     "Документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст файла "
     "без мета-оговорок. Клиент сохранит ответ как скачиваемый файл.\n"
     "Пустой .txt — ответь пустой строкой или одним переводом строки, без пояснений.\n"
-    "Картинка / арт / фото — ТОЛЬКО data:image/png;base64,... "
-    "(PNG предпочтительно; не SVG и не имена файлов), без пояснений.\n"
+    "Картинка / фото / арт «найди / пришли»: НЕ генерируй и НЕ шли data:image/base64. "
+    "Верни 1–3 РЕАЛЬНЫХ https URL (прямая .png/.jpg/.webp или страница Wikipedia/wiki "
+    "с картинкой). Без выдуманных ссылок и без имён файлов без URL.\n"
     "Excel — TSV с строками «# Лист: …». Word — обычный текст документа.\n"
     "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
     "Неизвестные поля — прочерки «—»."
@@ -243,6 +244,110 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
         if len(content) >= 80:
             return content
     return ""
+
+
+def _image_search_query(message: str) -> str:
+    """Текст запроса картинки без «пришли мне картинку»."""
+    t = (message or "").strip()
+    t = re.sub(
+        r"(?i)^(пришл[иу]|отправ[ьи]|найд[ий]|скача[йть]|дай|покаж[иь])\s+"
+        r"(мне\s+)?(пожалуйста\s+)?",
+        "",
+        t,
+    ).strip()
+    t = re.sub(
+        r"(?i)^(картин?к\w*|изображен\w*|фото|рисунок|арт|пикч\w*|image|picture|photo)\s+"
+        r"(of\s+|с\s+|про\s+)?",
+        "",
+        t,
+    ).strip()
+    t = re.sub(
+        r"(?i)\b(из\s+интернета|из\s+сети|в\s+интернете|ссылк\w*|url|пожалуйста)\b",
+        "",
+        t,
+    ).strip(" ,.-")
+    return t or (message or "").strip()
+
+
+def _image_query_variants(message_or_query: str) -> list[str]:
+    """Несколько поисковых формулировок (RU/EN), чтобы Openverse находил арт."""
+    base = _image_search_query(message_or_query)
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        s = re.sub(r"\s+", " ", (s or "").strip())
+        if not s:
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append(s)
+
+    add(base)
+    low = base.lower()
+    if re.search(r"[а-яё]", low):
+        if "фантом" in low and "ассас" in low:
+            add("Phantom Assassin Dota 2")
+        if "дот" in low:
+            add(re.sub(r"(?i)из\s+доты|в\s+доте|дота\s*2?|доты", "Dota 2", base))
+            add(f"{base} Dota 2")
+        add(f"{base} art")
+        add(f"{base} official")
+    else:
+        add(f"{base} art")
+        if "dota" not in low and re.search(
+            r"(?i)assassin|phantom|invoker|pudge", low
+        ):
+            add(f"{base} Dota 2")
+    if "бел" in low or "white" in low:
+        add((variants[0] if variants else base) + " white background")
+    return variants
+
+
+def _is_placeholder_image(path: Path) -> bool:
+    """1×1 / крошечный data-URI — заглушка модели, не реальная картинка."""
+    import struct
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True
+    suf = path.suffix.lower()
+    if suf not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}:
+        return False
+    if len(data) < 64:
+        return True
+    if data.startswith(b"\x89PNG") and len(data) >= 24:
+        w, h = struct.unpack(">II", data[16:24])
+        if w <= 2 or h <= 2:
+            return True
+        return False
+    if data.startswith(b"\xff\xd8\xff") and len(data) < 400:
+        return True
+    if suf == ".svg" and len(data) < 80:
+        return True
+    return False
+
+
+def _filter_placeholder_images(out_dir: Path, names: list[str]) -> list[str]:
+    kept: list[str] = []
+    for name in names:
+        p = out_dir / Path(name).name
+        if p.is_file() and _is_placeholder_image(p):
+            logger.warning(
+                "gpt_workspace: drop placeholder image {} ({} B)",
+                p.name,
+                p.stat().st_size,
+            )
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            continue
+        kept.append(name)
+    return kept
 
 
 def _wants_blank_file(message: str) -> bool:
@@ -1019,6 +1124,8 @@ async def ask(
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 
+        saved_files = _filter_placeholder_images(out_dir, saved_files)
+
         media_count = sum(
             1
             for n in saved_files
@@ -1026,6 +1133,42 @@ async def ask(
                 ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg",
             }
         )
+
+        # Картинка из интернета: если GPT не дал рабочих URL — ищем сами.
+        if _wants_image_file(text) and media_count == 0:
+            q = _image_search_query(text)
+            variants = _image_query_variants(text)
+            try:
+                from app.services.gpt_api import fetch_web_images
+
+                web_imgs = await fetch_web_images(
+                    q,
+                    out_dir,
+                    prefix=f"web_{ts}",
+                    limit=3,
+                    timeout=60.0,
+                    query_variants=variants,
+                )
+                for p in web_imgs:
+                    if p.is_file() and p.name not in saved_files:
+                        saved_files.append(p.name)
+                saved_files = _filter_placeholder_images(out_dir, saved_files)
+                media_count = sum(
+                    1
+                    for n in saved_files
+                    if Path(n).suffix.lower() in {
+                        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg",
+                    }
+                )
+                logger.info(
+                    "gpt_workspace: session={} web image search q={!r} variants={} got={}",
+                    session_id,
+                    q,
+                    variants[:4],
+                    media_count,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("gpt_workspace: web image search: {}", e)
 
         # 2) Excel — если просили (и/или в ответе есть # Лист:)
         if _wants_xlsx(text) or ("# Лист:" in reply) or ("# Лист：" in reply) or has_xlsx:
@@ -1084,7 +1227,7 @@ async def ask(
         ).rstrip()
         if _wants_image_file(text) and media_count == 0:
             logger.warning(
-                "gpt_workspace: session={} image ask but no media extracted "
+                "gpt_workspace: session={} image ask but no real media "
                 "raw_reply_len={} has_data_uri={}",
                 session_id,
                 len(reply or ""),
@@ -1092,8 +1235,9 @@ async def ask(
             )
             if not body:
                 body = (
-                    "GPT ответил, но картинку извлечь не удалось "
-                    "(формат/битый data-URI). Попробуй ещё раз — лучше попроси PNG."
+                    "Не удалось найти картинку в интернете по запросу. "
+                    "Уточни название (например: «Phantom Assassin Dota 2») "
+                    "или пришли прямую ссылку на изображение."
                 )
         if ready:
             notice = _ready_files_notice(ready)

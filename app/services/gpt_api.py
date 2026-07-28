@@ -1222,6 +1222,126 @@ async def materialize_reply_assets(
     return saved
 
 
+async def search_web_image_urls(query: str, *, limit: int = 4) -> list[str]:
+    """Найти URL картинок (Openverse + запасные источники, без API-ключа)."""
+    queries = [q.strip() for q in (query or "").split("||") if q.strip()]
+    if not queries:
+        q = (query or "").strip()
+        if q:
+            queries = [q]
+    if not queries:
+        return []
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/html,*/*",
+    }
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(u: str | None) -> None:
+        u = (u or "").strip()
+        if not u or not u.startswith("http") or u in seen:
+            return
+        if u.startswith("data:"):
+            return
+        seen.add(u)
+        found.append(u)
+
+    async with httpx.AsyncClient(
+        timeout=25.0, follow_redirects=True, headers=headers
+    ) as client:
+        for q in queries:
+            if len(found) >= limit:
+                break
+            try:
+                r = await client.get(
+                    "https://api.openverse.org/v1/images/",
+                    params={"q": q, "page_size": str(max(limit, 5))},
+                )
+                if r.status_code < 400 and r.content:
+                    data = r.json()
+                    for item in (data.get("results") or []) if isinstance(data, dict) else []:
+                        if not isinstance(item, dict):
+                            continue
+                        _add(item.get("url"))
+                        _add(item.get("thumbnail"))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("search_web_image_urls: openverse {!r}: {}", q, e)
+
+            if len(found) >= limit:
+                break
+            try:
+                r = await client.get(
+                    "https://api.duckduckgo.com/",
+                    params={
+                        "q": q,
+                        "format": "json",
+                        "no_redirect": "1",
+                        "no_html": "1",
+                    },
+                )
+                if r.status_code < 400 and r.content:
+                    data = r.json()
+                    if isinstance(data, dict):
+                        _add(data.get("Image"))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("search_web_image_urls: ddg {!r}: {}", q, e)
+
+    found.sort(key=_url_image_priority)
+    return found[:limit]
+
+
+async def fetch_web_images(
+    query: str,
+    out_dir: Path,
+    *,
+    prefix: str = "web",
+    limit: int = 3,
+    timeout: float = 60.0,
+    query_variants: list[str] | None = None,
+) -> list[Path]:
+    """Поиск + скачивание картинок по запросу пользователя."""
+    if query_variants:
+        joined = "||".join(query_variants)
+    else:
+        joined = query
+    urls = await search_web_image_urls(joined, limit=limit)
+    if not urls:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    for i, url in enumerate(urls):
+        dest = out_dir / f"{prefix}_{i}.download"
+        n = 2
+        while dest.exists():
+            dest = out_dir / f"{prefix}_{i}_{n}.download"
+            n += 1
+        try:
+            got = await download_content(url, dest, timeout=timeout)
+            got = ensure_correct_extension(got)
+            if got.suffix.lower() in {".html", ".htm", ".bin", ".download"}:
+                try:
+                    got.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            if got.stat().st_size < 64:
+                try:
+                    got.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            saved.append(got)
+            if len(saved) >= limit:
+                break
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_web_images: skip {}: {}", url[:120], e)
+    return saved
+
+
 async def download_content(
     url: str, out_path: Path, *, timeout: float = 180.0
 ) -> Path:
