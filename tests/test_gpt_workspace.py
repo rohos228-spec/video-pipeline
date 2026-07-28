@@ -445,6 +445,23 @@ async def test_ask_blank_txt_via_gpt_empty_output(
 
 
 @pytest.mark.asyncio
+async def test_materialize_svg_data_uri(tmp_path: Path) -> None:
+    from app.services.gpt_api import materialize_reply_assets
+
+    b64 = (
+        "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiPjwvc3ZnPg=="
+    )
+    saved = await materialize_reply_assets(
+        f"data:image/svg+xml;base64,{b64}",
+        tmp_path,
+        prefix="gpt_test",
+    )
+    assert len(saved) == 1
+    assert saved[0].suffix == ".svg"
+    assert b"<svg" in saved[0].read_bytes().lower()
+
+
+@pytest.mark.asyncio
 async def test_ask_image_typo_does_not_pack_txt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

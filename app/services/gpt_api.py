@@ -643,7 +643,7 @@ async def chat(
 # ─────────────────────────── контент (download/copy) ───────────────────────────
 
 _DATA_URI_RE = re.compile(
-    r"data:(image/(?:png|jpeg|jpg|webp|gif)|application/(?:pdf|zip|octet-stream|"
+    r"data:(image/(?:png|jpeg|jpg|webp|gif|svg\+xml)|application/(?:pdf|zip|octet-stream|"
     r"vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|"
     r"vnd\.ms-excel))"
     r";base64,([A-Za-z0-9+/=\s]+)",
@@ -677,6 +677,10 @@ def sniff_file_extension(data: bytes) -> str | None:
             return ".heic"
     if data.startswith(b"%PDF"):
         return ".pdf"
+    # SVG (часто text/xml без магии)
+    head = data[:200].lstrip().lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in data[:800].lower()):
+        return ".svg"
     if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
         head = data[:8000]
         if b"word/" in head:
@@ -1091,6 +1095,7 @@ def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -
             "image/jpg": ".jpg",
             "image/webp": ".webp",
             "image/gif": ".gif",
+            "image/svg+xml": ".svg",
             "application/pdf": ".pdf",
             "application/zip": ".zip",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
@@ -1100,7 +1105,9 @@ def extract_data_uri_files(text: str, out_dir: Path, *, prefix: str = "embed") -
             data = base64.b64decode(raw_b64, validate=False)
         except Exception:  # noqa: BLE001
             continue
-        if len(data) < 32:
+        # SVG часто короче 32 байт после decode; растр — нет
+        min_bytes = 8 if "svg" in mime else 32
+        if len(data) < min_bytes:
             continue
         sniffed = sniff_file_extension(data)
         if sniffed:

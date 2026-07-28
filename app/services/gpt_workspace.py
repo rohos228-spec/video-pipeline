@@ -29,8 +29,8 @@ _WORKSPACE_SYSTEM = (
     "Документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст файла "
     "без мета-оговорок. Клиент сохранит ответ как скачиваемый файл.\n"
     "Пустой .txt — ответь пустой строкой или одним переводом строки, без пояснений.\n"
-    "Картинка / арт / фото — ТОЛЬКО одна или несколько строк data:image/...;base64,... "
-    "без имён файлов, без списков и без пояснений.\n"
+    "Картинка / арт / фото — ТОЛЬКО data:image/png;base64,... "
+    "(PNG предпочтительно; не SVG и не имена файлов), без пояснений.\n"
     "Excel — TSV с строками «# Лист: …». Word — обычный текст документа.\n"
     "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
     "Неизвестные поля — прочерки «—»."
@@ -1082,6 +1082,19 @@ async def ask(
             body,
             flags=re.I,
         ).rstrip()
+        if _wants_image_file(text) and media_count == 0:
+            logger.warning(
+                "gpt_workspace: session={} image ask but no media extracted "
+                "raw_reply_len={} has_data_uri={}",
+                session_id,
+                len(reply or ""),
+                bool(_DATA_URI_INLINE_RE.search(reply or "")),
+            )
+            if not body:
+                body = (
+                    "GPT ответил, но картинку извлечь не удалось "
+                    "(формат/битый data-URI). Попробуй ещё раз — лучше попроси PNG."
+                )
         if ready:
             notice = _ready_files_notice(ready)
             reply = f"{body}\n\n{notice}" if body else notice
