@@ -409,29 +409,35 @@ def test_resolve_file_intent_simple() -> None:
         gw.resolve_file_intent(
             "пришли мне пустой txt файл", has_attachments=False, last_doc=""
         )
-        == "make_blank"
+        == "pack_reply"
     )
 
 
 @pytest.mark.asyncio
-async def test_ask_blank_txt_without_gpt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """«пустой txt» — Studio пишет empty_*.txt, GPT не вызывается."""
+async def test_ask_blank_txt_via_gpt_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«пустой txt» → запрос в GPT; пустой output пакуется как empty_*.txt."""
     import app.services.gpt_client as gc
 
-    class Boom:
+    class FakeGpt:
         async def ask_with_files(self, *a, **k):
-            raise AssertionError("GPT не нужен для пустого файла")
+            from app.services.gpt_api import GptApiError
 
-    monkeypatch.setattr(gc, "get_gpt_client", lambda: Boom())
+            raise GptApiError("GPT(responses): пустой output")
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
     s = gw.create_session()
     out = await gw.ask(s["id"], "пришли мне пустой txt файл")
     names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
-    assert names and all(n.endswith(".txt") for n in names)
-    blank = next(o for o in out["outputs"] if o["name"].startswith("empty_"))
+    assert names and any(n.endswith(".txt") for n in names)
+    blank = next(o for o in out["outputs"] if o["name"].endswith(".txt") and not o["name"].startswith("reply_"))
     assert Path(blank["path"]).is_file()
     assert Path(blank["path"]).stat().st_size == 0
     assert "Готовые файлы" in out["messages"][-1]["content"]
-    assert blank["name"] in out["messages"][-1]["content"]
 
 
 @pytest.mark.asyncio

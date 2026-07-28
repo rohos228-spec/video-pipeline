@@ -21,15 +21,17 @@ from app.settings import settings
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._\-а-яА-ЯёЁ ]+")
 
-# Vision ≠ исходные байты. Выдача файлов — всегда Studio, не модель.
+# Vision ≠ исходные байты. Контент файлов — только из ответа GPT; Studio лишь сохраняет/показывает.
 _WORKSPACE_SYSTEM = (
-    "Ты в Studio GPT (HTTP API). Вложения пользователя уже приложены приложением.\n"
+    "Ты в чате Studio GPT (HTTP API). Вложения пользователя уже приложены.\n"
     "Изображения — vision: ты их видишь и анализируешь.\n"
-    "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений. "
-    "Studio сама кладёт готовый текст в «Результаты» как скачиваемый файл.\n"
+    "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений.\n"
     "Если просят документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст "
-    "без мета-оговорок. Неизвестные поля — прочерки «—».\n"
-    "Таблицы — TSV с «# Лист: …». Картинки — только data:image/...;base64,..."
+    "файла без мета-оговорок. Клиент сохранит твой ответ как скачиваемый файл.\n"
+    "Если просят пустой .txt / empty file — ответь пустой строкой или одним "
+    "переводом строки, без пояснений и без извинений.\n"
+    "Неизвестные поля — прочерки «—». Таблицы — TSV с «# Лист: …». "
+    "Картинки — только data:image/...;base64,..."
 )
 
 # Пользователь хочет файл в «Результаты» (не обязательно исходник).
@@ -55,13 +57,12 @@ _NEEDS_WORK_RE = re.compile(
 
 _DOCX_RE = re.compile(r"(?i)(\.docx|\bdocx\b|word|ворд)")
 
-# «пришли пустой txt» — без GPT, Studio пишет файл на диск.
+# «пустой txt» — контент всё равно от GPT (может быть пустой строкой).
 _BLANK_FILE_RE = re.compile(
     r"(?i)("
     r"пуст(?:ой|ая|ое|ую|ых)?\s*(?:\.?txt|\.?docx|\.?md|файл|текст|document)?"
     r"|empty\s+(?:\.?txt|\.?docx|file|text|document)"
     r"|blank\s+(?:\.?txt|file)"
-    r"|(?:\.?txt|\.?docx|\.?md)\s*файл\s*пуст"
     r")"
 )
 
@@ -120,15 +121,11 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
 
 
 def _wants_blank_file(message: str) -> bool:
+    """Просят пустой файл — контент от GPT может быть пустым."""
     text = (message or "").strip()
-    if not text:
-        return False
-    # нужен явный запрос файла/формата + «пустой/empty»
-    if not _BLANK_FILE_RE.search(text):
-        return False
-    return bool(
+    return bool(text) and bool(_BLANK_FILE_RE.search(text)) and (
         _asks_file(text)
-        or re.search(r"(?i)(\.txt|\.docx|\.md|\btxt\b|\bdocx\b|\bmd\b|файл)", text)
+        or bool(re.search(r"(?i)(\.txt|\.docx|\.md|\btxt\b|файл)", text))
     )
 
 
@@ -140,11 +137,10 @@ def resolve_file_intent(
 ) -> str:
     """Одна развилка вместо кучи флагов.
 
-    make_blank          — пустой .txt/.docx без GPT
-    return_attachments  — скопировать вложения пользователя в Результаты
-    pack_last           — упаковать предыдущий ответ ассистента
-    pack_reply          — вызвать GPT и упаковать его ответ
-    none                — обычный чат
+    return_attachments — скопировать вложения пользователя (байты юзера)
+    pack_last         — упаковать предыдущий ответ ассистента
+    pack_reply        — вызвать GPT и упаковать его ответ
+    none              — обычный чат
     """
     text = (message or "").strip()
     if not text:
@@ -154,11 +150,10 @@ def resolve_file_intent(
     short = len(text) < 240
     has_doc = len(last_doc or "") >= 80
 
-    # «пришли пустой txt» — Studio пишет файл, модель не нужна
-    if short and _wants_blank_file(text) and not work:
-        return "make_blank"
-    # «составь договор и пришли файлом» / «переработай и отправь»
+    # «составь договор и пришли файлом» / «переработай и отправь» / «пустой txt»
     if asks and work:
+        return "pack_reply"
+    if asks and _wants_blank_file(text):
         return "pack_reply"
     # «отправь файл» после готового текста в чате
     if asks and short and has_doc and not work:
@@ -166,7 +161,7 @@ def resolve_file_intent(
     # «верни файл» — только исходники со скрепки
     if asks and short and has_attachments and not work and not has_doc:
         return "return_attachments"
-    # «отправь файл» без контекста — всё равно просим модель и пакуем ответ
+    # «отправь файл» без контекста — GPT, затем сохранить ответ как файл
     if asks:
         return "pack_reply"
     # договор без слова «файл»
@@ -235,18 +230,6 @@ def _write_simple_docx(path: Path, text: str) -> None:
         zf.writestr("word/_rels/document.xml.rels", doc_rels)
 
 
-def _create_blank_file(out_dir: Path, user_text: str, ts: str) -> Path:
-    """Пустой .txt или минимальный .docx — без модели."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    if _wants_docx(user_text):
-        dest = out_dir / f"empty_{ts}.docx"
-        _write_simple_docx(dest, "")
-    else:
-        dest = out_dir / f"empty_{ts}.txt"
-        dest.write_bytes(b"")
-    return dest
-
-
 def _deliver_reply_as_file(
     *,
     out_dir: Path,
@@ -255,13 +238,14 @@ def _deliver_reply_as_file(
     attachments: list[Path],
     ts: str,
 ) -> Path | None:
-    """Сохранить текст как скачиваемый .txt/.docx в outputs/."""
+    """Сохранить текст ответа GPT как скачиваемый .txt/.docx в outputs/."""
+    allow_empty = _wants_blank_file(user_text)
     body = _strip_attachment_excuses(reply)
     if len(body) < 40:
         body = (reply or "").strip()
-    if len(body) < 20:
+    if len(body) < 20 and not allow_empty:
         return None
-    stem = "document"
+    stem = "empty" if allow_empty and len(body) < 20 else "document"
     for p in attachments:
         if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv", ".docx"}:
             stem = p.stem[:48] or stem
@@ -275,8 +259,15 @@ def _deliver_reply_as_file(
         _write_simple_docx(dest, body)
     else:
         dest = out_dir / f"{stem}_{ts}.txt"
-        dest.write_text(body, encoding="utf-8")
-    return dest if dest.is_file() and dest.stat().st_size > 32 else None
+        if allow_empty and not body:
+            dest.write_bytes(b"")
+        else:
+            dest.write_text(body, encoding="utf-8")
+    if not dest.is_file():
+        return None
+    if allow_empty:
+        return dest
+    return dest if dest.stat().st_size > 32 else None
 
 
 def _file_urls(path: Path) -> dict[str, str]:
@@ -659,7 +650,7 @@ _READY_SUFFIXES = frozenset(
 )
 
 
-def _verify_ready_files(out_dir: Path, names: list[str], *, min_size: int = 1) -> list[str]:
+def _verify_ready_files(out_dir: Path, names: list[str], *, min_size: int = 0) -> list[str]:
     """Только реально лежащие на диске файлы (без reply_*.txt и мусора)."""
     junk = {".bin", ".download", ".tmp", ".dat", ".octet-stream", ".html", ".htm"}
     seen: set[str] = set()
@@ -768,31 +759,6 @@ async def ask(
     want_pack = intent in {"pack_last", "pack_reply"}
     want_return = intent == "return_attachments"
 
-    # 0) Пустой файл — без GPT
-    if intent == "make_blank":
-        blank = _create_blank_file(out_dir, text, ts)
-        ready = _verify_ready_files(out_dir, [blank.name], min_size=0)
-        reply = _ready_files_notice(ready)
-        (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
-        _append_message(
-            session_id,
-            "assistant",
-            reply,
-            output_files=list(ready),
-        )
-        meta = _read_json(d / "meta.json", {})
-        meta["status"] = "idle"
-        meta["phase"] = "done"
-        meta["phase_detail"] = "Готово (пустой файл)"
-        meta["updated_at"] = _now()
-        _write_json(d / "meta.json", meta)
-        logger.info(
-            "gpt_workspace: session={} intent=make_blank file={}",
-            session_id,
-            blank.name,
-        )
-        return get_session(session_id)
-
     # 1) Упаковать уже готовый текст из чата
     if intent == "pack_last":
         delivered = _deliver_reply_as_file(
@@ -863,15 +829,27 @@ async def ask(
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
 
-        reply = await gpt.ask_with_files(
-            ask_text,
-            files,
-            timeout=float(settings.gpt_timeout_s or 600),
-            expect_file_download=has_xlsx,
-            history=history,
-            treat_txt_as_prompt=False,
-            system=_WORKSPACE_SYSTEM,
-        )
+        try:
+            reply = await gpt.ask_with_files(
+                ask_text,
+                files,
+                timeout=float(settings.gpt_timeout_s or 600),
+                expect_file_download=has_xlsx,
+                history=history,
+                treat_txt_as_prompt=False,
+                system=_WORKSPACE_SYSTEM,
+            )
+        except Exception as e:  # noqa: BLE001
+            # Модель иногда отдаёт пустой output на «пустой txt» — это валидный контент файла.
+            err = str(e)
+            if want_pack and "пустой output" in err.lower():
+                logger.info(
+                    "gpt_workspace: session={} empty GPT output → pack as empty file",
+                    session_id,
+                )
+                reply = ""
+            else:
+                raise
         reply = (reply or "").strip()
 
         meta = _read_json(d / "meta.json", {})
@@ -885,11 +863,7 @@ async def ask(
         reply_path.write_text(reply, encoding="utf-8")
 
         delivered: Path | None = None
-        if (
-            reply
-            and want_pack
-            and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
-        ):
+        if want_pack and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files):
             try:
                 delivered = _deliver_reply_as_file(
                     out_dir=out_dir,
