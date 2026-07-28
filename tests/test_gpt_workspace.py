@@ -434,10 +434,69 @@ async def test_ask_blank_txt_via_gpt_empty_output(
     out = await gw.ask(s["id"], "пришли мне пустой txt файл")
     names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
     assert names and any(n.endswith(".txt") for n in names)
-    blank = next(o for o in out["outputs"] if o["name"].endswith(".txt") and not o["name"].startswith("reply_"))
+    blank = next(
+        o
+        for o in out["outputs"]
+        if o["name"].endswith(".txt") and not o["name"].startswith("reply_")
+    )
     assert Path(blank["path"]).is_file()
     assert Path(blank["path"]).stat().st_size == 0
     assert "Готовые файлы" in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_image_does_not_pack_txt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«пришли картинку» → png, без document_*.txt с data-URI."""
+    import app.services.gpt_client as gc
+
+    png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF"
+        "gAI/ScL1WQAAAABJRU5ErkJggg=="
+    )
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return f"data:image/png;base64,{png_b64}"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "пришли мне картинку")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".png") for n in names)
+    assert not any(n.endswith(".txt") and n.startswith("document_") for n in names)
+    assert "data:image" not in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_excel_and_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.gpt_client as gc
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return (
+                "# Лист: Данные\n"
+                "A\tB\n"
+                "1\t2\n"
+                "\n"
+                "Короткий текст для word-документа про тест."
+            )
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "пришли теперь эксель и ворд")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".xlsx") for n in names)
+    assert any(n.endswith(".docx") for n in names)
 
 
 @pytest.mark.asyncio

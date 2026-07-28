@@ -26,12 +26,13 @@ _WORKSPACE_SYSTEM = (
     "Ты в чате Studio GPT (HTTP API). Вложения пользователя уже приложены.\n"
     "Изображения — vision: ты их видишь и анализируешь.\n"
     "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений.\n"
-    "Если просят документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст "
-    "файла без мета-оговорок. Клиент сохранит твой ответ как скачиваемый файл.\n"
-    "Если просят пустой .txt / empty file — ответь пустой строкой или одним "
-    "переводом строки, без пояснений и без извинений.\n"
-    "Неизвестные поля — прочерки «—». Таблицы — TSV с «# Лист: …». "
-    "Картинки — только data:image/...;base64,..."
+    "Документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст файла "
+    "без мета-оговорок. Клиент сохранит ответ как скачиваемый файл.\n"
+    "Пустой .txt — ответь пустой строкой или одним переводом строки, без пояснений.\n"
+    "Картинка — ТОЛЬКО data:image/...;base64,... без другого текста.\n"
+    "Excel — TSV с строками «# Лист: …». Word — обычный текст документа.\n"
+    "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
+    "Неизвестные поля — прочерки «—»."
 )
 
 # Пользователь хочет файл в «Результаты» (не обязательно исходник).
@@ -56,6 +57,17 @@ _NEEDS_WORK_RE = re.compile(
 )
 
 _DOCX_RE = re.compile(r"(?i)(\.docx|\bdocx\b|word|ворд)")
+_XLSX_RE = re.compile(
+    r"(?i)(\.xlsx|\.xls|\bxlsx\b|\bexcel\b|эксел[ьяю]|таблиц[аеуы])"
+)
+_IMAGE_ASK_RE = re.compile(
+    r"(?i)(картинк|изображен|\.png|\.jpe?g|\.webp|\.gif|\bpng\b|"
+    r"\bimage\b|фото|рисунок|пиксель)"
+)
+_DATA_URI_INLINE_RE = re.compile(
+    r"data:(?:image|application)/[^;,\s]+;base64,[A-Za-z0-9+/=\s]+",
+    re.IGNORECASE,
+)
 
 # «пустой txt» — контент всё равно от GPT (может быть пустой строкой).
 _BLANK_FILE_RE = re.compile(
@@ -94,6 +106,93 @@ def _wants_analysis(message: str) -> bool:
 
 def _wants_docx(message: str) -> bool:
     return bool(_DOCX_RE.search(message or ""))
+
+
+def _wants_xlsx(message: str) -> bool:
+    return bool(_XLSX_RE.search(message or ""))
+
+
+def _wants_image_file(message: str) -> bool:
+    return bool(_IMAGE_ASK_RE.search(message or ""))
+
+
+def _strip_media_payloads(text: str) -> str:
+    """Убрать data-URI / прямые URL картинок из текста пузыря."""
+    t = _DATA_URI_INLINE_RE.sub("", text or "")
+    t = re.sub(
+        r"https?://\S+\.(?:png|jpe?g|webp|gif|bmp|svg)(?:\?\S*)?",
+        "",
+        t,
+        flags=re.I,
+    )
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def _is_media_heavy_reply(reply: str) -> bool:
+    """Ответ почти целиком картинка/data-URI — не паковать в .txt."""
+    raw = (reply or "").strip()
+    if not raw or not _DATA_URI_INLINE_RE.search(raw):
+        return False
+    return len(_strip_media_payloads(raw)) < 40
+
+
+def _should_pack_text_document(
+    user_text: str, reply: str, *, media_count: int
+) -> bool:
+    """Паковать .txt/.docx только когда просят документ, не «картинку»."""
+    if _wants_blank_file(user_text):
+        return True
+    if _wants_docx(user_text):
+        return True
+    if _wants_image_file(user_text) and not _wants_docx(user_text) and not re.search(
+        r"(?i)(\.txt|\.md|\btxt\b|текст|договор|контракт)", user_text or ""
+    ):
+        return False
+    if _wants_xlsx(user_text) and not _wants_docx(user_text) and not re.search(
+        r"(?i)(\.txt|\.md|\btxt\b)", user_text or ""
+    ):
+        return False
+    if media_count > 0 and _is_media_heavy_reply(reply):
+        return False
+    return _asks_file(user_text)
+
+
+def _write_simple_xlsx(path: Path, text: str) -> None:
+    """Минимальный .xlsx из ответа GPT (TSV / # Лист / строки)."""
+    from openpyxl import Workbook
+
+    from app.services.xlsx_text_writeback import extract_sheet_blocks
+
+    blocks = extract_sheet_blocks(text or "")
+    wb = Workbook()
+    if blocks:
+        default = wb.active
+        if default is not None:
+            wb.remove(default)
+        for name, rows in blocks.items():
+            ws = wb.create_sheet(title=(name or "Данные")[:31])
+            for r_i, row in enumerate(rows, start=1):
+                for c_i, val in enumerate(row, start=1):
+                    ws.cell(r_i, c_i, val)
+    else:
+        ws = wb.active
+        ws.title = "Данные"
+        lines = [
+            ln
+            for ln in _strip_media_payloads(text or "").splitlines()
+            if ln.strip()
+        ]
+        if not lines:
+            ws.cell(1, 1, "")
+        else:
+            for r_i, line in enumerate(lines[:800], start=1):
+                if "\t" in line:
+                    for c_i, val in enumerate(line.split("\t"), start=1):
+                        ws.cell(r_i, c_i, val)
+                else:
+                    ws.cell(r_i, 1, line)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
 
 
 def _strip_attachment_excuses(text: str) -> str:
@@ -238,11 +337,11 @@ def _deliver_reply_as_file(
     attachments: list[Path],
     ts: str,
 ) -> Path | None:
-    """Сохранить текст ответа GPT как скачиваемый .txt/.docx в outputs/."""
+    """Сохранить текст ответа GPT как .txt/.docx (без data-URI)."""
     allow_empty = _wants_blank_file(user_text)
-    body = _strip_attachment_excuses(reply)
+    body = _strip_media_payloads(_strip_attachment_excuses(reply))
     if len(body) < 40:
-        body = (reply or "").strip()
+        body = _strip_media_payloads((reply or "").strip())
     if len(body) < 20 and not allow_empty:
         return None
     stem = "empty" if allow_empty and len(body) < 20 else "document"
@@ -862,22 +961,7 @@ async def ask(
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
 
-        delivered: Path | None = None
-        if want_pack and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files):
-            try:
-                delivered = _deliver_reply_as_file(
-                    out_dir=out_dir,
-                    reply=reply,
-                    user_text=text,
-                    attachments=files,
-                    ts=ts,
-                )
-                if delivered is not None and delivered.name not in saved_files:
-                    saved_files.append(delivered.name)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("gpt_workspace: deliver reply file: {}", e)
-
-        # URL / data-URI из ответа → только НОВЫЕ артефакты модели
+        # 1) Картинки / URL из ответа модели
         try:
             from app.services.gpt_api import ensure_correct_extension, materialize_reply_assets
 
@@ -891,7 +975,6 @@ async def ask(
                 p = ensure_correct_extension(p)
                 if p.is_file() and p.name not in saved_files:
                     saved_files.append(p.name)
-            # Добить любые .bin/.download в outputs этой сессии
             for p in list(out_dir.iterdir()):
                 if p.is_file() and p.suffix.lower() in {
                     ".bin",
@@ -906,22 +989,35 @@ async def ask(
                         ".bin",
                         ".download",
                     }:
-                        if fixed.name not in saved_files:
-                            saved_files.append(fixed.name)
+                        saved_files.append(fixed.name)
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_workspace: materialize assets: {}", e)
 
-        looks_like_xlsx = has_xlsx or ("# Лист:" in reply) or ("# Лист：" in reply)
-        if looks_like_xlsx:
+        media_count = sum(
+            1
+            for n in saved_files
+            if Path(n).suffix.lower() in {
+                ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg",
+            }
+        )
+
+        # 2) Excel — если просили (и/или в ответе есть # Лист:)
+        if _wants_xlsx(text) or ("# Лист:" in reply) or ("# Лист：" in reply) or has_xlsx:
             try:
-                xlsx_path = out_dir / f"result_{ts}.xlsx"
-                await gpt.download_attachment_from_last_reply(
-                    xlsx_path,
-                    timeout=120 if has_xlsx else 60,
-                    fallback_text=reply,
-                    allow_reply_text_fallback=False,
-                )
-                if xlsx_path.exists() and xlsx_path.stat().st_size > 64:
+                xlsx_path = out_dir / f"table_{ts}.xlsx"
+                if has_xlsx or ("# Лист:" in reply) or ("# Лист：" in reply):
+                    try:
+                        await gpt.download_attachment_from_last_reply(
+                            xlsx_path,
+                            timeout=120 if has_xlsx else 60,
+                            fallback_text=reply,
+                            allow_reply_text_fallback=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                if not xlsx_path.exists() or xlsx_path.stat().st_size < 64:
+                    _write_simple_xlsx(xlsx_path, reply)
+                if xlsx_path.exists() and xlsx_path.stat().st_size >= 64:
                     if xlsx_path.name not in saved_files:
                         saved_files.append(xlsx_path.name)
                 elif xlsx_path.exists():
@@ -929,12 +1025,31 @@ async def ask(
                         xlsx_path.unlink()
                     except OSError:
                         pass
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning("gpt_workspace: xlsx deliver: {}", e)
+
+        # 3) .txt/.docx — только документные запросы, не «пришли картинку»
+        delivered: Path | None = None
+        if (
+            want_pack
+            and _should_pack_text_document(text, reply, media_count=media_count)
+            and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
+        ):
+            try:
+                delivered = _deliver_reply_as_file(
+                    out_dir=out_dir,
+                    reply=reply,
+                    user_text=text,
+                    attachments=files,
+                    ts=ts,
+                )
+                if delivered is not None and delivered.name not in saved_files:
+                    saved_files.append(delivered.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("gpt_workspace: deliver reply file: {}", e)
 
         ready = _verify_ready_files(out_dir, saved_files)
-        body = _strip_attachment_excuses(reply).rstrip()
-        # убрать старые служебные хвосты, если модель их повторила
+        body = _strip_media_payloads(_strip_attachment_excuses(reply)).rstrip()
         body = re.sub(
             r"\n*—\n*(?:Studio положила|Studio вернула|Готовые файлы:)[\s\S]*$",
             "",

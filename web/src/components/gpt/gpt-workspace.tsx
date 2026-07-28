@@ -98,7 +98,10 @@ function stripFilesNotice(content: string): string {
     /^(?:Studio положила файл[^\n]*(?:\n•[^\n]*)*|Studio вернула[\s\S]*|Готовые файлы:[\s\S]*)$/i,
     "",
   );
-  return t.trim();
+  // сырые data:image в пузыре не показываем — картинка в карточках
+  t = t.replace(/data:(?:image|application)\/[^;,\s]+;base64,[A-Za-z0-9+/=\s]+/gi, "");
+  t = t.replace(/\n{3,}/g, "\n\n").trim();
+  return t;
 }
 
 function ReadyFilesPanel({
