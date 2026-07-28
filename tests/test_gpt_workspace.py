@@ -275,7 +275,8 @@ async def test_ask_studio_returns_bytes_without_gpt(
     # байты идентичны исходному вложению
     got = next(o for o in out["outputs"] if o["name"] == "hero.png")
     assert Path(got["path"]).read_bytes() == raw
-    assert "Studio вернула" in out["messages"][-1]["content"]
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    assert "hero.png" in out["messages"][-1]["content"]
     assert out["messages"][-1].get("studio_returned") is True
 
 
@@ -334,10 +335,12 @@ async def test_ask_rework_text_to_file_calls_gpt(
     assert out["messages"][-1].get("studio_returned") is not True
     assert "Studio вернула исходные" not in out["messages"][-1]["content"]
     assert "Переработанный текст" in out["messages"][-1]["content"]
-    assert "Studio положила файл в «Результаты»" in out["messages"][-1]["content"]
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    assert "Studio положила" not in out["messages"][-1]["content"]
     # новый файл в Результаты, не копия исходника
     out_names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
     assert any(n.endswith(".txt") and "дело" in n.lower() for n in out_names)
+    assert any("дело" in line for line in out["messages"][-1]["content"].splitlines())
 
 
 @pytest.mark.asyncio
@@ -359,7 +362,8 @@ async def test_ask_send_file_packs_previous_assistant_reply(
     names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
     assert names, out["outputs"]
     assert any(n.endswith((".txt", ".docx")) for n in names)
-    assert "Studio положила файл" in out["messages"][-1]["content"]
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    assert "Studio положила" not in out["messages"][-1]["content"]
     assert "ДОГОВОР" not in out["messages"][-1]["content"]  # не дублируем весь текст в пузырь
 
 
@@ -428,9 +432,11 @@ async def test_ask_docx_contract_saved_as_docx(
     assert any(n.endswith(".docx") for n in names)
     doc = next(o for o in out["outputs"] if o["name"].endswith(".docx"))
     assert Path(doc["path"]).stat().st_size > 64
-    # отмазка модели вырезана / перекрыта студийной ремаркой
-    assert "Studio положила файл" in out["messages"][-1]["content"]
+    # отмазка модели вырезана; уведомление только о реальных файлах
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    assert "Studio положила" not in out["messages"][-1]["content"]
     assert "недоступен инструмент" not in out["messages"][-1]["content"]
+    assert any(n.endswith(".docx") for n in out["messages"][-1].get("output_files") or [])
 
 
 def test_save_attachment_empty_raises() -> None:

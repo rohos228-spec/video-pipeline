@@ -593,21 +593,77 @@ def _promote_attachments(session_id: str, files: list[Path]) -> list[str]:
     return names
 
 
+# Типы, которые обещаем корректно отдать (остальное — мусор / не в уведомление).
+_READY_SUFFIXES = frozenset(
+    {
+        ".txt",
+        ".md",
+        ".csv",
+        ".tsv",
+        ".docx",
+        ".xlsx",
+        ".xlsm",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".bmp",
+        ".svg",
+        ".pdf",
+        ".zip",
+        ".mp3",
+        ".wav",
+        ".mp4",
+        ".webm",
+    }
+)
+
+
+def _verify_ready_files(out_dir: Path, names: list[str], *, min_size: int = 1) -> list[str]:
+    """Только реально лежащие на диске файлы (без reply_*.txt и мусора)."""
+    junk = {".bin", ".download", ".tmp", ".dat", ".octet-stream", ".html", ".htm"}
+    seen: set[str] = set()
+    ok: list[str] = []
+    for raw in names:
+        name = Path(raw).name
+        if not name or name in seen:
+            continue
+        if re.match(r"^reply_\d", name, re.I):
+            continue
+        p = out_dir / name
+        if not p.is_file() or p.stat().st_size < min_size:
+            continue
+        suf = p.suffix.lower()
+        if suf in junk:
+            continue
+        # генерация: предпочитаем обещанные типы; исходники «верни» — любой не-junk
+        if suf and suf not in _READY_SUFFIXES and not re.search(
+            r"[a-zA-Z0-9]", suf[1:] or ""
+        ):
+            continue
+        seen.add(name)
+        ok.append(name)
+    return ok
+
+
+def _ready_files_notice(names: list[str]) -> str:
+    """Уведомление в пузыре: полный список успешно созданных файлов."""
+    if not names:
+        return "Файлы не созданы — на диск ничего не записано."
+    lines = ["Готовые файлы:"]
+    for n in names:
+        lines.append(f"• {n}")
+    return "\n".join(lines)
+
+
 def _studio_return_reply(returned: list[str]) -> str:
     if not returned:
         return (
             "Нет вложений в этой сессии. Прикрепи файл(ы) скрепкой, "
             "затем снова попроси вернуть."
         )
-    lines = [
-        "Studio вернула исходные файлы из хранилища сессии "
-        "(байты с диска, без участия модели / vision).",
-        "",
-        "Скачай в блоке «Результаты» или ↓ ниже:",
-    ]
-    for n in returned:
-        lines.append(f"• {n}")
-    return "\n".join(lines)
+    return _ready_files_notice(returned)
 
 
 async def ask(
@@ -684,13 +740,14 @@ async def ask(
         )
         if delivered is not None:
             saved_files.append(delivered.name)
-            reply = f"Studio положила файл в «Результаты»: {delivered.name}"
+            ready = _verify_ready_files(out_dir, saved_files)
+            reply = _ready_files_notice(ready)
             (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
             _append_message(
                 session_id,
                 "assistant",
                 reply,
-                output_files=list(saved_files),
+                output_files=list(ready),
             )
             meta = _read_json(d / "meta.json", {})
             meta["status"] = "idle"
@@ -708,13 +765,14 @@ async def ask(
     # 2) Вернуть исходные вложения со скрепки
     if want_return:
         saved_files.extend(_promote_attachments(session_id, files))
-        reply = _studio_return_reply(saved_files)
+        ready = _verify_ready_files(out_dir, saved_files)
+        reply = _studio_return_reply(ready)
         (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
         _append_message(
             session_id,
             "assistant",
             reply,
-            output_files=list(saved_files),
+            output_files=list(ready),
             studio_returned=True,
         )
         meta = _read_json(d / "meta.json", {})
@@ -836,18 +894,26 @@ async def ask(
             except Exception:  # noqa: BLE001
                 pass
 
-        if delivered is not None:
-            reply = (
-                f"{_strip_attachment_excuses(reply).rstrip()}\n\n"
-                f"—\n"
-                f"Studio положила файл в «Результаты»: {delivered.name}"
-            )
+        ready = _verify_ready_files(out_dir, saved_files)
+        body = _strip_attachment_excuses(reply).rstrip()
+        # убрать старые служебные хвосты, если модель их повторила
+        body = re.sub(
+            r"\n*—\n*(?:Studio положила|Studio вернула|Готовые файлы:)[\s\S]*$",
+            "",
+            body,
+            flags=re.I,
+        ).rstrip()
+        if ready:
+            notice = _ready_files_notice(ready)
+            reply = f"{body}\n\n{notice}" if body else notice
+        else:
+            reply = body
 
         _append_message(
             session_id,
             "assistant",
             reply,
-            output_files=list(saved_files),
+            output_files=list(ready),
         )
         meta = _read_json(d / "meta.json", {})
         meta["status"] = "idle"

@@ -80,6 +80,109 @@ function triggerDownload(f: GptWorkspaceFile): void {
   a.remove();
 }
 
+function formatBytes(n?: number): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Убрать блок «Готовые файлы» / старые Studio-хвосты — карточки рисуем отдельно. */
+function stripFilesNotice(content: string): string {
+  let t = (content || "").trim();
+  t = t.replace(
+    /\n*—?\s*\n*(?:Studio положила файл[^\n]*(?:\n•[^\n]*)*|Studio вернула[\s\S]*|Готовые файлы:[\s\S]*)$/i,
+    "",
+  );
+  t = t.replace(
+    /^(?:Studio положила файл[^\n]*(?:\n•[^\n]*)*|Studio вернула[\s\S]*|Готовые файлы:[\s\S]*)$/i,
+    "",
+  );
+  return t.trim();
+}
+
+function ReadyFilesPanel({
+  names,
+  filesByName,
+}: {
+  names: string[];
+  filesByName: Map<string, GptWorkspaceFile>;
+}) {
+  if (names.length === 0) return null;
+  return (
+    <div
+      className="mt-3 overflow-hidden rounded-lg border"
+      style={{
+        borderColor: "rgba(209,254,23,0.28)",
+        background:
+          "linear-gradient(180deg, rgba(209,254,23,0.07) 0%, rgba(209,254,23,0.02) 100%)",
+      }}
+    >
+      <div
+        className="flex items-center gap-2 border-b px-3 py-2"
+        style={{ borderColor: "rgba(209,254,23,0.18)" }}
+      >
+        <FolderOutput className="h-3.5 w-3.5 shrink-0" style={{ color: ACCENT }} />
+        <span
+          className="text-[11px] font-semibold uppercase tracking-[0.12em]"
+          style={{ color: ACCENT }}
+        >
+          Готовые файлы · {names.length}
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1.5 p-2">
+        {names.map((name) => {
+          const f = resolveFile(filesByName, name);
+          const label = f ? fileLabel(f) : name;
+          const image = isImageFile(f, name);
+          const size = formatBytes(f?.size);
+          return (
+            <li
+              key={name}
+              className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/35 px-2.5 py-2"
+            >
+              {image && f ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={f.url}
+                  alt={label}
+                  className="h-10 w-10 shrink-0 rounded object-cover bg-black/50"
+                />
+              ) : (
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-white/[0.04]">
+                  <FileText className="h-4 w-4 text-white/45" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium text-white/90" title={label}>
+                  {label}
+                </div>
+                {size ? (
+                  <div className="font-mono text-[10px] text-white/35">{size}</div>
+                ) : null}
+              </div>
+              {f ? (
+                <button
+                  type="button"
+                  onClick={() => triggerDownload(f)}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold text-black"
+                  style={{ backgroundColor: ACCENT }}
+                  title="Скачать"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Скачать
+                </button>
+              ) : (
+                <span className="text-[10px] text-white/30">нет на диске</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function FileChip({
   file,
   onToOutputs,
@@ -643,7 +746,8 @@ function MessageBubble({
     (n) => !/^reply_\d/.test(n) && !/\.html?$/i.test(n),
   );
   const [attsOpen, setAttsOpen] = useState(false);
-  const [outsOpen, setOutsOpen] = useState(false);
+  const displayText = stripFilesNotice(message.content || "");
+  const showReady = !isUser && outNames.length > 0;
 
   return (
     <div
@@ -659,9 +763,11 @@ function MessageBubble({
           {message.role}
         </span>
       </div>
-      <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-white/90">
-        {message.content}
-      </pre>
+      {displayText ? (
+        <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-white/90">
+          {displayText}
+        </pre>
+      ) : null}
       {attNames.length > 0 && (
         <div className="mt-2">
           <button
@@ -716,63 +822,9 @@ function MessageBubble({
           )}
         </div>
       )}
-      {outNames.length > 0 && (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setOutsOpen((v) => !v)}
-            className="flex items-center gap-1 text-[10px] uppercase tracking-[0.14em] text-white/30 hover:text-white/55"
-          >
-            <ChevronDown
-              className={cn(
-                "h-3 w-3 shrink-0 transition-transform",
-                !outsOpen && "-rotate-90",
-              )}
-            />
-            Файлы из ответа · {outNames.length}
-          </button>
-          {outsOpen && (
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              {outNames.map((name) => {
-                const f = resolveFile(filesByName, name);
-                const label = f ? fileLabel(f) : name;
-                return (
-                  <div
-                    key={name}
-                    className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5 text-[10px] text-white/55"
-                  >
-                    {f && isImageFile(f, name) ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={f.url}
-                        alt={label}
-                        className="max-h-28 w-full rounded object-contain bg-black/40"
-                      />
-                    ) : (
-                      <div className="flex items-center gap-1">
-                        <FileText className="h-3 w-3" />
-                        <span className="truncate">{label}</span>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-1">
-                      <span className="min-w-0 flex-1 truncate">{label}</span>
-                      {f && (
-                        <button
-                          type="button"
-                          onClick={() => triggerDownload(f)}
-                          title="Скачать"
-                        >
-                          <Download className="h-3 w-3 text-white/35 hover:text-white" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+      {showReady ? (
+        <ReadyFilesPanel names={outNames} filesByName={filesByName} />
+      ) : null}
     </div>
   );
 }
