@@ -18,7 +18,7 @@ async def test_ensure_public_keeps_http() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_hosts_data_url(tmp_path: Path) -> None:
+async def test_ensure_public_hosts_data_url_via_uguu() -> None:
     from app.bots import outsee_http as oh
 
     png = base64.b64encode(
@@ -26,23 +26,40 @@ async def test_ensure_public_hosts_data_url(tmp_path: Path) -> None:
     ).decode("ascii")
     data = f"data:image/png;base64,{png}"
 
-    class FakeResp:
-        status_code = 200
-        text = "https://litterbox.catbox.moe/hosted.png"
+    async def fake_uguu(_client, _raw, _mime, _filename):
+        return "https://n.uguu.se/hosted.png"
 
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
-        async def post(self, *a, **k):
-            return FakeResp()
-
-    with patch.object(oh.httpx, "AsyncClient", return_value=FakeClient()):
+    with (
+        patch.object(oh, "_host_via_uguu", side_effect=fake_uguu),
+        patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+    ):
         out = await oh.ensure_public_image_url(data)
-    assert out == "https://litterbox.catbox.moe/hosted.png"
+    assert out == "https://n.uguu.se/hosted.png"
+
+
+@pytest.mark.asyncio
+async def test_ensure_public_falls_back_when_uguu_fails() -> None:
+    from app.bots import outsee_http as oh
+
+    png = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    ).decode("ascii")
+    data = f"data:image/png;base64,{png}"
+
+    async def boom(*_a, **_k):
+        raise oh.OutseeApiError("uguu down")
+
+    async def litter(_client, _raw, _mime, _filename):
+        return "https://litter.catbox.moe/ok.png"
+
+    with (
+        patch.object(oh, "_host_via_uguu", side_effect=boom),
+        patch.object(oh, "_host_via_litterbox", side_effect=litter),
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+    ):
+        out = await oh.ensure_public_image_url(data)
+    assert out == "https://litter.catbox.moe/ok.png"
 
 
 @pytest.mark.asyncio

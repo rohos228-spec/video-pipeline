@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -315,10 +314,72 @@ def _decode_data_url(url: str) -> tuple[bytes, str] | None:
     return raw, mime
 
 
+_FRAME_UPLOAD_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+async def _verify_hosted_image(client: httpx.AsyncClient, url: str, *, min_bytes: int = 32) -> bool:
+    try:
+        r = await client.get(url)
+        return r.status_code < 400 and len(r.content or b"") >= min_bytes
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://uguu.se/upload.php",
+        files={"files[]": (filename, raw, mime)},
+    )
+    if r.status_code >= 400:
+        raise OutseeApiError(f"uguu HTTP {r.status_code}: {(r.text or '')[:160]}")
+    try:
+        payload = r.json()
+        url = str((((payload or {}).get("files") or [{}])[0]).get("url") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        raise OutseeApiError(f"uguu bad JSON: {(r.text or '')[:160]}") from exc
+    if not url.startswith("http"):
+        raise OutseeApiError(f"uguu no url: {(r.text or '')[:160]}")
+    if not await _verify_hosted_image(client, url, min_bytes=min(32, len(raw))):
+        raise OutseeApiError(f"uguu URL empty/unreachable: {url[:120]}")
+    return url
+
+
+async def _host_via_litterbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://litterbox.catbox.moe/resources/internals/api.php",
+        data={"reqtype": "fileupload", "time": "24h"},
+        files={"fileToUpload": (filename, raw, mime)},
+    )
+    text = (r.text or "").strip()
+    if r.status_code >= 400 or not text.startswith("http"):
+        raise OutseeApiError(f"litterbox HTTP {r.status_code}: {text[:160]}")
+    if not await _verify_hosted_image(client, text, min_bytes=min(32, len(raw))):
+        raise OutseeApiError(f"litterbox URL empty/unreachable: {text[:120]}")
+    return text
+
+
+async def _host_via_catbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://catbox.moe/user/api.php",
+        data={"reqtype": "fileupload"},
+        files={"fileToUpload": (filename, raw, mime)},
+    )
+    text = (r.text or "").strip()
+    if r.status_code >= 400 or not text.startswith("http"):
+        raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160]}")
+    # catbox иногда отдаёт URL с 0 байт — проверяем
+    if not await _verify_hosted_image(client, text, min_bytes=min(32, len(raw))):
+        raise OutseeApiError(f"catbox URL empty/unreachable: {text[:120]}")
+    return text
+
+
 async def ensure_public_image_url(url: str | None) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (litterbox 24h). http(s) → как есть (кроме localhost).
+    data: → публичный URL (uguu → litterbox → catbox). http(s) → как есть (кроме localhost).
     """
     if not url or not str(url).strip():
         return None
@@ -338,31 +399,31 @@ async def ensure_public_image_url(url: str | None) -> str | None:
         return None
     raw, mime = decoded
     ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "png")
-    import os
-
-    tmp = Path(tempfile.gettempdir()) / f"outsee_frame_{os.getpid()}_{abs(hash(raw)) & 0xFFFFFFFF}.{ext}"
-    try:
-        tmp.write_bytes(raw)
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            with tmp.open("rb") as fh:
-                r = await client.post(
-                    "https://litterbox.catbox.moe/resources/internals/api.php",
-                    data={"reqtype": "fileupload", "time": "24h"},
-                    files={"fileToUpload": (tmp.name, fh, mime)},
-                )
-            text = (r.text or "").strip()
-            if r.status_code >= 400 or not text.startswith("http"):
-                raise OutseeApiError(
-                    f"frame upload failed HTTP {r.status_code}: {text[:200]}",
-                    context={"mime": mime, "bytes": len(raw)},
-                )
-            logger.info("outsee_api.frame hosted {} bytes → {}", len(raw), text[:120])
-            return text
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    filename = f"frame.{ext}"
+    errors: list[str] = []
+    hosts = (
+        ("uguu", _host_via_uguu),
+        ("litterbox", _host_via_litterbox),
+        ("catbox", _host_via_catbox),
+    )
+    async with httpx.AsyncClient(
+        timeout=90.0,
+        follow_redirects=True,
+        headers={"User-Agent": _FRAME_UPLOAD_UA},
+    ) as client:
+        for name, upload in hosts:
+            try:
+                hosted = await upload(client, raw, mime, filename)
+                logger.info("outsee_api.frame hosted via {} {} bytes → {}", name, len(raw), hosted[:120])
+                return hosted
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)[:180]
+                errors.append(f"{name}: {msg}")
+                logger.warning("outsee_api.frame host {} failed: {}", name, msg)
+    raise OutseeApiError(
+        "frame upload failed: " + " | ".join(errors)[:400],
+        context={"mime": mime, "bytes": len(raw)},
+    )
 
 
 async def probe_has_audio(path: Path) -> bool:
