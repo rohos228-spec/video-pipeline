@@ -55,6 +55,16 @@ _NEEDS_WORK_RE = re.compile(
 
 _DOCX_RE = re.compile(r"(?i)(\.docx|\bdocx\b|word|ворд)")
 
+# «пришли пустой txt» — без GPT, Studio пишет файл на диск.
+_BLANK_FILE_RE = re.compile(
+    r"(?i)("
+    r"пуст(?:ой|ая|ое|ую|ых)?\s*(?:\.?txt|\.?docx|\.?md|файл|текст|document)?"
+    r"|empty\s+(?:\.?txt|\.?docx|file|text|document)"
+    r"|blank\s+(?:\.?txt|file)"
+    r"|(?:\.?txt|\.?docx|\.?md)\s*файл\s*пуст"
+    r")"
+)
+
 _EXCUSE_RE = re.compile(
     r"(?im)^.*("
     r"недоступен инструмент|не\s+могу\s+прикрепить|не\s+смогу\s+прикрепить|"
@@ -109,6 +119,19 @@ def _last_assistant_document(prior_raw: list[Any]) -> str:
     return ""
 
 
+def _wants_blank_file(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    # нужен явный запрос файла/формата + «пустой/empty»
+    if not _BLANK_FILE_RE.search(text):
+        return False
+    return bool(
+        _asks_file(text)
+        or re.search(r"(?i)(\.txt|\.docx|\.md|\btxt\b|\bdocx\b|\bmd\b|файл)", text)
+    )
+
+
 def resolve_file_intent(
     message: str,
     *,
@@ -117,10 +140,11 @@ def resolve_file_intent(
 ) -> str:
     """Одна развилка вместо кучи флагов.
 
-    return_attachments — скопировать вложения пользователя в Результаты
-    pack_last         — упаковать предыдущий ответ ассистента
-    pack_reply        — вызвать GPT и упаковать его ответ
-    none              — обычный чат
+    make_blank          — пустой .txt/.docx без GPT
+    return_attachments  — скопировать вложения пользователя в Результаты
+    pack_last           — упаковать предыдущий ответ ассистента
+    pack_reply          — вызвать GPT и упаковать его ответ
+    none                — обычный чат
     """
     text = (message or "").strip()
     if not text:
@@ -130,6 +154,9 @@ def resolve_file_intent(
     short = len(text) < 240
     has_doc = len(last_doc or "") >= 80
 
+    # «пришли пустой txt» — Studio пишет файл, модель не нужна
+    if short and _wants_blank_file(text) and not work:
+        return "make_blank"
     # «составь договор и пришли файлом» / «переработай и отправь»
     if asks and work:
         return "pack_reply"
@@ -206,6 +233,18 @@ def _write_simple_docx(path: Path, text: str) -> None:
         zf.writestr("_rels/.rels", rels)
         zf.writestr("word/document.xml", document_xml)
         zf.writestr("word/_rels/document.xml.rels", doc_rels)
+
+
+def _create_blank_file(out_dir: Path, user_text: str, ts: str) -> Path:
+    """Пустой .txt или минимальный .docx — без модели."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if _wants_docx(user_text):
+        dest = out_dir / f"empty_{ts}.docx"
+        _write_simple_docx(dest, "")
+    else:
+        dest = out_dir / f"empty_{ts}.txt"
+        dest.write_bytes(b"")
+    return dest
 
 
 def _deliver_reply_as_file(
@@ -728,6 +767,31 @@ async def ask(
     )
     want_pack = intent in {"pack_last", "pack_reply"}
     want_return = intent == "return_attachments"
+
+    # 0) Пустой файл — без GPT
+    if intent == "make_blank":
+        blank = _create_blank_file(out_dir, text, ts)
+        ready = _verify_ready_files(out_dir, [blank.name], min_size=0)
+        reply = _ready_files_notice(ready)
+        (out_dir / f"reply_{ts}.txt").write_text(reply, encoding="utf-8")
+        _append_message(
+            session_id,
+            "assistant",
+            reply,
+            output_files=list(ready),
+        )
+        meta = _read_json(d / "meta.json", {})
+        meta["status"] = "idle"
+        meta["phase"] = "done"
+        meta["phase_detail"] = "Готово (пустой файл)"
+        meta["updated_at"] = _now()
+        _write_json(d / "meta.json", meta)
+        logger.info(
+            "gpt_workspace: session={} intent=make_blank file={}",
+            session_id,
+            blank.name,
+        )
+        return get_session(session_id)
 
     # 1) Упаковать уже готовый текст из чата
     if intent == "pack_last":

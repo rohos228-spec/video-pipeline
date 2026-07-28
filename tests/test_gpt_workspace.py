@@ -405,6 +405,33 @@ def test_resolve_file_intent_simple() -> None:
         gw.resolve_file_intent("что на картинке?", has_attachments=True, last_doc="")
         == "none"
     )
+    assert (
+        gw.resolve_file_intent(
+            "пришли мне пустой txt файл", has_attachments=False, last_doc=""
+        )
+        == "make_blank"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_blank_txt_without_gpt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """«пустой txt» — Studio пишет empty_*.txt, GPT не вызывается."""
+    import app.services.gpt_client as gc
+
+    class Boom:
+        async def ask_with_files(self, *a, **k):
+            raise AssertionError("GPT не нужен для пустого файла")
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: Boom())
+    s = gw.create_session()
+    out = await gw.ask(s["id"], "пришли мне пустой txt файл")
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert names and all(n.endswith(".txt") for n in names)
+    blank = next(o for o in out["outputs"] if o["name"].startswith("empty_"))
+    assert Path(blank["path"]).is_file()
+    assert Path(blank["path"]).stat().st_size == 0
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    assert blank["name"] in out["messages"][-1]["content"]
 
 
 @pytest.mark.asyncio
