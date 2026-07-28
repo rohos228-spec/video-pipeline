@@ -125,3 +125,30 @@ async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
     status = await start_step(session, project, "anim_pr")
     assert status is not ProjectStatus.generating_animation_prompts
     assert project.status is not ProjectStatus.generating_animation_prompts
+
+
+@pytest.mark.asyncio
+async def test_start_step_anim_pr_runs_when_only_shot2_missing(
+    anim_pr_session, tmp_path: Path, monkeypatch
+) -> None:
+    """shot_01 готов, shot_02 нужен — ▶ anim_pr не должен пропускать."""
+    from app.settings import settings
+    import app.services.animation_prompt_gpt as apg
+
+    session, project = anim_pr_session
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data_dir = tmp_path / "videos" / project.slug
+    scenes = data_dir / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "frame_001_abcd1234.png").write_bytes(b"x" * 250_000)
+    (scenes / "frame_001_s2_efgh5678.png").write_bytes(b"y" * 250_000)
+
+    monkeypatch.setattr(
+        apg,
+        "frame_needs_shot2_video_prompt",
+        lambda _project, fr: fr.number == 1,
+    )
+
+    status = await start_step(session, project, "anim_pr")
+    assert status is ProjectStatus.generating_animation_prompts
+    assert project.status is ProjectStatus.generating_animation_prompts

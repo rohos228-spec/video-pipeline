@@ -172,7 +172,7 @@ async def start_step(
         from app.models import Frame
         from app.services.animation_prompt_gpt import (
             count_animation_prompt_stats,
-            scan_missing_animation_prompts,
+            scan_missing_animation_prompts_all,
             sync_animation_prompts_from_xlsx,
         )
 
@@ -184,8 +184,8 @@ async def start_step(
                 .order_by(Frame.number)
             )
         ).scalars().all()
-        missing = scan_missing_animation_prompts(project, frames)
-        if not missing:
+        missing_s1, missing_s2 = scan_missing_animation_prompts_all(project, frames)
+        if not missing_s1 and not missing_s2:
             from app.services.project_state import compute_actual_status
 
             ready, xlsx_filled, with_image = count_animation_prompt_stats(
