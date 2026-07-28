@@ -869,6 +869,15 @@ async def main() -> None:
         guard_stats = await block_pipeline_autorun_on_startup(s)
         logger.warning("startup autorun guard: {}", guard_stats)
 
+    try:
+        from app.services.gpt_workspace import reset_running_sessions_on_startup
+
+        gpt_reset = reset_running_sessions_on_startup()
+        if gpt_reset.get("reset"):
+            logger.warning("startup gpt_workspace orphan reset: {}", gpt_reset)
+    except Exception:  # noqa: BLE001
+        logger.exception("gpt_workspace orphan reset failed (non-fatal)")
+
     # Backfill/recompute могут занимать 30–60+ сек на большой БД.
     # Поднимаем HTTP сразу после init_db, чтобы Launcher не ждал таймаут.
     maintenance_task = asyncio.create_task(_startup_maintenance())

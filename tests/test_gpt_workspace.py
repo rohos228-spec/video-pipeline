@@ -373,6 +373,30 @@ def test_wants_deliverable_includes_send_file() -> None:
     assert gw._wants_deliverable_file("Составь договор аренды и пришли .docx")
 
 
+def test_reset_running_sessions_on_startup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(gw, "_root", lambda: tmp_path)
+    sid = "stucksession01"
+    d = tmp_path / sid
+    d.mkdir()
+    (d / "attachments").mkdir()
+    (d / "outputs").mkdir()
+    meta = {
+        "id": sid,
+        "title": "stuck",
+        "status": "running",
+        "phase": "thinking",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    (d / "meta.json").write_text(
+        __import__("json").dumps(meta), encoding="utf-8"
+    )
+    (d / "messages.json").write_text("[]", encoding="utf-8")
+    out = gw.reset_running_sessions_on_startup()
+    assert out["reset"] == 1
+    got = __import__("json").loads((d / "meta.json").read_text(encoding="utf-8"))
+    assert got["status"] == "error"
+
+
 def test_resolve_file_intent_simple() -> None:
     doc = "ДОГОВОР\n\n" + ("пункт\n" * 20)
     assert (

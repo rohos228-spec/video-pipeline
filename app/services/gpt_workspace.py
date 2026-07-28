@@ -721,6 +721,40 @@ def create_session(*, title: str | None = None) -> dict[str, Any]:
     return get_session(sid)
 
 
+def reset_running_sessions_on_startup() -> dict[str, Any]:
+    """После рестарта бэкенда in-flight ask мёртв — UI не должен крутить «думает»."""
+    root = _root()
+    if not root.is_dir():
+        return {"reset": 0}
+    reset = 0
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        meta_path = d / "meta.json"
+        if not meta_path.is_file():
+            continue
+        meta = _read_json(meta_path, {})
+        if not isinstance(meta, dict):
+            continue
+        if (meta.get("status") or "").lower() != "running":
+            continue
+        meta["status"] = "error"
+        meta["phase"] = "error"
+        meta["phase_detail"] = "Сброс после рестарта: запрос GPT прерван"
+        meta["last_error"] = "backend restart — in-flight GPT ask cancelled"
+        meta["updated_at"] = _now()
+        _write_json(meta_path, meta)
+        _append_message(
+            d.name,
+            "system",
+            "Ошибка: бэкенд перезапущен во время ответа GPT. Статус сброшен — "
+            "отправь сообщение ещё раз.",
+        )
+        reset += 1
+        logger.warning("gpt_workspace: reset orphan running session={}", d.name)
+    return {"reset": reset}
+
+
 def get_session(session_id: str) -> dict[str, Any]:
     d = _session_dir(session_id)
     if not d.is_dir():
@@ -1070,6 +1104,7 @@ async def ask(
     meta["status"] = "running"
     meta["phase"] = "accepted"
     meta["phase_detail"] = "Запрос принят"
+    meta["last_error"] = ""
     meta["updated_at"] = _now()
     _write_json(d / "meta.json", meta)
 
@@ -1170,7 +1205,8 @@ async def ask(
             reply = await gpt.ask_with_files(
                 ask_text,
                 files,
-                timeout=float(settings.gpt_timeout_s or 600),
+                # Workspace: не держим UI 10 мин на зависшем ретрае провайдера
+                timeout=min(float(settings.gpt_timeout_s or 600), 180.0),
                 expect_file_download=has_xlsx,
                 history=history,
                 treat_txt_as_prompt=False,

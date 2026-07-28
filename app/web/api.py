@@ -132,6 +132,15 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("startup autorun guard failed (non-fatal)")
 
+    try:
+        from app.services.gpt_workspace import reset_running_sessions_on_startup
+
+        gpt_reset = reset_running_sessions_on_startup()
+        if gpt_reset.get("reset"):
+            logger.warning("web lifespan gpt_workspace orphan reset: {}", gpt_reset)
+    except Exception:  # noqa: BLE001
+        logger.exception("gpt_workspace orphan reset failed (non-fatal)")
+
     from app.services.pipeline_worker import ensure_pipeline_worker_started
     from app.settings import settings
     from app.telegram.noop_bot import get_worker_bot
