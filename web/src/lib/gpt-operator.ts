@@ -65,6 +65,18 @@ export interface CheckAnalysisView {
   raw_error?: string | null;
 }
 
+export interface SourcePromptView {
+  nodeKey?: string | null;
+  nodeType?: string | null;
+  stepCode?: string | null;
+  ok: boolean;
+  chars: number;
+  variant?: string | null;
+  source?: string | null;
+  path?: string | null;
+  error?: string | null;
+}
+
 export interface OperatorResolve {
   nodeKey: string;
   role: OperatorRole;
@@ -72,6 +84,11 @@ export interface OperatorResolve {
   emitKinds: OperatorEmitKind[];
   useSnapshot: boolean;
   takeFromEdges: boolean;
+  /** Тумблер «Проверка»: промты со стрелок + check_report.txt. */
+  checkMode?: boolean;
+  /** true = чинить, false = только отчёт. */
+  checkFix?: boolean;
+  sourcePrompts?: SourcePromptView[];
   transport: string;
   label: string;
   files: OperatorFileProbe[];
@@ -88,7 +105,7 @@ export interface OperatorResolve {
   }[];
   outgoingEdges: OperatorEdgeSummary[];
   branching?: OperatorBranching;
-  /** Последний разбор vp.check.v1 (если нода проверяет). */
+  /** Последний разбор vp.check.v1 / TXT-отчёта (если нода проверяет). */
   analysis?: CheckAnalysisView | null;
   errors: string[];
   warnings: string[];

@@ -61,12 +61,15 @@ export function ExcelGptSettingsPanel({
 
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
+  const checkMode = data?.checkMode === true;
+  const checkFix = data?.checkFix !== false;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
-    : role === "review" || role === "gate" || role === "compare"
-      ? (["inputs"] as OperatorEmitKind[])
+    : checkMode || role === "review" || role === "gate" || role === "compare"
+      ? (["inputs", "reply_txt"] as OperatorEmitKind[])
       : (["result", "reply_txt"] as OperatorEmitKind[]));
+  const sourcePrompts = data?.sourcePrompts || [];
 
   const toggleEmit = (kind: OperatorEmitKind) => {
     const next = emitKinds.includes(kind)
@@ -90,6 +93,73 @@ export function ExcelGptSettingsPanel({
             if (label) void patch.mutateAsync({ label });
           }}
         />
+      </section>
+
+      <section className="rounded-xl border border-rose-400/25 bg-rose-500/[0.07] p-4">
+        <h3 className="text-sm font-semibold text-foreground">Проверка</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          По исходному промту ноды со стрелки. Всегда пишет check_report.txt.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={checkMode ? "default" : "outline"}
+            className={cn(
+              checkMode && "ring-2 ring-rose-400/50 ring-offset-1 ring-offset-background",
+            )}
+            onClick={() =>
+              patch.mutate({
+                checkMode: !checkMode,
+                transport: "api",
+                ...(!checkMode
+                  ? { emitKinds: ["inputs", "reply_txt"], outputMode: "text" }
+                  : {}),
+              })
+            }
+          >
+            {checkMode ? "✓ " : ""}
+            Проверка
+          </Button>
+          {checkMode ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant={checkFix ? "default" : "outline"}
+                onClick={() => patch.mutate({ checkFix: true, transport: "api" })}
+              >
+                Чинить
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={!checkFix ? "default" : "outline"}
+                onClick={() => patch.mutate({ checkFix: false, transport: "api" })}
+              >
+                Только отчёт
+              </Button>
+            </>
+          ) : null}
+        </div>
+        {checkMode ? (
+          <ul className="mt-3 space-y-1 text-[11px]">
+            {sourcePrompts.length ? (
+              sourcePrompts.map((s) => (
+                <li
+                  key={String(s.nodeKey)}
+                  className={s.ok ? "text-emerald-200/90" : "text-destructive"}
+                >
+                  {s.ok ? "✓" : "✗"} {s.nodeKey}
+                  {s.chars ? ` · ${s.chars} симв` : ""}
+                  {s.error ? ` · ${s.error}` : ""}
+                </li>
+              ))
+            ) : (
+              <li className="text-destructive">Нет входящих стрелок</li>
+            )}
+          </ul>
+        ) : null}
       </section>
 
       <section className="rounded-xl border border-violet-400/20 bg-violet-500/[0.06] p-4">

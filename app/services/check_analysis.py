@@ -1,7 +1,7 @@
-"""Контракт проверки GPT-ноды: vp.check.v1.
+"""Контракт проверки GPT-ноды: TXT-отчёт + fallback JSON vp.check.v1.
 
-Проверочная нода (роль review/gate/compare) обязана вернуть JSON.
-Парсер выставляет gateStatus и список файлов для передачи дальше.
+Основной deliverable — check_report.txt. JSON vp.check.v1 остаётся
+внутренним fallback (старые промты / analysis.json).
 """
 
 from __future__ import annotations
@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 SCHEMA_ID = "vp.check.v1"
+CHECK_REPORT_NAME = "check_report.txt"
 
 Verdict = Literal["pass", "fail"]
 ForwardMode = Literal["inherit", "explicit"]
 FixTarget = Literal["source", "xlsx", "prompt", "none"]
+CheckFixMode = Literal["fix", "report_only"]
 
 # Хвост для промтов проверочных нод — модель обязана ответить только JSON.
 RESPONSE_FOOTER = """
@@ -47,6 +49,58 @@ RESPONSE_FOOTER = """
   forward.mode можно оставить inherit — приоритет у rewrite_file.
 - Никогда не вставляй содержимое xlsx/TSV внутрь JSON или рядом с ним.
 """.strip()
+
+# Основной формат для тумблера «Проверка» — читаемый TXT.
+TXT_REPORT_FOOTER = """
+---
+ФОРМАТ ОТВЕТА (строго): один текстовый файл-отчёт на русском.
+НЕ JSON. Не пиши содержимое xlsx/TSV внутрь отчёта.
+
+Шаблон (все секции обязательны, в этом порядке):
+
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass|fail
+mode: fix|report_only
+source_prompts: <nodeKey[, nodeKey…]>
+
+## summary
+2–4 предложения: итог.
+
+## analysis
+Что проверяли и по каким правилам из исходных промтов; что увидели в файле.
+
+## findings
+- [error] …
+- [warn] …
+
+## related
+- <finding> → промт:<узел> | лист:… | строка:… | поле:…
+
+## logic
+Что логично / согласовано.
+Что странно или противоречит.
+
+## actions
+Что сделано в этой ноде.
+Что осталось.
+
+## forward
+file: original|fixed
+path: <относительный путь от корня проекта или —>
+
+Правила:
+- mode=report_only → file: original, path: —, файл на диске НЕ меняй.
+- mode=fix и есть правка → сохрани файл и укажи file: fixed + path.
+- Без правок → file: original.
+""".strip()
+
+_SECTION_RE = re.compile(r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward)\s*$")
+_HEADER_VERDICT_RE = re.compile(r"(?im)^\s*verdict\s*:\s*(\S+)\s*$")
+_HEADER_MODE_RE = re.compile(r"(?im)^\s*mode\s*:\s*(\S+)\s*$")
+_HEADER_SOURCES_RE = re.compile(r"(?im)^\s*source_prompts\s*:\s*(.+?)\s*$")
+_FORWARD_FILE_RE = re.compile(r"(?im)^\s*file\s*:\s*(\S+)\s*$")
+_FORWARD_PATH_RE = re.compile(r"(?im)^\s*path\s*:\s*(.+?)\s*$")
+_FINDING_RE = re.compile(r"(?m)^\s*[-*]\s*\[(error|warn|ok|pass|fail)\]\s*(.+?)\s*$")
 
 _JSON_FENCE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```",
@@ -227,25 +281,182 @@ def fail_analysis(reason: str) -> CheckAnalysis:
     )
 
 
+def looks_like_check_report_txt(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if "# отчёт проверки" in low or "# отчет проверки" in low:
+        return True
+    if _HEADER_VERDICT_RE.search(raw) and "## summary" in low:
+        return True
+    return False
+
+
+def _section_bodies(text: str) -> dict[str, str]:
+    matches = list(_SECTION_RE.finditer(text or ""))
+    bodies: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        name = m.group(1).lower()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        bodies[name] = (text[start:end] or "").strip()
+    return bodies
+
+
+def parse_check_report_txt(text: str) -> CheckAnalysis | None:
+    """Разобрать TXT-отчёт. None — если текст не похож на шаблон."""
+    raw = (text or "").strip()
+    if not looks_like_check_report_txt(raw):
+        return None
+    vm = _HEADER_VERDICT_RE.search(raw)
+    if not vm:
+        return fail_analysis("в TXT-отчёте нет поля verdict")
+    verdict = _norm_verdict(vm.group(1))
+    bodies = _section_bodies(raw)
+    summary = bodies.get("summary") or ""
+    findings = bodies.get("findings") or ""
+    actions = bodies.get("actions") or ""
+    forward_body = bodies.get("forward") or ""
+    checks: list[CheckItem] = []
+    for i, fm in enumerate(_FINDING_RE.finditer(findings), start=1):
+        kind = fm.group(1).lower()
+        note = fm.group(2).strip()
+        ok = kind in ("ok", "pass")
+        checks.append(CheckItem(id=f"{kind}_{i}", ok=ok, note=note))
+    if not checks and findings.strip():
+        for line in findings.splitlines():
+            s = line.strip().lstrip("-*").strip()
+            if s:
+                checks.append(CheckItem(id="finding", ok=False, note=s))
+    ff = _FORWARD_FILE_RE.search(forward_body)
+    fp = _FORWARD_PATH_RE.search(forward_body)
+    file_kind = (ff.group(1) if ff else "original").strip().lower()
+    path_raw = (fp.group(1) if fp else "").strip()
+    if path_raw in ("—", "-", "–", "none", "null", ""):
+        path_raw = ""
+    rewrite = path_raw if file_kind == "fixed" and path_raw else None
+    forward = ForwardSpec(
+        mode="explicit" if path_raw else "inherit",
+        paths=[path_raw.replace("\\", "/")] if path_raw else [],
+    )
+    fix = FixSpec(
+        target="source" if verdict == "fail" or rewrite else "none",
+        instructions=actions[:1000],
+        rewrite_file=rewrite,
+    )
+    if not summary and not checks:
+        return fail_analysis("TXT-отчёт пустой (нет summary/findings)")
+    return CheckAnalysis(
+        schema=SCHEMA_ID,
+        verdict=verdict,
+        summary=summary or (checks[0].note if checks else verdict),
+        checks=checks,
+        forward=forward,
+        fix=fix,
+    )
+
+
+def render_check_report_txt(
+    analysis: CheckAnalysis,
+    *,
+    mode: CheckFixMode | str = "fix",
+    source_prompts: list[str] | None = None,
+) -> str:
+    """Собрать канонический check_report.txt из CheckAnalysis."""
+    mode_s = "report_only" if str(mode).strip().lower() == "report_only" else "fix"
+    sources = ", ".join(str(x).strip() for x in (source_prompts or []) if str(x).strip()) or "—"
+    findings_lines: list[str] = []
+    for c in analysis.checks:
+        tag = "ok" if c.ok else "error"
+        note = (c.note or c.id or "").strip() or "—"
+        findings_lines.append(f"- [{tag}] {note}")
+    if not findings_lines:
+        findings_lines.append("- [ok] замечаний нет" if analysis.verdict == "pass" else "- [error] см. summary")
+    rewrite = (analysis.fix.rewrite_file or "").strip().replace("\\", "/")
+    if rewrite:
+        file_kind = "fixed"
+        path_line = rewrite
+    elif analysis.forward.paths:
+        file_kind = "original"
+        path_line = analysis.forward.paths[0]
+    else:
+        file_kind = "original"
+        path_line = "—"
+    related = "—\n"
+    if analysis.checks:
+        related = "\n".join(
+            f"- {c.id} → промт:— | {c.note}" if c.note else f"- {c.id} → промт:— |"
+            for c in analysis.checks[:12]
+        ) + "\n"
+    actions = (analysis.fix.instructions or "").strip() or (
+        "правки не выполнялись" if mode_s == "report_only" else "см. findings"
+    )
+    analysis_body = (analysis.summary or "").strip() or "см. findings"
+    return (
+        "# ОТЧЁТ ПРОВЕРКИ\n"
+        f"verdict: {analysis.verdict}\n"
+        f"mode: {mode_s}\n"
+        f"source_prompts: {sources}\n"
+        "\n## summary\n"
+        f"{(analysis.summary or analysis.verdict).strip()}\n"
+        "\n## analysis\n"
+        f"{analysis_body}\n"
+        "\n## findings\n"
+        + "\n".join(findings_lines)
+        + "\n\n## related\n"
+        f"{related}"
+        "\n## logic\n"
+        "см. analysis / findings\n"
+        "\n## actions\n"
+        f"{actions}\n"
+        "\n## forward\n"
+        f"file: {file_kind}\n"
+        f"path: {path_line}\n"
+    )
+
+
+def write_check_report_txt(
+    out_dir: Path,
+    analysis: CheckAnalysis,
+    *,
+    mode: CheckFixMode | str = "fix",
+    source_prompts: list[str] | None = None,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / CHECK_REPORT_NAME
+    path.write_text(
+        render_check_report_txt(analysis, mode=mode, source_prompts=source_prompts),
+        encoding="utf-8",
+    )
+    return path
+
+
 def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAnalysis:
-    """Разобрать ответ GPT. Битый/пустой JSON → fail (не пускать дальше)."""
+    """Разобрать ответ GPT: JSON vp.check.v1 или TXT-отчёт. Битый → fail."""
     obj = extract_json_object(text)
-    if obj is None:
-        return fail_analysis("нет JSON vp.check.v1 в ответе")
-    if require_schema:
-        sid = str(obj.get("schema") or "").strip()
-        if sid and sid != SCHEMA_ID:
-            return fail_analysis(f"неверная schema: {sid!r}, ожидается {SCHEMA_ID}")
-    if "verdict" not in obj:
-        # мягкий адаптер: auto_review JSON decision
-        decision = str(obj.get("decision") or "").strip().lower()
-        if decision in ("approved", "approve", "ok"):
-            obj = {**obj, "verdict": "pass"}
-        elif decision in ("rejected", "regen", "reject", "fail"):
-            obj = {**obj, "verdict": "fail"}
-        else:
-            return fail_analysis("в JSON нет поля verdict")
-    return analysis_from_dict(obj)
+    if obj is not None:
+        if require_schema:
+            sid = str(obj.get("schema") or "").strip()
+            if sid and sid != SCHEMA_ID:
+                return fail_analysis(f"неверная schema: {sid!r}, ожидается {SCHEMA_ID}")
+        if "verdict" not in obj:
+            decision = str(obj.get("decision") or "").strip().lower()
+            if decision in ("approved", "approve", "ok"):
+                obj = {**obj, "verdict": "pass"}
+            elif decision in ("rejected", "regen", "reject", "fail"):
+                obj = {**obj, "verdict": "fail"}
+            else:
+                # возможно это не check-JSON — пробуем TXT
+                txt = parse_check_report_txt(text)
+                if txt is not None:
+                    return txt
+                return fail_analysis("в JSON нет поля verdict")
+        return analysis_from_dict(obj)
+    txt = parse_check_report_txt(text)
+    if txt is not None:
+        return txt
+    return fail_analysis("нет TXT-отчёта и нет JSON vp.check.v1 в ответе")
 
 
 def parse_gate_status(text: str) -> str:
@@ -261,6 +472,17 @@ def write_analysis_json(out_dir: Path, analysis: CheckAnalysis) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def append_txt_report_footer(prompt: str) -> str:
+    """Добавить TXT-шаблон отчёта, если его ещё нет."""
+    base = (prompt or "").rstrip()
+    marker = "# ОТЧЁТ ПРОВЕРКИ"
+    if marker in base or "source_prompts:" in base.lower() and "## findings" in base.lower():
+        return base
+    if not base:
+        return TXT_REPORT_FOOTER
+    return f"{base}\n\n{TXT_REPORT_FOOTER}"
 
 
 def _load_footer_from_prompts() -> str:

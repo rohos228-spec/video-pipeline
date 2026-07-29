@@ -1,7 +1,7 @@
 """Клиент оператора GPT через API (без браузера/CDP).
 
 Пока нет боевого chat+files провайдера — stub пишет фактический результат
-на диск (включая analysis.json по vp.check.v1), чтобы связи/UI/resolve
+на диск (включая analysis.json / check_report.txt), чтобы связи/UI/resolve
 можно было проверять end-to-end.
 """
 
@@ -17,8 +17,11 @@ from app.services.check_analysis import (
     SCHEMA_ID,
     CheckAnalysis,
     append_response_footer,
+    append_txt_report_footer,
     parse_check_analysis,
+    render_check_report_txt,
     write_analysis_json,
+    write_check_report_txt,
 )
 
 
@@ -61,6 +64,10 @@ def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysi
     )
 
 
+def _is_check(*, role: str, check_mode: bool) -> bool:
+    return bool(check_mode) or role in ("review", "gate", "compare")
+
+
 async def run_operator_api(
     *,
     project_dir: Path,
@@ -70,6 +77,9 @@ async def run_operator_api(
     prompt: str,
     accompanying: str,
     input_paths: list[Path],
+    check_mode: bool = False,
+    check_fix: bool = True,
+    source_prompt_keys: list[str] | None = None,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -88,21 +98,29 @@ async def run_operator_api(
             prompt=prompt,
             accompanying=accompanying,
             input_paths=input_paths,
+            check_mode=check_mode,
+            check_fix=check_fix,
+            source_prompt_keys=source_prompt_keys,
         )
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
 
     names = ", ".join(p.name for p in input_paths) or "(нет файлов)"
-    prompt_for_model = (
-        append_response_footer(prompt)
-        if role in ("review", "gate", "compare")
-        else (prompt or "")
-    )
+    is_check = _is_check(role=role, check_mode=check_mode)
+    mode = "fix" if check_fix else "report_only"
+    if check_mode:
+        prompt_for_model = append_txt_report_footer(prompt or "")
+    elif is_check:
+        prompt_for_model = append_response_footer(prompt)
+    else:
+        prompt_for_model = prompt or ""
 
     body = (
         f"[gpt-operator/api stub]\n"
         f"role={role}\n"
+        f"checkMode={check_mode}\n"
+        f"checkFix={check_fix}\n"
         f"outputMode={output_mode}\n"
         f"files={names}\n"
         f"prompt_chars={len((prompt_for_model or '').strip())}\n"
@@ -114,27 +132,33 @@ async def run_operator_api(
     analysis: CheckAnalysis | None = None
     gate_status: str | None = None
     output_paths: list[Path] = []
+    source_keys = list(source_prompt_keys or [])
 
-    if role in ("review", "gate", "compare"):
+    if is_check:
         analysis = _stub_analysis(
             role=role, prompt=prompt or "", accompanying=accompanying or ""
         )
+        if mode == "report_only":
+            analysis.fix.rewrite_file = None
+            analysis.forward.mode = "inherit"
+            analysis.forward.paths = []
         gate_status = analysis.verdict
         analysis_path = write_analysis_json(out_dir, analysis)
-        output_paths.append(analysis_path)
-        # Ответ = канонический JSON (плюс stub-заголовок для отладки).
-        body = (
-            f"[gpt-operator/api stub]\n"
-            f"{json.dumps(analysis.to_dict(), ensure_ascii=False, indent=2)}\n"
+        report_path = write_check_report_txt(
+            out_dir, analysis, mode=mode, source_prompts=source_keys
+        )
+        output_paths.extend([analysis_path, report_path])
+        body = render_check_report_txt(
+            analysis, mode=mode, source_prompts=source_keys
         )
     elif role == "extract":
-        body += "\nextract: {\"ok\": true, \"items\": []}\n"
+        body += '\nextract: {"ok": true, "items": []}\n'
 
-    if output_mode == "project_file" and input_paths:
+    if output_mode == "project_file" and input_paths and not check_mode:
         sidecar = out_dir / "operator_sidecar_manifest.txt"
         sidecar.write_text(body, encoding="utf-8")
         output_paths.append(sidecar)
-    elif output_mode == "sidecar":
+    elif output_mode == "sidecar" and not check_mode:
         sidecar = out_dir / "operator_transform.txt"
         sidecar.write_text(body, encoding="utf-8")
         output_paths.append(sidecar)
@@ -143,11 +167,16 @@ async def run_operator_api(
         reply_path.write_text(body, encoding="utf-8")
         output_paths.append(reply_path)
 
-    # Если в будущем сюда придёт реальный ответ — разбираем JSON из body.
-    if analysis is None and role in ("review", "gate", "compare"):
+    if analysis is None and is_check:
         analysis = parse_check_analysis(body)
         gate_status = analysis.verdict
         output_paths.insert(0, write_analysis_json(out_dir, analysis))
+        output_paths.insert(
+            1,
+            write_check_report_txt(
+                out_dir, analysis, mode=mode, source_prompts=source_keys
+            ),
+        )
 
     return OperatorApiResult(
         reply_text=body,
@@ -166,6 +195,9 @@ async def _run_operator_api_real(
     prompt: str,
     accompanying: str,
     input_paths: list[Path],
+    check_mode: bool = False,
+    check_fix: bool = True,
+    source_prompt_keys: list[str] | None = None,
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
@@ -174,18 +206,24 @@ async def _run_operator_api_real(
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    is_check = role in ("review", "gate", "compare")
-    prompt_for_model = append_response_footer(prompt) if is_check else (prompt or "")
+    is_check = _is_check(role=role, check_mode=check_mode)
+    mode = "fix" if check_fix else "report_only"
+    if check_mode:
+        prompt_for_model = append_txt_report_footer(prompt or "")
+    elif is_check:
+        prompt_for_model = append_response_footer(prompt)
+    else:
+        prompt_for_model = prompt or ""
 
     accomp = accompanying or ""
-    if output_mode == "project_file" and WRITEBACK_HINT not in accomp:
+    effective_output = "text" if check_mode else output_mode
+    if effective_output == "project_file" and WRITEBACK_HINT not in accomp:
         accomp = f"{accomp}\n\n{WRITEBACK_HINT}".strip() if accomp else WRITEBACK_HINT
 
     result = await chat(
         prompt=prompt_for_model,
         accompanying=accomp,
         input_paths=list(input_paths),
-        # Проверочные роли: строгий JSON, temperature=0 для стабильного вердикта.
         temperature=0.0 if is_check else None,
     )
     reply_text = result.text
@@ -193,16 +231,26 @@ async def _run_operator_api_real(
     analysis: CheckAnalysis | None = None
     gate_status: str | None = None
     output_paths: list[Path] = []
+    source_keys = list(source_prompt_keys or [])
 
     if is_check:
         analysis = parse_check_analysis(reply_text)
+        if mode == "report_only":
+            analysis.fix.rewrite_file = None
+            analysis.forward.mode = "inherit"
+            analysis.forward.paths = []
         gate_status = analysis.verdict
         output_paths.append(write_analysis_json(out_dir, analysis))
+        report_path = write_check_report_txt(
+            out_dir, analysis, mode=mode, source_prompts=source_keys
+        )
+        output_paths.append(report_path)
+        reply_text = render_check_report_txt(
+            analysis, mode=mode, source_prompts=source_keys
+        )
 
-    # Скачивание/копирование контента: если модель вернула ссылки на файлы —
-    # тянем их в папку ноды (картинки/видео/xlsx из ответа GPT).
     downloaded: list[Path] = []
-    for i, url in enumerate(collect_result_urls(reply_text)):
+    for i, url in enumerate(collect_result_urls(result.text)):
         suffix = Path(url.split("?")[0]).suffix or ".bin"
         dest = out_dir / f"content_{i + 1}{suffix}"
         try:
@@ -212,12 +260,11 @@ async def _run_operator_api_real(
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_operator/api: не скачал {}: {}", url, e)
 
-    # Рабочие ноды (project_file): запись обратно в project.xlsx.
-    if output_mode == "project_file":
+    if effective_output == "project_file":
         project_xlsx = project_dir / "project.xlsx"
         updated = writeback_project_xlsx(
             project_xlsx=project_xlsx,
-            reply_text=reply_text,
+            reply_text=result.text,
             downloaded_paths=downloaded,
         )
         if updated is not None:
@@ -228,8 +275,7 @@ async def _run_operator_api_real(
                 node_key,
             )
 
-    # Текст ответа на диск (для UI / forward.inherit).
-    if output_mode == "sidecar":
+    if effective_output == "sidecar":
         sidecar = out_dir / "operator_transform.txt"
         sidecar.write_text(reply_text, encoding="utf-8")
         output_paths.append(sidecar)

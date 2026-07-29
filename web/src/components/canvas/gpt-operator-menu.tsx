@@ -91,16 +91,19 @@ export function GptOperatorMenuPanel({
 
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
+  const checkMode = data?.checkMode === true;
+  const checkFix = data?.checkFix !== false;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
-    : role === "review" || role === "gate" || role === "compare"
-      ? (["inputs"] as OperatorEmitKind[])
+    : checkMode || role === "review" || role === "gate" || role === "compare"
+      ? (["inputs", "reply_txt"] as OperatorEmitKind[])
       : (["result", "reply_txt"] as OperatorEmitKind[]));
   const branching = data?.branching;
-  const showBranches = isBranchingRole(role);
+  const showBranches = isBranchingRole(role) || checkMode;
   const takeFromEdges = data?.takeFromEdges !== false;
   const incomingCount = data?.incomingEdges?.length ?? 0;
+  const sourcePrompts = data?.sourcePrompts || [];
 
   const toggleEmit = (kind: OperatorEmitKind) => {
     const next = emitKinds.includes(kind)
@@ -136,6 +139,99 @@ export function GptOperatorMenuPanel({
           {(data.errors || []).join("; ") || "Рассинхрон входов"}
         </p>
       ) : null}
+
+      <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Проверка
+      </p>
+      <div className="rounded-lg border border-rose-400/25 bg-rose-500/10 px-2 py-1.5">
+        <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            disabled={patch.isPending}
+            title="Проверить файл по исходному промту ноды со стрелки; всегда пишет check_report.txt"
+            onClick={() =>
+              patch.mutate({
+                checkMode: !checkMode,
+                transport: "api",
+                ...( !checkMode
+                  ? { emitKinds: ["inputs", "reply_txt"], outputMode: "text" }
+                  : {}),
+              })
+            }
+            className={cn(
+              "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
+              checkMode
+                ? "border-rose-400/70 bg-rose-500/30 text-rose-50 ring-1 ring-rose-400/40"
+                : "border-white/10 text-muted-foreground hover:border-white/20",
+            )}
+          >
+            {checkMode ? "✓ " : ""}
+            Проверка
+          </button>
+          {checkMode ? (
+            <>
+              <button
+                type="button"
+                disabled={patch.isPending}
+                title="Можно исправить файл в этой ноде"
+                onClick={() => patch.mutate({ checkFix: true, transport: "api" })}
+                className={cn(
+                  "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
+                  checkFix
+                    ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-50 ring-1 ring-emerald-400/40"
+                    : "border-white/10 text-muted-foreground hover:border-white/20",
+                )}
+              >
+                {checkFix ? "✓ " : ""}
+                Чинить
+              </button>
+              <button
+                type="button"
+                disabled={patch.isPending}
+                title="Только отчёт, файл на диске не менять"
+                onClick={() => patch.mutate({ checkFix: false, transport: "api" })}
+                className={cn(
+                  "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
+                  !checkFix
+                    ? "border-amber-400/70 bg-amber-500/25 text-amber-50 ring-1 ring-amber-400/40"
+                    : "border-white/10 text-muted-foreground hover:border-white/20",
+                )}
+              >
+                {!checkFix ? "✓ " : ""}
+                Только отчёт
+              </button>
+            </>
+          ) : null}
+        </div>
+        {checkMode ? (
+          <div className="mt-1.5 space-y-0.5">
+            <p className="text-[9px] leading-snug text-rose-50/80">
+              Промт берётся с ноды по входящей стрелке. Отчёт: check_report.txt
+            </p>
+            {sourcePrompts.length ? (
+              <ul className="space-y-0.5">
+                {sourcePrompts.map((s) => (
+                  <li
+                    key={String(s.nodeKey)}
+                    className={cn(
+                      "font-mono text-[9px]",
+                      s.ok ? "text-emerald-100/85" : "text-rose-100/90",
+                    )}
+                  >
+                    {s.ok ? "✓" : "✗"} {s.nodeKey}
+                    {s.chars ? ` · ${s.chars} симв` : ""}
+                    {s.error ? ` · ${s.error}` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[9px] text-rose-100/80">
+                Нет входящих стрелок — подключи источник
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
 
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
         Роль
@@ -222,7 +318,7 @@ export function GptOperatorMenuPanel({
           {data?.analysis ? (
             <div className="mt-1.5 space-y-1 rounded-md border border-white/10 bg-black/25 px-1.5 py-1.5">
               <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Анализ vp.check.v1
+                Анализ проверки
               </p>
               {data.analysis.summary ? (
                 <p className="text-[10px] leading-snug text-foreground/90">

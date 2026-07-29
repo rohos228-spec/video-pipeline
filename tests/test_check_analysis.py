@@ -48,6 +48,7 @@ def test_parse_fail_and_broken() -> None:
     broken = parse_check_analysis("просто текст без json")
     assert broken.verdict == "fail"
     assert broken.raw_error
+    assert "TXT" in (broken.raw_error or "") or "JSON" in (broken.raw_error or "")
     assert parse_gate_status("") == "fail"
 
 

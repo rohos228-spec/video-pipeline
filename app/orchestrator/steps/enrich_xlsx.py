@@ -173,12 +173,46 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     accompanying = _get_accompanying_text(project, legacy_step_code)
 
-    # Проверочные роли: агент-проверки vp.check.v1.
+    # Проверочные роли / тумблер «Проверка».
     branching_role = False
+    check_mode = False
+    check_fix = True
+    source_prompt_keys: list[str] = []
     if node_key and resolved is not None:
         role_name = str(resolved.get("role") or "")
-        branching_role = role_name in ("review", "gate", "compare")
-        if branching_role:
+        check_mode = bool(resolved.get("checkMode") or op_cfg.get("checkMode"))
+        check_fix = bool(resolved.get("checkFix", op_cfg.get("checkFix", True)))
+        branching_role = role_name in ("review", "gate", "compare") or check_mode
+        if check_mode:
+            from app.services.gpt_operator import (
+                assemble_check_master_prompt,
+                collect_source_prompts,
+                project_format_hint_for_check,
+            )
+
+            sources = collect_source_prompts(project, node_key)
+            ok_sources = [s for s in sources if s.get("ok")]
+            if not ok_sources:
+                raise RuntimeError("нет исходного промта для проверки")
+            source_prompt_keys = [str(s.get("nodeKey") or "") for s in ok_sources]
+            # Короткий текст этой ноды — только доп. указания ревьюера.
+            master = assemble_check_master_prompt(
+                ok_sources,
+                check_fix=check_fix,
+                reviewer_notes=accompanying or "",
+            )
+            accompanying = ""
+            hint = project_format_hint_for_check(project, node_key)
+            if hint:
+                accompanying = hint
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: checkMode sources={} chars={}",
+                project.id,
+                node_key,
+                source_prompt_keys,
+                len(master),
+            )
+        elif branching_role:
             from app.services.check_analysis import append_response_footer
             from app.services.gpt_operator import (
                 default_check_prompt_for_node,
@@ -228,12 +262,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
 
         role = str(resolved.get("role") or "assist")
-        output_mode = str(resolved.get("outputMode") or "text")
+        output_mode = "text" if check_mode else str(resolved.get("outputMode") or "text")
         logger.info(
-            "[#{}] enrich_xlsx API transport slot={} role={} output={} files={}",
+            "[#{}] enrich_xlsx API transport slot={} role={} checkMode={} "
+            "output={} files={}",
             project.id,
             slot_idx,
             role,
+            check_mode,
             output_mode,
             [p.name for p in data_paths],
         )
@@ -246,6 +282,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             prompt=master or "",
             accompanying=accompanying,
             input_paths=data_paths,
+            check_mode=check_mode,
+            check_fix=check_fix,
+            source_prompt_keys=source_prompt_keys,
         )
         # После project_file writeback — подтянуть xlsx → DB.
         if output_mode == "project_file":

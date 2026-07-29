@@ -38,7 +38,9 @@ VALID_OUTPUTS: frozenset[str] = frozenset({"text", "project_file", "sidecar"})
 VALID_EMIT_KINDS: frozenset[str] = frozenset(
     {"result", "reply_txt", "analysis", "inputs"}
 )
-_REPLY_TXT_NAMES: frozenset[str] = frozenset({"gpt_reply.txt", "operator_transform.txt"})
+_REPLY_TXT_NAMES: frozenset[str] = frozenset(
+    {"gpt_reply.txt", "operator_transform.txt", "check_report.txt"}
+)
 _ANALYSIS_NAMES: frozenset[str] = frozenset({"analysis.json"})
 
 # Роли с вердиктом ок/не ок → две исходящие ветки.
@@ -145,8 +147,27 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
     role = normalize_role(cfg.get("role") or cfg.get("workMode") or "assist")
     cfg["role"] = role
     cfg["workMode"] = role if role in ("assist", "review", "transform") else "assist"
-    cfg["outputMode"] = normalize_output_mode(cfg.get("outputMode"), role=role)
-    cfg["emitKinds"] = normalize_emit_kinds(cfg.get("emitKinds"), role=role)
+    check_mode = bool(cfg.get("checkMode"))
+    cfg["checkMode"] = check_mode
+    # Чинить по умолчанию; явно false → только отчёт.
+    if "checkFix" in cfg:
+        cfg["checkFix"] = bool(cfg.get("checkFix"))
+    else:
+        cfg["checkFix"] = True
+    # Для checkMode дефолтный emit — вход + txt-отчёт (если пользователь не задал).
+    if check_mode and not (
+        isinstance(cfg.get("emitKinds"), list) and cfg.get("emitKinds")
+    ):
+        cfg["emitKinds"] = ["inputs", "reply_txt"]
+    else:
+        cfg["emitKinds"] = normalize_emit_kinds(cfg.get("emitKinds"), role=role)
+    if check_mode:
+        # Отчёт — текст; Excel проекта не трогаем как основной выход отчёта.
+        cfg["outputMode"] = normalize_output_mode(
+            cfg.get("outputMode") or "text", role="review"
+        )
+    else:
+        cfg["outputMode"] = normalize_output_mode(cfg.get("outputMode"), role=role)
     cfg["useSnapshot"] = bool(cfg.get("useSnapshot"))
     # Вход со стрелок: по умолчанию да (подвели → претендует на файлы прошлой ноды).
     if "takeFromEdges" in cfg:
@@ -166,6 +187,127 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
         names = [single] if single else []
     cfg["uploadedFileNames"] = [str(x).strip() for x in names if str(x).strip()]
     return cfg
+
+
+def is_check_operator(cfg_or_role: Any, check_mode: bool | None = None) -> bool:
+    """Роль с вердиктом или явный тумблер «Проверка»."""
+    if isinstance(cfg_or_role, dict):
+        role = str(cfg_or_role.get("role") or "")
+        cm = bool(cfg_or_role.get("checkMode")) if check_mode is None else bool(check_mode)
+        return cm or role in BRANCHING_ROLES
+    role = str(cfg_or_role or "")
+    return bool(check_mode) or role in BRANCHING_ROLES
+
+
+def collect_source_prompts(project: Project, node_key: str) -> list[dict[str, Any]]:
+    """Активные мастер-промты нод по входящим стрелкам (для checkMode)."""
+    from app.orchestrator.node_registry import NODE_TYPE_TO_STEP_CODE
+    from app.services.excel_gpt_node import EXCEL_GPT_STEP_CODE
+    from app.services.prompt_library import read_resolved_project_prompt
+    from app.services import gpt_text_builder as gtb
+
+    types = _node_type_map(project)
+    out: list[dict[str, Any]] = []
+    for e in _incoming_edges(project, node_key):
+        src = str(e.get("source") or "").strip()
+        if not src:
+            continue
+        typ = types.get(src, "")
+        step = NODE_TYPE_TO_STEP_CODE.get(typ) or ""
+        if not step and is_excel_gpt_node_type(typ):
+            step = EXCEL_GPT_STEP_CODE
+        if not step and typ:
+            step = typ
+        entry: dict[str, Any] = {
+            "nodeKey": src,
+            "nodeType": typ,
+            "stepCode": step or None,
+            "ok": False,
+            "chars": 0,
+            "text": "",
+            "accompanying": "",
+            "variant": None,
+            "source": None,
+            "path": None,
+            "error": None,
+        }
+        if not step:
+            entry["error"] = "нет step-кода для промта источника"
+            out.append(entry)
+            continue
+        try:
+            use_node = is_excel_gpt_node_type(typ)
+            variant, path, text, source = read_resolved_project_prompt(
+                project,
+                step,
+                node_key=src if use_node else None,
+                slot_id="main" if use_node else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"промт не прочитан: {exc}"
+            out.append(entry)
+            continue
+        accomp = ""
+        try:
+            accomp = gtb.get_effective_text(project, step) or ""
+            if use_node and not accomp.strip():
+                accomp = gtb.get_effective_text(project, EXCEL_GPT_STEP_CODE) or ""
+        except Exception:  # noqa: BLE001
+            accomp = ""
+        text_s = (text or "").strip()
+        entry.update(
+            {
+                "ok": bool(text_s),
+                "chars": len(text_s),
+                "text": text_s,
+                "accompanying": (accomp or "").strip(),
+                "variant": variant,
+                "source": source,
+                "path": str(path) if path else None,
+                "error": None if text_s else "пустой промт источника",
+            }
+        )
+        out.append(entry)
+    return out
+
+
+def assemble_check_master_prompt(
+    sources: list[dict[str, Any]],
+    *,
+    check_fix: bool = True,
+    reviewer_notes: str = "",
+) -> str:
+    """Собрать master-промт проверки из промтов источников + TXT footer."""
+    from app.services.check_analysis import append_txt_report_footer
+
+    mode = "fix" if check_fix else "report_only"
+    blocks: list[str] = [
+        "Ты — агент проверки результата.",
+        "Проверь входной файл СТРОГО по исходным промтам работы ниже (не придумывай свой этап).",
+        f"mode: {mode}",
+        (
+            "Можно исправить файл на диске и указать path в секции forward (file: fixed)."
+            if check_fix
+            else "НЕ изменяй файл на диске — только отчёт (file: original)."
+        ),
+        "",
+        "# Исходные промты работы",
+    ]
+    for s in sources:
+        if not s.get("ok"):
+            continue
+        key = str(s.get("nodeKey") or "?")
+        blocks.append(f"### source: {key}")
+        blocks.append(str(s.get("text") or "").strip())
+        accomp = str(s.get("accompanying") or "").strip()
+        if accomp:
+            blocks.append(f"(сопровождение источника {key}):\n{accomp}")
+        blocks.append("")
+    notes = (reviewer_notes or "").strip()
+    if notes:
+        blocks.append("# Доп. указания ревьюера (эта нода)")
+        blocks.append(notes)
+    return append_txt_report_footer("\n".join(blocks).strip())
 
 
 def _file_probe(path: Path, *, origin: InputOrigin, from_node: str | None = None) -> dict[str, Any]:
@@ -570,8 +712,26 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     if not take_from_edges and incoming:
         warnings.append("вход со стрелок выключен — файлы прошлых нод не берутся")
 
+    check_mode = bool(cfg.get("checkMode"))
+    check_fix = bool(cfg.get("checkFix", True))
+    source_prompts: list[dict[str, Any]] = []
+    if check_mode:
+        source_prompts = collect_source_prompts(project, node_key)
+        ok_prompts = [s for s in source_prompts if s.get("ok")]
+        if not source_prompts:
+            errors.append("нет исходного промта для проверки (нет входящих стрелок)")
+        elif not ok_prompts:
+            errors.append("нет исходного промта для проверки")
+        for s in source_prompts:
+            if not s.get("ok") and s.get("error"):
+                warnings.append(
+                    f"промт {s.get('nodeKey')}: {s.get('error')}"
+                )
+
     if not ok_files and role in ("assist", "transform", "extract", "review"):
         # soft: assist без файлов — ошибка запуска
+        errors.append("нет ни одного существующего файла на входе")
+    elif not ok_files and check_mode:
         errors.append("нет ни одного существующего файла на входе")
 
     # исходящие стрелки + ветки ок/не ок
@@ -594,7 +754,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
 
     pass_edges = [e for e in outgoing if is_pass_edge_kind(str(e.get("kind") or ""))]
     fail_edges = [e for e in outgoing if is_fail_edge_kind(str(e.get("kind") or ""))]
-    branching_enabled = role in BRANCHING_ROLES
+    branching_enabled = role in BRANCHING_ROLES or check_mode
     if branching_enabled:
         if not pass_edges:
             warnings.append(
@@ -628,6 +788,20 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         }
 
     consistent = len(errors) == 0
+    source_prompt_view = [
+        {
+            "nodeKey": s.get("nodeKey"),
+            "nodeType": s.get("nodeType"),
+            "stepCode": s.get("stepCode"),
+            "ok": bool(s.get("ok")),
+            "chars": int(s.get("chars") or 0),
+            "variant": s.get("variant"),
+            "source": s.get("source"),
+            "path": s.get("path"),
+            "error": s.get("error"),
+        }
+        for s in source_prompts
+    ]
     return {
         "nodeKey": node_key,
         "nodeType": EXCEL_GPT_NODE_TYPE,
@@ -636,6 +810,9 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "emitKinds": emit_kinds,
         "useSnapshot": use_snapshot,
         "takeFromEdges": take_from_edges,
+        "checkMode": check_mode,
+        "checkFix": check_fix,
+        "sourcePrompts": source_prompt_view,
         "transport": cfg.get("transport") or "api",
         "label": str(cfg.get("label") or default_label_for_role(role)),
         "files": unique_files,
@@ -662,6 +839,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "emitKinds": emit_kinds,
             "useSnapshot": use_snapshot,
             "takeFromEdges": take_from_edges,
+            "checkMode": check_mode,
+            "checkFix": check_fix,
             "transport": cfg.get("transport") or "api",
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
@@ -710,6 +889,18 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         cur["useSnapshot"] = bool(patch.get("useSnapshot"))
     if "takeFromEdges" in patch:
         cur["takeFromEdges"] = bool(patch.get("takeFromEdges"))
+    if "checkMode" in patch:
+        cur["checkMode"] = bool(patch.get("checkMode"))
+        if cur["checkMode"]:
+            # При включении — разумные дефолты отчёта, если emit ещё не выбран.
+            if not (isinstance(cur.get("emitKinds"), list) and cur.get("emitKinds")):
+                cur["emitKinds"] = ["inputs", "reply_txt"]
+            if not str(cur.get("outputMode") or "").strip():
+                cur["outputMode"] = "text"
+            if "checkFix" not in cur:
+                cur["checkFix"] = True
+    if "checkFix" in patch:
+        cur["checkFix"] = bool(patch.get("checkFix"))
     if "transport" in patch:
         t = str(patch.get("transport") or "api").strip().lower()
         cur["transport"] = t if t in ("api", "browser") else "api"
@@ -786,10 +977,26 @@ def apply_check_reply(
     from app.services.check_analysis import parse_check_analysis, write_analysis_json
     from app.services.excel_gpt_node import upload_dir
 
+    from app.services.check_analysis import write_check_report_txt
+
     parsed = parse_check_analysis(reply_text or "")
+    cfg = operator_config(project, node_key)
+    mode = "fix" if cfg.get("checkFix", True) else "report_only"
+    # report_only: не прокидываем rewrite дальше, даже если модель указала path.
+    if mode == "report_only":
+        parsed.fix.rewrite_file = None
+        parsed.forward = type(parsed.forward)(mode="inherit", paths=[])
     out_dir = upload_dir(project, node_key)
     analysis_path = write_analysis_json(out_dir, parsed)
-    outputs = [analysis_path, *(extra_output_paths or [])]
+    sources = [
+        str(s.get("nodeKey") or "")
+        for s in collect_source_prompts(project, node_key)
+        if s.get("ok")
+    ]
+    report_path = write_check_report_txt(
+        out_dir, parsed, mode=mode, source_prompts=sources
+    )
+    outputs = [analysis_path, report_path, *(extra_output_paths or [])]
     reply_file = out_dir / "gpt_reply.txt"
     if (reply_text or "").strip() and not reply_file.is_file():
         reply_file.write_text((reply_text or "").strip() + "\n", encoding="utf-8")
@@ -826,7 +1033,7 @@ def save_operator_result(
     analysis_dict = analysis
     if analysis_dict is None and reply_text:
         cfg = operator_config(project, node_key)
-        if cfg.get("role") in BRANCHING_ROLES:
+        if is_check_operator(cfg):
             parsed = parse_check_analysis(reply_text)
             analysis_dict = parsed.to_dict()
             if resolved_gate not in ("pass", "fail"):
@@ -874,7 +1081,7 @@ def save_operator_result(
 def gate_allows_successors(project: Project, gate_node_key: str) -> bool | None:
     """None — нода без вердикта / не branching-роль; True/False — pass/fail."""
     cfg = operator_config(project, gate_node_key)
-    if cfg.get("role") not in BRANCHING_ROLES:
+    if not is_check_operator(cfg):
         return None
     meta = project.meta if isinstance(project.meta, dict) else {}
     results = meta.get("gpt_operator_results")
