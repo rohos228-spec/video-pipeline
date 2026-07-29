@@ -100,3 +100,28 @@ def test_broken_edge_reference() -> None:
     edges = [{"id": "e1", "source": "n_plan", "target": "n_missing"}]
     r = validate_workflow_graph(nodes, edges)
     assert r["valid"] is False
+
+
+def test_topic_alone_is_not_isolated_warning() -> None:
+    """topic — конфиг без стрелок; не тост «изолированные ноды: n_topic»."""
+    nodes = [
+        {"id": "n_topic", "type": "topic", "position": {}, "data": {}},
+        {"id": "n_plan", "type": "plan", "position": {}, "data": {}},
+        {"id": "n_script", "type": "script", "position": {}, "data": {}},
+    ]
+    edges = [
+        {"id": "e1", "source": "n_plan", "target": "n_script", "data": {"kind": "after"}},
+    ]
+    r = validate_workflow_graph(nodes, edges)
+    assert r["valid"] is True
+    assert not any("изолирован" in w for w in r["warnings"])
+
+
+def test_isolated_work_node_still_warned() -> None:
+    nodes = [
+        {"id": "n_plan", "type": "plan", "position": {}, "data": {}},
+        {"id": "n_orphan", "type": "script", "position": {}, "data": {}},
+    ]
+    edges: list[dict] = []
+    r = validate_workflow_graph(nodes, edges)
+    assert any("изолирован" in w and "n_orphan" in w for w in r["warnings"])

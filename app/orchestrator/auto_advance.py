@@ -572,14 +572,21 @@ async def _prepare_node_run_for_status(
     node_key: str | None = None
     if slot is not None:
         step_code = EXCEL_GPT_STEP_CODE
+        # Свежий meta с диска: иначе flush сотрёт canvas_graph, который UI
+        # сохранил пока воркер ждал GPT (пропадает script→storage и т.п.).
+        try:
+            await session.refresh(project)
+        except Exception:  # noqa: BLE001
+            pass
         meta = dict(project.meta) if isinstance(project.meta, dict) else {}
         node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
         # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту.
         if not node_key:
             node_key = resolve_excel_gpt_node_key_for_slot(project, slot)
             if node_key:
-                meta["active_excel_gpt_node_key"] = node_key
-                project.meta = meta
+                from app.services.project_meta import set_meta_fields
+
+                set_meta_fields(project, active_excel_gpt_node_key=node_key)
                 await session.flush()
                 logger.info(
                     "auto_advance: #{} excel_gpt slot={} → node_key={}",

@@ -91,3 +91,20 @@ def apply_project_meta_patch(
         source=source,
         project_id=getattr(project, "id", None),
     )
+
+
+def set_meta_fields(project: Any, **fields: Any) -> dict[str, Any]:
+    """Точечно обновить ключи meta без затирания свежего canvas_graph.
+
+    Воркер часто держит project.meta минутами (GPT). Shallow ``dict(meta)`` +
+    flush поверх чужого PATCH канваса снимает стрелки (20→19 edges) — storage
+    и topic «отваливаются», voiceover потом внезапно появляется через autoSync.
+    """
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    for key, value in fields.items():
+        if value is None:
+            meta.pop(key, None)
+        else:
+            meta[key] = value
+    project.meta = meta
+    return meta

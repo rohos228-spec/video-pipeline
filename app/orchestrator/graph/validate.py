@@ -210,8 +210,13 @@ def validate_workflow_graph(
         if not entry:
             warnings.append("нет входной рабочей ноды — все имеют предшественников")
 
+    # topic — конфиг-нода (тема проекта), часто без стрелок; не пугаем тостом.
     isolated = [
-        nid for nid in by_id if not out.get(nid) and not rev.get(nid)
+        nid
+        for nid in by_id
+        if not out.get(nid)
+        and not rev.get(nid)
+        and _node_type(by_id.get(nid)) != "topic"
     ]
     if isolated:
         warnings.append(f"изолированные ноды ({len(isolated)}): {', '.join(isolated[:5])}")

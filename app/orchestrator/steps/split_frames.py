@@ -52,22 +52,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         logger.info("[#{}] split_frames sync: {}", project.id, sync_info)
 
     try:
-        from app.services.node_xlsx_snapshot import find_node_key_for_type
-        from app.services.storage_node import sync_downstream_storage_from_node
+        from app.services.storage_step_sync import sync_storage_after_step
 
-        split_key = await find_node_key_for_type(session, project, "split")
-        if split_key:
-            synced = sync_downstream_storage_from_node(project, split_key)
-            for info in synced:
-                logger.info(
-                    "[#{}] split_frames: storage {} ← {} copied={} skipped={} errors={}",
-                    project.id,
-                    info.get("storageNode"),
-                    split_key,
-                    info.get("copied"),
-                    info.get("skipped"),
-                    info.get("errors"),
-                )
+        await sync_storage_after_step(
+            session, project, "split", log_prefix="split_frames"
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "[#{}] split_frames: sync downstream storage failed: {}",

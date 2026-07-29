@@ -28,6 +28,27 @@ def canvas_graph_from_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None
     return {"nodes": nodes, "edges": edges, "workflow_id": raw.get("workflow_id")}
 
 
+def find_canvas_node_key_by_type(
+    meta: dict[str, Any] | None, node_type: str
+) -> str | None:
+    """Первый node id данного type из project.meta.canvas_graph (без WorkflowRun)."""
+    want = str(node_type or "").strip()
+    if not want:
+        return None
+    cg = canvas_graph_from_meta(meta)
+    if not cg:
+        return None
+    for n in cg.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        if str(n.get("type") or "").strip() != want:
+            continue
+        nid = str(n.get("id") or "").strip()
+        if nid:
+            return nid
+    return None
+
+
 def build_canvas_graph_payload(
     *,
     workflow_id: int,
