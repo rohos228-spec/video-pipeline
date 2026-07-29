@@ -86,16 +86,16 @@ def test_append_preserves_override_body() -> None:
     assert "700" in text
 
 
-def test_subtitles_enabled_default_on() -> None:
+def test_subtitles_enabled_default_off() -> None:
     p = Project(topic="t")
     p.meta = {}
-    assert subtitles_enabled_for_project(p) is True
-
-
-def test_subtitles_enabled_off() -> None:
-    p = Project(topic="t")
-    p.meta = {"node_step_params": {"assemble": {"subtitles_enabled": False}}}
     assert subtitles_enabled_for_project(p) is False
+
+
+def test_subtitles_enabled_on() -> None:
+    p = Project(topic="t")
+    p.meta = {"node_step_params": {"assemble": {"subtitles_enabled": True}}}
+    assert subtitles_enabled_for_project(p) is True
 
 
 def test_post_voiceover_tail_default_zero() -> None:
@@ -108,6 +108,36 @@ def test_post_voiceover_tail_from_assemble_params() -> None:
     p = Project(topic="t")
     p.meta = {"node_step_params": {"assemble": {"post_voiceover_tail_seconds": 5}}}
     assert post_voiceover_tail_seconds_for_project(p) == 5.0
+
+
+def test_skip_intro_default_off() -> None:
+    from app.services.node_step_params import (
+        skip_intro_enabled_for_project,
+        skip_intro_seconds_for_project,
+    )
+
+    p = Project(topic="t")
+    p.meta = {}
+    assert skip_intro_enabled_for_project(p) is False
+    assert skip_intro_seconds_for_project(p) == 0.0
+
+
+def test_skip_intro_when_enabled() -> None:
+    from app.services.node_step_params import (
+        skip_intro_enabled_for_project,
+        skip_intro_seconds_for_project,
+    )
+
+    p = Project(topic="t")
+    p.meta = {
+        "node_step_params": {
+            "assemble": {"skip_intro_enabled": True, "skip_intro_seconds": 1.25}
+        }
+    }
+    assert skip_intro_enabled_for_project(p) is True
+    assert skip_intro_seconds_for_project(p) == 1.25
+    p.meta["node_step_params"]["assemble"]["skip_intro_seconds"] = 9
+    assert skip_intro_seconds_for_project(p) == 2.0
 
 
 def test_assemble_bgm_level_from_meta() -> None:

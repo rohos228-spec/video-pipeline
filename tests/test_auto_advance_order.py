@@ -161,8 +161,8 @@ async def test_approve_plan_default_graph_goes_to_scripting(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_enrich2_goes_to_slot3_not_hero(session) -> None:
-    """Stale «готово» на слоте 3 + рёбра 2→hero не должны прыгать на hero."""
+async def test_approve_enrich2_follows_edge_to_hero_not_orphan_slot3(session) -> None:
+    """Рёбра 2→hero: orphan слот 3 на канвасе не перехватывает auto_advance."""
     nodes = [
         {
             "id": "n_excel_gpt_2",
@@ -180,7 +180,7 @@ async def test_approve_enrich2_goes_to_slot3_not_hero(session) -> None:
     ]
     edges = [{"id": "e2", "source": "n_excel_gpt_2", "target": "n_hero"}]
     p = Project(
-        slug="aa-enrich-chain",
+        slug="aa-enrich-edges",
         topic="t",
         status=ProjectStatus.enrich_2_ready,
         auto_mode=True,
@@ -206,7 +206,49 @@ async def test_approve_enrich2_goes_to_slot3_not_hero(session) -> None:
     await _apply_approve(
         session, p, None, TRANSITIONS[ProjectStatus.enrich_2_ready], bot=None
     )
-    assert p.status is ProjectStatus.enriching_3
-    assert p.meta.get("enrich_auto_chain_to") == 3
-    assert 3 not in (p.meta.get("enrich_completed_slots") or [])
-    assert "n_excel_gpt_3" not in (p.meta.get("excel_gpt_completed_keys") or [])
+    assert p.status is ProjectStatus.generating_hero
+
+
+@pytest.mark.asyncio
+async def test_approve_enrich1_goes_to_script_along_edges(session) -> None:
+    """GPT → script: после GPT идёт закадровый, а не следующий GPT."""
+    nodes = [
+        {
+            "id": "n_excel_gpt_1",
+            "type": "excel_gpt",
+            "position": {"x": 0, "y": 0},
+            "data": {"slotIndex": 1},
+        },
+        {"id": "n_script", "type": "script", "position": {"x": 100, "y": 0}, "data": {}},
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 200, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+    ]
+    edges = [
+        {"id": "e1", "source": "n_excel_gpt_1", "target": "n_script"},
+        {"id": "e2", "source": "n_script", "target": "n_excel_gpt_2"},
+    ]
+    p = Project(
+        slug="aa-gpt-script",
+        topic="t",
+        status=ProjectStatus.enrich_1_ready,
+        auto_mode=True,
+        general_plan="x" * 200,
+        meta={
+            "plan_completed": True,
+            "enrich_completed_slots": [1],
+            "excel_gpt_completed_keys": ["n_excel_gpt_1"],
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+        },
+    )
+    session.add(p)
+    await session.flush()
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+
+    await _apply_approve(
+        session, p, None, TRANSITIONS[ProjectStatus.enrich_1_ready], bot=None
+    )
+    assert p.status is ProjectStatus.scripting

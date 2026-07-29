@@ -88,7 +88,10 @@ def build_step_params_block(project: Project, step_code: str) -> str:
 
 
 def send_to_main_pc_for_project(project: Project) -> bool:
-    """Отправка на главный ПК для монтажа (meta.node_step_params.assemble.send_to_main_pc)."""
+    """Отправка на главный ПК для монтажа (meta.node_step_params.assemble.send_to_main_pc).
+
+    По умолчанию включено.
+    """
     val = _step_bucket(project, "assemble").get("send_to_main_pc")
     if val is False:
         return False
@@ -96,27 +99,47 @@ def send_to_main_pc_for_project(project: Project) -> bool:
 
 
 def subtitles_enabled_for_project(project: Project) -> bool:
-    """Субтитры при сборке: meta.node_step_params.assemble.subtitles_enabled (по умолчанию вкл.)."""
+    """Субтитры при сборке: meta.node_step_params.assemble.subtitles_enabled.
+
+    По умолчанию выключены.
+    """
     val = _step_bucket(project, "assemble").get("subtitles_enabled")
-    if val is False:
-        return False
-    return True
+    if val is True:
+        return True
+    return False
 
 
-def _parse_nonneg_seconds(value: object, *, default: float = 0.0) -> float:
+def _parse_nonneg_seconds(value: object, *, default: float = 0.0, cap: float = 120.0) -> float:
     if value is None or value == "":
         return default
     try:
         n = float(value)
     except (TypeError, ValueError):
         return default
-    return max(0.0, min(120.0, n))
+    return max(0.0, min(cap, n))
 
 
 def post_voiceover_tail_seconds_for_project(project: Project) -> float:
     """Секунды видео после конца озвучки (заморозка последнего кадра)."""
     val = _step_bucket(project, "assemble").get("post_voiceover_tail_seconds")
     return _parse_nonneg_seconds(val)
+
+
+def skip_intro_enabled_for_project(project: Project) -> bool:
+    """Тумблер «не учитывать первые секунды» (assemble.skip_intro_enabled)."""
+    val = _step_bucket(project, "assemble").get("skip_intro_enabled")
+    return val is True
+
+
+def skip_intro_seconds_for_project(project: Project) -> float:
+    """Сколько секунд от начала финального ролика отрезать (0.00–2.00).
+
+    Учитывается только если skip_intro_enabled=True.
+    """
+    if not skip_intro_enabled_for_project(project):
+        return 0.0
+    val = _step_bucket(project, "assemble").get("skip_intro_seconds")
+    return round(_parse_nonneg_seconds(val, cap=2.0), 2)
 
 
 def assemble_bgm_level_from_meta(meta: dict) -> int | None:

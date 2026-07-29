@@ -279,6 +279,31 @@ async def assemble(
     return out_path
 
 
+async def trim_intro_seconds(src: Path, *, skip_seconds: float) -> Path:
+    """Отрезать первые skip_seconds от готового mp4 (видео+аудио). in-place."""
+    skip = max(0.0, float(skip_seconds or 0.0))
+    if skip < 0.005 or not src.is_file():
+        return src
+    with tempfile.TemporaryDirectory(prefix="vp_skip_") as tmp:
+        tmp_dir = Path(tmp)
+        dst = tmp_dir / "trimmed.mp4"
+        await _run([
+            "ffmpeg", "-y",
+            "-ss", f"{skip:.3f}",
+            "-i", str(src),
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
+            str(dst),
+        ])
+        if not dst.is_file() or dst.stat().st_size < 64:
+            raise RuntimeError(f"trim intro failed for {src.name}")
+        import shutil
+
+        shutil.copy2(dst, src)
+    logger.info("assembly: skip intro {:.2f}s → {}", skip, src)
+    return src
+
+
 def make_simple_ass(
     frames: list[tuple[float, float, str]],
     path: Path,

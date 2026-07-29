@@ -195,3 +195,32 @@ def test_dedup_same_source_size(tmp_path: Path, monkeypatch) -> None:
     assert len(r1["copied"]) == 1
     assert r2["copied"] == []
     assert resolve_storage(p, store, auto_sync=False)["okFileCount"] == 1
+
+
+def test_dedup_same_xlsx_from_two_nodes(tmp_path: Path, monkeypatch) -> None:
+    """Две ноды отдают один project.xlsx — в хранилище одна копия."""
+    p = _project(tmp_path, monkeypatch)
+    xlsx = p.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"PK" + b"excel-bytes-same" * 20)
+    store = "n_store"
+    a, b = "n_excel_gpt_1", "n_plan"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": a, "type": "excel_gpt", "position": {"x": 0, "y": 0}, "data": {"slotIndex": 1}},
+                {"id": b, "type": "plan", "position": {"x": 50, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": a, "target": store, "data": {"kind": "after"}},
+                {"id": "e2", "source": b, "target": store, "data": {"kind": "after"}},
+            ],
+        },
+        "storage_nodes": {store: {"formats": ["any"]}},
+    }
+    res = sync_from_edges(p, store)
+    assert len(res["copied"]) == 1
+    assert resolve_storage(p, store, auto_sync=False)["okFileCount"] == 1
+    res2 = sync_from_edges(p, store)
+    assert res2["copied"] == []
+    assert resolve_storage(p, store, auto_sync=False)["okFileCount"] == 1

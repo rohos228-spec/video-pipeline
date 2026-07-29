@@ -22,7 +22,13 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.artifact_recovery import recover_before_assemble
-from app.services.assembly import assemble, make_simple_ass, subtitles_vf_arg, SUBTITLES_ASS_NAME
+from app.services.assembly import (
+    SUBTITLES_ASS_NAME,
+    assemble,
+    make_simple_ass,
+    subtitles_vf_arg,
+    trim_intro_seconds,
+)
 from app.services.bgm import resolve_bgm
 from app.services.frame_audio import build_assembly_timeline, has_all_frame_audio
 from app.services.hitl import send_hitl_video
@@ -33,6 +39,7 @@ from app.services.montage_board_meta import montage_meta
 from app.services.montage_asr import ensure_montage_words
 from app.services.node_step_params import (
     post_voiceover_tail_seconds_for_project,
+    skip_intro_seconds_for_project,
     subtitles_enabled_for_project,
 )
 from app.services.plan_shot2 import read_shot2_columns
@@ -534,6 +541,15 @@ async def _assemble_body(
                 if proc.returncode != 0:
                     raise RuntimeError("ffmpeg subtitle burn failed")
                 shutil.copy2(burned, out_path)
+
+    skip_intro = skip_intro_seconds_for_project(project)
+    if skip_intro > 0:
+        await trim_intro_seconds(out_path, skip_seconds=skip_intro)
+        logger.info(
+            "[#{}] assemble: skip intro {:.2f}s applied",
+            project.id,
+            skip_intro,
+        )
 
     logger.info(
         "[#{}] assemble done: voice {:.2f}s, engine={}, timeline={}",

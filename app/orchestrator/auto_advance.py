@@ -648,8 +648,8 @@ async def _apply_approve(
         )
         project.status = nxt
     else:
-        # enrich_N_ready: пока на канвасе есть excel_gpt M>N — только туда.
-        # Иначе graph BFS по stale «готово» / кривым рёбрам прыгает на hero.
+        # enrich_N_ready: следующий excel_gpt только если так ведут стрелки.
+        # Иначе graph BFS (script / hero / …).
         from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
 
         enrich_nxt = prepare_enrich_chain_for_auto_advance(
@@ -658,7 +658,7 @@ async def _apply_approve(
         if enrich_nxt is not None:
             graph_nxt = enrich_nxt
             logger.info(
-                "auto_advance: #{} {} → next excel_gpt {} (canvas slot chain)",
+                "auto_advance: #{} {} → next excel_gpt {} (edge chain)",
                 project.id,
                 transition.ready_status.value,
                 enrich_nxt.value,

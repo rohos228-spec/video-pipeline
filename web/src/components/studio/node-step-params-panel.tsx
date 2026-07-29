@@ -261,19 +261,25 @@ function AssembleFields({
   onSave: (patch: AssembleStepParams) => void;
   saving: boolean;
 }) {
-  const subsOn = params.assemble?.subtitles_enabled !== false;
+  const subsOn = params.assemble?.subtitles_enabled === true;
   const tailSaved = params.assemble?.post_voiceover_tail_seconds ?? 0;
   const bgmFromMeta =
     typeof metaRecord.bgm_level === "number" ? Math.round(metaRecord.bgm_level) : 35;
   const bgmSaved = params.assemble?.bgm_level ?? bgmFromMeta;
   const sendToMain = params.assemble?.send_to_main_pc !== false;
+  const skipIntroOn = params.assemble?.skip_intro_enabled === true;
+  const skipIntroSec = Math.min(
+    2,
+    Math.max(0, Number(params.assemble?.skip_intro_seconds ?? 0) || 0),
+  );
+  const skipIntroLabel = `${skipIntroSec.toFixed(2)} с`;
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
       <div>
         <h3 className="text-sm font-semibold text-foreground">Сборка FFmpeg</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Субтитры, хвост видео после озвучки и громкость фона из папки music/.
+          Субтитры, хвост после озвучки, пропуск начала ролика и громкость фона из music/.
         </p>
       </div>
       <StepperControl
@@ -358,6 +364,60 @@ function AssembleFields({
           />
         </span>
       </button>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() =>
+          onSave({
+            skip_intro_enabled: !skipIntroOn,
+            skip_intro_seconds: skipIntroOn ? skipIntroSec : skipIntroSec || 0.5,
+          })
+        }
+        className={cn(
+          "flex w-full items-start justify-between gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+          skipIntroOn ? "border-primary/40 bg-primary/10" : "border-border/60 hover:bg-accent/40",
+        )}
+      >
+        <span className="flex flex-col">
+          <span className="text-sm font-medium text-foreground">Не учитывать первые секунды</span>
+          <span className="text-xs text-muted-foreground">
+            {skipIntroOn
+              ? `Отрезаем начало ролика: ${skipIntroLabel}`
+              : "Выкл — ролик с 0:00 без обрезки начала"}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+            skipIntroOn ? "bg-primary" : "bg-muted",
+          )}
+        >
+          <span
+            className={cn(
+              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              skipIntroOn && "translate-x-4",
+            )}
+          />
+        </span>
+      </button>
+      {skipIntroOn ? (
+        <StepperControl
+          label="Сколько секунд от начала отрезать"
+          description="Шаг 0.01 с (сотые). Диапазон 0.00–2.00. Не учитываются в финальном mp4."
+          value={Number(skipIntroSec.toFixed(2))}
+          min={0}
+          max={2}
+          step={0.01}
+          valueLabel={skipIntroLabel}
+          disabled={saving}
+          onChange={(next) =>
+            onSave({
+              skip_intro_enabled: true,
+              skip_intro_seconds: Math.round(Math.min(2, Math.max(0, next)) * 100) / 100,
+            })
+          }
+        />
+      ) : null}
       {saving ? (
         <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />

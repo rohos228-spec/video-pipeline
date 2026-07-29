@@ -18,7 +18,7 @@ export type AudioStepParams = {
 };
 
 export type AssembleStepParams = {
-  /** По умолчанию true — прожиг ASS в финальный mp4 */
+  /** По умолчанию false — без прожига ASS */
   subtitles_enabled?: boolean | null;
   /** Секунды видео после конца озвучки (заморозка последнего кадра) */
   post_voiceover_tail_seconds?: number | null;
@@ -26,6 +26,10 @@ export type AssembleStepParams = {
   bgm_level?: number | null;
   /** По умолчанию true — после music_ready отправить bundle на hub для монтажа */
   send_to_main_pc?: boolean | null;
+  /** Тумблер: отрезать начало финального ролика */
+  skip_intro_enabled?: boolean | null;
+  /** Секунды от начала (0.00–2.00, сотые), если skip_intro_enabled */
+  skip_intro_seconds?: number | null;
 };
 
 /** Подпись дБ для UI: 100% = 0 дБ, 0% = −∞ (линейная шкала 0..100). */

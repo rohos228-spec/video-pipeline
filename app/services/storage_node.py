@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -303,15 +304,37 @@ def _incoming_sources(project: Project, node_key: str) -> list[str]:
     meta = project.meta if isinstance(project.meta, dict) else {}
     cg = canvas_graph_from_meta(meta) or {}
     sources: list[str] = []
+    seen: set[str] = set()
     for e in cg.get("edges") or []:
         if not isinstance(e, dict):
             continue
         if str(e.get("target") or "") != node_key:
             continue
         src = str(e.get("source") or "").strip()
-        if src:
+        if src and src not in seen:
+            seen.add(src)
             sources.append(src)
     return sources
+
+
+def _file_fingerprint(path: Path) -> str:
+    """size + sha256(head+tail) — одинаковый project.xlsx с разных нод = один файл."""
+    try:
+        st = path.stat()
+        size = int(st.st_size)
+    except OSError:
+        return ""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(65_536)
+            h.update(head)
+            if size > 65_536:
+                fh.seek(max(0, size - 65_536))
+                h.update(fh.read(65_536))
+    except OSError:
+        return f"{size}:"
+    return f"{size}:{h.hexdigest()}"
 
 
 def _already_have(
@@ -320,14 +343,25 @@ def _already_have(
     from_node: str,
     original_name: str,
     size: int,
+    fingerprint: str = "",
 ) -> bool:
     for item in index_files:
+        if fingerprint and str(item.get("fingerprint") or "") == fingerprint:
+            return True
         if (
             str(item.get("fromNode") or "") == from_node
             and str(item.get("originalName") or "") == original_name
             and int(item.get("size") or 0) == size
         ):
-            # файл ещё на диске?
+            name = str(item.get("name") or "")
+            if name:
+                return True
+        # Тот же basename+size уже лежит (другая нода отдала тот же project.xlsx)
+        if (
+            fingerprint
+            and str(item.get("originalName") or "") == original_name
+            and int(item.get("size") or 0) == size
+        ):
             name = str(item.get("name") or "")
             if name:
                 return True
@@ -338,7 +372,7 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
     """Скопировать все подходящие файлы с входящих нод.
 
     Имя: ``{метка_источника}_{YYYYMMDD_HHMMSS}_{оригинал}``.
-    Дубликат (тот же источник + имя + размер) не копируется повторно.
+    Дубликат: тот же fingerprint / realpath / (источник+имя+размер) не копируется.
     """
     from app.services.gpt_operator import files_from_source_node
 
@@ -354,6 +388,12 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
     copied: list[str] = []
     skipped: list[str] = []
     errors: list[str] = []
+    seen_realpaths: set[str] = set()
+    seen_fingerprints: set[str] = {
+        str(x.get("fingerprint") or "")
+        for x in index_files
+        if str(x.get("fingerprint") or "")
+    }
 
     for src in _incoming_sources(project, node_key):
         label = _source_label(project, src)
@@ -371,12 +411,27 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
             if not _allowed(src_path, allow):
                 skipped.append(f"{src_path.name}: формат не подходит")
                 continue
+            try:
+                real = str(src_path.resolve())
+            except OSError:
+                real = str(src_path)
+            if real in seen_realpaths:
+                skipped.append(f"{src_path.name}: тот же путь уже скопирован")
+                continue
             size = int(src_path.stat().st_size)
             orig = src_path.name
+            fp = _file_fingerprint(src_path)
+            if fp and fp in seen_fingerprints:
+                skipped.append(f"{orig}: дубликат содержимого (fingerprint)")
+                continue
             if _already_have(
-                index_files, from_node=src, original_name=orig, size=size
+                index_files,
+                from_node=src,
+                original_name=orig,
+                size=size,
+                fingerprint=fp,
             ):
-                skipped.append(f"{orig}: уже есть от {label}")
+                skipped.append(f"{orig}: уже есть от {label} или того же содержимого")
                 continue
             stamp = _stamp_now()
             safe_orig = _safe_token(orig, max_len=80)
@@ -393,6 +448,9 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{src_path.name}: {exc}")
                 continue
+            seen_realpaths.add(real)
+            if fp:
+                seen_fingerprints.add(fp)
             saved_at = datetime.now().astimezone().isoformat(timespec="seconds")
             entry = {
                 "name": dest_name,
@@ -401,6 +459,7 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
                 "originalName": orig,
                 "savedAt": saved_at,
                 "size": size,
+                "fingerprint": fp,
             }
             index_files.append(entry)
             copied.append(dest_name)

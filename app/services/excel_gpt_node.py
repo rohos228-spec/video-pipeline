@@ -189,6 +189,84 @@ def next_excel_gpt_slot_after_ready(project: Project, ready_status: ProjectStatu
     return later[0] if later else None
 
 
+def first_work_successor_along_edges(
+    project: Project, from_node_key: str
+) -> tuple[str, str] | None:
+    """Первый work-узел по исходящим стрелкам (passthrough/storage пропускаем).
+
+    Returns (node_key, node_type) или None.
+    """
+    from collections import deque
+
+    from app.orchestrator.graph.planner import (
+        is_passthrough_node_type,
+        is_work_node_type,
+    )
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    key0 = (from_node_key or "").strip()
+    if not key0:
+        return None
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    by_id: dict[str, dict[str, Any]] = {}
+    for n in cg.get("nodes") or []:
+        if isinstance(n, dict) and n.get("id"):
+            by_id[str(n["id"])] = n
+    outs: dict[str, list[str]] = {}
+    for e in cg.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        s = str(e.get("source") or "").strip()
+        t = str(e.get("target") or "").strip()
+        if s and t:
+            outs.setdefault(s, []).append(t)
+    visited: set[str] = set()
+    queue: deque[str] = deque(outs.get(key0, []))
+    while queue:
+        key = queue.popleft()
+        if key in visited:
+            continue
+        visited.add(key)
+        node = by_id.get(key) or {}
+        typ = str(node.get("type") or "")
+        if is_passthrough_node_type(typ):
+            queue.extend(outs.get(key, []))
+            continue
+        if is_work_node_type(typ):
+            return key, typ
+        queue.extend(outs.get(key, []))
+    return None
+
+
+def first_work_successor_from_excel_slot(
+    project: Project, from_slot: int
+) -> tuple[str, str, int | None] | None:
+    """(node_key, type, slot_if_excel_gpt) — следующий work после excel_gpt слота."""
+    from_key = resolve_excel_gpt_node_key_for_slot(project, from_slot)
+    if not from_key:
+        return None
+    succ = first_work_successor_along_edges(project, from_key)
+    if succ is None:
+        return None
+    key, typ = succ
+    slot: int | None = None
+    if is_excel_gpt_node_type(typ):
+        slot = slot_for_excel_gpt_node_key(project, key)
+        if slot is None:
+            node = next(
+                (
+                    n
+                    for n in excel_gpt_nodes_from_project(project)
+                    if str(n.get("id") or "") == key
+                ),
+                None,
+            )
+            if node is not None:
+                slot = slot_index_from_node(node)
+    return key, typ, slot
+
+
 def next_excel_gpt_running_after_ready(
     project: Project, ready_status: ProjectStatus
 ) -> ProjectStatus | None:
@@ -202,19 +280,22 @@ def next_excel_gpt_running_after_ready(
 def prepare_enrich_chain_for_auto_advance(
     project: Project, ready_status: ProjectStatus
 ) -> ProjectStatus | None:
-    """Перед auto_advance с enrich_N_ready: цепочка + сброс stale «готово».
+    """Перед auto_advance с enrich_N_ready: цепочка ТОЛЬКО по стрелкам.
 
-    Возвращает enriching_{N+1} если на канвасе есть следующий слот, иначе None
-    (тогда caller идёт по обычному graph.next).
+    Если следующий work по рёбрам — excel_gpt M — вернуть enriching_M.
+    Если стрелка ведёт в script/hero/другое — None (caller идёт по graph BFS).
     """
     finished = slot_from_ready_status(ready_status)
     if finished is None:
         return None
-    nxt_slot = next_excel_gpt_slot_after_ready(project, ready_status)
-    if nxt_slot is None:
+    succ = first_work_successor_from_excel_slot(project, finished)
+    if succ is None:
+        return None
+    _key, typ, nxt_slot = succ
+    if not is_excel_gpt_node_type(typ) or nxt_slot is None or nxt_slot <= finished:
         return None
     ensure_enrich_auto_chain_to(project, finished)
-    clear_excel_gpt_tail_completion(project, finished + 1)
+    clear_excel_gpt_tail_completion(project, nxt_slot)
     meta = dict(project.meta or {})
     node_key = resolve_excel_gpt_node_key_for_slot(project, nxt_slot)
     if node_key:
@@ -402,21 +483,33 @@ def next_incomplete_excel_gpt_slot(project: Project, after_slot: int) -> int | N
 
 
 def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
-    """Выставить meta.enrich_auto_chain_to = max slot, если на канвасе есть хвост.
+    """Выставить enrich_auto_chain_to по цепочке excel_gpt ТОЛЬКО вдоль стрелок.
 
-    Нужно, чтобы после enrich_N_ready сразу шёл enriching_N+1 без ожидания
-    auto_advance (который часто режется gen_queue / auto_mode=False).
+    GPT1→script→GPT2: после слота 1 цепочка НЕ ставится (следующий work = script).
+    GPT1→GPT2→GPT3: chain_to=3.
     """
-    max_slot = max_excel_gpt_slot(project)
-    if max_slot <= from_slot:
+    end = from_slot
+    cur = from_slot
+    guard = 0
+    while guard < MAX_EXCEL_GPT_SLOTS + 2:
+        guard += 1
+        succ = first_work_successor_from_excel_slot(project, cur)
+        if succ is None:
+            break
+        _key, typ, slot = succ
+        if not is_excel_gpt_node_type(typ) or slot is None or slot <= cur:
+            break
+        end = slot
+        cur = slot
+    if end <= from_slot:
         return None
     meta = dict(project.meta or {})
-    cur = meta.get("enrich_auto_chain_to")
-    if isinstance(cur, int) and cur >= max_slot:
-        return cur
-    meta["enrich_auto_chain_to"] = max_slot
+    cur_meta = meta.get("enrich_auto_chain_to")
+    if isinstance(cur_meta, int) and cur_meta >= end:
+        return cur_meta
+    meta["enrich_auto_chain_to"] = end
     project.meta = meta
-    return max_slot
+    return end
 
 
 def slot_for_excel_gpt_node_key(project: Project, node_key: str) -> int | None:

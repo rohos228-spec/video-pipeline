@@ -66,16 +66,59 @@ def test_clear_tail_completion_allows_regen() -> None:
     assert p.meta["excel_gpt_completed_keys"] == ["n_excel_gpt_1"]
 
 
-def test_ensure_enrich_auto_chain_to_sets_max() -> None:
+def test_ensure_enrich_auto_chain_to_sets_max_along_edges() -> None:
     p = _project_with_excel_nodes([1, 2, 3], completed=[1])
-    assert ensure_enrich_auto_chain_to(p, from_slot=2) == 3
+    # без рёбер — цепочки нет
+    assert ensure_enrich_auto_chain_to(p, from_slot=1) is None
+    nodes = p.meta["canvas_graph"]["nodes"]
+    p.meta["canvas_graph"]["edges"] = [
+        {"id": "e1", "source": "n_excel_gpt_1", "target": "n_excel_gpt_2"},
+        {"id": "e2", "source": "n_excel_gpt_2", "target": "n_excel_gpt_3"},
+    ]
+    p.meta["canvas_graph"]["nodes"] = nodes
+    assert ensure_enrich_auto_chain_to(p, from_slot=1) == 3
     assert p.meta["enrich_auto_chain_to"] == 3
 
 
 def test_ensure_enrich_auto_chain_noop_when_last_slot() -> None:
     p = _project_with_excel_nodes([1, 2], completed=[1])
+    p.meta["canvas_graph"]["edges"] = [
+        {"id": "e1", "source": "n_excel_gpt_1", "target": "n_excel_gpt_2"},
+    ]
     assert ensure_enrich_auto_chain_to(p, from_slot=2) is None
     assert "enrich_auto_chain_to" not in p.meta
+
+
+def test_ensure_enrich_stops_at_script_edge() -> None:
+    """GPT → script → GPT: после первого GPT цепочку не форсим через script."""
+    nodes = [
+        {
+            "id": "n_excel_gpt_1",
+            "type": "excel_gpt",
+            "position": {"x": 0, "y": 0},
+            "data": {"slotIndex": 1},
+        },
+        {"id": "n_script", "type": "script", "position": {"x": 100, "y": 0}, "data": {}},
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 200, "y": 0},
+            "data": {"slotIndex": 2},
+        },
+    ]
+    edges = [
+        {"id": "e1", "source": "n_excel_gpt_1", "target": "n_script"},
+        {"id": "e2", "source": "n_script", "target": "n_excel_gpt_2"},
+    ]
+    p = SimpleNamespace(
+        meta={"canvas_graph": {"nodes": nodes, "edges": edges}},
+        status=ProjectStatus.enrich_1_ready,
+        id=1,
+    )
+    assert ensure_enrich_auto_chain_to(p, from_slot=1) is None
+    from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+    assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_1_ready) is None
 
 
 def test_enrich_ready_bypasses_gen_queue_when_slot3_pending() -> None:
@@ -151,6 +194,9 @@ def test_next_excel_slot_after_ready_ignores_done() -> None:
 
     p = _project_with_excel_nodes([1, 2, 3], completed=[1, 2, 3])
     p.status = ProjectStatus.enrich_2_ready
+    p.meta["canvas_graph"]["edges"] = [
+        {"id": "e2", "source": "n_excel_gpt_2", "target": "n_excel_gpt_3"},
+    ]
     assert next_excel_gpt_slot_after_ready(p, ProjectStatus.enrich_2_ready) == 3
     assert next_excel_gpt_running_after_ready(p, ProjectStatus.enrich_2_ready) is (
         ProjectStatus.enriching_3
@@ -191,8 +237,8 @@ def test_graph_skips_to_hero_only_after_last_excel_slot() -> None:
     )
 
 
-def test_prepare_chain_even_if_edges_skip_slot3() -> None:
-    """Слот 3 на канвасе, но рёбра excel_2→hero — всё равно enriching_3."""
+def test_prepare_chain_follows_edges_not_orphan_slots() -> None:
+    """Слот 3 на канвасе, но рёбра excel_2→hero — идём по стрелке (не форсим #3)."""
     from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
 
     nodes = [
@@ -216,6 +262,4 @@ def test_prepare_chain_even_if_edges_skip_slot3() -> None:
     p = _project_with_excel_nodes([2, 3], completed=[2, 3])
     p.meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
     p.status = ProjectStatus.enrich_2_ready
-    assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_2_ready) is (
-        ProjectStatus.enriching_3
-    )
+    assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_2_ready) is None
