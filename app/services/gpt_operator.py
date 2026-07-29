@@ -623,6 +623,82 @@ def _manual_upload_files(project: Project, node_key: str, cfg: dict[str, Any]) -
     return files
 
 
+def hydrate_check_result_from_disk(
+    project: Project, node_key: str, last: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Подтянуть gate/analysis с диска, если meta протухла после re-run.
+
+    Файлы analysis.json / check_report.txt — источник правды после прогона;
+    canvas/web_get иногда перезаписывают meta без gpt_operator_results.
+    """
+    import json
+
+    from app.services.check_analysis import CHECK_REPORT_NAME, parse_check_analysis
+
+    entry = dict(last or {})
+    gate = str(entry.get("gateStatus") or "").strip().lower()
+    if gate in ("pass", "fail") and isinstance(entry.get("analysis"), dict):
+        return entry
+
+    up = upload_dir(project, node_key)
+    analysis_path = up / "analysis.json"
+    report_path = up / CHECK_REPORT_NAME
+    reply_path = up / "gpt_reply.txt"
+
+    parsed_dict: dict[str, Any] | None = None
+    preview = ""
+    if analysis_path.is_file() and analysis_path.stat().st_size > 0:
+        try:
+            raw = json.loads(analysis_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("verdict"):
+                parsed_dict = raw
+        except Exception:  # noqa: BLE001
+            parsed_dict = None
+    if parsed_dict is None and report_path.is_file() and report_path.stat().st_size > 0:
+        preview = report_path.read_text(encoding="utf-8")
+        parsed = parse_check_analysis(preview)
+        if parsed.raw_error is None or parsed.verdict in ("pass", "fail"):
+            parsed_dict = parsed.to_dict()
+    if parsed_dict is None and reply_path.is_file() and reply_path.stat().st_size > 0:
+        preview = reply_path.read_text(encoding="utf-8")
+        if "ОТЧЁТ ПРОВЕРКИ" in preview or "vp.check.v1" in preview or "verdict" in preview.lower():
+            parsed = parse_check_analysis(preview)
+            parsed_dict = parsed.to_dict()
+
+    if not parsed_dict:
+        return entry
+
+    verdict = str(parsed_dict.get("verdict") or "").strip().lower()
+    if verdict not in ("pass", "fail"):
+        return entry
+
+    entry["gateStatus"] = verdict
+    entry["analysis"] = parsed_dict
+    if not preview and report_path.is_file():
+        preview = report_path.read_text(encoding="utf-8")
+    if preview:
+        entry["replyPreview"] = preview[:2000]
+    outs = [str(p) for p in (entry.get("outputPaths") or []) if str(p).strip()]
+    for p in (analysis_path, report_path, reply_path):
+        if p.is_file() and str(p) not in outs:
+            outs.append(str(p))
+    entry["outputPaths"] = outs
+    return entry
+
+
+def sanitize_check_reviewer_notes(text: str) -> str:
+    """Убрать из сопровода старый JSON-контракт — он ломает TXT-отчёт."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    low = t.lower()
+    if "vp.check.v1" in low:
+        return ""
+    if '"schema"' in low and "verdict" in low and "forward" in low:
+        return ""
+    return t
+
+
 def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     """Полная сверка: стрелки + слоты + диск. Единый ответ для UI и run."""
     cfg = operator_config(project, node_key)
@@ -751,6 +827,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     results = meta.get("gpt_operator_results")
     if isinstance(results, dict) and isinstance(results.get(node_key), dict):
         last = dict(results[node_key])
+    if check_mode or role in BRANCHING_ROLES:
+        last = hydrate_check_result_from_disk(project, node_key, last)
 
     pass_edges = [e for e in outgoing if is_pass_edge_kind(str(e.get("kind") or ""))]
     fail_edges = [e for e in outgoing if is_fail_edge_kind(str(e.get("kind") or ""))]
@@ -1066,7 +1144,12 @@ def save_operator_result(
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
     if output_paths:
-        cur["lastReplyPath"] = str(output_paths[0])
+        # Предпочитаем человекочитаемый отчёт, не analysis.json.
+        preferred = next(
+            (p for p in output_paths if p.name == "check_report.txt"),
+            None,
+        )
+        cur["lastReplyPath"] = str(preferred or output_paths[0])
         cur["lastReplyAt"] = entry["at"]
     if resolved_gate:
         cur["gateStatus"] = resolved_gate
@@ -1075,6 +1158,12 @@ def save_operator_result(
     configs[node_key] = cur
     meta["excel_gpt_nodes"] = configs
     project.meta = meta
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(project, "meta")
+    except Exception:  # noqa: BLE001
+        pass
     return entry
 
 
@@ -1085,13 +1174,11 @@ def gate_allows_successors(project: Project, gate_node_key: str) -> bool | None:
         return None
     meta = project.meta if isinstance(project.meta, dict) else {}
     results = meta.get("gpt_operator_results")
-    status = ""
-    if isinstance(results, dict):
-        entry = results.get(gate_node_key)
-        if isinstance(entry, dict):
-            status = str(entry.get("gateStatus") or "").strip().lower()
-    if not status:
-        status = str(cfg.get("gateStatus") or "").strip().lower()
+    entry: dict[str, Any] = {}
+    if isinstance(results, dict) and isinstance(results.get(gate_node_key), dict):
+        entry = dict(results[gate_node_key])
+    entry = hydrate_check_result_from_disk(project, gate_node_key, entry)
+    status = str(entry.get("gateStatus") or cfg.get("gateStatus") or "").strip().lower()
     if status == "pass":
         return True
     if status == "fail":

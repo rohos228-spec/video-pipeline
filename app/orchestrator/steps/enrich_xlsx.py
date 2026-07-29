@@ -188,6 +188,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 assemble_check_master_prompt,
                 collect_source_prompts,
                 project_format_hint_for_check,
+                sanitize_check_reviewer_notes,
             )
 
             sources = collect_source_prompts(project, node_key)
@@ -195,11 +196,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             if not ok_sources:
                 raise RuntimeError("нет исходного промта для проверки")
             source_prompt_keys = [str(s.get("nodeKey") or "") for s in ok_sources]
-            # Короткий текст этой ноды — только доп. указания ревьюера.
+            # Короткий текст — только доп. указания; старый vp.check.v1 JSON выкидываем.
+            reviewer_notes = sanitize_check_reviewer_notes(accompanying or "")
             master = assemble_check_master_prompt(
                 ok_sources,
                 check_fix=check_fix,
-                reviewer_notes=accompanying or "",
+                reviewer_notes=reviewer_notes,
             )
             accompanying = ""
             hint = project_format_hint_for_check(project, node_key)

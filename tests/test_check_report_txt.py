@@ -208,6 +208,65 @@ def test_assemble_prompt_includes_sources() -> None:
     assert "# ОТЧЁТ ПРОВЕРКИ" in text
 
 
+def test_hydrate_result_from_disk_when_meta_stale(tmp_path: Path, monkeypatch) -> None:
+    from app.services.gpt_operator import hydrate_check_result_from_disk, resolve_operator
+
+    p = _project(tmp_path, monkeypatch)
+    key = "n_check"
+    up = p.data_dir / "excel_gpt_uploads" / key
+    up.mkdir(parents=True)
+    (up / "check_report.txt").write_text(SAMPLE_TXT, encoding="utf-8")
+    (up / "analysis.json").write_text(
+        json.dumps(parse_check_analysis(SAMPLE_TXT).to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (p.data_dir / "project.xlsx").write_bytes(b"PK\x03\x04" + b"0" * 200)
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [{"id": key, "type": "excel_gpt", "position": {"x": 0, "y": 0}}],
+            "edges": [],
+        },
+        "excel_gpt_nodes": {
+            key: {
+                "role": "assist",
+                "checkMode": True,
+                "transport": "api",
+                "uploadedFileNames": ["project.xlsx"],
+                "inputSource": "upload",
+            }
+        },
+        # stale meta без gate — как после web_get overwrite
+        "gpt_operator_results": {
+            key: {
+                "gateStatus": None,
+                "replyPreview": "старый эссе-текст",
+                "outputPaths": [],
+            }
+        },
+    }
+    # upload path for project.xlsx under node
+    import shutil
+
+    shutil.copy(p.data_dir / "project.xlsx", up / "project.xlsx")
+    p.meta["excel_gpt_nodes"][key]["uploadedFileNames"] = ["project.xlsx"]
+
+    hydrated = hydrate_check_result_from_disk(p, key, {"gateStatus": None})
+    assert hydrated["gateStatus"] == "fail"
+    assert hydrated["analysis"]["verdict"] == "fail"
+
+    res = resolve_operator(p, key)
+    assert res["branching"]["verdict"] == "fail"
+    assert res["analysis"]["verdict"] == "fail"
+
+
+def test_sanitize_strips_old_json_contract() -> None:
+    from app.services.gpt_operator import sanitize_check_reviewer_notes
+
+    dirty = 'Верни ответ\n{\n  "schema": "vp.check.v1",\n  "verdict": "pass"\n}'
+    assert sanitize_check_reviewer_notes(dirty) == ""
+    assert sanitize_check_reviewer_notes("смотри только лист План") == "смотри только лист План"
+
+
 def test_check_mode_gate_edges(tmp_path: Path, monkeypatch) -> None:
     p = _project(tmp_path, monkeypatch)
     key = "n_check"
