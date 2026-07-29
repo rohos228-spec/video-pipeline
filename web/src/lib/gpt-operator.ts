@@ -136,10 +136,22 @@ export const ROLE_OPTIONS: { value: OperatorRole; title: string; hint: string }[
   { value: "gate", title: "Шлагбаум", hint: "Ок / не ок — две ветки" },
 ];
 
-export const OUTPUT_OPTIONS: { value: OperatorOutputMode; title: string }[] = [
-  { value: "text", title: "Текст" },
-  { value: "project_file", title: "Файл проекта" },
-  { value: "sidecar", title: "Рядом, не ломая" },
+export const OUTPUT_OPTIONS: {
+  value: OperatorOutputMode;
+  title: string;
+  hint: string;
+}[] = [
+  { value: "text", title: "Текст", hint: "Ответ в gpt_reply.txt (Excel не трогает)" },
+  {
+    value: "project_file",
+    title: "Excel проекта",
+    hint: "Пишет обратно в project.xlsx",
+  },
+  {
+    value: "sidecar",
+    title: "Отдельный .txt",
+    hint: "Сохраняет ответ рядом с нодой, project.xlsx не меняет",
+  },
 ];
 
 /** Что отдаёт дальше следующей ноде (мультивыбор). */
@@ -194,7 +206,7 @@ export const OPERATOR_MENU_ACTIONS = [
   { id: "role_gate", group: "role", title: "Роль: шлагбаум" },
   { id: "out_text", group: "out", title: "Выход: текст" },
   { id: "out_project", group: "out", title: "Выход: файл проекта" },
-  { id: "out_sidecar", group: "out", title: "Выход: сохранить рядом" },
+  { id: "out_sidecar", group: "out", title: "Выход: отдельный .txt" },
   { id: "emit_result", group: "emit", title: "Отдаёт: результат" },
   { id: "emit_reply", group: "emit", title: "Отдаёт: текст .txt" },
   { id: "emit_analysis", group: "emit", title: "Отдаёт: проверка" },

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
+import { BugReportButton } from "@/components/shell/bug-report-button";
 
 interface UiState {
   framesProjectId: number | null;
@@ -111,6 +112,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             <Activity className="h-3.5 w-3.5" />
             Логи
           </Button>
+          <BugReportButton />
           <Button variant="ghost" size="sm" className="gap-2 text-xs" asChild>
             <a href="/api/docs" target="_blank" rel="noreferrer">
               API

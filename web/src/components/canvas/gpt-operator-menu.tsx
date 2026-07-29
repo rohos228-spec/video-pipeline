@@ -56,6 +56,9 @@ export function GptOperatorMenuPanel({
     mutationFn: (body: Record<string, unknown>) =>
       api.patchGptOperator(projectId, nodeKey, body),
     onSuccess: (res, vars) => {
+      if (res.resolve) {
+        qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
+      }
       const resolved = res.resolve;
       const role = (resolved?.role || (vars.role as string) || "assist") as OperatorRole;
       const label =
@@ -151,13 +154,14 @@ export function GptOperatorMenuPanel({
               })
             }
             className={cn(
-              "rounded-md border px-1.5 py-1 text-left text-[9px] leading-tight transition",
+              "rounded-md border px-1.5 py-1 text-left text-[9px] font-medium leading-tight transition",
               role === opt.value
-                ? "border-violet-400/50 bg-violet-500/15 text-violet-50"
+                ? "border-violet-400/70 bg-violet-500/25 text-violet-50 ring-1 ring-violet-400/40"
                 : "border-white/10 bg-black/20 text-muted-foreground hover:border-white/20",
             )}
             title={opt.hint}
           >
+            {role === opt.value ? "✓ " : ""}
             {opt.title}
           </button>
         ))}
@@ -275,11 +279,12 @@ export function GptOperatorMenuPanel({
             key={opt.value}
             type="button"
             disabled={patch.isPending}
+            title={opt.hint}
             onClick={() => patch.mutate({ outputMode: opt.value, transport: "api" })}
             className={cn(
-              "rounded-md border px-1.5 py-1 text-[9px]",
+              "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
               outputMode === opt.value
-                ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-50"
+                ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-50 ring-1 ring-emerald-400/40"
                 : "border-white/10 text-muted-foreground hover:border-white/20",
             )}
           >
@@ -306,12 +311,13 @@ export function GptOperatorMenuPanel({
                 title={opt.hint}
                 onClick={() => toggleEmit(opt.value)}
                 className={cn(
-                  "rounded-md border px-1.5 py-1 text-[9px] transition",
+                  "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
                   on
-                    ? "border-sky-400/45 bg-sky-500/15 text-sky-50"
+                    ? "border-sky-400/70 bg-sky-500/25 text-sky-50 ring-1 ring-sky-400/40"
                     : "border-white/10 text-muted-foreground hover:border-white/20",
                 )}
               >
+                {on ? "✓ " : ""}
                 {opt.title}
               </button>
             );
@@ -340,13 +346,14 @@ export function GptOperatorMenuPanel({
               patch.mutate({ takeFromEdges: true, transport: "api" })
             }
             className={cn(
-              "rounded-md border px-1.5 py-1 text-[9px] transition",
+              "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
               takeFromEdges && incomingCount > 0
-                ? "border-emerald-400/45 bg-emerald-500/15 text-emerald-50"
+                ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-50 ring-1 ring-emerald-400/40"
                 : "border-white/10 text-muted-foreground hover:border-white/20",
               incomingCount === 0 && "opacity-50",
             )}
           >
+            {takeFromEdges && incomingCount > 0 ? "✓ " : ""}
             От прошлых ({incomingCount})
           </button>
           <button
@@ -357,12 +364,13 @@ export function GptOperatorMenuPanel({
               patch.mutate({ takeFromEdges: false, transport: "api" })
             }
             className={cn(
-              "rounded-md border px-1.5 py-1 text-[9px] transition",
+              "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
               !takeFromEdges
-                ? "border-amber-400/40 bg-amber-500/15 text-amber-50"
+                ? "border-amber-400/70 bg-amber-500/25 text-amber-50 ring-1 ring-amber-400/40"
                 : "border-white/10 text-muted-foreground hover:border-white/20",
             )}
           >
+            {!takeFromEdges ? "✓ " : ""}
             Ничего со стрелок
           </button>
         </div>

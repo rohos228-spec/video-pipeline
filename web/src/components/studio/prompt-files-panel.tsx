@@ -99,20 +99,27 @@ export function PromptFilesPanel({
     refetchInterval: POLL_INTERVAL_MS,
   });
 
+  // Список файлов: не сбрасывать ручной выбор на preferred/первый при каждом poll.
   useEffect(() => {
     const list = files.data ?? [];
     if (list.length === 0) {
-      if (selectedName !== null) setSelectedName(null);
+      setSelectedName(null);
       return;
     }
-    if (preferredFile && list.some((f) => f.name === preferredFile)) {
-      if (selectedName !== preferredFile) setSelectedName(preferredFile);
-      return;
-    }
-    if (!selectedName || !list.some((f) => f.name === selectedName)) {
-      setSelectedName(list[0].name);
-    }
-  }, [files.data, selectedName, preferredFile]);
+    setSelectedName((prev) => {
+      if (prev && list.some((f) => f.name === prev)) return prev;
+      if (preferredFile && list.some((f) => f.name === preferredFile)) {
+        return preferredFile;
+      }
+      return list[0].name;
+    });
+  }, [files.data, preferredFile]);
+
+  // Смена активного варианта — перейти на него один раз.
+  useEffect(() => {
+    if (!preferredFile) return;
+    setSelectedName(preferredFile);
+  }, [preferredFile]);
 
   const content = useQuery({
     queryKey: ["prompt-file", cacheKey, selectedName],

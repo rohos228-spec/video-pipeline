@@ -26,6 +26,9 @@ from app.web.routers import (
     auth as auth_router,
 )
 from app.web.routers import (
+    bug_reports as bug_reports_router,
+)
+from app.web.routers import (
     config_presets as config_presets_router,
 )
 from app.web.routers import (
@@ -225,6 +228,7 @@ def create_app() -> FastAPI:
     app.include_router(frames_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.router, prefix=API_PREFIX)
     app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
+    app.include_router(bug_reports_router.router, prefix=API_PREFIX)
     app.include_router(fleet_router.router, prefix=API_PREFIX)
     app.include_router(auth_router.router, prefix=API_PREFIX)
 

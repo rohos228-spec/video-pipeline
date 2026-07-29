@@ -39,6 +39,9 @@ export function ExcelGptSettingsPanel({
     mutationFn: (body: Record<string, unknown>) =>
       api.patchGptOperator(projectId, nodeKey, body),
     onSuccess: (res) => {
+      if (res.resolve) {
+        qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
+      }
       const cfg = res.resolve?.config || {};
       onConfigChange({
         workMode: (cfg.workMode as ExcelGptNodeConfig["workMode"]) || undefined,
@@ -103,7 +106,7 @@ export function ExcelGptSettingsPanel({
               className={cn(
                 "rounded-lg border px-3 py-2.5 text-left transition",
                 role === opt.value
-                  ? "border-violet-400/50 bg-violet-500/15"
+                  ? "border-violet-400/60 bg-violet-500/25 ring-2 ring-violet-400/40"
                   : "border-white/10 bg-black/20 hover:border-white/20",
               )}
             >
@@ -122,7 +125,12 @@ export function ExcelGptSettingsPanel({
               key={opt.value}
               type="button"
               size="sm"
-              variant={outputMode === opt.value ? "secondary" : "outline"}
+              title={opt.hint}
+              variant={outputMode === opt.value ? "default" : "outline"}
+              className={cn(
+                outputMode === opt.value &&
+                  "ring-2 ring-emerald-400/50 ring-offset-1 ring-offset-background",
+              )}
               onClick={() => patch.mutate({ outputMode: opt.value, transport: "api" })}
             >
               {opt.title}
@@ -144,8 +152,11 @@ export function ExcelGptSettingsPanel({
                 key={opt.value}
                 type="button"
                 size="sm"
-                variant={on ? "secondary" : "outline"}
+                variant={on ? "default" : "outline"}
                 title={opt.hint}
+                className={cn(
+                  on && "ring-2 ring-sky-400/50 ring-offset-1 ring-offset-background",
+                )}
                 onClick={() => toggleEmit(opt.value)}
               >
                 {opt.title}

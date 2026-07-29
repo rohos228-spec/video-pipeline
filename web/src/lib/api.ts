@@ -382,6 +382,28 @@ export const api = {
       { method: "PATCH", body: JSON.stringify({ kind }) },
     ),
 
+  previewBugReport: (minutes: number) =>
+    http<{
+      minutes: number;
+      files: { name: string; chars: number; preview: string }[];
+    }>(`/api/bug-reports/preview?minutes=${minutes}`),
+  createBugReport: (body: {
+    description: string;
+    minutes: number;
+    projectId?: number;
+    projectSlug?: string;
+    studioVersion?: string;
+  }) =>
+    http<{
+      ok: boolean;
+      path: string;
+      rel: string;
+      filename: string;
+      minutes: number;
+      logFiles: string[];
+      clipboardPrompt: string;
+    }>(`/api/bug-reports`, { method: "POST", body: JSON.stringify(body) }),
+
   // ── Excel-Hero (читает лист «Персонажи» из project.xlsx) ─────────
   getExcelHero: (projectId: number) =>
     http<{ loaded: boolean; characters: ExcelHeroCharacter[] }>(
