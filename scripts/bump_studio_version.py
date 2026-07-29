@@ -56,16 +56,31 @@ def bump() -> str:
     return label
 
 
+def _npm_cmd() -> list[str]:
+    """На Windows `npm` без shell не находится — нужен npm.cmd / полный путь."""
+    import shutil
+
+    for name in ("npm.cmd", "npm"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    raise SystemExit(
+        "npm not found on PATH (need Node.js). "
+        "Install Node or run: web> npm install && npm run build"
+    )
+
+
 def build_web_out() -> None:
     """Собрать web/out — папка коммитится в git для обновления без npm у пользователя."""
     import shutil
 
     web = ROOT / "web"
     out = web / "out"
+    npm = _npm_cmd()
     if out.is_dir():
         shutil.rmtree(out)
-    subprocess.run(["npm", "install"], cwd=web, check=True)
-    subprocess.run(["npm", "run", "build"], cwd=web, check=True)
+    subprocess.run([*npm, "install"], cwd=web, check=True)
+    subprocess.run([*npm, "run", "build"], cwd=web, check=True)
     if not (out / "index.html").is_file():
         raise SystemExit("web/out/index.html missing after npm run build")
 
