@@ -34,12 +34,23 @@ export function NodeResultViewBody({
 }) {
   switch (snapshot.viewMode) {
     case "xlsx_general_plan":
-      return <GeneralPlanSheetView projectId={projectId} nodeKey={nodeKey} />;
+      return (
+        <GeneralPlanSheetView
+          projectId={projectId}
+          nodeKey={nodeKey}
+          nodeType={nodeType}
+        />
+      );
     case "voiceover_wide":
       return <VoiceoverWideView projectId={projectId} snapshot={snapshot} />;
     case "xlsx_split_row":
-      return <SplitRowView projectId={projectId} nodeKey={nodeKey} />;
-    case "frame_prompts":
+      return (
+        <SplitRowView
+          projectId={projectId}
+          nodeKey={nodeKey}
+          nodeType={nodeType}
+        />
+      );    case "frame_prompts":
       return <FramePromptsView items={snapshot.items} />;
     case "frame_images":
       return (
@@ -87,21 +98,45 @@ function isSplitRowLabel(text: string): boolean {
 function XlsxUploadBar({
   projectId,
   nodeKey,
+  nodeType,
 }: {
   projectId: number;
   nodeKey?: string | null;
+  nodeType?: string | null;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
+  const isExcelGpt = nodeType === "excel_gpt" || Boolean(nodeType?.startsWith("enrich_"));
   const upload = useMutation({
-    mutationFn: (file: File) => api.uploadProjectXlsx(projectId, file),
-    onSuccess: () => {
-      toast.success("Excel загружен");
+    mutationFn: (file: File) =>
+      isExcelGpt && nodeKey
+        ? api.uploadExcelGptFile(projectId, nodeKey, file)
+        : api.uploadProjectXlsx(projectId, file),
+    onSuccess: (res) => {
+      const name =
+        res && typeof res === "object" && "fileName" in res
+          ? String((res as { fileName?: string }).fileName || "")
+          : "";
+      toast.success(
+        isExcelGpt && name ? `Excel подменён: ${name}` : "Excel загружен",
+      );
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-split-row", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+      qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId] });
+      if (isExcelGpt && nodeKey && name) {
+        window.dispatchEvent(
+          new CustomEvent("canvas-patch-node-data", {
+            detail: {
+              nodeKey,
+              patch: { inputSource: "upload", uploadedFileName: name },
+            },
+          }),
+        );
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -145,9 +180,11 @@ function XlsxUploadBar({
 function GeneralPlanSheetView({
   projectId,
   nodeKey,
+  nodeType,
 }: {
   projectId: number;
   nodeKey?: string | null;
+  nodeType?: string | null;
 }) {
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -181,7 +218,7 @@ function GeneralPlanSheetView({
     const planText = project.data?.general_plan?.trim();
     return (
       <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
         {planText ? (
           <div className="rounded-lg border border-white/10 bg-black/20 p-4">
             <p className="mb-2 text-xs text-muted-foreground">Текст плана (из БД)</p>
@@ -200,7 +237,7 @@ function GeneralPlanSheetView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
       {snapLabel ? (
         <p className="mb-1 text-[10px] text-muted-foreground">
           Снимок ноды: {snapLabel}
@@ -337,9 +374,11 @@ function VoiceoverWideView({
 function SplitRowView({
   projectId,
   nodeKey,
+  nodeType,
 }: {
   projectId: number;
   nodeKey?: string | null;
+  nodeType?: string | null;
 }) {
   const row = useQuery({
     queryKey: ["xlsx-split-row", projectId, nodeKey ?? "live"],
@@ -362,7 +401,7 @@ function SplitRowView({
   if (!frameCells.length) {
     return (
       <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
         <p className="py-8 text-center text-sm text-muted-foreground">
           Строка {ROW_VOICEOVER_V8} листа «{SHEET_PLAN_V8}» пока пуста — сначала выполните разбивку.
         </p>
@@ -372,7 +411,7 @@ function SplitRowView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} />
+      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
       {row.data?.xlsx_snapshot ? (
         <p className="mb-1 text-[10px] text-muted-foreground">
           Снимок ноды: {row.data.xlsx_snapshot}

@@ -399,16 +399,20 @@ async def download_xlsx(
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     p = _project_or_404(await session.get(Project, project_id))
-    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+    from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
 
-    bound = resolve_bound_xlsx_path(p, node_key)
-    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
-    if not xlsx.exists() and bound is None:
+    xlsx, snapshot_name = resolve_display_xlsx_path(p, node_key)
+    if not xlsx.exists() and snapshot_name is None:
         sheet = ProjectSheet(file_path=xlsx)
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
         raise HTTPException(status_code=404, detail="project.xlsx not found")
-    fname = bound.name if bound is not None else f"{p.slug}-project.xlsx"
+    if snapshot_name and str(snapshot_name).startswith("upload:"):
+        fname = Path(str(snapshot_name).split(":", 1)[-1]).name
+    elif snapshot_name:
+        fname = Path(str(snapshot_name)).name
+    else:
+        fname = f"{p.slug}-project.xlsx"
     return FileResponse(
         path=str(xlsx),
         filename=fname,
@@ -512,12 +516,10 @@ async def preview_xlsx(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
-    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+    from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
 
-    bound = resolve_bound_xlsx_path(p, node_key)
-    xlsx = bound if bound is not None else p.data_dir / "project.xlsx"
-    snapshot_name = bound.name if bound is not None else None
-    if not xlsx.exists() and bound is None:
+    xlsx, snapshot_name = resolve_display_xlsx_path(p, node_key)
+    if not xlsx.exists() and snapshot_name is None:
         sheet_obj = ProjectSheet(file_path=xlsx)
         sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
@@ -1340,16 +1342,47 @@ async def upload_excel_gpt_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = upload_file_path(p, node_key, safe_name)
     dest.write_bytes(content)
+    # mtime новее старого снимка → preview берёт upload
+    try:
+        import os
+        import time
+
+        now = time.time()
+        os.utime(dest, (now, now))
+    except OSError:
+        pass
+
+    is_image = ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    is_xlsx = ext in {".xlsx", ".xlsm", ".xls"}
+    preview = (
+        f"/api/files?path={dest}"
+        if is_image or ext in {".mp4", ".webm", ".txt", ".md"}
+        else None
+    )
+
+    if is_xlsx:
+        from app.services.node_xlsx_snapshot import clear_bound_snapshot
+
+        clear_bound_snapshot(p, node_key)
+
     meta = dict(p.meta or {})
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
-    is_image = ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-    preview = f"/api/files?path={dest}" if is_image or ext in {".mp4", ".webm", ".txt", ".md"} else None
     cur["inputSource"] = "image" if is_image else "upload"
     cur["uploadedFileName"] = safe_name
-    names = [str(x) for x in (cur.get("uploadedFileNames") or []) if x]
-    if safe_name not in names:
+    prev_names = [str(x) for x in (cur.get("uploadedFileNames") or []) if x]
+    if is_xlsx:
+        # Подмена: один актуальный Excel (+ прочие не-xlsx вложения).
+        names = [
+            n
+            for n in prev_names
+            if Path(n).suffix.lower() not in {".xlsx", ".xlsm", ".xls"}
+        ]
         names.append(safe_name)
+    else:
+        names = list(prev_names)
+        if safe_name not in names:
+            names.append(safe_name)
     cur["uploadedFileNames"] = names
     cur["uploadedPreviewUrl"] = preview
     cur["transport"] = "api"
@@ -1368,6 +1401,7 @@ async def upload_excel_gpt_file(
         "preview_url": preview,
         "uploadedFileNames": names,
         "usedAsCheckAgent": False,
+        "replacedXlsx": is_xlsx,
     }
 
 

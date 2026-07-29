@@ -78,6 +78,95 @@ def resolve_bound_xlsx_path(project: Project, node_key: str | None) -> Path | No
     return _latest_snapshot_by_filename(project, str(node_key))
 
 
+def clear_bound_snapshot(project: Project, node_key: str) -> bool:
+    """Снять привязку снимка у ноды (после новой загрузки Excel в GPT)."""
+    key = (node_key or "").strip()
+    if not key:
+        return False
+    meta = dict(project.meta or {})
+    by_node = dict(meta.get(META_KEY) or {})
+    if key not in by_node:
+        return False
+    by_node.pop(key, None)
+    meta[META_KEY] = by_node
+    project.meta = meta
+    flag_modified(project, "meta")
+    return True
+
+
+def resolve_upload_xlsx_path(project: Project, node_key: str | None) -> Path | None:
+    """Загруженный .xlsx ноды excel_gpt (excel_gpt_uploads/…), если есть."""
+    if not node_key:
+        return None
+    try:
+        from app.services.excel_gpt_node import (
+            input_source,
+            node_config,
+            upload_dir,
+            upload_file_path,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    src = input_source(project, node_key)
+    if src not in ("upload", "image"):
+        return None
+    cfg = node_config(project, node_key)
+    names: list[str] = []
+    primary = str(cfg.get("uploadedFileName") or "").strip()
+    if primary:
+        names.append(primary)
+    for n in cfg.get("uploadedFileNames") or []:
+        s = str(n or "").strip()
+        if s and s not in names:
+            names.append(s)
+    for name in names:
+        if Path(name).suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+            continue
+        path = upload_file_path(project, node_key, name)
+        if path.is_file() and path.stat().st_size > 64:
+            return path
+    udir = upload_dir(project, node_key)
+    if not udir.is_dir():
+        return None
+    for p in sorted(udir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if (
+            p.is_file()
+            and p.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+            and p.stat().st_size > 64
+            and p.name != "check_agent.txt"
+        ):
+            return p
+    return None
+
+
+def resolve_display_xlsx_path(
+    project: Project, node_key: str | None
+) -> tuple[Path, str | None]:
+    """Файл для preview/download UI по node_key.
+
+    Приоритет:
+      1) загруженный .xlsx ноды (inputSource=upload) — свежая подмена пользователем;
+      2) привязанный снимок результата ноды;
+      3) live project.xlsx.
+    """
+    live = project.data_dir / "project.xlsx"
+    uploaded = resolve_upload_xlsx_path(project, node_key)
+    bound = resolve_bound_xlsx_path(project, node_key)
+
+    if uploaded is not None and bound is not None:
+        try:
+            if uploaded.stat().st_mtime >= bound.stat().st_mtime:
+                return uploaded, f"upload:{uploaded.name}"
+        except OSError:
+            return uploaded, f"upload:{uploaded.name}"
+        return bound, bound.name
+    if uploaded is not None:
+        return uploaded, f"upload:{uploaded.name}"
+    if bound is not None:
+        return bound, bound.name
+    return live, None
+
+
 def bind_snapshot_entry(
     project: Project,
     node_key: str,

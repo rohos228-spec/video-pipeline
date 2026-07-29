@@ -375,12 +375,36 @@ export function NodeStudio({
   });
 
   const uploadXlsx = useMutation({
-    mutationFn: (file: File) => api.uploadProjectXlsx(projectId!, file),
-    onSuccess: () => {
-      toast.success("Excel загружен");
+    mutationFn: (file: File) =>
+      nodeType === "excel_gpt" && nodeKey
+        ? api.uploadExcelGptFile(projectId!, nodeKey, file)
+        : api.uploadProjectXlsx(projectId!, file),
+    onSuccess: (res) => {
+      const name =
+        res && typeof res === "object" && "fileName" in res
+          ? String((res as { fileName?: string }).fileName || "")
+          : "";
+      toast.success(
+        nodeType === "excel_gpt" && name
+          ? `Excel подменён: ${name}`
+          : "Excel загружен",
+      );
       qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
       qc.invalidateQueries({ queryKey: ["xlsx-general-plan", projectId] });
+      qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      if (nodeType === "excel_gpt" && nodeKey && name) {
+        window.dispatchEvent(
+          new CustomEvent("canvas-patch-node-data", {
+            detail: {
+              nodeKey,
+              patch: { inputSource: "upload", uploadedFileName: name },
+            },
+          }),
+        );
+      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

@@ -354,6 +354,7 @@ export const api = {
       preview_url?: string | null;
       uploadedFileNames?: string[];
       usedAsCheckAgent?: boolean;
+      replacedXlsx?: boolean;
       chars?: number;
       resolve?: import("@/lib/gpt-operator").OperatorResolve;
     }>(

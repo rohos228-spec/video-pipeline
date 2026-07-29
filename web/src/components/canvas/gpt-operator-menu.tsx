@@ -90,10 +90,28 @@ export function GptOperatorMenuPanel({
           qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
         }
       } else {
-        toast.success(`Файл: ${res.fileName}`);
+        toast.success(
+          res.replacedXlsx
+            ? `Excel подменён: ${res.fileName}`
+            : `Файл: ${res.fileName}`,
+        );
       }
       void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
+      void qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+      void qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+      void qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
+      window.dispatchEvent(
+        new CustomEvent("canvas-patch-node-data", {
+          detail: {
+            nodeKey,
+            patch: {
+              inputSource: "upload",
+              uploadedFileName: res.fileName,
+            },
+          },
+        }),
+      );
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
