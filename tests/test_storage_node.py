@@ -38,19 +38,23 @@ def test_each_storage_node_has_own_folder(tmp_path: Path, monkeypatch) -> None:
     save_upload(p, a, "a.txt", b"aaa")
     save_upload(p, b, "b.txt", b"bbb")
     assert storage_dir(p, a) != storage_dir(p, b)
-    assert (storage_dir(p, a) / "a.txt").read_bytes() == b"aaa"
-    assert (storage_dir(p, b) / "b.txt").read_bytes() == b"bbb"
+    files_a = list(storage_dir(p, a).glob("*.txt"))
+    files_b = list(storage_dir(p, b).glob("*.txt"))
+    assert len(files_a) == 1
+    assert len(files_b) == 1
+    assert files_a[0].read_bytes() == b"aaa"
+    assert files_b[0].read_bytes() == b"bbb"
     assert len(list_stored_files(p, a)) == 1
     assert len(list_stored_files(p, b)) == 1
 
 
-def test_sync_from_edge_copies_images(tmp_path: Path, monkeypatch) -> None:
+def test_sync_renames_with_node_and_time(tmp_path: Path, monkeypatch) -> None:
     p = _project(tmp_path, monkeypatch)
     scenes = p.data_dir / "scenes"
     scenes.mkdir(parents=True)
     (scenes / "f001.png").write_bytes(b"\x89PNG" + b"1" * 200)
     store = "n_storage_1"
-    img = "n_images"
+    img = "n_images_3"
     p.meta = {
         "canvas_graph": {
             "nodes": [
@@ -61,11 +65,20 @@ def test_sync_from_edge_copies_images(tmp_path: Path, monkeypatch) -> None:
                 {"id": "e1", "source": img, "target": store, "data": {"kind": "after"}},
             ],
         },
-        "storage_nodes": {store: {"formats": ["image"]}},
+        "storage_nodes": {store: {"formats": ["any"]}},
     }
     res = sync_from_edges(p, store)
     assert res["okFileCount"] >= 1
-    assert any("f001.png" in name for name in res["copied"])
+    name = res["copied"][0]
+    # n3_YYYYMMDD_HHMMSS_f001.png
+    assert name.startswith("n3_")
+    assert "f001.png" in name
+    assert "_" in name
+    entry = list_stored_files(p, store)[0]
+    assert entry["fromNode"] == img
+    assert entry["fromLabel"] == "n3"
+    assert entry["originalName"] == "f001.png"
+    assert entry["savedAt"]
     paths = files_from_source_node(p, store)
     assert paths
     assert all(p0.is_file() for p0 in paths)
@@ -140,3 +153,45 @@ def test_clear_and_resolve(tmp_path: Path, monkeypatch) -> None:
     assert resolve_storage(p, key, auto_sync=False)["okFileCount"] == 1
     assert clear_storage(p, key) == 1
     assert resolve_storage(p, key, auto_sync=False)["okFileCount"] == 0
+
+
+def test_build_storage_zip(tmp_path: Path, monkeypatch) -> None:
+    from app.services.storage_node import build_storage_zip
+
+    p = _project(tmp_path, monkeypatch)
+    key = "n_store_zip"
+    save_upload(p, key, "a.txt", b"aaa")
+    save_upload(p, key, "b.txt", b"bbb")
+    z = build_storage_zip(p, key)
+    assert z.is_file() and z.suffix == ".zip"
+    assert z.stat().st_size > 0
+    # zip не должен попасть в список содержимого
+    names = {f["name"] for f in list_stored_files(p, key)}
+    assert z.name not in names
+    assert len(names) == 2
+
+
+def test_dedup_same_source_size(tmp_path: Path, monkeypatch) -> None:
+    p = _project(tmp_path, monkeypatch)
+    scenes = p.data_dir / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "a.png").write_bytes(b"\x89PNG" + b"1" * 100)
+    store = "n_store_dedup"
+    src = "n_images_1"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": src, "type": "images", "position": {"x": 0, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": src, "target": store, "data": {"kind": "after"}},
+            ],
+        },
+        "storage_nodes": {store: {"formats": ["any"]}},
+    }
+    r1 = sync_from_edges(p, store)
+    r2 = sync_from_edges(p, store)
+    assert len(r1["copied"]) == 1
+    assert r2["copied"] == []
+    assert resolve_storage(p, store, auto_sync=False)["okFileCount"] == 1

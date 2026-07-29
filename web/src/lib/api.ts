@@ -423,19 +423,27 @@ export const api = {
       nodeKey: string;
       label: string;
       formats: string[];
+      autoSync?: boolean;
       files: {
         name: string;
         path: string;
         size: number;
         kind: string;
         ok: boolean;
+        fromNode?: string | null;
+        fromLabel?: string | null;
+        savedAt?: string | null;
+        originalName?: string | null;
         preview_url?: string | null;
+        download_url?: string | null;
       }[];
       okFileCount: number;
       incomingSources: string[];
       storageDir: string;
       lastSyncAt?: string;
     }>(`/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/resolve`),
+  storageDownloadZipUrl: (projectId: number, nodeKey: string) =>
+    `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/download.zip`,
   patchStorage: (
     projectId: number,
     nodeKey: string,

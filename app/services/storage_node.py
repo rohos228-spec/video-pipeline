@@ -3,10 +3,15 @@
 Изоляция по node_key:
   data/.../storage/<node_key>/
   meta.storage_nodes[node_key]
+
+Имена при копировании со стрелок:
+  {номер_или_id_источника}_{YYYYMMDD_HHMMSS}_{оригинал}
 """
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +21,7 @@ from app.models import Project
 from app.services.canvas_graph import canvas_graph_from_meta
 
 STORAGE_NODE_TYPE = "storage"
+INDEX_NAME = "_index.json"
 
 StorageFormat = Literal["image", "video", "xlsx", "text", "any"]
 
@@ -29,6 +35,8 @@ _ANY = _IMAGE | _VIDEO | _XLSX | _TEXT
 
 # formats=any → любой файл (не только whitelist суффиксов)
 _ACCEPT_ALL = object()
+
+_SAFE_RE = re.compile(r"[^A-Za-z0-9._\-]+")
 
 
 def is_storage_node_type(node_type: str) -> bool:
@@ -68,7 +76,6 @@ def node_config(project: Project, node_key: str) -> dict[str, Any]:
             formats = ["any"]
     cfg["formats"] = formats
     cfg["label"] = str(cfg.get("label") or "Хранилище")
-    # По умолчанию авто-забор со всех входящих стрелок.
     if "autoSync" in cfg:
         cfg["autoSync"] = bool(cfg.get("autoSync"))
     else:
@@ -134,40 +141,161 @@ def _file_kind(path: Path) -> str:
     return "other"
 
 
+def _safe_token(raw: str, *, max_len: int = 48) -> str:
+    s = _SAFE_RE.sub("_", str(raw or "").strip()).strip("._")
+    return (s or "node")[:max_len]
+
+
+def _source_label(project: Project, source_key: str) -> str:
+    """Номер/метка ноды-источника для имени файла.
+
+    excel_gpt → slot_N (или хвост id);
+    иначе короткий id ноды.
+    """
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    for n in cg.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        if str(n.get("id") or "") != source_key:
+            continue
+        typ = str(n.get("type") or "")
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        if typ == "excel_gpt":
+            slot = data.get("slotIndex")
+            if slot is None:
+                eg = meta.get("excel_gpt_nodes") if isinstance(meta.get("excel_gpt_nodes"), dict) else {}
+                cfg = eg.get(source_key) if isinstance(eg, dict) else None
+                if isinstance(cfg, dict) and cfg.get("slotIndex") is not None:
+                    slot = cfg.get("slotIndex")
+            if slot is not None and str(slot).strip().isdigit():
+                return f"slot{int(slot)}"
+            m = re.search(r"(\d+)$", source_key)
+            if m:
+                return f"n{m.group(1)}"
+        m = re.search(r"(\d+)$", source_key)
+        if m:
+            return f"n{m.group(1)}"
+        return _safe_token(source_key, max_len=24)
+    m = re.search(r"(\d+)$", source_key)
+    if m:
+        return f"n{m.group(1)}"
+    return _safe_token(source_key, max_len=24)
+
+
+def _stamp_now() -> str:
+    return datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+
+
+def _index_path(project: Project, node_key: str) -> Path:
+    return storage_dir(project, node_key) / INDEX_NAME
+
+
+def _load_index(project: Project, node_key: str) -> dict[str, Any]:
+    path = _index_path(project, node_key)
+    if not path.is_file():
+        return {"files": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"files": []}
+    if not isinstance(raw, dict):
+        return {"files": []}
+    files = raw.get("files")
+    if not isinstance(files, list):
+        files = []
+    return {"files": [x for x in files if isinstance(x, dict)]}
+
+
+def _save_index(project: Project, node_key: str, index: dict[str, Any]) -> None:
+    ensure_storage_dir(project, node_key)
+    path = _index_path(project, node_key)
+    path.write_text(
+        json.dumps(index, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _entry_for_file(
+    project: Project,
+    node_key: str,
+    path: Path,
+    *,
+    from_node: str | None = None,
+    from_label: str | None = None,
+    saved_at: str | None = None,
+    original_name: str | None = None,
+) -> dict[str, Any]:
+    kind = _file_kind(path)
+    size = int(path.stat().st_size) if path.is_file() else 0
+    q = str(path)
+    return {
+        "name": path.name,
+        "path": q,
+        "size": size,
+        "kind": kind,
+        "ok": path.is_file() and size > 0,
+        "fromNode": from_node,
+        "fromLabel": from_label,
+        "savedAt": saved_at,
+        "originalName": original_name or path.name,
+        "preview_url": (
+            f"/api/files?path={q}" if kind in ("image", "video", "text") else None
+        ),
+        "download_url": f"/api/files?path={q}&download=1",
+    }
+
+
 def list_stored_files(project: Project, node_key: str) -> list[dict[str, Any]]:
+    """Все файлы в папке хранилища (+ метаданные из _index.json)."""
     root = storage_dir(project, node_key)
     if not root.is_dir():
         return []
+    index = _load_index(project, node_key)
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in index.get("files") or []:
+        name = str(item.get("name") or "").strip()
+        if name:
+            by_name[name] = item
+
     files: list[dict[str, Any]] = []
-    for p in sorted(root.iterdir()):
+    for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
         if not p.is_file() or p.stat().st_size < 1:
             continue
-        kind = _file_kind(p)
+        # служебные: индекс и временные zip-экспорты
+        if p.name == INDEX_NAME or p.name.startswith("_export_"):
+            continue
+        meta = by_name.get(p.name) or {}
         files.append(
-            {
-                "name": p.name,
-                "path": str(p),
-                "size": int(p.stat().st_size),
-                "kind": kind,
-                "ok": True,
-                "preview_url": (
-                    f"/api/files?path={p}" if kind in ("image", "video", "text") else None
-                ),
-            }
+            _entry_for_file(
+                project,
+                node_key,
+                p,
+                from_node=str(meta.get("fromNode") or "") or None,
+                from_label=str(meta.get("fromLabel") or "") or None,
+                saved_at=str(meta.get("savedAt") or "") or None,
+                original_name=str(meta.get("originalName") or "") or None,
+            )
         )
+    # новые сверху по времени в имени / mtime
+    def sort_key(f: dict[str, Any]) -> str:
+        return str(f.get("savedAt") or f.get("name") or "")
+
+    files.sort(key=sort_key, reverse=True)
     return files
 
 
-def stored_paths(project: Project, node_key: str, *, limit: int = 24) -> list[Path]:
+def stored_paths(project: Project, node_key: str, *, limit: int = 200) -> list[Path]:
     root = storage_dir(project, node_key)
     if not root.is_dir():
         return []
     out: list[Path] = []
     for p in sorted(root.iterdir()):
-        if p.is_file() and p.stat().st_size > 0:
-            out.append(p)
-            if len(out) >= limit:
-                break
+        if not p.is_file() or p.name == INDEX_NAME or p.stat().st_size < 1:
+            continue
+        out.append(p)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -186,18 +314,49 @@ def _incoming_sources(project: Project, node_key: str) -> list[str]:
     return sources
 
 
+def _already_have(
+    index_files: list[dict[str, Any]],
+    *,
+    from_node: str,
+    original_name: str,
+    size: int,
+) -> bool:
+    for item in index_files:
+        if (
+            str(item.get("fromNode") or "") == from_node
+            and str(item.get("originalName") or "") == original_name
+            and int(item.get("size") or 0) == size
+        ):
+            # файл ещё на диске?
+            name = str(item.get("name") or "")
+            if name:
+                return True
+    return False
+
+
 def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 200) -> dict[str, Any]:
-    """Скопировать все подходящие файлы с входящих нод в папку хранилища."""
+    """Скопировать все подходящие файлы с входящих нод.
+
+    Имя: ``{метка_источника}_{YYYYMMDD_HHMMSS}_{оригинал}``.
+    Дубликат (тот же источник + имя + размер) не копируется повторно.
+    """
     from app.services.gpt_operator import files_from_source_node
 
     cfg = node_config(project, node_key)
     allow = _suffixes_for_formats(list(cfg.get("formats") or ["any"]))
     dest_root = ensure_storage_dir(project, node_key)
+    index = _load_index(project, node_key)
+    index_files: list[dict[str, Any]] = list(index.get("files") or [])
+    # выкинуть записи о пропавших файлах
+    alive = {p.name for p in dest_root.iterdir() if p.is_file()}
+    index_files = [x for x in index_files if str(x.get("name") or "") in alive]
+
     copied: list[str] = []
     skipped: list[str] = []
     errors: list[str] = []
 
     for src in _incoming_sources(project, node_key):
+        label = _source_label(project, src)
         try:
             paths = files_from_source_node(
                 project, src, use_snapshot=False, limit=limit_per_source
@@ -212,18 +371,42 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
             if not _allowed(src_path, allow):
                 skipped.append(f"{src_path.name}: формат не подходит")
                 continue
-            # Имя: fromNode__filename, без коллизий
-            safe_src = "".join(c if c.isalnum() or c in "-_" else "_" for c in src)[:40]
-            dest_name = f"{safe_src}__{src_path.name}"
+            size = int(src_path.stat().st_size)
+            orig = src_path.name
+            if _already_have(
+                index_files, from_node=src, original_name=orig, size=size
+            ):
+                skipped.append(f"{orig}: уже есть от {label}")
+                continue
+            stamp = _stamp_now()
+            safe_orig = _safe_token(orig, max_len=80)
+            dest_name = f"{label}_{stamp}_{safe_orig}"
             dest = dest_root / dest_name
+            # коллизия в ту же секунду
+            n = 1
+            while dest.exists():
+                dest_name = f"{label}_{stamp}_{n}_{safe_orig}"
+                dest = dest_root / dest_name
+                n += 1
             try:
-                if dest.exists() and dest.stat().st_size == src_path.stat().st_size:
-                    copied.append(dest_name)
-                    continue
                 shutil.copy2(src_path, dest)
-                copied.append(dest_name)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{src_path.name}: {exc}")
+                continue
+            saved_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            entry = {
+                "name": dest_name,
+                "fromNode": src,
+                "fromLabel": label,
+                "originalName": orig,
+                "savedAt": saved_at,
+                "size": size,
+            }
+            index_files.append(entry)
+            copied.append(dest_name)
+
+    index["files"] = index_files
+    _save_index(project, node_key, index)
 
     meta = dict(project.meta or {})
     nodes = dict(meta.get("storage_nodes") or {})
@@ -266,7 +449,7 @@ def resolve_storage(project: Project, node_key: str, *, auto_sync: bool | None =
         "incomingSources": incoming,
         "storageDir": str(storage_dir(project, node_key)),
         "lastSyncAt": cfg.get("lastSyncAt"),
-        "lastSyncCopied": sync_info.get("copied") if sync_info else None,
+        "lastSyncCopied": (sync_info or {}).get("copied"),
         "config": cfg,
     }
 
@@ -277,17 +460,66 @@ def clear_storage(project: Project, node_key: str) -> int:
         return 0
     n = 0
     for p in list(root.iterdir()):
-        if p.is_file():
-            p.unlink(missing_ok=True)
+        if not p.is_file():
+            continue
+        is_index = p.name == INDEX_NAME
+        p.unlink(missing_ok=True)
+        if not is_index:
             n += 1
     return n
 
 
+def build_storage_zip(project: Project, node_key: str) -> Path:
+    """Собрать zip всех файлов хранилища (без _index.json и старых zip)."""
+    import zipfile
+
+    root = storage_dir(project, node_key)
+    if not root.is_dir():
+        raise FileNotFoundError("хранилище пусто")
+    files = [
+        p
+        for p in sorted(root.iterdir())
+        if p.is_file()
+        and p.name != INDEX_NAME
+        and not p.name.startswith("_export_")
+        and p.stat().st_size > 0
+    ]
+    if not files:
+        raise FileNotFoundError("хранилище пусто")
+    stamp = _stamp_now()
+    zip_path = root / f"_export_{stamp}.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in files:
+            zf.write(p, arcname=p.name)
+    return zip_path
+
+
 def save_upload(project: Project, node_key: str, filename: str, data: bytes) -> Path:
     root = ensure_storage_dir(project, node_key)
-    safe = Path(filename).name
+    stamp = _stamp_now()
+    safe = _safe_token(Path(filename).name, max_len=80)
     if not safe:
         raise ValueError("empty filename")
-    dest = root / safe
+    dest_name = f"upload_{stamp}_{safe}"
+    dest = root / dest_name
+    n = 1
+    while dest.exists():
+        dest_name = f"upload_{stamp}_{n}_{safe}"
+        dest = root / dest_name
+        n += 1
     dest.write_bytes(data)
+    index = _load_index(project, node_key)
+    files = list(index.get("files") or [])
+    files.append(
+        {
+            "name": dest_name,
+            "fromNode": None,
+            "fromLabel": "upload",
+            "originalName": Path(filename).name,
+            "savedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "size": len(data),
+        }
+    )
+    index["files"] = files
+    _save_index(project, node_key, index)
     return dest

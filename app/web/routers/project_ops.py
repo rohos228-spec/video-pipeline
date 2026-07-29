@@ -1447,6 +1447,30 @@ async def storage_clear_files(
     return {"ok": True, "removed": n, "resolve": resolve_storage(p, node_key)}
 
 
+@router.get("/{project_id}/storage/{node_key}/download.zip")
+async def storage_download_zip(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Скачать все файлы хранилища одним zip."""
+    from fastapi.responses import FileResponse
+
+    from app.services.storage_node import build_storage_zip
+
+    p = _project_or_404(await session.get(Project, project_id))
+    try:
+        path = build_storage_zip(p, node_key)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in node_key)[:40]
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"storage_{safe_key}.zip",
+    )
+
+
 @router.post("/parents/disable-auto-mode")
 async def disable_auto_mode_all_parents(
     session: AsyncSession = Depends(get_session),

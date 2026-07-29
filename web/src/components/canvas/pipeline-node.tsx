@@ -108,7 +108,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
-              isExcelGpt ? "w-[300px]" : "w-[260px]",
+              isExcelGpt || isStorage ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
               running && "glow-running border-amber-400/60",
               d.status === "done" && "border-emerald-500/40",
@@ -209,7 +209,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                       ? "Две исходящие: «Ок» и «Не ок». Вход от прошлых — в пульте."
                       : "Вход от прошлых нод и роли — в пульте. На стрелке: связь / ок / не ок."
                     : isStorage
-                      ? "Только хранит файлы. Своя папка. Форматы — в панели ниже."
+                      ? "Хранилище всех входящих файлов. Имя: номерНоды_время_файл."
                       : spec.description}
                 </span>
                 {isExcelGpt ? (
