@@ -1,8 +1,37 @@
-"""sanitize_voiceover_text: убрать ИТОГО и мета-отчёт GPT."""
+"""sanitize_voiceover_text: маркеры VOICEOVER + убрать ИТОГО/мета."""
 
 from __future__ import annotations
 
-from app.services.voiceover_sanitize import sanitize_voiceover_text
+from app.services.voiceover_sanitize import (
+    ensure_voiceover_format_instruction,
+    extract_voiceover_block,
+    sanitize_voiceover_text,
+)
+
+
+def test_extract_voiceover_markers() -> None:
+    raw = (
+        "Сначала план работы.\n"
+        "<<<VOICEOVER>>>\n"
+        "Третьего января 1889 года Ницше пережил коллапс.\n"
+        "<<<END>>>\n"
+        "ИТОГО: 50 символов."
+    )
+    assert extract_voiceover_block(raw) == (
+        "Третьего января 1889 года Ницше пережил коллапс."
+    )
+    out = sanitize_voiceover_text(raw)
+    assert out == "Третьего января 1889 года Ницше пережил коллапс."
+    assert "ИТОГО" not in out
+    assert "план работы" not in out
+
+
+def test_ensure_voiceover_format_instruction_idempotent() -> None:
+    base = "Сделай закадровый текст."
+    once = ensure_voiceover_format_instruction(base)
+    twice = ensure_voiceover_format_instruction(once)
+    assert once.count("<<<VOICEOVER>>>") == 1
+    assert twice == once
 
 
 _POLLUTED = (

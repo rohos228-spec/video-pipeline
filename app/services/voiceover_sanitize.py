@@ -4,6 +4,26 @@ from __future__ import annotations
 
 import re
 
+# Контракт ответа шага script: код берёт только блок между маркерами.
+VOICEOVER_START = "<<<VOICEOVER>>>"
+VOICEOVER_END = "<<<END>>>"
+
+VOICEOVER_OUTPUT_FORMAT = (
+    "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА:\n"
+    "Весь готовый закадровый текст (только озвучка) оберни строго так:\n\n"
+    f"{VOICEOVER_START}\n"
+    "…только текст озвучки…\n"
+    f"{VOICEOVER_END}\n\n"
+    "Вне этих двух маркеров можно писать что угодно — в voiceover.txt попадёт "
+    "только текст внутри.\n"
+    "Внутри блока не пиши ИТОГО, комментарии, markdown и разбор плана."
+)
+
+_VOICEOVER_BLOCK_RE = re.compile(
+    r"<<<\s*VOICEOVER\s*>>>\s*(.*?)\s*<<<\s*END\s*>>>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Промпты часто требуют самопроверку «ИТОГО: N символов» — в файл озвучки это не входит.
 _ITOGO_RE = re.compile(
     r"(?im)(?:\n|\s)*итог[оа]?\s*:\s*\d+\s*символ\w*\.?\s*$"
@@ -74,6 +94,23 @@ def looks_like_xlsx_tsv_writeback(text: str) -> bool:
     return False
 
 
+def extract_voiceover_block(text: str) -> str | None:
+    """Достать текст между <<<VOICEOVER>>> и <<<END>>>, иначе None."""
+    m = _VOICEOVER_BLOCK_RE.search(text or "")
+    if not m:
+        return None
+    body = (m.group(1) or "").strip()
+    return body or None
+
+
+def ensure_voiceover_format_instruction(chat_text: str) -> str:
+    """Дописать контракт маркеров в chat_msg шага script (если ещё нет)."""
+    body = (chat_text or "").rstrip()
+    if "<<<VOICEOVER>>>" in body:
+        return body
+    return f"{body}\n\n{VOICEOVER_OUTPUT_FORMAT}".strip()
+
+
 def _has_process_preamble(text: str) -> bool:
     head = (text or "")[:800].lower()
     hits = sum(1 for m in _PROCESS_MARKERS if m in head)
@@ -97,11 +134,18 @@ def _cut_process_preamble(body: str) -> str:
 
 
 def sanitize_voiceover_text(text: str) -> str:
-    """Убрать ИТОГО/мета-отчёт GPT, оставить готовый закадровый текст."""
+    """Вычленить закадровый текст: маркеры → иначе эвристика без мета/ИТОГО."""
     body = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not body:
         return ""
+
+    extracted = extract_voiceover_block(body)
+    if extracted is not None:
+        body = extracted
     body = _ITOGO_RE.sub("", body).strip()
+    # Если маркеры уже вырезали блок — мета снаружи отброшена; внутри чистим ИТОГО.
+    if extracted is not None:
+        return body
     if not _has_process_preamble(body):
         return body
     return _cut_process_preamble(body)

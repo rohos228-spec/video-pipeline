@@ -231,6 +231,8 @@ def _build_script_default(project: Project, *, prompt_file_name: str = "prompt.t
     """
     topic = (project.topic or "").strip()
     context_block = _build_topic_context_block(project)
+    from app.services.voiceover_sanitize import VOICEOVER_OUTPUT_FORMAT
+
     return (
         f"Тема ролика: «{topic}».\n\n"
         f"{context_block}"
@@ -239,7 +241,8 @@ def _build_script_default(project: Project, *, prompt_file_name: str = "prompt.t
         f"  2. project.xlsx — рабочая таблица ролика (план, структура).\n\n"
         "Сделай всё, что написано в первом файле (инструкция), опираясь на "
         "второй (project.xlsx).\n\n"
-        "Пришли результат txt файлом в чат."
+        "Пришли результат txt файлом в чат.\n\n"
+        f"{VOICEOVER_OUTPUT_FORMAT}"
     )
 
 
@@ -481,7 +484,11 @@ def get_effective_text(project: Project, step_code: str, **ctx) -> str:
     body = refresh_topic_line_in_text(body, str(actual_topic))
     body = inject_topic_placeholders(body, str(actual_topic))
     if step_code in ("plan", "script", "split"):
-        return append_step_params_to_gpt_text(project, step_code, body)
+        body = append_step_params_to_gpt_text(project, step_code, body)
+    if step_code == "script":
+        from app.services.voiceover_sanitize import ensure_voiceover_format_instruction
+
+        body = ensure_voiceover_format_instruction(body)
     return body
 
 
