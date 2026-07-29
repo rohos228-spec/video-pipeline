@@ -337,12 +337,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             )
 
             reviewer_notes = sanitize_check_reviewer_notes(accompanying or "")
+            from app.services.gpt_operator import resolve_check_report_format
+
+            report_fmt, _ = resolve_check_report_format(project, node_key)
             if check_prompt_source == "agent":
                 master, agent_step = assemble_check_agent_prompt(
                     project,
                     node_key,
                     check_fix=check_fix,
                     reviewer_notes=reviewer_notes,
+                    report_format=report_fmt,
                 )
                 source_prompt_keys = [f"agent:{agent_step}"] if agent_step else ["agent"]
                 accompanying = ""
@@ -367,6 +371,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     ok_sources,
                     check_fix=check_fix,
                     reviewer_notes=reviewer_notes,
+                    report_format=report_fmt,
                 )
                 accompanying = ""
                 hint = project_format_hint_for_check(project, node_key)

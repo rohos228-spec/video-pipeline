@@ -183,7 +183,7 @@ export function GptOperatorMenuPanel({
           <button
             type="button"
             disabled={patch.isPending}
-            title="Проверить файл. Критерии: промт ноды со стрелки ИЛИ свой .txt агента. Отчёт — check_report.txt (после ▶)"
+            title="Проверить файл. Критерии: промт со стрелки ИЛИ .txt агента. Формат отчёта — в настройках ноды. check_report.txt после ▶"
             onClick={() =>
               patch.mutate({
                 checkMode: !checkMode,

@@ -513,15 +513,48 @@ def write_analysis_json(out_dir: Path, analysis: CheckAnalysis) -> Path:
     return path
 
 
-def append_txt_report_footer(prompt: str) -> str:
-    """Добавить TXT-шаблон отчёта, если его ещё нет."""
+def default_check_report_format() -> str:
+    """Дефолтный шаблон ответа модели (можно переопределить на ноде)."""
+    return TXT_REPORT_FOOTER
+
+
+def normalize_check_report_format(raw: str | None) -> str | None:
+    """Пустой / whitespace → None (использовать дефолт)."""
+    text = (raw or "").strip()
+    return text if text else None
+
+
+def append_txt_report_footer(
+    prompt: str,
+    *,
+    report_format: str | None = None,
+) -> str:
+    """Добавить шаблон отчёта в конец промта.
+
+    ``report_format`` — кастом с ноды; иначе дефолт TXT_REPORT_FOOTER.
+    Если в промте уже есть явный шаблон (``# ОТЧЁТ`` / ``verdict:``+``## findings``)
+    и кастом не задан — не дублируем. Кастом всегда дописываем (заменяет дефолт).
+    """
     base = (prompt or "").rstrip()
+    custom = normalize_check_report_format(report_format)
+    footer = custom or TXT_REPORT_FOOTER
+    if custom:
+        # Пользовательский формат — всегда в хвосте (даже если в агенте был старый шаблон).
+        if not base:
+            return footer
+        # Убрать прежний дефолтный хвост, если агент его случайно включил.
+        if TXT_REPORT_FOOTER in base:
+            base = base.replace(TXT_REPORT_FOOTER, "").rstrip()
+        sep = "\n\n---\nФОРМАТ ОТВЕТА (шаблон этой ноды):\n"
+        return f"{base}{sep}{footer}"
     marker = "# ОТЧЁТ ПРОВЕРКИ"
-    if marker in base or "source_prompts:" in base.lower() and "## findings" in base.lower():
+    if marker in base or (
+        "source_prompts:" in base.lower() and "## findings" in base.lower()
+    ):
         return base
     if not base:
-        return TXT_REPORT_FOOTER
-    return f"{base}\n\n{TXT_REPORT_FOOTER}"
+        return footer
+    return f"{base}\n\n{footer}"
 
 
 def _load_footer_from_prompts() -> str:

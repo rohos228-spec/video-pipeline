@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
@@ -77,6 +78,20 @@ export function ExcelGptSettingsPanel({
       : (["result", "reply_txt"] as OperatorEmitKind[]));
   const sourcePrompts = data?.sourcePrompts || [];
 
+  const [formatDraft, setFormatDraft] = useState("");
+  const [formatDirty, setFormatDirty] = useState(false);
+  useEffect(() => {
+    if (!data || formatDirty) return;
+    setFormatDraft(
+      String(data.checkReportFormat || data.checkReportFormatDefault || ""),
+    );
+  }, [
+    data,
+    formatDirty,
+    data?.checkReportFormat,
+    data?.checkReportFormatDefault,
+  ]);
+
   const agentFileRef = useRef<HTMLInputElement>(null);
   const uploadAgent = useMutation({
     mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
@@ -126,8 +141,8 @@ export function ExcelGptSettingsPanel({
       <section className="rounded-xl border border-rose-400/25 bg-rose-500/[0.07] p-4">
         <h3 className="text-sm font-semibold text-foreground">Проверка</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Отчёт check_report.txt пишется после ▶. Критерии — не из обычного
-          «Загрузить файл» (xlsx), а из режима ниже.
+          Отчёт check_report.txt пишется после ▶. Критерии — в режиме ниже.
+          Формат ответа модели редактируется в блоке «Формат ответа модели».
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button
@@ -288,6 +303,76 @@ export function ExcelGptSettingsPanel({
                 )}
               </ul>
             )}
+          </div>
+        ) : null}
+
+        {checkMode ? (
+          <div className="mt-3 space-y-2 rounded-lg border border-rose-400/25 bg-rose-500/[0.06] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-muted-foreground">
+                Формат ответа модели{" "}
+                {data?.checkReportFormatCustom ? (
+                  <span className="text-amber-200/90">(свой)</span>
+                ) : (
+                  <span className="text-muted-foreground/80">(дефолт)</span>
+                )}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={patch.isPending || !formatDirty}
+                  onClick={() => {
+                    patch.mutate(
+                      { checkReportFormat: formatDraft, transport: "api" },
+                      {
+                        onSuccess: () => {
+                          setFormatDirty(false);
+                          toast.success("Формат отчёта сохранён");
+                        },
+                      },
+                    );
+                  }}
+                >
+                  Сохранить
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={patch.isPending}
+                  onClick={() => {
+                    const def = String(data?.checkReportFormatDefault || "");
+                    setFormatDraft(def);
+                    setFormatDirty(false);
+                    patch.mutate(
+                      { checkReportFormat: null, transport: "api" },
+                      {
+                        onSuccess: () => toast.success("Формат сброшен к дефолту"),
+                      },
+                    );
+                  }}
+                >
+                  Дефолт
+                </Button>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Редактируйте шаблон ответа GPT. Для стрелок ок/не ок оставьте строку{" "}
+              <span className="font-mono text-foreground/90">verdict: pass|fail</span>.
+              Критерии — в агенте/.txt отдельно.
+            </p>
+            <Textarea
+              value={formatDraft}
+              onChange={(e) => {
+                setFormatDraft(e.target.value);
+                setFormatDirty(true);
+              }}
+              rows={14}
+              className="min-h-[220px] font-mono text-[11px] leading-snug"
+              spellCheck={false}
+            />
           </div>
         ) : null}
       </section>

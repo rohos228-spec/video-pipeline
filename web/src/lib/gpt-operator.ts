@@ -96,6 +96,10 @@ export interface OperatorResolve {
   checkAgentFileName?: string | null;
   /** Размер текста загруженного агента. */
   checkAgentChars?: number;
+  /** Шаблон ответа модели (дефолт или свой на ноде). */
+  checkReportFormat?: string;
+  checkReportFormatCustom?: boolean;
+  checkReportFormatDefault?: string;
   sourcePrompts?: SourcePromptView[];
   transport: string;
   label: string;

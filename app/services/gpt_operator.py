@@ -278,11 +278,23 @@ def collect_source_prompts(project: Project, node_key: str) -> list[dict[str, An
     return out
 
 
+def resolve_check_report_format(project: Project, node_key: str) -> tuple[str, bool]:
+    """(текст шаблона отчёта, is_custom)."""
+    from app.services.check_analysis import default_check_report_format, normalize_check_report_format
+
+    cfg = operator_config(project, node_key)
+    custom = normalize_check_report_format(str(cfg.get("checkReportFormat") or ""))
+    if custom:
+        return custom, True
+    return default_check_report_format(), False
+
+
 def assemble_check_master_prompt(
     sources: list[dict[str, Any]],
     *,
     check_fix: bool = True,
     reviewer_notes: str = "",
+    report_format: str | None = None,
 ) -> str:
     """Собрать master-промт проверки из промтов источников + TXT footer."""
     from app.services.check_analysis import append_txt_report_footer
@@ -316,7 +328,10 @@ def assemble_check_master_prompt(
     if notes:
         blocks.append("# Доп. указания ревьюера (эта нода)")
         blocks.append(notes)
-    return append_txt_report_footer("\n".join(blocks).strip())
+    return append_txt_report_footer(
+        "\n".join(blocks).strip(),
+        report_format=report_format,
+    )
 
 
 def check_agent_upload_path(project: Project, node_key: str) -> Path:
@@ -355,6 +370,7 @@ def assemble_check_agent_prompt(
     *,
     check_fix: bool = True,
     reviewer_notes: str = "",
+    report_format: str | None = None,
 ) -> tuple[str, str | None]:
     """Master-промт из загруженного .txt или prompts/check_operator.
 
@@ -388,6 +404,10 @@ def assemble_check_agent_prompt(
             )
         label = step
 
+    fmt = report_format
+    if fmt is None:
+        fmt, _ = resolve_check_report_format(project, node_key)
+
     mode = "fix" if check_fix else "report_only"
     blocks: list[str] = [
         body,
@@ -401,12 +421,15 @@ def assemble_check_agent_prompt(
             if check_fix
             else "НЕ изменяй файл — только отчёт (file: original)."
         ),
-        "Отвечай TXT-отчётом по шаблону ниже (НЕ JSON vp.check.v1).",
+        "Отвечай TXT-отчётом по шаблону формата ниже (НЕ JSON vp.check.v1).",
     ]
     notes = (reviewer_notes or "").strip()
     if notes:
         blocks.extend(["", "# Доп. указания ревьюера (эта нода)", notes])
-    return append_txt_report_footer("\n".join(blocks).strip()), label
+    return append_txt_report_footer(
+        "\n".join(blocks).strip(),
+        report_format=fmt,
+    ), label
 
 
 def save_check_agent_file(
@@ -1066,6 +1089,11 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         }
 
     consistent = len(errors) == 0
+    from app.services.check_analysis import default_check_report_format
+
+    report_format_text, report_format_custom = resolve_check_report_format(
+        project, node_key
+    )
     source_prompt_view = [
         {
             "nodeKey": s.get("nodeKey"),
@@ -1098,6 +1126,9 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             if check_prompt_source == "agent"
             else 0
         ),
+        "checkReportFormat": report_format_text,
+        "checkReportFormatCustom": report_format_custom,
+        "checkReportFormatDefault": default_check_report_format(),
         "sourcePrompts": source_prompt_view,
         "transport": cfg.get("transport") or "api",
         "label": str(cfg.get("label") or default_label_for_role(role)),
@@ -1129,6 +1160,9 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "checkFix": check_fix,
             "checkPromptSource": check_prompt_source,
             "checkAgentFileName": str(cfg.get("checkAgentFileName") or "") or None,
+            "checkReportFormat": (
+                report_format_text if report_format_custom else None
+            ),
             "transport": cfg.get("transport") or "api",
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
@@ -1196,6 +1230,18 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         cur["checkPromptSource"] = (
             cps if cps in VALID_CHECK_PROMPT_SOURCES else "upstream"
         )
+    if "checkReportFormat" in patch:
+        from app.services.check_analysis import normalize_check_report_format
+
+        raw = patch.get("checkReportFormat")
+        if raw is None:
+            cur.pop("checkReportFormat", None)
+        else:
+            custom = normalize_check_report_format(str(raw))
+            if custom:
+                cur["checkReportFormat"] = custom
+            else:
+                cur.pop("checkReportFormat", None)
     if "checkAgentFileName" in patch:
         name = str(patch.get("checkAgentFileName") or "").strip()
         if name:
