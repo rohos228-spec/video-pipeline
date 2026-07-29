@@ -306,3 +306,49 @@ async def test_stale_enrich_meta_without_split_completed_starts_slot1() -> None:
     assert g.next_running_after_ready(p, ProjectStatus.frames_ready) is (
         ProjectStatus.enriching_1
     )
+
+
+@pytest.mark.asyncio
+async def test_recompute_keeps_enrich_ready_before_split(session) -> None:
+    """Баг 2026-07-29: enrich_2_ready без кадров откатывался в script_ready
+    → auto_advance снова запускал ту же GPT-ноду, UI висел на database is locked.
+    """
+    p = Project(
+        slug="enrich-before-split",
+        topic="t",
+        status=ProjectStatus.enrich_2_ready,
+        general_plan="x" * 200,
+        script_text="script text here " * 20,
+        auto_mode=True,
+        meta={
+            "enrich_completed_slots": [2],
+            "excel_gpt_completed_keys": ["n_excel_gpt_1"],
+            "active_excel_gpt_node_key": "n_excel_gpt_1",
+        },
+    )
+    session.add(p)
+    await session.flush()
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    (p.data_dir / "voiceover.txt").write_text("vo " * 100, encoding="utf-8")
+
+    actual = await compute_actual_status(session, p)
+    assert actual is ProjectStatus.enrich_2_ready
+
+    old, new, changed = await recompute_status(
+        session, p, log_prefix="recompute(web_get)"
+    )
+    assert old is ProjectStatus.enrich_2_ready
+    assert new is ProjectStatus.enrich_2_ready
+    assert changed is False
+    assert p.status is ProjectStatus.enrich_2_ready
+
+    from app.services.step_data_guard import (
+        clamp_status_to_data,
+        ready_status_confirmed_by_data,
+    )
+
+    assert await ready_status_confirmed_by_data(
+        session, p, ProjectStatus.enrich_2_ready
+    )
+    assert await clamp_status_to_data(session, p) is None
+    assert p.status is ProjectStatus.enrich_2_ready

@@ -446,6 +446,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             [p.name for p in data_paths],
         )
         raise_if_cancelled(project.id)
+        # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
+        await session.commit()
         api_res = await run_operator_api(
             project_dir=project.data_dir,
             node_key=node_key,
@@ -458,6 +460,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             check_fix=check_fix,
             source_prompt_keys=source_prompt_keys,
         )
+        await session.refresh(project)
         # После project_file writeback — подтянуть xlsx → DB.
         if output_mode == "project_file":
             wrote = any(
@@ -588,6 +591,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     last_err: Exception | None = None
     xlsx_stat_before_run = cx.project_xlsx_stat(xlsx_path)
+
+    # Browser GPT тоже долгий — не держим SQLite write-lock.
+    await session.commit()
 
     for attempt in range(1, _MAX_RETRIES + 1):
         raise_if_cancelled(project.id)

@@ -1502,7 +1502,16 @@ async def storage_resolve(
     after = str((p.meta or {}).get("storage_nodes") or {})
     if before != after:
         flag_modified(p, "meta")
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            # Во время GPT worker может держать write-lock — UI не должен падать.
+            logger.warning(
+                "storage_resolve: commit meta #{} skipped: {}",
+                project_id,
+                exc,
+            )
+            await session.rollback()
     return result
 
 

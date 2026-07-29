@@ -148,6 +148,8 @@ def clear_stale_downstream_meta(project: Project) -> list[str]:
     """Сбросить stale meta, который ломает порядок нод.
 
     1) Статус ещё до frames_ready — чистим всё downstream.
+       Исключение: уже на enrich_* (excel_gpt до split на канвасе) — meta
+       enrich_completed_slots / excel_gpt_completed_keys не трогаем.
     2) frames_ready без ``split_completed`` — кадры/enrich meta с прошлого
        прогона; иначе planner прыгает сразу на excel_gpt #3.
     """
@@ -156,6 +158,10 @@ def clear_stale_downstream_meta(project: Project) -> list[str]:
     cleared: list[str] = []
 
     if _status_ord(cur) < _status_ord(ProjectStatus.frames_ready):
+        # enrich_*_ready / enriching_* имеют order > frames_ready в меню,
+        # но на всякий случай: если когда-нибудь order поменяют — не сносим.
+        if _enrich_meta_allowed_for_status(project):
+            return []
         return clear_pipeline_progress_meta(project)
 
     if (
@@ -353,6 +359,19 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         return ProjectStatus.plan_ready
     # script ✓
     if fr_total == 0:
+        # Canvas: excel_gpt часто до split — кадров ещё нет. Не откатывать
+        # enrich_*_ready в script_ready (иначе auto_advance снова жмёт ту же GPT-ноду).
+        if _enrich_meta_allowed_for_status(project):
+            enrich_st = _enrich_ready_from_meta(project)
+            if enrich_st is not None:
+                return enrich_st
+            cur = getattr(project, "status", None)
+            if (
+                cur is not None
+                and _status_ord(cur) >= _status_ord(ProjectStatus.enrich_1_ready)
+                and str(getattr(cur, "value", "")).endswith("_ready")
+            ):
+                return cur
         return ProjectStatus.script_ready
     # Кадры в БД есть, но split ещё не подтверждён — не поднимаем status
     # выше script_ready. Источник правды — meta.split_completed текущего
@@ -363,6 +382,18 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     ):
         meta_now = project.meta if isinstance(project.meta, dict) else {}
         if not bool(meta_now.get("split_completed")):
+            # Уже на enrich до split (canvas) — не сбрасывать в script_ready.
+            if _enrich_meta_allowed_for_status(project):
+                enrich_st = _enrich_ready_from_meta(project)
+                if enrich_st is not None:
+                    return enrich_st
+                cur = getattr(project, "status", None)
+                if (
+                    cur is not None
+                    and _status_ord(cur) >= _status_ord(ProjectStatus.enrich_1_ready)
+                    and str(getattr(cur, "value", "")).endswith("_ready")
+                ):
+                    return cur
             return ProjectStatus.script_ready
     # frames ✓
     hero_required = _hero_step_required(project)

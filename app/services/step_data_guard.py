@@ -72,6 +72,28 @@ async def ready_status_confirmed_by_data(
     ready_status: ProjectStatus,
 ) -> bool:
     """True если данные в БД подтверждают *_ready (не шаблон/заглушка)."""
+    # enrich_*_ready до split: кадры могут отсутствовать — смотрим meta / статус.
+    if ready_status in (
+        ProjectStatus.enrich_1_ready,
+        ProjectStatus.enrich_2_ready,
+        ProjectStatus.enrich_3_ready,
+        ProjectStatus.enrich_4_ready,
+        ProjectStatus.enrich_5_ready,
+    ):
+        from app.services.project_state import (
+            _enrich_meta_allowed_for_status,
+            _enrich_ready_from_meta,
+        )
+
+        if _enrich_meta_allowed_for_status(project):
+            enrich_st = _enrich_ready_from_meta(project)
+            if enrich_st is not None and status_order(enrich_st) >= status_order(
+                ready_status
+            ):
+                return True
+            if project.status is ready_status:
+                return True
+
     # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
     # (нет всех scene_image), но audio_ready уже законно — не откатывать.
     if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):
