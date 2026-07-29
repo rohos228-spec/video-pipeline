@@ -45,60 +45,64 @@ class FrameWordSpan:
 
 
 def align_script_tokens(script_tokens: list[str], words: list[WordTS]) -> list[int]:
-    """Индекс ASR-слова для каждого токена сценария (монотонно по времени)."""
+    """Индекс ASR-слова для каждого токена сценария.
+
+    Важно: токены, которых нет в озвучке (insert в difflib), остаются -1.
+    Их нельзя сажать на первое найденное слово — иначе весь таймлайн ползёт.
+    """
     if not script_tokens:
         return []
     if not words:
-        return [0] * len(script_tokens)
+        return [-1] * len(script_tokens)
 
     whisper_tokens = [whisper_token(w) for w in words]
     result = [-1] * len(script_tokens)
+    matched = [False] * len(script_tokens)
     matcher = difflib.SequenceMatcher(None, script_tokens, whisper_tokens, autojunk=False)
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for offset in range(i2 - i1):
                 result[i1 + offset] = j1 + offset
+                matched[i1 + offset] = True
             continue
-        script_len = i2 - i1
-        if script_len <= 0:
+        if tag == "replace":
+            script_len = i2 - i1
+            whisper_len = max(j2 - j1, 0)
+            if script_len <= 0 or whisper_len <= 0:
+                continue
+            # Нечёткое совпадение блока — пропорционально внутри блока.
+            for offset in range(script_len):
+                wi = j1 + min(int(offset * whisper_len / script_len), whisper_len - 1)
+                result[i1 + offset] = wi
             continue
-        whisper_len = max(j2 - j1, 0)
-        if whisper_len == 0:
-            # Вставка в сценарии без ASR — растянуть между соседями позже
-            continue
-        for offset in range(script_len):
-            wi = j1 + min(int(offset * whisper_len / script_len), whisper_len - 1)
-            result[i1 + offset] = wi
+        # insert (есть в сценарии, нет в ASR) / delete (есть в ASR, нет в сценарии):
+        # insert → оставляем -1; delete игнорируем.
+        continue
 
-    # Заполнить дыры линейной интерполяцией между известными якорями (не одним anchor).
-    known = [(i, wi) for i, wi in enumerate(result) if wi >= 0]
-    if not known:
-        # Полный провал align — равномерно по словам ASR
-        n_s, n_w = len(script_tokens), len(words)
-        return [
-            min(int(i * n_w / max(n_s, 1)), n_w - 1) for i in range(n_s)
-        ]
-    # края
-    first_i, first_w = known[0]
-    for i in range(first_i):
-        result[i] = first_w
-    last_i, last_w = known[-1]
-    for i in range(last_i + 1, len(result)):
-        result[i] = last_w
+    # Интерполяция ТОЛЬКО между двумя matched-якорями (дыры внутри речи).
+    # Краевые insert (интро/аутро которых нет в аудио) остаются -1.
+    known = [(i, result[i]) for i, ok in enumerate(matched) if ok]
     for (a_i, a_w), (b_i, b_w) in zip(known, known[1:]):
         gap = b_i - a_i
         if gap <= 1:
             continue
         for k in range(1, gap):
+            idx = a_i + k
+            if matched[idx]:
+                continue
+            if result[idx] >= 0:
+                continue
             t = k / gap
-            result[a_i + k] = int(round(a_w + t * (b_w - a_w)))
+            result[idx] = int(round(a_w + t * (b_w - a_w)))
 
-    # Монотонность индексов (не назад во времени ASR).
-    last = 0
+    # Монотонность только среди назначенных (≥0).
+    last = -1
     for i, wi in enumerate(result):
+        if wi < 0:
+            continue
         wi = max(0, min(int(wi), len(words) - 1))
-        if wi < last:
+        if last >= 0 and wi < last:
             wi = last
         result[i] = wi
         last = wi
@@ -109,11 +113,10 @@ def exclusive_asr_word_bounds(
     cells: list[tuple[int, str]],
     words: list[WordTS],
 ) -> list[tuple[int, int, int]]:
-    """Для каждого кадра — полуинтервал ASR-слов [lo, hi) без пересечений.
+    """Для каждого кадра — полуинтервал ASR-слов [lo, hi).
 
-    Границы якорятся на difflib-align R49↔ASR, но принудительно монотонны:
-    каждый следующий кадр начинается строго после предыдущего. Так таймкоды
-    следуют реальной озвучке, а не схлопываются в одну точку.
+    Кадры без совпадения с озвучкой (интро/текст не из audio) получают
+    lo=hi=-1 и НЕ забирают ASR-слова у следующих кадров.
     """
     if not cells:
         return []
@@ -121,59 +124,62 @@ def exclusive_asr_word_bounds(
     n = len(spans)
     w_n = len(words)
     if w_n <= 0:
-        return [(s.frame_number, 0, 0) for s in spans]
+        return [(s.frame_number, -1, -1) for s in spans]
 
-    # Предпочтительный старт = первое сопоставленное слово кадра
-    pref: list[int] = []
+    # Предпочтительный [lo, hi) только по реально сопоставленным токенам (≥0).
+    pref_lo: list[int] = []
+    pref_hi: list[int] = []
+    has_match: list[bool] = []
     for span in spans:
-        if span.whisper_indices:
-            pref.append(max(0, min(min(span.whisper_indices), w_n - 1)))
+        hit = [i for i in (span.whisper_indices or []) if i >= 0]
+        if hit:
+            pref_lo.append(max(0, min(min(hit), w_n - 1)))
+            pref_hi.append(max(0, min(max(hit) + 1, w_n)))
+            has_match.append(True)
         else:
-            pref.append(-1)
+            pref_lo.append(-1)
+            pref_hi.append(-1)
+            has_match.append(False)
 
-    # Заполнить пустые старты
-    last = 0
-    for i, p in enumerate(pref):
-        if p < 0:
-            pref[i] = last
-        else:
-            last = p
-
-    # Жадные старты: max(pref[i], prev_end), не выходя за лимит слов
-    starts = [0] * n
-    starts[0] = max(0, min(pref[0], max(w_n - n, 0)))
-    for i in range(1, n):
-        # Сколько слов ещё нужно минимум на хвост (по 1 на кадр)
-        remain_frames = n - i
-        max_start = max(0, w_n - remain_frames)
-        want = max(pref[i], starts[i - 1] + 1)
-        starts[i] = min(want, max_start)
-        if starts[i] <= starts[i - 1]:
-            starts[i] = min(starts[i - 1] + 1, max_start)
-
-    # Если слов меньше кадров — несколько кадров на одно слово (редко)
-    if w_n < n:
+    matched_idx = [i for i, ok in enumerate(has_match) if ok]
+    if not matched_idx:
+        # Ничего не сопоставилось — равномерно по всем словам.
         starts = [min(int(i * w_n / n), w_n - 1) for i in range(n)]
+        ends = [starts[i + 1] if i + 1 < n else w_n for i in range(n)]
+        return [(spans[i].frame_number, starts[i], ends[i]) for i in range(n)]
 
-    ends = [0] * n
-    for i in range(n - 1):
-        ends[i] = max(starts[i] + 1, starts[i + 1])
-    ends[-1] = w_n
+    # Exclusive starts только среди matched-кадров.
+    m_starts: dict[int, int] = {}
+    first = matched_idx[0]
+    m_starts[first] = max(0, min(pref_lo[first], max(w_n - len(matched_idx), 0)))
+    for k in range(1, len(matched_idx)):
+        i = matched_idx[k]
+        prev = matched_idx[k - 1]
+        remain = len(matched_idx) - k
+        max_start = max(0, w_n - remain)
+        want = max(pref_lo[i], m_starts[prev] + 1)
+        m_starts[i] = min(want, max_start)
+        if m_starts[i] <= m_starts[prev]:
+            m_starts[i] = min(m_starts[prev] + 1, max_start)
 
-    # Подтянуть концы по preferred max index, не залезая в следующий кадр
-    for i, span in enumerate(spans):
-        if not span.whisper_indices:
-            continue
-        pref_hi = max(span.whisper_indices) + 1
-        lo = starts[i]
-        hi_cap = ends[i]
-        if pref_hi > lo and pref_hi <= hi_cap:
-            # ok — можно оставить ends как starts следующего
+    m_ends: dict[int, int] = {}
+    for k, i in enumerate(matched_idx):
+        if k + 1 < len(matched_idx):
+            nxt = matched_idx[k + 1]
+            m_ends[i] = max(m_starts[i] + 1, m_starts[nxt])
+        else:
+            m_ends[i] = w_n
+        # Не режем preferred hi, если он внутри своего слота
+        if pref_hi[i] > m_starts[i] and pref_hi[i] <= m_ends[i]:
             pass
 
-    return [
-        (spans[i].frame_number, starts[i], ends[i]) for i in range(n)
-    ]
+    out: list[tuple[int, int, int]] = []
+    for i, span in enumerate(spans):
+        if not has_match[i]:
+            out.append((span.frame_number, -1, -1))
+        else:
+            out.append((span.frame_number, m_starts[i], m_ends[i]))
+    return out
 
 
 def timings_match_voiceover(
@@ -185,8 +191,8 @@ def timings_match_voiceover(
 ) -> list[FrameTiming]:
     """Таймкоды кадров строго по словам озвучки (NeMo).
 
-    mode=contiguous: кадр [start_i, start_{i+1}) — без дыр/overlap, границы = речь.
-    mode=direct: start/end = первое/последнее слово кадра, затем monotonic glue.
+    Кадры без текста в аудио (интро и т.п.) не едят ASR-слова:
+    они получают паузу до первой реальной речи / стык без сдвига хвоста.
     """
     if not cells:
         return []
@@ -199,35 +205,91 @@ def timings_match_voiceover(
         return normalize_contiguous(raw, ad)
 
     bounds = exclusive_asr_word_bounds(cells, words)
-    out: list[FrameTiming] = []
+    speech1 = float(words[-1].end)
+
+    # Временные метки matched-кадров по словам; unmatched — None.
+    raw_se: list[tuple[float, float] | None] = [None] * len(bounds)
     for i, (fn, lo, hi) in enumerate(bounds):
-        lo = max(0, min(lo, len(words) - 1))
-        hi = max(lo + 1, min(hi, len(words)))
+        if lo < 0 or hi < 0 or hi <= lo:
+            continue
+        lo_i = max(0, min(lo, len(words) - 1))
+        hi_i = max(lo_i + 1, min(hi, len(words)))
         if mode == "direct":
-            start = float(words[lo].start)
-            end = float(words[hi - 1].end)
+            start = float(words[lo_i].start)
+            end = float(words[hi_i - 1].end)
         else:
-            start = float(words[lo].start)
-            if i + 1 < len(bounds):
-                nlo = max(0, min(bounds[i + 1][1], len(words) - 1))
-                end = float(words[nlo].start)
-            else:
-                end = float(words[hi - 1].end)
+            start = float(words[lo_i].start)
+            # конец = старт следующего matched
+            end = float(words[hi_i - 1].end)
+            for j in range(i + 1, len(bounds)):
+                nlo, nhi = bounds[j][1], bounds[j][2]
+                if nlo >= 0 and nhi > nlo:
+                    nlo_i = max(0, min(nlo, len(words) - 1))
+                    end = float(words[nlo_i].start)
+                    break
             if end <= start:
-                end = float(words[hi - 1].end)
+                end = float(words[hi_i - 1].end)
+        raw_se[i] = (start, end)
+
+    # Unmatched: ведущие → [0, first_speech); хвостовые → [speech1, master];
+    # середина → нулевая точка на стыке (потом absorb/склейка).
+    # Важно: преролл до старта ПЕРВОГО matched-кадра, не words[0] —
+    # иначе glue сдвинет речь, если в ASR есть «лишние» слова до текста.
+    first_matched = next((i for i, se in enumerate(raw_se) if se is not None), None)
+    last_matched = next(
+        (i for i in range(len(raw_se) - 1, -1, -1) if raw_se[i] is not None),
+        None,
+    )
+    first_speech = (
+        float(raw_se[first_matched][0]) if first_matched is not None else 0.0
+    )
+    out: list[FrameTiming] = []
+    for i, (fn, _lo, _hi) in enumerate(bounds):
+        se = raw_se[i]
+        if se is not None:
+            start, end = se
+        elif first_matched is not None and i < first_matched:
+            # Интро не из аудио — только тишина/преролл до первой речи.
+            lead = [k for k in range(first_matched) if raw_se[k] is None]
+            if len(lead) > 1 and first_speech > 0.05:
+                pos = lead.index(i)
+                step = first_speech / len(lead)
+                start = round(pos * step, 3)
+                end = round((pos + 1) * step, 3)
+            elif lead and i == lead[0] and first_speech > 0.05:
+                start, end = 0.0, first_speech
+            else:
+                start = end = first_speech
+        elif last_matched is not None and i > last_matched:
+            tail = [k for k in range(last_matched + 1, len(bounds)) if raw_se[k] is None]
+            if len(tail) > 0 and ad - speech1 > 0.05:
+                pos = tail.index(i)
+                step = (ad - speech1) / len(tail)
+                start = round(speech1 + pos * step, 3)
+                end = round(speech1 + (pos + 1) * step, 3)
+            else:
+                start = end = speech1
+        else:
+            # Unmatched в середине — точка на предыдущем/следующем стыке
+            prev_end = 0.0
+            for j in range(i - 1, -1, -1):
+                if raw_se[j] is not None:
+                    prev_end = raw_se[j][1]
+                    break
+            start = end = prev_end
         out.append(
             FrameTiming(fn, round(start, 3), round(end, 3), round(max(end - start, 0.0), 3))
         )
 
-    # Покрытие всей озвучки [0, master] без дыр (паузы в начале/конце и между).
+    # Покрытие [0, master] без дыр; крошки — absorb.
     if out:
         out[0] = FrameTiming(out[0].frame_number, 0.0, out[0].end_ts, round(out[0].end_ts, 3))
         for i in range(1, len(out)):
             out[i] = FrameTiming(
                 out[i].frame_number,
                 out[i - 1].end_ts,
-                out[i].end_ts,
-                round(out[i].end_ts - out[i - 1].end_ts, 3),
+                max(out[i].end_ts, out[i - 1].end_ts),
+                round(max(out[i].end_ts, out[i - 1].end_ts) - out[i - 1].end_ts, 3),
             )
         out[-1] = FrameTiming(
             out[-1].frame_number,
@@ -235,7 +297,6 @@ def timings_match_voiceover(
             round(ad, 3),
             round(ad - out[-1].start_ts, 3),
         )
-        # Крошки после склейки — только если слов << кадров; absorb у соседей.
         if count_crumb_frames(out) > 0:
             out = absorb_crumb_durations(out, ad)
     return out
@@ -490,11 +551,13 @@ def timings_from_word_transitions(
     raw_starts: list[float] = []
     prev = 0.0
     for span in spans:
-        if span.whisper_indices and words:
-            wi = max(0, min(min(span.whisper_indices), len(words) - 1))
+        hit = [i for i in (span.whisper_indices or []) if i >= 0]
+        if hit and words:
+            wi = max(0, min(min(hit), len(words) - 1))
             s = float(words[wi].start)
             s = max(s, prev)
         else:
+            # Unmatched (интро не из аудио) — не крадём words[0].
             s = prev
         raw_starts.append(s)
         prev = s
