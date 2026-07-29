@@ -26,6 +26,9 @@ OperatorRole = Literal["assist", "review", "transform", "extract", "compare", "g
 OutputMode = Literal["text", "project_file", "sidecar"]
 EmitKind = Literal["result", "reply_txt", "analysis", "inputs"]
 InputOrigin = Literal["upload", "edge", "project", "snapshot"]
+# Критерии проверки: промты со стрелок ИЛИ готовый агент из prompts/check_operator.
+CheckPromptSource = Literal["upstream", "agent"]
+VALID_CHECK_PROMPT_SOURCES: frozenset[str] = frozenset({"upstream", "agent"})
 
 # Связь = порядок + кандидат на вход. Файлы берёт приёмник (takeFromEdges),
 # не отдельный kind «feed». gate — legacy «если ok»; pass/fail — ветки вердикта.
@@ -154,6 +157,10 @@ def operator_config(project: Project, node_key: str) -> dict[str, Any]:
         cfg["checkFix"] = bool(cfg.get("checkFix"))
     else:
         cfg["checkFix"] = True
+    raw_cps = str(cfg.get("checkPromptSource") or "upstream").strip().lower()
+    cfg["checkPromptSource"] = (
+        raw_cps if raw_cps in VALID_CHECK_PROMPT_SOURCES else "upstream"
+    )
     # Для checkMode дефолтный emit — вход + txt-отчёт (если пользователь не задал).
     if check_mode and not (
         isinstance(cfg.get("emitKinds"), list) and cfg.get("emitKinds")
@@ -310,6 +317,56 @@ def assemble_check_master_prompt(
         blocks.append("# Доп. указания ревьюера (эта нода)")
         blocks.append(notes)
     return append_txt_report_footer("\n".join(blocks).strip())
+
+
+def assemble_check_agent_prompt(
+    project: Project,
+    node_key: str,
+    *,
+    check_fix: bool = True,
+    reviewer_notes: str = "",
+) -> tuple[str, str | None]:
+    """Master-промт из готового агента prompts/check_operator (без промтов стрелок).
+
+    Returns (prompt_text, agent_step_name).
+    """
+    from app.services.check_analysis import (
+        append_txt_report_footer,
+        load_check_operator_prompt_body,
+        resolve_check_operator_step,
+    )
+
+    typ = upstream_node_type_for_check(project, node_key)
+    if not typ:
+        raise RuntimeError(
+            "нет вышестоящей ноды для готового агента проверки — проведите стрелку"
+        )
+    step = resolve_check_operator_step(typ)
+    body = load_check_operator_prompt_body(typ)
+    if not body:
+        raise RuntimeError(
+            f"нет готового агента проверки для типа «{typ}» "
+            f"(prompts/check_operator/{step}/default.md)"
+        )
+    mode = "fix" if check_fix else "report_only"
+    blocks: list[str] = [
+        body,
+        "",
+        f"mode: {mode}",
+        (
+            "Вложение — текстовый экспорт xlsx (TSV) или файлы со стрелки. "
+            "Бинарный .xlsx в рабочей директории модели может быть недоступен — это норма. "
+            "При правках: после отчёта блок --- XLSX_WRITEBACK --- с `# Лист:` TSV; "
+            "в forward укажи file: fixed."
+            if check_fix
+            else "НЕ изменяй файл — только отчёт (file: original)."
+        ),
+        "Отвечай TXT-отчётом по шаблону ниже (НЕ JSON vp.check.v1).",
+    ]
+    notes = (reviewer_notes or "").strip()
+    if notes:
+        blocks.extend(["", "# Доп. указания ревьюера (эта нода)", notes])
+    return append_txt_report_footer("\n".join(blocks).strip()), step
 
 
 def _file_probe(path: Path, *, origin: InputOrigin, from_node: str | None = None) -> dict[str, Any]:
@@ -792,19 +849,41 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
 
     check_mode = bool(cfg.get("checkMode"))
     check_fix = bool(cfg.get("checkFix", True))
+    check_prompt_source = str(cfg.get("checkPromptSource") or "upstream")
+    if check_prompt_source not in VALID_CHECK_PROMPT_SOURCES:
+        check_prompt_source = "upstream"
     source_prompts: list[dict[str, Any]] = []
+    check_agent_step: str | None = None
     if check_mode:
-        source_prompts = collect_source_prompts(project, node_key)
-        ok_prompts = [s for s in source_prompts if s.get("ok")]
-        if not source_prompts:
-            errors.append("нет исходного промта для проверки (нет входящих стрелок)")
-        elif not ok_prompts:
-            errors.append("нет исходного промта для проверки")
-        for s in source_prompts:
-            if not s.get("ok") and s.get("error"):
-                warnings.append(
-                    f"промт {s.get('nodeKey')}: {s.get('error')}"
+        if check_prompt_source == "agent":
+            from app.services.check_analysis import resolve_check_operator_step
+
+            typ = upstream_node_type_for_check(project, node_key)
+            if not typ:
+                errors.append(
+                    "готовый агент: нет вышестоящей ноды — проведите стрелку от результата"
                 )
+            else:
+                from app.services.check_analysis import load_check_operator_prompt_body
+
+                check_agent_step = resolve_check_operator_step(typ)
+                if not load_check_operator_prompt_body(typ):
+                    errors.append(
+                        f"нет готового агента для «{typ}» "
+                        f"(prompts/check_operator/{check_agent_step}/default.md)"
+                    )
+        else:
+            source_prompts = collect_source_prompts(project, node_key)
+            ok_prompts = [s for s in source_prompts if s.get("ok")]
+            if not source_prompts:
+                errors.append("нет исходного промта для проверки (нет входящих стрелок)")
+            elif not ok_prompts:
+                errors.append("нет исходного промта для проверки")
+            for s in source_prompts:
+                if not s.get("ok") and s.get("error"):
+                    warnings.append(
+                        f"промт {s.get('nodeKey')}: {s.get('error')}"
+                    )
 
     if not ok_files and role in ("assist", "transform", "extract", "review"):
         # soft: assist без файлов — ошибка запуска
@@ -892,6 +971,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "takeFromEdges": take_from_edges,
         "checkMode": check_mode,
         "checkFix": check_fix,
+        "checkPromptSource": check_prompt_source,
+        "checkAgentStep": check_agent_step,
         "sourcePrompts": source_prompt_view,
         "transport": cfg.get("transport") or "api",
         "label": str(cfg.get("label") or default_label_for_role(role)),
@@ -921,6 +1002,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "takeFromEdges": take_from_edges,
             "checkMode": check_mode,
             "checkFix": check_fix,
+            "checkPromptSource": check_prompt_source,
             "transport": cfg.get("transport") or "api",
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
@@ -979,8 +1061,15 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
                 cur["outputMode"] = "text"
             if "checkFix" not in cur:
                 cur["checkFix"] = True
+            if "checkPromptSource" not in cur:
+                cur["checkPromptSource"] = "upstream"
     if "checkFix" in patch:
         cur["checkFix"] = bool(patch.get("checkFix"))
+    if "checkPromptSource" in patch:
+        cps = str(patch.get("checkPromptSource") or "upstream").strip().lower()
+        cur["checkPromptSource"] = (
+            cps if cps in VALID_CHECK_PROMPT_SOURCES else "upstream"
+        )
     if "transport" in patch:
         t = str(patch.get("transport") or "api").strip().lower()
         cur["transport"] = t if t in ("api", "browser") else "api"

@@ -405,6 +405,8 @@ export const api = {
       filename: string;
       minutes: number;
       logFiles: string[];
+      logChars?: number;
+      content?: string;
       clipboardPrompt: string;
     }>(`/api/bug-reports`, { method: "POST", body: JSON.stringify(body) }),
 

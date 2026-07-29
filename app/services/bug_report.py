@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from app.settings import settings
 VALID_WINDOWS_MIN = frozenset({1, 5, 30, 60})
 
 # loguru / типичный префикс: 2026-07-29 06:22:01.123 | INFO | ...
+# PowerShell backend: 2026-07-29 11:44:00  message
 _TS_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)"
 )
@@ -32,7 +33,14 @@ def _list_log_paths() -> list[Path]:
         p = data / name
         if p.is_file():
             found.append(p)
-    found.extend(sorted(data.glob("backend-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:3])
+    # свежие session-логи (до 8), не только 3
+    found.extend(
+        sorted(
+            data.glob("backend-*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:8]
+    )
     logs_dir = Path("logs")
     if not logs_dir.is_absolute():
         logs_dir = find_project_root() / "logs"
@@ -45,7 +53,10 @@ def _list_log_paths() -> list[Path]:
     out: list[Path] = []
     seen: set[str] = set()
     for p in found:
-        key = str(p.resolve())
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
         if key in seen:
             continue
         seen.add(key)
@@ -54,16 +65,27 @@ def _list_log_paths() -> list[Path]:
 
 
 def _parse_line_ts(line: str) -> datetime | None:
+    """Naive wall-clock из строки лога (локальное время Studio/PowerShell)."""
     m = _TS_RE.match(line.strip())
     if not m:
         return None
     raw = m.group(1).replace("T", " ")
     for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
         try:
-            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(raw, fmt)
         except ValueError:
             continue
     return None
+
+
+def _wall_clock(now: datetime | None = None) -> datetime:
+    """Локальные wall-clock (naive) для сравнения с timestamps логов."""
+    if now is None:
+        return datetime.now()
+    if now.tzinfo is None:
+        return now
+    # aware → локальная стена (не UTC-компоненты: иначе окно «5 мин» пустеет)
+    return now.astimezone().replace(tzinfo=None)
 
 
 def _tail_bytes(path: Path, max_bytes: int = 2_000_000) -> str:
@@ -83,11 +105,12 @@ def filter_log_window(text: str, *, minutes: int, now: datetime | None = None) -
     """Оставить строки за последние ``minutes`` минут (по timestamp в строке).
 
     Если timestamps нет — вернуть хвост целиком (уже обрезанный при чтении).
+    Timestamps в логах — локальные wall-clock (как пишет Studio на Windows).
     """
     if minutes not in VALID_WINDOWS_MIN:
         minutes = 5
-    now = now or datetime.now(timezone.utc)
-    since = now - timedelta(minutes=minutes)
+    now_wall = _wall_clock(now)
+    since = now_wall - timedelta(minutes=minutes)
     lines = text.splitlines()
     kept: list[str] = []
     any_ts = False
@@ -99,16 +122,14 @@ def filter_log_window(text: str, *, minutes: int, now: datetime | None = None) -
                 kept.append(line)
             continue
         any_ts = True
-        # naive timestamps из логов считаем локальными ≈ utc для фильтра
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+        if ts.tzinfo is not None:
+            ts = ts.astimezone().replace(tzinfo=None)
         if ts >= since:
             kept.append(line)
     if any_ts:
         return "\n".join(kept)
-    # нет timestamp — отдаём последние ~400 строк
-    return "\n".join(lines[-400:])
-
+    # нет timestamp — отдаём последние ~800 строк
+    return "\n".join(lines[-800:])
 
 def collect_log_snippets(*, minutes: int) -> list[dict[str, Any]]:
     snippets: list[dict[str, Any]] = []
@@ -126,13 +147,30 @@ def collect_log_snippets(*, minutes: int) -> list[dict[str, Any]]:
     return snippets
 
 
-def build_clipboard_prompt(*, rel_path: str, description: str) -> str:
-    return (
-        "Почини баг по отчёту из video-pipeline.\n"
-        f"Файл: {rel_path}\n\n"
-        f"Кратко от пользователя:\n{description.strip()[:1500]}\n\n"
-        "Прочитай отчёт целиком (описание + логи), найди корневую причину и исправь в main."
-    )
+def build_clipboard_prompt(
+    *,
+    rel_path: str,
+    description: str,
+    log_excerpt: str = "",
+) -> str:
+    """Промпт для Composer: описание + выдержка логов (файл баги/ gitignore)."""
+    parts = [
+        "Почини баг по отчёту из video-pipeline.",
+        f"Файл: {rel_path}",
+        "",
+        "Кратко от пользователя:",
+        (description or "").strip()[:1500],
+        "",
+        "Прочитай отчёт целиком (описание + логи), найди корневую причину и исправь в main.",
+    ]
+    excerpt = (log_excerpt or "").strip()
+    if excerpt:
+        # Обрезаем: буфер обмена / чат имеют лимиты.
+        if len(excerpt) > 24_000:
+            excerpt = excerpt[-24_000:]
+            excerpt = "…(обрезано)\n" + excerpt
+        parts.extend(["", "## Логи (выдержка из отчёта)", "", "```", excerpt, "```"])
+    return "\n".join(parts)
 
 
 def write_bug_report(
@@ -177,6 +215,7 @@ def write_bug_report(
         parts.append(f"- studio: {studio_version}")
     parts.extend(["", "## Описание", "", desc, "", "## Логи", ""])
 
+    log_chunks: list[str] = []
     for sn in snippets:
         parts.append(f"### {sn['name']}")
         parts.append(f"_{sn['path']} · {sn['chars']} символов_")
@@ -185,9 +224,17 @@ def write_bug_report(
         parts.append(sn["text"] or "(пусто)")
         parts.append("```")
         parts.append("")
+        if sn["text"]:
+            log_chunks.append(f"### {sn['name']}\n{sn['text']}")
 
-    path.write_text("\n".join(parts), encoding="utf-8")
-    clipboard = build_clipboard_prompt(rel_path=rel, description=desc)
+    content = "\n".join(parts)
+    path.write_text(content, encoding="utf-8")
+    clipboard = build_clipboard_prompt(
+        rel_path=rel,
+        description=desc,
+        log_excerpt="\n\n".join(log_chunks),
+    )
+    total_log_chars = sum(int(s["chars"] or 0) for s in snippets)
     return {
         "ok": True,
         "path": str(path),
@@ -195,5 +242,7 @@ def write_bug_report(
         "filename": filename,
         "minutes": minutes,
         "logFiles": [s["name"] for s in snippets],
+        "logChars": total_log_chars,
+        "content": content,
         "clipboardPrompt": clipboard,
     }

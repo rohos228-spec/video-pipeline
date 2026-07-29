@@ -488,6 +488,68 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
     }
 
 
+def sync_downstream_storage_from_node(
+    project: Project, from_node_key: str
+) -> list[dict[str, Any]]:
+    """После завершения ноды — подтянуть файлы во все storage со стрелки.
+
+    Учитывает вердикт pass/fail: заблокированные ветки не синкаем.
+    Возвращает список результатов sync_from_edges (для логов).
+    """
+    from app.services.gpt_operator import (
+        edge_kind_of,
+        is_verdict_edge_kind,
+        verdict_edge_blocks,
+    )
+
+    key = (from_node_key or "").strip()
+    if not key:
+        return []
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    by_id: dict[str, dict[str, Any]] = {}
+    for n in cg.get("nodes") or []:
+        if isinstance(n, dict) and n.get("id"):
+            by_id[str(n["id"])] = n
+
+    results: list[dict[str, Any]] = []
+    for e in cg.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("source") or "").strip() != key:
+            continue
+        tgt = str(e.get("target") or "").strip()
+        if not tgt:
+            continue
+        typ = str((by_id.get(tgt) or {}).get("type") or "")
+        if typ != STORAGE_NODE_TYPE:
+            continue
+        kind = edge_kind_of(e)
+        if is_verdict_edge_kind(kind):
+            blocked = verdict_edge_blocks(project, key, kind)
+            if blocked:
+                continue
+        cfg = node_config(project, tgt)
+        if cfg.get("autoSync", True) is False:
+            continue
+        try:
+            info = sync_from_edges(project, tgt)
+            info = dict(info)
+            info["storageNode"] = tgt
+            results.append(info)
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                {
+                    "storageNode": tgt,
+                    "copied": [],
+                    "skipped": [],
+                    "errors": [str(exc)],
+                    "okFileCount": 0,
+                }
+            )
+    return results
+
+
 def resolve_storage(project: Project, node_key: str, *, auto_sync: bool | None = None) -> dict[str, Any]:
     cfg = node_config(project, node_key)
     do_sync = cfg.get("autoSync", True) if auto_sync is None else bool(auto_sync)

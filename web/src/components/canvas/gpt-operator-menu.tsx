@@ -93,6 +93,9 @@ export function GptOperatorMenuPanel({
   const role = (data?.role || "assist") as OperatorRole;
   const checkMode = data?.checkMode === true;
   const checkFix = data?.checkFix !== false;
+  const checkPromptSource =
+    data?.checkPromptSource === "agent" ? "agent" : "upstream";
+  const checkAgentStep = data?.checkAgentStep || null;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
@@ -204,30 +207,82 @@ export function GptOperatorMenuPanel({
           ) : null}
         </div>
         {checkMode ? (
-          <div className="mt-1.5 space-y-0.5">
-            <p className="text-[9px] leading-snug text-rose-50/80">
-              Промт берётся с ноды по входящей стрелке. Отчёт: check_report.txt
+          <div className="mt-1.5 space-y-1">
+            <p className="text-[9px] font-semibold uppercase tracking-wider text-rose-100/70">
+              Критерии
             </p>
-            {sourcePrompts.length ? (
-              <ul className="space-y-0.5">
-                {sourcePrompts.map((s) => (
-                  <li
-                    key={String(s.nodeKey)}
-                    className={cn(
-                      "font-mono text-[9px]",
-                      s.ok ? "text-emerald-100/85" : "text-rose-100/90",
-                    )}
-                  >
-                    {s.ok ? "✓" : "✗"} {s.nodeKey}
-                    {s.chars ? ` · ${s.chars} симв` : ""}
-                    {s.error ? ` · ${s.error}` : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-[9px] text-rose-100/80">
-                Нет входящих стрелок — подключи источник
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                disabled={patch.isPending}
+                title="Сверять результат с мастер-промтом ноды по входящей стрелке"
+                onClick={() =>
+                  patch.mutate({ checkPromptSource: "upstream", transport: "api" })
+                }
+                className={cn(
+                  "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
+                  checkPromptSource === "upstream"
+                    ? "border-sky-400/70 bg-sky-500/25 text-sky-50 ring-1 ring-sky-400/40"
+                    : "border-white/10 text-muted-foreground hover:border-white/20",
+                )}
+              >
+                {checkPromptSource === "upstream" ? "✓ " : ""}
+                Промт источника
+              </button>
+              <button
+                type="button"
+                disabled={patch.isPending}
+                title="Не брать промт прошлой ноды — прогнать готового агента из prompts/check_operator"
+                onClick={() =>
+                  patch.mutate({ checkPromptSource: "agent", transport: "api" })
+                }
+                className={cn(
+                  "rounded-md border px-1.5 py-1 text-[9px] font-medium transition",
+                  checkPromptSource === "agent"
+                    ? "border-violet-400/70 bg-violet-500/25 text-violet-50 ring-1 ring-violet-400/40"
+                    : "border-white/10 text-muted-foreground hover:border-white/20",
+                )}
+              >
+                {checkPromptSource === "agent" ? "✓ " : ""}
+                Готовый агент
+              </button>
+            </div>
+            {checkPromptSource === "agent" ? (
+              <p className="text-[9px] leading-snug text-rose-50/80">
+                Агент:{" "}
+                <span className="font-mono text-violet-100">
+                  {checkAgentStep || "—"}
+                </span>
+                {" "}
+                (по типу ноды выше). Файлы — со стрелки. Отчёт: check_report.txt
               </p>
+            ) : (
+              <>
+                <p className="text-[9px] leading-snug text-rose-50/80">
+                  Промт берётся с ноды по входящей стрелке. Отчёт: check_report.txt
+                </p>
+                {sourcePrompts.length ? (
+                  <ul className="space-y-0.5">
+                    {sourcePrompts.map((s) => (
+                      <li
+                        key={String(s.nodeKey)}
+                        className={cn(
+                          "font-mono text-[9px]",
+                          s.ok ? "text-emerald-100/85" : "text-rose-100/90",
+                        )}
+                      >
+                        {s.ok ? "✓" : "✗"} {s.nodeKey}
+                        {s.chars ? ` · ${s.chars} симв` : ""}
+                        {s.error ? ` · ${s.error}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[9px] text-rose-100/80">
+                    Нет входящих стрелок — подключи источник
+                  </p>
+                )}
+              </>
             )}
           </div>
         ) : null}

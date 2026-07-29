@@ -55,6 +55,69 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
 _MAX_RETRIES = 3
 
 
+async def _after_excel_gpt_done(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str | None,
+    slot_idx: int,
+    ready_status: ProjectStatus,
+) -> None:
+    """После готовности excel_gpt: sync storage по стрелкам + auto-chain / advance."""
+    if node_key:
+        try:
+            from app.services.storage_node import sync_downstream_storage_from_node
+
+            synced = sync_downstream_storage_from_node(project, node_key)
+            for info in synced:
+                logger.info(
+                    "[#{}] enrich_xlsx: storage {} ← {} copied={} skipped={} errors={}",
+                    project.id,
+                    info.get("storageNode"),
+                    node_key,
+                    len(info.get("copied") or []),
+                    len(info.get("skipped") or []),
+                    info.get("errors") or [],
+                )
+            if synced:
+                from sqlalchemy.orm.attributes import flag_modified
+
+                flag_modified(project, "meta")
+                await session.flush()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] enrich_xlsx: sync downstream storage failed node={}",
+                project.id,
+                node_key,
+            )
+
+    await _maybe_auto_chain_excel_gpt(session, project, slot_idx, ready_status)
+
+    # Если auto-chain не переключил status на следующий excel_gpt —
+    # явно дергаем auto_advance (storage / script / … по стрелкам).
+    await session.refresh(project)
+    if project.status is ready_status:
+        try:
+            from app.orchestrator.auto_advance import maybe_auto_advance
+
+            advanced = await maybe_auto_advance(
+                session, project, bot=None, force=True
+            )
+            logger.info(
+                "[#{}] enrich_xlsx: maybe_auto_advance after {} → advanced={} status={}",
+                project.id,
+                ready_status.value,
+                advanced,
+                project.status.value,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] enrich_xlsx: maybe_auto_advance failed after {}",
+                project.id,
+                ready_status.value,
+            )
+
+
 async def _maybe_auto_chain_excel_gpt(
     session: AsyncSession,
     project: Project,
@@ -262,43 +325,72 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     branching_role = False
     check_mode = False
     check_fix = True
+    check_prompt_source = "upstream"
     source_prompt_keys: list[str] = []
     if node_key and resolved is not None:
         role_name = str(resolved.get("role") or "")
         check_mode = bool(resolved.get("checkMode") or op_cfg.get("checkMode"))
         check_fix = bool(resolved.get("checkFix", op_cfg.get("checkFix", True)))
+        check_prompt_source = str(
+            resolved.get("checkPromptSource")
+            or op_cfg.get("checkPromptSource")
+            or "upstream"
+        ).strip().lower()
+        if check_prompt_source not in ("upstream", "agent"):
+            check_prompt_source = "upstream"
         branching_role = role_name in ("review", "gate", "compare") or check_mode
         if check_mode:
             from app.services.gpt_operator import (
+                assemble_check_agent_prompt,
                 assemble_check_master_prompt,
                 collect_source_prompts,
                 project_format_hint_for_check,
                 sanitize_check_reviewer_notes,
             )
 
-            sources = collect_source_prompts(project, node_key)
-            ok_sources = [s for s in sources if s.get("ok")]
-            if not ok_sources:
-                raise RuntimeError("нет исходного промта для проверки")
-            source_prompt_keys = [str(s.get("nodeKey") or "") for s in ok_sources]
-            # Короткий текст — только доп. указания; старый vp.check.v1 JSON выкидываем.
             reviewer_notes = sanitize_check_reviewer_notes(accompanying or "")
-            master = assemble_check_master_prompt(
-                ok_sources,
-                check_fix=check_fix,
-                reviewer_notes=reviewer_notes,
-            )
-            accompanying = ""
-            hint = project_format_hint_for_check(project, node_key)
-            if hint:
-                accompanying = hint
-            logger.info(
-                "[#{}] enrich_xlsx node={!r}: checkMode sources={} chars={}",
-                project.id,
-                node_key,
-                source_prompt_keys,
-                len(master),
-            )
+            if check_prompt_source == "agent":
+                master, agent_step = assemble_check_agent_prompt(
+                    project,
+                    node_key,
+                    check_fix=check_fix,
+                    reviewer_notes=reviewer_notes,
+                )
+                source_prompt_keys = [f"agent:{agent_step}"] if agent_step else ["agent"]
+                accompanying = ""
+                hint = project_format_hint_for_check(project, node_key)
+                if hint:
+                    accompanying = hint
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: checkMode agent={} chars={}",
+                    project.id,
+                    node_key,
+                    agent_step,
+                    len(master),
+                )
+            else:
+                sources = collect_source_prompts(project, node_key)
+                ok_sources = [s for s in sources if s.get("ok")]
+                if not ok_sources:
+                    raise RuntimeError("нет исходного промта для проверки")
+                source_prompt_keys = [str(s.get("nodeKey") or "") for s in ok_sources]
+                # Короткий текст — только доп. указания; старый vp.check.v1 JSON выкидываем.
+                master = assemble_check_master_prompt(
+                    ok_sources,
+                    check_fix=check_fix,
+                    reviewer_notes=reviewer_notes,
+                )
+                accompanying = ""
+                hint = project_format_hint_for_check(project, node_key)
+                if hint:
+                    accompanying = hint
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: checkMode sources={} chars={}",
+                    project.id,
+                    node_key,
+                    source_prompt_keys,
+                    len(master),
+                )
         elif branching_role:
             from app.services.check_analysis import append_response_footer
             from app.services.gpt_operator import (
@@ -457,7 +549,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             api_res.gate_status,
             [p.name for p in api_res.output_paths],
         )
-        await _maybe_auto_chain_excel_gpt(session, project, slot_idx, ready_status)
+        await _after_excel_gpt_done(
+            session,
+            project,
+            node_key=node_key,
+            slot_idx=slot_idx,
+            ready_status=ready_status,
+        )
         return
 
     # ── Legacy browser path (только transport=browser) ────────────────
@@ -771,7 +869,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             exc_info=True,
         )
 
-    # 6. Auto-chain до хвоста excel_gpt на канвасе.
-    await _maybe_auto_chain_excel_gpt(session, project, slot_idx, ready_status)
+    # 6. Storage sync + auto-chain / advance.
+    await _after_excel_gpt_done(
+        session,
+        project,
+        node_key=node_key,
+        slot_idx=slot_idx,
+        ready_status=ready_status,
+    )
 
     _ = last_err  # keep ref to silence "unused" warning in some linters

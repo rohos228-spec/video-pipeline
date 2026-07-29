@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bug, Loader2 } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -17,8 +17,22 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { Bug } from "lucide-react";
 
 const WINDOWS = [1, 5, 30, 60] as const;
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 export function BugReportButton({
   projectId,
@@ -47,9 +61,20 @@ export function BugReportButton({
         studioVersion: CLIENT_STUDIO_VERSION,
       }),
     onSuccess: async (res) => {
+      if (res.content && res.filename) {
+        try {
+          downloadTextFile(res.filename, res.content);
+        } catch {
+          /* файл уже в баги/ */
+        }
+      }
       try {
         await navigator.clipboard.writeText(res.clipboardPrompt);
-        toast.success(`Сохранено: ${res.rel} · промпт в буфере`);
+        const logHint =
+          (res.logChars ?? 0) > 0
+            ? ` · логи ${res.logChars} симв.`
+            : " · логи пусты — проверьте data/*.log";
+        toast.success(`Сохранено: ${res.rel}${logHint} · скачан + буфер`);
       } catch {
         toast.success(`Сохранено: ${res.rel}`);
       }
@@ -68,6 +93,9 @@ export function BugReportButton({
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
+  const previewFiles = preview.data?.files || [];
+  const previewChars = previewFiles.reduce((n, f) => n + (f.chars || 0), 0);
+
   return (
     <>
       <Button
@@ -75,7 +103,7 @@ export function BugReportButton({
         size="sm"
         onClick={() => setOpen(true)}
         className="gap-2 border-rose-400/35 text-xs text-rose-100 hover:border-rose-400/55 hover:bg-rose-500/10"
-        title="Багрепорт: описание + логи → папка баги/"
+        title="Багрепорт: описание + логи → папка баги/ + скачать .md"
       >
         <Bug className="h-3.5 w-3.5" />
         Баг
@@ -87,8 +115,8 @@ export function BugReportButton({
             <DialogTitle>Багрепорт</DialogTitle>
             <DialogDescription>
               Описание + хвост логов сохраняются в{" "}
-              <span className="font-mono text-foreground">баги/</span> с датой и
-              временем. Промпт для Composer копируется в буфер.
+              <span className="font-mono text-foreground">баги/</span>, файл
+              скачивается в Downloads, промпт с логами — в буфер.
             </DialogDescription>
           </DialogHeader>
 
@@ -127,6 +155,9 @@ export function BugReportButton({
           <div className="rounded-lg border border-white/10 bg-black/30 p-2">
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Превью логов
+              {!preview.isLoading && previewFiles.length
+                ? ` · ${previewChars} симв.`
+                : ""}
             </p>
             {preview.isLoading ? (
               <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
@@ -135,7 +166,7 @@ export function BugReportButton({
               </div>
             ) : (
               <div className="max-h-40 space-y-2 overflow-y-auto font-mono text-[10px] leading-relaxed text-muted-foreground">
-                {(preview.data?.files || []).map((f) => (
+                {previewFiles.map((f) => (
                   <div key={f.name}>
                     <p className="text-foreground/80">
                       {f.name} · {f.chars} симв.
@@ -145,8 +176,17 @@ export function BugReportButton({
                     </pre>
                   </div>
                 ))}
-                {!preview.isLoading && !(preview.data?.files || []).length ? (
-                  <p>Логи не найдены в data/</p>
+                {!preview.isLoading && !previewFiles.length ? (
+                  <p className="text-amber-200/90">
+                    Логи не найдены в data/ (studio-live.log, backend.log,
+                    backend-*.log)
+                  </p>
+                ) : null}
+                {!preview.isLoading && previewFiles.length > 0 && previewChars === 0 ? (
+                  <p className="text-amber-200/90">
+                    Файлы есть, но за выбранное окно строк нет — увеличьте окно
+                    (30/60 мин).
+                  </p>
                 ) : null}
               </div>
             )}
@@ -166,9 +206,9 @@ export function BugReportButton({
               {save.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Bug className="h-3.5 w-3.5" />
+                <Download className="h-3.5 w-3.5" />
               )}
-              Сохранить в баги/
+              Сохранить и скачать
             </Button>
           </div>
         </DialogContent>

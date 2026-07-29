@@ -224,3 +224,45 @@ def test_dedup_same_xlsx_from_two_nodes(tmp_path: Path, monkeypatch) -> None:
     res2 = sync_from_edges(p, store)
     assert res2["copied"] == []
     assert resolve_storage(p, store, auto_sync=False)["okFileCount"] == 1
+
+
+def test_sync_downstream_storage_after_gpt(tmp_path: Path, monkeypatch) -> None:
+    """После excel_gpt → storage подтягивается без открытия панели."""
+    from app.services.gpt_operator import save_operator_result
+    from app.services.storage_node import sync_downstream_storage_from_node
+
+    p = _project(tmp_path, monkeypatch)
+    xlsx = p.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"PK" + b"gpt-out" * 30)
+    gpt, store = "n_excel_gpt_1", "n_storage_1"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": gpt, "type": "excel_gpt", "position": {"x": 0, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": gpt, "target": store, "data": {"kind": "after"}},
+            ],
+        },
+        "excel_gpt_nodes": {
+            gpt: {"role": "assist", "emitKinds": ["result", "reply_txt"], "transport": "api"}
+        },
+        "storage_nodes": {store: {"formats": ["any"], "autoSync": True}},
+    }
+    out = p.data_dir / "excel_gpt_uploads" / gpt
+    out.mkdir(parents=True)
+    reply = out / "gpt_reply.txt"
+    reply.write_text("done", encoding="utf-8")
+    save_operator_result(
+        p,
+        gpt,
+        input_paths=[xlsx],
+        output_paths=[xlsx, reply],
+        reply_text="done",
+    )
+    synced = sync_downstream_storage_from_node(p, gpt)
+    assert len(synced) == 1
+    assert synced[0]["storageNode"] == store
+    assert synced[0]["okFileCount"] >= 1
+    assert resolve_storage(p, store, auto_sync=False)["okFileCount"] >= 1

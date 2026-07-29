@@ -88,6 +88,10 @@ export interface OperatorResolve {
   checkMode?: boolean;
   /** true = чинить, false = только отчёт. */
   checkFix?: boolean;
+  /** upstream = промты прошлой ноды; agent = готовый агент check_operator. */
+  checkPromptSource?: "upstream" | "agent";
+  /** Имя агента (plan/images/…) при checkPromptSource=agent. */
+  checkAgentStep?: string | null;
   sourcePrompts?: SourcePromptView[];
   transport: string;
   label: string;

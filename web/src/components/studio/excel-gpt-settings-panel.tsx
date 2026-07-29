@@ -63,6 +63,9 @@ export function ExcelGptSettingsPanel({
   const role = (data?.role || "assist") as OperatorRole;
   const checkMode = data?.checkMode === true;
   const checkFix = data?.checkFix !== false;
+  const checkPromptSource =
+    data?.checkPromptSource === "agent" ? "agent" : "upstream";
+  const checkAgentStep = data?.checkAgentStep || null;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
@@ -98,7 +101,8 @@ export function ExcelGptSettingsPanel({
       <section className="rounded-xl border border-rose-400/25 bg-rose-500/[0.07] p-4">
         <h3 className="text-sm font-semibold text-foreground">Проверка</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          По исходному промту ноды со стрелки. Всегда пишет check_report.txt.
+          Всегда пишет check_report.txt. Критерии — промт источника или готовый
+          агент.
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button
@@ -143,22 +147,63 @@ export function ExcelGptSettingsPanel({
           ) : null}
         </div>
         {checkMode ? (
-          <ul className="mt-3 space-y-1 text-[11px]">
-            {sourcePrompts.length ? (
-              sourcePrompts.map((s) => (
-                <li
-                  key={String(s.nodeKey)}
-                  className={s.ok ? "text-emerald-200/90" : "text-destructive"}
-                >
-                  {s.ok ? "✓" : "✗"} {s.nodeKey}
-                  {s.chars ? ` · ${s.chars} симв` : ""}
-                  {s.error ? ` · ${s.error}` : ""}
-                </li>
-              ))
+          <div className="mt-3 space-y-2">
+            <p className="text-[11px] font-medium text-muted-foreground">
+              Критерии проверки
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={checkPromptSource === "upstream" ? "default" : "outline"}
+                title="Сверять с мастер-промтом ноды по входящей стрелке"
+                onClick={() =>
+                  patch.mutate({ checkPromptSource: "upstream", transport: "api" })
+                }
+              >
+                {checkPromptSource === "upstream" ? "✓ " : ""}
+                Промт источника
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={checkPromptSource === "agent" ? "default" : "outline"}
+                title="Не брать промт прошлой ноды — готовый агент check_operator"
+                onClick={() =>
+                  patch.mutate({ checkPromptSource: "agent", transport: "api" })
+                }
+              >
+                {checkPromptSource === "agent" ? "✓ " : ""}
+                Готовый агент
+              </Button>
+            </div>
+            {checkPromptSource === "agent" ? (
+              <p className="text-[11px] text-muted-foreground">
+                Агент{" "}
+                <span className="font-mono text-foreground">
+                  {checkAgentStep || "—"}
+                </span>{" "}
+                по типу ноды выше. Файлы — со стрелки.
+              </p>
             ) : (
-              <li className="text-destructive">Нет входящих стрелок</li>
+              <ul className="space-y-1 text-[11px]">
+                {sourcePrompts.length ? (
+                  sourcePrompts.map((s) => (
+                    <li
+                      key={String(s.nodeKey)}
+                      className={s.ok ? "text-emerald-200/90" : "text-destructive"}
+                    >
+                      {s.ok ? "✓" : "✗"} {s.nodeKey}
+                      {s.chars ? ` · ${s.chars} симв` : ""}
+                      {s.error ? ` · ${s.error}` : ""}
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-destructive">Нет входящих стрелок</li>
+                )}
+              </ul>
             )}
-          </ul>
+          </div>
         ) : null}
       </section>
 

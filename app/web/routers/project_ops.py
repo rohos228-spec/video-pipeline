@@ -1179,6 +1179,9 @@ async def patch_excel_gpt_config(
         "useSnapshot",
         "takeFromEdges",
         "transport",
+        "checkMode",
+        "checkFix",
+        "checkPromptSource",
     }
     if any(
         k in payload
@@ -1190,6 +1193,9 @@ async def patch_excel_gpt_config(
             "takeFromEdges",
             "transport",
             "uploadedFileNames",
+            "checkMode",
+            "checkFix",
+            "checkPromptSource",
         )
     ):
         resolved = patch_operator_config(p, node_key, {k: payload[k] for k in op_keys if k in payload})
