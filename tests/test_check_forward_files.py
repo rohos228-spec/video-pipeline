@@ -52,7 +52,38 @@ def test_inherit_forwards_input_not_analysis(tmp_path: Path, monkeypatch) -> Non
     )
     got = files_from_source_node(p, "n_check")
     assert img in got
+    # дефолт review: inputs + reply_txt — analysis не уходит
+    assert any(x.name == "gpt_reply.txt" for x in got)
     assert not any(x.name == "analysis.json" for x in got)
+
+
+def test_rewrite_plus_report_emit(tmp_path: Path, monkeypatch) -> None:
+    """rewrite_file + emitKinds reply_txt → исправленный файл И отчёт."""
+    p = _project(tmp_path, monkeypatch)
+    orig = p.data_dir / "project.xlsx"
+    orig.write_bytes(b"PK" + b"0" * 100)
+    fixed_dir = p.data_dir / "old"
+    fixed_dir.mkdir()
+    fixed_file = fixed_dir / "project_fixed.xlsx"
+    fixed_file.write_bytes(b"PK" + b"1" * 100)
+
+    apply_check_reply(
+        p,
+        "n_check",
+        '{"schema":"vp.check.v1","verdict":"pass","summary":"поправил",'
+        '"checks":[],"forward":{"mode":"inherit","paths":[]},'
+        '"fix":{"target":"xlsx","instructions":"ok",'
+        '"rewrite_file":"old/project_fixed.xlsx"}}',
+        input_paths=[orig],
+    )
+    patch_operator_config(
+        p, "n_check", {"emitKinds": ["inputs", "reply_txt"], "role": "review"}
+    )
+    got = files_from_source_node(p, "n_check")
+    names = {x.name for x in got}
+    assert "project_fixed.xlsx" in names
+    assert "gpt_reply.txt" in names
+    assert "analysis.json" not in names
 
 
 def test_explicit_forward_paths(tmp_path: Path, monkeypatch) -> None:
@@ -97,7 +128,8 @@ def test_fix_rewrite_file_forwarded(tmp_path: Path, monkeypatch) -> None:
         input_paths=[orig],
     )
     got = files_from_source_node(p, "n_check")
-    assert got == [fixed_file]  # исправленный файл имеет приоритет над inherit
+    assert fixed_file in got  # исправленный файл имеет приоритет над inherit
+    assert any(x.name == "gpt_reply.txt" for x in got)  # отчёт тоже (дефолт emit)
 
 
 def test_emit_kinds_reply_and_analysis(tmp_path: Path, monkeypatch) -> None:

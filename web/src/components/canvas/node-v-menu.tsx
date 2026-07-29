@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   Ban,
-  Download,
   Eye,
   FileSpreadsheet,
   FileText,
@@ -37,7 +36,6 @@ import {
   type ExcelGptWorkMode,
 } from "@/lib/excel-gpt-config";
 import { Button } from "@/components/ui/button";
-import { NodeVMenuExcelPreview } from "./node-v-menu-excel";
 import { GptOperatorMenuPanel } from "./gpt-operator-menu";
 
 function openPromptSlot(
@@ -150,11 +148,17 @@ export function NodeVMenu({
     const close = (ev: Event) => {
       const t = ev.target as HTMLElement;
       if (t.closest(".node-v-menu") || t.closest(".node-v-trigger")) return;
-      if (t.closest(".react-flow__pane") || t.closest(".react-flow__viewport")) return;
       onClose();
     };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") onClose();
+    };
     document.addEventListener("pointerdown", close, true);
-    return () => document.removeEventListener("pointerdown", close, true);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("pointerdown", close, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
   }, [open, onClose]);
 
   const stepCode = stepCodeForNodeType(nodeType) ?? nodeType;
@@ -181,7 +185,6 @@ export function NodeVMenu({
     (s) => s.kind !== "blocks",
   );
   const excelSlot = menuSlots.find((s) => s.kind === "excel");
-  const showExcelPreview = excelSlot != null && projectId != null;
   const gptTextSlot = gptTextSlotForNode(nodeType);
   const showGptText = nodeSupportsGptText(nodeType) && gptTextSlot;
 
@@ -203,6 +206,25 @@ export function NodeVMenu({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
+        <div className="sticky top-0 z-10 mb-2 flex items-center justify-between gap-2 rounded-lg bg-[hsl(240_8%_9%/0.95)] pb-1">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-sky-300/90">
+            {isGptOp ? "Работа с GPT" : "Меню ноды"}
+          </span>
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-white/15 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onClose();
+            }}
+            title="Закрыть (Esc / клик снаружи)"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
         {isGptOp ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
             <span className="rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
@@ -235,22 +257,7 @@ export function NodeVMenu({
           <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/90">
             Мастер-промты
           </span>
-          <div className="flex items-center gap-1">
-            <span className="text-[9px] text-muted-foreground">{menuSlots.length} шт.</span>
-            <button
-              type="button"
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onClose();
-              }}
-              title="Закрыть меню"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          <span className="text-[9px] text-muted-foreground">{menuSlots.length} шт.</span>
         </div>
 
         {menuSlots.length > 0 ? (
@@ -363,16 +370,6 @@ export function NodeVMenu({
           </div>
         )}
 
-        {showExcelPreview && excelSlot && (
-          <NodeVMenuExcelPreview
-            open={open}
-            projectId={projectId!}
-            nodeKey={nodeKey}
-            nodeType={nodeType}
-            onOpen={() => openPromptSlot(excelSlot, onClose, onSelectPrompt)}
-          />
-        )}
-
         {showGptText && (
           <div className="mb-3 border-t border-white/8 pt-3">
             <span className="mb-1.5 block text-[9px] font-semibold uppercase tracking-widest text-violet-300/90">
@@ -401,8 +398,6 @@ export function NodeVMenu({
         )}
 
         <div className="grid grid-cols-2 gap-1 border-t border-white/8 pt-2">
-          <MenuAction icon={Eye} label="Просмотр промтов" onClick={onViewAllPrompts} />
-          <MenuAction icon={Download} label="Скачать промты" onClick={onDownloadPrompts} />
           <MenuAction icon={Play} label="Запустить шаг" onClick={onRunNode} />
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />

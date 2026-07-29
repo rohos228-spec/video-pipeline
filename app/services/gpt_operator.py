@@ -136,7 +136,7 @@ def normalize_emit_kinds(raw: Any, *, role: OperatorRole) -> list[EmitKind]:
     if out:
         return out
     if role in BRANCHING_ROLES:
-        return ["inputs"]
+        return ["inputs", "reply_txt"]
     return ["result", "reply_txt"]
 
 
@@ -373,15 +373,28 @@ def files_from_source_node(
     if isinstance(results, dict):
         entry = results.get(source_key)
         if isinstance(entry, dict):
-            # vp.check.v1 fix.rewrite_file → агент сам исправил файл: дальше
-            # отдаём исправленную версию (высший приоритет над forward/inherit).
+            # vp.check.v1 fix.rewrite_file → исправленный файл + отчёт из emitKinds.
             rewrite = str(entry.get("fixRewriteFile") or "").strip().replace("\\", "/")
             if rewrite:
                 rp = Path(rewrite)
                 if not rp.is_file():
                     rp = root / rewrite
                 if rp.is_file() and rp.stat().st_size > 0:
-                    return [rp]
+                    found = [rp]
+                    src_cfg = operator_config(project, source_key)
+                    emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
+                    report_kinds = [k for k in emit_kinds if k in ("reply_txt", "analysis")]
+                    if report_kinds:
+                        found.extend(
+                            _paths_for_emit_kinds(
+                                project,
+                                source_key,
+                                entry,
+                                report_kinds,
+                                limit=limit,
+                            )
+                        )
+                    return found[:limit]
             # vp.check.v1 forward.explicit → только указанные пути
             fwd_paths = entry.get("forwardPaths")
             if isinstance(fwd_paths, list) and fwd_paths:

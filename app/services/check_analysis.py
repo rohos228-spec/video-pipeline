@@ -21,19 +21,31 @@ FixTarget = Literal["source", "xlsx", "prompt", "none"]
 # Хвост для промтов проверочных нод — модель обязана ответить только JSON.
 RESPONSE_FOOTER = """
 ---
-ФОРМАТ ОТВЕТА (строго): один JSON-объект, без markdown и без текста вокруг.
-Схема vp.check.v1:
+ФОРМАТ ОТВЕТА (строго): ОДИН JSON-объект vp.check.v1.
+ЗАПРЕЩЕНО: markdown, текст до/после JSON, TSV/CSV таблиц, «исправленный Excel текстом».
+Отчёт = этот JSON (система сама положит его в gpt_reply.txt + analysis.json).
+Данные файла НЕ пиши в отчёт — файл передаётся отдельно (вход или rewrite_file).
+
 {
   "schema": "vp.check.v1",
   "verdict": "pass" | "fail",
-  "summary": "кратко почему",
+  "summary": "краткий отчёт: что проверил / что поправил",
   "checks": [{"id": "имя", "ok": true|false, "note": "…"}],
   "forward": {"mode": "inherit" | "explicit", "paths": ["относительный/путь"]},
-  "fix": {"target": "source" | "xlsx" | "prompt" | "none", "instructions": "…", "rewrite_file": null}
+  "fix": {
+    "target": "source" | "xlsx" | "prompt" | "none",
+    "instructions": "что сделано / что осталось",
+    "rewrite_file": null
+  }
 }
-verdict=pass — пустить по стрелке «Ок»; fail — по «Не ок».
-forward.mode=inherit — дальше те же файлы, что пришли на проверку;
-explicit — только paths (относительно корня проекта).
+
+Правила:
+- Без правок: verdict=pass|fail, forward.mode=inherit, fix.target=none, rewrite_file=null
+  → дальше уйдёт тот же входной файл + отчёт (если включено «Текст .txt» / «Проверка»).
+- С правками в ЭТОЙ ноде: сохрани исправленный файл на диск и укажи
+  fix.rewrite_file="относительный/путь/к/файлу.xlsx" (от корня проекта),
+  forward.mode можно оставить inherit — приоритет у rewrite_file.
+- Никогда не вставляй содержимое xlsx/TSV внутрь JSON или рядом с ним.
 """.strip()
 
 _JSON_FENCE = re.compile(
