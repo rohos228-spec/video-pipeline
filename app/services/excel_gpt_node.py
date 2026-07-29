@@ -701,7 +701,7 @@ async def clear_slot_completion_meta(
 
 
 def remap_node_keys_in_meta(project: Project, mapping: dict[str, str]) -> list[str]:
-    """Перенести excel_gpt_nodes и upload-файлы при смене node_key (paste)."""
+    """Перенести excel_gpt_nodes / storage / snapshots / edges при смене node_key (paste)."""
     import shutil
 
     meta = dict(project.meta or {})
@@ -728,5 +728,42 @@ def remap_node_keys_in_meta(project: Project, mapping: dict[str, str]) -> list[s
     done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
     meta["excel_gpt_completed_keys"] = [mapping.get(k, k) for k in done_keys]
     meta["excel_gpt_nodes"] = configs
+
+    # storage_nodes / gpt_operator_results / xlsx snapshots — иначе связи «отваливаются»
+    for bucket in ("storage_nodes", "gpt_operator_results", "xlsx_snapshots_by_node"):
+        raw = meta.get(bucket)
+        if not isinstance(raw, dict):
+            continue
+        moved = dict(raw)
+        for old_key, new_key in mapping.items():
+            old_s, new_s = str(old_key), str(new_key)
+            if not old_s or not new_s or old_s == new_s:
+                continue
+            if old_s in moved and new_s not in moved:
+                moved[new_s] = moved.pop(old_s)
+        meta[bucket] = moved
+
+    # canvas edges: source/target id
+    cg = meta.get("canvas_graph")
+    if isinstance(cg, dict):
+        edges = cg.get("edges")
+        if isinstance(edges, list):
+            new_edges = []
+            for e in edges:
+                if not isinstance(e, dict):
+                    new_edges.append(e)
+                    continue
+                ee = dict(e)
+                src = str(ee.get("source") or "")
+                tgt = str(ee.get("target") or "")
+                if src in mapping:
+                    ee["source"] = mapping[src]
+                if tgt in mapping:
+                    ee["target"] = mapping[tgt]
+                new_edges.append(ee)
+            cg = dict(cg)
+            cg["edges"] = new_edges
+            meta["canvas_graph"] = cg
+
     project.meta = meta
     return remapped

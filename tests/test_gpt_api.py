@@ -247,6 +247,25 @@ def test_xlsx_to_text(tmp_path: Path) -> None:
     assert "Лист: План" in text
     assert "хук" in text
     assert "xlsx text-export" in text
+    assert "@row=1" in text
+    assert "@row=2" in text
+
+
+def test_xlsx_to_text_sparse_rows_keep_excel_numbers(tmp_path: Path) -> None:
+    """Пустые ряды между R1 и R49 не должны сдвигать @row= в экспорте."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws["A1"] = "title"
+    ws["C49"] = "voice cell"
+    p = tmp_path / "project.xlsx"
+    wb.save(p)
+    text = xlsx_to_text(p)
+    assert "@row=1" in text
+    assert "@row=49" in text
+    assert "voice cell" in text
 
 
 def test_xlsx_to_text_prioritizes_general_plan(tmp_path: Path) -> None:

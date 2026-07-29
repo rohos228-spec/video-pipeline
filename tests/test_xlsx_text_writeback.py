@@ -9,6 +9,7 @@ from openpyxl import Workbook, load_workbook
 from app.services.xlsx_text_writeback import (
     apply_sheet_blocks_to_xlsx,
     extract_sheet_blocks,
+    merge_xlsx_nonempty_overlay,
     writeback_project_xlsx,
 )
 
@@ -63,6 +64,144 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     wb2.close()
 
 
+def test_apply_row_marks_preserve_sparse_plan_rows(tmp_path: Path) -> None:
+    """@row=N пишет в абсолютные строки — R45/R49 не съезжают вниз."""
+    src = tmp_path / "project.xlsx"
+    dest = tmp_path / "out.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "заголовок"
+    ws["A15"] = "таймкод"
+    ws["C15"] = "0:00-0:05"
+    ws["A45"] = "промт картинки"
+    ws["C45"] = "old prompt"
+    ws["A49"] = "закадровый текст"
+    ws["C49"] = "old vo"
+    ws["A2"] = "enrich keep"
+    ws["C2"] = "enrich value"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    blocks = extract_sheet_blocks(
+        "# Лист: план\n"
+        "@row=45\tпромт картинки\t\tnew prompt\n"
+        "@row=49\tзакадровый текст\t\tnew vo\n"
+    )
+    apply_sheet_blocks_to_xlsx(src, blocks, dest)
+    wb2 = load_workbook(dest)
+    assert wb2["план"]["C45"].value == "new prompt"
+    assert wb2["план"]["C49"].value == "new vo"
+    assert wb2["план"]["C15"].value == "0:00-0:05"
+    assert wb2["план"]["C2"].value == "enrich value"
+    assert wb2["план"]["A2"].value == "enrich keep"
+    wb2.close()
+
+
+def test_apply_label_fallback_without_row_marks(tmp_path: Path) -> None:
+    """Legacy TSV без @row=: сопоставляем по подписи A на листе «план»."""
+    src = tmp_path / "project.xlsx"
+    dest = tmp_path / "out.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A2"] = "enrich"
+    ws["C2"] = "keep"
+    ws["A45"] = "промт для картинки 1"
+    ws["C45"] = "old"
+    ws["A49"] = "закадровый текст"
+    ws["C49"] = "old vo"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    # Уплотнённый ответ без пустых рядов — раньше писал в R1/R2.
+    apply_sheet_blocks_to_xlsx(
+        src,
+        {
+            "план": [
+                ["промт для картинки 1", "", "fresh prompt"],
+                ["закадровый текст", "", "fresh vo"],
+            ]
+        },
+        dest,
+    )
+    wb2 = load_workbook(dest)
+    assert wb2["план"]["C45"].value == "fresh prompt"
+    assert wb2["план"]["C49"].value == "fresh vo"
+    assert wb2["план"]["C2"].value == "keep"
+    wb2.close()
+
+
+def test_binary_writeback_overlays_not_wipes(tmp_path: Path) -> None:
+    project = tmp_path / "project.xlsx"
+    dl = tmp_path / "gpt.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A2"] = "enrich"
+    ws["C2"] = "must-keep"
+    ws["A49"] = "закадровый текст"
+    ws["C49"] = "old"
+    wb.create_sheet("Общий план")
+    wb.save(project)
+    wb.close()
+
+    wb2 = Workbook()
+    ws2 = wb2.active
+    assert ws2 is not None
+    ws2.title = "план"
+    ws2["C49"] = "from_download"
+    # enrich отсутствует в ответе GPT — не должен затереться
+    wb2.save(dl)
+    wb2.close()
+
+    out = writeback_project_xlsx(
+        project_xlsx=project,
+        reply_text="",
+        downloaded_paths=[dl],
+    )
+    assert out == project
+    got = load_workbook(project)
+    assert got["план"]["C49"].value == "from_download"
+    assert got["план"]["C2"].value == "must-keep"
+    got.close()
+
+
+def test_merge_xlsx_nonempty_overlay(tmp_path: Path) -> None:
+    proj = tmp_path / "p.xlsx"
+    gpt = tmp_path / "g.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "label"
+    ws["B1"] = "keep"
+    wb.create_sheet("Общий план")
+    wb.save(proj)
+    wb.close()
+
+    wb2 = Workbook()
+    ws2 = wb2.active
+    assert ws2 is not None
+    ws2.title = "план"
+    ws2["B1"] = "updated"
+    ws2["C1"] = "new"
+    wb2.save(gpt)
+    wb2.close()
+
+    merge_xlsx_nonempty_overlay(proj, gpt, proj)
+    got = load_workbook(proj)
+    assert got["план"]["A1"].value == "label"
+    assert got["план"]["B1"].value == "updated"
+    assert got["план"]["C1"].value == "new"
+    got.close()
+
+
 def test_apply_does_not_add_foreign_sheets_on_v8_workbook(tmp_path: Path) -> None:
     src = tmp_path / "project.xlsx"
     dest = tmp_path / "out.xlsx"
@@ -97,6 +236,7 @@ def test_writeback_prefers_downloaded_xlsx(tmp_path: Path) -> None:
     ws["A1"] = "from_download"
     wb.save(dl)
     wb.close()
+    # Нет v8-листов → полный copy как раньше
     Workbook().save(project)
 
     out = writeback_project_xlsx(

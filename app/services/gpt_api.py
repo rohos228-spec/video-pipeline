@@ -152,7 +152,9 @@ def xlsx_to_text(
     out: list[str] = [
         "[xlsx text-export: это полный текстовый снимок книги для API; "
         "бинарный .xlsx в песочнице модели недоступен — это норма. "
-        "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки.]",
+        "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
+        "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
+        "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]",
     ]
     used = len(out[0])
     truncated_sheets: list[str] = []
@@ -171,11 +173,13 @@ def xlsx_to_text(
             else max_rows
         )
         sheet_truncated = False
-        for row in ws.iter_rows(values_only=True):
+        # Абсолютный номер строки Excel (@row=N): иначе writeback уплотняет
+        # пропуски пустых рядов и сдвигает R15/R45/R48/R49.
+        for excel_row, row in enumerate(ws.iter_rows(values_only=True), start=1):
             cells = ["" if c is None else str(c) for c in row[:max_cols]]
             if not any(c.strip() for c in cells):
                 continue
-            line = "\t".join(cells)
+            line = "\t".join([f"@row={excel_row}", *cells])
             # +1 за \n при join
             if used + sheet_used + len(line) + 1 > budget:
                 sheet_lines.append("… (обрезано: лимит контекста)")

@@ -6,19 +6,24 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from app.models import Project
 from app.services import xlsx_step_runners as xsr
 from app.services.xlsx_v8_import import ROW_VOICEOVER_V8, SHEET_PLAN_V8
 
 
-def _save_split_xlsx(path: Path, *, blocks: int) -> None:
+def _save_split_xlsx(path: Path, *, blocks: int, enrich: str | None = None) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_PLAN_V8
+    if enrich is not None:
+        ws["A2"] = "enrich"
+        ws["C2"] = enrich
     for i in range(blocks):
         ws.cell(row=ROW_VOICEOVER_V8, column=3 + i, value=f"block {i + 1}")
+    # validate_xlsx ждёт v8-набор листов (хотя бы «Общий план» + «план»)
+    wb.create_sheet("Общий план")
     wb.save(path)
 
 
@@ -31,7 +36,7 @@ async def test_split_runs_gpt_even_when_project_already_has_blocks(
     proj_xlsx = proj_dir / "project.xlsx"
     voiceover = proj_dir / "voiceover.txt"
     voiceover.write_text("x" * 300, encoding="utf-8")
-    _save_split_xlsx(proj_xlsx, blocks=4)
+    _save_split_xlsx(proj_xlsx, blocks=4, enrich="must-keep")
 
     tmp_dir = proj_dir / "tmp_gpt"
     tmp_dir.mkdir()
@@ -41,6 +46,7 @@ async def test_split_runs_gpt_even_when_project_already_has_blocks(
     monkeypatch.setattr(type(project), "data_dir", property(lambda self: proj_dir))
 
     async def fake_gpt(_chat, _files, download_path, **_k) -> str:
+        # GPT отдаёт только R49 — без enrich (раньше full replace затирал C2)
         _save_split_xlsx(Path(download_path), blocks=4)
         return "ok"
 
@@ -63,6 +69,9 @@ async def test_split_runs_gpt_even_when_project_already_has_blocks(
     gpt_mock.assert_called_once()
     assert result.project_xlsx == proj_xlsx
     assert xsr._count_v8_voiceover_blocks(proj_xlsx) == 4
+    got = load_workbook(proj_xlsx)
+    assert got[SHEET_PLAN_V8]["C2"].value == "must-keep"
+    got.close()
 
 
 @pytest.mark.asyncio

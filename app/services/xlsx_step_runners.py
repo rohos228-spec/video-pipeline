@@ -168,11 +168,18 @@ def _try_reuse_split_download(
         blocks = _count_v8_voiceover_blocks(candidate)
         if blocks < min_blocks:
             continue
+        from app.storage.plan_sheet_v8 import merge_gpt_voiceover_row_into_project
+
         backup = backup_to_old(proj_xlsx)
-        replace_with(proj_xlsx, candidate)
+        merged = merge_gpt_voiceover_row_into_project(proj_xlsx, candidate)
+        if merged < min_blocks:
+            # Нет листа «план» в шаблоне / не v8 — полный replace как раньше.
+            replace_with(proj_xlsx, candidate)
+            merged = _count_v8_voiceover_blocks(proj_xlsx)
         logger.info(
-            "split_xlsx: reuse downloaded {} ({} voiceover blocks) — skip GPT",
+            "split_xlsx: reuse downloaded {} (R49 merged={}, blocks={}) — skip GPT",
             candidate.name,
+            merged,
             blocks,
         )
         return XlsxRoundtripResult(
@@ -390,8 +397,23 @@ async def run_split_xlsx(
 
     backup: Path | None = None
     if downloaded_blocks >= 2:
+        from app.storage.plan_sheet_v8 import merge_gpt_voiceover_row_into_project
+
         backup = backup_to_old(proj_xlsx)
-        replace_with(proj_xlsx, downloaded)
+        merged = merge_gpt_voiceover_row_into_project(proj_xlsx, downloaded)
+        if merged < 2:
+            # Шаблон без «план» / merge не сработал — полный replace.
+            logger.warning(
+                "split_xlsx: R49 merge={} (<2) — fallback full replace",
+                merged,
+            )
+            replace_with(proj_xlsx, downloaded)
+        else:
+            logger.info(
+                "split_xlsx: R49 merged {} cells into project.xlsx (enrich сохранён)",
+                merged,
+            )
+        downloaded_blocks = _count_v8_voiceover_blocks(proj_xlsx)
     elif on_disk_blocks >= 2:
         logger.warning(
             "split_xlsx: GPT xlsx has {} blocks (<2) — keeping project.xlsx "

@@ -486,6 +486,54 @@ def write_plan_image_prompt_shot2(
         return False
 
 
+def merge_gpt_voiceover_row_into_project(
+    project_xlsx: Path,
+    gpt_xlsx: Path,
+) -> int:
+    """Скопировать R49 (озвучка) из ответа GPT в ``project.xlsx``.
+
+    Разбивка раньше подменяла весь файл — GPT часто отдавал «урезанную» книгу
+    и затирал enrich / чужие строки. Пишем только непустые ячейки R49.
+    """
+    project_xlsx = Path(project_xlsx)
+    gpt_xlsx = Path(gpt_xlsx)
+    if not project_xlsx.is_file() or not gpt_xlsx.is_file():
+        return 0
+    written = 0
+    try:
+        with _file_lock(project_xlsx):
+            wb_gpt = load_workbook(filename=str(gpt_xlsx), data_only=True)
+            wb_proj = load_workbook(filename=str(project_xlsx))
+            try:
+                ws_g = _resolve_plan_sheet(wb_gpt)
+                ws_p = _resolve_plan_sheet(wb_proj)
+                if ws_g is None or ws_p is None:
+                    return 0
+                max_col = max(ws_g.max_column or 0, ws_p.max_column or 0)
+                if max_col < 3:
+                    return 0
+                for col in range(3, max_col + 1):
+                    text = (_cell_text(ws_g, ROW_VOICEOVER_V8, col) or "").strip()
+                    if not text:
+                        continue
+                    ws_p.cell(row=ROW_VOICEOVER_V8, column=col, value=text)
+                    written += 1
+                if written:
+                    wb_proj.save(project_xlsx)
+            finally:
+                wb_gpt.close()
+                wb_proj.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "merge_gpt_voiceover_row_into_project {} <- {}: {}",
+            project_xlsx,
+            gpt_xlsx,
+            e,
+        )
+        return 0
+    return written
+
+
 def merge_gpt_image_prompt_rows_into_project(
     project_xlsx: Path,
     gpt_xlsx: Path,

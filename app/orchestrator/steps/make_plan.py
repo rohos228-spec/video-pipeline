@@ -37,6 +37,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         logger.warning("[#{}] plan xlsx snapshot bind failed: {}", project.id, e)
     await xsr.sync_after_plan(session, project, proj_xlsx)
 
+    try:
+        from app.services.node_xlsx_snapshot import find_node_key_for_type
+        from app.services.storage_node import sync_downstream_storage_from_node
+
+        plan_key = await find_node_key_for_type(session, project, "plan")
+        if plan_key:
+            synced = sync_downstream_storage_from_node(project, plan_key)
+            for info in synced:
+                logger.info(
+                    "[#{}] make_plan: storage {} ← {} copied={} skipped={}",
+                    project.id,
+                    info.get("storageNode"),
+                    plan_key,
+                    info.get("copied"),
+                    info.get("skipped"),
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] make_plan: sync downstream storage failed: {}", project.id, e)
+
     plan_text = (project.general_plan or "").strip()
     project.status = ProjectStatus.plan_ready
     await session.flush()
