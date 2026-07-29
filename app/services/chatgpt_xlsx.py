@@ -410,13 +410,52 @@ async def sync_project_xlsx(
     return sync_info
 
 
+def _is_polluted_voiceover_payload(text: str) -> str | None:
+    """Причина отказа, если текст нельзя писать в voiceover.txt."""
+    from app.services.check_analysis import looks_like_check_payload
+    from app.services.voiceover_sanitize import looks_like_xlsx_tsv_writeback
+
+    if looks_like_check_payload(text):
+        return (
+            "Ответ похож на отчёт проверки, а не на закадровый текст — "
+            "voiceover.txt не перезаписан. Перезапустите шаг «Закадровый текст» "
+            "с промтом сценария (не проверки)."
+        )
+    if looks_like_xlsx_tsv_writeback(text):
+        return (
+            "Ответ похож на TSV/Excel writeback (`# Лист:` / `@row=`), "
+            "а не на закадровый текст — voiceover.txt не перезаписан."
+        )
+    return None
+
+
+def _voiceover_text_usable(text: str) -> bool:
+    body = (text or "").strip()
+    if not body:
+        return False
+    return _is_polluted_voiceover_payload(body) is None
+
+
 def _sync_voiceover_from_script_text(project: Project) -> Path | None:
-    """Возвращает путь к voiceover.txt, синхронизируя из script_text / бэкапа при необходимости."""
+    """Возвращает путь к voiceover.txt, синхронизируя из script_text / бэкапа при необходимости.
+
+    Загрязнённые файлы (check-JSON, TSV `# Лист:`) не считаются актуальным закадром.
+    """
     voiceover_path = project.data_dir / "voiceover.txt"
     if voiceover_path.is_file() and voiceover_path.stat().st_size > 0:
-        return voiceover_path
+        try:
+            cur = voiceover_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            cur = ""
+        if _voiceover_text_usable(cur):
+            return voiceover_path
+        logger.warning(
+            "[#{}] ensure_current_voiceover: voiceover.txt загрязнён "
+            "(check/TSV) — ищем чистый источник",
+            project.id,
+        )
     text = (project.script_text or "").strip()
-    if text:
+    if text and _voiceover_text_usable(text):
         voiceover_path.parent.mkdir(parents=True, exist_ok=True)
         voiceover_path.write_text(text, encoding="utf-8")
         logger.info(
@@ -429,25 +468,32 @@ def _sync_voiceover_from_script_text(project: Project) -> Path | None:
     if old_dir.is_dir():
         backups = sorted(old_dir.glob("*_voiceover.txt"), reverse=True)
         for backup in backups:
-            if backup.is_file() and backup.stat().st_size > 0:
-                voiceover_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup, voiceover_path)
-                logger.info(
-                    "[#{}] ensure_current_voiceover: voiceover.txt из бэкапа {}",
-                    project.id,
-                    backup.name,
-                )
-                return voiceover_path
+            if not (backup.is_file() and backup.stat().st_size > 0):
+                continue
+            try:
+                bt = backup.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if not _voiceover_text_usable(bt):
+                continue
+            voiceover_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup, voiceover_path)
+            logger.info(
+                "[#{}] ensure_current_voiceover: voiceover.txt из бэкапа {}",
+                project.id,
+                backup.name,
+            )
+            return voiceover_path
     return None
 
 
 def ensure_current_voiceover(project: Project) -> Path | None:
-    """Актуальный voiceover для split/music и шагов после script."""
+    """Актуальный voiceover для script/split/music и GPT-проверки."""
     return _sync_voiceover_from_script_text(project)
 
 
 def ensure_script_input_voiceover(project: Project) -> Path | None:
-    """Исходный voiceover для шага script — самый ранний бэкап, иначе текущий файл."""
+    """Исходный voiceover для recovery/reset — самый ранний бэкап, иначе текущий файл."""
     from app.services.voiceover_recovery import oldest_voiceover_backup
 
     oldest = oldest_voiceover_backup(project)
@@ -465,22 +511,18 @@ def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> st
     """Сохраняет voiceover.txt с бэкапом предыдущей версии.
 
     Очищает мета-отчёт GPT / строку «ИТОГО».
-    Отказывает, если ``text`` похож на отчёт проверки (JSON/TXT) —
-    иначе check-ответ затирает закадр и ломает разбивку.
+    Отказывает, если ``text`` похож на отчёт проверки (JSON/TXT) или
+    TSV writeback Excel — иначе чужой ответ затирает закадр.
 
     Returns:
         Фактически записанный закадровый текст.
     """
-    from app.services.check_analysis import looks_like_check_payload
     from app.services.voiceover_sanitize import sanitize_voiceover_text
 
     body = sanitize_voiceover_text(text)
-    if looks_like_check_payload(body):
-        raise ValueError(
-            "Ответ похож на отчёт проверки, а не на закадровый текст — "
-            "voiceover.txt не перезаписан. Перезапустите шаг «Закадровый текст» "
-            "с промтом сценария (не проверки)."
-        )
+    polluted = _is_polluted_voiceover_payload(body)
+    if polluted is not None:
+        raise ValueError(polluted)
     if len(body) < 10:
         raise ValueError(
             "После очистки ответ слишком короткий для voiceover.txt — "

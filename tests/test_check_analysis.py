@@ -124,6 +124,32 @@ def test_save_voiceover_rejects_check_payload(tmp_path: Path, monkeypatch) -> No
     assert dest.read_text(encoding="utf-8") == "старый нормальный закадр"
 
 
+def test_save_voiceover_rejects_tsv_writeback(tmp_path: Path, monkeypatch) -> None:
+    from app.models import Project
+    from app.services.chatgpt_xlsx import save_voiceover_text
+
+    data = tmp_path / "data"
+    monkeypatch.setattr("app.models.settings.data_dir", data)
+    root = data / "videos" / "p1"
+    root.mkdir(parents=True)
+    p = Project(id=1, topic="t", slug="p1")
+    monkeypatch.setattr(type(p), "data_dir", property(lambda self: root))
+    dest = root / "voiceover.txt"
+    dest.write_text("старый нормальный закадр", encoding="utf-8")
+    bad = (
+        "# Лист: Общий план\n"
+        "@row=1\tТема\tдлинный текст\n"
+        "# Лист: План\n"
+        "@row=49\tзакадровый текст\tраз\tдва\n"
+    )
+    try:
+        save_voiceover_text(p, dest, bad)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "tsv" in str(e).lower() or "лист" in str(e).lower()
+    assert dest.read_text(encoding="utf-8") == "старый нормальный закадр"
+
+
 def test_write_analysis_json(tmp_path: Path) -> None:
     a = parse_check_analysis(
         '{"schema":"vp.check.v1","verdict":"pass","summary":"ok","checks":[]}'

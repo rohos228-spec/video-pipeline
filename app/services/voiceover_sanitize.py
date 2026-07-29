@@ -24,6 +24,15 @@ _PROCESS_MARKERS: tuple[str, ...] = (
     "сначала извлеку",
     "сейчас составлю",
     "сейчас напишу",
+    "сначала пойму",
+    "сначала создам",
+    "рабочую мысль",
+    "саморедактур",
+    "перед выдачей",
+    "готовым закадровым",
+    "напишу цельный",
+    "проверю ритм",
+    "уберу метафор",
 )
 
 _MONTH = (
@@ -44,11 +53,47 @@ _NARRATION_START_RE = re.compile(
     rf")"
 )
 
+_SHEET_HEADER_RE = re.compile(
+    r"^\s*#\s*Лист\s*:\s*.+",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def looks_like_xlsx_tsv_writeback(text: str) -> bool:
+    """True, если текст — TSV writeback Excel (`# Лист:` / `@row=`), не закадр."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    headers = _SHEET_HEADER_RE.findall(raw)
+    if len(headers) >= 2:
+        return True
+    if headers and ("@row=" in raw.lower() or "\t" in raw):
+        return True
+    if raw.lower().count("@row=") >= 2:
+        return True
+    return False
+
 
 def _has_process_preamble(text: str) -> bool:
-    head = (text or "")[:500].lower()
+    head = (text or "")[:800].lower()
     hits = sum(1 for m in _PROCESS_MARKERS if m in head)
     return hits >= 2
+
+
+def _cut_process_preamble(body: str) -> str:
+    match = _NARRATION_START_RE.search(body)
+    if match is not None and match.start() >= 40:
+        cut = body[match.start() :].lstrip()
+        if len(cut) >= 80:
+            return cut.strip()
+    # Запасной путь: первый абзац после пустой строки, если голова — мета.
+    parts = re.split(r"\n\s*\n", body, maxsplit=4)
+    if len(parts) >= 2 and _has_process_preamble(parts[0]):
+        for i in range(1, len(parts)):
+            rest = "\n\n".join(parts[i:]).strip()
+            if len(rest) >= 80 and not _has_process_preamble(rest[:200]):
+                return rest
+    return body
 
 
 def sanitize_voiceover_text(text: str) -> str:
@@ -59,11 +104,4 @@ def sanitize_voiceover_text(text: str) -> str:
     body = _ITOGO_RE.sub("", body).strip()
     if not _has_process_preamble(body):
         return body
-
-    match = _NARRATION_START_RE.search(body)
-    if match is not None and match.start() >= 40:
-        cut = body[match.start() :].lstrip()
-        # Мета обычно короче рассказа; не режем, если «хвост» крошечный.
-        if len(cut) >= 80:
-            return cut.strip()
-    return body
+    return _cut_process_preamble(body)

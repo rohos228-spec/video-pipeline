@@ -281,9 +281,13 @@ async def run_script_xlsx(
     *,
     project_id: int | None = None,
 ) -> tuple[XlsxRoundtripResult, str]:
-    """Шаг «Закадровый текст»: prompt + project.xlsx [+ voiceover.txt] → voiceover.txt."""
+    """Шаг «Закадровый текст»: prompt + project.xlsx [+ voiceover.txt] → voiceover.txt.
+
+    К текущему шагу крепим актуальный voiceover.txt (не самый старый бэкап) —
+    иначе GPT/проверка получают чужой черновик и «реген» уходит в прошлое.
+    """
     proj_xlsx = _ensure_project_xlsx(project)
-    source_voiceover = cx.ensure_script_input_voiceover(project)
+    source_voiceover = cx.ensure_current_voiceover(project)
 
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)

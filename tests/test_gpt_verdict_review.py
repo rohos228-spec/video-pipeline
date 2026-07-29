@@ -29,6 +29,7 @@ def test_parse_check_script_json_regen() -> None:
 }"""
     r = parse_gpt_verdict(raw)
     assert r.approved is False
+    assert r.structured_check is True
     assert "мета" in r.fix_text
 
 
@@ -36,3 +37,4 @@ def test_parse_check_script_json_approved() -> None:
     raw = '{"decision": "approved", "confidence": 0.9, "criteria": {}}'
     r = parse_gpt_verdict(raw)
     assert r.approved is True
+    assert r.structured_check is True

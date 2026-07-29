@@ -343,6 +343,30 @@ def writeback_project_xlsx(
     Возвращает путь к project.xlsx при успехе, иначе None.
     """
     downloaded_paths = list(downloaded_paths or [])
+    reply = reply_text or ""
+
+    # Отчёт проверки (JSON/TXT) нельзя заливать в «Общий план» через prose/TSV.
+    try:
+        from app.services.check_analysis import looks_like_check_payload
+    except Exception:  # noqa: BLE001
+        looks_like_check_payload = None  # type: ignore[assignment]
+
+    if callable(looks_like_check_payload) and looks_like_check_payload(reply):
+        has_xlsx = any(
+            p.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+            and p.exists()
+            and p.stat().st_size > 64
+            for p in downloaded_paths
+        )
+        logger.warning(
+            "xlsx_writeback: skip text — reply looks like check report "
+            "(binary_xlsx={})",
+            has_xlsx,
+        )
+        if not has_xlsx:
+            return None
+        reply = ""
+
     for p in downloaded_paths:
         if p.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and p.exists() and p.stat().st_size > 64:
             project_xlsx.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +393,7 @@ def writeback_project_xlsx(
             )
             return project_xlsx
 
-    blocks = extract_sheet_blocks(reply_text or "")
+    blocks = extract_sheet_blocks(reply)
     if blocks:
         tmp = project_xlsx.with_suffix(".writeback.tmp.xlsx")
         try:
@@ -389,7 +413,7 @@ def writeback_project_xlsx(
             # fall through to prose fallback
 
     # Fallback: GPT отдал прозу без `# Лист:` / TSV
-    prose = _strip_reply_noise(reply_text or "")
+    prose = _strip_reply_noise(reply)
     if len(prose) >= _MIN_PROSE_PLAN_CHARS and project_xlsx.exists():
         tmp = project_xlsx.with_suffix(".writeback.prose.tmp.xlsx")
         try:

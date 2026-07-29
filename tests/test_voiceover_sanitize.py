@@ -44,3 +44,18 @@ def test_sanitize_strips_only_itogo_footer() -> None:
     out = sanitize_voiceover_text(text)
     assert out.endswith("коллапс.")
     assert "ИТОГО" not in out
+
+
+def test_looks_like_xlsx_tsv_writeback() -> None:
+    from app.services.voiceover_sanitize import looks_like_xlsx_tsv_writeback
+
+    tsv = (
+        "# Лист: Общий план\n"
+        "@row=1\tТема\tТекст\n"
+        "# Лист: План\n"
+        "@row=49\tзакадровый текст\tраз\tдва\n"
+    )
+    assert looks_like_xlsx_tsv_writeback(tsv)
+    assert not looks_like_xlsx_tsv_writeback(
+        "Третьего января 1889 года Ницше пережил психический коллапс."
+    )

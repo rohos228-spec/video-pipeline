@@ -284,6 +284,33 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     assert "Рим был велик" in text
 
 
+def test_writeback_skips_check_report_json(tmp_path: Path) -> None:
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Общий план"
+    ws["A2"] = "Тема"
+    ws["B2"] = "оригинал плана"
+    wb.save(src)
+    wb.close()
+
+    report = (
+        '{"decision":"regen","confidence":0.99,'
+        '"criteria":{"flow_continuity":{"verdict":"pass"}},'
+        '"fix_hints":["убери мета"],"issues":["x"]}'
+    )
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text=report,
+        downloaded_paths=[],
+    )
+    assert out is None
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["Общий план"]["B2"].value == "оригинал плана"
+    wb2.close()
+
+
 def test_apply_creates_missing_sheet(tmp_path: Path) -> None:
     src = tmp_path / "a.xlsx"
     dest = tmp_path / "b.xlsx"

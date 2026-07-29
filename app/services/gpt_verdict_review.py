@@ -143,6 +143,8 @@ class VerdictResult:
     approved: bool
     fix_text: str = ""
     raw: str = ""
+    # JSON/TXT отчёт проверки: нельзя материализовать raw как voiceover/xlsx.
+    structured_check: bool = False
 
 
 @dataclass
@@ -166,9 +168,13 @@ def parse_gpt_verdict(raw: str) -> VerdictResult:
         return VerdictResult(approved=False, fix_text=m.group(1).strip(), raw=raw)
 
     # check_script/default и подобные: JSON decision/criteria (не «Вердикт: …»).
-    try:
-        from app.services.check_analysis import extract_json_object
+    from app.services.check_analysis import (
+        extract_json_object,
+        looks_like_check_payload,
+        parse_check_report_txt,
+    )
 
+    try:
         obj = extract_json_object(raw)
     except Exception:  # noqa: BLE001
         obj = None
@@ -177,7 +183,7 @@ def parse_gpt_verdict(raw: str) -> VerdictResult:
     ):
         dec = str(obj.get("decision") or "").strip().lower()
         if dec in {"approved", "approve", "ok", "pass", "одобрено"}:
-            return VerdictResult(approved=True, raw=raw)
+            return VerdictResult(approved=True, raw=raw, structured_check=True)
         hints = obj.get("fix_hints") or obj.get("issues") or []
         if isinstance(hints, list):
             fix = "; ".join(str(x).strip() for x in hints if str(x).strip())
@@ -187,6 +193,31 @@ def parse_gpt_verdict(raw: str) -> VerdictResult:
             approved=False,
             fix_text=fix or f"decision={dec or 'regen'}",
             raw=raw,
+            structured_check=True,
+        )
+
+    try:
+        analysis = parse_check_report_txt(raw)
+    except Exception:  # noqa: BLE001
+        analysis = None
+    if analysis is not None:
+        approved = str(getattr(analysis, "verdict", "")).lower() == "pass"
+        fix = ""
+        if not approved:
+            fix = (getattr(analysis, "summary", None) or "")[:2000]
+        return VerdictResult(
+            approved=approved,
+            fix_text=fix,
+            raw=raw,
+            structured_check=True,
+        )
+
+    if looks_like_check_payload(raw):
+        return VerdictResult(
+            approved=False,
+            fix_text="ответ похож на отчёт проверки без явного вердикта",
+            raw=raw,
+            structured_check=True,
         )
 
     return VerdictResult(approved=False, fix_text=raw.strip()[:2000], raw=raw)
@@ -327,10 +358,10 @@ async def attachments_for_step(
     if step_code in ("script", "music", "split"):
         from app.services import chatgpt_xlsx as cx
 
-        if step_code == "script":
-            voice = cx.ensure_script_input_voiceover(project)
-        else:
-            voice = cx.ensure_current_voiceover(project)
+        # Проверка и split/music — только актуальный voiceover.txt.
+        # Старый бэкап через ensure_script_input давал «чужие» данные в отчёт
+        # и ложный regen → откат на предыдущую ноду.
+        voice = cx.ensure_current_voiceover(project)
         if voice is not None:
             paths.append(voice)
     # Входы для images: рефы персонажей/предметов (не scene_image — это выход img).
@@ -437,12 +468,17 @@ async def _download_and_apply_verdict_fix(
 
     if fix_target == "voiceover":
         from app.services.check_analysis import looks_like_check_payload
+        from app.services.voiceover_sanitize import looks_like_xlsx_tsv_writeback
 
         tmp_path = tmp_dir / f"verdict_{step_code}_{ts}.txt"
         target = data_dir / "voiceover.txt"
-        # JSON/TXT отчёта проверки нельзя материализовать как voiceover.txt.
+        # JSON/TXT отчёта / TSV нельзя материализовать как voiceover.txt.
         safe_fallback = ""
-        if last_raw and not looks_like_check_payload(last_raw):
+        if (
+            last_raw
+            and not looks_like_check_payload(last_raw)
+            and not looks_like_xlsx_tsv_writeback(last_raw)
+        ):
             safe_fallback = last_raw
         if not await _download_to(tmp_path, safe_fallback):
             fix_msg = build_fix_user_message(fix_text, target=fix_target)
@@ -456,16 +492,20 @@ async def _download_and_apply_verdict_fix(
             else:
                 fix_raw = await chatgpt_bot.ask_fresh(fix_msg, timeout=900)
             safe_fix = ""
-            if fix_raw and not looks_like_check_payload(fix_raw):
+            if (
+                fix_raw
+                and not looks_like_check_payload(fix_raw)
+                and not looks_like_xlsx_tsv_writeback(fix_raw)
+            ):
                 safe_fix = fix_raw
             if not await _download_to(tmp_path, safe_fix):
                 raise RuntimeError("GPT не вернул исправленный voiceover.txt")
         text = tmp_path.read_text(encoding="utf-8").strip()
         if len(text) < 10:
             raise RuntimeError("скачанный voiceover.txt пустой")
-        if looks_like_check_payload(text):
+        if looks_like_check_payload(text) or looks_like_xlsx_tsv_writeback(text):
             raise RuntimeError(
-                "GPT вернул отчёт проверки вместо закадрового текста — "
+                "GPT вернул отчёт/TSV вместо закадрового текста — "
                 "voiceover.txt не перезаписан"
             )
         text = cx.save_voiceover_text(project, target, text)
@@ -479,9 +519,15 @@ async def _download_and_apply_verdict_fix(
         )
         return target
 
+    from app.services.check_analysis import looks_like_check_payload
+
     tmp_path = tmp_dir / f"verdict_{step_code}_{ts}.xlsx"
     target = data_dir / "project.xlsx"
-    if not await _download_to(tmp_path, last_raw):
+    # Отчёт проверки нельзя прогонять через writeback → «Общий план».
+    safe_xlsx_fallback = ""
+    if last_raw and not looks_like_check_payload(last_raw):
+        safe_xlsx_fallback = last_raw
+    if not await _download_to(tmp_path, safe_xlsx_fallback):
         fix_msg = build_fix_user_message(fix_text, target=fix_target)
         if files:
             fix_raw = await chatgpt_bot.ask_with_files(
@@ -492,7 +538,10 @@ async def _download_and_apply_verdict_fix(
             )
         else:
             fix_raw = await chatgpt_bot.ask_fresh(fix_msg, timeout=900)
-        if not await _download_to(tmp_path, fix_raw or ""):
+        safe_fix = ""
+        if fix_raw and not looks_like_check_payload(fix_raw):
+            safe_fix = fix_raw
+        if not await _download_to(tmp_path, safe_fix):
             raise RuntimeError("GPT не вернул исправленный xlsx")
     validation_err = validate_xlsx(tmp_path)
     if validation_err is not None:
@@ -576,6 +625,18 @@ async def run_verdict_review(
             )
 
         fix_text = verdict.fix_text
+        # JSON/TXT check-отчёт — это вердикт, не исправленный файл.
+        # Попытка materialize raw → voiceover/xlsx давала мусор и ложный regen.
+        if verdict.structured_check:
+            history.append("structured_check: skip file materialize")
+            return VerdictRunResult(
+                approved=False,
+                rounds=round_idx,
+                last_raw=last_raw or "",
+                fix_text=fix_text,
+                history=history,
+            )
+
         if step_code in FILE_FIX_STEPS and fix_target in ("excel", "voiceover"):
             try:
                 fix_path = await _download_and_apply_verdict_fix(
