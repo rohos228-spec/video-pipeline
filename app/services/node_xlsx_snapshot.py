@@ -139,29 +139,45 @@ def resolve_upload_xlsx_path(project: Project, node_key: str | None) -> Path | N
     return None
 
 
+def release_upload_display_source(project: Project, node_key: str) -> bool:
+    """После GPT-снимка: превью снова от snapshot/project, не от старого upload."""
+    key = (node_key or "").strip()
+    if not key:
+        return False
+    try:
+        from app.services.excel_gpt_node import node_config
+    except Exception:  # noqa: BLE001
+        return False
+    cfg = node_config(project, key)
+    if str(cfg.get("inputSource") or "") != "upload":
+        return False
+    meta = dict(project.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(key) or {})
+    cur["inputSource"] = "project_xlsx"
+    configs[key] = cur
+    meta["excel_gpt_nodes"] = configs
+    project.meta = meta
+    flag_modified(project, "meta")
+    return True
+
+
 def resolve_display_xlsx_path(
     project: Project, node_key: str | None
 ) -> tuple[Path, str | None]:
     """Файл для preview/download UI по node_key.
 
     Приоритет:
-      1) загруженный .xlsx ноды (inputSource=upload) — свежая подмена пользователем;
+      1) если inputSource=upload и есть .xlsx в uploads — ВСЕГДА он
+         (пользователь явно подменил вход; снимок не перекрывает);
       2) привязанный снимок результата ноды;
       3) live project.xlsx.
     """
     live = project.data_dir / "project.xlsx"
     uploaded = resolve_upload_xlsx_path(project, node_key)
-    bound = resolve_bound_xlsx_path(project, node_key)
-
-    if uploaded is not None and bound is not None:
-        try:
-            if uploaded.stat().st_mtime >= bound.stat().st_mtime:
-                return uploaded, f"upload:{uploaded.name}"
-        except OSError:
-            return uploaded, f"upload:{uploaded.name}"
-        return bound, bound.name
     if uploaded is not None:
         return uploaded, f"upload:{uploaded.name}"
+    bound = resolve_bound_xlsx_path(project, node_key)
     if bound is not None:
         return bound, bound.name
     return live, None

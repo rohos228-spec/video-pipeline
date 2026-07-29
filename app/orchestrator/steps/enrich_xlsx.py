@@ -517,6 +517,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     node_key=node_key,
                     node_type="excel_gpt",
                 )
+                from app.services.node_xlsx_snapshot import release_upload_display_source
+
+                if release_upload_display_source(project, node_key):
+                    flag_modified(project, "meta")
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[#{}] enrich_xlsx API slot={} xlsx snapshot bind failed: {}",
@@ -831,6 +835,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             node_key=node_key,
             node_type="excel_gpt",
         )
+        from app.services.node_xlsx_snapshot import release_upload_display_source
+        from sqlalchemy.orm.attributes import flag_modified
+
+        if node_key and release_upload_display_source(project, node_key):
+            flag_modified(project, "meta")
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "[#{}] enrich_xlsx slot={} xlsx snapshot bind failed: {}",

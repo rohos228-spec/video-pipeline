@@ -92,7 +92,7 @@ export function GptOperatorMenuPanel({
       } else {
         toast.success(
           res.replacedXlsx
-            ? `Excel подменён: ${res.fileName}`
+            ? `Excel подменён: ${res.fileName} (вход только этот файл)`
             : `Файл: ${res.fileName}`,
         );
       }
@@ -101,13 +101,16 @@ export function GptOperatorMenuPanel({
       void qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
       void qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
       void qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
+      void qc.refetchQueries({ queryKey: ["xlsx-preview", projectId] });
+      void qc.refetchQueries({ queryKey: ["xlsx-sheets", projectId] });
       window.dispatchEvent(
         new CustomEvent("canvas-patch-node-data", {
           detail: {
             nodeKey,
             patch: {
-              inputSource: "upload",
+              inputSource: res.inputSource || "upload",
               uploadedFileName: res.fileName,
+              takeFromEdges: res.replacedXlsx ? false : undefined,
             },
           },
         }),

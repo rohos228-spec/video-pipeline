@@ -955,11 +955,26 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         edge_summaries.append(summary)
 
     manual = _manual_upload_files(project, node_key, cfg)
-    # Если берём со стрелок — legacy project.xlsx из inputSource не дублируем.
-    if take_from_edges and incoming:
+    # Явная загрузка Excel/файла — она и есть вход. Со стрелок не мешаем
+    # старый project.xlsx (иначе «загрузил — а в списке старый»).
+    src = str(cfg.get("inputSource") or "project_xlsx")
+    has_upload_xlsx = any(
+        str(f.get("name") or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
+        and f.get("origin") == "upload"
+        and f.get("ok")
+        for f in manual
+    )
+    if src in ("upload", "image") and (has_upload_xlsx or (manual and src == "image")):
+        take_from_edges = False
+        edge_files = []
+        for s in edge_summaries:
+            s["takesFiles"] = False
+            s["fileCount"] = 0
+    elif take_from_edges and incoming:
+        # Если берём со стрелок — legacy project.xlsx из inputSource не дублируем.
         manual = [f for f in manual if f.get("origin") == "upload"]
 
-    all_files = [*edge_files, *manual]
+    all_files = [*manual, *edge_files] if (src in ("upload", "image") and manual) else [*edge_files, *manual]
     # de-dupe by path
     seen: set[str] = set()
     unique_files: list[dict[str, Any]] = []

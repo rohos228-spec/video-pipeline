@@ -1372,13 +1372,26 @@ async def upload_excel_gpt_file(
     cur["uploadedFileName"] = safe_name
     prev_names = [str(x) for x in (cur.get("uploadedFileNames") or []) if x]
     if is_xlsx:
-        # Подмена: один актуальный Excel (+ прочие не-xlsx вложения).
+        # Подмена Excel: один актуальный файл; со стрелок больше не берём —
+        # иначе в списке/GPT остаётся старый project.xlsx.
         names = [
             n
             for n in prev_names
             if Path(n).suffix.lower() not in {".xlsx", ".xlsm", ".xls"}
         ]
         names.append(safe_name)
+        cur["takeFromEdges"] = False
+        # Удалить старые xlsx в папке uploads этой ноды (кроме нового).
+        for old in list(dest_dir.iterdir()):
+            if (
+                old.is_file()
+                and old.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+                and old.name != safe_name
+            ):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
     else:
         names = list(prev_names)
         if safe_name not in names:
@@ -1402,6 +1415,8 @@ async def upload_excel_gpt_file(
         "uploadedFileNames": names,
         "usedAsCheckAgent": False,
         "replacedXlsx": is_xlsx,
+        "takeFromEdges": False if is_xlsx else cur.get("takeFromEdges", True),
+        "inputSource": cur.get("inputSource"),
     }
 
 

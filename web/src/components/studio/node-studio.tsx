@@ -389,7 +389,7 @@ export function NodeStudio({
           : "";
       toast.success(
         nodeType === "excel_gpt" && name
-          ? `Excel подменён: ${name}`
+          ? `Excel подменён: ${name} (вход только этот файл)`
           : "Excel загружен",
       );
       qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
@@ -398,12 +398,18 @@ export function NodeStudio({
       qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
       qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId] });
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      void qc.refetchQueries({ queryKey: ["xlsx-preview", projectId] });
+      void qc.refetchQueries({ queryKey: ["xlsx-sheets", projectId] });
       if (nodeType === "excel_gpt" && nodeKey && name) {
         window.dispatchEvent(
           new CustomEvent("canvas-patch-node-data", {
             detail: {
               nodeKey,
-              patch: { inputSource: "upload", uploadedFileName: name },
+              patch: {
+                inputSource: "upload",
+                uploadedFileName: name,
+                takeFromEdges: false,
+              },
             },
           }),
         );
@@ -691,6 +697,15 @@ export function NodeStudio({
                   )}
                   {!xlsxSheetsMeta.isLoading && !xlsxPreview.isLoading && (
                     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                      {xlsxPreview.data?.xlsx_snapshot || xlsxSheetsMeta.data?.xlsx_snapshot ? (
+                        <p className="shrink-0 text-[10px] text-muted-foreground">
+                          Показан файл:{" "}
+                          <span className="font-mono text-foreground/90">
+                            {xlsxPreview.data?.xlsx_snapshot ||
+                              xlsxSheetsMeta.data?.xlsx_snapshot}
+                          </span>
+                        </p>
+                      ) : null}
                       {xlsxParams.hint && xlsxFocusKeyRows ? (
                         <p className="shrink-0 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/90">
                           {xlsxParams.hint}
