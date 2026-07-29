@@ -85,7 +85,8 @@ def test_sync_renames_with_node_and_time(tmp_path: Path, monkeypatch) -> None:
     assert all(p0.is_file() for p0 in paths)
 
 
-def test_format_filter_skips_video(tmp_path: Path, monkeypatch) -> None:
+def test_formats_config_does_not_block_sync(tmp_path: Path, monkeypatch) -> None:
+    """formats — фильтр витрины UI; sync со стрелок принимает все типы."""
     p = _project(tmp_path, monkeypatch)
     vids = p.data_dir / "videos"
     vids.mkdir(parents=True)
@@ -105,8 +106,8 @@ def test_format_filter_skips_video(tmp_path: Path, monkeypatch) -> None:
     }
     patch_config(p, store, {"formats": ["image"]})
     res = sync_from_edges(p, store)
-    assert res["okFileCount"] == 0
-    assert res["copied"] == []
+    assert res["okFileCount"] >= 1
+    assert any("clip.mp4" in n for n in res["copied"])
 
 
 def test_resolve_auto_syncs_all_incoming(tmp_path: Path, monkeypatch) -> None:
@@ -309,7 +310,7 @@ def test_script_source_exports_voiceover_and_syncs_storage(
 def test_checkmode_reports_sync_despite_image_only_storage(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """check → storage(formats=image): всё равно копируем txt/json/xlsx отчёты."""
+    """check → storage: отчёты копируются (formats больше не режет sync)."""
     p = _project(tmp_path, monkeypatch)
     check = "n_excel_gpt_check"
     store = "n_storage_1"

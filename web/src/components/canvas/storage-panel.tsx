@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Download, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -9,13 +9,27 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-const FORMAT_OPTIONS: { value: string; title: string }[] = [
+/** Фильтр витрины (что показать), не отбор при sync со стрелок. */
+const VIEW_OPTIONS: { value: string; title: string }[] = [
   { value: "any", title: "Любые" },
   { value: "image", title: "Картинки" },
   { value: "video", title: "Видео" },
   { value: "xlsx", title: "Excel" },
   { value: "text", title: "Текст" },
 ];
+
+type StoredFile = {
+  name: string;
+  path: string;
+  size: number;
+  kind: string;
+  fromNode?: string | null;
+  fromLabel?: string | null;
+  originalName?: string | null;
+  savedAt?: string | null;
+  download_url?: string | null;
+  preview_url?: string | null;
+};
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} Б`;
@@ -36,6 +50,15 @@ function formatWhen(iso?: string | null): string {
   });
 }
 
+function fileMatchesView(kind: string, view: Set<string>): boolean {
+  if (view.has("any") || view.size === 0) return true;
+  const k = (kind || "other").toLowerCase();
+  if (view.has(k)) return true;
+  // json/md/pdf и пр. показываем во вкладке «Текст»
+  if (view.has("text") && (k === "text" || k === "other")) return true;
+  return false;
+}
+
 /** Панель ноды «Хранилище»: витрина всех файлов + авто-забор со стрелок. */
 export function StoragePanel({
   projectId,
@@ -47,24 +70,14 @@ export function StoragePanel({
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(true);
+  /** Локальный фильтр списка — без PATCH/API (иначе гонка с poll и canvas-save). */
+  const [viewKinds, setViewKinds] = useState<Set<string>>(() => new Set(["any"]));
 
   const resolve = useQuery({
     queryKey: ["storage-resolve", projectId, nodeKey],
     queryFn: () => api.resolveStorage(projectId, nodeKey),
     staleTime: 1500,
     refetchInterval: 4000,
-  });
-
-  const patch = useMutation({
-    mutationFn: (body: { formats?: string[]; label?: string }) =>
-      api.patchStorage(projectId, nodeKey, body),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["storage-resolve", projectId, nodeKey] });
-      window.setTimeout(() => {
-        window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
-      }, 40);
-    },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const sync = useMutation({
@@ -96,20 +109,20 @@ export function StoragePanel({
   });
 
   const data = resolve.data;
-  const formats = new Set(data?.formats?.length ? data.formats : ["any"]);
-  const files = data?.files ?? [];
+  const allFiles = (data?.files ?? []) as StoredFile[];
+  const files = useMemo(
+    () => allFiles.filter((f) => fileMatchesView(f.kind, viewKinds)),
+    [allFiles, viewKinds],
+  );
 
-  const toggleFormat = (value: string) => {
-    let next: string[];
-    if (value === "any") {
-      next = ["any"];
-    } else {
-      const cur = new Set([...formats].filter((f) => f !== "any"));
-      if (cur.has(value)) cur.delete(value);
-      else cur.add(value);
-      next = cur.size ? [...cur] : ["any"];
-    }
-    patch.mutate({ formats: next });
+  const toggleView = (value: string) => {
+    setViewKinds((prev) => {
+      if (value === "any") return new Set(["any"]);
+      const next = new Set([...prev].filter((f) => f !== "any"));
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next.size ? next : new Set(["any"]);
+    });
   };
 
   return (
@@ -131,7 +144,9 @@ export function StoragePanel({
             Хранилище
           </span>
           <span className="mt-0.5 block text-[9px] text-muted-foreground">
-            {files.length} файл{files.length === 1 ? "" : files.length >= 2 && files.length <= 4 ? "а" : "ов"}
+            {allFiles.length} файл
+            {allFiles.length === 1 ? "" : allFiles.length >= 2 && allFiles.length <= 4 ? "а" : "ов"}
+            {files.length !== allFiles.length ? ` · показано ${files.length}` : ""}
             {data?.incomingSources?.length
               ? ` · входов ${data.incomingSources.length}`
               : " · нет стрелок"}
@@ -145,20 +160,20 @@ export function StoragePanel({
       {open ? (
         <div className="mt-2.5 space-y-2">
           <div className="flex flex-wrap gap-1">
-            {FORMAT_OPTIONS.map((opt) => (
+            {VIEW_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
-                disabled={patch.isPending}
-                onClick={() => toggleFormat(opt.value)}
+                title="Фильтр списка: что показать (не влияет на забор со стрелок)"
+                onClick={() => toggleView(opt.value)}
                 className={cn(
                   "rounded-md border px-1.5 py-0.5 text-[9px] font-medium",
-                  formats.has(opt.value)
+                  viewKinds.has(opt.value)
                     ? "border-sky-400/70 bg-sky-500/25 text-sky-50 ring-1 ring-sky-400/40"
                     : "border-white/10 text-muted-foreground hover:border-white/20",
                 )}
               >
-                {formats.has(opt.value) ? "✓ " : ""}
+                {viewKinds.has(opt.value) ? "✓ " : ""}
                 {opt.title}
               </button>
             ))}
@@ -196,7 +211,7 @@ export function StoragePanel({
               )}
               Загрузить
             </Button>
-            {files.length > 0 ? (
+            {allFiles.length > 0 ? (
               <Button type="button" size="sm" variant="secondary" className="h-7 text-[10px]" asChild>
                 <a
                   href={api.storageDownloadZipUrl(projectId, nodeKey)}
@@ -225,7 +240,7 @@ export function StoragePanel({
               size="sm"
               variant="ghost"
               className="h-7 text-[10px] text-destructive"
-              disabled={clear.isPending || files.length === 0}
+              disabled={clear.isPending || allFiles.length === 0}
               onClick={() => clear.mutate()}
             >
               <Trash2 className="h-3 w-3" />
@@ -253,6 +268,7 @@ export function StoragePanel({
               </span>
               <span className="font-mono text-[9px] text-muted-foreground">
                 {files.length}
+                {files.length !== allFiles.length ? ` / ${allFiles.length}` : ""}
               </span>
             </div>
             <div className="max-h-56 overflow-y-auto px-1.5 py-1.5">
@@ -261,10 +277,14 @@ export function StoragePanel({
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   Читаю папку…
                 </div>
-              ) : files.length === 0 ? (
+              ) : allFiles.length === 0 ? (
                 <p className="px-2 py-3 text-[10px] text-muted-foreground">
                   Пусто — подведите стрелку от ноды с файлами (подтянется само).
                   Имя: номерНоды_время_файл
+                </p>
+              ) : files.length === 0 ? (
+                <p className="px-2 py-3 text-[10px] text-muted-foreground">
+                  Нет файлов выбранного типа — нажмите «Любые» или другой фильтр.
                 </p>
               ) : (
                 <ul className="space-y-1">
