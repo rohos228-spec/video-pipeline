@@ -84,7 +84,6 @@ import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
-import { AutoAdvanceToggle } from "@/components/inspector/project-settings";
 import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
   DropdownMenu,
@@ -1196,7 +1195,6 @@ export function FlowCanvas({
       />
       <RunOverlay
         projectId={projectId}
-        project={project.data ?? null}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
         runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
@@ -1354,14 +1352,12 @@ function EmptyState() {
 
 function RunOverlay({
   projectId,
-  project,
   workflow,
   run,
   runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
-  project: import("@/lib/types").ProjectDetail | null;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
   runStepNodeKey: string | null;
@@ -1538,11 +1534,6 @@ function RunOverlay({
   return (
     <>
     <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,640px)]">
-      {project ? (
-        <div className="pointer-events-auto min-w-[200px] max-w-[260px]">
-          <AutoAdvanceToggle project={project} />
-        </div>
-      ) : null}
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">

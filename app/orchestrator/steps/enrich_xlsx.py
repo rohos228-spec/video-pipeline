@@ -63,7 +63,7 @@ async def _after_excel_gpt_done(
     slot_idx: int,
     ready_status: ProjectStatus,
 ) -> None:
-    """После готовности excel_gpt: sync storage по стрелкам + auto-chain / advance."""
+    """После готовности excel_gpt: sync storage; цепочка — только при auto_mode."""
     if node_key:
         try:
             from app.services.storage_node import sync_downstream_storage_from_node
@@ -91,31 +91,19 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
+    # Без автопродвижения — остаёмся на enrich_N_ready, следующую ноду
+    # пользователь запускает вручную ▶. Воркер сам вызовет maybe_auto_advance
+    # только если auto_mode=True.
+    if not getattr(project, "auto_mode", False):
+        logger.info(
+            "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без auto-chain/advance",
+            project.id,
+            slot_idx,
+            ready_status.value,
+        )
+        return
+
     await _maybe_auto_chain_excel_gpt(session, project, slot_idx, ready_status)
-
-    # Если auto-chain не переключил status на следующий excel_gpt —
-    # явно дергаем auto_advance (storage / script / … по стрелкам).
-    await session.refresh(project)
-    if project.status is ready_status:
-        try:
-            from app.orchestrator.auto_advance import maybe_auto_advance
-
-            advanced = await maybe_auto_advance(
-                session, project, bot=None, force=True
-            )
-            logger.info(
-                "[#{}] enrich_xlsx: maybe_auto_advance after {} → advanced={} status={}",
-                project.id,
-                ready_status.value,
-                advanced,
-                project.status.value,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "[#{}] enrich_xlsx: maybe_auto_advance failed after {}",
-                project.id,
-                ready_status.value,
-            )
 
 
 async def _maybe_auto_chain_excel_gpt(
