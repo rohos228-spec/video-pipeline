@@ -164,6 +164,31 @@ def parse_gpt_verdict(raw: str) -> VerdictResult:
     m = _REJECT.search(raw)
     if m:
         return VerdictResult(approved=False, fix_text=m.group(1).strip(), raw=raw)
+
+    # check_script/default и подобные: JSON decision/criteria (не «Вердикт: …»).
+    try:
+        from app.services.check_analysis import extract_json_object
+
+        obj = extract_json_object(raw)
+    except Exception:  # noqa: BLE001
+        obj = None
+    if isinstance(obj, dict) and (
+        "decision" in obj or ("criteria" in obj and "confidence" in obj)
+    ):
+        dec = str(obj.get("decision") or "").strip().lower()
+        if dec in {"approved", "approve", "ok", "pass", "одобрено"}:
+            return VerdictResult(approved=True, raw=raw)
+        hints = obj.get("fix_hints") or obj.get("issues") or []
+        if isinstance(hints, list):
+            fix = "; ".join(str(x).strip() for x in hints if str(x).strip())
+        else:
+            fix = str(hints or "").strip()
+        return VerdictResult(
+            approved=False,
+            fix_text=fix or f"decision={dec or 'regen'}",
+            raw=raw,
+        )
+
     return VerdictResult(approved=False, fix_text=raw.strip()[:2000], raw=raw)
 
 
@@ -411,9 +436,15 @@ async def _download_and_apply_verdict_fix(
         return path.is_file() and path.stat().st_size >= 10
 
     if fix_target == "voiceover":
+        from app.services.check_analysis import looks_like_check_payload
+
         tmp_path = tmp_dir / f"verdict_{step_code}_{ts}.txt"
         target = data_dir / "voiceover.txt"
-        if not await _download_to(tmp_path, last_raw):
+        # JSON/TXT отчёта проверки нельзя материализовать как voiceover.txt.
+        safe_fallback = ""
+        if last_raw and not looks_like_check_payload(last_raw):
+            safe_fallback = last_raw
+        if not await _download_to(tmp_path, safe_fallback):
             fix_msg = build_fix_user_message(fix_text, target=fix_target)
             if files:
                 fix_raw = await chatgpt_bot.ask_with_files(
@@ -424,12 +455,20 @@ async def _download_and_apply_verdict_fix(
                 )
             else:
                 fix_raw = await chatgpt_bot.ask_fresh(fix_msg, timeout=900)
-            if not await _download_to(tmp_path, fix_raw or ""):
+            safe_fix = ""
+            if fix_raw and not looks_like_check_payload(fix_raw):
+                safe_fix = fix_raw
+            if not await _download_to(tmp_path, safe_fix):
                 raise RuntimeError("GPT не вернул исправленный voiceover.txt")
         text = tmp_path.read_text(encoding="utf-8").strip()
         if len(text) < 10:
             raise RuntimeError("скачанный voiceover.txt пустой")
-        cx.save_voiceover_text(project, target, text)
+        if looks_like_check_payload(text):
+            raise RuntimeError(
+                "GPT вернул отчёт проверки вместо закадрового текста — "
+                "voiceover.txt не перезаписан"
+            )
+        text = cx.save_voiceover_text(project, target, text)
         project.script_text = text
         await session.flush()
         logger.info(

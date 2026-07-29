@@ -461,20 +461,30 @@ def ensure_source_voiceover(project: Project) -> Path | None:
     return ensure_current_voiceover(project)
 
 
-def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:
+def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> str:
     """Сохраняет voiceover.txt с бэкапом предыдущей версии.
 
+    Очищает мета-отчёт GPT / строку «ИТОГО».
     Отказывает, если ``text`` похож на отчёт проверки (JSON/TXT) —
     иначе check-ответ затирает закадр и ломает разбивку.
+
+    Returns:
+        Фактически записанный закадровый текст.
     """
     from app.services.check_analysis import looks_like_check_payload
+    from app.services.voiceover_sanitize import sanitize_voiceover_text
 
-    body = (text or "").strip()
+    body = sanitize_voiceover_text(text)
     if looks_like_check_payload(body):
         raise ValueError(
             "Ответ похож на отчёт проверки, а не на закадровый текст — "
             "voiceover.txt не перезаписан. Перезапустите шаг «Закадровый текст» "
             "с промтом сценария (не проверки)."
+        )
+    if len(body) < 10:
+        raise ValueError(
+            "После очистки ответ слишком короткий для voiceover.txt — "
+            "перезапустите шаг «Закадровый текст»."
         )
     voiceover_path.parent.mkdir(parents=True, exist_ok=True)
     if voiceover_path.exists():
@@ -483,3 +493,4 @@ def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> No
         backup = old_dir / f"{_timestamp()}_voiceover.txt"
         shutil.copy2(voiceover_path, backup)
     voiceover_path.write_text(body, encoding="utf-8")
+    return body

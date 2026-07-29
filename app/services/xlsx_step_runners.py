@@ -322,7 +322,9 @@ async def run_script_xlsx(
         )
 
     voiceover_text = downloaded.read_text(encoding="utf-8").strip()
-    cx.save_voiceover_text(project, proj_xlsx.parent / "voiceover.txt", voiceover_text)
+    voiceover_text = cx.save_voiceover_text(
+        project, proj_xlsx.parent / "voiceover.txt", voiceover_text
+    )
 
     return (
         XlsxRoundtripResult(
