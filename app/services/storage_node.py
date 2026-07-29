@@ -129,6 +129,30 @@ def _allowed(path: Path, allow: frozenset[str] | object) -> bool:
     return path.suffix.lower() in allow  # type: ignore[operator]
 
 
+def _allow_for_source(
+    project: Project,
+    source_key: str,
+    base_allow: frozenset[str] | object,
+) -> frozenset[str] | object:
+    """Для checkMode-источника всегда принимаем text/xlsx-отчёты.
+
+    Иначе хранилище с formats=image молча отбрасывает check_report.txt /
+    analysis.json / project_fixed.xlsx (copied=0 skipped=N).
+    """
+    if base_allow is _ACCEPT_ALL:
+        return base_allow
+    try:
+        from app.services.gpt_operator import is_check_operator, operator_config
+
+        if not is_check_operator(operator_config(project, source_key)):
+            return base_allow
+    except Exception:  # noqa: BLE001
+        return base_allow
+    if isinstance(base_allow, frozenset):
+        return frozenset(set(base_allow) | _TEXT | _XLSX)
+    return frozenset(_TEXT | _XLSX)
+
+
 def _file_kind(path: Path) -> str:
     s = path.suffix.lower()
     if s in _IMAGE:
@@ -406,6 +430,7 @@ def sync_from_edges(
 
     for src in _incoming_sources(project, node_key):
         label = _source_label(project, src)
+        allow_src = _allow_for_source(project, src, allow)
         try:
             paths = files_from_source_node(
                 project, src, use_snapshot=False, limit=limit_per_source
@@ -417,7 +442,7 @@ def sync_from_edges(
             skipped.append(f"{src}: нет файлов")
             continue
         for src_path in paths:
-            if not _allowed(src_path, allow):
+            if not _allowed(src_path, allow_src):
                 skipped.append(f"{src_path.name}: формат не подходит")
                 continue
             try:

@@ -13,6 +13,7 @@ from app.services.storage_node import (
     resolve_storage,
     save_upload,
     storage_dir,
+    sync_downstream_storage_from_node,
     sync_from_edges,
 )
 
@@ -303,6 +304,62 @@ def test_script_source_exports_voiceover_and_syncs_storage(
     assert synced[0]["okFileCount"] >= 1
     names = [f["originalName"] for f in list_stored_files(p, store)]
     assert "voiceover.txt" in names
+
+
+def test_checkmode_reports_sync_despite_image_only_storage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """check → storage(formats=image): всё равно копируем txt/json/xlsx отчёты."""
+    p = _project(tmp_path, monkeypatch)
+    check = "n_excel_gpt_check"
+    store = "n_storage_1"
+    up = p.data_dir / "excel_gpt_uploads" / check
+    up.mkdir(parents=True)
+    (up / "check_report.txt").write_text("отчёт проверки " * 20, encoding="utf-8")
+    (up / "analysis.json").write_text('{"verdict":"fail"}', encoding="utf-8")
+    (up / "project_fixed.xlsx").write_bytes(b"PK" + b"x" * 80)
+    (p.data_dir / "voiceover.txt").write_text("закадр " * 30, encoding="utf-8")
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": check, "type": "excel_gpt", "position": {"x": 0, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": check,
+                    "target": store,
+                    "data": {"kind": "after"},
+                },
+            ],
+        },
+        "storage_nodes": {store: {"formats": ["image"], "autoSync": True}},
+        "excel_gpt_nodes": {
+            check: {
+                "checkMode": True,
+                "emitKinds": ["inputs", "reply_txt", "analysis"],
+                "role": "assist",
+            }
+        },
+        "gpt_operator_results": {
+            check: {
+                "inputPaths": [str(p.data_dir / "voiceover.txt")],
+                "outputPaths": [
+                    str(up / "analysis.json"),
+                    str(up / "check_report.txt"),
+                ],
+                "fixRewriteFile": f"excel_gpt_uploads/{check}/project_fixed.xlsx",
+                "gateStatus": "fail",
+            }
+        },
+    }
+    res = sync_from_edges(p, store)
+    assert res["copied"], res.get("skipped")
+    names = {f["originalName"] for f in list_stored_files(p, store)}
+    assert "check_report.txt" in names
+    assert "analysis.json" in names
+    assert "project_fixed.xlsx" in names
 
 
 def test_resolve_storage_without_touching_project_meta(tmp_path: Path, monkeypatch) -> None:

@@ -70,15 +70,23 @@ async def _after_excel_gpt_done(
 
             synced = sync_downstream_storage_from_node(project, node_key)
             for info in synced:
+                skipped = info.get("skipped") or []
                 logger.info(
                     "[#{}] enrich_xlsx: storage {} ← {} copied={} skipped={} errors={}",
                     project.id,
                     info.get("storageNode"),
                     node_key,
                     len(info.get("copied") or []),
-                    len(info.get("skipped") or []),
+                    len(skipped),
                     info.get("errors") or [],
                 )
+                if not (info.get("copied") or []) and skipped:
+                    logger.warning(
+                        "[#{}] enrich_xlsx: storage {} пусто после sync — причины: {}",
+                        project.id,
+                        info.get("storageNode"),
+                        "; ".join(str(x) for x in skipped[:12]),
+                    )
             if synced:
                 from sqlalchemy.orm.attributes import flag_modified
 
