@@ -1289,9 +1289,11 @@ async def upload_excel_gpt_file(
 
     from app.services.excel_gpt_node import (
         is_allowed_upload_filename,
+        node_config,
         upload_dir,
         upload_file_path,
     )
+    from app.services.gpt_operator import save_check_agent_file
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
@@ -1302,17 +1304,45 @@ async def upload_excel_gpt_file(
             status_code=400,
             detail="нужен файл .xlsx/.txt/.md/.json/.csv/.pdf/.png/.jpg/.webp/.mp4/.webm…",
         )
-    dest_dir = upload_dir(p, node_key)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_file_path(p, node_key, safe_name)
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="empty file")
+
+    ext = Path(safe_name).suffix.lower()
+    cfg_before = node_config(p, node_key)
+    # Режим «Проверка»: .txt/.md = критерии агента, не входные данные.
+    # Иначе «загрузил промт» лежит во вложениях, а отчёт всё ещё по старому builtin.
+    if bool(cfg_before.get("checkMode")) and ext in {".txt", ".md"}:
+        try:
+            result = save_check_agent_file(
+                p, node_key, original_name=safe_name, content=content
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        flag_modified(p, "meta")
+        await session.commit()
+        return {
+            "ok": True,
+            "fileName": result["fileName"],
+            "path": result["path"],
+            "chars": result.get("chars"),
+            "usedAsCheckAgent": True,
+            "isImage": False,
+            "preview_url": None,
+            "uploadedFileNames": list(
+                (result.get("resolve") or {}).get("config", {}).get("uploadedFileNames")
+                or []
+            ),
+            "resolve": result.get("resolve"),
+        }
+
+    dest_dir = upload_dir(p, node_key)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_file_path(p, node_key, safe_name)
     dest.write_bytes(content)
     meta = dict(p.meta or {})
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
-    ext = Path(safe_name).suffix.lower()
     is_image = ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
     preview = f"/api/files?path={dest}" if is_image or ext in {".mp4", ".webm", ".txt", ".md"} else None
     cur["inputSource"] = "image" if is_image else "upload"
@@ -1337,6 +1367,7 @@ async def upload_excel_gpt_file(
         "isImage": is_image,
         "preview_url": preview,
         "uploadedFileNames": names,
+        "usedAsCheckAgent": False,
     }
 
 

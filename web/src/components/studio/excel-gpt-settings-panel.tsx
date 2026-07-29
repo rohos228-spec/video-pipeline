@@ -126,8 +126,8 @@ export function ExcelGptSettingsPanel({
       <section className="rounded-xl border border-rose-400/25 bg-rose-500/[0.07] p-4">
         <h3 className="text-sm font-semibold text-foreground">Проверка</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Всегда пишет check_report.txt. Критерии — промт источника или готовый
-          агент.
+          Отчёт check_report.txt пишется после ▶. Критерии — не из обычного
+          «Загрузить файл» (xlsx), а из режима ниже.
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button
@@ -174,14 +174,14 @@ export function ExcelGptSettingsPanel({
         {checkMode ? (
           <div className="mt-3 space-y-2">
             <p className="text-[11px] font-medium text-muted-foreground">
-              Критерии проверки
+              Откуда критерии отчёта
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
                 variant={checkPromptSource === "upstream" ? "default" : "outline"}
-                title="Сверять с мастер-промтом ноды по входящей стрелке"
+                title="Активный мастер-промт ноды выше по стрелке (Studio → Промты GPT)"
                 onClick={() =>
                   patch.mutate({ checkPromptSource: "upstream", transport: "api" })
                 }
@@ -193,7 +193,7 @@ export function ExcelGptSettingsPanel({
                 type="button"
                 size="sm"
                 variant={checkPromptSource === "agent" ? "default" : "outline"}
-                title="Не брать промт прошлой ноды — готовый агент check_operator"
+                title="Свой .txt/.md или builtin check_operator"
                 onClick={() =>
                   patch.mutate({ checkPromptSource: "agent", transport: "api" })
                 }
@@ -211,15 +211,17 @@ export function ExcelGptSettingsPanel({
                       <span className="font-mono text-foreground">
                         {checkAgentFileName}
                       </span>
-                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}
+                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}. После
+                      загрузки перезапустите ноду ▶ — иначе виден старый отчёт.
                     </>
                   ) : (
                     <>
                       Builtin{" "}
                       <span className="font-mono text-foreground">
                         {checkAgentStep || "—"}
-                      </span>{" "}
-                      из prompts/check_operator — или загрузите свой .txt
+                      </span>
+                      . Загрузите .txt/.md — или через «Загрузить файл» при
+                      включённой Проверке.
                     </>
                   )}
                 </p>
@@ -265,6 +267,10 @@ export function ExcelGptSettingsPanel({
               </div>
             ) : (
               <ul className="space-y-1 text-[11px]">
+                <li className="text-muted-foreground">
+                  Мастер-промт ноды со стрелки (Studio → сделать активным). Не
+                  «Загрузить файл».
+                </li>
                 {sourcePrompts.length ? (
                   sourcePrompts.map((s) => (
                     <li
@@ -272,6 +278,7 @@ export function ExcelGptSettingsPanel({
                       className={s.ok ? "text-emerald-200/90" : "text-destructive"}
                     >
                       {s.ok ? "✓" : "✗"} {s.nodeKey}
+                      {s.variant ? ` · ${s.variant}` : ""}
                       {s.chars ? ` · ${s.chars} симв` : ""}
                       {s.error ? ` · ${s.error}` : ""}
                     </li>

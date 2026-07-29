@@ -82,7 +82,16 @@ export function GptOperatorMenuPanel({
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadExcelGptFile(projectId, nodeKey, file),
     onSuccess: (res) => {
-      toast.success(`Файл: ${res.fileName}`);
+      if (res.usedAsCheckAgent) {
+        toast.success(
+          `Агент проверки: ${res.fileName}${res.chars ? ` · ${res.chars} симв.` : ""} — перезапустите ноду`,
+        );
+        if (res.resolve) {
+          qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
+        }
+      } else {
+        toast.success(`Файл: ${res.fileName}`);
+      }
       void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
@@ -174,7 +183,7 @@ export function GptOperatorMenuPanel({
           <button
             type="button"
             disabled={patch.isPending}
-            title="Проверить файл по исходному промту ноды со стрелки; всегда пишет check_report.txt"
+            title="Проверить файл. Критерии: промт ноды со стрелки ИЛИ свой .txt агента. Отчёт — check_report.txt (после ▶)"
             onClick={() =>
               patch.mutate({
                 checkMode: !checkMode,
@@ -232,13 +241,13 @@ export function GptOperatorMenuPanel({
         {checkMode ? (
           <div className="mt-1.5 space-y-1">
             <p className="text-[9px] font-semibold uppercase tracking-wider text-rose-100/70">
-              Критерии
+              Откуда критерии отчёта
             </p>
             <div className="flex flex-wrap gap-1">
               <button
                 type="button"
                 disabled={patch.isPending}
-                title="Сверять результат с мастер-промтом ноды по входящей стрелке"
+                title="Берёт активный мастер-промт ноды ВЫШЕ по стрелке (Studio → Промты GPT). Не из «Загрузить файл»."
                 onClick={() =>
                   patch.mutate({ checkPromptSource: "upstream", transport: "api" })
                 }
@@ -255,7 +264,7 @@ export function GptOperatorMenuPanel({
               <button
                 type="button"
                 disabled={patch.isPending}
-                title="Не брать промт прошлой ноды — прогнать готового агента из prompts/check_operator"
+                title="Свой .txt/.md (кнопка ниже или Загрузить файл) либо builtin prompts/check_operator"
                 onClick={() =>
                   patch.mutate({ checkPromptSource: "agent", transport: "api" })
                 }
@@ -275,19 +284,20 @@ export function GptOperatorMenuPanel({
                 <p className="text-[9px] leading-snug text-rose-50/80">
                   {checkAgentFileName ? (
                     <>
-                      Свой файл:{" "}
+                      Сейчас: свой{" "}
                       <span className="font-mono text-violet-100">
                         {checkAgentFileName}
                       </span>
-                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}
+                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}. Старый
+                      check_report.txt не меняется сам — нажмите ▶ на ноде.
                     </>
                   ) : (
                     <>
-                      Builtin:{" "}
+                      Сейчас: builtin{" "}
                       <span className="font-mono text-violet-100">
                         {checkAgentStep || "—"}
-                      </span>{" "}
-                      из prompts/check_operator (по типу ноды выше)
+                      </span>
+                      . Загрузите .txt — станет критерием отчёта.
                     </>
                   )}
                 </p>
@@ -332,7 +342,9 @@ export function GptOperatorMenuPanel({
             ) : (
               <>
                 <p className="text-[9px] leading-snug text-rose-50/80">
-                  Промт берётся с ноды по входящей стрелке. Отчёт: check_report.txt
+                  Критерии = активный мастер-промт ноды со стрелки (Studio →
+                  Промты GPT → сделать активным). «Загрузить файл» сюда — это
+                  данные, не критерии. После смены промта — ▶ снова.
                 </p>
                 {sourcePrompts.length ? (
                   <ul className="space-y-0.5">
@@ -345,6 +357,8 @@ export function GptOperatorMenuPanel({
                         )}
                       >
                         {s.ok ? "✓" : "✗"} {s.nodeKey}
+                        {s.variant ? ` · ${s.variant}` : ""}
+                        {s.source ? ` · ${s.source}` : ""}
                         {s.chars ? ` · ${s.chars} симв` : ""}
                         {s.error ? ` · ${s.error}` : ""}
                       </li>

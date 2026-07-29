@@ -353,6 +353,9 @@ export const api = {
       isImage?: boolean;
       preview_url?: string | null;
       uploadedFileNames?: string[];
+      usedAsCheckAgent?: boolean;
+      chars?: number;
+      resolve?: import("@/lib/gpt-operator").OperatorResolve;
     }>(
       `/api/projects/${projectId}/excel-gpt/${encodeURIComponent(nodeKey)}/upload`,
       { method: "POST", body: fd },

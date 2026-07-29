@@ -109,3 +109,28 @@ def test_custom_uploaded_agent_txt(tmp_path: Path, monkeypatch) -> None:
     assert label and label.startswith("upload:")
     assert "хронометраж" in text
     assert "Исходные промты работы" not in text
+
+
+def test_upload_txt_on_check_node_becomes_agent(tmp_path: Path, monkeypatch) -> None:
+    """Обычный upload .txt при checkMode → критерии агента, не input."""
+    p = _project(tmp_path, monkeypatch)
+    p.meta["excel_gpt_nodes"]["n_check"]["checkMode"] = True
+    from app.services.gpt_operator import (
+        assemble_check_agent_prompt,
+        load_custom_check_agent_body,
+        operator_config,
+        save_check_agent_file,
+    )
+
+    assert operator_config(p, "n_check")["checkMode"] is True
+    save_check_agent_file(
+        p,
+        "n_check",
+        original_name="rules.txt",
+        content="Проверь только длительность блоков.\n".encode("utf-8"),
+    )
+    body = load_custom_check_agent_body(p, "n_check")
+    assert body and "длительность" in body
+    text, label = assemble_check_agent_prompt(p, "n_check")
+    assert label and label.startswith("upload:")
+    assert "длительность" in text
