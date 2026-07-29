@@ -1340,6 +1340,51 @@ async def upload_excel_gpt_file(
     }
 
 
+@router.post("/{project_id}/gpt-operator/{node_key}/check-agent")
+async def upload_check_agent_file(
+    project_id: int,
+    node_key: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Загрузить .txt/.md агента проверки (режим «Готовый агент»)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.gpt_operator import save_check_agent_file
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="need filename")
+    content = await file.read()
+    try:
+        result = save_check_agent_file(
+            p, node_key, original_name=file.filename, content=content
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    flag_modified(p, "meta")
+    await session.commit()
+    return result
+
+
+@router.delete("/{project_id}/gpt-operator/{node_key}/check-agent")
+async def delete_check_agent_file(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сбросить загруженный агент → снова builtin из prompts/check_operator."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.gpt_operator import clear_check_agent_file
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = clear_check_agent_file(p, node_key)
+    flag_modified(p, "meta")
+    await session.commit()
+    return result
+
+
 @router.post("/{project_id}/excel-gpt/remap-keys")
 async def remap_excel_gpt_keys(
     project_id: int,

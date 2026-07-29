@@ -319,6 +319,36 @@ def assemble_check_master_prompt(
     return append_txt_report_footer("\n".join(blocks).strip())
 
 
+def check_agent_upload_path(project: Project, node_key: str) -> Path:
+    """Фиксированное имя загруженного агента в папке ноды."""
+    return upload_dir(project, node_key) / "check_agent.txt"
+
+
+def load_custom_check_agent_body(project: Project, node_key: str) -> str | None:
+    """Текст загруженного .txt/.md агента (если есть)."""
+    cfg = operator_config(project, node_key)
+    name = str(cfg.get("checkAgentFileName") or "").strip()
+    candidates: list[Path] = []
+    if name:
+        candidates.append(upload_dir(project, node_key) / Path(name).name)
+    candidates.append(check_agent_upload_path(project, node_key))
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.is_file() or path.stat().st_size < 1:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            return text
+    return None
+
+
 def assemble_check_agent_prompt(
     project: Project,
     node_key: str,
@@ -326,9 +356,9 @@ def assemble_check_agent_prompt(
     check_fix: bool = True,
     reviewer_notes: str = "",
 ) -> tuple[str, str | None]:
-    """Master-промт из готового агента prompts/check_operator (без промтов стрелок).
+    """Master-промт из загруженного .txt или prompts/check_operator.
 
-    Returns (prompt_text, agent_step_name).
+    Returns (prompt_text, agent_label) — label: upload:name или step builtin.
     """
     from app.services.check_analysis import (
         append_txt_report_footer,
@@ -336,18 +366,28 @@ def assemble_check_agent_prompt(
         resolve_check_operator_step,
     )
 
-    typ = upstream_node_type_for_check(project, node_key)
-    if not typ:
-        raise RuntimeError(
-            "нет вышестоящей ноды для готового агента проверки — проведите стрелку"
-        )
-    step = resolve_check_operator_step(typ)
-    body = load_check_operator_prompt_body(typ)
-    if not body:
-        raise RuntimeError(
-            f"нет готового агента проверки для типа «{typ}» "
-            f"(prompts/check_operator/{step}/default.md)"
-        )
+    cfg = operator_config(project, node_key)
+    custom = load_custom_check_agent_body(project, node_key)
+    label: str | None = None
+    body: str | None = custom
+    if body:
+        label = f"upload:{cfg.get('checkAgentFileName') or 'check_agent.txt'}"
+    else:
+        typ = upstream_node_type_for_check(project, node_key)
+        if not typ:
+            raise RuntimeError(
+                "нет файла агента и нет вышестоящей ноды — "
+                "загрузите .txt агента или проведите стрелку"
+            )
+        step = resolve_check_operator_step(typ)
+        body = load_check_operator_prompt_body(typ)
+        if not body:
+            raise RuntimeError(
+                f"нет готового агента проверки для типа «{typ}» "
+                f"(prompts/check_operator/{step}/default.md) — загрузите свой .txt"
+            )
+        label = step
+
     mode = "fix" if check_fix else "report_only"
     blocks: list[str] = [
         body,
@@ -366,7 +406,78 @@ def assemble_check_agent_prompt(
     notes = (reviewer_notes or "").strip()
     if notes:
         blocks.extend(["", "# Доп. указания ревьюера (эта нода)", notes])
-    return append_txt_report_footer("\n".join(blocks).strip()), step
+    return append_txt_report_footer("\n".join(blocks).strip()), label
+
+
+def save_check_agent_file(
+    project: Project, node_key: str, *, original_name: str, content: bytes
+) -> dict[str, Any]:
+    """Сохранить .txt/.md агента проверки в uploads ноды."""
+    safe = Path(original_name or "check_agent.txt").name
+    ext = Path(safe).suffix.lower()
+    if ext not in {".txt", ".md"}:
+        raise ValueError("нужен файл .txt или .md")
+    if not content or not content.strip():
+        raise ValueError("пустой файл агента")
+    # Нормализуем в UTF-8 текст
+    text = content.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise ValueError("пустой файл агента")
+    dest_dir = upload_dir(project, node_key)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = check_agent_upload_path(project, node_key)
+    dest.write_text(text + "\n", encoding="utf-8")
+    # также копия с оригинальным именем (удобно смотреть в папке)
+    named = dest_dir / safe
+    if named.resolve() != dest.resolve():
+        named.write_text(text + "\n", encoding="utf-8")
+    meta = dict(project.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(node_key) or {})
+    cur["checkAgentFileName"] = safe
+    cur["checkPromptSource"] = "agent"
+    cur["checkMode"] = True
+    cur["transport"] = "api"
+    configs[node_key] = cur
+    meta["excel_gpt_nodes"] = configs
+    project.meta = meta
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(project, "meta")
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "ok": True,
+        "fileName": safe,
+        "path": str(dest),
+        "chars": len(text),
+        "resolve": resolve_operator(project, node_key),
+    }
+
+
+def clear_check_agent_file(project: Project, node_key: str) -> dict[str, Any]:
+    """Убрать загруженный агент — снова builtin по типу вышестоящей ноды."""
+    dest = check_agent_upload_path(project, node_key)
+    dest.unlink(missing_ok=True)
+    cfg = operator_config(project, node_key)
+    name = str(cfg.get("checkAgentFileName") or "").strip()
+    if name:
+        (upload_dir(project, node_key) / Path(name).name).unlink(missing_ok=True)
+    meta = dict(project.meta or {})
+    configs = dict(meta.get("excel_gpt_nodes") or {})
+    cur = dict(configs.get(node_key) or {})
+    cur.pop("checkAgentFileName", None)
+    configs[node_key] = cur
+    meta["excel_gpt_nodes"] = configs
+    project.meta = meta
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(project, "meta")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "resolve": resolve_operator(project, node_key)}
 
 
 def _file_probe(path: Path, *, origin: InputOrigin, from_node: str | None = None) -> dict[str, Any]:
@@ -856,22 +967,30 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     check_agent_step: str | None = None
     if check_mode:
         if check_prompt_source == "agent":
-            from app.services.check_analysis import resolve_check_operator_step
+            from app.services.check_analysis import (
+                load_check_operator_prompt_body,
+                resolve_check_operator_step,
+            )
 
-            typ = upstream_node_type_for_check(project, node_key)
-            if not typ:
-                errors.append(
-                    "готовый агент: нет вышестоящей ноды — проведите стрелку от результата"
+            custom = load_custom_check_agent_body(project, node_key)
+            if custom:
+                check_agent_step = (
+                    f"upload:{cfg.get('checkAgentFileName') or 'check_agent.txt'}"
                 )
             else:
-                from app.services.check_analysis import load_check_operator_prompt_body
-
-                check_agent_step = resolve_check_operator_step(typ)
-                if not load_check_operator_prompt_body(typ):
+                typ = upstream_node_type_for_check(project, node_key)
+                if not typ:
                     errors.append(
-                        f"нет готового агента для «{typ}» "
-                        f"(prompts/check_operator/{check_agent_step}/default.md)"
+                        "готовый агент: загрузите .txt/.md или проведите стрелку "
+                        "от результата (builtin по типу ноды)"
                     )
+                else:
+                    check_agent_step = resolve_check_operator_step(typ)
+                    if not load_check_operator_prompt_body(typ):
+                        errors.append(
+                            f"нет builtin-агента для «{typ}» — загрузите свой .txt "
+                            f"(prompts/check_operator/{check_agent_step}/default.md)"
+                        )
         else:
             source_prompts = collect_source_prompts(project, node_key)
             ok_prompts = [s for s in source_prompts if s.get("ok")]
@@ -973,6 +1092,12 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "checkFix": check_fix,
         "checkPromptSource": check_prompt_source,
         "checkAgentStep": check_agent_step,
+        "checkAgentFileName": str(cfg.get("checkAgentFileName") or "") or None,
+        "checkAgentChars": (
+            len(load_custom_check_agent_body(project, node_key) or "")
+            if check_prompt_source == "agent"
+            else 0
+        ),
         "sourcePrompts": source_prompt_view,
         "transport": cfg.get("transport") or "api",
         "label": str(cfg.get("label") or default_label_for_role(role)),
@@ -1003,6 +1128,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             "checkMode": check_mode,
             "checkFix": check_fix,
             "checkPromptSource": check_prompt_source,
+            "checkAgentFileName": str(cfg.get("checkAgentFileName") or "") or None,
             "transport": cfg.get("transport") or "api",
             "uploadedFileNames": list(cfg.get("uploadedFileNames") or []),
             "workMode": cfg.get("workMode"),
@@ -1070,6 +1196,12 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         cur["checkPromptSource"] = (
             cps if cps in VALID_CHECK_PROMPT_SOURCES else "upstream"
         )
+    if "checkAgentFileName" in patch:
+        name = str(patch.get("checkAgentFileName") or "").strip()
+        if name:
+            cur["checkAgentFileName"] = Path(name).name
+        else:
+            cur.pop("checkAgentFileName", None)
     if "transport" in patch:
         t = str(patch.get("transport") or "api").strip().lower()
         cur["transport"] = t if t in ("api", "browser") else "api"

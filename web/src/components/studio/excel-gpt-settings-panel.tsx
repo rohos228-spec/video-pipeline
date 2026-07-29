@@ -1,7 +1,8 @@
 "use client";
 
+import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -66,6 +67,8 @@ export function ExcelGptSettingsPanel({
   const checkPromptSource =
     data?.checkPromptSource === "agent" ? "agent" : "upstream";
   const checkAgentStep = data?.checkAgentStep || null;
+  const checkAgentFileName = data?.checkAgentFileName || null;
+  const checkAgentChars = data?.checkAgentChars || 0;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
@@ -73,6 +76,28 @@ export function ExcelGptSettingsPanel({
       ? (["inputs", "reply_txt"] as OperatorEmitKind[])
       : (["result", "reply_txt"] as OperatorEmitKind[]));
   const sourcePrompts = data?.sourcePrompts || [];
+
+  const agentFileRef = useRef<HTMLInputElement>(null);
+  const uploadAgent = useMutation({
+    mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
+    onSuccess: (res) => {
+      toast.success(`Агент: ${res.fileName}`);
+      if (res.resolve) {
+        qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
+      }
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+  const clearAgent = useMutation({
+    mutationFn: () => api.clearCheckAgentFile(projectId, nodeKey),
+    onSuccess: (res) => {
+      toast.success("Свой агент сброшен");
+      if (res.resolve) {
+        qc.setQueryData(["gpt-operator-resolve", projectId, nodeKey], res.resolve);
+      }
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
 
   const toggleEmit = (kind: OperatorEmitKind) => {
     const next = emitKinds.includes(kind)
@@ -178,13 +203,66 @@ export function ExcelGptSettingsPanel({
               </Button>
             </div>
             {checkPromptSource === "agent" ? (
-              <p className="text-[11px] text-muted-foreground">
-                Агент{" "}
-                <span className="font-mono text-foreground">
-                  {checkAgentStep || "—"}
-                </span>{" "}
-                по типу ноды выше. Файлы — со стрелки.
-              </p>
+              <div className="space-y-2">
+                <p className="text-[11px] text-muted-foreground">
+                  {checkAgentFileName ? (
+                    <>
+                      Свой файл:{" "}
+                      <span className="font-mono text-foreground">
+                        {checkAgentFileName}
+                      </span>
+                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}
+                    </>
+                  ) : (
+                    <>
+                      Builtin{" "}
+                      <span className="font-mono text-foreground">
+                        {checkAgentStep || "—"}
+                      </span>{" "}
+                      из prompts/check_operator — или загрузите свой .txt
+                    </>
+                  )}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    ref={agentFileRef}
+                    type="file"
+                    accept=".txt,.md,text/plain,text/markdown"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = "";
+                      if (f) uploadAgent.mutate(f);
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={uploadAgent.isPending}
+                    onClick={() => agentFileRef.current?.click()}
+                    className="gap-1.5"
+                  >
+                    {uploadAgent.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="h-3.5 w-3.5" />
+                    )}
+                    Загрузить .txt / .md
+                  </Button>
+                  {checkAgentFileName ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={clearAgent.isPending}
+                      onClick={() => clearAgent.mutate()}
+                    >
+                      Сбросить
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
             ) : (
               <ul className="space-y-1 text-[11px]">
                 {sourcePrompts.length ? (

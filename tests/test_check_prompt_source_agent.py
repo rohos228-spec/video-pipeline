@@ -81,3 +81,31 @@ def test_patch_switches_to_upstream(tmp_path: Path, monkeypatch) -> None:
         p, "n_check", {"checkPromptSource": "upstream", "transport": "api"}
     )
     assert res["checkPromptSource"] == "upstream"
+
+
+def test_custom_uploaded_agent_txt(tmp_path: Path, monkeypatch) -> None:
+    from app.services.gpt_operator import (
+        assemble_check_agent_prompt,
+        save_check_agent_file,
+    )
+
+    p = _project(tmp_path, monkeypatch)
+    res = save_check_agent_file(
+        p,
+        "n_check",
+        original_name="my_agent.txt",
+        content="Ты проверяешь только хронометраж.\nКаждый блок ≤ 15 сек.\n".encode(
+            "utf-8"
+        ),
+    )
+    assert res["ok"] is True
+    assert res["fileName"] == "my_agent.txt"
+    assert res["chars"] > 10
+    resolve = res["resolve"]
+    assert resolve["checkPromptSource"] == "agent"
+    assert resolve["checkAgentFileName"] == "my_agent.txt"
+    assert resolve["canRun"] is True
+    text, label = assemble_check_agent_prompt(p, "n_check", check_fix=True)
+    assert label and label.startswith("upload:")
+    assert "хронометраж" in text
+    assert "Исходные промты работы" not in text

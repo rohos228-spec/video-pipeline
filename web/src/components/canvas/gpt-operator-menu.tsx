@@ -89,6 +89,27 @@ export function GptOperatorMenuPanel({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const uploadAgent = useMutation({
+    mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
+    onSuccess: (res) => {
+      toast.success(`Агент: ${res.fileName} · ${res.chars} симв.`);
+      void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
+      void qc.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const clearAgent = useMutation({
+    mutationFn: () => api.clearCheckAgentFile(projectId, nodeKey),
+    onSuccess: () => {
+      toast.success("Свой агент сброшен → builtin");
+      void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const agentFileRef = useRef<HTMLInputElement>(null);
+
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
   const checkMode = data?.checkMode === true;
@@ -96,6 +117,8 @@ export function GptOperatorMenuPanel({
   const checkPromptSource =
     data?.checkPromptSource === "agent" ? "agent" : "upstream";
   const checkAgentStep = data?.checkAgentStep || null;
+  const checkAgentFileName = data?.checkAgentFileName || null;
+  const checkAgentChars = data?.checkAgentChars || 0;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
   const emitKinds = (data?.emitKinds?.length
     ? data.emitKinds
@@ -248,14 +271,64 @@ export function GptOperatorMenuPanel({
               </button>
             </div>
             {checkPromptSource === "agent" ? (
-              <p className="text-[9px] leading-snug text-rose-50/80">
-                Агент:{" "}
-                <span className="font-mono text-violet-100">
-                  {checkAgentStep || "—"}
-                </span>
-                {" "}
-                (по типу ноды выше). Файлы — со стрелки. Отчёт: check_report.txt
-              </p>
+              <div className="space-y-1">
+                <p className="text-[9px] leading-snug text-rose-50/80">
+                  {checkAgentFileName ? (
+                    <>
+                      Свой файл:{" "}
+                      <span className="font-mono text-violet-100">
+                        {checkAgentFileName}
+                      </span>
+                      {checkAgentChars ? ` · ${checkAgentChars} симв.` : ""}
+                    </>
+                  ) : (
+                    <>
+                      Builtin:{" "}
+                      <span className="font-mono text-violet-100">
+                        {checkAgentStep || "—"}
+                      </span>{" "}
+                      из prompts/check_operator (по типу ноды выше)
+                    </>
+                  )}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  <input
+                    ref={agentFileRef}
+                    type="file"
+                    accept=".txt,.md,text/plain,text/markdown"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = "";
+                      if (f) uploadAgent.mutate(f);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={uploadAgent.isPending}
+                    title="Загрузить свой .txt / .md агента проверки"
+                    onClick={() => agentFileRef.current?.click()}
+                    className="inline-flex items-center gap-1 rounded-md border border-violet-400/40 bg-violet-500/15 px-1.5 py-1 text-[9px] font-medium text-violet-50 hover:border-violet-400/70"
+                  >
+                    {uploadAgent.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Upload className="h-3 w-3" />
+                    )}
+                    Загрузить .txt
+                  </button>
+                  {checkAgentFileName ? (
+                    <button
+                      type="button"
+                      disabled={clearAgent.isPending}
+                      onClick={() => clearAgent.mutate()}
+                      className="rounded-md border border-white/15 px-1.5 py-1 text-[9px] text-muted-foreground hover:border-white/30"
+                    >
+                      Сбросить
+                    </button>
+                  ) : null}
+                </div>
+              </div>
             ) : (
               <>
                 <p className="text-[9px] leading-snug text-rose-50/80">

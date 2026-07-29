@@ -90,8 +90,12 @@ export interface OperatorResolve {
   checkFix?: boolean;
   /** upstream = промты прошлой ноды; agent = готовый агент check_operator. */
   checkPromptSource?: "upstream" | "agent";
-  /** Имя агента (plan/images/…) при checkPromptSource=agent. */
+  /** Имя агента (plan/images/… или upload:file.txt). */
   checkAgentStep?: string | null;
+  /** Загруженный .txt/.md агента (если есть). */
+  checkAgentFileName?: string | null;
+  /** Размер текста загруженного агента. */
+  checkAgentChars?: number;
   sourcePrompts?: SourcePromptView[];
   transport: string;
   label: string;

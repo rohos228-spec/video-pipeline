@@ -376,6 +376,25 @@ export const api = {
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     ),
+  uploadCheckAgentFile: (projectId: number, nodeKey: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{
+      ok: boolean;
+      fileName: string;
+      path: string;
+      chars: number;
+      resolve: import("@/lib/gpt-operator").OperatorResolve;
+    }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
+      { method: "POST", body: fd },
+    );
+  },
+  clearCheckAgentFile: (projectId: number, nodeKey: string) =>
+    http<{ ok: boolean; resolve: import("@/lib/gpt-operator").OperatorResolve }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
+      { method: "DELETE" },
+    ),
   patchCanvasEdgeKind: (
     projectId: number,
     edgeId: string,
