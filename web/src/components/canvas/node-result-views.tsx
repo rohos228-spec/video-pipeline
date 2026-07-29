@@ -108,10 +108,13 @@ function XlsxUploadBar({
   const qc = useQueryClient();
   const isExcelGpt = nodeType === "excel_gpt" || Boolean(nodeType?.startsWith("enrich_"));
   const upload = useMutation({
-    mutationFn: (file: File) =>
-      isExcelGpt && nodeKey
-        ? api.uploadExcelGptFile(projectId, nodeKey, file)
-        : api.uploadProjectXlsx(projectId, file),
+    mutationFn: async (file: File) => {
+      if (isExcelGpt && nodeKey) {
+        return api.uploadExcelGptFile(projectId, nodeKey, file);
+      }
+      await api.uploadProjectXlsx(projectId, file);
+      return { fileName: file.name, replacedXlsx: true as const };
+    },
     onSuccess: (res) => {
       const name =
         res && typeof res === "object" && "fileName" in res
