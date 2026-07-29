@@ -34,7 +34,6 @@ import {
   Loader2,
   Play,
   Save,
-  Sparkles,
   Square,
   Trash2,
   Video,
@@ -78,12 +77,12 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
-import { NodeAiReviewControls } from "./node-ai-review-controls";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
+import { AutoAdvanceToggle } from "@/components/inspector/project-settings";
 import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
   DropdownMenu,
@@ -1045,32 +1044,8 @@ export function FlowCanvas({
           variant={BackgroundVariant.Dots}
         />
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
-        <NodeAiReviewControls />
         <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
         <Controls position="bottom-right" showInteractive={false} />
-        {selectedNodeKey && (
-          <button
-            type="button"
-            title="ИИ-помощник для выделенной ноды"
-            aria-label="ИИ-помощник"
-            className="absolute bottom-[4.5rem] right-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-violet-400/60 bg-gradient-to-br from-violet-500/80 to-amber-500/50 text-white shadow-lg shadow-violet-500/25 transition hover:scale-105 hover:border-violet-300"
-            onClick={() => {
-              const node = nodes.find((n) => n.id === selectedNodeKey);
-              const nodeType = nodeTypeFromKey(selectedNodeKey);
-              if (!node) return;
-              window.dispatchEvent(
-                new CustomEvent("canvas-open-ai-node", {
-                  detail: {
-                    nodeKey: selectedNodeKey,
-                    nodeType: (node.data as PipelineNodeData).type || nodeType,
-                  },
-                }),
-              );
-            }}
-          >
-            <Sparkles className="h-4 w-4" />
-          </button>
-        )}
         <MiniMap
           pannable
           zoomable
@@ -1195,6 +1170,7 @@ export function FlowCanvas({
       />
       <RunOverlay
         projectId={projectId}
+        project={project.data ?? null}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
         runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
@@ -1352,12 +1328,14 @@ function EmptyState() {
 
 function RunOverlay({
   projectId,
+  project,
   workflow,
   run,
   runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
+  project: import("@/lib/types").ProjectDetail | null;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
   runStepNodeKey: string | null;
@@ -1534,6 +1512,11 @@ function RunOverlay({
   return (
     <>
     <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,640px)]">
+      {project ? (
+        <div className="pointer-events-auto min-w-[200px] max-w-[260px]">
+          <AutoAdvanceToggle project={project} />
+        </div>
+      ) : null}
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">

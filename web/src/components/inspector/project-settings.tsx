@@ -16,24 +16,16 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
         <GitBranch className="h-3.5 w-3.5" />
         Настройки пайплайна
       </div>
-      <AutoAdvanceToggle
-        project={project}
-        className={
-          "flex w-full items-start justify-between gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors " +
-          (project.auto_mode
-            ? "border-primary/40 bg-primary/10"
-            : "border-border/60 bg-card/40 hover:bg-accent/40")
-        }
-      />
       <p className="text-[10px] text-muted-foreground">
-        Контроль шагов — только ИИ. Без автопродвижения следующий шаг только по ▶.
+        Контроль шагов — только ИИ. Автопродвижение — тумблер сверху справа, рядом с
+        генерацией.
       </p>
       <MassFactoryPanel project={project} />
     </div>
   );
 }
 
-/** Тумблер автопродвижения (инспектор). */
+/** Тумблер автопродвижения (верхняя панель канваса, рядом с Run/генерацией). */
 export function AutoAdvanceToggle({
   project,
   className,
@@ -59,7 +51,7 @@ export function AutoAdvanceToggle({
       onClick={() => patch.mutate({ auto_mode: !autoOn })}
       className={
         className ??
-        "flex items-start justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors " +
+        "pointer-events-auto flex items-start justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors " +
           (autoOn
             ? "border-primary/40 bg-primary/10"
             : "border-border/60 bg-card/70 hover:bg-accent/40")
