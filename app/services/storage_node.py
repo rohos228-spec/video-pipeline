@@ -368,11 +368,20 @@ def _already_have(
     return False
 
 
-def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 200) -> dict[str, Any]:
+def sync_from_edges(
+    project: Project,
+    node_key: str,
+    *,
+    limit_per_source: int = 200,
+    touch_project_meta: bool = True,
+) -> dict[str, Any]:
     """Скопировать все подходящие файлы с входящих нод.
 
     Имя: ``{метка_источника}_{YYYYMMDD_HHMMSS}_{оригинал}``.
     Дубликат: тот же fingerprint / realpath / (источник+имя+размер) не копируется.
+
+    ``touch_project_meta=False`` — только диск/_index.json, без UPDATE projects.meta
+    (GET storage/resolve не должен держать SQLite write-lock).
     """
     from app.services.gpt_operator import files_from_source_node
 
@@ -467,14 +476,16 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
     index["files"] = index_files
     _save_index(project, node_key, index)
 
-    meta = dict(project.meta or {})
-    nodes = dict(meta.get("storage_nodes") or {})
-    cur = dict(nodes.get(node_key) or {})
-    cur["lastSyncAt"] = datetime.now(timezone.utc).isoformat()
-    cur["lastSyncCopied"] = len(copied)
-    nodes[node_key] = cur
-    meta["storage_nodes"] = nodes
-    project.meta = meta
+    last_sync_at = datetime.now(timezone.utc).isoformat()
+    if touch_project_meta:
+        meta = dict(project.meta or {})
+        nodes = dict(meta.get("storage_nodes") or {})
+        cur = dict(nodes.get(node_key) or {})
+        cur["lastSyncAt"] = last_sync_at
+        cur["lastSyncCopied"] = len(copied)
+        nodes[node_key] = cur
+        meta["storage_nodes"] = nodes
+        project.meta = meta
 
     files = list_stored_files(project, node_key)
     return {
@@ -485,6 +496,8 @@ def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 
         "files": files,
         "okFileCount": len(files),
         "formats": cfg.get("formats") or ["any"],
+        "lastSyncAt": last_sync_at if touch_project_meta else cfg.get("lastSyncAt"),
+        "lastSyncCopied": len(copied),
     }
 
 
@@ -550,12 +563,20 @@ def sync_downstream_storage_from_node(
     return results
 
 
-def resolve_storage(project: Project, node_key: str, *, auto_sync: bool | None = None) -> dict[str, Any]:
+def resolve_storage(
+    project: Project,
+    node_key: str,
+    *,
+    auto_sync: bool | None = None,
+    touch_project_meta: bool = True,
+) -> dict[str, Any]:
     cfg = node_config(project, node_key)
     do_sync = cfg.get("autoSync", True) if auto_sync is None else bool(auto_sync)
     sync_info: dict[str, Any] | None = None
     if do_sync and _incoming_sources(project, node_key):
-        sync_info = sync_from_edges(project, node_key)
+        sync_info = sync_from_edges(
+            project, node_key, touch_project_meta=touch_project_meta
+        )
         cfg = node_config(project, node_key)
     files = list_stored_files(project, node_key)
     incoming = _incoming_sources(project, node_key)
@@ -569,8 +590,10 @@ def resolve_storage(project: Project, node_key: str, *, auto_sync: bool | None =
         "okFileCount": len(files),
         "incomingSources": incoming,
         "storageDir": str(storage_dir(project, node_key)),
-        "lastSyncAt": cfg.get("lastSyncAt"),
-        "lastSyncCopied": (sync_info or {}).get("copied"),
+        "lastSyncAt": (sync_info or {}).get("lastSyncAt") or cfg.get("lastSyncAt"),
+        "lastSyncCopied": (sync_info or {}).get("lastSyncCopied")
+        if sync_info is not None
+        else cfg.get("lastSyncCopied"),
         "config": cfg,
     }
 

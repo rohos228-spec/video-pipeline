@@ -125,6 +125,8 @@ async def get_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
+    await session.refresh(p)
     await recompute_status(session, p, log_prefix="recompute(web_get)")
     await session.commit()
     await session.refresh(p)

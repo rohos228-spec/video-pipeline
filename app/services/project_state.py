@@ -153,6 +153,12 @@ def clear_stale_downstream_meta(project: Project) -> list[str]:
     2) frames_ready без ``split_completed`` — кадры/enrich meta с прошлого
        прогона; иначе planner прыгает сразу на excel_gpt #3.
     """
+    from app.services.gen_queue_run import is_user_stopped
+
+    # После ⏹ не сносить прогресс — иначе auto_advance снова стартует GPT.
+    if is_user_stopped(project):
+        return []
+
     cur = getattr(project, "status", None)
     meta = dict(project.meta or {})
     cleared: list[str] = []
@@ -474,6 +480,14 @@ async def recompute_status(
     """
     from loguru import logger
 
+    from app.services.gen_queue_run import is_user_stopped
+
+    # Свежий meta/status: иначе concurrent ⏹ user_stop затирается stale commit.
+    try:
+        await session.refresh(project)
+    except Exception:  # noqa: BLE001
+        pass
+
     old = project.status
     if old in _RUNNING_STATUSES:
         # Бежит шаг — не вмешиваемся. Если шаг упадёт, воркер сам
@@ -483,8 +497,6 @@ async def recompute_status(
         # `paused` — пользователь руками приостановил. `failed` —
         # legacy, _init_db уже сбросил в `new`, но защитимся тут тоже.
         return old, old, False
-
-    from app.services.gen_queue_run import is_user_stopped
 
     if is_user_stopped(project):
         return old, old, False
@@ -549,6 +561,32 @@ async def recompute_status(
             project.id, log_prefix, old.value, new.value,
         )
         return old, new, True
+
+    # Перед записью — ещё раз: ⏹ мог успеть между compute и commit.
+    try:
+        await session.refresh(project)
+    except Exception:  # noqa: BLE001
+        pass
+    if is_user_stopped(project):
+        logger.info(
+            "[#{}] {}: skip write {}→{} (user_stop)",
+            project.id,
+            log_prefix,
+            old.value,
+            new.value,
+        )
+        return project.status, project.status, False
+    if project.status != old:
+        logger.info(
+            "[#{}] {}: skip write {}→{} (status already {})",
+            project.id,
+            log_prefix,
+            old.value,
+            new.value,
+            project.status.value,
+        )
+        return project.status, project.status, False
+
     project.status = new
     logger.info(
         "[#{}] {}: {} → {}",

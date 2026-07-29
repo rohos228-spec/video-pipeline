@@ -88,6 +88,10 @@ async def continue_project(
 async def stop_project(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
+    # Сразу cancel advance/GPT — до любого ожидания SQLite (первый клик ⏹).
+    from app.services.step_cancel import request_stop
+
+    request_stop(project_id)
     p = _project_or_404(await session.get(Project, project_id))
     info = await stop_project_running(session, p)
     if not info["ok"]:
@@ -1492,27 +1496,12 @@ async def storage_resolve(
     node_key: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    from sqlalchemy.orm.attributes import flag_modified
-
+    """Прочитать/досинковать файлы хранилища без UPDATE projects (anti-lock)."""
     from app.services.storage_node import resolve_storage
 
     p = _project_or_404(await session.get(Project, project_id))
-    before = str((p.meta or {}).get("storage_nodes") or {})
-    result = resolve_storage(p, node_key)
-    after = str((p.meta or {}).get("storage_nodes") or {})
-    if before != after:
-        flag_modified(p, "meta")
-        try:
-            await session.commit()
-        except Exception as exc:  # noqa: BLE001
-            # Во время GPT worker может держать write-lock — UI не должен падать.
-            logger.warning(
-                "storage_resolve: commit meta #{} skipped: {}",
-                project_id,
-                exc,
-            )
-            await session.rollback()
-    return result
+    # touch_project_meta=False: иначе GET держит write-lock и UI лагает на GPT.
+    return resolve_storage(p, node_key, touch_project_meta=False)
 
 
 @router.patch("/{project_id}/storage/{node_key}")

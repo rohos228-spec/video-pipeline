@@ -216,6 +216,31 @@ async def stop_project_running(
             if step is not None and step.requires is not None
             else ProjectStatus.new
         )
+        # excel_gpt до split: enriching_2 → enrich_1_ready ложный (слот 1
+        # мог не существовать) → recompute откатывает в script_ready и
+        # auto_advance снова жмёт ту же ноду. Откат только на реально
+        # завершённый слот / script_ready.
+        from app.services.excel_gpt_node import (
+            ready_status_for_slot,
+            slot_from_running_status,
+        )
+
+        enrich_slot = slot_from_running_status(cur)
+        if enrich_slot is not None:
+            meta_now = project.meta if isinstance(project.meta, dict) else {}
+            done_slots: list[int] = []
+            for raw in meta_now.get("enrich_completed_slots") or []:
+                try:
+                    s = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if s < enrich_slot:
+                    done_slots.append(s)
+            if done_slots:
+                rollback_to = ready_status_for_slot(max(done_slots))
+            else:
+                # Нет завершённых enrich до текущего — как после script.
+                rollback_to = ProjectStatus.script_ready
         rollback_to_val = rollback_to.value
         await stop_active_running_node(session, project)
         project.status = rollback_to

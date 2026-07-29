@@ -303,3 +303,26 @@ def test_script_source_exports_voiceover_and_syncs_storage(
     assert synced[0]["okFileCount"] >= 1
     names = [f["originalName"] for f in list_stored_files(p, store)]
     assert "voiceover.txt" in names
+
+
+def test_resolve_storage_without_touching_project_meta(tmp_path: Path, monkeypatch) -> None:
+    """GET resolve не должен dirty'ить projects.meta (SQLite lock / лаг UI)."""
+    p = _project(tmp_path, monkeypatch)
+    (p.data_dir / "voiceover.txt").write_text("vo " * 40, encoding="utf-8")
+    script, store = "n_script", "n_storage_1"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": script, "type": "script", "position": {"x": 0, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": script, "target": store, "data": {"kind": "after"}},
+            ],
+        },
+        "storage_nodes": {store: {"formats": ["any"], "autoSync": True}},
+    }
+    before = str(p.meta)
+    res = resolve_storage(p, store, touch_project_meta=False)
+    assert res["okFileCount"] >= 1
+    assert str(p.meta) == before
