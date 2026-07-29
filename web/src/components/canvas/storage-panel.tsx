@@ -33,6 +33,7 @@ export function StoragePanel({
     queryKey: ["storage-resolve", projectId, nodeKey],
     queryFn: () => api.resolveStorage(projectId, nodeKey),
     staleTime: 2000,
+    refetchInterval: 5000,
   });
 
   const patch = useMutation({
@@ -122,7 +123,8 @@ export function StoragePanel({
       {open ? (
         <div className="mt-2 space-y-2">
           <p className="text-[9px] leading-snug text-muted-foreground">
-            Только хранит то, что пришло. Свои файлы — в своей папке ноды. Форматы:
+            Автоматически забирает все файлы со входящих стрелок (формат «Любые»).
+            Можно сузить фильтр или загрузить вручную.
           </p>
           <div className="flex flex-wrap gap-1">
             {FORMAT_OPTIONS.map((opt) => (
@@ -132,12 +134,13 @@ export function StoragePanel({
                 disabled={patch.isPending}
                 onClick={() => toggleFormat(opt.value)}
                 className={cn(
-                  "rounded-md border px-1.5 py-0.5 text-[9px]",
+                  "rounded-md border px-1.5 py-0.5 text-[9px] font-medium",
                   formats.has(opt.value)
-                    ? "border-sky-400/45 bg-sky-500/15 text-sky-50"
+                    ? "border-sky-400/70 bg-sky-500/25 text-sky-50 ring-1 ring-sky-400/40"
                     : "border-white/10 text-muted-foreground hover:border-white/20",
                 )}
               >
+                {formats.has(opt.value) ? "✓ " : ""}
                 {opt.title}
               </button>
             ))}
@@ -151,13 +154,14 @@ export function StoragePanel({
               className="h-7 text-[10px]"
               disabled={sync.isPending}
               onClick={() => sync.mutate()}
+              title="Принудительно обновить со стрелок"
             >
               {sync.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <RefreshCw className="h-3 w-3" />
               )}
-              Со стрелок
+              Обновить
             </Button>
             <Button
               type="button"
@@ -205,7 +209,7 @@ export function StoragePanel({
               <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
             ) : files.length === 0 ? (
               <p className="text-[10px] text-muted-foreground">
-                Пусто — подведите стрелку и нажмите «Со стрелок»
+                Пусто — подведите стрелку от ноды с файлами (подтянется само)
               </p>
             ) : (
               <ul className="space-y-1">

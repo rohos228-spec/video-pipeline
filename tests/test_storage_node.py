@@ -28,7 +28,7 @@ def _project(tmp_path: Path, monkeypatch) -> Project:
         hero_mode="no_hero",
         meta={},
     )
-    p.data_dir.mkdir(parents=True)
+    p.data_dir.mkdir(parents=True, exist_ok=True)
     return p
 
 
@@ -95,10 +95,48 @@ def test_format_filter_skips_video(tmp_path: Path, monkeypatch) -> None:
     assert res["copied"] == []
 
 
+def test_resolve_auto_syncs_all_incoming(tmp_path: Path, monkeypatch) -> None:
+    """resolve с autoSync забирает файлы со всех входящих стрелок без ручного sync."""
+    p = _project(tmp_path, monkeypatch)
+    scenes = p.data_dir / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "f001.png").write_bytes(b"\x89PNG" + b"1" * 200)
+    weird = p.data_dir / "excel_gpt_uploads" / "n_gpt"
+    weird.mkdir(parents=True)
+    (weird / "report.bin").write_bytes(b"bin-data-123")
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": "n_images", "type": "images", "position": {"x": 0, "y": 0}},
+                {"id": "n_gpt", "type": "excel_gpt", "position": {"x": 100, "y": 0}},
+                {"id": "n_store", "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n_images", "target": "n_store", "data": {"kind": "after"}},
+                {"id": "e2", "source": "n_gpt", "target": "n_store", "data": {"kind": "after"}},
+            ],
+        },
+        "gpt_operator_results": {
+            "n_gpt": {
+                "inputPaths": [],
+                "outputPaths": [str(weird / "report.bin")],
+                "replyPreview": "",
+            }
+        },
+        "excel_gpt_nodes": {"n_gpt": {"role": "assist", "emitKinds": ["result"]}},
+        "storage_nodes": {"n_store": {"formats": ["any"], "autoSync": True}},
+    }
+    res = resolve_storage(p, "n_store")
+    names = {f["name"] for f in res["files"]}
+    assert any("f001.png" in n for n in names)
+    assert any("report.bin" in n for n in names)
+    assert res["okFileCount"] >= 2
+
+
 def test_clear_and_resolve(tmp_path: Path, monkeypatch) -> None:
     p = _project(tmp_path, monkeypatch)
     key = "n_storage_x"
     save_upload(p, key, "x.txt", b"hello")
-    assert resolve_storage(p, key)["okFileCount"] == 1
+    assert resolve_storage(p, key, auto_sync=False)["okFileCount"] == 1
     assert clear_storage(p, key) == 1
-    assert resolve_storage(p, key)["okFileCount"] == 0
+    assert resolve_storage(p, key, auto_sync=False)["okFileCount"] == 0

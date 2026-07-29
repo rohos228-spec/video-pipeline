@@ -1361,10 +1361,18 @@ async def storage_resolve(
     node_key: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from sqlalchemy.orm.attributes import flag_modified
+
     from app.services.storage_node import resolve_storage
 
     p = _project_or_404(await session.get(Project, project_id))
-    return resolve_storage(p, node_key)
+    before = str((p.meta or {}).get("storage_nodes") or {})
+    result = resolve_storage(p, node_key)
+    after = str((p.meta or {}).get("storage_nodes") or {})
+    if before != after:
+        flag_modified(p, "meta")
+        await session.commit()
+    return result
 
 
 @router.patch("/{project_id}/storage/{node_key}")
@@ -1383,7 +1391,7 @@ async def storage_patch(
     cfg = patch_config(p, node_key, body)
     flag_modified(p, "meta")
     await session.commit()
-    return {"ok": True, "config": cfg, "resolve": resolve_storage(p, node_key)}
+    return {"ok": True, "config": cfg, "resolve": resolve_storage(p, node_key, auto_sync=False)}
 
 
 @router.post("/{project_id}/storage/{node_key}/sync")

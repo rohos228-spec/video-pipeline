@@ -41,7 +41,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     type: "storage",
     label: "Хранилище",
     description:
-      "Только хранит файлы: со стрелок или загрузкой. Своя папка на каждую ноду, форматы на выбор.",
+      "Принимает все файлы со входящих стрелок (и загрузку). Своя папка на каждую ноду.",
     category: "objects",
     accent: "200 55% 55%",
     iconKey: "package",

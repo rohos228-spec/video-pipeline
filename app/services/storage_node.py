@@ -27,6 +27,9 @@ _XLSX = frozenset({".xlsx", ".xls"})
 _TEXT = frozenset({".txt", ".md", ".json", ".csv", ".pdf"})
 _ANY = _IMAGE | _VIDEO | _XLSX | _TEXT
 
+# formats=any → любой файл (не только whitelist суффиксов)
+_ACCEPT_ALL = object()
+
 
 def is_storage_node_type(node_type: str) -> bool:
     return str(node_type or "") == STORAGE_NODE_TYPE
@@ -65,6 +68,11 @@ def node_config(project: Project, node_key: str) -> dict[str, Any]:
             formats = ["any"]
     cfg["formats"] = formats
     cfg["label"] = str(cfg.get("label") or "Хранилище")
+    # По умолчанию авто-забор со всех входящих стрелок.
+    if "autoSync" in cfg:
+        cfg["autoSync"] = bool(cfg.get("autoSync"))
+    else:
+        cfg["autoSync"] = True
     return cfg
 
 
@@ -84,15 +92,17 @@ def patch_config(project: Project, node_key: str, patch: dict[str, Any]) -> dict
             cur["formats"] = fmts or ["any"]
         elif isinstance(raw, str) and raw in VALID_FORMATS:
             cur["formats"] = [raw]
+    if "autoSync" in patch:
+        cur["autoSync"] = bool(patch.get("autoSync"))
     nodes[key] = cur
     meta["storage_nodes"] = nodes
     project.meta = meta
     return node_config(project, key)
 
 
-def _suffixes_for_formats(formats: list[str]) -> frozenset[str]:
+def _suffixes_for_formats(formats: list[str]) -> frozenset[str] | object:
     if "any" in formats:
-        return _ANY
+        return _ACCEPT_ALL
     out: set[str] = set()
     if "image" in formats:
         out |= _IMAGE
@@ -102,7 +112,13 @@ def _suffixes_for_formats(formats: list[str]) -> frozenset[str]:
         out |= _XLSX
     if "text" in formats:
         out |= _TEXT
-    return frozenset(out) if out else _ANY
+    return frozenset(out) if out else _ACCEPT_ALL
+
+
+def _allowed(path: Path, allow: frozenset[str] | object) -> bool:
+    if allow is _ACCEPT_ALL:
+        return path.is_file() and path.stat().st_size > 0
+    return path.suffix.lower() in allow  # type: ignore[operator]
 
 
 def _file_kind(path: Path) -> str:
@@ -170,8 +186,8 @@ def _incoming_sources(project: Project, node_key: str) -> list[str]:
     return sources
 
 
-def sync_from_edges(project: Project, node_key: str) -> dict[str, Any]:
-    """Скопировать подходящие файлы с входящих нод в папку хранилища."""
+def sync_from_edges(project: Project, node_key: str, *, limit_per_source: int = 200) -> dict[str, Any]:
+    """Скопировать все подходящие файлы с входящих нод в папку хранилища."""
     from app.services.gpt_operator import files_from_source_node
 
     cfg = node_config(project, node_key)
@@ -183,7 +199,9 @@ def sync_from_edges(project: Project, node_key: str) -> dict[str, Any]:
 
     for src in _incoming_sources(project, node_key):
         try:
-            paths = files_from_source_node(project, src, use_snapshot=False, limit=24)
+            paths = files_from_source_node(
+                project, src, use_snapshot=False, limit=limit_per_source
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{src}: {exc}")
             continue
@@ -191,7 +209,7 @@ def sync_from_edges(project: Project, node_key: str) -> dict[str, Any]:
             skipped.append(f"{src}: нет файлов")
             continue
         for src_path in paths:
-            if src_path.suffix.lower() not in allow:
+            if not _allowed(src_path, allow):
                 skipped.append(f"{src_path.name}: формат не подходит")
                 continue
             # Имя: fromNode__filename, без коллизий
@@ -228,8 +246,13 @@ def sync_from_edges(project: Project, node_key: str) -> dict[str, Any]:
     }
 
 
-def resolve_storage(project: Project, node_key: str) -> dict[str, Any]:
+def resolve_storage(project: Project, node_key: str, *, auto_sync: bool | None = None) -> dict[str, Any]:
     cfg = node_config(project, node_key)
+    do_sync = cfg.get("autoSync", True) if auto_sync is None else bool(auto_sync)
+    sync_info: dict[str, Any] | None = None
+    if do_sync and _incoming_sources(project, node_key):
+        sync_info = sync_from_edges(project, node_key)
+        cfg = node_config(project, node_key)
     files = list_stored_files(project, node_key)
     incoming = _incoming_sources(project, node_key)
     return {
@@ -237,11 +260,13 @@ def resolve_storage(project: Project, node_key: str) -> dict[str, Any]:
         "nodeType": STORAGE_NODE_TYPE,
         "label": cfg.get("label") or "Хранилище",
         "formats": list(cfg.get("formats") or ["any"]),
+        "autoSync": bool(cfg.get("autoSync", True)),
         "files": files,
         "okFileCount": len(files),
         "incomingSources": incoming,
         "storageDir": str(storage_dir(project, node_key)),
         "lastSyncAt": cfg.get("lastSyncAt"),
+        "lastSyncCopied": sync_info.get("copied") if sync_info else None,
         "config": cfg,
     }
 
