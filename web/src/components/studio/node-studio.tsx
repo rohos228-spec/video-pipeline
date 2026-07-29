@@ -376,10 +376,12 @@ export function NodeStudio({
 
   const uploadXlsx = useMutation({
     mutationFn: async (file: File) => {
-      if (nodeType === "excel_gpt" && nodeKey) {
+      if (isExcelGptNode(nodeType) && nodeKey) {
         return api.uploadExcelGptFile(projectId!, nodeKey, file);
       }
-      await api.uploadProjectXlsx(projectId!, file);
+      await api.uploadProjectXlsx(projectId!, file, {
+        nodeKey: nodeKey ?? undefined,
+      });
       return { fileName: file.name };
     },
     onSuccess: (res) => {
@@ -388,7 +390,7 @@ export function NodeStudio({
           ? String((res as { fileName?: string }).fileName || "")
           : "";
       toast.success(
-        nodeType === "excel_gpt" && name
+        isExcelGptNode(nodeType) && name
           ? `Excel подменён: ${name} (вход только этот файл)`
           : "Excel загружен",
       );
@@ -400,7 +402,7 @@ export function NodeStudio({
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       void qc.refetchQueries({ queryKey: ["xlsx-preview", projectId] });
       void qc.refetchQueries({ queryKey: ["xlsx-sheets", projectId] });
-      if (nodeType === "excel_gpt" && nodeKey && name) {
+      if (isExcelGptNode(nodeType) && nodeKey && name) {
         window.dispatchEvent(
           new CustomEvent("canvas-patch-node-data", {
             detail: {
@@ -652,6 +654,7 @@ export function NodeStudio({
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) uploadXlsx.mutate(f);
+                        e.target.value = "";
                       }}
                     />
                     <Button

@@ -443,6 +443,7 @@ async def reload_xlsx(
 async def upload_xlsx(
     project_id: int,
     file: UploadFile = File(...),
+    node_key: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
@@ -463,10 +464,18 @@ async def upload_xlsx(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=validation_err)
     tmp_path.replace(dest)
+    if node_key:
+        from app.services.node_xlsx_snapshot import clear_bound_snapshot
+
+        clear_bound_snapshot(p, node_key)
     await sync_project_xlsx(session, p, dest)
     await session.commit()
     await session.refresh(p)
-    await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "uploaded"})
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"xlsx": "uploaded", "node_key": node_key},
+    )
     return p
 
 

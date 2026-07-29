@@ -128,9 +128,31 @@ def test_clear_bound_snapshot_and_upload_path(tmp_path: Path, monkeypatch) -> No
     bind_snapshot_entry(p, "n_gpt", snap)
     assert META_KEY in (p.meta or {})
     assert clear_bound_snapshot(p, "n_gpt") is True
-    assert "n_gpt" not in ((p.meta or {}).get(META_KEY) or {})
+    cleared = ((p.meta or {}).get(META_KEY) or {}).get("n_gpt")
+    assert isinstance(cleared, dict) and cleared.get("cleared") is True
 
     upload = upload_file_path(p, "n_gpt", "new.xlsx")
     _write_xlsx(upload, "X")
     assert resolve_upload_xlsx_path(p, "n_gpt") == upload
     assert upload_dir(p, "n_gpt").is_dir()
+
+
+def test_clear_bound_snapshot_suppresses_filename_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """После явной очистки снимка UI не должен снова цеплять old/*_result_*.xlsx."""
+    from app.services.node_xlsx_snapshot import resolve_bound_xlsx_path
+
+    p = _project(tmp_path, monkeypatch)
+    live = p.data_dir / "project.xlsx"
+    snap = snapshot_node_result_xlsx(live, node_key="n_plan")
+    assert snap is not None
+    bind_snapshot_entry(p, "n_plan", snap)
+    _write_xlsx(snap, "OLD_SNAP")
+
+    assert clear_bound_snapshot(p, "n_plan") is True
+    assert resolve_bound_xlsx_path(p, "n_plan") is None
+
+    path, label = resolve_display_xlsx_path(p, "n_plan")
+    assert path == live
+    assert label is None

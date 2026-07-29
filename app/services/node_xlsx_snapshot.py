@@ -60,9 +60,22 @@ def _latest_snapshot_by_filename(project: Project, node_key: str) -> Path | None
     return None
 
 
+def _raw_snapshot_entry(project: Project, node_key: str) -> dict[str, Any] | None:
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    raw = meta.get(META_KEY)
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(str(node_key))
+    return dict(entry) if isinstance(entry, dict) else None
+
+
 def resolve_bound_xlsx_path(project: Project, node_key: str | None) -> Path | None:
     """Абсолютный путь к привязанному снимку ноды или None."""
     if not node_key:
+        return None
+    raw_entry = _raw_snapshot_entry(project, str(node_key))
+    # Явная очистка после «Загрузить» — не цеплять old/*_result_*.xlsx снова.
+    if raw_entry is not None and raw_entry.get("cleared"):
         return None
     entry = snapshots_map(project).get(str(node_key))
     if entry:
@@ -75,19 +88,24 @@ def resolve_bound_xlsx_path(project: Project, node_key: str | None) -> Path | No
                 path = None  # type: ignore[assignment]
             if path is not None and path.is_file():
                 return path
+    # Fallback по имени — только если в meta ещё не было явного cleared.
+    if raw_entry is not None:
+        return None
     return _latest_snapshot_by_filename(project, str(node_key))
 
 
 def clear_bound_snapshot(project: Project, node_key: str) -> bool:
-    """Снять привязку снимка у ноды (после новой загрузки Excel в GPT)."""
+    """Снять привязку снимка у ноды (после новой загрузки Excel).
+
+    Пишет tombstone ``cleared``, чтобы ``_latest_snapshot_by_filename``
+    не вернул старый файл из ``old/``.
+    """
     key = (node_key or "").strip()
     if not key:
         return False
     meta = dict(project.meta or {})
     by_node = dict(meta.get(META_KEY) or {})
-    if key not in by_node:
-        return False
-    by_node.pop(key, None)
+    by_node[key] = {"cleared": True, "cleared_at": _utcnow_iso(), "node_key": key}
     meta[META_KEY] = by_node
     project.meta = meta
     flag_modified(project, "meta")

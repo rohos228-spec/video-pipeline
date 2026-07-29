@@ -112,7 +112,9 @@ function XlsxUploadBar({
       if (isExcelGpt && nodeKey) {
         return api.uploadExcelGptFile(projectId, nodeKey, file);
       }
-      await api.uploadProjectXlsx(projectId, file);
+      await api.uploadProjectXlsx(projectId, file, {
+        nodeKey: nodeKey ?? undefined,
+      });
       return { fileName: file.name, replacedXlsx: true as const };
     },
     onSuccess: (res) => {
@@ -746,10 +748,16 @@ function DefaultResultView({
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const uploadXlsx = useMutation({
-    mutationFn: (file: File) => api.uploadProjectXlsx(projectId, file),
+    mutationFn: (file: File) =>
+      api.uploadProjectXlsx(projectId, file, {
+        nodeKey: nodeKey ?? undefined,
+      }),
     onSuccess: () => {
       toast.success("Excel заменён");
       qc.invalidateQueries({ queryKey: ["project", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-preview", projectId] });
+      qc.invalidateQueries({ queryKey: ["xlsx-sheets", projectId] });
+      qc.invalidateQueries({ queryKey: ["v-menu-xlsx-preview", projectId] });
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });

@@ -89,11 +89,15 @@ async function http<T>(
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // FormData: не ставить Content-Type вручную — браузер сам добавит
+    // multipart boundary. Иначе FastAPI не видит UploadFile.
+    const isFormData =
+      typeof FormData !== "undefined" && options.body instanceof FormData;
     const res = await fetch(path, {
       ...options,
       signal: controller.signal,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(options.headers || {}),
       },
     });
@@ -1376,10 +1380,17 @@ export const api = {
   },
   reloadProjectXlsx: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
-  uploadProjectXlsx: async (projectId: number, file: File) => {
+  uploadProjectXlsx: async (
+    projectId: number,
+    file: File,
+    opts?: { nodeKey?: string },
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch(`/api/projects/${projectId}/xlsx/upload`, {
+    const q = opts?.nodeKey
+      ? `?node_key=${encodeURIComponent(opts.nodeKey)}`
+      : "";
+    const res = await fetch(`/api/projects/${projectId}/xlsx/upload${q}`, {
       method: "POST",
       body: fd,
     });
