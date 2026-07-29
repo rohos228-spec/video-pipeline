@@ -303,6 +303,7 @@ async def test_complete_recovers_pending_when_prepare_missed(
 
 @pytest.mark.asyncio
 async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> None:
+    """Stale completed_keys + pending NodeRun — meta чистим, в done не прыгаем."""
     keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_3"]
     project_id, wf_id, nr_ids = await _seed_excel_gpt_run(
         mem_db, keys=keys, active_key=None
@@ -315,6 +316,7 @@ async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> No
         project.meta = {
             **(project.meta or {}),
             "excel_gpt_completed_keys": [keys[0], keys[1], keys[2]],
+            "enrich_completed_slots": [1, 2, 3],
         }
 
     await sync_run_for_project(project_id)
@@ -322,7 +324,11 @@ async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> No
     async with mem_db() as session:
         for k in keys:
             nr = await session.get(NodeRun, nr_ids[k])
-            assert nr is not None and nr.status == NodeRunStatus.done
+            assert nr is not None and nr.status == NodeRunStatus.pending
+        project = await session.get(Project, project_id)
+        assert project is not None
+        assert not (project.meta or {}).get("excel_gpt_completed_keys")
+        assert not (project.meta or {}).get("enrich_completed_slots")
 
 
 @pytest.mark.asyncio
@@ -450,6 +456,10 @@ async def test_sync_heals_stale_running_from_completed_keys(mem_db, monkeypatch)
 
     async with mem_db() as session:
         assert (await session.get(NodeRun, nr_ids[keys[0]])).status == NodeRunStatus.done
-        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.done
+        # pending + stale completed_keys — не прыгаем в done
+        assert (await session.get(NodeRun, nr_ids[keys[1]])).status == NodeRunStatus.pending
+        project = await session.get(Project, project_id)
+        assert project is not None
+        assert keys[1] not in (project.meta or {}).get("excel_gpt_completed_keys", [])
         # Активный слот 3 не трогаем heal'ом
         assert (await session.get(NodeRun, nr_ids[keys[2]])).status == NodeRunStatus.running

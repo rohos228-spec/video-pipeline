@@ -121,7 +121,10 @@ from app.services.disabled_nodes import disabled_node_types
 from app.services.excel_gpt_node import (
     EXCEL_GPT_NODE_TYPE,
     active_excel_gpt_node_key,
+    clear_slot_completion_meta,
+    completed_node_keys,
     resolve_excel_gpt_node_key_for_slot,
+    slot_for_excel_gpt_node_key,
     slot_from_ready_status,
     slot_from_running_status,
 )
@@ -182,7 +185,6 @@ def _aggregate_workflow_run_status(run: WorkflowRun) -> None:
 
 async def sync_run_for_project(project_id: int) -> None:
     """Синхронизировать skipped/disabled и агрегировать WorkflowRun (без повышения статусов)."""
-    from app.services.excel_gpt_node import completed_node_keys
 
     async with session_scope() as s:
         project = await s.get(Project, project_id)
@@ -230,9 +232,9 @@ async def sync_run_for_project(project_id: int) -> None:
                         },
                     )
 
-        # Heal: excel_gpt в completed_keys, но NodeRun pending/running
+        # Heal: excel_gpt в completed_keys, но NodeRun ещё running/queued —
         # (auto-chain раньше помечал next done и оставлял prev running).
-        # Не трогаем только реально активную ноду.
+        # pending + completed_keys = stale meta → снимаем «готово», не прыгаем в done.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
         for nr in run.node_runs:
@@ -244,14 +246,24 @@ async def sync_run_for_project(project_id: int) -> None:
                 continue
             if nr.status == NodeRunStatus.done:
                 continue
+            slot = slot_for_excel_gpt_node_key(project, nr.node_key)
             if nr.status == NodeRunStatus.pending:
-                queue_node_for_start(nr, project_id=project_id, initiator="worker")
-                start_node_running(nr, project_id=project_id, initiator="worker")
+                if slot is not None:
+                    await clear_slot_completion_meta(
+                        s, project, slot, node_key=nr.node_key
+                    )
+                    logger.info(
+                        "[#{}] heal: stale completed_key {} (slot {}) — "
+                        "meta сброшен, NodeRun pending (не прыгаем в done)",
+                        project_id,
+                        nr.node_key,
+                        slot,
+                    )
+                continue
             if nr.status in (
                 NodeRunStatus.running,
                 NodeRunStatus.queued,
                 NodeRunStatus.waiting_hitl,
-                NodeRunStatus.pending,
             ):
                 old = nr.status.value
                 if complete_node(nr, project_id=project_id, initiator="worker"):

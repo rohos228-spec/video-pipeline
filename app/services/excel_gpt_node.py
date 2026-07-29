@@ -419,6 +419,17 @@ def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
     return max_slot
 
 
+def slot_for_excel_gpt_node_key(project: Project, node_key: str) -> int | None:
+    """slotIndex (1..5) для node_key на канвасе."""
+    key = (node_key or "").strip()
+    if not key:
+        return None
+    for n in excel_gpt_nodes_from_project(project):
+        if str(n.get("id") or "").strip() == key:
+            return slot_index_from_node(n)
+    return None
+
+
 def clear_excel_gpt_tail_completion(
     project: Project,
     from_slot: int,
