@@ -462,11 +462,24 @@ def ensure_source_voiceover(project: Project) -> Path | None:
 
 
 def save_voiceover_text(project: Project, voiceover_path: Path, text: str) -> None:
-    """Сохраняет voiceover.txt с бэкапом предыдущей версии."""
+    """Сохраняет voiceover.txt с бэкапом предыдущей версии.
+
+    Отказывает, если ``text`` похож на отчёт проверки (JSON/TXT) —
+    иначе check-ответ затирает закадр и ломает разбивку.
+    """
+    from app.services.check_analysis import looks_like_check_payload
+
+    body = (text or "").strip()
+    if looks_like_check_payload(body):
+        raise ValueError(
+            "Ответ похож на отчёт проверки, а не на закадровый текст — "
+            "voiceover.txt не перезаписан. Перезапустите шаг «Закадровый текст» "
+            "с промтом сценария (не проверки)."
+        )
     voiceover_path.parent.mkdir(parents=True, exist_ok=True)
     if voiceover_path.exists():
         old_dir = voiceover_path.parent / "old"
         old_dir.mkdir(parents=True, exist_ok=True)
         backup = old_dir / f"{_timestamp()}_voiceover.txt"
         shutil.copy2(voiceover_path, backup)
-    voiceover_path.write_text(text, encoding="utf-8")
+    voiceover_path.write_text(body, encoding="utf-8")

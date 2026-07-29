@@ -12,6 +12,7 @@ from app.services.check_analysis import (
     expected_artifacts_for_node_type,
     list_check_operator_steps,
     load_check_operator_prompt,
+    looks_like_check_payload,
     parse_check_analysis,
     parse_gate_status,
     write_analysis_json,
@@ -67,6 +68,60 @@ def test_parse_fenced_and_aliases() -> None:
 
     rej = parse_check_analysis('{"decision":"rejected","reason":"x"}')
     assert rej.verdict == "fail"
+
+
+def test_looks_like_check_payload_blocks_voiceover_pollution() -> None:
+    assert looks_like_check_payload(
+        "# ОТЧЁТ ПРОВЕРКИ\nverdict: fail\n\n## summary\nx\n"
+    )
+    assert looks_like_check_payload(
+        json.dumps(
+            {
+                "decision": "rejected",
+                "criteria": [],
+                "issues": ["a"],
+                "red_flags": [],
+            },
+            ensure_ascii=False,
+        )
+    )
+    assert looks_like_check_payload(
+        json.dumps(
+            {
+                "schema": SCHEMA_ID,
+                "verdict": "fail",
+                "summary": "x",
+                "checks": [],
+            }
+        )
+    )
+    assert not looks_like_check_payload(
+        "В тёмном подъезде пахло сыростью. Герой шагнул вперёд."
+    )
+
+
+def test_save_voiceover_rejects_check_payload(tmp_path: Path, monkeypatch) -> None:
+    from app.models import Project
+    from app.services.chatgpt_xlsx import save_voiceover_text
+
+    data = tmp_path / "data"
+    monkeypatch.setattr("app.models.settings.data_dir", data)
+    root = data / "videos" / "p1"
+    root.mkdir(parents=True)
+    p = Project(id=1, topic="t", slug="p1")
+    monkeypatch.setattr(type(p), "data_dir", property(lambda self: root))
+    dest = root / "voiceover.txt"
+    dest.write_text("старый нормальный закадр", encoding="utf-8")
+    bad = json.dumps(
+        {"decision": "rejected", "criteria": [], "issues": ["x"], "red_flags": []},
+        ensure_ascii=False,
+    )
+    try:
+        save_voiceover_text(p, dest, bad)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "отчёт проверки" in str(e).lower() or "проверк" in str(e).lower()
+    assert dest.read_text(encoding="utf-8") == "старый нормальный закадр"
 
 
 def test_write_analysis_json(tmp_path: Path) -> None:

@@ -309,6 +309,32 @@ def looks_like_check_report_txt(text: str) -> bool:
     return False
 
 
+def looks_like_check_payload(text: str) -> bool:
+    """True, если текст — отчёт проверки (TXT/JSON), а не закадровый текст.
+
+    Нужен guard при записи voiceover.txt: иначе ответ check-ноды
+    попадает в закадр и ломает разбивку.
+    """
+    if looks_like_check_report_txt(text):
+        return True
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    obj = extract_json_object(raw)
+    if not isinstance(obj, dict):
+        return False
+    if str(obj.get("schema") or "").strip() == SCHEMA_ID:
+        return True
+    if "verdict" in obj and ("checks" in obj or "fix" in obj or "forward" in obj):
+        return True
+    decision = str(obj.get("decision") or "").strip()
+    if decision and (
+        "criteria" in obj or "issues" in obj or "red_flags" in obj or "checks" in obj
+    ):
+        return True
+    return False
+
+
 def split_check_reply_and_writeback(text: str) -> tuple[str, str]:
     """Отделить TXT-отчёт от TSV writeback-хвоста.
 

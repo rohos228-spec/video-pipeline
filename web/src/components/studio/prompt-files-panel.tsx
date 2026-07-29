@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 8000;
 
 function toastError(e: unknown) {
   toast.error(errorMessageFromUnknown(e));
@@ -85,6 +85,7 @@ export function PromptFilesPanel({
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const userPickedRef = useRef(false);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [draft, setDraft] = useState<string>("");
   const [dirty, setDirty] = useState(false);
@@ -99,27 +100,39 @@ export function PromptFilesPanel({
     refetchInterval: POLL_INTERVAL_MS,
   });
 
+  // Слот/папка сменились — можно снова следовать preferred.
+  useEffect(() => {
+    userPickedRef.current = false;
+  }, [stepCode, slotId, preferredFile]);
+
   // Список файлов: не сбрасывать ручной выбор на preferred/первый при каждом poll.
   useEffect(() => {
     const list = files.data ?? [];
     if (list.length === 0) {
-      setSelectedName(null);
+      // Пока идёт fetch — не обнулять выбор (иначе мигание + Delete disabled).
+      if (!files.isFetching && !files.isPending) setSelectedName(null);
       return;
     }
     setSelectedName((prev) => {
+      if (userPickedRef.current && prev && list.some((f) => f.name === prev)) {
+        return prev;
+      }
       if (prev && list.some((f) => f.name === prev)) return prev;
       if (preferredFile && list.some((f) => f.name === preferredFile)) {
         return preferredFile;
       }
+      if (activeVariant && list.some((f) => f.name === activeVariant)) {
+        return activeVariant;
+      }
       return list[0].name;
     });
-  }, [files.data, preferredFile]);
-
-  // Смена активного варианта — перейти на него один раз.
-  useEffect(() => {
-    if (!preferredFile) return;
-    setSelectedName(preferredFile);
-  }, [preferredFile]);
+  }, [
+    files.data,
+    files.isFetching,
+    files.isPending,
+    preferredFile,
+    activeVariant,
+  ]);
 
   const content = useQuery({
     queryKey: ["prompt-file", cacheKey, selectedName],
@@ -128,16 +141,29 @@ export function PromptFilesPanel({
     refetchInterval: () => (dirty ? false : POLL_INTERVAL_MS),
   });
 
+  const contentText = content.data?.content;
   useEffect(() => {
-    if (!content.data) return;
+    if (contentText == null) return;
     if (dirty) return;
-    setDraft(content.data.content);
-  }, [content.data, dirty]);
+    setDraft((prev) => (prev === contentText ? prev : contentText));
+  }, [contentText, dirty]);
 
   useEffect(() => {
     setDirty(false);
     setPreviewVersion(null);
   }, [selectedName, slotId, stepCode]);
+
+  const selectFile = (name: string) => {
+    userPickedRef.current = true;
+    setSelectedName(name);
+  };
+
+  const selectedMeta = useMemo(
+    () => (files.data ?? []).find((f) => f.name === selectedName) ?? null,
+    [files.data, selectedName],
+  );
+  const selectedIsDefault =
+    selectedName === "default" || Boolean(selectedMeta?.is_default);
 
   const save = useMutation({
     mutationFn: () => api.savePromptFile(stepCode, selectedName!, draft),
@@ -161,6 +187,7 @@ export function PromptFilesPanel({
       const old = selectedName!;
       toast.success(`Промт переименован: ${old} → ${info.name}`);
       setSelectedName(info.name);
+      userPickedRef.current = true;
       onPromptRenamed?.(old, info.name);
       qc.invalidateQueries({ queryKey: ["prompt-files", cacheKey] });
       qc.invalidateQueries({ queryKey: ["prompt-file-history", cacheKey] });
@@ -222,7 +249,10 @@ export function PromptFilesPanel({
       versionId: string;
     }) => api.getPromptFileHistory(stepCode, fileName, versionId),
     onSuccess: (data, { fileName }) => {
-      if (fileName !== selectedName) setSelectedName(fileName);
+      if (fileName !== selectedName) {
+        userPickedRef.current = true;
+        setSelectedName(fileName);
+      }
       setDraft(data.content);
       setDirty(false);
       setPreviewVersion({
@@ -348,7 +378,7 @@ export function PromptFilesPanel({
             <li key={f.name} className="flex items-stretch gap-0.5">
               <button
                 type="button"
-                onClick={() => setSelectedName(f.name)}
+                onClick={() => selectFile(f.name)}
                 className={cn(
                   "flex min-w-0 flex-1 items-center justify-between gap-1 rounded-md px-2 py-1 text-left text-[10px] transition-colors",
                   selectedName === f.name
@@ -383,7 +413,7 @@ export function PromptFilesPanel({
                 cacheKey={cacheKey}
                 fileName={f.name}
                 isActive={selectedName === f.name}
-                onSelectFile={() => setSelectedName(f.name)}
+                onSelectFile={() => selectFile(f.name)}
                 onPreview={(v) =>
                   loadVersionPreview.mutate({ fileName: f.name, versionId: v.id })
                 }
@@ -419,17 +449,17 @@ export function PromptFilesPanel({
               size="sm"
               variant="outline"
               className="h-7 gap-1 px-2 text-[10px]"
-              disabled={!selectedName || selectedName === "default" || renamePrompt.isPending}
+              disabled={!selectedName || selectedIsDefault || renamePrompt.isPending}
               title={
-                selectedName === "default"
+                selectedIsDefault
                   ? "default переименовывать нельзя"
                   : "Переименовать файл промта"
               }
               onClick={() => {
-                if (!selectedName || selectedName === "default") return;
+                if (!selectedName || selectedIsDefault) return;
                 const next = window.prompt("Новое имя промта (без .md):", selectedName);
                 if (next == null) return;
-                const name = next.trim();
+                const name = next.trim().replace(/\.md$/i, "");
                 if (!name || name === selectedName) return;
                 renamePrompt.mutate(name);
               }}
@@ -488,7 +518,7 @@ export function PromptFilesPanel({
               className="h-7 gap-1 px-2 text-[10px] text-destructive hover:text-destructive"
               onClick={() => {
                 if (!selectedName) return;
-                if (selectedName === "default") {
+                if (selectedIsDefault) {
                   toast.error("default удалять нельзя");
                   return;
                 }
@@ -496,9 +526,9 @@ export function PromptFilesPanel({
                 remove.mutate(selectedName);
               }}
               disabled={
-                !selectedName || selectedName === "default" || remove.isPending
+                !selectedName || selectedIsDefault || remove.isPending
               }
-              title={selectedName === "default" ? "default удалять нельзя" : "Удалить файл"}
+              title={selectedIsDefault ? "default удалять нельзя" : "Удалить файл"}
             >
               <Trash2 className="h-3 w-3" />
               Удалить
@@ -555,7 +585,7 @@ export function PromptFilesPanel({
                 ? "Содержимое файла…"
                 : "Выберите файл слева или загрузите новый."
             }
-            disabled={!selectedName || content.isLoading}
+            disabled={!selectedName || (content.isPending && !content.data)}
           />
         </div>
       </div>

@@ -275,7 +275,15 @@ export function StoragePanel({
                     return (
                       <li
                         key={f.path}
-                        className="flex items-start gap-2 rounded-lg border border-white/6 bg-white/[0.03] px-2 py-1.5"
+                        className="flex cursor-pointer items-start gap-2 rounded-lg border border-white/6 bg-white/[0.03] px-2 py-1.5 transition hover:border-sky-400/35 hover:bg-sky-500/10"
+                        title="Двойной клик — открыть файл"
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          const openUrl =
+                            f.preview_url ||
+                            `/api/files?path=${encodeURIComponent(f.path)}`;
+                          window.open(openUrl, "_blank", "noopener,noreferrer");
+                        }}
                       >
                         {f.preview_url && f.kind === "image" ? (
                           // eslint-disable-next-line @next/next/no-img-element
