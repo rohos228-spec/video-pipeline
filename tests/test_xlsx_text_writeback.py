@@ -82,6 +82,34 @@ def test_writeback_prefers_downloaded_xlsx(tmp_path: Path) -> None:
     wb2.close()
 
 
+def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
+    from app.services.xlsx_v8_import import _read_general_plan
+    from app.services.plan_validation import is_meaningful_general_plan
+
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Общий план"
+    ws["A1"] = "Хук"
+    wb.create_sheet("план")
+    wb.save(src)
+    wb.close()
+
+    prose = "А" * 250 + "\n\nРим был велик: армия, право, дороги."
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text=prose,
+        downloaded_paths=[],
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    text = _read_general_plan(wb2) or ""
+    wb2.close()
+    assert is_meaningful_general_plan(text)
+    assert "Рим был велик" in text
+
+
 def test_apply_creates_missing_sheet(tmp_path: Path) -> None:
     src = tmp_path / "a.xlsx"
     dest = tmp_path / "b.xlsx"

@@ -3,7 +3,9 @@
 Модель не отдаёт бинарный .xlsx — поэтому:
   1) если в ответе/скачанных файлах есть .xlsx — копируем поверх project.xlsx;
   2) иначе парсим блоки `# Лист: <имя>` + TSV (тот же формат, что `xlsx_to_text`)
-     и пишем в копию исходного workbook.
+     и пишем в копию исходного workbook;
+  3) если TSV нет, но ответ — длинная проза, а в книге есть «Общий план» —
+     дописываем план туда (fallback для шага plan).
 """
 
 from __future__ import annotations
@@ -22,6 +24,10 @@ _FENCE_RE = re.compile(
     r"```(?:tsv|csv|text|xlsx)?\s*\n(.*?)```",
     re.IGNORECASE | re.DOTALL,
 )
+
+# Совпадает с app.services.xlsx_v8_import.SHEET_GENERAL_V8 / plan_validation.
+_GENERAL_PLAN_SHEET = "Общий план"
+_MIN_PROSE_PLAN_CHARS = 200
 
 
 def extract_sheet_blocks(text: str) -> dict[str, list[list[str]]]:
@@ -47,8 +53,9 @@ def extract_sheet_blocks(text: str) -> dict[str, list[list[str]]]:
                 out.setdefault(current, [])
                 continue
             if current is None:
-                # Без заголовка — лист «Данные», если есть табы/|; иначе skip.
-                if "\t" in line or ("," in line and line.count(",") >= 2):
+                # Без `# Лист:` — только явный TSV (табы). Запятые в русской
+                # прозе (. «армия, право, дороги») нельзя считать CSV.
+                if "\t" in line:
                     current = "Данные"
                     out.setdefault(current, [])
                 else:
@@ -118,6 +125,50 @@ def apply_sheet_blocks_to_xlsx(
     return dest_xlsx
 
 
+def _strip_reply_noise(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"```[\w]*\n?", "", t)
+    t = t.replace("```", "").strip()
+    return t
+
+
+def write_prose_into_general_plan(
+    src_xlsx: Path,
+    dest_xlsx: Path,
+    prose: str,
+) -> Path:
+    """Дописать длинный текстовый план на лист «Общий план» (без wipe других листов)."""
+    from openpyxl import load_workbook
+
+    cleaned = _strip_reply_noise(prose)
+    if len(cleaned) < _MIN_PROSE_PLAN_CHARS:
+        raise ValueError(
+            f"проза слишком короткая для плана ({len(cleaned)} < {_MIN_PROSE_PLAN_CHARS})"
+        )
+    if not src_xlsx.exists():
+        raise FileNotFoundError(str(src_xlsx))
+
+    wb = load_workbook(filename=str(src_xlsx))
+    try:
+        if _GENERAL_PLAN_SHEET not in wb.sheetnames:
+            raise ValueError(f"нет листа «{_GENERAL_PLAN_SHEET}»")
+        ws = wb[_GENERAL_PLAN_SHEET]
+        # Не чистим шаблон целиком — добавляем пару label/value в конец.
+        row = (ws.max_row or 0) + 2
+        if row < 1:
+            row = 1
+        ws.cell(row=row, column=1, value="План (GPT)")
+        # Excel cell limit ~32767
+        ws.cell(row=row, column=2, value=cleaned[:32000])
+        dest_xlsx.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(str(dest_xlsx))
+    finally:
+        wb.close()
+    return dest_xlsx
+
+
 def writeback_project_xlsx(
     *,
     project_xlsx: Path,
@@ -143,30 +194,52 @@ def writeback_project_xlsx(
             return project_xlsx
 
     blocks = extract_sheet_blocks(reply_text or "")
-    if not blocks:
-        logger.debug("xlsx_writeback: в ответе нет TSV/листов")
-        return None
+    if blocks:
+        tmp = project_xlsx.with_suffix(".writeback.tmp.xlsx")
+        try:
+            apply_sheet_blocks_to_xlsx(project_xlsx, blocks, tmp)
+            shutil.move(str(tmp), str(project_xlsx))
+            logger.info(
+                "xlsx_writeback: TSV→{} листов={}, size={}",
+                project_xlsx.name,
+                list(blocks.keys()),
+                project_xlsx.stat().st_size,
+            )
+            return project_xlsx
+        except Exception as e:  # noqa: BLE001
+            logger.warning("xlsx_writeback failed: {}", e)
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+            # fall through to prose fallback
 
-    tmp = project_xlsx.with_suffix(".writeback.tmp.xlsx")
-    try:
-        apply_sheet_blocks_to_xlsx(project_xlsx, blocks, tmp)
-        shutil.move(str(tmp), str(project_xlsx))
-        logger.info(
-            "xlsx_writeback: TSV→{} листов={}, size={}",
-            project_xlsx.name,
-            list(blocks.keys()),
-            project_xlsx.stat().st_size,
-        )
-        return project_xlsx
-    except Exception as e:  # noqa: BLE001
-        logger.warning("xlsx_writeback failed: {}", e)
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        return None
+    # Fallback: GPT отдал прозу без `# Лист:` / TSV
+    prose = _strip_reply_noise(reply_text or "")
+    if len(prose) >= _MIN_PROSE_PLAN_CHARS and project_xlsx.exists():
+        tmp = project_xlsx.with_suffix(".writeback.prose.tmp.xlsx")
+        try:
+            write_prose_into_general_plan(project_xlsx, tmp, prose)
+            shutil.move(str(tmp), str(project_xlsx))
+            logger.info(
+                "xlsx_writeback: prose→«{}» ({} симв) → {}",
+                _GENERAL_PLAN_SHEET,
+                len(prose),
+                project_xlsx.name,
+            )
+            return project_xlsx
+        except Exception as e:  # noqa: BLE001
+            logger.warning("xlsx_writeback prose fallback failed: {}", e)
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+
+    logger.debug(
+        "xlsx_writeback: в ответе нет TSV/листов и prose-fallback не сработал"
+    )
+    return None
 
 
 WRITEBACK_HINT = (
     "Верни обновлённый Excel в текстовом формате: для каждого листа строка "
     "`# Лист: <имя>` и далее строки TSV (ячейки через табуляцию). "
+    "Для шага план обязателен лист «Общий план» (`# Лист: Общий план`). "
     "Сохрани имена листов как во входе. Либо приложи прямую ссылку на .xlsx."
 )
